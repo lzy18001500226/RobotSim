@@ -2,6 +2,8 @@
 
 RobotSim uses local Codex for integration work that needs its canonical robotics environment. Cloud Codex is for repository work that can be validated headlessly. Keep claims within the environment actually tested.
 
+RobotSim Dockerfiles and Compose files define the reproducible headless/runtime baseline. Unity, WSLg, GPU rendering, and their integration remain host-side/local capabilities; the container baseline does not reproduce them.
+
 ## Where work runs
 
 | Environment | Appropriate work | Validation boundary |

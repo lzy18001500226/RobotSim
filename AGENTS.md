@@ -22,7 +22,7 @@ Project plans and workflows provide context or procedures; they are not task que
 - ROS 2 is the system integration layer for sensor and robot interfaces and higher-level capabilities; sensor simulators must expose ROS 2 compatible interfaces.
 - Unitree G1 is the first robot backend; AgiBot X2 is the second. Keep vendor-specific SDK logic inside `robots/unitree_g1/` or `robots/agibot_x2/` adapters. Do not edit upstream vendor robot files in place.
 - Keep simulation ground truth separate from estimated state. Algorithms must be runnable with a simulated backend before real deployment, and robot backends must preserve common interfaces.
-- Treat Dockerfiles and Compose files as the environment source of truth, rosdep/apt as the ROS dependency source, and pinned commits in `third_party/LOCK.md` as the third-party version source.
+- Treat Dockerfiles and Compose files as the source of truth for the reproducible headless/runtime baseline. Unity, WSLg, and GPU integration remain host-side capabilities documented separately; the container baseline does not reproduce them. Treat rosdep/apt as the ROS dependency source and pinned commits in `third_party/LOCK.md` as the third-party version source.
 
 Read the relevant record in `docs/adr/` before changing an established architecture boundary. Do not change these boundaries as incidental task cleanup.
 
@@ -47,6 +47,7 @@ Read the relevant record in `docs/adr/` before changing an established architect
 
 ## Git and PR closeout
 
+- At task closeout, follow the [Codex closeout workflow](docs/setup/codex.md#closeout) and invoke `scripts/agent/notify_task.py` with `ready_for_review`, `completed`, or `blocked` for the actual terminal outcome. Missing notification configuration or delivery failure is best-effort and does not change the task result.
 - Routine, low-risk tasks may self-review, commit, open a PR, wait for required checks, and merge after they pass.
 - Stop at a reviewable PR for architecture decisions, destructive or high-risk work, dependency/security changes, unresolved GUI/hardware validation, and explicitly review-gated tasks.
 - Never bypass branch protection or force merge. Explicit current-user instructions take precedence.
