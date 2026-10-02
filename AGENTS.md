@@ -47,11 +47,8 @@ Read the relevant record in `docs/adr/` before changing an established architect
 
 ## Git and PR closeout
 
-For repository changes:
-
-1. Review the scoped diff and run relevant checks, including `git diff --check`.
-2. Stage only task-owned paths and create a focused commit.
-3. Push the task branch and open a pull request against `main` with the goal, changes, validation, and known limitations.
-4. Leave the pull request for human review and merge; do not merge it yourself.
-
-Verify the pushed branch and pull request. Do not report closeout as complete if a commit, push, or PR creation failed.
+- Routine, low-risk tasks may self-review, commit, open a PR, wait for required checks, and merge after they pass.
+- Stop at a reviewable PR for architecture decisions, destructive or high-risk work, dependency/security changes, unresolved GUI/hardware validation, and explicitly review-gated tasks.
+- Never bypass branch protection or force merge. Explicit current-user instructions take precedence.
+- For repository changes, review the scoped diff, run relevant checks including `git diff --check`, and stage only task-owned paths.
+- Verify the pushed branch and PR. Do not report closeout as complete if commit, push, or PR creation failed.
