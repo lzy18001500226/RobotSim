@@ -1,23 +1,57 @@
-# Project Agent Instructions
+# Repository Agent Instructions
 
-## Core rule
-Do not put vendor-specific logic in task, perception, localization, navigation, or generic manipulation packages.
+## Task ownership and authority
 
-Vendor SDK usage belongs only in robot adapters:
-- `robots/unitree_g1/`
-- `robots/agibot_x2/`
+- The current user's request defines the task, scope, and acceptance criteria. Repository documents guide the work but do not create or authorize additional tasks.
+- The primary agent owns the task from inspection through implementation, validation, and Git/PR closeout. Normal development uses one primary agent thread.
+- Subagents are optional and limited to independent, bounded research or review. They do not own the task or edit shared project files; the primary agent reviews and validates their input.
+- Follow higher-priority instructions and the current user's directions when they conflict with repository guidance.
 
-## Source of truth
-- Environment: Dockerfiles + Compose
-- ROS dependencies: rosdep / apt
-- Third-party source versions: pinned commits in `third_party/LOCK.md`
-- Design decisions: `docs/adr/`
-- Repeatable procedures: `docs/workflows/`
-- Technology notes: `docs/skills/`
+## Minimal startup and reading
 
-## Development rules
-- Keep simulation truth and estimated state separate.
-- Every sensor simulator must publish a ROS 2 compatible interface.
-- Every algorithm must be runnable with a simulated backend first.
-- Do not edit upstream vendor robot files in place; use overlays/adapters.
-- New robot backends must preserve the common interfaces.
+1. Read this file and the repository `README.md`.
+2. Use [`docs/README.md`](docs/README.md) to locate relevant project documents.
+3. Read only the source, workflow, checklist, skill note, or decision record needed for the current task. Do not load the whole documentation tree by default.
+
+Project plans and workflows provide context or procedures; they are not task queues or authorization to expand the current request.
+
+## Architecture boundaries
+
+- MuJoCo is the source of truth for robot physics and simulation ground truth.
+- Unity provides high-fidelity scenes, rendering, external sensor simulation, and visualization. It must not become a second robot-physics authority.
+- ROS 2 is the system integration layer for sensor and robot interfaces and higher-level capabilities; sensor simulators must expose ROS 2 compatible interfaces.
+- Unitree G1 is the first robot backend; AgiBot X2 is the second. Keep vendor-specific SDK logic inside `robots/unitree_g1/` or `robots/agibot_x2/` adapters. Do not edit upstream vendor robot files in place.
+- Keep simulation ground truth separate from estimated state. Algorithms must be runnable with a simulated backend before real deployment, and robot backends must preserve common interfaces.
+- Treat Dockerfiles and Compose files as the environment source of truth, rosdep/apt as the ROS dependency source, and pinned commits in `third_party/LOCK.md` as the third-party version source.
+
+Read the relevant record in `docs/adr/` before changing an established architecture boundary. Do not change these boundaries as incidental task cleanup.
+
+## Workspace and change boundaries
+
+- Inspect the current branch, working-tree status, and relevant diff before editing. Preserve unrelated user changes.
+- Work on a task branch; do not commit task changes directly to `main`.
+- Keep edits within the paths needed for the current request. Never use broad staging, reset, clean, or force-push operations to remove or hide unrelated work.
+- Do not rewrite unrelated technical documentation or broaden scope without direction from the current user.
+
+## Execution and validation
+
+- Inspect the smallest relevant source and documentation set before editing. Follow the applicable setup, workflow, skill, and checklist documents.
+- Make the smallest change that satisfies the task, then run focused checks relevant to the changed paths.
+- Report which checks ran and their results. Distinguish static checks from environment, simulation, or hardware validation; do not claim checks that were not run.
+- If a required check or Git operation is blocked, preserve the work and report the specific blocker and remaining validation gap.
+
+## Documentation responsibilities
+
+- Put durable architecture decisions in `docs/adr/`, setup procedures in `docs/setup/`, repeatable task procedures in `docs/workflows/`, focused technical guidance in `docs/skills/`, and verification lists in `docs/checklists/`.
+- Update the document that owns a changed rule or procedure. Link to existing guidance instead of duplicating it, and do not add progress documents just to narrate routine work.
+
+## Git and PR closeout
+
+For repository changes:
+
+1. Review the scoped diff and run relevant checks, including `git diff --check`.
+2. Stage only task-owned paths and create a focused commit.
+3. Push the task branch and open a pull request against `main` with the goal, changes, validation, and known limitations.
+4. Leave the pull request for human review and merge; do not merge it yourself.
+
+Verify the pushed branch and pull request. Do not report closeout as complete if a commit, push, or PR creation failed.
