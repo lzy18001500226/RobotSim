@@ -4,6 +4,8 @@ RobotSim uses local Codex for integration work that needs its canonical robotics
 
 RobotSim Dockerfiles and Compose files define the reproducible headless/runtime baseline. Unity, WSLg, GPU rendering, and their integration remain host-side/local capabilities; the container baseline does not reproduce them.
 
+For multi-step work that should continue across sessions, use the repository's [Goal-driven development workflow](../workflows/goal_driven_development.md). It defines the evidence, blocker, budget, and review boundaries for native Codex Goals; it does not create a shared task queue or expand the user's authorization.
+
 ## Where work runs
 
 | Environment | Appropriate work | Validation boundary |
