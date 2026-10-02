@@ -11,6 +11,7 @@ Use the [repository README](../README.md) for the project overview and [`AGENTS.
 | [`workflows/`](workflows/) | Repeatable procedures for baseline bring-up, navigation, and robot porting | Implementing or validating one of those workflows. |
 | [`skills/`](skills/) | Focused technical notes for robots, MuJoCo, ROS 2, and LiDAR/SLAM | Working in the corresponding technology area. |
 | [`checklists/`](checklists/) | Environment and reproducibility checks | Verifying setup or preparing reproducible results. |
+| [`local_readiness_backlog.md`](local_readiness_backlog.md) | Local readiness snapshot and dependency-aware issue drafts | Planning the next implementation Goals after the physics spike review. |
 
 ## Reading and maintenance
 
