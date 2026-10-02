@@ -1,0 +1,16 @@
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    image: robotsim:humble-dev
+    working_dir: /workspace
+    volumes:
+      - ..:/workspace
+    stdin_open: true
+    tty: true
+    ipc: host
+    gpus: all
+    environment:
+      ROS_DOMAIN_ID: "1"
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
