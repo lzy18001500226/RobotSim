@@ -15,6 +15,16 @@ For multi-step work that should continue across sessions, use the repository's [
 
 See [host and WSL setup](01_HOST_WSL_DOCKER.md), [development container setup](02_DEV_CONTAINER.md), and the [Codex Cloud environment guide](https://developers.openai.com/codex/cloud/environments/).
 
+Before acting in a new, resumed, or parallel-worktree task, verify the checkout:
+
+```bash
+git rev-parse --show-toplevel
+git branch --show-current
+git status --short --branch
+```
+
+Confirm the root and branch are the intended ones, and preserve any existing changes.
+
 ## Project-local Codex hooks
 
 `.codex/hooks.json` contains an optional `PreToolUse` guard for plainly destructive Git commands and obvious attempts to stage or write credential files, plus a local `Stop` handler for one best-effort notification when a Codex turn ends. The guard is a last-line check, not a substitute for reviewing a command or protecting secrets. The repository remains usable when hooks are disabled.

@@ -11,8 +11,8 @@ Use the [repository README](../README.md) for the project overview and [`AGENTS.
 | [`setup/codex.md`](setup/codex.md) | Local/Cloud Codex boundaries, hooks, notifications, and closeout | Choosing where Codex work runs or finishing a task. |
 | [`workflows/`](workflows/) | Repeatable procedures for baseline bring-up, navigation, and robot porting | Implementing or validating one of those workflows. |
 | [`workflows/goal_driven_development.md`](workflows/goal_driven_development.md) | Codex prompt-versus-Goal conventions, continuation, evidence, and review gates | Starting multi-step or long-running Codex work. |
-| [`skills/`](skills/) | Focused technical notes for robots, MuJoCo, ROS 2, and LiDAR/SLAM | Working in the corresponding technology area. |
-| [`checklists/`](checklists/) | Environment and reproducibility checks | Verifying setup or preparing reproducible results. |
+| [`skills/`](skills/) | RobotSim technical notes; these are not native Codex Skills. Native project Skills use `.agents/skills/<name>/SKILL.md`. | Working in the corresponding technology area. |
+| [`checklists/`](checklists/) | Environment, reproducibility, and [Agent Infra evaluation cases](checklists/agent_infra_eval.md) | Verifying setup, preparing reproducible results, or evaluating agent-infrastructure changes. |
 
 ## Reading and maintenance
 
