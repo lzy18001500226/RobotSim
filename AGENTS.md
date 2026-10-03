@@ -15,6 +15,8 @@
 
 Project plans and workflows provide context or procedures; they are not task queues or authorization to expand the current request.
 
+For implementation placement and RobotSim runtime/validation rules, follow [`docs/engineering/README.md`](docs/engineering/README.md). For multi-step work that needs persistent continuation, follow [`docs/workflows/goal_driven_development.md`](docs/workflows/goal_driven_development.md); Goals are thread-scoped and do not authorize actions beyond the user's request.
+
 ## Architecture boundaries
 
 - MuJoCo is the source of truth for robot physics and simulation ground truth.
