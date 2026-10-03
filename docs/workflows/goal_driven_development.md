@@ -48,7 +48,7 @@ Budget and stop behavior
 
 Continue from the Goal and the repository's durable state; inspect the current branch, tree, diffs, and existing artifacts before acting. Save useful handoff state in the right maintained artifact (code, tests, docs, issue/PR) rather than relying on conversation memory or a new progress diary. When a hypothesis fails, retain its useful evidence, choose the next safe hypothesis, and continue if scope and budget allow.
 
-Completion is evidence-based. Map changes to the minimum levels in [the validation contract](../engineering/validation.md), report exact results, and leave unavailable checks `DEFERRED` or `NOT RUN`. “The Goal ran out of budget”, “the code looks done”, or “the task was attempted” is not completion. A real manual blocker should preserve the successful work, distinguish completed from outstanding checks, and name the exact unlock action. Complete other independent in-scope work before stopping as blocked.
+Completion is evidence-based. Apply the minimum levels and status definitions in [the validation contract](../engineering/validation.md), and report each result with its command and evidence. Finish other in-scope work before stopping on a blocker; name the exact unlock action for any required deferred check.
 
 The Goal's thread scope matters: it helps continue one task, but does not automatically discover or switch to other independent repository tasks. Use manually curated GitHub Issues if a durable backlog becomes useful. Do not build a supervisor or queue merely to imitate an issue tracker.
 
@@ -60,7 +60,7 @@ Where the current Codex client exposes pause, resume, or clear/end controls, Rob
 - **Resume:** continue the same Goal in its existing thread from the current repository state and the last evidence. Re-check the tree before resuming work.
 - **Clear/end:** retire the active Goal contract in that thread. This does not roll back files, commits, or PRs and is not a success signal. Record any unfinished work before clearing if it needs a handoff.
 
-Human/review gates are meaningful decisions, not routine error handling. Continue through ordinary test failures and safe alternative approaches. Stop for user/maintainer architecture acceptance, destructive operations, new credentials/authentication, irreversible dependency migrations, unsafe hardware actuation, or an unresolved visual/manual assertion that affects correctness. Stay within the user's authorization; do not interpret a Goal's continuation as new permission to merge, deploy, actuate, or publish.
+Continue through ordinary test failures and safe alternatives. Stop for architecture acceptance, destructive operations, new credentials/authentication, irreversible dependency migrations, unsafe hardware actuation, or unresolved visual/manual assertions that affect correctness. Routine low-risk merge authorization and required checks/review follow [AGENTS.md](../../AGENTS.md); Goal continuation does not waive these meaningful gates or expand task scope.
 
 For repository PR closeout, review the scoped diff and its evidence, then follow [the Codex closeout workflow](../setup/codex.md#closeout), including its explicit `ready_for_review`, `completed`, or `blocked` notifier call. A Goal status and a PR notification are separate records: use the notification that matches the actual task outcome and report deferred checks honestly.
 

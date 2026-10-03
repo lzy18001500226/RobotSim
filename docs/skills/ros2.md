@@ -1,4 +1,4 @@
-# Skill: ROS 2 Humble
+# Technical note: ROS 2 Humble
 
 Required topics:
 - workspaces / colcon

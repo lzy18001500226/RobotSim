@@ -1,4 +1,4 @@
-# Skill: LiDAR Localization
+# Technical note: LiDAR Localization
 
 Design principles:
 - sensor simulator outputs ROS 2 point clouds

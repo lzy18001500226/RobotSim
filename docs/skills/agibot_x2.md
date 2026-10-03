@@ -1,4 +1,4 @@
-# Skill: AgiBot X2
+# Technical note: AgiBot X2
 
 Expected components:
 - official X2 URDF / MJCF
