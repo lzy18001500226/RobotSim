@@ -1,15 +1,17 @@
 name: Auto-create task pull request
 
 on:
-  push:
-    branches:
-      - "issue/**"
-      - "codex/**"
+  # workflow_run loads this privileged definition from the default branch.
+  workflow_run:
+    workflows:
+      - Agent infrastructure
+    types:
+      - completed
 
 permissions: {}
 
 concurrency:
-  group: auto-task-pr-${{ github.repository }}-${{ github.ref }}
+  group: auto-task-pr-${{ github.repository }}-${{ github.event.workflow_run.head_branch || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -20,95 +22,16 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      - name: Check out trusted default-branch automation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          persist-credentials: false
+
       - name: Create a PR if this task branch does not already have one
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ github.token }}
           script: |
-            const owner = "lzy18001500226";
-            const repo = "RobotSim";
-            const repository = context.payload.repository;
-            if (
-              process.env.GITHUB_REPOSITORY !== `${owner}/${repo}` ||
-              repository.full_name !== `${owner}/${repo}` ||
-              repository.fork
-            ) {
-              core.info("Skipping non-canonical or fork repository.");
-              return;
-            }
-
-            const ref = context.ref || "";
-            if (!ref.startsWith("refs/heads/")) {
-              core.setFailed("Expected a branch push.");
-              return;
-            }
-            const branch = ref.slice("refs/heads/".length);
-            const approvedBranch = /^(?:issue|codex)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-            if (
-              !approvedBranch.test(branch) ||
-              branch.includes("..") ||
-              branch.includes("//") ||
-              branch.endsWith(".") ||
-              branch.endsWith(".lock")
-            ) {
-              core.setFailed("Branch name is outside the approved task-branch format.");
-              return;
-            }
-
-            const head = `${owner}:${branch}`;
-            const findOpenPullRequests = () => github.rest.pulls.list({
-              owner,
-              repo,
-              head,
-              state: "open",
-              per_page: 100,
-            });
-            const existing = await findOpenPullRequests();
-            if (existing.data.length > 0) {
-              core.info(`PR #${existing.data[0].number} already tracks ${branch}; pushed commits update it automatically.`);
-              return;
-            }
-
-            const templateResponse = await github.rest.repos.getContent({
-              owner,
-              repo,
-              path: ".github/pull_request_template.md",
-              ref: "main",
-            });
-            const templateFile = templateResponse.data;
-            if (Array.isArray(templateFile) || templateFile.type !== "file" || !templateFile.content) {
-              core.setFailed("Could not load the standard PR template from main.");
-              return;
-            }
-            const template = Buffer.from(templateFile.content, "base64").toString("utf8").trim();
-
-            const issueMatch = /^issue\/([0-9]+)(?:$|[-/])/.exec(branch);
-            let taskName = branch.slice(branch.indexOf("/") + 1);
-            if (issueMatch) {
-              taskName = taskName.replace(/^[0-9]+(?:[-/])?/, "");
-            }
-            taskName = taskName.replace(/[._/-]+/g, " ").trim().slice(0, 80) || "implementation";
-            const title = `${issueMatch ? `Issue #${issueMatch[1]}` : "RobotSim task"}: ${taskName}`;
-            const issueLine = issueMatch ? `- Issue: #${issueMatch[1]}` : "- Issue: not inferred from branch name";
-            const body = `${template}\n\n---\n\n## Automated task handoff\n\n- Branch: \`${branch}\`\n- Head SHA: \`${context.sha}\`\n${issueLine}\n\n**Review required:** CI results and validation/evidence still require review. Architecture, hardware, security, and other maintainer gates remain in force. This workflow does not approve or merge pull requests.`;
-
-            try {
-              const created = await github.rest.pulls.create({
-                owner,
-                repo,
-                title,
-                head: branch,
-                base: "main",
-                body,
-              });
-              core.info(`Created PR #${created.data.number} for ${branch} at ${context.sha}.`);
-            } catch (error) {
-              if (error.status === 422) {
-                const raced = await findOpenPullRequests();
-                if (raced.data.length > 0) {
-                  core.info(`PR #${raced.data[0].number} was created concurrently; no duplicate was added.`);
-                  return;
-                }
-              }
-              throw error;
-            }
+            const { ensurePullRequest } = require("./scripts/agent/auto_task_pr.js");
+            await ensurePullRequest({ github, context, core });

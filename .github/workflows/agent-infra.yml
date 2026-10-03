@@ -25,6 +25,9 @@ jobs:
       - name: Run Python unit tests
         run: python3 -m unittest discover -s tests -v
 
+      - name: Run mocked task PR workflow tests
+        run: node --test tests/auto_task_pr.test.js
+
       - name: Compile agent scripts and tests
         run: >-
           python3 -m py_compile
