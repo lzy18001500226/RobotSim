@@ -1,6 +1,6 @@
 # RobotSim engineering contract
 
-This page is the index for implementation and validation conventions. It applies to the current early bring-up stage; it does not assert that planned packages or runtime interfaces already exist. Read the focused [runtime contract](runtime.md), [validation contract](validation.md), and [Goal workflow](../workflows/goal_driven_development.md) when they apply.
+This page is the index for implementation and validation conventions. It applies to the current early bring-up stage; it does not assert that planned packages or runtime interfaces already exist. Read the focused [runtime contract](runtime.md), [simulation state contract](simulation_state_contract.md), [validation contract](validation.md), and [Goal workflow](../workflows/goal_driven_development.md) when they apply.
 
 The architecture boundary is already established in [ADR-0004](../adr/0004_mujoco_unity_ros2_architecture.md): MuJoCo owns robot physics and ground truth, Unity owns scene/rendering/external sensor simulation, and ROS 2 integrates simulated and real backends. These engineering rules make that boundary actionable; they do not choose a new physics topology.
 

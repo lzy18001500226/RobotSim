@@ -7,6 +7,7 @@ Use the [repository README](../README.md) for the project overview and [`AGENTS.
 | [`00_PROJECT_PLAN.md`](00_PROJECT_PLAN.md) | Project goals, development phases, design principles, and non-goals | You need high-level scope or milestone context. It is not a task queue. |
 | [`adr/`](adr/) | Accepted architecture and environment decisions | A task touches an established design boundary or proposes changing one. |
 | [`engineering/README.md`](engineering/README.md) | Repository layout, artifact discipline, runtime and validation contract | Adding runtime code, selecting a language, or deciding what evidence a change needs. |
+| [`engineering/simulation_state_contract.md`](engineering/simulation_state_contract.md) | Topology-independent simulation state, command, lifecycle, and telemetry semantics | Defining or implementing a simulation state boundary without selecting its transport. |
 | [`setup/`](setup/) | Host, WSL, Docker, and development-container setup | Setting up or diagnosing the development environment. |
 | [`setup/codex.md`](setup/codex.md) | Local/Cloud Codex boundaries, hooks, notifications, and closeout | Choosing where Codex work runs or finishing a task. |
 | [`workflows/`](workflows/) | Repeatable procedures for baseline bring-up, navigation, and robot porting | Implementing or validating one of those workflows. |
