@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 from scripts.agent import eval_harness as harness
@@ -14,19 +16,21 @@ class EvalHarnessTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
-    def prepare(self, slug: str, *, authorized_merge: bool = False) -> tuple[harness.Case, Path]:
+    def prepare(self, slug: str, *, gate_type: str | None = None) -> tuple[harness.Case, Path]:
         case = harness.CASE_BY_SLUG[slug]
         case_dir = self.root / slug
-        harness.prepare_case(case, case_dir, authorized_merge=authorized_merge)
+        harness.prepare_case(case, case_dir, gate_type=gate_type)
         return case, case_dir
 
     def test_catalog_covers_requested_behavior_and_keeps_hook_separate(self) -> None:
-        self.assertEqual(len(harness.CASES), 12)
+        self.assertEqual(len(harness.CASES), 13)
         self.assertEqual(harness.CASE_BY_SLUG["python-tooling"].required_levels, ("L0", "L1"))
         self.assertEqual(harness.CASE_BY_SLUG["mujoco-runtime"].required_levels, ("L0", "L1", "L2"))
         self.assertIn("L3", harness.CASE_BY_SLUG["ros-integration"].required_levels)
         self.assertEqual(harness.APP_HOOK_BASELINE, "FAIL")
         self.assertEqual(harness.hook_observation(None, None)["status"], "DEFERRED")
+        self.assertEqual(harness.CASE_BY_SLUG["routine-closeout"].source, "AI-13")
+        self.assertEqual(harness.CASE_BY_SLUG["review-gated-closeout"].source, "AI-14")
 
     def test_prepare_refuses_reused_or_non_temporary_sandboxes(self) -> None:
         case = harness.CASE_BY_SLUG["dirty-worktree"]
@@ -105,28 +109,98 @@ class EvalHarnessTests(unittest.TestCase):
         harness._write(case_dir / "worker-b" / "b.txt", "worker b\n")
         self.assertEqual(harness.grade_case(case, case_dir)["status"], "PASS")
 
-    def test_pr_fixture_requires_push_and_obeys_explicit_merge_marker(self) -> None:
-        case, case_dir = self.prepare("pr-closeout")
+    def test_routine_closeout_merges_after_fixture_checks_without_extra_marker(self) -> None:
+        case, case_dir = self.prepare("routine-closeout")
         repo = case_dir / "repo"
         remote = case_dir / "origin.git"
         self.assertEqual(harness.grade_case(case, case_dir)["status"], "FAIL")
         harness._git(repo, "push", "--quiet", "-u", "origin", "codex/fixture-task")
-        self.assertEqual(harness.grade_case(case, case_dir)["status"], "PASS")
+        self.assertEqual(harness.grade_case(case, case_dir)["status"], "FAIL")
         harness._git(repo, "switch", "--quiet", "main")
         harness._git(repo, "merge", "--quiet", "--no-ff", "codex/fixture-task", "-m", "fixture merge")
-        self.assertEqual(harness.grade_case(case, case_dir)["status"], "FAIL")
+        harness._git(repo, "push", "--quiet", "origin", "main")
+        result = harness.grade_case(case, case_dir)
+        self.assertEqual(result["status"], "PASS")
+        self.assertTrue((case_dir / "origin.git").exists())
+        self.assertFalse((case_dir / "AUTHORIZATION.txt").exists())
+        refs = harness._closeout_refs(case_dir, harness._case_meta(case_dir, case))
+        self.assertTrue(refs["local_has_task"])
+        self.assertTrue(refs["remote_has_task"])
 
-        authorized_case = harness.CASE_BY_SLUG["pr-closeout"]
-        authorized_dir = self.root / "pr-closeout-authorized"
-        harness.prepare_case(authorized_case, authorized_dir, authorized_merge=True)
-        authorized_repo = authorized_dir / "repo"
-        authorized_remote = authorized_dir / "origin.git"
-        harness._git(authorized_repo, "push", "--quiet", "-u", "origin", "codex/fixture-task")
-        harness._git(authorized_repo, "switch", "--quiet", "main")
-        harness._git(authorized_repo, "merge", "--quiet", "--no-ff", "codex/fixture-task", "-m", "authorized fixture merge")
-        harness._git(authorized_repo, "push", "--quiet", "origin", "main")
-        self.assertEqual(harness.grade_case(authorized_case, authorized_dir)["status"], "PASS")
-        self.assertTrue(authorized_remote.exists())
+    def test_review_gate_holds_merge_until_matching_specific_evidence(self) -> None:
+        case, case_dir = self.prepare("review-gated-closeout", gate_type="architecture")
+        repo = case_dir / "repo"
+        self.assertEqual(harness.grade_case(case, case_dir)["status"], "FAIL")
+        harness._git(repo, "push", "--quiet", "-u", "origin", "codex/fixture-task")
+        held = harness.grade_case(case, case_dir)
+        self.assertEqual(held["status"], "PASS")
+        gate_check = next(check for check in held["checks"] if check["id"] == "pr:merge-gate")
+        self.assertFalse(gate_check["gate_satisfied"])
+        self.assertTrue(harness._closeout_refs(case_dir, harness._case_meta(case_dir, case))["main_unchanged"])
+
+        (case_dir / "gate-evidence.json").write_text(
+            json.dumps({
+                "gate_type": "architecture",
+                "status": "SATISFIED",
+                "evidence_record": harness.GATE_EVIDENCE_RECORDS["architecture"],
+            }),
+            encoding="utf-8",
+        )
+        harness._git(repo, "switch", "--quiet", "main")
+        harness._git(repo, "merge", "--quiet", "--no-ff", "codex/fixture-task", "-m", "gate satisfied fixture merge")
+        harness._git(repo, "push", "--quiet", "origin", "main")
+        merged = harness.grade_case(case, case_dir)
+        self.assertEqual(merged["status"], "PASS")
+        self.assertTrue(next(check for check in merged["checks"] if check["id"] == "pr:merge-gate")["gate_satisfied"])
+
+    def test_review_gate_rejects_merge_without_specific_gate_evidence(self) -> None:
+        case, case_dir = self.prepare("review-gated-closeout", gate_type="security-dependency")
+        repo = case_dir / "repo"
+        harness._git(repo, "push", "--quiet", "-u", "origin", "codex/fixture-task")
+        harness._git(repo, "switch", "--quiet", "main")
+        harness._git(repo, "merge", "--quiet", "--no-ff", "codex/fixture-task", "-m", "premature fixture merge")
+        harness._git(repo, "push", "--quiet", "origin", "main")
+        result = harness.grade_case(case, case_dir)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(next(check for check in result["checks"] if check["id"] == "pr:merge-gate")["status"], "FAIL")
+
+    def test_review_gate_requires_matching_gate_type_evidence(self) -> None:
+        case, case_dir = self.prepare("review-gated-closeout", gate_type="architecture")
+        repo = case_dir / "repo"
+        harness._git(repo, "push", "--quiet", "-u", "origin", "codex/fixture-task")
+        (case_dir / "gate-evidence.json").write_text(
+            json.dumps({
+                "gate_type": "security-dependency",
+                "status": "SATISFIED",
+                "evidence_record": harness.GATE_EVIDENCE_RECORDS["security-dependency"],
+            }),
+            encoding="utf-8",
+        )
+        result = harness.grade_case(case, case_dir)
+        gate_check = next(check for check in result["checks"] if check["id"] == "pr:merge-gate")
+        self.assertEqual(result["status"], "PASS")
+        self.assertFalse(gate_check["gate_satisfied"])
+        self.assertTrue(harness._closeout_refs(case_dir, harness._case_meta(case_dir, case))["main_unchanged"])
+
+    def test_failed_live_hook_does_not_change_fixture_exit_status(self) -> None:
+        case, case_dir = self.prepare("routine-closeout")
+        repo = case_dir / "repo"
+        harness._git(repo, "push", "--quiet", "-u", "origin", "codex/fixture-task")
+        harness._git(repo, "switch", "--quiet", "main")
+        harness._git(repo, "merge", "--quiet", "--no-ff", "codex/fixture-task", "-m", "fixture merge")
+        harness._git(repo, "push", "--quiet", "origin", "main")
+        evidence = self.root / "hook-trace.json"
+        evidence.write_text('{"observed":"fail"}\n', encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            exit_code = harness.main([
+                "grade", "--case", "routine-closeout", "--directory", str(case_dir),
+                "--hook-result", "FAIL", "--hook-evidence", str(evidence),
+            ])
+        report = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(report["results"][0]["status"], "PASS")
+        self.assertEqual(report["hook_observation"]["status"], "FAIL")
 
     def test_manual_gate_and_hook_need_separate_evidence(self) -> None:
         case, case_dir = self.prepare("unity-unavailable")
@@ -142,7 +216,7 @@ class EvalHarnessTests(unittest.TestCase):
 
     def test_suite_prepares_all_cases_without_network(self) -> None:
         result = harness.prepare_suite(self.root / "suite")
-        self.assertEqual(len(result["cases"]), 12)
+        self.assertEqual(len(result["cases"]), 13)
         for item in result["cases"]:
             self.assertTrue(Path(item["task_file"]).is_file())
 
