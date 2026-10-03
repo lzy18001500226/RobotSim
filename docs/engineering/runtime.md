@@ -31,11 +31,11 @@ Every message with spatial values must carry the correct frame and unit. Publish
 
 ### Time and state truth
 
-Stamp sensor measurements at acquisition time and preserve that stamp through processing; a callback or publish timestamp is not a substitute. Use ROS time for simulation-coherent sensor/state messages. When a graph is running against simulation or bag playback, configure every participating node consistently with `use_sim_time` and provide one authoritative `/clock` source. ROS time may pause, jump, or move backward with simulation controls; use a steady/monotonic clock for watchdogs, host deadlines, and elapsed wall-time measurements. Handle the absence of an initial simulation clock explicitly.
+Stamp sensor measurements at acquisition time and preserve that stamp through processing; a callback or publish timestamp is not a substitute. Use ROS time for simulation-coherent sensor/state messages. When a graph is running against simulation or bag playback, configure every participating node consistently with `use_sim_time` and provide one authoritative `/clock` source. ROS time may pause or jump with simulation controls. Any backward simulation-time jump is a reset/discontinuity boundary: the producer **MUST** start a new generation before publishing post-jump state, and consumers **MUST** discard state and commands from the prior generation. The operation-specific reset/rewind behavior and clock-domain mapping remain **BLOCKED BY #10**. Use a steady/monotonic clock for local watchdogs, host deadlines, and elapsed wall-time measurements; numeric freshness and timeout thresholds remain **BLOCKED BY TRANSPORT BENCHMARK**. Handle the absence of an initial simulation clock explicitly.
 
 MuJoCo state is simulation ground truth. Localization, perception, and state-estimation outputs are estimates, including when their input is simulated. Keep these channels, topic names, message ownership, and data products distinct; ground truth must never masquerade as `/odom`, a perception result, or a localization estimate. Record the source and timestamp semantics of derived state.
 
-The focused [simulation state contract](simulation_state_contract.md) defines generation, sequence, lifecycle, snapshot/command freshness, and bounded-queue semantics without choosing the transport or physics topology.
+The focused [simulation state contract](simulation_state_contract.md) defines generation, sequence, lifecycle, snapshot/command freshness, and bounded-queue semantics without choosing the transport or physics topology. In particular, simulation time is monotonic within a generation; rollback requires a new generation.
 
 ### Ownership, QoS, and backend parity
 
