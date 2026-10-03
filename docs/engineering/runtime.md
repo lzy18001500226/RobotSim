@@ -35,6 +35,8 @@ Stamp sensor measurements at acquisition time and preserve that stamp through pr
 
 MuJoCo state is simulation ground truth. Localization, perception, and state-estimation outputs are estimates, including when their input is simulated. Keep these channels, topic names, message ownership, and data products distinct; ground truth must never masquerade as `/odom`, a perception result, or a localization estimate. Record the source and timestamp semantics of derived state.
 
+The focused [simulation state contract](simulation_state_contract.md) defines generation, sequence, lifecycle, snapshot/command freshness, and bounded-queue semantics without choosing the transport or physics topology.
+
 ### Ownership, QoS, and backend parity
 
 For each topic, service, and action introduced, document its owner, message or request meaning, frame/time semantics, and the expected publishers and consumers. Use topics for streams, services for bounded request/response operations, and actions for long-running operations that need feedback or cancellation. Select QoS per interface: state required reliability, history/depth, durability, and any deadline/liveliness needs. High-rate sensor data may favor best-effort delivery; commands and task actions may need reliable delivery and explicit freshness/safety handling. Do not copy one QoS profile to every interface.
