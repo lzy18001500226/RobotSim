@@ -35,6 +35,6 @@ These examples check that the selected evidence matches the touched boundary; th
 | --- | --- |
 | Python repository tooling | L0 + L1 |
 | MuJoCo model, physics, or runtime | L0 + L1 + L2 |
-| ROS integration | Include L3; add L2 when simulation behavior is affected |
+| ROS integration change | L0 + L1 + L3; add L2 when the change also affects simulation behavior |
 | Unity change without local GUI/GPU access | L4 is `DEFERRED`; name the local validation action |
 | Simulation succeeds | Report only the simulation evidence; it is not L5 |
