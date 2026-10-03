@@ -68,4 +68,4 @@ For repository PR closeout, review the scoped diff and its evidence, then follow
 
 Anthropic's [effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) and [building effective agents](https://www.anthropic.com/engineering/building-effective-agents) are comparative engineering material. RobotSim adopts the useful themes of durable artifacts, incremental progress, evaluator feedback, and human judgment at meaningful checkpoints. These examples do not justify copying a multi-agent or multi-agent supervisor design; RobotSim's default remains one primary owner.
 
-See [ADR-0005](../adr/0005_goal_mode_first.md) for the Proposed choice to start with native Goals, add a manually maintained issue backlog only when useful, and reconsider a local supervisor only after observed task-switching failures provide evidence.
+See [ADR-0006](../adr/0006_goal_mode_first.md) for the Proposed choice to start with native Goals, add a manually maintained issue backlog only when useful, and reconsider a local supervisor only after observed task-switching failures provide evidence.
