@@ -46,17 +46,32 @@ Use `completed` or `blocked` for the corresponding terminal outcome. `--dry-run`
 
 ## Closeout
 
+Implementation task on an approved branch (`issue/**` or `codex/**`):
+
+```text
+validate -> self-review -> commit -> push -> Actions creates or detects PR
+  -> task-branch CI -> human review and maintainer gates -> merge when authorized
+```
+
+The [`auto-task-pr.yml`](../../.github/workflows/auto-task-pr.yml) workflow runs only for pushes to the approved prefixes in the canonical RobotSim repository. It detects an existing open PR by head branch and otherwise creates one targeting `main`, using the standard PR template from `main`. Issue branches such as `issue/36-auto-pr-handoff` are linked to the matching issue, and the new PR includes the branch and pushed head SHA. Later pushes add commits to the same PR without rewriting its description. The workflow does not approve, merge, or bypass branch rulesets.
+
+The workflow has `contents: read` and `pull-requests: write` only. It does not check out or execute task-branch code, and validates branch names without passing them through a shell. Fork repositories are excluded. The existing Agent Infrastructure and G1 smoke CI workflows also run on approved task-branch pushes, so CI evidence for the pushed head does not depend on follow-up PR events. GitHub suppresses most workflow runs caused by `GITHUB_TOKEN`; on some configurations, `pull_request` runs from a workflow-created PR require approval. See [GitHub's `GITHUB_TOKEN` event behavior](https://docs.github.com/en/actions/concepts/security/github_token#when-github_token-triggers-workflow-runs).
+
+If the workflow cannot create PRs, a repository administrator may need to enable **Settings → Actions → General → Workflow permissions → Allow GitHub Actions to create and approve pull requests**. The workflow still requests only `pull-requests: write`; it does not approve PRs or require a personal token. See [GitHub's repository Actions settings](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository) and [`GITHUB_TOKEN` permissions](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#permissions).
+
+Research-only work that does not push an approved task branch is outside this automation. It does not create a branch, PR, or task queue for read-only research. CI evidence, implementation claims, architecture decisions, security review, and hardware validation still require the normal human review gates.
+
 Routine authorized task:
 
 ```text
-validate -> self-review -> commit -> push -> PR -> required checks/review
+validate -> self-review -> commit -> push -> auto-created/detected PR -> required checks/review
   -> merge only when authorized -> update main -> completed notification
 ```
 
 Review-gated task:
 
 ```text
-validate -> self-review -> commit -> push -> PR
+validate -> self-review -> commit -> push -> auto-created/detected PR
   -> ready_for_review notification -> stop for review
 ```
 
