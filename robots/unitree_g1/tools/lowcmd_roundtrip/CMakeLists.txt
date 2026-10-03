@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(robotsim_g1_lowcmd_roundtrip LANGUAGES CXX)
+
+find_package(unitree_sdk2 CONFIG REQUIRED)
+
+add_executable(lowcmd_roundtrip_probe lowcmd_roundtrip_probe.cpp)
+target_compile_features(lowcmd_roundtrip_probe PRIVATE cxx_std_17)
+target_link_libraries(lowcmd_roundtrip_probe PRIVATE unitree_sdk2)
