@@ -1,22 +1,16 @@
 # Documentation Guide
 
-Use the [repository README](../README.md) for the project overview and [`AGENTS.md`](../AGENTS.md) for durable repository rules. Start with this map, then read only the documents relevant to the current task.
+This map identifies the documents that own RobotSim guidance.
 
 | Path | Owns | Read it when |
 |---|---|---|
 | [`00_PROJECT_PLAN.md`](00_PROJECT_PLAN.md) | Project goals, development phases, design principles, and non-goals | You need high-level scope or milestone context. It is not a task queue. |
-| [`adr/`](adr/) | Accepted architecture and environment decisions | A task touches an established design boundary or proposes changing one. |
+| [`adr/`](adr/) | Status-bearing architecture and environment decision records; proposals are not accepted by default | A task touches an established design boundary or proposes changing one. |
 | [`engineering/README.md`](engineering/README.md) | Repository layout, artifact discipline, runtime and validation contract | Adding runtime code, selecting a language, or deciding what evidence a change needs. |
 | [`engineering/simulation_state_contract.md`](engineering/simulation_state_contract.md) | Topology-independent simulation state, command, lifecycle, and telemetry semantics | Defining or implementing a simulation state boundary without selecting its transport. |
 | [`setup/`](setup/) | Host, WSL, Docker, and development-container setup | Setting up or diagnosing the development environment. |
 | [`setup/codex.md`](setup/codex.md) | Local/Cloud Codex boundaries, hooks, notifications, and closeout | Choosing where Codex work runs or finishing a task. |
 | [`workflows/`](workflows/) | Repeatable procedures for baseline bring-up, navigation, and robot porting | Implementing or validating one of those workflows. |
 | [`workflows/goal_driven_development.md`](workflows/goal_driven_development.md) | Codex prompt-versus-Goal conventions, continuation, evidence, and review gates | Starting multi-step or long-running Codex work. |
-| [`skills/`](skills/) | RobotSim technical notes; these are not native Codex Skills. Native project Skills use `.agents/skills/<name>/SKILL.md`. | Working in the corresponding technology area. |
+| [`skills/`](skills/) | RobotSim technical notes; these are not native Codex Skills. Native project Skills use `.agents/skills/<name>/SKILL.md`. | Working in the corresponding technology area. For validation routing, use the [RobotSim validation-planning Skill](../.agents/skills/robotsim-validation-planning/SKILL.md). |
 | [`checklists/`](checklists/) | Environment, reproducibility, and [Agent Infra evaluation cases](checklists/agent_infra_eval.md) | Verifying setup, preparing reproducible results, or evaluating agent-infrastructure changes. |
-
-## Reading and maintenance
-
-- For a normal task, read `AGENTS.md`, the repository README, and the relevant source. Use the table above to select any additional documentation; do not read every directory by default.
-- For architecture-sensitive changes, read the affected ADR before editing. For a repeatable task, follow its workflow and the applicable checklist or skill note.
-- Keep each document in the directory that owns its purpose. Update existing guidance when its responsibility changes; link to it instead of copying it elsewhere.

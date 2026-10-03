@@ -57,7 +57,7 @@ jobs:
           from pathlib import Path
           import re
 
-          documents = (Path("AGENTS.md"), Path("docs/setup/codex.md"))
+          documents = (Path("AGENTS.md"), Path("docs/setup/codex.md"), Path("docs/README.md"))
           missing = []
           for document in documents:
               text = document.read_text(encoding="utf-8")

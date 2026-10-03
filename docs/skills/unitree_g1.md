@@ -1,4 +1,4 @@
-# Skill: Unitree G1
+# Technical note: Unitree G1
 
 Public baseline:
 - `unitree_sdk2`

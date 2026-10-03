@@ -19,14 +19,7 @@ For implementation placement and RobotSim runtime/validation rules, follow [`doc
 
 ## Architecture boundaries
 
-- MuJoCo is the source of truth for robot physics and simulation ground truth.
-- Unity provides high-fidelity scenes, rendering, external sensor simulation, and visualization. It must not become a second robot-physics authority.
-- ROS 2 is the system integration layer for sensor and robot interfaces and higher-level capabilities; sensor simulators must expose ROS 2 compatible interfaces.
-- Unitree G1 is the first robot backend; AgiBot X2 is the second. Keep vendor-specific SDK logic inside `robots/unitree_g1/` or `robots/agibot_x2/` adapters. Do not edit upstream vendor robot files in place.
-- Keep simulation ground truth separate from estimated state. Algorithms must be runnable with a simulated backend before real deployment, and robot backends must preserve common interfaces.
-- Treat Dockerfiles and Compose files as the source of truth for the reproducible headless/runtime baseline. Unity, WSLg, and GPU integration remain host-side capabilities documented separately; the container baseline does not reproduce them. Treat rosdep/apt as the ROS dependency source and pinned commits in `third_party/LOCK.md` as the third-party version source.
-
-Read the relevant record in `docs/adr/` before changing an established architecture boundary. Do not change these boundaries as incidental task cleanup.
+The [engineering contracts](docs/engineering/README.md) and relevant records in [`docs/adr/`](docs/adr/) own architecture, runtime, and evidence details. Read affected records before changing an established boundary; do not treat a proposed ADR as accepted.
 
 ## Workspace and change boundaries
 

@@ -56,8 +56,4 @@
 
 ## Reproducibility
 
-- [ ] Third-party commits are recorded in `third_party/LOCK.md`
-- [ ] Machine-specific Unity files remain under ignored local paths
-- [ ] Generated build artifacts are ignored
-- [ ] Setup steps are documented
-- [ ] A clean-machine or clean-container reproduction path exists
+Use the [Reproducibility Checklist](reproducibility.md) for repository-wide reproducibility criteria.
