@@ -31,9 +31,9 @@ Confirm the root and branch are the intended ones, and preserve any existing cha
 
 Codex discovers project hooks from `.codex/hooks.json`; discovery is distinct from project/folder trust and hook approval. Review the hook and trust the real repository checkout through the normal UI before enabling it. Then run `/hooks` in that trusted checkout and confirm both `PreToolUse` and `Stop` are listed and enabled. If a hook is absent or disabled, do not assume it ran. Recheck `/hooks` after changing hook configuration; a changed handler may need renewed trust. Check the repository root, branch, and working-tree status before acting, especially after opening another checkout or worktree. Never bypass hook trust or approval policy, and do not copy project settings into global `~/.codex` configuration.
 
-The local `Stop` hook receives Codex's stop payload, including `session_id`, `turn_id`, `last_assistant_message`, and `stop_hook_active`. It sends one `completed` notification per session/turn only when the local-only `ROBOTSIM_LOCAL_STOP_HOOK=1` opt-in is set, and ignores a recursive Stop event when `stop_hook_active` is true. Normal hook outcomes leave stdout empty, as Codex expects; failures may be diagnosed on stderr. A manual `stop --dry-run` still prints the formatted message without sending mail. The hook does not run for individual tool calls, tests, commits, or progress updates. Notification errors are best-effort and do not change the task result.
+The local `Stop` hook receives Codex's stop payload, including `session_id`, `turn_id`, `last_assistant_message`, and `stop_hook_active`. For ordinary turns it sends one `completed` notification per session/turn. If the final message contains a valid marked research-completion envelope, it emits that structured event instead of the generic completion. Both paths require the local-only `ROBOTSIM_LOCAL_STOP_HOOK=1` opt-in; recursive Stop events are ignored. Normal hook outcomes leave stdout empty, as Codex expects; failures may be diagnosed on stderr. A manual `stop --dry-run` still prints formatted output without sending mail or writing an Issue comment. The hook does not run for individual tool calls, tests, commits, or progress updates. Notification errors are best-effort and do not change the task result.
 
-Project command hooks must not be assumed to run in Codex Cloud. For each Cloud instruction, explicitly call `scripts/agent/notify_task.py` exactly once at closeout, after validation and immediately before the final answer, with the actual terminal outcome (`ready_for_review`, `completed`, or `blocked`). Leave `ROBOTSIM_LOCAL_STOP_HOOK` unset in Cloud: even if project hooks become active there, the Stop handler will skip, so the explicit Cloud closeout remains the only notification path. Use a stable task/turn ID so retries are deduplicated. Do not make a second manual closeout call after the Cloud call.
+Project command hooks must not be assumed to run in Codex Cloud. For implementation tasks, explicitly call `scripts/agent/notify_task.py` exactly once at closeout with the actual terminal outcome (`ready_for_review`, `completed`, or `blocked`). For read-only research tasks, send one `research-completion` event instead, as described below. Leave `ROBOTSIM_LOCAL_STOP_HOOK` unset in Cloud: even if project hooks become active there, the Stop handler will skip, so the explicit Cloud closeout remains the only notification path. Use a stable task/turn ID so retries are deduplicated. Do not make a second generic closeout call after a research event.
 
 For current hook behavior, see the [Codex hook configuration types](https://github.com/openai/codex/blob/main/codex-rs/config/src/hook_config.rs), [hook discovery and trust handling](https://github.com/openai/codex/blob/main/codex-rs/hooks/src/engine/discovery.rs), and the [official AGENTS.md guidance](https://developers.openai.com/codex/guides/agents-md).
 
@@ -49,20 +49,21 @@ When notifications are enabled, configure:
 | `AGENTMAIL_INBOX_ID` | `lzy18001500226@agentmail.to` | Non-secret inbox identifier. |
 | `ROBOTSIM_NOTIFY_TO` | Maintainer's normal QQ mailbox | Personal configuration; do not hard-code it in the repository. |
 | `ROBOTSIM_NOTIFY_STATE_DIR` | Optional local state path | Optional; defaults under the user's cache directory, outside the checkout. |
+| `GH_TOKEN` or `GITHUB_TOKEN` | GitHub API token | Secret. Needs Issues read/write access to `lzy18001500226/RobotSim` for research-event comments; never put it in Git, a command line, a log, or chat. |
 | `ROBOTSIM_LOCAL_STOP_HOOK` | Set to `1` in the local Codex environment only | Local Stop-hook opt-in. Leave unset in Codex Cloud. |
 
 ### Local Codex setup
 
 1. Create an AgentMail API key in the AgentMail account that owns the inbox.
-2. Store the key in the operating system's secret manager or the user's shell secret manager, and expose it to Codex as `AGENTMAIL_API_KEY`. Do not place it in a shell command, shell startup file in plaintext, repository file, or chat.
+2. Store the AgentMail key and, when research-event persistence is needed, a GitHub token with Issue comment read/write access in the operating system's secret manager. Expose them as `AGENTMAIL_API_KEY` and `GH_TOKEN` (or `GITHUB_TOKEN`) to Codex. Do not put either value in a shell command, plaintext shell startup file, repository file, or chat.
 3. Set `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and set `ROBOTSIM_NOTIFY_TO` to the maintainer's normal QQ mailbox through the user's local environment/secret manager.
 4. Set `ROBOTSIM_LOCAL_STOP_HOOK=1` in the local Codex environment. Restart local Codex so it receives the configured environment. Trust the actual RobotSim checkout, run `/hooks`, and verify that `Stop` and `PreToolUse` are active.
 
 ### Codex Cloud setup
 
-1. In the Codex Cloud Environment settings, add `AGENTMAIL_API_KEY` as an environment secret. Do not paste it into a task prompt or repository file.
+1. In the Codex Cloud Environment settings, add `AGENTMAIL_API_KEY` and, when research-event persistence is needed, `GH_TOKEN` (or `GITHUB_TOKEN`) as environment secrets. The GitHub token needs Issue comment read/write access to this repository. Do not paste secrets into a task prompt or repository file.
 2. Configure `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and the personal `ROBOTSIM_NOTIFY_TO` value in the Cloud environment's protected variable/secret settings. Do not store the QQ address in this repository, and do not set `ROBOTSIM_LOCAL_STOP_HOOK` in Cloud.
-3. Allow HTTPS access to `api.agentmail.to` in the Cloud environment network settings. A Cloud task must explicitly call the notifier once at closeout; project command hooks are not assumed to run there.
+3. Allow HTTPS access to `api.agentmail.to` for notifications and `api.github.com` for research-event comment persistence in the Cloud environment network settings. A Cloud task must explicitly call the notifier once at closeout; project command hooks are not assumed to run there.
 4. Notification is opt-in. If configuration is missing or AgentMail is unavailable, the notifier reports a best-effort skip/failure and exits successfully so the task can finish.
 
 For Cloud closeout, use a stable identifier for the instruction/turn and the matching actual outcome. For example:
@@ -77,6 +78,46 @@ python3 scripts/agent/notify_task.py ready_for_review \
 ```
 
 Change the event to `completed` or `blocked` when that is the actual terminal outcome. Do not send per-tool, per-test, per-commit, or progress notifications. Messages contain a short task label, worker, branch/issue when available, and final summary. Local state markers and AgentMail's idempotency key prevent duplicate sends for the same event.
+
+## Read-only research completion
+
+For read-only research, the originating GitHub Issue comment is the canonical durable project record. AgentMail is an attention channel and secondary retrieval surface; ChatGPT-side AgentMail access is optional and is not needed for correctness. Implementation work continues to use pull requests. A research task emits one structured completion event, not a separate generic `completed` notification.
+
+The v1 event uses `schema_version: "robotsim.research-completion.v1"` and the fields `event_id`, `repository`, `task_id`, `worker`, `final_status`, `summary`, `blockers`, `recommended_next_action`, `evidence`, and `timestamp`. `final_status` is one of `completed`, `blocked`, `deferred`, `cancelled`, or `failed`. Use the canonical repository name `lzy18001500226/RobotSim`; `task_id` must be stable and formatted `issue-<number>-<stable-slug>` so the notifier can persist to the originating Issue. Set `event_id` to `auto`; the notifier derives a stable `sha256:` ID from schema version, repository, task ID, and worker. Keep the exact event and timestamp when retrying. Reusing an event ID with changed content is rejected rather than overwritten.
+
+Use concise, safe summaries and blockers. Evidence entries must be durable HTTPS references; local paths, private/local hosts, credential-bearing URLs, unknown fields, and transcript fields are rejected or omitted. The notifier redacts recognized credential-shaped text and local filesystem paths from text fields. It sends only the structured event, never the surrounding final answer or transcript.
+
+Local Codex recognizes one JSON envelope in the final message, wrapped as an HTML comment so it does not clutter the user-facing report:
+
+```html
+<!-- robotsim-research-completion:v1
+{
+  "schema_version": "robotsim.research-completion.v1",
+  "event_id": "auto",
+  "repository": "lzy18001500226/RobotSim",
+  "task_id": "issue-38-agentmail-research",
+  "worker": "Codex",
+  "final_status": "completed",
+  "summary": "Recorded the research findings and reuse map.",
+  "blockers": [],
+  "recommended_next_action": "Review the findings and open a focused follow-up issue.",
+  "evidence": ["https://github.com/lzy18001500226/RobotSim/issues/38"],
+  "timestamp": "2026-10-04T12:00:00Z"
+}
+-->
+```
+
+The Stop hook validates the envelope, writes a hidden event marker and structured payload to the Issue comment, then sends the same event through the existing AgentMail configuration and idempotency path. If GitHub comment capability is missing, it reports that persistence did not happen and skips AgentMail; add `GH_TOKEN`/`GITHUB_TOKEN` with Issue comment access before retrying. Once the Issue comment exists, AgentMail failure does not remove or replace it; retry the same event to recover delivery.
+
+Codex Cloud must explicitly call the same notifier once, with the event JSON on stdin; project hooks are not assumed to run there:
+
+```bash
+python3 scripts/agent/notify_task.py research-completion <<'JSON'
+{"schema_version":"robotsim.research-completion.v1","event_id":"auto","repository":"lzy18001500226/RobotSim","task_id":"issue-38-agentmail-research","worker":"Codex Cloud","final_status":"completed","summary":"Recorded the research findings and reuse map.","blockers":[],"recommended_next_action":"Review the findings and open a focused follow-up issue.","evidence":["https://github.com/lzy18001500226/RobotSim/issues/38"],"timestamp":"2026-10-04T12:00:00Z"}
+JSON
+```
+
+Do not make a second generic closeout call for that research task. The GitHub Issue is sufficient for durable retrieval even when AgentMail is not configured or unavailable.
 
 ### Human-gated live tests
 
