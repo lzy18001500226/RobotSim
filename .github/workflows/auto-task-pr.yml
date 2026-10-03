@@ -1,0 +1,37 @@
+name: Auto-create task pull request
+
+on:
+  # workflow_run loads this privileged definition from the default branch.
+  workflow_run:
+    workflows:
+      - Agent infrastructure
+    types:
+      - completed
+
+permissions: {}
+
+concurrency:
+  group: auto-task-pr-${{ github.repository }}-${{ github.event.workflow_run.head_branch || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  ensure-pull-request:
+    if: github.repository == 'lzy18001500226/RobotSim' && github.event.repository.fork == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out trusted default-branch automation
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Create a PR if this task branch does not already have one
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { ensurePullRequest } = require("./scripts/agent/auto_task_pr.js");
+            await ensurePullRequest({ github, context, core });
