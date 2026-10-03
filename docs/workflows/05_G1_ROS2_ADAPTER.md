@@ -97,12 +97,16 @@ ROBOTSIM_UNITREE_MUJOCO_DIR=/vendor/unitree_mujoco \
 ## Isolated simulator run
 
 Use a separate, writable overlay for the pinned simulator; keep `/vendor`
-read-only. The simulation and ROS adapter must run in the same container so
-SDK2 and ROS DDS traffic remains on the container's loopback interface.
+read-only. Copy source files without Git metadata because a mounted linked
+worktree's `.git` pointer may refer to a host-only path. The simulation and ROS
+adapter must run in the same container so SDK2 and ROS DDS traffic remains on
+the container's loopback interface.
 
 ```bash
 mkdir -p /lab/sim-overlay
-cp -a /vendor/unitree_mujoco /lab/sim-overlay/unitree_mujoco
+mkdir -p /lab/sim-overlay/unitree_mujoco
+tar --exclude=./.git -C /vendor/unitree_mujoco -cf - . \
+  | tar -C /lab/sim-overlay/unitree_mujoco -xf -
 ln -sfn /opt/mujoco/mujoco-3.3.6 \
   /lab/sim-overlay/unitree_mujoco/simulate/mujoco
 cmake -S /lab/sim-overlay/unitree_mujoco/simulate \
