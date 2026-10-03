@@ -9,10 +9,14 @@ real-time behavior. No real hardware was used.
 
 The pinned standalone Unitree G1 simulator accepted bounded SDK2 `LowCmd`
 messages and returned CRC-valid `LowState` messages whose `tau_est` followed
-the commanded torque sign. The 60-second run passed all 120 phase observations.
-Source inspection also found unsynchronized concurrent access to shared
-MuJoCo `mjData`; this is a serious upstream integration risk and was not
-patched in the vendor checkout.
+the commanded torque sign. The recorded 60-second run passed all 120 phase
+observations. Its latency values are send-to-callback sign-threshold estimates,
+not measurements of the simulator's command-application instant.
+
+Source inspection found unsynchronized concurrent access to shared MuJoCo
+`mjData`; this is an upstream source-level race risk, not a dynamically proven
+race. The probe is restricted to the local simulator DDS segment and is not a
+hardware control utility.
 
 ## Locked setup
 
@@ -71,7 +75,15 @@ cmake --build /lab/probe-build -j2
 Start the pinned 29-DoF G1 scene from the simulator build directory, then run
 the bounded probe. The maintained wrapper
 [`scripts/dev/run_g1_lowcmd_roundtrip.sh`](../../scripts/dev/run_g1_lowcmd_roundtrip.sh)
-sets the isolated domain/interface and forwards the remaining probe arguments.
+uses only DDS domain `73` and interface `lo`. The executable validates that
+configuration itself, confirms that the OS `lo` interface is up and flagged as
+loopback, and rejects a different `--domain` or `--interface`. Mismatching
+`ISSUE9_DOMAIN_ID`, `ISSUE9_DDS_INTERFACE`, `CYCLONEDDS_DOMAIN_ID`, or
+`ROS_DOMAIN_ID` overrides are rejected. `CYCLONEDDS_URI` is rejected entirely
+so an external DDS profile cannot silently replace the probe's explicit local
+interface selection. The wrapper performs the same environment checks before
+launching the probe. The probe is only for the isolated simulator path; no
+physical or arbitrary network interface mode is available.
 
 ```bash
 cd /lab/sim-overlay/unitree_mujoco/simulate/build
@@ -89,17 +101,48 @@ which alternates between `+0.10 Nm` and `-0.10 Nm` every 500 ms. The positive
 torque bound is capped at `0.20 Nm`; duration is capped at 120 s and publish
 rate at 250 Hz. A phase counts as observed only when a later CRC-valid state
 reports matching `tau_est` magnitude of at least `0.05 Nm` before the next
-phase. This is transport and actuator-feedback evidence only; it is not a
+phase. PASS also requires at least 100 CRC-valid states during the measured
+window (or one per expected phase when that is larger), zero capture drops,
+zero failed writes, and complete phase coverage. This is transport and
+actuator-feedback evidence only; it is not a
 whole-body stability, walking, or control-quality test.
+
+The callback-arrival estimate starts immediately before `publisher.Write()`
+and ends when the probe receives the first CRC-valid `LowState` callback whose
+`tau_est` crosses the phase's sign/magnitude threshold. The pre-command sample
+must not already meet that threshold. A DDS sample has no command sequence ID or
+host-synchronized simulator timestamp, so this is an observed callback-arrival
+lag estimate, not causal command-application latency. Every expected phase must
+have a command and an observed transition for the probe to pass. Any CRC error
+stops further LowCmd publication.
+
+Each run writes `*.lowstate.csv`, `*.lowcmd.csv`, and a compact
+`*.summary.json`. The default prefix is unique per process/run. An explicitly
+selected prefix is created exclusively; if any evidence path already exists,
+the probe fails without replacing it. Writes are flushed and closed before the
+probe can report `PASS`. The summary contains the configuration, sample/drop
+counts, phase coverage, tick generations, and p50/p95/p99 values so it can be
+attached to a review without committing the larger raw traces.
+
+To make an evidence bundle reviewable, retain the summary and checksums beside
+the raw CSVs and attach the compact summary plus manifest to the PR (the CSVs
+can remain in external storage):
+
+```bash
+sha256sum /lab/roundtrip-60s.lowstate.csv \
+  /lab/roundtrip-60s.lowcmd.csv /lab/roundtrip-60s.summary.json \
+  > /lab/roundtrip-60s.SHA256SUMS
+```
 
 ## Measured standalone run
 
-The corrected 60-second run started at `2026-10-03T09:14:24.520Z` and ended
-with `PASS`. The CSV records use `steady_clock` monotonic timestamps; wall-clock
-timestamps are retained for correlation. Percentiles use nearest-rank
-selection. Command-to-state latency is measured from immediately before
-`publisher.Write()` to the first matching `LowState.tau_est` callback in each
-500 ms phase.
+The previously recorded 60-second run started at `2026-10-03T09:14:24.520Z`
+and ended with `PASS`. Its CSV records use `steady_clock` monotonic timestamps;
+wall-clock timestamps are retained for correlation. Percentiles use
+nearest-rank selection. The results below are historical WSL2 evidence from
+the original probe revision; the corrected phase-completeness and deadline
+counters have not been rerun against that trace. A new run's summary JSON is
+the reviewable artifact for those corrected counters.
 
 | Measurement | Result |
 | --- | ---: |
@@ -108,19 +151,20 @@ selection. Command-to-state latency is measured from immediately before
 | Published `LowCmd` rate | `99.999 Hz` (`6,000` samples, zero write failures) |
 | Valid LowState CRC / capture drops | `41,486 / 41,486`; `0` drops |
 | Observed torque phases | `120 / 120`; `0` missed |
-| LowCmd-to-observed-`tau_est` latency p50/p95/p99 | `3.500 / 7.594 / 11.877 ms` |
+| Send-to-callback sign-threshold estimate p50/p95/p99 | `3.500 / 7.594 / 11.877 ms` |
 | LowState interval p50/p95/p99 | `1.272 / 2.498 / 9.092 ms` |
 | Absolute LowState interval error from 1 ms p50/p95/p99; max | `0.292 / 1.498 / 8.092 ms`; `17.460 ms` |
 | LowCmd interval p50/p95/p99 | `10.006 / 13.995 / 16.965 ms` |
 | Absolute LowCmd interval error from 10 ms p50/p95/p99; max | `0.251 / 5.341 / 8.618 ms`; `15.127 ms` |
-| Late LowState intervals (`>1.5 ms`) | `3,476` |
-| Late LowCmd intervals (`>15 ms`) / late publish calls | `159 / 25` |
+| LowState callback gaps (`>1.5 ms`) | `3,476` |
+| LowCmd intervals (`>15 ms`) / old late-publish counter | `159 / 25` |
 | Repeated simulator ticks / skipped tick count | `16,402 / 35,117` |
 | Container CPU samples, mean / min..max | `649.62% / 615.47..662.10%` (7 samples, 10 s apart) |
 | Container memory | `1.001..1.034 GiB` |
 
-The p99 latency is an empirical tail percentile over 120 transitions, not a
-confidence bound. The interface emitted a warning that `lo` is not
+The p99 callback-arrival estimate is an empirical tail percentile over 120
+transitions, not a confidence bound or a simulator-application latency. The
+interface emitted a warning that `lo` is not
 multicast-capable and DDS multicast was disabled; LowCmd/LowState traffic still
 worked inside the isolated container. The received state rate is below the
 simulator tick rate, with repeated and skipped tick values. The SDK2 subscriber
@@ -151,6 +195,14 @@ from these measurements.
   lab container is removed during task cleanup. No real DDS participant or
   physical robot was involved.
 
+The pinned `unitree_sdk2` also has a source-level subscriber worker teardown
+limitation: `DdsReaderListener` reads `volatile bool mQuit` in its queued worker
+and writes it from the listener destructor before joining that worker. `volatile`
+does not synchronize C++ threads. This is an upstream SDK race risk, not a
+dynamic race finding from the probe or the MuJoCo bridge; vendor sources remain
+unchanged. The process-level shutdown observations above do not establish a
+race-free SDK teardown guarantee.
+
 ## Shared `mjData` concurrency finding
 
 At pinned `unitree_mujoco` commit
@@ -167,21 +219,27 @@ At pinned `unitree_mujoco` commit
   unsynchronized concurrent access to shared `mjData` (`ctrl` and sensor/time
   fields): a source-level C++ data-race risk, not a race dynamically confirmed
   by ThreadSanitizer.
-- [`main()` and the bridge startup loop`](https://github.com/unitreerobotics/unitree_mujoco/blob/1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d/simulate/src/main.cc#L573)
-  start the bridge thread before the physics thread; the bridge polls global
+- [`main()` bridge/physics thread creation](https://github.com/unitreerobotics/unitree_mujoco/blob/1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d/simulate/src/main.cc#L695-L698)
+  starts the bridge thread before the physics thread; the bridge polls global
   `d` while the physics thread initializes it, without synchronized
   publication. The bridge then retains raw model/data pointers and has no
   stop/join path; the physics thread exits the process when its loop ends.
 
 No vendor source was changed and no synchronization workaround was added.
-The probe cannot safely acquire the simulator's private `sim.mtx`; resolving
-this requires a RobotSim-owned integration/lifecycle boundary that shares an
-explicit data-access lock. Treat the current bridge as unsuitable for a
-production concurrency guarantee until that work is separately designed and
-validated.
+Any integration that shares this `mjData` must establish synchronized access
+or exclusive ownership; this source finding does not choose a process topology.
+Treat the current bridge as unsuitable for a production concurrency guarantee
+until the applicable ownership/synchronization design is separately validated.
 
 ## Validation and remaining boundary
 
+- PR #24 hardening smoke: built the pinned SDK2, MuJoCo simulator, and probe in
+  a temporary Ubuntu 22.04 image, then ran the 29-DoF G1 simulator headlessly
+  with the container on `--network none`. The 4-second, 100 Hz run passed all
+  `8/8` phases with `3,231` CRC-valid states in the measurement window, zero
+  CRC errors, capture drops, or failed writes. Reusing the evidence prefix was
+  rejected, and checksums confirmed the original CSVs and summary were
+  unchanged. The test artifacts remained outside the repository.
 - `python3 -m unittest discover -s tests -v`: 12 repository tests passed.
 - Python compilation and `bash -n` for the touched scripts: passed.
 - SDK2 and RobotSim probe CMake builds in `robotsim:humble-dev`: passed.
@@ -197,7 +255,9 @@ validated.
 Raw CSV and lifecycle logs are retained outside the checkout in
 `~/.local/share/robotsim/issue9-standalone-evidence/2026-10-03/`, with a
 `SHA256SUMS` manifest. They are intentionally not committed as benchmark
-traces. Issue #9's local simulated round trip is evidenced; standalone
-evidence for Issue #10 is collected, but the Unity-hosted comparison and ADR
-decision remain deferred. ADR-0005 is unchanged. No Issue #11 implementation
-was started.
+traces. New runs produce the compact summary JSON next to the CSVs; attach that
+summary and its checksum to the PR or another review-accessible artifact store
+when reporting a new measurement. Issue #9's local simulated round trip is
+evidenced; standalone evidence for Issue #10 is collected, but the Unity-hosted
+comparison and ADR decision remain deferred. ADR-0005 is unchanged. No Issue
+#11 implementation was started.
