@@ -50,7 +50,7 @@ Read the relevant record in `docs/adr/` before changing an established architect
 ## Git and PR closeout
 
 - At task closeout, follow the [Codex closeout workflow](docs/setup/codex.md#closeout) and invoke `scripts/agent/notify_task.py` with `ready_for_review`, `completed`, or `blocked` for the actual terminal outcome. Missing notification configuration or delivery failure is best-effort and does not change the task result.
-- Routine, low-risk tasks may self-review, commit, open a PR, wait for required checks, and merge after they pass.
+- Routine, low-risk tasks may self-review, commit, open a PR, and wait for required checks. Merge only after the current user explicitly authorizes it and required checks pass.
 - Stop at a reviewable PR for architecture decisions, destructive or high-risk work, dependency/security changes, unresolved GUI/hardware validation, and explicitly review-gated tasks.
 - Never bypass branch protection or force merge. Explicit current-user instructions take precedence.
 - For repository changes, review the scoped diff, run relevant checks including `git diff --check`, and stage only task-owned paths.

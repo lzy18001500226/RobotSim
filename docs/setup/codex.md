@@ -13,15 +13,23 @@ For multi-step work that should continue across sessions, use the repository's [
 | Local Codex | Canonical integration on WSL2 Ubuntu 22.04 with ROS 2 Humble; Unity, WSLg, GPU rendering, DDS, vendor runtimes, and hardware integration | Use local results for GUI, GPU, full ROS, DDS, and hardware behavior. |
 | Codex Cloud | Headless C/C++ and Python changes, MuJoCo headless work, static and unit tests, documentation, CI fixes, code review, and repository refactors | Cloud results do not prove Unity, GPU, full ROS 2 Humble, DDS, vendor runtime, or hardware behavior. |
 
-New Codex Web Cloud task creation is currently known to fail in some cases with `Unable to determine project root for task`. Continue from an existing repository-bound Cloud workspace when available. Do not add project architecture or task infrastructure around this temporary product limitation.
-
 See [host and WSL setup](01_HOST_WSL_DOCKER.md), [development container setup](02_DEV_CONTAINER.md), and the [Codex Cloud environment guide](https://developers.openai.com/codex/cloud/environments/).
+
+Before acting in a new, resumed, or parallel-worktree task, verify the checkout:
+
+```bash
+git rev-parse --show-toplevel
+git branch --show-current
+git status --short --branch
+```
+
+Confirm the root and branch are the intended ones, and preserve any existing changes.
 
 ## Project-local Codex hooks
 
 `.codex/hooks.json` contains a small, optional `PreToolUse` guard for plainly destructive Git commands and obvious attempts to stage or write credential files. It is a last-line guard, not a substitute for reviewing a command or protecting secrets. The repository remains usable when hooks are disabled.
 
-Codex loads project hooks only through its project configuration and trust controls. Review the hook and accept Codex's project-trust prompt through the normal UI before enabling it. Never bypass hook trust, approval policy, or the user's review decision. Do not copy project settings into global `~/.codex` configuration.
+Codex discovers project hooks from `.codex/hooks.json` through the repository's project configuration. Discovery is separate from trust and enablement. Trust the actual RobotSim repository checkout through Codex's normal project controls, then use `/hooks` to confirm the guard is listed and enabled/trusted. Recheck after changing the hook configuration; a changed handler may need renewed trust. If the hook is absent or disabled, do not assume the guard ran. Never bypass hook trust, approval policy, or the user's review decision. Do not copy project settings into global `~/.codex` configuration.
 
 There is no automatic terminal notification hook. A turn-ending hook cannot reliably tell whether the task is complete, ready for review, or blocked. Invoke the notifier explicitly at the matching closeout point below. Notification errors are reported as best-effort warnings and do not change the task result.
 

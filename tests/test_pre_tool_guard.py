@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -58,17 +59,30 @@ class PreToolGuardTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(run_guard(event("Bash", {"command": command})))
 
-    def test_hook_json_is_project_local_and_limited_to_pre_tool_use(self) -> None:
+    def test_hook_config_wires_guard_for_robot_sim_tool_aliases(self) -> None:
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
         config = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(config["hooks"]), {"PreToolUse"})
-        matcher = config["hooks"]["PreToolUse"][0]
-        self.assertRegex("Bash", matcher["matcher"])
-        self.assertEqual(matcher["hooks"][0]["type"], "command")
-        self.assertGreater(matcher["hooks"][0]["timeout"], 0)
-        self.assertIn("scripts/agent/pre_tool_guard.py", matcher["hooks"][0]["command"])
+        self.assertIn("PreToolUse", config.get("hooks", {}))
+        aliases = {"Bash", "exec_command", "Write", "Edit", "apply_patch"}
+        guard_path = "scripts/agent/pre_tool_guard.py"
+
+        for group in config["hooks"]["PreToolUse"]:
+            matcher = re.compile(group["matcher"])
+            if not all(matcher.fullmatch(alias) for alias in aliases):
+                continue
+            for handler in group["hooks"]:
+                if handler.get("type") != "command":
+                    continue
+                command = handler.get("command", "")
+                if guard_path not in command:
+                    continue
+                self.assertGreater(handler.get("timeout", 0), 0)
+                self.assertTrue((root / guard_path).is_file())
+                return
+
+        self.fail("PreToolUse must wire the guard for every RobotSim tool alias")
 
 
 if __name__ == "__main__":
