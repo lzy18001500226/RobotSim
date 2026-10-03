@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -36,21 +37,24 @@ class PreToolGuardTests(unittest.TestCase):
     def test_blocks_obvious_secret_file_staging_and_secret_redirection(self) -> None:
         for command in (
             "git add .env.local",
-            "printf '%s' \"$ROBOTSIM_SMTP_PASSWORD\" > credentials.txt",
+            "printf '%s' \"$AGENTMAIL_API_KEY\" > credentials.txt",
         ):
             with self.subTest(command=command):
-                result = run_guard(event("exec_command", {"cmd": command}))
+                result = run_guard(event("Bash", {"command": command}))
                 self.assertEqual(result["decision"], "block")
 
-    def test_write_hook_blocks_secret_files_but_allows_example_files(self) -> None:
-        blocked = run_guard(event("Write", {"file_path": "/repo/.env"}))
-        allowed = run_guard(event("Write", {"file_path": "/repo/.env.example"}))
+    def test_apply_patch_hook_blocks_secret_files_but_allows_example_files(self) -> None:
+        blocked_patch = "*** Begin Patch\n*** Add File: .env\n+TOKEN=synthetic\n*** End Patch"
+        allowed_patch = "*** Begin Patch\n*** Add File: .env.example\n+TOKEN=placeholder\n*** End Patch"
+        blocked = run_guard(event("apply_patch", {"command": blocked_patch}))
+        allowed = run_guard(event("apply_patch", {"command": allowed_patch}))
         self.assertEqual(blocked["decision"], "block")
         self.assertIsNone(allowed)
 
-    def test_write_hook_blocks_credential_shaped_literals_in_content(self) -> None:
+    def test_apply_patch_hook_blocks_credential_shaped_literals_in_command(self) -> None:
         fake_token = "gh" + "p_" + "A" * 32
-        result = run_guard(event("Write", {"file_path": "/repo/config.txt", "content": fake_token}))
+        patch = f"*** Begin Patch\n*** Add File: config.txt\n+{fake_token}\n*** End Patch"
+        result = run_guard(event("apply_patch", {"command": patch}))
         self.assertEqual(result["decision"], "block")
 
     def test_safe_repository_commands_are_not_blocked(self) -> None:
@@ -58,17 +62,36 @@ class PreToolGuardTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(run_guard(event("Bash", {"command": command})))
 
-    def test_hook_json_is_project_local_and_limited_to_pre_tool_use(self) -> None:
+    def test_hook_config_wires_guard_for_canonical_codex_tools(self) -> None:
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
         config = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(config["hooks"]), {"PreToolUse"})
-        matcher = config["hooks"]["PreToolUse"][0]
-        self.assertRegex("Bash", matcher["matcher"])
-        self.assertEqual(matcher["hooks"][0]["type"], "command")
-        self.assertGreater(matcher["hooks"][0]["timeout"], 0)
-        self.assertIn("scripts/agent/pre_tool_guard.py", matcher["hooks"][0]["command"])
+        self.assertEqual(set(config.get("hooks", {})), {"PreToolUse", "Stop"})
+        stop_handler = config["hooks"]["Stop"][0]["hooks"][0]
+        self.assertEqual(stop_handler.get("type"), "command")
+        self.assertIn("scripts/agent/notify_task.py", stop_handler.get("command", ""))
+        self.assertGreater(stop_handler.get("timeout", 0), 0)
+        tool_names = {"Bash", "apply_patch"}
+        guard_path = "scripts/agent/pre_tool_guard.py"
+        covered = set()
+
+        for group in config["hooks"]["PreToolUse"]:
+            matcher_text = group.get("matcher")
+            if not isinstance(matcher_text, str):
+                continue
+            matcher = re.compile(matcher_text)
+            for handler in group["hooks"]:
+                if handler.get("type") != "command":
+                    continue
+                command = handler.get("command", "")
+                if guard_path not in command:
+                    continue
+                self.assertGreater(handler.get("timeout", 0), 0)
+                self.assertTrue((root / guard_path).is_file())
+                covered.update(name for name in tool_names if matcher.search(name))
+
+        self.assertEqual(covered, tool_names)
 
 
 if __name__ == "__main__":

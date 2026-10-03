@@ -15,8 +15,8 @@ DESTRUCTIVE_PATTERNS = (
     re.compile(r"(?:^|[\s;&|])git(?:\s+-C\s+\S+)?\s+clean\b[^;&|\n]*(?:--force\b|(?:^|\s)-[a-z]*f[a-z]*(?:\s|$))", re.I),
 )
 SECRET_VARIABLE = re.compile(
-    r"\$(?:\{)?(?:ROBOTSIM_SMTP_PASSWORD|GH_TOKEN|GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY)(?:\})?"
-    r"|\$env:(?:ROBOTSIM_SMTP_PASSWORD|GH_TOKEN|GITHUB_TOKEN)",
+    r"\$(?:\{)?(?:AGENTMAIL_API_KEY|GH_TOKEN|GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY)(?:\})?"
+    r"|\$env:(?:AGENTMAIL_API_KEY|GH_TOKEN|GITHUB_TOKEN)",
     re.I,
 )
 WRITE_SINK = re.compile(r"(?:>|\btee\b|\bset-content\b|\bout-file\b)", re.I)
@@ -50,8 +50,8 @@ def _is_sensitive_path(value: str) -> bool:
 def _reason(payload: dict[str, Any]) -> str | None:
     tool_name = str(payload.get("tool_name", ""))
     tool_input = _tool_input(payload)
-    if tool_name in {"Bash", "exec_command"}:
-        command = str(tool_input.get("command", tool_input.get("cmd", ""))).replace("\\\n", " ")
+    if tool_name == "Bash":
+        command = str(tool_input.get("command", "")).replace("\\\n", " ")
         if any(pattern.search(command) for pattern in DESTRUCTIVE_PATTERNS):
             return "blocked a destructive Git command; inspect the target and use the normal review flow"
         if TOKEN_LITERAL.search(command):
@@ -62,18 +62,12 @@ def _reason(payload: dict[str, Any]) -> str | None:
         if staged and any(_is_sensitive_path(item.strip("\"'")) for item in re.findall(r"[^\s]+", staged.group(1))):
             return "blocked staging an obvious credential file; review it locally and keep credentials out of Git"
 
-    if tool_name in {"Write", "Edit", "apply_patch"}:
-        paths = [tool_input.get(key) for key in ("file_path", "path", "filename")]
-        if any(isinstance(path, str) and _is_sensitive_path(path) for path in paths):
-            return "blocked writing an obvious credential file into the project"
-        patch = str(tool_input.get("patch", ""))
+    if tool_name == "apply_patch":
+        patch = str(tool_input.get("command", ""))
         added_paths = re.findall(r"(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$", patch)
         if any(_is_sensitive_path(path.strip()) for path in added_paths):
             return "blocked a patch targeting an obvious credential file"
-        content = "\n".join(
-            str(tool_input.get(key, "")) for key in ("patch", "content", "new_string", "input")
-        )
-        if TOKEN_LITERAL.search(content):
+        if TOKEN_LITERAL.search(patch):
             return "blocked a patch containing a credential-shaped literal"
     return None
 

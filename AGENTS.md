@@ -49,8 +49,8 @@ Read the relevant record in `docs/adr/` before changing an established architect
 
 ## Git and PR closeout
 
-- At task closeout, follow the [Codex closeout workflow](docs/setup/codex.md#closeout) and invoke `scripts/agent/notify_task.py` with `ready_for_review`, `completed`, or `blocked` for the actual terminal outcome. Missing notification configuration or delivery failure is best-effort and does not change the task result.
-- Routine, low-risk tasks may self-review, commit, open a PR, wait for required checks, and merge after they pass.
+- At task closeout, follow the [Codex closeout workflow](docs/setup/codex.md#closeout). Local Codex's trusted project `Stop` hook invokes `scripts/agent/notify_task.py` once per turn; Codex Cloud must invoke it explicitly once before its final answer because project hooks are not assumed to run there. Use the actual terminal outcome. Missing notification configuration or delivery failure is best-effort and does not change the task result.
+- Routine, low-risk tasks have standing authorization to self-review, commit, open a PR, wait for required checks and any configured independent review, and merge once those gates pass. Do not ask for an additional per-merge confirmation.
 - Stop at a reviewable PR for architecture decisions, destructive or high-risk work, dependency/security changes, unresolved GUI/hardware validation, and explicitly review-gated tasks.
 - Never bypass branch protection or force merge. Explicit current-user instructions take precedence.
 - For repository changes, review the scoped diff, run relevant checks including `git diff --check`, and stage only task-owned paths.

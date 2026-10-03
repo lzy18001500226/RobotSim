@@ -2,134 +2,337 @@ from __future__ import annotations
 
 import contextlib
 import io
-import os
+import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
 from scripts.agent import notify_task
 
 
+class FakeResponse:
+    status = 202
+
+    def __enter__(self) -> "FakeResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
 class NotifyTaskTests(unittest.TestCase):
-    def test_status_subjects_and_body_are_concise_single_line_headers(self) -> None:
-        expected = {
-            "ready_for_review": "Ready for review",
-            "completed": "Completed",
-            "blocked": "Blocked",
+    def _settings(self, directory: str) -> dict[str, str]:
+        return {
+            "AGENTMAIL_API_KEY": "fake-test-key",
+            "AGENTMAIL_INBOX_ID": "lzy18001500226@agentmail.to",
+            "ROBOTSIM_NOTIFY_TO": "maintainer@example.invalid",
+            "ROBOTSIM_LOCAL_STOP_HOOK": "1",
+            "ROBOTSIM_NOTIFY_STATE_DIR": directory,
         }
-        for status, label in expected.items():
-            with self.subTest(status=status):
-                subject, body = notify_task.format_notification(status, "task-7", "Docs\nupdated")
-                self.assertEqual(subject, f"[RobotSim] {label}: Docs updated")
-                self.assertIn("Task: task-7", body)
-                self.assertIn("Summary: Docs updated", body)
-                self.assertNotIn("\n", subject)
 
-    def test_dry_run_formats_without_smtp_settings(self) -> None:
-        stdout = io.StringIO()
-        with patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(stdout):
-            code = notify_task.main(
-                ["ready_for_review", "--task-id", "task-7", "--summary", "Review docs", "--dry-run"]
-            )
-        self.assertEqual(code, 0)
-        self.assertIn("Dry run: no SMTP connection was made", stdout.getvalue())
-        self.assertIn("Subject: [RobotSim] Ready for review: Review docs", stdout.getvalue())
+    def test_notification_is_short_and_includes_available_context(self) -> None:
+        subject, body = notify_task.format_notification(
+            "ready_for_review",
+            "issue-28-pr-12",
+            "Issue #28 notifications implemented",
+            task="Issue #28: AgentMail notifications",
+            worker="Codex Cloud",
+            branch="issue/28-agentmail-notifications",
+            issue="28",
+        )
+        self.assertEqual(subject, "[RobotSim] Ready for review: Issue #28 notifications implemented")
+        self.assertIn("Task: Issue #28: AgentMail notifications", body)
+        self.assertIn("Worker: Codex Cloud", body)
+        self.assertIn("Branch: issue/28-agentmail-notifications", body)
+        self.assertIn("Issue: #28", body)
+        self.assertIn("Summary: Issue #28 notifications implemented", body)
+        self.assertNotIn("\n", subject)
 
-    def test_duplicate_status_for_task_is_sent_only_once(self) -> None:
-        settings = {
-            "ROBOTSIM_SMTP_HOST": "smtp.example.invalid",
-            "ROBOTSIM_SMTP_FROM": "robot@example.invalid",
-            "ROBOTSIM_NOTIFY_TO": "reviewer@example.invalid",
-        }
-        with tempfile.TemporaryDirectory() as directory, patch.object(notify_task, "_send") as send:
-            settings["ROBOTSIM_NOTIFY_STATE_DIR"] = directory
-            first = notify_task.notify("completed", "task-7", "Checks passed", environ=settings)
-            second = notify_task.notify("completed", "task-7", "Checks passed", environ=settings)
-            self.assertEqual(first.state, "sent")
-            self.assertEqual(second.state, "duplicate")
-            send.assert_called_once()
-            state_files = list(Path(directory).iterdir())
-            self.assertEqual(len(state_files), 1)
-            self.assertEqual(state_files[0].suffix, ".sent")
-
-    def test_missing_auth_pair_skips_and_does_not_fail_task(self) -> None:
-        settings = {
-            "ROBOTSIM_SMTP_HOST": "smtp.example.invalid",
-            "ROBOTSIM_SMTP_FROM": "robot@example.invalid",
-            "ROBOTSIM_NOTIFY_TO": "reviewer@example.invalid",
-            "ROBOTSIM_SMTP_USERNAME": "configured-user",
-        }
-        stderr = io.StringIO()
-        with patch.dict(os.environ, settings, clear=True), patch.object(notify_task, "_send") as send:
-            with contextlib.redirect_stderr(stderr):
-                code = notify_task.main(
-                    ["blocked", "--task-id", "task-8", "--summary", "Waiting for access"]
+    def test_successful_agentmail_send_uses_current_rest_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            with patch.object(notify_task, "_open_request", return_value=FakeResponse()) as urlopen:
+                result = notify_task.notify(
+                    "completed", "task-1", "Tests passed", worker="Codex Cloud", environ=settings
                 )
+
+        self.assertEqual(result.state, "sent")
+        urlopen.assert_called_once()
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "https://api.agentmail.to/v0/inboxes/lzy18001500226@agentmail.to/messages/send",
+        )
+        self.assertEqual(request.get_header("Authorization"), "Bearer fake-test-key")
+        self.assertEqual(request.get_header("Content-type"), "application/json")
+        self.assertTrue(request.get_header("Idempotency-key"))
+        self.assertEqual(json.loads(request.data)["to"], ["maintainer@example.invalid"])
+        self.assertEqual(json.loads(request.data)["subject"], result.subject)
+
+    def test_auth_provider_and_http_failures_are_non_blocking(self) -> None:
+        for status in (401, 403, 429, 500):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                settings = self._settings(directory)
+                error = urllib.error.HTTPError(
+                    "https://api.agentmail.to", status, "mock response", {}, io.BytesIO(b"mock")
+                )
+                with patch.object(notify_task, "_open_request", side_effect=error):
+                    result = notify_task.notify("blocked", f"task-{status}", "Waiting", environ=settings)
+                self.assertEqual(result.state, "failed")
+                self.assertIn(f"HTTP {status}", result.message)
+                self.assertNotIn(settings["AGENTMAIL_API_KEY"], result.message)
+
+    def test_provider_transport_failure_is_non_blocking_and_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            with patch.object(
+                notify_task, "_open_request", side_effect=urllib.error.URLError("mock network failure")
+            ) as urlopen:
+                result = notify_task.notify("completed", "task-network", "Finished", environ=settings)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.message, "AgentMail delivery failed (URLError)")
+        urlopen.assert_called_once()
+
+    def test_missing_configuration_skips_without_a_request(self) -> None:
+        with patch.object(notify_task, "_open_request") as urlopen:
+            result = notify_task.notify("completed", "task-2", "Finished", environ={})
+        self.assertEqual(result.state, "skipped")
+        self.assertIn("AGENTMAIL_API_KEY", result.message)
+        self.assertIn("AGENTMAIL_INBOX_ID", result.message)
+        self.assertIn("ROBOTSIM_NOTIFY_TO", result.message)
+        urlopen.assert_not_called()
+
+    def test_repeated_task_event_is_deduplicated_locally(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            with patch.object(notify_task, "_open_request", return_value=FakeResponse()) as urlopen:
+                first = notify_task.notify("completed", "task-3", "Finished", environ=settings)
+                second = notify_task.notify("completed", "task-3", "Finished", environ=settings)
+            state_files = list(Path(directory).iterdir())
+
+        self.assertEqual(first.state, "sent")
+        self.assertEqual(second.state, "duplicate")
+        urlopen.assert_called_once()
+        self.assertEqual(len(state_files), 1)
+        self.assertEqual(state_files[0].suffix, ".sent")
+
+    def test_redirect_handler_refuses_to_forward_credentials(self) -> None:
+        result = notify_task._NoRedirect().redirect_request(
+            None, None, 302, "Found", {}, "https://example.invalid/redirect"
+        )
+        self.assertIsNone(result)
+
+    def test_retry_after_ambiguous_failure_reuses_agentmail_idempotency_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            error = urllib.error.URLError("mock connection closed after send")
+            with patch.object(
+                notify_task, "_open_request", side_effect=[error, FakeResponse()]
+            ) as urlopen:
+                failed = notify_task.notify("completed", "task-retry", "Finished", environ=settings)
+                retried = notify_task.notify("completed", "task-retry", "Finished", environ=settings)
+
+        self.assertEqual(failed.state, "failed")
+        self.assertEqual(retried.state, "sent")
+        first_request = urlopen.call_args_list[0].args[0]
+        second_request = urlopen.call_args_list[1].args[0]
+        self.assertEqual(
+            first_request.get_header("Idempotency-key"), second_request.get_header("Idempotency-key")
+        )
+
+    def test_successful_stop_hook_send_has_empty_stdout(self) -> None:
+        payload = {
+            "session_id": "mock-session-id",
+            "turn_id": "mock-turn-id",
+            "transcript_path": None,
+            "cwd": "/mock/checkout",
+            "hook_event_name": "Stop",
+            "model": "mock-model",
+            "permission_mode": "default",
+            "stop_hook_active": False,
+            "last_assistant_message": "# Issue #28 complete\nPR opened and validation passed.",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
+            with (
+                patch.object(notify_task, "_branch_at", return_value="issue/28-agentmail-notifications"),
+                patch.object(notify_task, "_send") as send,
+                patch.dict("os.environ", self._settings(directory), clear=True),
+                patch("sys.stdin", io.StringIO(json.dumps(payload))),
+                contextlib.redirect_stdout(stdout),
+            ):
+                code = notify_task.main(["stop"])
+
         self.assertEqual(code, 0)
-        self.assertIn("ROBOTSIM_SMTP_USERNAME and ROBOTSIM_SMTP_PASSWORD", stderr.getvalue())
-        self.assertNotIn("configured-user", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        send.assert_called_once()
+        body = send.call_args.args[1]
+        self.assertIn("Task: Local Codex turn", body)
+        self.assertIn("Worker: Local Codex", body)
+        self.assertIn("Branch: issue/28-agentmail-notifications", body)
+        self.assertIn("Issue: #28", body)
+        self.assertIn("Summary: Issue #28 complete", body)
+
+    def test_recursive_stop_event_has_empty_stdout_and_does_not_send(self) -> None:
+        payload = {
+            "session_id": "mock-session-id",
+            "turn_id": "mock-turn-id",
+            "hook_event_name": "Stop",
+            "stop_hook_active": True,
+        }
+        stdout = io.StringIO()
+        with (
+            patch.object(notify_task, "_send") as send,
+            patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = notify_task.main(["stop"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
         send.assert_not_called()
 
-    def test_smtp_uses_certificate_checked_starttls_and_environment_auth(self) -> None:
-        calls: list[object] = []
-
-        class FakeSMTP:
-            def __init__(self, host: str, port: int, timeout: float) -> None:
-                calls.append((host, port, timeout))
-
-            def __enter__(self) -> "FakeSMTP":
-                return self
-
-            def __exit__(self, *args: object) -> None:
-                return None
-
-            def ehlo(self) -> None:
-                calls.append("ehlo")
-
-            def starttls(self, *, context: object) -> None:
-                calls.append(("starttls", context.check_hostname, context.verify_mode))
-
-            def login(self, username: str, password: str) -> None:
-                calls.append(("login", username, password))
-
-            def send_message(self, message: object) -> dict[str, str]:
-                calls.append(("message", message["Subject"]))
-                return {}
-
-        settings = {
-            "host": "smtp.example.invalid",
-            "port": 587,
-            "timeout": 10,
-            "sender": "robot@example.invalid",
-            "recipient": "reviewer@example.invalid",
-            "username": "test-user",
-            "password": "test-password",
+    def test_duplicate_stop_event_has_empty_stdout_and_sends_once(self) -> None:
+        payload = {
+            "session_id": "same-session",
+            "turn_id": "same-turn",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "Completed the task.",
+            "cwd": "",
         }
-        with patch.object(notify_task.smtplib, "SMTP", FakeSMTP):
-            notify_task._send("subject", "body", settings)
-        self.assertEqual(calls[0], ("smtp.example.invalid", 587, 10.0))
-        self.assertIn(("starttls", True, notify_task.ssl.CERT_REQUIRED), calls)
-        self.assertIn(("login", "test-user", "test-password"), calls)
-        self.assertIn(("message", "subject"), calls)
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
+            with (
+                patch.object(notify_task, "_branch_at", return_value=""),
+                patch.object(notify_task, "_send") as send,
+                patch.dict("os.environ", self._settings(directory), clear=True),
+                contextlib.redirect_stdout(stdout),
+            ):
+                with patch("sys.stdin", io.StringIO(json.dumps(payload))):
+                    first_code = notify_task.main(["stop"])
+                with patch("sys.stdin", io.StringIO(json.dumps(payload))):
+                    second_code = notify_task.main(["stop"])
+        self.assertEqual(first_code, 0)
+        self.assertEqual(second_code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        send.assert_called_once()
 
-    def test_delivery_failure_releases_duplicate_claim_and_returns_success_code(self) -> None:
-        settings = {
-            "ROBOTSIM_SMTP_HOST": "smtp.example.invalid",
-            "ROBOTSIM_SMTP_FROM": "robot@example.invalid",
-            "ROBOTSIM_NOTIFY_TO": "reviewer@example.invalid",
+    def test_different_turn_ids_in_one_session_notify_independently(self) -> None:
+        payload = {
+            "session_id": "shared-session",
+            "turn_id": "turn-one",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "First turn finished.",
+            "cwd": "",
         }
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, settings, clear=True):
-            os.environ["ROBOTSIM_NOTIFY_STATE_DIR"] = directory
+        second_payload = {**payload, "turn_id": "turn-two", "last_assistant_message": "Second turn finished."}
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
+            with (
+                patch.object(notify_task, "_send") as send,
+                patch.dict("os.environ", self._settings(directory), clear=True),
+                contextlib.redirect_stdout(stdout),
+            ):
+                for event in (payload, second_payload):
+                    with patch("sys.stdin", io.StringIO(json.dumps(event))):
+                        self.assertEqual(notify_task.main(["stop"]), 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(send.call_count, 2)
+        self.assertNotEqual(
+            send.call_args_list[0].args[3], send.call_args_list[1].args[3]
+        )
+
+    def test_missing_stop_hook_configuration_is_silent_and_non_blocking(self) -> None:
+        payload = {
+            "session_id": "session-without-config",
+            "turn_id": "turn-without-config",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "Finished.",
+            "cwd": "",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
             stderr = io.StringIO()
-            with patch.object(notify_task, "_send", side_effect=OSError("relay unavailable")):
-                with contextlib.redirect_stderr(stderr):
-                    code = notify_task.main(
-                        ["blocked", "--task-id", "task-9", "--summary", "External service unavailable"]
-                    )
-            self.assertEqual(code, 0)
-            self.assertIn("SMTP delivery failed (OSError)", stderr.getvalue())
-            self.assertEqual(list(Path(directory).iterdir()), [])
+            with (
+                patch.object(notify_task, "_send") as send,
+                patch.dict(
+                    "os.environ",
+                    {"ROBOTSIM_LOCAL_STOP_HOOK": "1", "ROBOTSIM_NOTIFY_STATE_DIR": directory},
+                    clear=True,
+                ),
+                patch("sys.stdin", io.StringIO(json.dumps(payload))),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = notify_task.main(["stop"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+        send.assert_not_called()
+
+    def test_stop_hook_is_disabled_without_local_opt_in_even_when_cloud_is_configured(self) -> None:
+        payload = {
+            "session_id": "cloud-session",
+            "turn_id": "cloud-turn",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "Cloud task finished.",
+            "cwd": "",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            cloud_settings = self._settings(directory)
+            cloud_settings.pop("ROBOTSIM_LOCAL_STOP_HOOK")
+            stdout = io.StringIO()
+            with (
+                patch.object(notify_task, "_send") as send,
+                patch.dict("os.environ", cloud_settings, clear=True),
+                patch("sys.stdin", io.StringIO(json.dumps(payload))),
+                contextlib.redirect_stdout(stdout),
+            ):
+                code = notify_task.main(["stop"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        send.assert_not_called()
+
+    def test_stop_dry_run_keeps_manual_output_without_local_opt_in(self) -> None:
+        payload = {
+            "session_id": "dry-session",
+            "turn_id": "dry-turn",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "Dry-run turn.",
+            "cwd": "",
+        }
+        stdout = io.StringIO()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = notify_task.main(["stop", "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertIn("Dry run: no AgentMail request was made", stdout.getvalue())
+        self.assertIn("[RobotSim] Completed: Dry-run turn.", stdout.getvalue())
+
+    def test_dry_run_does_not_read_configuration_or_call_agentmail(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch.object(notify_task, "_open_request") as urlopen,
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = notify_task.main(
+                ["ready_for_review", "--task-id", "issue-28-pr-12", "--summary", "PR opened", "--dry-run"]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("Dry run: no AgentMail request was made", stdout.getvalue())
+        self.assertIn("[RobotSim] Ready for review: PR opened", stdout.getvalue())
+        urlopen.assert_not_called()
 
 
 if __name__ == "__main__":
