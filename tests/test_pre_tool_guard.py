@@ -40,18 +40,21 @@ class PreToolGuardTests(unittest.TestCase):
             "printf '%s' \"$ROBOTSIM_SMTP_PASSWORD\" > credentials.txt",
         ):
             with self.subTest(command=command):
-                result = run_guard(event("exec_command", {"cmd": command}))
+                result = run_guard(event("Bash", {"command": command}))
                 self.assertEqual(result["decision"], "block")
 
-    def test_write_hook_blocks_secret_files_but_allows_example_files(self) -> None:
-        blocked = run_guard(event("Write", {"file_path": "/repo/.env"}))
-        allowed = run_guard(event("Write", {"file_path": "/repo/.env.example"}))
+    def test_apply_patch_hook_blocks_secret_files_but_allows_example_files(self) -> None:
+        blocked_patch = "*** Begin Patch\n*** Add File: .env\n+TOKEN=synthetic\n*** End Patch"
+        allowed_patch = "*** Begin Patch\n*** Add File: .env.example\n+TOKEN=placeholder\n*** End Patch"
+        blocked = run_guard(event("apply_patch", {"command": blocked_patch}))
+        allowed = run_guard(event("apply_patch", {"command": allowed_patch}))
         self.assertEqual(blocked["decision"], "block")
         self.assertIsNone(allowed)
 
-    def test_write_hook_blocks_credential_shaped_literals_in_content(self) -> None:
+    def test_apply_patch_hook_blocks_credential_shaped_literals_in_command(self) -> None:
         fake_token = "gh" + "p_" + "A" * 32
-        result = run_guard(event("Write", {"file_path": "/repo/config.txt", "content": fake_token}))
+        patch = f"*** Begin Patch\n*** Add File: config.txt\n+{fake_token}\n*** End Patch"
+        result = run_guard(event("apply_patch", {"command": patch}))
         self.assertEqual(result["decision"], "block")
 
     def test_safe_repository_commands_are_not_blocked(self) -> None:
@@ -59,19 +62,21 @@ class PreToolGuardTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(run_guard(event("Bash", {"command": command})))
 
-    def test_hook_config_wires_guard_for_robot_sim_tool_aliases(self) -> None:
+    def test_hook_config_wires_guard_for_canonical_codex_tools(self) -> None:
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
         config = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
         self.assertIn("PreToolUse", config.get("hooks", {}))
-        aliases = {"Bash", "exec_command", "Write", "Edit", "apply_patch"}
+        tool_names = {"Bash", "apply_patch"}
         guard_path = "scripts/agent/pre_tool_guard.py"
+        covered = set()
 
         for group in config["hooks"]["PreToolUse"]:
-            matcher = re.compile(group["matcher"])
-            if not all(matcher.fullmatch(alias) for alias in aliases):
+            matcher_text = group.get("matcher")
+            if not isinstance(matcher_text, str):
                 continue
+            matcher = re.compile(matcher_text)
             for handler in group["hooks"]:
                 if handler.get("type") != "command":
                     continue
@@ -80,9 +85,9 @@ class PreToolGuardTests(unittest.TestCase):
                     continue
                 self.assertGreater(handler.get("timeout", 0), 0)
                 self.assertTrue((root / guard_path).is_file())
-                return
+                covered.update(name for name in tool_names if matcher.search(name))
 
-        self.fail("PreToolUse must wire the guard for every RobotSim tool alias")
+        self.assertEqual(covered, tool_names)
 
 
 if __name__ == "__main__":
