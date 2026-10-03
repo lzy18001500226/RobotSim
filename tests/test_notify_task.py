@@ -28,6 +28,7 @@ class NotifyTaskTests(unittest.TestCase):
             "AGENTMAIL_API_KEY": "fake-test-key",
             "AGENTMAIL_INBOX_ID": "lzy18001500226@agentmail.to",
             "ROBOTSIM_NOTIFY_TO": "maintainer@example.invalid",
+            "ROBOTSIM_LOCAL_STOP_HOOK": "1",
             "ROBOTSIM_NOTIFY_STATE_DIR": directory,
         }
 
@@ -142,7 +143,7 @@ class NotifyTaskTests(unittest.TestCase):
             first_request.get_header("Idempotency-key"), second_request.get_header("Idempotency-key")
         )
 
-    def test_stop_hook_payload_sends_one_turn_with_issue_and_branch_context(self) -> None:
+    def test_successful_stop_hook_send_has_empty_stdout(self) -> None:
         payload = {
             "session_id": "mock-session-id",
             "turn_id": "mock-turn-id",
@@ -166,7 +167,7 @@ class NotifyTaskTests(unittest.TestCase):
                 code = notify_task.main(["stop"])
 
         self.assertEqual(code, 0)
-        self.assertIn("notify_task: sent", stdout.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
         send.assert_called_once()
         body = send.call_args.args[1]
         self.assertIn("Task: Local Codex turn", body)
@@ -175,20 +176,25 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertIn("Issue: #28", body)
         self.assertIn("Summary: Issue #28 complete", body)
 
-    def test_stop_hook_recursion_guard_skips_without_sending(self) -> None:
+    def test_recursive_stop_event_has_empty_stdout_and_does_not_send(self) -> None:
         payload = {
             "session_id": "mock-session-id",
             "turn_id": "mock-turn-id",
             "hook_event_name": "Stop",
             "stop_hook_active": True,
         }
-        with patch.object(notify_task, "_send") as send:
-            result = notify_task.process_stop_payload(payload, environ={})
-        self.assertEqual(result.state, "skipped")
-        self.assertIn("recursion guard", result.message)
+        stdout = io.StringIO()
+        with (
+            patch.object(notify_task, "_send") as send,
+            patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = notify_task.main(["stop"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
         send.assert_not_called()
 
-    def test_repeated_stop_payload_for_same_turn_sends_once(self) -> None:
+    def test_duplicate_stop_event_has_empty_stdout_and_sends_once(self) -> None:
         payload = {
             "session_id": "same-session",
             "turn_id": "same-turn",
@@ -198,15 +204,120 @@ class NotifyTaskTests(unittest.TestCase):
             "cwd": "",
         }
         with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
             with (
                 patch.object(notify_task, "_branch_at", return_value=""),
                 patch.object(notify_task, "_send") as send,
+                patch.dict("os.environ", self._settings(directory), clear=True),
+                contextlib.redirect_stdout(stdout),
             ):
-                first = notify_task.process_stop_payload(payload, environ=self._settings(directory))
-                second = notify_task.process_stop_payload(payload, environ=self._settings(directory))
-        self.assertEqual(first.state, "sent")
-        self.assertEqual(second.state, "duplicate")
+                with patch("sys.stdin", io.StringIO(json.dumps(payload))):
+                    first_code = notify_task.main(["stop"])
+                with patch("sys.stdin", io.StringIO(json.dumps(payload))):
+                    second_code = notify_task.main(["stop"])
+        self.assertEqual(first_code, 0)
+        self.assertEqual(second_code, 0)
+        self.assertEqual(stdout.getvalue(), "")
         send.assert_called_once()
+
+    def test_different_turn_ids_in_one_session_notify_independently(self) -> None:
+        payload = {
+            "session_id": "shared-session",
+            "turn_id": "turn-one",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "First turn finished.",
+            "cwd": "",
+        }
+        second_payload = {**payload, "turn_id": "turn-two", "last_assistant_message": "Second turn finished."}
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
+            with (
+                patch.object(notify_task, "_send") as send,
+                patch.dict("os.environ", self._settings(directory), clear=True),
+                contextlib.redirect_stdout(stdout),
+            ):
+                for event in (payload, second_payload):
+                    with patch("sys.stdin", io.StringIO(json.dumps(event))):
+                        self.assertEqual(notify_task.main(["stop"]), 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(send.call_count, 2)
+        self.assertNotEqual(
+            send.call_args_list[0].args[3], send.call_args_list[1].args[3]
+        )
+
+    def test_missing_stop_hook_configuration_is_silent_and_non_blocking(self) -> None:
+        payload = {
+            "session_id": "session-without-config",
+            "turn_id": "turn-without-config",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "Finished.",
+            "cwd": "",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                patch.object(notify_task, "_send") as send,
+                patch.dict(
+                    "os.environ",
+                    {"ROBOTSIM_LOCAL_STOP_HOOK": "1", "ROBOTSIM_NOTIFY_STATE_DIR": directory},
+                    clear=True,
+                ),
+                patch("sys.stdin", io.StringIO(json.dumps(payload))),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = notify_task.main(["stop"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+        send.assert_not_called()
+
+    def test_stop_hook_is_disabled_without_local_opt_in_even_when_cloud_is_configured(self) -> None:
+        payload = {
+            "session_id": "cloud-session",
+            "turn_id": "cloud-turn",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "Cloud task finished.",
+            "cwd": "",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            cloud_settings = self._settings(directory)
+            cloud_settings.pop("ROBOTSIM_LOCAL_STOP_HOOK")
+            stdout = io.StringIO()
+            with (
+                patch.object(notify_task, "_send") as send,
+                patch.dict("os.environ", cloud_settings, clear=True),
+                patch("sys.stdin", io.StringIO(json.dumps(payload))),
+                contextlib.redirect_stdout(stdout),
+            ):
+                code = notify_task.main(["stop"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        send.assert_not_called()
+
+    def test_stop_dry_run_keeps_manual_output_without_local_opt_in(self) -> None:
+        payload = {
+            "session_id": "dry-session",
+            "turn_id": "dry-turn",
+            "hook_event_name": "Stop",
+            "stop_hook_active": False,
+            "last_assistant_message": "Dry-run turn.",
+            "cwd": "",
+        }
+        stdout = io.StringIO()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = notify_task.main(["stop", "--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertIn("Dry run: no AgentMail request was made", stdout.getvalue())
+        self.assertIn("[RobotSim] Completed: Dry-run turn.", stdout.getvalue())
 
     def test_dry_run_does_not_read_configuration_or_call_agentmail(self) -> None:
         stdout = io.StringIO()

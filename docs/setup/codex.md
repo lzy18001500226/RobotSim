@@ -21,9 +21,9 @@ See [host and WSL setup](01_HOST_WSL_DOCKER.md), [development container setup](0
 
 Codex discovers project hooks from `.codex/hooks.json`, subject to project/folder trust and hook approval. Review the hook and trust the real repository checkout through the normal UI before enabling it. Then run `/hooks` in that trusted checkout and confirm both `PreToolUse` and `Stop` are listed. Check the repository root, branch, and working-tree status before acting, especially after opening another checkout or worktree. Never bypass hook trust or approval policy, and do not copy project settings into global `~/.codex` configuration.
 
-The local `Stop` hook receives Codex's stop payload, including `session_id`, `turn_id`, `last_assistant_message`, and `stop_hook_active`. It sends one `completed` notification per session/turn and ignores a recursive Stop event when `stop_hook_active` is true. It does not run for individual tool calls, tests, commits, or progress updates. Notification errors are best-effort and do not change the task result.
+The local `Stop` hook receives Codex's stop payload, including `session_id`, `turn_id`, `last_assistant_message`, and `stop_hook_active`. It sends one `completed` notification per session/turn only when the local-only `ROBOTSIM_LOCAL_STOP_HOOK=1` opt-in is set, and ignores a recursive Stop event when `stop_hook_active` is true. Normal hook outcomes leave stdout empty, as Codex expects; failures may be diagnosed on stderr. A manual `stop --dry-run` still prints the formatted message without sending mail. The hook does not run for individual tool calls, tests, commits, or progress updates. Notification errors are best-effort and do not change the task result.
 
-Project command hooks must not be assumed to run in Codex Cloud. For each Cloud instruction, explicitly call `scripts/agent/notify_task.py` exactly once at closeout, after validation and immediately before the final answer, with the actual terminal outcome (`ready_for_review`, `completed`, or `blocked`). Use a stable task/turn ID so retries are deduplicated. Do not also make a second manual call after the local Stop hook has handled the turn.
+Project command hooks must not be assumed to run in Codex Cloud. For each Cloud instruction, explicitly call `scripts/agent/notify_task.py` exactly once at closeout, after validation and immediately before the final answer, with the actual terminal outcome (`ready_for_review`, `completed`, or `blocked`). Leave `ROBOTSIM_LOCAL_STOP_HOOK` unset in Cloud: even if project hooks become active there, the Stop handler will skip, so the explicit Cloud closeout remains the only notification path. Use a stable task/turn ID so retries are deduplicated. Do not make a second manual closeout call after the Cloud call.
 
 For current hook behavior, see the [Codex hook configuration types](https://github.com/openai/codex/blob/main/codex-rs/config/src/hook_config.rs), [hook discovery and trust handling](https://github.com/openai/codex/blob/main/codex-rs/hooks/src/engine/discovery.rs), and the [official AGENTS.md guidance](https://developers.openai.com/codex/guides/agents-md).
 
@@ -39,18 +39,19 @@ When notifications are enabled, configure:
 | `AGENTMAIL_INBOX_ID` | `lzy18001500226@agentmail.to` | Non-secret inbox identifier. |
 | `ROBOTSIM_NOTIFY_TO` | Maintainer's normal QQ mailbox | Personal configuration; do not hard-code it in the repository. |
 | `ROBOTSIM_NOTIFY_STATE_DIR` | Optional local state path | Optional; defaults under the user's cache directory, outside the checkout. |
+| `ROBOTSIM_LOCAL_STOP_HOOK` | Set to `1` in the local Codex environment only | Local Stop-hook opt-in. Leave unset in Codex Cloud. |
 
 ### Local Codex setup
 
 1. Create an AgentMail API key in the AgentMail account that owns the inbox.
 2. Store the key in the operating system's secret manager or the user's shell secret manager, and expose it to Codex as `AGENTMAIL_API_KEY`. Do not place it in a shell command, shell startup file in plaintext, repository file, or chat.
 3. Set `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and set `ROBOTSIM_NOTIFY_TO` to the maintainer's normal QQ mailbox through the user's local environment/secret manager.
-4. Restart local Codex so it receives the configured environment. Trust the actual RobotSim checkout, run `/hooks`, and verify that `Stop` and `PreToolUse` are active.
+4. Set `ROBOTSIM_LOCAL_STOP_HOOK=1` in the local Codex environment. Restart local Codex so it receives the configured environment. Trust the actual RobotSim checkout, run `/hooks`, and verify that `Stop` and `PreToolUse` are active.
 
 ### Codex Cloud setup
 
 1. In the Codex Cloud Environment settings, add `AGENTMAIL_API_KEY` as an environment secret. Do not paste it into a task prompt or repository file.
-2. Configure `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and the personal `ROBOTSIM_NOTIFY_TO` value in the Cloud environment's protected variable/secret settings. Do not store the QQ address in this repository.
+2. Configure `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and the personal `ROBOTSIM_NOTIFY_TO` value in the Cloud environment's protected variable/secret settings. Do not store the QQ address in this repository, and do not set `ROBOTSIM_LOCAL_STOP_HOOK` in Cloud.
 3. Allow HTTPS access to `api.agentmail.to` in the Cloud environment network settings. A Cloud task must explicitly call the notifier once at closeout; project command hooks are not assumed to run there.
 4. Notification is opt-in. If configuration is missing or AgentMail is unavailable, the notifier reports a best-effort skip/failure and exits successfully so the task can finish.
 

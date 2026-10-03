@@ -281,6 +281,9 @@ def process_stop_payload(
         return Outcome("skipped", "not a Codex Stop event")
     if payload.get("stop_hook_active") is True:
         return Outcome("skipped", "Stop hook recursion guard is active")
+    env = os.environ if environ is None else environ
+    if not dry_run and env.get("ROBOTSIM_LOCAL_STOP_HOOK", "").strip() != "1":
+        return Outcome("skipped", "local Stop notifications are not enabled")
     task_id = _stop_event_id(payload)
     if not task_id:
         return Outcome("skipped", "Stop payload has no session identifier")
@@ -351,7 +354,13 @@ def main(argv: list[str] | None = None) -> int:
             issue=issue,
             dry_run=args.dry_run,
         )
-    _print_outcome(outcome)
+    if args.event == "stop" and not args.dry_run:
+        # Codex Stop hooks accept empty stdout or a Stop result object. Keep
+        # routine outcomes silent; only diagnostics use stderr.
+        if outcome.state == "failed":
+            print(f"notify_task: {outcome.state}: {outcome.message}", file=sys.stderr)
+    else:
+        _print_outcome(outcome)
     # Mail delivery is best-effort and must never keep a completed turn open.
     return 0
 
