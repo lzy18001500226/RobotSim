@@ -15,8 +15,8 @@ DESTRUCTIVE_PATTERNS = (
     re.compile(r"(?:^|[\s;&|])git(?:\s+-C\s+\S+)?\s+clean\b[^;&|\n]*(?:--force\b|(?:^|\s)-[a-z]*f[a-z]*(?:\s|$))", re.I),
 )
 SECRET_VARIABLE = re.compile(
-    r"\$(?:\{)?(?:ROBOTSIM_SMTP_PASSWORD|GH_TOKEN|GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY)(?:\})?"
-    r"|\$env:(?:ROBOTSIM_SMTP_PASSWORD|GH_TOKEN|GITHUB_TOKEN)",
+    r"\$(?:\{)?(?:AGENTMAIL_API_KEY|GH_TOKEN|GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY)(?:\})?"
+    r"|\$env:(?:AGENTMAIL_API_KEY|GH_TOKEN|GITHUB_TOKEN)",
     re.I,
 )
 WRITE_SINK = re.compile(r"(?:>|\btee\b|\bset-content\b|\bout-file\b)", re.I)

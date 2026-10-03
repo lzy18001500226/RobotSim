@@ -36,7 +36,7 @@ class PreToolGuardTests(unittest.TestCase):
     def test_blocks_obvious_secret_file_staging_and_secret_redirection(self) -> None:
         for command in (
             "git add .env.local",
-            "printf '%s' \"$ROBOTSIM_SMTP_PASSWORD\" > credentials.txt",
+            "printf '%s' \"$AGENTMAIL_API_KEY\" > credentials.txt",
         ):
             with self.subTest(command=command):
                 result = run_guard(event("exec_command", {"cmd": command}))
@@ -58,17 +58,21 @@ class PreToolGuardTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(run_guard(event("Bash", {"command": command})))
 
-    def test_hook_json_is_project_local_and_limited_to_pre_tool_use(self) -> None:
+    def test_hook_json_preserves_pre_tool_guard_and_adds_local_stop_notifier(self) -> None:
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[1]
         config = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(config["hooks"]), {"PreToolUse"})
+        self.assertEqual(set(config["hooks"]), {"PreToolUse", "Stop"})
         matcher = config["hooks"]["PreToolUse"][0]
         self.assertRegex("Bash", matcher["matcher"])
         self.assertEqual(matcher["hooks"][0]["type"], "command")
         self.assertGreater(matcher["hooks"][0]["timeout"], 0)
         self.assertIn("scripts/agent/pre_tool_guard.py", matcher["hooks"][0]["command"])
+        stop = config["hooks"]["Stop"][0]["hooks"][0]
+        self.assertEqual(stop["type"], "command")
+        self.assertIn("scripts/agent/notify_task.py", stop["command"])
+        self.assertGreater(stop["timeout"], 0)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 {
-  "description": "Optional RobotSim guard for destructive Git operations and obvious credential leakage.",
+  "description": "Optional RobotSim tool guard and local Codex turn notification.",
   "hooks": {
     "PreToolUse": [
       {
@@ -10,6 +10,18 @@
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent/pre_tool_guard.py\"",
             "timeout": 5,
             "statusMessage": "Checking for destructive Git operations and credential leakage"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent/notify_task.py\" stop",
+            "timeout": 12,
+            "statusMessage": "Sending best-effort Codex turn notification"
           }
         ]
       }
