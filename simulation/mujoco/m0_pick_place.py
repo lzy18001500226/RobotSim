@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import json
 import math
 import os
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 import subprocess
 import sys
@@ -20,6 +21,45 @@ import numpy as np
 MUJOCO_VERSION = "3.2.6"
 UPSTREAM_COMMIT = "3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 UNITREE_COMMIT = "1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
+
+RUNTIME_PACKAGES = (
+    ("numpy", "numpy"),
+    ("mujoco", "mujoco"),
+    ("h5py", "h5py"),
+    ("opencv-python-headless", "opencv_python_headless"),
+)
+
+
+def _runtime_identity() -> dict[str, object]:
+    packages: dict[str, str | None] = {}
+    for distribution, key in RUNTIME_PACKAGES:
+        try:
+            packages[key] = importlib_metadata.version(distribution)
+        except importlib_metadata.PackageNotFoundError:
+            packages[key] = None
+    return {
+        "python_version": sys.version.split()[0],
+        "packages": packages,
+    }
+
+
+def _robotsim_identity() -> tuple[str, bool]:
+    repo_root = Path(__file__).resolve().parents[2]
+    sha = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    return sha, dirty
 SOURCE_TABLE_TOP_Z = 0.8
 SOURCE_TABLE_XY = np.array([0.3, 0.0], dtype=float)
 SOURCE_TABLE_HALF_EXTENTS = np.array([0.2, 0.12], dtype=float)
@@ -1556,27 +1596,19 @@ def run_demo(args: argparse.Namespace) -> dict:
         sim.renderer.close()
 
     result = monitor.result(final_sample)
-    repo_root = Path(__file__).resolve().parents[2]
-    robotsim_sha = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    robotsim_dirty = bool(
-        subprocess.run(
-            ["git", "-C", str(repo_root), "status", "--porcelain"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    )
+    robotsim_sha, robotsim_dirty = _robotsim_identity()
     result.update(
         {
             "issue": 43,
             "demo": "M0 G1 bottle pick-and-place",
             "robotsim_sha": robotsim_sha,
             "robotsim_dirty": robotsim_dirty,
+            "run_id": os.environ.get("ROBOTSIM_M0_RUN_ID", "unspecified"),
+            "runtime": _runtime_identity(),
+            "mesh_provenance": os.environ.get(
+                "ROBOTSIM_M0_MESH_PROVENANCE", "unverified"
+            ),
+            "output_directory": str(args.output_json.parent),
             "seed": args.seed,
             "upstream_shas": {
                 "humanoid_vla": UPSTREAM_COMMIT,
@@ -1684,8 +1716,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    robotsim_sha, robotsim_dirty = _robotsim_identity()
+    run_identity = {
+        "issue": 43,
+        "demo": "M0 G1 bottle pick-and-place",
+        "run_id": os.environ.get("ROBOTSIM_M0_RUN_ID", "unspecified"),
+        "state": "RUNNING",
+        "passed": False,
+        "robotsim_sha": robotsim_sha,
+        "robotsim_dirty": robotsim_dirty,
+        "runtime": _runtime_identity(),
+        "mesh_provenance": os.environ.get(
+            "ROBOTSIM_M0_MESH_PROVENANCE", "unverified"
+        ),
+        "output_directory": str(args.output_json.parent),
+        "seed": args.seed,
+        "upstream_shas": {
+            "humanoid_vla": UPSTREAM_COMMIT,
+            "unitree_mujoco_meshes": UNITREE_COMMIT,
+        },
+    }
     args.output_json.write_text(
-        json.dumps({"issue": 43, "passed": False, "state": "RUNNING"}, indent=2) + "\n",
+        json.dumps(run_identity, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
     try:
@@ -1699,7 +1751,16 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "issue": 43,
                 "demo": "M0 G1 bottle pick-and-place",
+                "state": "FAILED",
                 "passed": False,
+                "robotsim_sha": robotsim_sha,
+                "robotsim_dirty": robotsim_dirty,
+                "run_id": run_identity["run_id"],
+                "runtime": _runtime_identity(),
+                "mesh_provenance": run_identity["mesh_provenance"],
+                "output_directory": str(args.output_json.parent),
+                "seed": args.seed,
+                "upstream_shas": run_identity["upstream_shas"],
                 "error": f"{type(exc).__name__}: {exc}",
             }
         )

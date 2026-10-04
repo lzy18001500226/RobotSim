@@ -1,6 +1,6 @@
 # Issue #43 M0 Status
 
-CURRENT STAGE: Acceptance-gap revision complete; two clean seed-42 full episodes pass at RobotSim source SHA `b51e8565e8177dc41b06d0026b56207020faee46`.
+CURRENT STAGE: Physics/acceptance revision complete; launcher/evidence-integrity hardening is implemented and pending fresh reproduction on the final head.
 
 The earlier box-dominant geometry and center-only placement run is superseded; it is not evidence for this revised acceptance. Current evidence follows.
 
@@ -45,4 +45,10 @@ FINAL DEMO COMMAND: `ROBOTSIM_M0_CANDIDATE_DIR=/tmp/robotsim43-candidates/humano
 
 KNOWN SHORTCUTS: The G1 base is fixed, object/table poses are deterministic ground truth, and the script uses a measured-contact runtime weld during grasp. The final stable pose is side-lying; upright orientation is reported but is not an acceptance requirement. The adapter runtime pins MuJoCo 3.2.6; the repository's separate G1 smoke suite was validated on MuJoCo 3.3.6.
 
-FINAL STATUS: PASS - cylindrical bottle geometry, whole-object footprint acceptance, physics-step integrity, penetration limits, weld-event pose integrity, and two clean fixed-seed full episodes are validated. PR #45 remains Draft for independent review.
+FINAL STATUS: PENDING FINAL REPRODUCTION - physics acceptance is validated; launcher provenance, stale-result prevention, Python-version enforcement, and runtime identity are hardened and must be revalidated on this final branch head before maintainer visual review.
+
+## Launcher / Evidence-Integrity Hardening
+
+The launcher writes a fresh non-PASS preflight result before checkout/install work so a failed invocation cannot leave a previous PASS artifact looking current. It enforces Python 3.10 for reused environments, accepts a mesh override only when it resolves to the verified pinned Unitree mesh directory, and passes a run ID plus mesh provenance into the runtime result. Success and Python-level failure records include RobotSim/upstream identity, Python and key package versions, seed, output directory, and runtime provenance.
+
+Prerequisites for a fresh WSL2 run are `git`, `uv`, public network access for the initial public checkout/wheel install, and an EGL/Mesa runtime for headless rendering. A GPU, visible display, ROS 2, and Unity are not required.
