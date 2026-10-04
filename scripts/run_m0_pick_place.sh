@@ -14,11 +14,35 @@ if [[ "$SEED" =~ ^[0-9]+$ ]]; then SEED_JSON="$SEED"; else SEED_JSON=null; fi
 
 json_quote() {
     local value=${1-}
-    local code octal control escaped
+    local out=""
+    local ch byte escaped i
+    local LC_ALL=C
 
-    value=${value//\\/\\\\}
-    value=${value//\"/\\\"}
-    value=${value//
+    # Encode byte-by-byte so every JSON control byte U+0001..U+001F is
+    # emitted as \\u00XX. Bash variables/POSIX paths cannot contain NUL.
+    for ((i = 0; i < ${#value}; i++)); do
+        ch=${value:i:1}
+        case "$ch" in
+            "\\")
+                out+='\\\\'
+                ;;
+            "\"")
+                out+='\\"'
+                ;;
+            *)
+                printf -v byte '%d' "'$ch"
+                if (( byte < 32 )); then
+                    printf -v escaped '\\u%04x' "$byte"
+                    out+="$escaped"
+                else
+                    out+="$ch"
+                fi
+                ;;
+        esac
+    done
+    printf '"%s"' "$out"
+}
+
 write_result() {
     local state="$1"
     local error="$2"
