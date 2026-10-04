@@ -48,3 +48,11 @@ The goal is to provide a reusable simulation and system-integration framework fo
 RobotSim is currently in early platform bring-up.
 
 The current focus is validating the development environment and the MuJoCo, Unity, and ROS 2 integration architecture before implementing higher-level robot tasks.
+
+## Issue #43 M0 Bottle Pick-and-Place
+
+On WSL2 Ubuntu 22.04 with `git` and `uv`, run `./scripts/run_m0_pick_place.sh`. The launcher verifies pinned Humanoid VLA and Unitree MuJoCo commits and creates the Python 3.10 runtime under `/tmp/robotsim-issue43-m0`. The adapter writes the generated scene outside the repository and does not modify either upstream checkout.
+
+The launcher writes `m0_result.json`, `m0_pick_place.mp4`, `m0_final.png`, and `run.log` under `/tmp/robotsim-issue43-m0/output`. Acceptance requires bilateral palm force contact, a 5 cm lift, the object center within the target-table bounds and 3 cm from the edge, contact-free release, and one second of stable target contact. Upright orientation is reported but is not required. It also checks finite/bounded state, penetration, drop, and teleport limits. The run is CPU MuJoCo physics with offscreen EGL rendering; it requires no ROS 2, Unity, network transport, or physical hardware.
+
+Set `ROBOTSIM_M0_RUN_DIR`, `ROBOTSIM_M0_OUTPUT_DIR`, `ROBOTSIM_M0_CANDIDATE_DIR`, `ROBOTSIM_M0_UNITREE_DIR`, or `ROBOTSIM_M0_MESH_DIR` to select external cache/output locations. Existing checkouts must already be at the exact pinned commit and clean; the launcher refuses to switch or overwrite a mismatched checkout.
