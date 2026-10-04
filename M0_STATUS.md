@@ -1,8 +1,8 @@
 # Issue #43 M0 Status
 
-CURRENT STAGE: Launcher provenance and reproducibility fixes are in progress. The historical episodes below predate these fixes and are not final evidence for the current launcher revision.
+CURRENT STAGE: Final launcher provenance and reproducibility validation is complete. Two clean fresh-checkout seed-42 episodes passed. PR #45 remains Draft.
 
-The earlier box-dominant geometry and center-only placement run is superseded. All measurements below are historical evidence for the prior acceptance-gap code, not validation of the launcher changes now in progress.
+The earlier box-dominant geometry and center-only placement run is superseded. The historical measurements below describe the prior acceptance-gap code and are distinct from the final launcher-revision evidence recorded later in this file.
 
 ## Historical Acceptance-Gap Revision
 
@@ -39,10 +39,21 @@ HISTORICAL RUN MEASUREMENTS: The unchanged upstream H-VLA bimanual demo lifted i
 
 WHAT FAILED: HMG recorded low-level action replay diverged from its reference trajectory (late maximum state divergence about 2.85) and did not reach task success; its separate WBC-goal replay passed and remains candidate evidence, not the selected adapter. Initial widened-table variants interfered with grasp or prevented stable support and were discarded. No vendor checkout was modified.
 
-AUTOMATIC METRICS: PASS requires bilateral palm force contact (at least 2 N per palm for 5 frames), at least 5 cm lift, all projected bottle collision geoms inside the target tabletop with 3 cm margin, contact-free release for 5 frames, target-table contact, and at least 1.0 s stable time (33 consecutive samples, 1.024 s at 31.25 Hz). Physics-step limits are 5 mm translation and 0.025 rad rotation; weld-event limits are 2 mm and 1 degree; penetration must remain at or below 25 mm. Linear/angular speed limits remain 0.03 m/s and 0.20 rad/s; control-frame translation remains bounded by 0.20 m. These acceptance checks passed in the historical pair; the current launcher revision still requires two clean full runs.
+AUTOMATIC METRICS: PASS requires bilateral palm force contact (at least 2 N per palm for 5 frames), at least 5 cm lift, all projected bottle collision geoms inside the target tabletop with 3 cm margin, contact-free release for 5 frames, target-table contact, and at least 1.0 s stable time (33 consecutive samples, 1.024 s at 31.25 Hz). Physics-step limits are 5 mm translation and 0.025 rad rotation; weld-event limits are 2 mm and 1 degree; penetration must remain at or below 25 mm. Linear/angular speed limits remain 0.03 m/s and 0.20 rad/s; control-frame translation remains bounded by 0.20 m. Both final launcher-revision runs passed every task and safety check.
+
+## Final Launcher Reproduction
+
+Both runs used the exact documented command `./scripts/run_m0_pick_place.sh` from a fresh checkout at RobotSim SHA `43036f3e79f4a4b262a06c1a254338f92f683e8e`, with `robotsim_dirty: false`, seed 42, Python 3.10.12, MuJoCo 3.2.6, NumPy 1.26.4, h5py 3.14.0, and OpenCV 4.11.0. The pinned clean upstream revisions were Humanoid VLA `3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12` and Unitree MuJoCo `1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d`; mesh provenance resolved to `unitree_robots/g1/meshes` inside that Unitree checkout.
+
+| Run ID | Result directory | Result |
+|---|---|---|
+| `m0-1791107759-22515-24644` | `/tmp/robotsim-issue43-m0/output/m0-1791107759-22515-24644/` | PASS |
+| `m0-1791107852-23318-29918` | `/tmp/robotsim-issue43-m0/output/m0-1791107852-23318-29918/` | PASS |
+
+Each directory contains `m0_result.json`, `m0_physics_trace.jsonl` (14,080 physics steps), `run.log`, `m0_pick_place.mp4`, and `m0_final.png`. Both runs measured maximum physics-step translation `0.0009112432 m` (limit `0.005 m`), angular jump `0.004568844 rad` (limit `0.025 rad`), and penetration `0.002427863 m` (limit `0.025 m`). Weld activation at `2.208 s` changed pose by `0.000033841 m` / `0.000011402 rad`; release at `24.544 s` changed pose by `0.000001293 m` / `0.000012763 rad`. All four bottle collision geoms passed the 3 cm whole-footprint margin check; target-table contact and stable placement passed.
 
 FINAL DEMO COMMAND: `./scripts/run_m0_pick_place.sh`. Set `ROBOTSIM_M0_CANDIDATE_DIR`, `ROBOTSIM_M0_UNITREE_DIR`, `ROBOTSIM_M0_RUN_DIR`, or `ROBOTSIM_M0_OUTPUT_DIR` only to select cache/output locations. `ROBOTSIM_M0_MESH_DIR` is accepted only when its resolved path is inside the pinned Unitree checkout's `unitree_robots/g1/meshes` tree. Every invocation creates its own run ID and begins with a durable `PREFLIGHT`, `passed: false` result record.
 
 KNOWN SHORTCUTS: The G1 base is fixed, object/table poses are deterministic ground truth, and the script uses a measured-contact runtime weld during grasp. The final stable pose is side-lying; upright orientation is reported but is not an acceptance requirement. The adapter runtime pins MuJoCo 3.2.6; the repository's separate G1 smoke suite was validated on MuJoCo 3.3.6.
 
-FINAL STATUS: PENDING - rerun launcher regression checks and two clean fixed-seed full episodes after provenance, stale-PASS, Python-version, and latest-main integration changes. PR #45 remains Draft.
+FINAL STATUS: PASS - launcher regression checks and two clean seed-42 full episodes passed after latest-main integration. PR #45 remains Draft; it is not marked ready for review.
