@@ -1,6 +1,7 @@
 #include "robotsim_g1_adapter/g1_joint_map.hpp"
 #include "robotsim_g1_adapter/sim_time.hpp"
 #include "robotsim_core/latest_command_buffer.hpp"
+#include "robotsim_core/rollback_inhibit.hpp"
 #include "robotsim_core/state_timeline.hpp"
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -26,6 +27,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -119,6 +121,7 @@ class G1Ros2Adapter final : public rclcpp::Node {
     }
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
+      rollback_inhibit_.observeTick(copy.tick());
       latest_low_state_ = std::move(copy);
       have_low_state_ = true;
       ++state_revision_;
@@ -126,35 +129,51 @@ class G1Ros2Adapter final : public rclcpp::Node {
   }
 
   void onCommand(const RobotCommand& message) {
-    if (!timeline_initialized_) {
-      RCLCPP_WARN(get_logger(), "rejecting command before first simulator state");
-      return;
-    }
-    try {
-      (void)robotsim_g1_adapter::toSdkOrder(message.joint_names, message.effort_nm);
-    } catch (const std::exception& error) {
-      RCLCPP_WARN(get_logger(), "rejecting command joint map: %s", error.what());
-      return;
-    }
     std::string reason;
-    if (!command_buffer_->accept(message, timeline_.generation(), SteadyClock::now(), &reason))
+    bool rollback_pending = false;
+    bool before_first_state = false;
+    bool accepted = false;
+    rollback_inhibit_.synchronize([&](bool pending) {
+      rollback_pending = pending;
+      if (pending) return;
+      if (!timeline_initialized_) {
+        before_first_state = true;
+        return;
+      }
+      try {
+        (void)robotsim_g1_adapter::toSdkOrder(message.joint_names, message.effort_nm);
+      } catch (const std::exception& error) {
+        reason = error.what();
+        return;
+      }
+      accepted = command_buffer_->accept(message, timeline_.generation(),
+                                         SteadyClock::now(), &reason);
+    });
+    if (rollback_pending) {
+      RCLCPP_WARN(get_logger(), "rejecting command while simulator rollback is pending");
+    } else if (before_first_state) {
+      RCLCPP_WARN(get_logger(), "rejecting command before first simulator state");
+    } else if (!accepted) {
       RCLCPP_WARN(get_logger(), "rejecting command: %s", reason.c_str());
+    }
   }
 
   void publishState() {
     LowState low_state;
     uint64_t revision;
+    robotsim_core::RollbackInhibit::Snapshot rollback_snapshot;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (!have_low_state_ || state_revision_ == published_state_revision_) return;
       low_state = latest_low_state_;
       revision = state_revision_;
+      rollback_snapshot = rollback_inhibit_.snapshot();
     }
     published_state_revision_ = revision;
 
     const auto stamp = robotsim_g1_adapter::tickMillisecondsToRosTime(low_state.tick());
     const int64_t sim_time_ns = static_cast<int64_t>(stamp.sec) * 1000000000LL + stamp.nanosec;
-    const auto state_stamp = timeline_.next(sim_time_ns);
+    const auto state_stamp = timeline_.next(sim_time_ns, rollback_snapshot.pending);
     const bool first_state = !timeline_initialized_;
     if (!timeline_initialized_ || state_stamp.generation_changed) {
       command_buffer_->resetGeneration(state_stamp.generation);
@@ -163,6 +182,8 @@ class G1Ros2Adapter final : public rclcpp::Node {
                     state_stamp.generation.c_str());
       timeline_initialized_ = true;
     }
+    if (rollback_snapshot.pending)
+      rollback_inhibit_.generationEstablished(rollback_snapshot.epoch);
 
     RobotState state;
     state.header.stamp = stamp;
@@ -230,31 +251,39 @@ class G1Ros2Adapter final : public rclcpp::Node {
       low_state = latest_low_state_;
     }
 
-    std::array<double, robotsim_g1_adapter::kG1JointNames.size()> efforts{};
-    const auto latest = command_buffer_->current(SteadyClock::now());
-    if (latest) {
-      try {
-        efforts = robotsim_g1_adapter::toSdkOrder(latest->joint_names, latest->effort_nm);
-      } catch (const std::exception& error) {
-        RCLCPP_ERROR(get_logger(), "invalid named G1 command: %s", error.what());
+    bool write_succeeded = false;
+    std::string mapping_error;
+    rollback_inhibit_.synchronize([&](bool pending) {
+      std::array<double, robotsim_g1_adapter::kG1JointNames.size()> efforts{};
+      std::optional<RobotCommand> latest;
+      if (!pending) latest = command_buffer_->current(SteadyClock::now());
+      if (latest) {
+        try {
+          efforts = robotsim_g1_adapter::toSdkOrder(latest->joint_names, latest->effort_nm);
+        } catch (const std::exception& error) {
+          mapping_error = error.what();
+        }
       }
-    }
 
-    LowCmd command;
-    command.mode_pr() = 0;
-    command.mode_machine() = low_state.mode_machine();
-    for (std::size_t index = 0; index < robotsim_g1_adapter::kG1JointNames.size(); ++index) {
-      auto& motor = command.motor_cmd()[index];
-      motor.mode() = 1;
-      motor.q() = 0.0f;
-      motor.dq() = 0.0f;
-      motor.kp() = 0.0f;
-      motor.kd() = 0.0f;
-      motor.tau() = static_cast<float>(efforts[index]);
-    }
-    command.crc() = crc32_core(reinterpret_cast<uint32_t*>(&command),
-                               (sizeof(LowCmd) >> 2) - 1);
-    if (!low_command_publisher_->Write(command, 0))
+      LowCmd command;
+      command.mode_pr() = 0;
+      command.mode_machine() = low_state.mode_machine();
+      for (std::size_t index = 0; index < robotsim_g1_adapter::kG1JointNames.size(); ++index) {
+        auto& motor = command.motor_cmd()[index];
+        motor.mode() = 1;
+        motor.q() = 0.0f;
+        motor.dq() = 0.0f;
+        motor.kp() = 0.0f;
+        motor.kd() = 0.0f;
+        motor.tau() = static_cast<float>(efforts[index]);
+      }
+      command.crc() = crc32_core(reinterpret_cast<uint32_t*>(&command),
+                                 (sizeof(LowCmd) >> 2) - 1);
+      write_succeeded = low_command_publisher_->Write(command, 0);
+    });
+    if (!mapping_error.empty())
+      RCLCPP_ERROR(get_logger(), "invalid named G1 command: %s", mapping_error.c_str());
+    if (!write_succeeded)
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "SDK2 LowCmd write failed");
   }
 
@@ -264,6 +293,7 @@ class G1Ros2Adapter final : public rclcpp::Node {
   uint64_t state_revision_{0};
   uint64_t published_state_revision_{0};
   robotsim_core::StateTimeline timeline_;
+  robotsim_core::RollbackInhibit rollback_inhibit_;
   bool timeline_initialized_{false};
   std::unique_ptr<robotsim_core::LatestCommandBuffer> command_buffer_;
   std::unique_ptr<unitree::robot::ChannelSubscriber<LowState>> low_state_subscriber_;

@@ -14,7 +14,7 @@ struct StateStamp {
 class StateTimeline {
  public:
   StateTimeline();
-  StateStamp next(int64_t sim_time_ns);
+  StateStamp next(int64_t sim_time_ns, bool force_new_generation = false);
   const std::string& generation() const noexcept { return generation_; }
 
  private:

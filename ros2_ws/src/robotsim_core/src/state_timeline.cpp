@@ -13,13 +13,13 @@ std::string StateTimeline::newGeneration() {
 
 StateTimeline::StateTimeline() : generation_(newGeneration()) {}
 
-StateStamp StateTimeline::next(int64_t sim_time_ns) {
+StateStamp StateTimeline::next(int64_t sim_time_ns, bool force_new_generation) {
   if (sim_time_ns < 0) throw std::invalid_argument("simulation time must be nonnegative");
   bool changed = false;
   if (!initialized_) {
     initialized_ = true;
     sequence_ = 0;
-  } else if (sim_time_ns < last_sim_time_ns_) {
+  } else if (force_new_generation || sim_time_ns < last_sim_time_ns_) {
     generation_ = newGeneration();
     sequence_ = 0;
     changed = true;
