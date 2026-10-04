@@ -146,6 +146,7 @@ esac
         self.assertFalse(result["complete"])
         self.assertTrue(result["run_id"].startswith("m0-"))
         for key in (
+            "reproduction_command",
             "robotsim_sha",
             "robotsim_dirty",
             "python_version",
@@ -161,6 +162,19 @@ esac
             "output_directory",
         ):
             self.assertIn(key, result)
+        self.assertTrue(
+            result["reproduction_command"].startswith("ROBOTSIM_M0_OUTPUT_DIR=")
+        )
+        self.assertTrue(
+            result["reproduction_command"].endswith(
+                " ./scripts/run_m0_pick_place.sh"
+            )
+        )
+        run_log = Path(result["output_directory"]) / "run.log"
+        self.assertIn(
+            f"reproduction_command={result['reproduction_command']}",
+            run_log.read_text(encoding="utf-8"),
+        )
 
     def test_launcher_is_executable(self):
         self.assertTrue(LAUNCHER.stat().st_mode & stat.S_IXUSR)
@@ -170,6 +184,11 @@ esac
         self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         result = self.current_result()
         self.assert_failure_identity(result)
+        self.assertEqual(
+            result["reproduction_command"],
+            f"ROBOTSIM_M0_OUTPUT_DIR={self.output_root} "
+            "./scripts/run_m0_pick_place.sh",
+        )
         self.assertEqual(result["upstream_shas"]["unitree_mujoco"], "wrong-unitree-revision")
 
     def test_dirty_vendor_checkout_is_durable_failure(self):

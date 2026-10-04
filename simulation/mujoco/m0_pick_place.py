@@ -22,6 +22,10 @@ import numpy as np
 
 
 MUJOCO_VERSION = "3.2.6"
+DEFAULT_REPRODUCTION_COMMAND = (
+    "ROBOTSIM_M0_OUTPUT_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/"
+    "issue-43-g1-single-hand ./scripts/run_m0_pick_place.sh"
+)
 UPSTREAM_COMMIT = "3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 UNITREE_COMMIT = "1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
 DEX3_COMMIT = "5994d4faef0a9cadd3287f8de0199a67eeb2a259"
@@ -704,6 +708,7 @@ class AcceptanceMonitor:
     target_xy: np.ndarray
     target_half_extents: np.ndarray
     dt: float
+    reproduction_command: str = DEFAULT_REPRODUCTION_COMMAND
     lift_height: float = 0.05
     target_margin: float = TARGET_MARGIN_M
     minimum_thumb_force_n: float = 0.2
@@ -723,6 +728,8 @@ class AcceptanceMonitor:
     runtime_equality_count: int = 0
 
     def __post_init__(self) -> None:
+        if not self.reproduction_command.strip():
+            raise ValueError("reproduction command must not be empty")
         self.initial_position = np.asarray(self.initial_position, dtype=float).copy()
         self.target_xy = np.asarray(self.target_xy, dtype=float).copy()
         self.target_half_extents = np.asarray(self.target_half_extents, dtype=float).copy()
@@ -1050,6 +1057,7 @@ class AcceptanceMonitor:
         final = final_sample or {}
         final_position = final.get("position")
         return {
+            "reproduction_command": self.reproduction_command,
             "passed": bool(all(task_stages.values()) and all(safety.values())),
             "stage_order": [
                 {"name": name, **(self.stages[name] or {})}
@@ -1599,6 +1607,7 @@ def run_demo(args: argparse.Namespace) -> dict:
         target_xy=geometry["target_center"],
         target_half_extents=geometry["target_half_extents"],
         dt=frame_dt,
+        reproduction_command=args.reproduction_command,
         target_margin=TARGET_MARGIN_M,
         runtime_equality_count=geometry["runtime_equality_count"],
     )
@@ -2086,6 +2095,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--screenshot", type=Path, required=True)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--reproduction-command", default=DEFAULT_REPRODUCTION_COMMAND
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--approach-frames", type=int, default=60)
     parser.add_argument("--close-frames", type=int, default=60)
@@ -2099,6 +2111,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--retreat-frames", type=int, default=35)
     parser.add_argument("--settle-frames", type=int, default=200)
     args = parser.parse_args(argv)
+    if not args.reproduction_command.strip():
+        parser.error("reproduction command must not be empty")
     if abs(args.hand_roll_deg) > 90.0:
         parser.error("hand roll must be between -90 and 90 degrees")
     if min(
@@ -2125,6 +2139,7 @@ def main(argv: list[str] | None = None) -> int:
     initial_result = {
         "issue": 43,
         "demo": "M0 G1 bottle pick-and-place",
+        "reproduction_command": args.reproduction_command,
         **identity,
         "passed": False,
         "complete": False,

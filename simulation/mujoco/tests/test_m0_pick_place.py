@@ -8,6 +8,7 @@ import numpy as np
 from simulation.mujoco.m0_pick_place import (
     CARRY_CONTACT_MAX_GAP_PHYSICS_STEPS,
     DEX3_COMMIT,
+    DEFAULT_REPRODUCTION_COMMAND,
     GRASP_PRELOAD_RAD,
     OBJECT_COLLISION_GEOMS,
     OBJECT_GEOM_SPECS,
@@ -310,6 +311,7 @@ class AcceptanceMonitorTests(unittest.TestCase):
         }
         result = self.monitor.result(final_sample)
         self.assertTrue(result["passed"], result)
+        self.assertEqual(result["reproduction_command"], DEFAULT_REPRODUCTION_COMMAND)
         self.assertEqual(
             [stage["name"] for stage in result["stage_order"]],
             ["GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE", "SETTLE"],

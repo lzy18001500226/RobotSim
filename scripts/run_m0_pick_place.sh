@@ -7,6 +7,8 @@ CANDIDATE_DIR="${ROBOTSIM_M0_CANDIDATE_DIR:-$RUN_ROOT/checkouts/humanoid_vla}"
 UNITREE_DIR="${ROBOTSIM_M0_UNITREE_DIR:-$RUN_ROOT/checkouts/unitree_mujoco}"
 DEX3_DIR="${ROBOTSIM_M0_DEX3_DIR:-$RUN_ROOT/checkouts/unitree_ros_dex3}"
 OUTPUT_ROOT="${ROBOTSIM_M0_OUTPUT_DIR:-/tmp/robotsim-issue43-m0/output}"
+printf -v REPRODUCTION_OUTPUT_ROOT '%q' "$OUTPUT_ROOT"
+REPRODUCTION_COMMAND="ROBOTSIM_M0_OUTPUT_DIR=$REPRODUCTION_OUTPUT_ROOT ./scripts/run_m0_pick_place.sh"
 UPSTREAM_COMMIT="3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 UNITREE_COMMIT="1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
 DEX3_COMMIT="5994d4faef0a9cadd3287f8de0199a67eeb2a259"
@@ -38,10 +40,10 @@ json_quote() {
         ch=${value:i:1}
         case "$ch" in
             "\\")
-                out+='\\\\'
+                out+='\\'
                 ;;
             "\"")
-                out+='\\"'
+                out+='\"'
                 ;;
             *)
                 printf -v byte '%d' "'$ch"
@@ -65,6 +67,7 @@ write_result() {
         printf '  "issue": 43,\n'
         printf '  "demo": "M0 G1 bottle pick-and-place",\n'
         printf '  "run_id": %s,\n' "$(json_quote "$RUN_ID")"
+        printf '  "reproduction_command": %s,\n' "$(json_quote "$REPRODUCTION_COMMAND")"
         printf '  "state": %s,\n' "$(json_quote "$state")"
         printf '  "stage": %s,\n' "$(json_quote "$CURRENT_STAGE")"
         printf '  "passed": false,\n'
@@ -124,10 +127,19 @@ bootstrap_failure() {
         return 1
     fi
     RESULT_PATH="$OUTPUT_DIR/m0_result.json"
+    write_run_identity_log
     write_result "PREFLIGHT" ""
     CURRENT_STAGE="OUTPUT_DIRECTORY"
     write_result "FAILED" "$message"
     printf '%s; failure result: %s\n' "$message" "$RESULT_PATH" >&2
+}
+
+write_run_identity_log() {
+    LOG_PATH="$OUTPUT_DIR/run.log"
+    {
+        printf 'run_id=%s\n' "$RUN_ID"
+        printf 'reproduction_command=%s\n' "$REPRODUCTION_COMMAND"
+    } > "$LOG_PATH"
 }
 
 if ! mkdir -p "$OUTPUT_ROOT" 2>/dev/null; then
@@ -143,6 +155,7 @@ if ! mkdir "$OUTPUT_DIR" 2>/dev/null; then
     exit 2
 fi
 RESULT_PATH="$OUTPUT_DIR/m0_result.json"
+write_run_identity_log
 write_result "PREFLIGHT" ""
 
 on_exit() {
@@ -364,7 +377,6 @@ read -r MUJOCO_VERSION NUMPY_VERSION H5PY_VERSION OPENCV_VERSION < <(
 )
 write_result "PREFLIGHT" ""
 
-LOG_PATH="$OUTPUT_DIR/run.log"
 VIDEO_PATH="$OUTPUT_DIR/m0_pick_place.mp4"
 SCREENSHOT_PATH="$OUTPUT_DIR/m0_final.png"
 CURRENT_STAGE="RUNTIME"
@@ -381,6 +393,7 @@ MUJOCO_GL=egl PYTHONPATH="$CANDIDATE_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" \
         --video "$VIDEO_PATH" \
         --screenshot "$SCREENSHOT_PATH" \
         --run-id "$RUN_ID" \
+        --reproduction-command "$REPRODUCTION_COMMAND" \
         --seed "$SEED" \
         --hand-roll-deg "$HAND_ROLL_DEG" \
         --grasp-hold-frames "$GRASP_HOLD_FRAMES" \
@@ -388,7 +401,7 @@ MUJOCO_GL=egl PYTHONPATH="$CANDIDATE_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" \
         --lift-frames "$LIFT_FRAMES" \
         --transfer-frames "$TRANSFER_FRAMES" \
         --lower-frames "$LOWER_FRAMES" \
-    2>&1 | tee "$LOG_PATH"
+    2>&1 | tee -a "$LOG_PATH"
 pipeline_status=("${PIPESTATUS[@]}")
 status=${pipeline_status[0]}
 if (( status == 0 && pipeline_status[1] != 0 )); then
