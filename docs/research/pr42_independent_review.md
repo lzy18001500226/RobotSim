@@ -90,3 +90,59 @@ The global event-ID guarantee is still broken across target objects. Event ident
 - Focused run: python3 -m unittest discover -s tests -p 'test_notify_task.py' — 45 tests passed.
 - A direct validator probe confirmed the multiline inline-code bypass. A mocked concurrent persistence probe confirmed separate Issue #44 and PR #42 records both persist for one event ID.
 - No production code was changed; no merge was performed.
+
+---
+
+# FINAL independent re-review at PR head 6097f93aa2982b086ca2db7f1beeced801bddcbe
+
+Reviewed the exact current PR #42 head. The review checkout was read-only; no code was changed.
+
+## B1 — CommonMark inline code spans: RESOLVED
+
+`_pr_closes_task_issue()` now groups paragraph lines and strips matched backtick spans across embedded newlines before scanning visible references. The focused parser test covers:
+
+- Accepts `Closes #44` and canonical `Resolves lzy18001500226/RobotSim#44`.
+- Rejects `Closes someoneelse/OtherRepo#44`.
+- Rejects fenced and four-space-indented code.
+- Rejects single-line and multiline inline-code spans containing `Closes #44`.
+- Rejects the unrelated Issue reference `Closes #45`.
+
+`test_pr_wrong_repository_or_fenced_example_cannot_persist_closeout` also confirms those invalid cases do not create a GitHub or AgentMail record.
+
+## B2 — repository-wide event arbitration: RESOLVED
+
+The persistence path now lists comments from the repository-wide `/issues/comments` endpoint, across Issues and PRs. It validates the authenticated author, marker, embedded normalized payload, and digest; sorts matching records by numeric GitHub comment ID; retains the lowest ID; deletes other valid records through the repository-wide comment endpoint; and rereads before returning success.
+
+The separate-state-directory tests establish the key cases:
+
+- Same payload racing from isolated state directories creates two comments at the mocked POST boundary, then converges to exactly one durable comment.
+- Issue #44 versus PR #42 writers with the same event ID but conflicting payloads post to both destinations, converge to one record (comment ID 101), and the losing payload reports a conflict.
+- The conflict race asserts the surviving payload belongs to the non-failing writer and only one record remains.
+
+The schema's `pr_number` field both participates in the payload and selects the target, so two identical valid input payloads select the same target. A same-payload Issue-versus-PR pair is not constructible through the current public input. The repository-wide scan still recognizes and consolidates an identical event already present on another target. Local locks are explicitly documented as state-directory-local; repository-wide GitHub reconciliation provides cross-host arbitration. No Local/Cloud shared filesystem is assumed.
+
+A genuine attempt remains distinct: event ID derivation includes `attempt_id`, and `test_closeout_schema_and_attempt_identity` asserts a changed attempt ID produces a changed event ID. Same-attempt retries deduplicate; changed payload under that ID fails.
+
+## Failure and security semantics: PASS
+
+- Explicit Cloud `task-closeout` exits nonzero and sends no mail when GitHub persistence fails (`test_github_persistence_failure_never_sends_agentmail`). Local Stop remains non-blocking and returns zero on that failure.
+- AgentMail failure after successful GitHub persistence leaves the canonical comment available; the command remains successful, and a retry does not repost the GitHub comment.
+- Stop handling extracts only the marked structured closeout envelope. Tests confirm transcript-tail text is not forwarded; source reads only transcript file size for the legacy fallback event identity, not transcript contents.
+- Credential, URL-userinfo, Unix/Windows/UNC path filtering and evidence validation remain covered. Redirects are refused so AgentMail bearer credentials are not forwarded.
+
+## Validation and test coverage
+
+Re-ran on the exact head:
+
+- `python3 -m unittest discover -s tests -p 'test_notify_task.py'` — **46 passed**.
+- `python3 -m unittest discover -s tests` — **55 passed**.
+- `node --test tests/auto_task_pr.test.js` — **18 passed**.
+- `git diff --check` for the PR commit — passed.
+
+The new B1 parser edge cases and B2 repository-wide race cases are present in tests and pass. No blocking issue remains.
+
+## FINAL REVIEW STATUS
+
+**READY FOR ROUTINE MERGE**
+
+GitHub CLI review posting was unavailable because the configured `GH_TOKEN` is invalid. This final review is persisted on the requested report-only branch instead. PR #42 was not modified or merged.
