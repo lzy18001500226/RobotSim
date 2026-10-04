@@ -1,6 +1,6 @@
 # Issue #43 M0 Status
 
-CURRENT STAGE: Phase 2 - reproduce the selected upstream Drill PnP task unchanged.
+CURRENT STAGE: Phase 3 - build the RobotSim bottle/cylinder scene using the reproduced upstream G1/WBC runtime.
 
 CHOSEN BASELINE: NVLabs HumanoidMimicGen.
 
@@ -20,13 +20,13 @@ WHY SELECTED: It is the strongest license-clear MuJoCo candidate found that alre
 
 Other investigated candidates included Robotics-Ark/ark_unitree_g1 `95775cad397e90ca95198b02c0cbeab4d7418bc3` (MIT; G1/Dex3 MuJoCo model and IK hand-motion sequence, but no object scene or task acceptance) and wiscohumanoids/manipulation_sim (generic arm, not G1; no license found).
 
-REPRO COMMAND: Pending local reproduction. Intended command after setup: `python scripts/playback_dataset.py <public-replay-root>/datasets/06_drill_pnp --action-source recorded --num-episodes 1 --require-task-success`.
+REPRO COMMAND: `MUJOCO_GL=egl /tmp/robotsim43-hmg-venv/bin/python scripts/playback_dataset.py /tmp/robotsim43-hmg-drill-demo.hdf5 --action-source wbc-goal --allow-state-divergence --require-task-success --sim-frequency 200 --video-path /tmp/robotsim43-hmg-drill-wbc.mp4` from `/tmp/robotsim43-candidates/humanoidmimicgen`. Runtime: Python 3.10.12, MuJoCo 3.2.6, RoboSuite 1.5.1, NumPy 1.26.4, Torch 2.6.0+cpu, ONNX Runtime 1.22.1, Pinocchio 2.7.0. WBC policy weights are from GR00T-WholeBodyControl commit `4141c34280abb67c82e115342a8720f4a83d750d` and passed upstream SHA-256 checks. Source-demo dataset commit `8553b2736497f41562bdf2476348b815fef68950`; `datasets/06_drill_pnp/demo.hdf5` SHA-256 `bafcb756465c7b7e27a4a091b082fcbd66a355f44a9fbec0987d8ce074e66885`.
 
-WHAT WORKS: Candidate selection is recorded. Upstream code and its published replay dataset expose a direct reproduction path. No baseline run has been claimed yet.
+WHAT WORKS: Unchanged upstream `LMDrillPnP90_G1_Env` loads the G1 and DrillPnP scene; upstream WBC-goal playback completes 786 actions, reaches the task predicate for 76 steps (first at step 680), finishes with `final_success=true`, and exits 0 in 143.93 seconds. EGL video: `/tmp/robotsim43-hmg-drill-wbc.mp4`; full log: `/tmp/robotsim43-hmg-drill-wbc.log`.
 
-WHAT FAILED: The WSL Python 3.10.12 environment has no MuJoCo installed; use an isolated temporary environment for the pinned upstream baseline. This is not yet a reproduction failure.
+WHAT FAILED: Applying the human-demo's recorded low-level actions did not reproduce the reference physics trajectory (late maximum state divergence was about 2.85) and never reached task success (0/1, final false); this path exited 1 after 141.89 seconds. The upstream README identifies `wbc-goal` as the human-demo behavior path and permits its state divergence. No upstream source was modified.
 
-AUTOMATIC METRICS: Final M0 stage, physics, placement, release, settling, finite-state, penetration, and teleport checks are not implemented yet.
+AUTOMATIC METRICS: RobotSim M0 stage, contact/grasp, lift, transfer, release, settling, finite-state, penetration, and teleport checks are not implemented yet.
 
 FINAL DEMO COMMAND: Pending Phase 3-6.
 
