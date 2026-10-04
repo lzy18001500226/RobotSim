@@ -15,16 +15,11 @@
 
 Project plans and workflows provide context or procedures; they are not task queues or authorization to expand the current request.
 
+For implementation placement and RobotSim runtime/validation rules, follow [`docs/engineering/README.md`](docs/engineering/README.md). For multi-step work that needs persistent continuation, follow [`docs/workflows/goal_driven_development.md`](docs/workflows/goal_driven_development.md); Goals are thread-scoped and do not authorize actions beyond the user's request.
+
 ## Architecture boundaries
 
-- MuJoCo is the source of truth for robot physics and simulation ground truth.
-- Unity provides high-fidelity scenes, rendering, external sensor simulation, and visualization. It must not become a second robot-physics authority.
-- ROS 2 is the system integration layer for sensor and robot interfaces and higher-level capabilities; sensor simulators must expose ROS 2 compatible interfaces.
-- Unitree G1 is the first robot backend; AgiBot X2 is the second. Keep vendor-specific SDK logic inside `robots/unitree_g1/` or `robots/agibot_x2/` adapters. Do not edit upstream vendor robot files in place.
-- Keep simulation ground truth separate from estimated state. Algorithms must be runnable with a simulated backend before real deployment, and robot backends must preserve common interfaces.
-- Treat Dockerfiles and Compose files as the environment source of truth, rosdep/apt as the ROS dependency source, and pinned commits in `third_party/LOCK.md` as the third-party version source.
-
-Read the relevant record in `docs/adr/` before changing an established architecture boundary. Do not change these boundaries as incidental task cleanup.
+The [engineering contracts](docs/engineering/README.md) and relevant records in [`docs/adr/`](docs/adr/) own architecture, runtime, and evidence details. Read affected records before changing an established boundary; do not treat a proposed ADR as accepted.
 
 ## Workspace and change boundaries
 
@@ -47,11 +42,9 @@ Read the relevant record in `docs/adr/` before changing an established architect
 
 ## Git and PR closeout
 
-For repository changes:
-
-1. Review the scoped diff and run relevant checks, including `git diff --check`.
-2. Stage only task-owned paths and create a focused commit.
-3. Push the task branch and open a pull request against `main` with the goal, changes, validation, and known limitations.
-4. Leave the pull request for human review and merge; do not merge it yourself.
-
-Verify the pushed branch and pull request. Do not report closeout as complete if a commit, push, or PR creation failed.
+- At task closeout, follow the [Codex closeout workflow](docs/setup/codex.md#closeout). Local Codex's trusted project `Stop` hook invokes `scripts/agent/notify_task.py` once per turn; Codex Cloud must invoke it explicitly once before its final answer because project hooks are not assumed to run there. Use the actual terminal outcome. Missing notification configuration or delivery failure is best-effort and does not change the task result.
+- Routine, low-risk tasks have standing authorization to self-review, commit, open a PR, wait for required checks and any configured independent review, and merge once those gates pass. Do not ask for an additional per-merge confirmation.
+- Stop at a reviewable PR for architecture decisions, destructive or high-risk work, dependency/security changes, unresolved GUI/hardware validation, and explicitly review-gated tasks.
+- Never bypass branch protection or force merge. Explicit current-user instructions take precedence.
+- For repository changes, review the scoped diff, run relevant checks including `git diff --check`, and stage only task-owned paths.
+- Verify the pushed branch and PR. Do not report closeout as complete if commit, push, or PR creation failed.

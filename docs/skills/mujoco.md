@@ -1,4 +1,4 @@
-# Skill: MuJoCo
+# Technical note: MuJoCo
 
 Focus areas for this project:
 - MJCF composition and `<include>`

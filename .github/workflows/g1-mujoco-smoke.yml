@@ -1,0 +1,31 @@
+name: G1 MuJoCo smoke
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+      - "issue/**"
+      - "codex/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  g1-mujoco-smoke:
+    name: Headless G1 model and stepping test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run clean headless smoke test
+        run: ./scripts/run_g1_mujoco_smoke.sh

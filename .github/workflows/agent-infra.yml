@@ -1,0 +1,73 @@
+name: Agent infrastructure
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - "issue/**"
+      - "codex/**"
+
+permissions:
+  contents: read
+
+jobs:
+  agent-infra:
+    name: Agent infrastructure checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Python unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Run mocked task PR workflow tests
+        run: node --test tests/auto_task_pr.test.js
+
+      - name: Compile agent scripts and tests
+        run: >-
+          python3 -m py_compile
+          scripts/agent/notify_task.py
+          scripts/agent/pre_tool_guard.py
+          tests/test_notify_task.py
+          tests/test_pre_tool_guard.py
+
+      - name: Parse Codex hook configuration
+        run: python3 -m json.tool .codex/hooks.json > /dev/null
+
+      - name: Check diff and local documentation links
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            DIFF_BASE_SHA="$PR_BASE_SHA"
+            DIFF_HEAD_SHA="$PR_HEAD_SHA"
+          else
+            DIFF_BASE_SHA="$(git merge-base origin/main HEAD)"
+            DIFF_HEAD_SHA="HEAD"
+          fi
+          git diff --check "$DIFF_BASE_SHA" "$DIFF_HEAD_SHA"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          documents = (Path("AGENTS.md"), Path("docs/setup/codex.md"), Path("docs/README.md"))
+          missing = []
+          for document in documents:
+              text = document.read_text(encoding="utf-8")
+              for target in re.findall(r"\[[^]]+\]\(([^)]+)\)", text):
+                  if target.startswith(("https://", "http://", "mailto:", "#")):
+                      continue
+                  path = target.split("#", 1)[0]
+                  if path and not (document.parent / path).resolve().exists():
+                      missing.append(f"{document}: {target}")
+          if missing:
+              raise SystemExit("Missing local Markdown targets: " + ", ".join(missing))
+          print("Local Markdown links passed")
+          PY

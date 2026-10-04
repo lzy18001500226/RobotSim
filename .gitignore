@@ -20,6 +20,11 @@ data/*
 third_party/**/build/
 third_party/**/install/
 
+# Fetched upstream sources and vendor assets are not RobotSim source files.
+third_party/unitree_sdk2/
+third_party/unitree_mujoco/
+third_party/unitree_ros2/
+
 # OS
 .DS_Store
 Thumbs.db
