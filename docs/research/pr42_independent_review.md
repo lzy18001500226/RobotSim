@@ -62,3 +62,31 @@ Gaps: no wrong-repository or fenced-code closing-reference case; no concurrent s
 - This was a source/test/documentation review; tests were not rerun.
 - PR #42 was not modified and was not merged.
 - GitHub API commenting was unavailable in this environment (`gh auth status` reports the injected token invalid; the public PR page reports `canComment: false`). This report is being published on the requested report-only branch.
+
+
+---
+
+# Follow-up re-review at PR head 062afa3adb946dfa55ee23e63733986d3eadb61a
+
+Previous blockers are **partially resolved**, but this head is still **REQUEST CHANGES**.
+
+## B1 follow-up — closing reference parser
+
+The earlier wrong-repository and fenced-code bypasses are fixed: RobotSim-local Closes #44 and qualified Resolves lzy18001500226/RobotSim#44 are accepted; another repository, an unrelated Issue, a fenced block, and a single-line inline code span are rejected.
+
+One blocker remains. CommonMark permits inline code spans to cross a newline. The current parser strips code spans separately per line, so a span opened on one line and closed after Closes #44 on the next line is accepted as a source-Issue closing reference. Add multiline code-span handling and a regression test.
+
+## B2 follow-up — race reconciliation
+
+The implementation now reconciles conflicting records within one GitHub target. Separate state-directory race tests cover identical payloads and different summaries; they leave one comment, and the losing same-target writer reports conflict. The lowest comment ID is selected deterministically.
+
+The global event-ID guarantee is still broken across target objects. Event identity excludes pr_number, but Issue versus PR determines where records are read and written. A concurrent run using the same event ID, one payload with pr_number null (Issue #44), and another with pr_number 42 (PR #42) returned persisted for both and left one canonical comment on each object. Reconciliation must use one identity-wide arbitration location or compare across all allowed destinations. Add a separate-state-directory Issue-vs-PR race test that leaves one record and makes the loser report conflict.
+
+## Other requested checks
+
+- Cloud task-closeout returns exit code 1 and does not attempt AgentMail when GitHub persistence fails. AgentMail failure after GitHub success remains best-effort with a successful command status.
+- Local Stop returns success, keeps stdout empty, and writes sanitized failure detail to stderr when persistence fails.
+- Documentation accurately limits native Windows to a process-local thread lock and describes Linux/WSL flock as process-shared only through a common state-directory lock file. No Local/Cloud shared filesystem is assumed.
+- Focused run: python3 -m unittest discover -s tests -p 'test_notify_task.py' — 45 tests passed.
+- A direct validator probe confirmed the multiline inline-code bypass. A mocked concurrent persistence probe confirmed separate Issue #44 and PR #42 records both persist for one event ID.
+- No production code was changed; no merge was performed.
