@@ -25,6 +25,14 @@ The executed phase sequence was `CLEAR_UP → APPROACH → DESCEND → GRASP →
 
 **Decision:** keep HumanoidMimicGen DrillPnP as the already reproduced benchmark and keep this candidate as a fallback/reference. The candidate is a useful short reference for a seated G1, simple DLS arm motion, articulated fingertip contact, and release of a free cylinder. It is not a better evidence baseline until it gains an explicit seed/input record and stronger contact/upright/static/release metrics. Its model/hand variant and renderer path also need adaptation before RobotSim M0 use.
 
+## HMG DrillPnP bottle-geometry experiment attempt (2026-10-04)
+
+**Status: blocked before rollout; no bottle result is claimed.** I verified the isolated checkout is exactly `NVlabs/humanoidmimicgen@d82844dcec242c82d6b82628ccc45933c3ad5cbd` and clean. The source-demo HDF5 for `06_drill_pnp/demo.hdf5` is not present in `/workspace`, the HMG checkout, the Issue #43 scout checkout, or the local Hugging Face cache. The Cloud egress policy is restricted and does not allow `huggingface.co`; a non-following HEAD request to the public dataset failed with the proxy's `403 Forbidden`. No HMG or RobotSim source, datasets, assets, or Local02 checkout were changed.
+
+The pinned source confirms `load_hdf5_dataset()` requires `demo.attrs["model_file"]`, and WBC-goal playback passes that XML to `reset_to()` before stepping. `SyncEnv.reset_to()` replaces the current MuJoCo model from the embedded XML, so changing `LMDrillPnP90` alone would leave the replay using the drill geometry. `LMDrillPnP90` preserves its two tables and uses a dynamic `powerdrill_b01` object at scale 1.0; its upstream task predicate checks static state, uprightness above 0.95, gripper separation above 0.1 m, and contact with the target table. These are source facts only; no cylinder geometry, material, pose, contacts, phase outcomes, or final state were measured in this attempt.
+
+**Disposition:** HMG bottle reuse remains undetermined; the requested trajectory test could not run without that exact source-demo HDF5. Do not switch Local02's implementation based on this blocked attempt. Keep the already reproduced HMG DrillPnP run as its baseline and LWM's physically reproduced cylinder controller as the available cylinder reference until the derived-HDF5 experiment is executed. To resume, provide the public `datasets/06_drill_pnp/demo.hdf5` file or enable Hugging Face egress, then create a derived copy with only the embedded dynamic object's geometry/material/pose changed and run the original WBC-goal playback.
+
 ## Ranked top 5
 
 Only the first three contain a complete scripted physical pick-and-place task. Candidates 4–5 are useful supporting references, not substitutes for that task.
