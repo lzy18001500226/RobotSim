@@ -76,6 +76,10 @@ class SceneTests(unittest.TestCase):
     def test_builds_normal_bottle_and_removes_all_equalities(self):
         root = ET.fromstring(make_bottle_scene_xml(SCENE_XML, "/tmp/g1.xml"))
         worldbody = root.find("worldbody")
+        visual_global = root.find("visual/global")
+        self.assertIsNotNone(visual_global)
+        self.assertEqual(visual_global.attrib["offwidth"], "960")
+        self.assertEqual(visual_global.attrib["offheight"], "720")
         bottle = worldbody.find("body[@name='green_box']")
         self.assertEqual(root.find("include").attrib["file"], "/tmp/g1.xml")
         self.assertIsNotNone(bottle.find("freejoint[@name='box_joint']"))

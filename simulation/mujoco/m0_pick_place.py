@@ -550,6 +550,16 @@ def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
     if equality is not None:
         root.remove(equality)
 
+    visual = root.find("visual")
+    if visual is None:
+        visual = ET.Element("visual")
+        root.insert(list(root).index(worldbody), visual)
+    global_visual = visual.find("global")
+    if global_visual is None:
+        global_visual = ET.SubElement(visual, "global")
+    global_visual.set("offwidth", str(VIDEO_WIDTH))
+    global_visual.set("offheight", str(VIDEO_HEIGHT))
+
     camera = worldbody.find("camera[@name='scene_camera']")
     if camera is not None:
         camera.set("pos", "0.4 -1.1 1.7")
