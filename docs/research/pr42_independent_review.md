@@ -1,0 +1,64 @@
+# Independent security and correctness review: RobotSim PR #42
+
+- PR: [#42 — Unify durable Codex task closeout](https://github.com/lzy18001500226/RobotSim/pull/42)
+- Expected and reviewed head: `cb463dc0d1dcf712fc60bb5e5c6df58bfe3fcfbb`
+- Main observed during review: `11aebeb60a1d3c1c2f580c8f4d6bd6907581fd33`
+- Review type: read-only source, tests, documentation, and public CI-status review
+- Result: **REQUEST CHANGES**
+
+## BLOCKING
+
+### B1 — PR closeout can pass with a closing reference to another repository
+
+When `pr_number` is supplied, the adapter checks the PR is in the canonical RobotSim repository and checks that its body contains a closing reference for the Issue number from `task_id`. However, `_pr_closes_task_issue()` accepts any optional `owner/repository#N` prefix and never requires that prefix to be `lzy18001500226/RobotSim`. A body containing `Closes someoneelse/OtherRepo#44` therefore passes for task `issue-44-...`, even though GitHub will close an Issue in another repository and leave RobotSim Issue #44 open. The closeout is then written only to the PR, breaking the promised Issue-to-PR recovery path.
+
+The same raw-body regex can also match a closing phrase inside a fenced code example, which GitHub does not treat as an issue-closing instruction. See [`_pr_closes_task_issue()` at the reviewed head](https://github.com/lzy18001500226/RobotSim/blob/cb463dc0d1dcf712fc60bb5e5c6df58bfe3fcfbb/scripts/agent/notify_task.py#L648-L659). Validate any explicit repository prefix against the canonical repository and ignore Markdown code blocks; add tests for wrong-repository and fenced-code references.
+
+### B2 — Concurrent same-attempt payload conflicts remain as two durable comments
+
+The local lock is keyed by the state directory and event ID, so Local and Cloud writers with separate state directories do not share it. If both writers start with no comment and submit the same event ID with different payloads, each can POST before either rereads GitHub. On reread, `_trusted_closeout_comments()` returns `conflict`; both calls then return failure without removing either comment. The event ID now has multiple conflicting canonical records despite the documented same-ID/payload-conflict rule.
+
+Relevant sequence: [local lock and duplicate cleanup](https://github.com/lzy18001500226/RobotSim/blob/cb463dc0d1dcf712fc60bb5e5c6df58bfe3fcfbb/scripts/agent/notify_task.py#L585-L634), followed by [precheck, POST, and post-write conflict return](https://github.com/lzy18001500226/RobotSim/blob/cb463dc0d1dcf712fc60bb5e5c6df58bfe3fcfbb/scripts/agent/notify_task.py#L706-L737). Reconcile a same-ID conflict after POST so only one deterministic record remains (or use a shared atomic persistence mechanism), while still reporting the losing payload as a conflict. Add a concurrent test with different payloads and separate state directories.
+
+## NON-BLOCKING
+
+- **Exit status on GitHub failure:** `process_task_closeout()` returns `failed` and writes an explicit failure diagnostic to stderr without sending AgentMail when GitHub persistence fails. The CLI nevertheless returns exit code 0 unconditionally ([`main()`](https://github.com/lzy18001500226/RobotSim/blob/cb463dc0d1dcf712fc60bb5e5c6df58bfe3fcfbb/scripts/agent/notify_task.py#L1154-L1193)); the existing test asserts this. It does not print a durable-success message, but Cloud/shell automation cannot rely on the exit code to distinguish canonical persistence failure. Consider a nonzero exit for explicit `task-closeout` on GitHub failure while retaining the Stop hook's non-blocking exit behavior.
+- **Windows lock scope:** On WSL/Linux, `fcntl.flock(LOCK_EX)` on the per-event file protects other processes that use the same resolved state directory and local filesystem. On native Windows, `fcntl` is unavailable and the implementation has only the in-process `threading.Lock` (the code comment acknowledges this). The setup guide's “same machine” wording does not state that native Windows cross-process writers are not locked. Clarify this distinction. Cross-directory Local/Cloud writers rely on GitHub reread/cleanup rather than the local lock.
+- **Worker identity behavior:** worker is part of `event_id`; the same task and `attempt_id` under a different worker is intentionally a distinct event. This is documented and tested. Callers must preserve the same worker on a retry if they expect same-attempt deduplication.
+
+## ATTEMPT ID
+
+The strict `robotsim.task-closeout.v1` schema requires a UUID-like attempt ID (or the explicit legacy form). The event key is deterministically derived from schema, repository, task ID, attempt ID, and worker. Status and payload are excluded from that key, allowing same-key payload comparison. A genuine rerun with a new attempt ID is distinct. The legacy research envelope maps to a stable compatibility attempt derived from its normalized timestamp.
+
+## DEDUP
+
+Sequential same-worker retries with identical normalized payload deduplicate; changed payload under that event ID is rejected. A `blocked` then `completed` rerun with a new attempt ID produces distinct events. Different workers with the same attempt ID produce distinct event IDs by design. GitHub comments are deduplicated using authenticated author, event marker, and payload digest; pagination is bounded at 1,000 pages. Same-payload concurrent writes are reread and duplicates are consolidated. The conflicting-payload concurrent race is the blocker B2.
+
+## LOCAL STOP
+
+The hook checks `hook_event_name`, ignores recursive Stop payloads with `stop_hook_active`, and requires the local opt-in. Exactly one marked unified or legacy envelope is extracted from `last_assistant_message`; malformed or multiple envelopes fail closed and suppress the generic notification. A valid envelope uses the structured closeout path instead of the generic message. The persisted/mail payload is the normalized event only; the surrounding final answer or transcript is not forwarded. Stop outcomes keep stdout empty and return success so notification failure does not hold the turn open.
+
+## CLOUD PATH
+
+Cloud explicitly invokes `task-closeout` with JSON on stdin and uses the same normalization, GitHub persistence, and AgentMail path without requiring the Local Stop opt-in. GitHub persistence failure prevents AgentMail and emits a failure diagnostic; GitHub success followed by AgentMail failure leaves the GitHub record intact for retry. The exit-status caveat is listed above.
+
+## SECURITY
+
+GitHub and AgentMail credentials come from environment variables, requests use fixed HTTPS API hosts, redirects are disabled, and API errors are reduced to status/type messages rather than response bodies. The persisted comment is accepted for dedup only when its author matches the authenticated `/user` account and its marker digest matches the embedded JSON. The schema rejects unknown fields, so transcript fields cannot be forwarded. Text fields redact recognized secret patterns and local paths; evidence rejects non-HTTPS, local/private IP, localhost/local-only hostnames, URL userinfo, and credential-like query/fragment parameters. These controls are well scoped but pattern-based; do not treat them as a general secret scanner.
+
+The important gaps are B1's source-Issue validation and B2's conflicting concurrent writes. Native Windows cross-process locking is not provided; code comments are accurate, but setup documentation should say so explicitly.
+
+## TEST COVERAGE
+
+The added tests cover schema and attempt identity, worker distinction, blocked-to-completed reruns, sequential same-attempt conflict, PR-versus-Issue posting, PR branch/head and source-Issue checks, authenticated-comment trust, page-two pagination, same-payload concurrent cleanup across state directories, Local Stop recursion/extraction/transcript suppression, Cloud use of the shared path, GitHub failure with no mail, ambiguous GitHub response retry, AgentMail failure after GitHub persistence, local-path/credential filtering, and credential-bearing evidence rejection.
+
+Gaps: no wrong-repository or fenced-code closing-reference case; no concurrent same-event-ID/different-payload case; no subprocess test for Linux/WSL `flock`; and no native Windows cross-process behavior test. The GitHub-failure test verifies stderr and no AgentMail call but also codifies exit code 0.
+
+## VALIDATION
+
+- Verified PR head and current main SHA listed above.
+- Public GitHub checks page showed successful **Agent infrastructure checks** and **Headless G1 model and stepping test** on the reviewed head.
+- `git diff --check` against current main passed.
+- This was a source/test/documentation review; tests were not rerun.
+- PR #42 was not modified and was not merged.
+- GitHub API commenting was unavailable in this environment (`gh auth status` reports the injected token invalid; the public PR page reports `canComment: false`). This report is being published on the requested report-only branch.
