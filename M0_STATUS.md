@@ -1,6 +1,18 @@
 # Issue #43 M0 Status
 
-CURRENT STAGE: Final launcher provenance and reproducibility validation is complete. Two clean fresh-checkout seed-42 episodes passed. PR #45 remains Draft.
+CURRENT STAGE: Right Dex3-1 single-hand M0 acceptance passes the focused suite and seed-42 end-to-end run. PR #45 is ready for single-hand visual review; it remains unmerged.
+
+## Current Single-Hand Acceptance
+
+The current target uses the pinned G1 29-DoF body with one right Unitree Dex3-1 Rev 1.0 hand attached below `right_wrist_yaw_link`. The original 29 body actuators remain intact; seven added hand actuators are resolved by joint name. No articulated left hand is present, and the left arm remains clear of the bottle.
+
+The 500 mL bottle is represented by four cylindrical collision geoms, with a 65 mm body diameter, 231 mm total height, and 0.50 kg total mass. Bottle friction is 1.5 and hand friction is 2.0. Grasp, carry, and release use measured thumb, index, and middle finger contact with friction only. The runtime creates no equality constraint and does not write bottle qpos after reset.
+
+Seed 42 passed the ordered GRASP -> LIFT -> TRANSFER -> RELEASE -> PLACE checks, including at least 5 cm lift, continuous right-hand multi-finger contact through carry, no left-arm contact, true finger-open release, bounded physics-step motion and penetration, full collision-geometry footprint inside the target table margin, target-table contact, and stable free-physics settle. The review bundle is placed at `/mnt/c/Users/HP/Desktop/Robot/issue43-m0-single-hand-final/` and contains the result JSON, physics trace, log, MP4, and final PNG.
+
+Run the documented bare command `./scripts/run_m0_pick_place.sh`; its defaults are the validated single-hand trajectory. The pinned G1 body/controller baseline and existing launcher provenance checks remain in use.
+
+The sections below retain baseline research and reproduction evidence for earlier palm-pad and runtime-weld revisions. Those measurements are historical and do not qualify the current acceptance target.
 
 The earlier box-dominant geometry and center-only placement run is superseded. The historical measurements below describe the prior acceptance-gap code and are distinct from the final launcher-revision evidence recorded later in this file.
 
@@ -41,7 +53,7 @@ WHAT FAILED: HMG recorded low-level action replay diverged from its reference tr
 
 AUTOMATIC METRICS: PASS requires bilateral palm force contact (at least 2 N per palm for 5 frames), at least 5 cm lift, all projected bottle collision geoms inside the target tabletop with 3 cm margin, contact-free release for 5 frames, target-table contact, and at least 1.0 s stable time (33 consecutive samples, 1.024 s at 31.25 Hz). Physics-step limits are 5 mm translation and 0.025 rad rotation; weld-event limits are 2 mm and 1 degree; penetration must remain at or below 25 mm. Linear/angular speed limits remain 0.03 m/s and 0.20 rad/s; control-frame translation remains bounded by 0.20 m. Both final launcher-revision runs passed every task and safety check.
 
-## Final Launcher Reproduction
+## Historical Launcher Reproduction (Palm-Pad and Weld Target)
 
 Both runs used the exact documented command `./scripts/run_m0_pick_place.sh` from a fresh checkout at RobotSim SHA `43036f3e79f4a4b262a06c1a254338f92f683e8e`, with `robotsim_dirty: false`, seed 42, Python 3.10.12, MuJoCo 3.2.6, NumPy 1.26.4, h5py 3.14.0, and OpenCV 4.11.0. The pinned clean upstream revisions were Humanoid VLA `3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12` and Unitree MuJoCo `1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d`; mesh provenance resolved to `unitree_robots/g1/meshes` inside that Unitree checkout.
 
@@ -54,6 +66,6 @@ Each directory contains `m0_result.json`, `m0_physics_trace.jsonl` (14,080 physi
 
 FINAL DEMO COMMAND: `./scripts/run_m0_pick_place.sh`. Set `ROBOTSIM_M0_CANDIDATE_DIR`, `ROBOTSIM_M0_UNITREE_DIR`, `ROBOTSIM_M0_RUN_DIR`, or `ROBOTSIM_M0_OUTPUT_DIR` only to select cache/output locations. `ROBOTSIM_M0_MESH_DIR` is accepted only when its resolved path is inside the pinned Unitree checkout's `unitree_robots/g1/meshes` tree. Every invocation creates its own run ID and begins with a durable `PREFLIGHT`, `passed: false` result record.
 
-KNOWN SHORTCUTS: The G1 base is fixed, object/table poses are deterministic ground truth, and the script uses a measured-contact runtime weld during grasp. The final stable pose is side-lying; upright orientation is reported but is not an acceptance requirement. The adapter runtime pins MuJoCo 3.2.6; the repository's separate G1 smoke suite was validated on MuJoCo 3.3.6.
+HISTORICAL SHORTCUTS: The prior target used a fixed G1 base, deterministic object/table poses, and a measured-contact runtime weld. Those weld-carry results are superseded by the current single-hand physical-contact acceptance above. The adapter runtime pins MuJoCo 3.2.6; the repository's separate G1 smoke suite was validated on MuJoCo 3.3.6.
 
-FINAL STATUS: PASS - launcher regression checks and two clean seed-42 full episodes passed after latest-main integration. PR #45 remains Draft; it is not marked ready for review.
+HISTORICAL STATUS: The two launcher-revision seed-42 episodes below validated the earlier palm-pad/weld target only.

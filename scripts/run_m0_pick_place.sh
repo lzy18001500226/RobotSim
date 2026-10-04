@@ -5,11 +5,25 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_ROOT="${ROBOTSIM_M0_RUN_DIR:-/tmp/robotsim-issue43-m0}"
 CANDIDATE_DIR="${ROBOTSIM_M0_CANDIDATE_DIR:-$RUN_ROOT/checkouts/humanoid_vla}"
 UNITREE_DIR="${ROBOTSIM_M0_UNITREE_DIR:-$RUN_ROOT/checkouts/unitree_mujoco}"
+DEX3_DIR="${ROBOTSIM_M0_DEX3_DIR:-$RUN_ROOT/checkouts/unitree_ros_dex3}"
 OUTPUT_ROOT="${ROBOTSIM_M0_OUTPUT_DIR:-/tmp/robotsim-issue43-m0/output}"
 UPSTREAM_COMMIT="3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 UNITREE_COMMIT="1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
+DEX3_COMMIT="5994d4faef0a9cadd3287f8de0199a67eeb2a259"
 GRASP_REFERENCE_COMMIT="ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff"
 SEED="${ROBOTSIM_M0_SEED:-42}"
+HAND_ROLL_DEG="${ROBOTSIM_M0_HAND_ROLL_DEG:-20}"
+GRASP_HOLD_FRAMES="${ROBOTSIM_M0_GRASP_HOLD_FRAMES:-2}"
+LIFT_FRAMES="${ROBOTSIM_M0_LIFT_FRAMES:-15}"
+LIFT_HEIGHT_M="${ROBOTSIM_M0_LIFT_HEIGHT_M:-0.16}"
+TRANSFER_FRAMES="${ROBOTSIM_M0_TRANSFER_FRAMES:-30}"
+LOWER_FRAMES="${ROBOTSIM_M0_LOWER_FRAMES:-15}"
+if [[ "$HAND_ROLL_DEG" =~ ^-?[0-9]+([.][0-9]+)?$ ]] && awk -v value="$HAND_ROLL_DEG" 'BEGIN { exit !(value >= -90 && value <= 90) }'; then HAND_ROLL_JSON="$HAND_ROLL_DEG"; else HAND_ROLL_JSON=null; fi
+if [[ "$LIFT_FRAMES" =~ ^[1-9][0-9]*$ ]]; then LIFT_FRAMES_JSON="$LIFT_FRAMES"; else LIFT_FRAMES_JSON=null; fi
+if [[ "$TRANSFER_FRAMES" =~ ^[1-9][0-9]*$ ]]; then TRANSFER_FRAMES_JSON="$TRANSFER_FRAMES"; else TRANSFER_FRAMES_JSON=null; fi
+if [[ "$LOWER_FRAMES" =~ ^[1-9][0-9]*$ ]]; then LOWER_FRAMES_JSON="$LOWER_FRAMES"; else LOWER_FRAMES_JSON=null; fi
+if [[ "$LIFT_HEIGHT_M" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] && awk -v value="$LIFT_HEIGHT_M" 'BEGIN { exit !(value > 0 && value <= 0.30) }'; then LIFT_HEIGHT_JSON="$LIFT_HEIGHT_M"; else LIFT_HEIGHT_JSON=null; fi
+if [[ "$GRASP_HOLD_FRAMES" =~ ^[1-9][0-9]*$ ]]; then GRASP_HOLD_FRAMES_JSON="$GRASP_HOLD_FRAMES"; else GRASP_HOLD_FRAMES_JSON=null; fi
 if [[ "$SEED" =~ ^[0-9]+$ ]]; then SEED_JSON="$SEED"; else SEED_JSON=null; fi
 
 json_quote() {
@@ -63,16 +77,20 @@ write_result() {
         printf '  "numpy_version": %s,\n' "$(json_quote "$NUMPY_VERSION")"
         printf '  "h5py_version": %s,\n' "$(json_quote "$H5PY_VERSION")"
         printf '  "opencv_version": %s,\n' "$(json_quote "$OPENCV_VERSION")"
-        printf '  "upstream_shas": {"humanoid_vla": %s, "unitree_mujoco": %s, "grasp_reference": %s},\n' \
-            "$(json_quote "$CANDIDATE_SHA")" "$(json_quote "$UNITREE_SHA")" "$(json_quote "$GRASP_REFERENCE_COMMIT")"
-        printf '  "upstream_dirty": {"humanoid_vla": %s, "unitree_mujoco": %s},\n' \
-            "$CANDIDATE_DIRTY_JSON" "$UNITREE_DIRTY_JSON"
-        printf '  "expected_upstream_shas": {"humanoid_vla": %s, "unitree_mujoco": %s},\n' \
-            "$(json_quote "$UPSTREAM_COMMIT")" "$(json_quote "$UNITREE_COMMIT")"
+        printf '  "upstream_shas": {"humanoid_vla": %s, "unitree_mujoco": %s, "unitree_ros_dex3": %s, "grasp_reference": %s},\n' \
+            "$(json_quote "$CANDIDATE_SHA")" "$(json_quote "$UNITREE_SHA")" "$(json_quote "$DEX3_SHA")" "$(json_quote "$GRASP_REFERENCE_COMMIT")"
+        printf '  "upstream_dirty": {"humanoid_vla": %s, "unitree_mujoco": %s, "unitree_ros_dex3": %s},\n' \
+            "$CANDIDATE_DIRTY_JSON" "$UNITREE_DIRTY_JSON" "$DEX3_DIRTY_JSON"
+        printf '  "expected_upstream_shas": {"humanoid_vla": %s, "unitree_mujoco": %s, "unitree_ros_dex3": %s},\n' \
+            "$(json_quote "$UPSTREAM_COMMIT")" "$(json_quote "$UNITREE_COMMIT")" "$(json_quote "$DEX3_COMMIT")"
         printf '  "mesh_provenance": {"path_class": %s, "path_relative_to_unitree": %s},\n' \
             "$(json_quote "$MESH_PATH_CLASS")" "$(json_quote "$MESH_RELATIVE_PATH")"
+        printf '  "dex3_model_provenance": {"repository": "unitreerobotics/unitree_ros", "revision": %s, "model": "robots/g1_description/g1_29dof_with_hand_rev_1_0.xml", "mesh_path_class": "pinned_unitree_ros_g1_description_meshes", "mesh_path_relative_to_repository": "robots/g1_description/meshes"},\n' \
+            "$(json_quote "$DEX3_SHA")"
         printf '  "seed": %s,\n' "$SEED_JSON"
-        printf '  "acceptance_thresholds": {"target_table_margin_m": 0.03, "bilateral_grasp_force_n_per_palm": 2.0, "bilateral_grasp_frames": 5, "minimum_lift_height_m": 0.05, "contact_free_release_frames": 5, "stable_duration_s": 1.0, "linear_speed_m_s": 0.03, "angular_speed_rad_s": 0.20, "stable_position_radius_m": 0.02, "control_step_translation_m": 0.20, "physics_step_translation_m": 0.005, "physics_step_angular_jump_rad": 0.025, "weld_event_translation_snap_m": 0.002, "weld_event_angular_snap_rad": 0.017453292519943295, "maximum_penetration_m": 0.025, "drop_height_m": 0.50},\n'
+        printf '  "controller_parameters": {"hand_roll_deg": %s, "grasp_hold_frames": %s, "grasp_preload_rad": 0.30, "lift_frames": %s, "commanded_lift_height_m": %s, "transfer_frames": %s, "lower_frames": %s},\n' \
+            "$HAND_ROLL_JSON" "$GRASP_HOLD_FRAMES_JSON" "$LIFT_FRAMES_JSON" "$LIFT_HEIGHT_JSON" "$TRANSFER_FRAMES_JSON" "$LOWER_FRAMES_JSON"
+        printf '  "acceptance_thresholds": {"target_table_margin_m": 0.03, "minimum_thumb_contact_force_n": 0.2, "minimum_opposing_finger_force_n": 0.2, "grasp_contact_frames": 5, "minimum_lift_height_m": 0.05, "contact_free_release_frames": 5, "stable_duration_s": 1.0, "linear_speed_m_s": 0.03, "angular_speed_rad_s": 0.20, "stable_position_radius_m": 0.02, "control_step_translation_m": 0.20, "physics_step_translation_m": 0.005, "physics_step_angular_jump_rad": 0.025, "maximum_penetration_m": 0.025, "drop_height_m": 0.50, "left_arm_object_contact_allowed": false, "runtime_object_qpos_write_allowed": false, "runtime_equality_carry_allowed": false},\n'
         printf '  "output_directory": %s\n' "$(json_quote "$OUTPUT_DIR")"
         printf '}\n'
     } > "$RESULT_PATH"
@@ -88,8 +106,10 @@ H5PY_VERSION="not_run"
 OPENCV_VERSION="not_run"
 CANDIDATE_SHA="not_checked"
 UNITREE_SHA="not_checked"
+DEX3_SHA="not_checked"
 CANDIDATE_DIRTY_JSON=null
 UNITREE_DIRTY_JSON=null
+DEX3_DIRTY_JSON=null
 MESH_PATH_CLASS="not_checked"
 MESH_RELATIVE_PATH="not_checked"
 
@@ -146,6 +166,30 @@ trap on_exit EXIT
 CURRENT_STAGE="TOOL_CHECK"
 if [[ ! "$SEED" =~ ^[0-9]+$ ]]; then
     printf 'ROBOTSIM_M0_SEED must be a non-negative integer\n' >&2
+    exit 2
+fi
+if [[ ! "$HAND_ROLL_DEG" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || ! awk -v value="$HAND_ROLL_DEG" 'BEGIN { exit !(value >= -90 && value <= 90) }'; then
+    printf 'ROBOTSIM_M0_HAND_ROLL_DEG must be between -90 and 90\n' >&2
+    exit 2
+fi
+if [[ ! "$LIFT_FRAMES" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'ROBOTSIM_M0_LIFT_FRAMES must be a positive integer\n' >&2
+    exit 2
+fi
+if [[ ! "$LIFT_HEIGHT_M" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] || ! awk -v value="$LIFT_HEIGHT_M" 'BEGIN { exit !(value > 0 && value <= 0.30) }'; then
+    printf 'ROBOTSIM_M0_LIFT_HEIGHT_M must be greater than 0 and at most 0.30 m\n' >&2
+    exit 2
+fi
+if [[ ! "$GRASP_HOLD_FRAMES" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'ROBOTSIM_M0_GRASP_HOLD_FRAMES must be a positive integer\n' >&2
+    exit 2
+fi
+if [[ ! "$TRANSFER_FRAMES" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'ROBOTSIM_M0_TRANSFER_FRAMES must be a positive integer\n' >&2
+    exit 2
+fi
+if [[ ! "$LOWER_FRAMES" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'ROBOTSIM_M0_LOWER_FRAMES must be a positive integer\n' >&2
     exit 2
 fi
 command -v git >/dev/null || { printf 'git is required\n' >&2; exit 2; }
@@ -216,6 +260,31 @@ ensure_checkout \
     "$UNITREE_COMMIT" \
     "$UNITREE_DIR" \
     UNITREE_SHA
+
+CURRENT_STAGE="DEX3_MODEL_CHECKOUT"
+ensure_checkout \
+    "Unitree Dex3 model" \
+    "https://github.com/unitreerobotics/unitree_ros.git" \
+    "$DEX3_COMMIT" \
+    "$DEX3_DIR" \
+    DEX3_SHA
+
+DEX3_DIR_RESOLVED="$(realpath -e "$DEX3_DIR")"
+DEX3_MODEL_PATH="$(realpath -e "$DEX3_DIR_RESOLVED/robots/g1_description/g1_29dof_with_hand_rev_1_0.xml")"
+DEX3_MESH_DIR="$(realpath -e "$DEX3_DIR_RESOLVED/robots/g1_description/meshes")"
+case "$DEX3_MODEL_PATH" in
+    "$DEX3_DIR_RESOLVED"/*) ;;
+    *) printf 'Resolved Dex3 model escapes its pinned checkout\n' >&2; exit 2 ;;
+esac
+case "$DEX3_MESH_DIR" in
+    "$DEX3_DIR_RESOLVED"/*) ;;
+    *) printf 'Resolved Dex3 meshes escape their pinned checkout\n' >&2; exit 2 ;;
+esac
+if [[ ! -f "$DEX3_MODEL_PATH" || ! -d "$DEX3_MESH_DIR" ]]; then
+    printf 'Pinned Dex3 model or hand mesh assets are missing\n' >&2
+    exit 2
+fi
+write_result "PREFLIGHT" ""
 
 CURRENT_STAGE="MESH_PROVENANCE"
 UNITREE_DIR_RESOLVED="$(realpath -e "$UNITREE_DIR")"
@@ -305,6 +374,7 @@ MUJOCO_GL=egl PYTHONPATH="$CANDIDATE_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" \
     "$VENV_PYTHON" -m simulation.mujoco.m0_pick_place \
         --candidate-root "$CANDIDATE_DIR" \
         --unitree-root "$UNITREE_DIR" \
+        --dex3-root "$DEX3_DIR" \
         --mesh-dir "$MESH_DIR" \
         --output-dir "$OUTPUT_DIR/model" \
         --output-json "$RESULT_PATH" \
@@ -312,6 +382,12 @@ MUJOCO_GL=egl PYTHONPATH="$CANDIDATE_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" \
         --screenshot "$SCREENSHOT_PATH" \
         --run-id "$RUN_ID" \
         --seed "$SEED" \
+        --hand-roll-deg "$HAND_ROLL_DEG" \
+        --grasp-hold-frames "$GRASP_HOLD_FRAMES" \
+        --lift-height-m "$LIFT_HEIGHT_M" \
+        --lift-frames "$LIFT_FRAMES" \
+        --transfer-frames "$TRANSFER_FRAMES" \
+        --lower-frames "$LOWER_FRAMES" \
     2>&1 | tee "$LOG_PATH"
 pipeline_status=("${PIPESTATUS[@]}")
 status=${pipeline_status[0]}

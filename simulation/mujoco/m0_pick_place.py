@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import copy
 import importlib.metadata
 import json
 import math
@@ -23,12 +24,41 @@ import numpy as np
 MUJOCO_VERSION = "3.2.6"
 UPSTREAM_COMMIT = "3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 UNITREE_COMMIT = "1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
+DEX3_COMMIT = "5994d4faef0a9cadd3287f8de0199a67eeb2a259"
+DEX3_MODEL_RELATIVE_PATH = Path("robots/g1_description/g1_29dof_with_hand_rev_1_0.xml")
+DEX3_MESH_RELATIVE_PATH = Path("robots/g1_description/meshes")
+RIGHT_HAND_JOINT_NAMES = (
+    "right_hand_thumb_0_joint",
+    "right_hand_thumb_1_joint",
+    "right_hand_thumb_2_joint",
+    "right_hand_index_0_joint",
+    "right_hand_index_1_joint",
+    "right_hand_middle_0_joint",
+    "right_hand_middle_1_joint",
+)
+RIGHT_HAND_GROUPS = ("thumb", "index", "middle")
+RIGHT_HAND_OPEN_POS = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+RIGHT_HAND_CLOSED_POS = (-0.50, -0.70, -0.80, 1.05, 0.75, 1.05, 0.75)
+HAND_COLLISION_FRICTION = "2.0 0.01 0.001"
+HAND_POSITION_KP = 15.0
+HAND_VELOCITY_KD = 0.5
+CARRY_CONTACT_FRACTION_MIN = 0.90
+CARRY_CONTACT_MAX_GAP_PHYSICS_STEPS = 25
+DEFAULT_HAND_ROLL_DEG = 20.0
+DEFAULT_GRASP_HOLD_FRAMES = 2
+DEFAULT_LIFT_HEIGHT_M = 0.16
+DEFAULT_LIFT_FRAMES = 15
+DEFAULT_TRANSFER_FRAMES = 30
+DEFAULT_LOWER_FRAMES = 15
+GRASP_PRELOAD_RAD = 0.30
+GRASP_SITE_OFFSET_M = (-0.035, 0.0, 0.0)
+APPROACH_SITE_OFFSET_M = (-0.105, 0.0, 0.140)
 
 SOURCE_TABLE_TOP_Z = 0.8
 SOURCE_TABLE_XY = np.array([0.3, 0.0], dtype=float)
 SOURCE_TABLE_HALF_EXTENTS = np.array([0.2, 0.12], dtype=float)
-TARGET_TABLE_HALF_EXTENTS = np.array([0.20, 0.18], dtype=float)
-TABLE_GAP_M = 0.10
+TARGET_TABLE_HALF_EXTENTS = np.array([0.20, 0.10], dtype=float)
+TABLE_GAP_M = 0.02
 TARGET_TABLE_BODY_XY = np.array(
     [
         SOURCE_TABLE_XY[0],
@@ -39,17 +69,16 @@ TARGET_TABLE_BODY_XY = np.array(
     ],
     dtype=float,
 )
-TARGET_TABLE_SITE_OFFSET_Y_M = 0.06
+TARGET_TABLE_SITE_OFFSET_Y_M = 0.04
 TARGET_TABLE_XY = TARGET_TABLE_BODY_XY + np.array(
     [0.0, TARGET_TABLE_SITE_OFFSET_Y_M], dtype=float
 )
-TARGET_TABLE_BODY_Z = 0.20
+TARGET_TABLE_BODY_Z = 0.0
 TARGET_TABLE_TOP_Z = TARGET_TABLE_BODY_Z + 0.8
 TARGET_MARGIN_M = 0.03
 OBJECT_BODY_NAME = "green_box"
 OBJECT_JOINT_NAME = "box_joint"
 OBJECT_MAIN_GEOM = "m0_bottle_body"
-GRASP_WELD_NAME = "m0_grasp_weld"
 OBJECT_COLLISION_GEOMS = (
     OBJECT_MAIN_GEOM,
     "m0_bottle_shoulder",
@@ -61,33 +90,33 @@ OBJECT_GEOM_SPECS = (
         "name": OBJECT_MAIN_GEOM,
         "type": "cylinder",
         "pos": "0 0 0",
-        "size": "0.075 0.100",
-        "mass": "0.260",
-        "rgba": "0.10 0.52 0.72 1",
+        "size": "0.0325 0.078",
+        "mass": "0.470",
+        "rgba": "0.64 0.84 0.90 0.78",
     },
     {
         "name": "m0_bottle_shoulder",
         "type": "cylinder",
-        "pos": "0 0 0.115",
-        "size": "0.060 0.025",
-        "mass": "0.025",
-        "rgba": "0.10 0.52 0.72 1",
+        "pos": "0 0 0.084",
+        "size": "0.029 0.020",
+        "mass": "0.015",
+        "rgba": "0.64 0.84 0.90 0.78",
     },
     {
         "name": "m0_bottle_neck",
         "type": "cylinder",
-        "pos": "0 0 0.151",
-        "size": "0.022 0.024",
-        "mass": "0.018",
-        "rgba": "0.10 0.52 0.72 1",
+        "pos": "0 0 0.118",
+        "size": "0.015 0.019",
+        "mass": "0.010",
+        "rgba": "0.68 0.86 0.91 0.85",
     },
     {
         "name": "m0_bottle_cap",
         "type": "cylinder",
-        "pos": "0 0 0.183",
-        "size": "0.026 0.008",
-        "mass": "0.012",
-        "rgba": "0.10 0.20 0.28 1",
+        "pos": "0 0 0.145",
+        "size": "0.018 0.008",
+        "mass": "0.005",
+        "rgba": "0.94 0.95 0.91 1",
     },
 )
 
@@ -139,8 +168,11 @@ def _acceptance_thresholds(monitor: "AcceptanceMonitor | None" = None) -> dict:
     if monitor is None:
         return {
             "target_table_margin_m": TARGET_MARGIN_M,
-            "bilateral_grasp_force_n_per_palm": 2.0,
-            "bilateral_grasp_frames": 5,
+            "minimum_thumb_contact_force_n": 0.2,
+            "minimum_opposing_finger_force_n": 0.2,
+            "grasp_contact_frames": 5,
+            "carry_contact_fraction_min": CARRY_CONTACT_FRACTION_MIN,
+            "carry_contact_max_gap_physics_steps": CARRY_CONTACT_MAX_GAP_PHYSICS_STEPS,
             "minimum_lift_height_m": 0.05,
             "contact_free_release_frames": 5,
             "stable_duration_s": 1.0,
@@ -150,15 +182,19 @@ def _acceptance_thresholds(monitor: "AcceptanceMonitor | None" = None) -> dict:
             "control_step_translation_m": 0.20,
             "physics_step_translation_m": 0.005,
             "physics_step_angular_jump_rad": 0.025,
-            "weld_event_translation_snap_m": 0.002,
-            "weld_event_angular_snap_rad": math.radians(1.0),
             "maximum_penetration_m": 0.025,
             "drop_height_m": 0.50,
+            "left_arm_object_contact_allowed": False,
+            "runtime_object_qpos_write_allowed": False,
+            "runtime_equality_carry_allowed": False,
         }
     return {
         "target_table_margin_m": monitor.target_margin,
-        "bilateral_grasp_force_n_per_palm": monitor.minimum_grasp_force_n,
-        "bilateral_grasp_frames": monitor.grasp_frames_required,
+        "minimum_thumb_contact_force_n": monitor.minimum_thumb_force_n,
+        "minimum_opposing_finger_force_n": monitor.minimum_opposing_force_n,
+        "grasp_contact_frames": monitor.grasp_frames_required,
+        "carry_contact_fraction_min": CARRY_CONTACT_FRACTION_MIN,
+        "carry_contact_max_gap_physics_steps": CARRY_CONTACT_MAX_GAP_PHYSICS_STEPS,
         "minimum_lift_height_m": monitor.lift_height,
         "contact_free_release_frames": monitor.release_frames_required,
         "stable_duration_s": monitor.minimum_stable_duration_s,
@@ -168,10 +204,11 @@ def _acceptance_thresholds(monitor: "AcceptanceMonitor | None" = None) -> dict:
         "control_step_translation_m": monitor.teleport_step_limit,
         "physics_step_translation_m": monitor.physics_step_translation_limit,
         "physics_step_angular_jump_rad": monitor.physics_step_angular_jump_limit,
-        "weld_event_translation_snap_m": monitor.weld_event_translation_limit,
-        "weld_event_angular_snap_rad": monitor.weld_event_angular_jump_limit,
         "maximum_penetration_m": monitor.penetration_limit,
         "drop_height_m": monitor.drop_z_limit,
+        "left_arm_object_contact_allowed": False,
+        "runtime_object_qpos_write_allowed": False,
+        "runtime_equality_carry_allowed": False,
     }
 
 
@@ -179,10 +216,13 @@ def _runtime_identity(args: argparse.Namespace, monitor: "AcceptanceMonitor | No
     repo_root = Path(__file__).resolve().parents[2]
     unitree_root = Path(args.unitree_root)
     candidate_root = Path(args.candidate_root)
+    dex3_root = Path(args.dex3_root)
     unitree_sha = _git_value(unitree_root, "rev-parse", "HEAD")
     candidate_sha = _git_value(candidate_root, "rev-parse", "HEAD")
+    dex3_sha = _git_value(dex3_root, "rev-parse", "HEAD")
     unitree_dirty = _git_value(unitree_root, "status", "--porcelain", "--untracked-files=all")
     candidate_dirty = _git_value(candidate_root, "status", "--porcelain", "--untracked-files=all")
+    dex3_dirty = _git_value(dex3_root, "status", "--porcelain", "--untracked-files=all")
     mujoco_module = sys.modules.get("mujoco")
     robotsim_dirty = _git_value(repo_root, "status", "--porcelain", "--untracked-files=all")
     return {
@@ -201,13 +241,22 @@ def _runtime_identity(args: argparse.Namespace, monitor: "AcceptanceMonitor | No
         "upstream_shas": {
             "humanoid_vla": candidate_sha,
             "unitree_mujoco": unitree_sha,
+            "unitree_ros_dex3": dex3_sha,
             "grasp_reference": "ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff",
         },
         "upstream_dirty": {
             "humanoid_vla": None if candidate_dirty is None else bool(candidate_dirty),
             "unitree_mujoco": None if unitree_dirty is None else bool(unitree_dirty),
+            "unitree_ros_dex3": None if dex3_dirty is None else bool(dex3_dirty),
         },
         "mesh_provenance": _mesh_provenance(unitree_root, Path(args.mesh_dir)),
+        "dex3_model_provenance": {
+            "repository": "https://github.com/unitreerobotics/unitree_ros",
+            "revision": dex3_sha,
+            "model": DEX3_MODEL_RELATIVE_PATH.as_posix(),
+            "mesh_path_class": "pinned_unitree_ros_g1_description_meshes",
+            "mesh_path_relative_to_repository": DEX3_MESH_RELATIVE_PATH.as_posix(),
+        },
         "seed": args.seed,
         "acceptance_thresholds": _acceptance_thresholds(monitor),
         "output_directory": str(Path(args.output_json).parent.resolve()),
@@ -236,12 +285,28 @@ def _verify_unitree_mesh_inputs(args: argparse.Namespace) -> None:
     if provenance["path_class"] != "pinned_unitree_g1_mesh_tree":
         raise RuntimeError("mesh directory must resolve inside the pinned Unitree G1 mesh tree")
 
+    dex3_root = Path(args.dex3_root)
+    actual_dex3 = _git_value(dex3_root, "rev-parse", "HEAD")
+    if actual_dex3 != DEX3_COMMIT:
+        raise RuntimeError(f"Expected Unitree Dex3 model {DEX3_COMMIT}; found {actual_dex3 or 'unavailable'}")
+    dex3_dirty = _git_value(dex3_root, "status", "--porcelain", "--untracked-files=all")
+    if dex3_dirty is None or dex3_dirty:
+        raise RuntimeError("Unitree Dex3 model checkout must be clean")
+    dex3_resolved = dex3_root.resolve(strict=True)
+    model_path = (dex3_resolved / DEX3_MODEL_RELATIVE_PATH).resolve(strict=True)
+    mesh_root = (dex3_resolved / DEX3_MESH_RELATIVE_PATH).resolve(strict=True)
+    if not model_path.is_file() or not mesh_root.is_dir():
+        raise RuntimeError("Pinned Unitree Dex3 model or mesh directory is missing")
+    model_path.relative_to(dex3_resolved)
+    mesh_root.relative_to(dex3_resolved)
+
 
 def _safe_error(exc: Exception, args: argparse.Namespace) -> str:
     message = f"{type(exc).__name__}: {exc}"
     replacements = (
         (Path(args.candidate_root), "<candidate-root>"),
         (Path(args.unitree_root), "<unitree-root>"),
+        (Path(args.dex3_root), "<dex3-root>"),
         (Path(args.mesh_dir), "<mesh-dir>"),
         (Path(args.output_json).parent, "<output-directory>"),
     )
@@ -252,6 +317,121 @@ def _safe_error(exc: Exception, args: argparse.Namespace) -> str:
         except OSError:
             pass
     return message
+
+
+def make_single_right_dex3_model_xml(
+    model_xml: str, dex3_model_xml: str, dex3_mesh_dir: Path
+) -> str:
+    """Graft the pinned right Dex3 subtree onto the unchanged 29-DoF G1 model."""
+    root = ET.fromstring(model_xml)
+    dex3_root = ET.fromstring(dex3_model_xml)
+    asset = root.find("asset")
+    source_asset = dex3_root.find("asset")
+    actuator = root.find("actuator")
+    source_actuator = dex3_root.find("actuator")
+    wrist = root.find(".//body[@name='right_wrist_yaw_link']")
+    source_wrist = dex3_root.find(".//body[@name='right_wrist_yaw_link']")
+    left_wrist = root.find(".//body[@name='left_wrist_yaw_link']")
+    if any(item is None for item in (asset, source_asset, actuator, source_actuator, wrist, source_wrist, left_wrist)):
+        raise ValueError("G1 or pinned Dex3 model is missing required hand integration elements")
+
+    base_actuator_names = [item.attrib.get("name") for item in actuator]
+    if len(base_actuator_names) != 29:
+        raise ValueError(f"Expected the pinned G1 body to retain 29 actuators, found {len(base_actuator_names)}")
+    if any(item.tag == "body" and item.attrib.get("name", "").startswith("left_hand_") for item in left_wrist):
+        raise ValueError("The G1 model unexpectedly contains a left articulated hand")
+
+    for parent, obsolete in (
+        (wrist, {"right_palm_pad", "right_rubber_hand"}),
+        (left_wrist, {"left_palm_pad"}),
+    ):
+        for child in list(parent):
+            if child.tag == "geom" and (
+                child.attrib.get("name") in obsolete
+                or child.attrib.get("mesh") in obsolete
+            ):
+                parent.remove(child)
+
+    mesh_root = dex3_mesh_dir.resolve(strict=True)
+    existing_meshes = {item.attrib.get("name") for item in asset.findall("mesh")}
+    for mesh in source_asset.findall("mesh"):
+        name = mesh.attrib.get("name", "")
+        if not name.startswith("right_hand_"):
+            continue
+        if name in existing_meshes:
+            raise ValueError(f"G1 model already defines Dex3 mesh {name!r}")
+        source_path = (mesh_root / mesh.attrib["file"]).resolve(strict=True)
+        source_path.relative_to(mesh_root)
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Pinned Dex3 mesh is missing: {name}")
+        copied_mesh = copy.deepcopy(mesh)
+        copied_mesh.set("file", str(source_path))
+        asset.append(copied_mesh)
+        existing_meshes.add(name)
+
+    if not {"right_hand_palm_link", *[name.replace("_joint", "_link") for name in RIGHT_HAND_JOINT_NAMES]} <= existing_meshes:
+        raise ValueError("Pinned Dex3 model is missing one or more right-hand meshes")
+
+    imported = []
+    for child in source_wrist:
+        is_palm_geom = child.tag == "geom" and child.attrib.get("mesh") == "right_hand_palm_link"
+        is_right_digit = child.tag == "body" and child.attrib.get("name", "").startswith("right_hand_")
+        if is_palm_geom or is_right_digit:
+            imported.append(copy.deepcopy(child))
+    if not imported:
+        raise ValueError("Pinned Dex3 model has no right palm or finger subtree")
+
+    joints_found = set()
+    def configure_node(node: ET.Element) -> None:
+        if node.tag == "joint":
+            name = node.attrib.get("name")
+            if name in RIGHT_HAND_JOINT_NAMES:
+                joints_found.add(name)
+                node.set("damping", "0.08")
+                node.set("armature", "0.005")
+                node.set("frictionloss", "0.02")
+        if node.tag == "geom" and node.attrib.get("contype") != "0":
+            node.set("friction", HAND_COLLISION_FRICTION)
+            node.set("condim", "4")
+            node.set("solimp", "0.95 0.95 0.001")
+            node.set("solref", "0.01 1")
+        for descendant in node:
+            configure_node(descendant)
+
+    for child in imported:
+        configure_node(child)
+        wrist.append(child)
+    if joints_found != set(RIGHT_HAND_JOINT_NAMES):
+        raise ValueError(f"Pinned Dex3 right hand joint set is incomplete: {sorted(joints_found)}")
+
+    source_motors = {
+        item.attrib.get("name"): item
+        for item in source_actuator
+        if item.tag == "motor"
+    }
+    source_joints = {
+        item.attrib.get("name"): item
+        for item in dex3_root.iter("joint")
+    }
+    for name in RIGHT_HAND_JOINT_NAMES:
+        if name in {item.attrib.get("name") for item in actuator}:
+            raise ValueError(f"G1 model already defines actuator {name!r}")
+        motor = source_motors.get(name)
+        joint = source_joints.get(name)
+        if motor is None or joint is None or "actuatorfrcrange" not in joint.attrib:
+            raise ValueError(f"Pinned Dex3 model is missing actuator or torque limits for {name}")
+        copied_motor = copy.deepcopy(motor)
+        copied_motor.set("ctrlrange", joint.attrib["actuatorfrcrange"])
+        copied_motor.set("ctrllimited", "true")
+        actuator.append(copied_motor)
+
+    final_actuator_names = [item.attrib.get("name") for item in actuator]
+    if final_actuator_names[:29] != base_actuator_names:
+        raise AssertionError("Appending Dex3 actuators changed the pinned G1 actuator mapping")
+    if len(final_actuator_names) != 36:
+        raise AssertionError("Expected 29 G1 actuators followed by seven right Dex3 actuators")
+    ET.indent(root, space="  ")
+    return ET.tostring(root, encoding="unicode")
 
 
 def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
@@ -273,7 +453,7 @@ def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
     if freejoint is None:
         raise ValueError(f"{OBJECT_BODY_NAME} must retain its freejoint")
     site = bottle.find("site[@name='box_site']")
-    bottle.set("pos", "0.3 0 0.9")
+    bottle.set("pos", "0.3 0 0.878")
 
     for child in list(bottle):
         if child is not freejoint and child is not site:
@@ -367,17 +547,6 @@ def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
     equality = root.find("equality")
     if equality is not None:
         root.remove(equality)
-    equality = ET.SubElement(root, "equality")
-    ET.SubElement(
-        equality,
-        "weld",
-        {
-            "name": GRASP_WELD_NAME,
-            "body1": "right_wrist_yaw_link",
-            "body2": OBJECT_BODY_NAME,
-            "active": "false",
-        },
-    )
 
     camera = worldbody.find("camera[@name='scene_camera']")
     if camera is not None:
@@ -388,7 +557,7 @@ def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
-def prepare_scene(candidate_root: Path, mesh_dir: Path, output_dir: Path) -> Path:
+def prepare_scene(candidate_root: Path, mesh_dir: Path, dex3_root: Path, output_dir: Path) -> Path:
     source_model_path = candidate_root / "sim" / "models" / "g1_29dof.xml"
     source_scene_path = candidate_root / "sim" / "g1_with_camera.xml"
     if not source_model_path.is_file() or not source_scene_path.is_file():
@@ -406,6 +575,14 @@ def prepare_scene(candidate_root: Path, mesh_dir: Path, output_dir: Path) -> Pat
         compiler = ET.Element("compiler")
         model_root.insert(0, compiler)
     compiler.set("meshdir", str(mesh_dir.resolve()))
+    model_xml = ET.tostring(model_root, encoding="unicode")
+    dex3_model_path = dex3_root / DEX3_MODEL_RELATIVE_PATH
+    dex3_mesh_dir = dex3_root / DEX3_MESH_RELATIVE_PATH
+    dex3_model_xml = dex3_model_path.read_text(encoding="utf-8")
+    integrated_model_xml = make_single_right_dex3_model_xml(
+        model_xml, dex3_model_xml, dex3_mesh_dir
+    )
+    model_root = ET.fromstring(integrated_model_xml)
     ET.indent(model_root, space="  ")
     ET.ElementTree(model_root).write(model_copy_path, encoding="unicode", xml_declaration=True)
 
@@ -495,6 +672,20 @@ def _quaternion_angular_distance(first: np.ndarray, second: np.ndarray) -> float
     return float(2.0 * math.acos(dot))
 
 
+def _grasp_hold_target(hand_joint_positions: dict[str, float]) -> np.ndarray:
+    measured = np.asarray(
+        [hand_joint_positions[name] for name in RIGHT_HAND_JOINT_NAMES], dtype=float
+    )
+    open_target = np.asarray(RIGHT_HAND_OPEN_POS, dtype=float)
+    closed_target = np.asarray(RIGHT_HAND_CLOSED_POS, dtype=float)
+    closure_direction = np.sign(closed_target - open_target)
+    return np.clip(
+        measured + closure_direction * GRASP_PRELOAD_RAD,
+        np.minimum(open_target, closed_target),
+        np.maximum(open_target, closed_target),
+    )
+
+
 @dataclass
 class AcceptanceMonitor:
     initial_position: np.ndarray
@@ -503,7 +694,8 @@ class AcceptanceMonitor:
     dt: float
     lift_height: float = 0.05
     target_margin: float = TARGET_MARGIN_M
-    minimum_grasp_force_n: float = 2.0
+    minimum_thumb_force_n: float = 0.2
+    minimum_opposing_force_n: float = 0.2
     grasp_frames_required: int = 5
     release_frames_required: int = 5
     minimum_stable_duration_s: float = 1.0
@@ -514,10 +706,9 @@ class AcceptanceMonitor:
     teleport_step_limit: float = 0.20
     physics_step_translation_limit: float = 0.005
     physics_step_angular_jump_limit: float = 0.025
-    weld_event_translation_limit: float = 0.002
-    weld_event_angular_jump_limit: float = math.radians(1.0)
     penetration_limit: float = 0.025
     drop_z_limit: float = 0.50
+    runtime_equality_count: int = 0
 
     def __post_init__(self) -> None:
         self.initial_position = np.asarray(self.initial_position, dtype=float).copy()
@@ -532,13 +723,14 @@ class AcceptanceMonitor:
         }
         self.failures: list[str] = []
         self.frame_count = 0
-        self.bilateral_contact_frames = 0
-        self.max_bilateral_contact_frames = 0
+        self.grasp_contact_frames = 0
+        self.max_grasp_contact_frames = 0
         self.release_frames = 0
         self.settling_frames = 0
         self.max_settling_frames = 0
-        self.max_left_force_n = 0.0
-        self.max_right_force_n = 0.0
+        self.max_left_arm_force_n = 0.0
+        self.max_right_hand_force_n = 0.0
+        self.max_digit_force_n = {name: 0.0 for name in RIGHT_HAND_GROUPS}
         self.max_post_release_linear_speed = 0.0
         self.max_post_release_angular_speed = 0.0
         self.max_object_step = 0.0
@@ -547,9 +739,6 @@ class AcceptanceMonitor:
         self.max_physics_step_angular_jump = 0.0
         self.max_physics_step_penetration = 0.0
         self.previous_physics_pose: tuple[np.ndarray, np.ndarray] | None = None
-        self.weld_events: list[dict] = []
-        self.max_weld_event_translation = 0.0
-        self.max_weld_event_angular_jump = 0.0
         self.max_penetration = 0.0
         self.last_position: np.ndarray | None = None
         self.stable_anchor: np.ndarray | None = None
@@ -558,6 +747,13 @@ class AcceptanceMonitor:
         self.finite_state = True
         self.bounded_state = True
         self.dropped = False
+        self.left_arm_contact_seen = False
+        self.carry_contact_lost = False
+        self.carry_contact_frames = 0
+        self.carry_contact_required = False
+        self.carry_physics_steps = 0
+        self.carry_contact_gap_physics_steps = 0
+        self.max_carry_contact_gap_physics_steps = 0
 
     def _stage(self, name: str, sim_time: float) -> None:
         if self.stages[name] is None:
@@ -572,9 +768,11 @@ class AcceptanceMonitor:
         upright: bool,
         left_contact: bool,
         right_contact: bool,
-        grasp_attached: bool,
+        digit_contacts: dict[str, bool],
+        digit_forces_n: dict[str, float],
         left_force_n: float,
         right_force_n: float,
+        fingers_open: bool,
         target_contact: bool,
         linear_speed: float,
         angular_speed: float,
@@ -593,8 +791,15 @@ class AcceptanceMonitor:
             and math.isfinite(sim_time)
         )
         self.bounded_state &= bool(math.isfinite(state_extent) and state_extent <= 1000.0)
-        self.max_left_force_n = max(self.max_left_force_n, float(left_force_n))
-        self.max_right_force_n = max(self.max_right_force_n, float(right_force_n))
+        self.max_left_arm_force_n = max(self.max_left_arm_force_n, float(left_force_n))
+        self.max_right_hand_force_n = max(self.max_right_hand_force_n, float(right_force_n))
+        for name in RIGHT_HAND_GROUPS:
+            self.max_digit_force_n[name] = max(
+                self.max_digit_force_n[name], float(digit_forces_n.get(name, 0.0))
+            )
+        if left_contact:
+            self.left_arm_contact_seen = True
+            self._fail("left arm contacted the bottle")
 
         if self.last_position is not None and np.all(np.isfinite(position)):
             step_distance = float(np.linalg.norm(position - self.last_position))
@@ -609,17 +814,21 @@ class AcceptanceMonitor:
 
         self._record_penetration(minimum_contact_distance)
 
-        bilateral = bool(
-            left_contact
-            and right_contact
-            and left_force_n >= self.minimum_grasp_force_n
-            and right_force_n >= self.minimum_grasp_force_n
+        opposing_contact = any(
+            digit_contacts.get(name, False)
+            and digit_forces_n.get(name, 0.0) >= self.minimum_opposing_force_n
+            for name in ("index", "middle")
         )
-        self.bilateral_contact_frames = self.bilateral_contact_frames + 1 if bilateral else 0
-        self.max_bilateral_contact_frames = max(
-            self.max_bilateral_contact_frames, self.bilateral_contact_frames
+        credible_grasp = bool(
+            digit_contacts.get("thumb", False)
+            and digit_forces_n.get("thumb", 0.0) >= self.minimum_thumb_force_n
+            and opposing_contact
         )
-        if self.bilateral_contact_frames >= self.grasp_frames_required:
+        self.grasp_contact_frames = self.grasp_contact_frames + 1 if credible_grasp else 0
+        self.max_grasp_contact_frames = max(
+            self.max_grasp_contact_frames, self.grasp_contact_frames
+        )
+        if self.grasp_contact_frames >= self.grasp_frames_required:
             self._stage("GRASP", sim_time)
 
         lifted = position[2] >= self.initial_position[2] + self.lift_height
@@ -634,11 +843,11 @@ class AcceptanceMonitor:
         if self.stages["LIFT"] is not None and inside_target:
             self._stage("TRANSFER", sim_time)
 
-        any_hand_contact = left_contact or right_contact
         if (
             self.stages["TRANSFER"] is not None
-            and not any_hand_contact
-            and not grasp_attached
+            and fingers_open
+            and not right_contact
+            and not left_contact
         ):
             self.release_frames += 1
             if self.release_frames >= self.release_frames_required:
@@ -694,10 +903,16 @@ class AcceptanceMonitor:
         position: np.ndarray,
         quaternion_wxyz: np.ndarray,
         minimum_contact_distance: float,
+        left_arm_contact: bool = False,
+        digit_contacts: dict[str, bool] | None = None,
+        digit_forces_n: dict[str, float] | None = None,
     ) -> None:
         position = np.asarray(position, dtype=float).reshape(3)
         quaternion_wxyz = np.asarray(quaternion_wxyz, dtype=float).reshape(4)
         self.physics_step_count += 1
+        if left_arm_contact:
+            self.left_arm_contact_seen = True
+            self._fail("left arm contacted the bottle during a physics step")
         if not (
             math.isfinite(sim_time)
             and np.all(np.isfinite(position))
@@ -728,16 +943,32 @@ class AcceptanceMonitor:
             )
             self._record_penetration(minimum_contact_distance)
 
-    def record_weld_event(self, event: dict) -> None:
-        self.weld_events.append(event)
-        translation = float(event["pose_jump_m"]["translation"])
-        angular = float(event["pose_jump_m"]["rotation_rad"])
-        self.max_weld_event_translation = max(self.max_weld_event_translation, translation)
-        self.max_weld_event_angular_jump = max(self.max_weld_event_angular_jump, angular)
-        if translation > self.weld_event_translation_limit:
-            self._fail(f"{event['event']} weld created an object translation snap")
-        if angular > self.weld_event_angular_jump_limit:
-            self._fail(f"{event['event']} weld created an object rotation snap")
+        if self.carry_contact_required and self.stages["RELEASE"] is None:
+            self.carry_physics_steps += 1
+            contacts = digit_contacts or {}
+            forces = digit_forces_n or {}
+            opposing_contact = any(
+                contacts.get(name, False)
+                and forces.get(name, 0.0) >= self.minimum_opposing_force_n
+                for name in ("index", "middle")
+            )
+            credible_grasp = bool(
+                contacts.get("thumb", False)
+                and forces.get("thumb", 0.0) >= self.minimum_thumb_force_n
+                and opposing_contact
+            )
+            if credible_grasp:
+                self.carry_contact_frames += 1
+                self.carry_contact_gap_physics_steps = 0
+            else:
+                self.carry_contact_gap_physics_steps += 1
+                self.max_carry_contact_gap_physics_steps = max(
+                    self.max_carry_contact_gap_physics_steps,
+                    self.carry_contact_gap_physics_steps,
+                )
+                if self.carry_contact_gap_physics_steps > CARRY_CONTACT_MAX_GAP_PHYSICS_STEPS:
+                    self.carry_contact_lost = True
+                    self._fail("right Dex3 multi-finger contact was lost during carry")
 
     def _fail(self, reason: str) -> None:
         if reason not in self.failures:
@@ -745,6 +976,11 @@ class AcceptanceMonitor:
 
     def result(self, final_sample: dict | None) -> dict:
         task_stages = {name: sample is not None for name, sample in self.stages.items()}
+        stage_times = [self.stages[name]["sim_time_s"] for name in ("GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE") if self.stages[name] is not None]
+        ordered_stages = bool(
+            len(stage_times) == len(self.stages)
+            and all(first < second for first, second in zip(stage_times, stage_times[1:]))
+        )
         safety = {
             "FINITE_STATE": self.finite_state,
             "ROBOT_STATE_BOUNDED": self.bounded_state,
@@ -753,12 +989,23 @@ class AcceptanceMonitor:
                 and self.max_physics_step_translation <= self.physics_step_translation_limit
                 and self.max_physics_step_angular_jump <= self.physics_step_angular_jump_limit
             ),
-            "NO_WELD_EVENT_SNAP": bool(
-                self.max_weld_event_translation <= self.weld_event_translation_limit
-                and self.max_weld_event_angular_jump <= self.weld_event_angular_jump_limit
-            ),
             "NO_EXCESSIVE_PENETRATION": self.max_penetration <= self.penetration_limit,
             "NO_DROP": not self.dropped,
+            "RIGHT_HAND_MULTI_FINGER_CONTACT": self.stages["GRASP"] is not None,
+            "RIGHT_HAND_CONTACT_DURING_CARRY": bool(
+                self.carry_contact_frames > 0
+                and not self.carry_contact_lost
+                and self.carry_contact_frames / max(1, self.carry_physics_steps)
+                >= CARRY_CONTACT_FRACTION_MIN
+            ),
+            "ORDERED_TASK_STAGES": ordered_stages,
+            "LEFT_ARM_CLEAR": not self.left_arm_contact_seen,
+            "NO_RUNTIME_EQUALITY_CARRY": self.runtime_equality_count == 0,
+            "TRUE_FINGER_OPEN_RELEASE": bool(
+                self.stages["RELEASE"] is not None
+                and final_sample
+                and final_sample.get("fingers_open")
+            ),
             "TARGET_TABLE_CONTACT": bool(final_sample and final_sample.get("target_contact")),
             "WHOLE_OBJECT_FOOTPRINT_INSIDE_TARGET": bool(
                 (self.placement_footprint_check or self.last_footprint_check or {}).get(
@@ -770,6 +1017,10 @@ class AcceptanceMonitor:
         final_position = final.get("position")
         return {
             "passed": bool(all(task_stages.values()) and all(safety.values())),
+            "stage_order": [
+                {"name": name, **(self.stages[name] or {})}
+                for name in ("GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE")
+            ],
             "task_stages": {
                 name: {"passed": task_stages[name], **(sample or {})}
                 for name, sample in self.stages.items()
@@ -777,14 +1028,24 @@ class AcceptanceMonitor:
             "safety_checks": safety,
             "whole_object_footprint": self.placement_footprint_check
             or self.last_footprint_check,
-            "weld_events": list(self.weld_events),
             "metrics": {
                 "control_frames": self.frame_count,
-                "bilateral_grasp_frames_max": self.max_bilateral_contact_frames,
+                "multi_finger_grasp_frames_max": self.max_grasp_contact_frames,
                 "grasp_contact_frames_required": self.grasp_frames_required,
-                "minimum_grasp_force_n_per_palm": self.minimum_grasp_force_n,
-                "max_left_palm_force_n": self.max_left_force_n,
-                "max_right_palm_force_n": self.max_right_force_n,
+                "minimum_thumb_contact_force_n": self.minimum_thumb_force_n,
+                "minimum_opposing_finger_force_n": self.minimum_opposing_force_n,
+                "max_left_arm_force_n": self.max_left_arm_force_n,
+                "max_right_hand_force_n": self.max_right_hand_force_n,
+                "max_digit_force_n": dict(self.max_digit_force_n),
+                "carry_contact_frames": self.carry_contact_frames,
+                "carry_physics_steps": self.carry_physics_steps,
+                "carry_contact_fraction": (
+                    self.carry_contact_frames / self.carry_physics_steps
+                    if self.carry_physics_steps
+                    else 0.0
+                ),
+                "max_carry_contact_gap_physics_steps": self.max_carry_contact_gap_physics_steps,
+                "carry_contact_lost": self.carry_contact_lost,
                 "lift_height_required_m": self.lift_height,
                 "minimum_stable_duration_s": self.minimum_stable_duration_s,
                 "settling_frames_required": self.settling_frames_required,
@@ -799,10 +1060,6 @@ class AcceptanceMonitor:
                 "physics_step_translation_limit_m": self.physics_step_translation_limit,
                 "max_physics_step_angular_jump_rad": self.max_physics_step_angular_jump,
                 "physics_step_angular_jump_limit_rad": self.physics_step_angular_jump_limit,
-                "max_weld_event_translation_m": self.max_weld_event_translation,
-                "weld_event_translation_limit_m": self.weld_event_translation_limit,
-                "max_weld_event_angular_jump_rad": self.max_weld_event_angular_jump,
-                "weld_event_angular_jump_limit_rad": self.weld_event_angular_jump_limit,
                 "max_penetration_m": self.max_penetration,
                 "max_physics_step_penetration_m": self.max_physics_step_penetration,
                 "penetration_limit_m": self.penetration_limit,
@@ -825,9 +1082,10 @@ class AcceptanceMonitor:
                 "final_angular_speed_rad_s": final.get("angular_speed_rad_s"),
                 "final_upright": final.get("upright"),
                 "final_target_contact": final.get("target_contact"),
-                "final_left_palm_contact": final.get("left_contact"),
-                "final_right_palm_contact": final.get("right_contact"),
-                "final_grasp_attached": final.get("grasp_attached"),
+                "final_left_arm_contact": final.get("left_contact"),
+                "final_right_hand_contact": final.get("right_contact"),
+                "final_digit_contacts": final.get("digit_contacts"),
+                "final_fingers_open": final.get("fingers_open"),
                 "failure_reasons": list(self.failures),
             },
         }
@@ -861,9 +1119,50 @@ def load_upstream(candidate_root: Path):
 
     sys.path.insert(0, str(candidate_root / "scripts"))
     from physics_sim import LEFT_ARM_CTRL, RIGHT_ARM_CTRL, PhysicsSim
-    from generate_bimanual_demos import plan_bimanual_trajectory
 
-    return mujoco, PhysicsSim, LEFT_ARM_CTRL, RIGHT_ARM_CTRL, plan_bimanual_trajectory
+    return mujoco, PhysicsSim, LEFT_ARM_CTRL.copy(), RIGHT_ARM_CTRL.copy()
+
+
+def _configure_hand_controller(mujoco, PhysicsSim, model) -> dict[str, int]:
+    controller_globals = PhysicsSim._compute_pd_torques.__globals__
+    old_kp = np.asarray(controller_globals["_KP"], dtype=float)
+    old_kd = np.asarray(controller_globals["_KD"], dtype=float)
+    if old_kp.shape != (29,) or old_kd.shape != (29,):
+        raise RuntimeError("Pinned G1 controller no longer has the reviewed 29-actuator mapping")
+
+    base_names = [
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
+        for index in range(29)
+    ]
+    expected_body_names = [
+        "left_hip_pitch", "left_hip_roll", "left_hip_yaw", "left_knee",
+        "left_ankle_pitch", "left_ankle_roll", "right_hip_pitch", "right_hip_roll",
+        "right_hip_yaw", "right_knee", "right_ankle_pitch", "right_ankle_roll",
+        "waist_yaw", "waist_roll", "waist_pitch", "left_shoulder_pitch",
+        "left_shoulder_roll", "left_shoulder_yaw", "left_elbow", "left_wrist_roll",
+        "left_wrist_pitch", "left_wrist_yaw", "right_shoulder_pitch",
+        "right_shoulder_roll", "right_shoulder_yaw", "right_elbow", "right_wrist_roll",
+        "right_wrist_pitch", "right_wrist_yaw",
+    ]
+    if base_names != expected_body_names:
+        raise RuntimeError("Dex3 integration changed one or more G1 body actuator indices")
+
+    hand_actuators = {}
+    for name in RIGHT_HAND_JOINT_NAMES:
+        actuator_id = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+        joint_id = int(model.actuator_trnid[actuator_id, 0])
+        joint_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+        if joint_name != name:
+            raise RuntimeError(f"Dex3 actuator {name!r} resolves to unexpected joint {joint_name!r}")
+        hand_actuators[name] = actuator_id
+    if model.nu != 36 or sorted(hand_actuators.values()) != list(range(29, 36)):
+        raise RuntimeError("Model must contain 29 preserved G1 actuators plus seven appended Dex3 actuators")
+
+    controller_globals["NUM_ACTUATORS"] = 36
+    controller_globals["_ACTUATED_DOF_END"] = 42
+    controller_globals["_KP"] = np.concatenate((old_kp, np.full(7, HAND_POSITION_KP)))
+    controller_globals["_KD"] = np.concatenate((old_kd, np.full(7, HAND_VELOCITY_KD)))
+    return hand_actuators
 
 
 def _contact_sample(mujoco, sim, geometry: dict) -> dict:
@@ -877,6 +1176,9 @@ def _contact_sample(mujoco, sim, geometry: dict) -> dict:
     right_contact = False
     left_force = 0.0
     right_force = 0.0
+    digit_contacts = {name: False for name in RIGHT_HAND_GROUPS}
+    digit_forces = {name: 0.0 for name in RIGHT_HAND_GROUPS}
+    digit_contact_geometry = {name: [] for name in RIGHT_HAND_GROUPS}
     target_contact = False
     contact_distances = []
 
@@ -888,29 +1190,49 @@ def _contact_sample(mujoco, sim, geometry: dict) -> dict:
             other = second if first in geometry["object_geoms"] else first
             if other == geometry["target_geom"]:
                 target_contact = True
-            if other in (geometry["left_palm_geom"], geometry["right_palm_geom"]):
+            digit_group = next(
+                (name for name, geom_ids in geometry["right_digit_geoms"].items() if other in geom_ids),
+                None,
+            )
+            if other in geometry["left_arm_geoms"] or digit_group is not None or other in geometry["right_arm_geoms"]:
                 force = np.zeros(6)
                 mujoco.mj_contactForce(sim.model, data, index, force)
                 force_n = float(np.linalg.norm(force[:3]))
-                if other == geometry["left_palm_geom"]:
+                if other in geometry["left_arm_geoms"]:
                     left_contact = True
                     left_force += force_n
-                else:
+                elif other in geometry["right_arm_geoms"]:
                     right_contact = True
                     right_force += force_n
+                    if digit_group is not None:
+                        digit_contacts[digit_group] = True
+                        digit_forces[digit_group] += force_n
+                        radial_xy = np.asarray(contact.pos[:2], dtype=float) - object_position[:2]
+                        radial_norm = float(np.linalg.norm(radial_xy))
+                        digit_contact_geometry[digit_group].append(
+                            {
+                                "position_m": np.asarray(contact.pos, dtype=float).tolist(),
+                                "radial_xy_unit": (
+                                    (radial_xy / radial_norm).tolist()
+                                    if radial_norm > 1e-9
+                                    else None
+                                ),
+                            }
+                        )
+
+    hand_joint_positions = {
+        name: float(data.qpos[geometry["hand_qpos_addresses"][name]])
+        for name in RIGHT_HAND_JOINT_NAMES
+    }
+    hand_qpos = np.asarray(list(hand_joint_positions.values()), dtype=float)
+    fingers_open = bool(
+        np.all(np.isfinite(hand_qpos))
+        and np.allclose(hand_qpos, RIGHT_HAND_OPEN_POS, atol=0.12, rtol=0.0)
+    )
 
     state = np.concatenate((data.qpos, data.qvel, data.qacc, object_position))
     state_extent = float(np.max(np.abs(state))) if state.size else 0.0
-    hand_distance = min(
-        float(np.linalg.norm(sim.left_hand_pos - object_position)),
-        float(np.linalg.norm(sim.right_hand_pos - object_position)),
-    )
-    grasp_attached = bool(data.eq_active[geometry["grasp_weld"]])
-    weld_position_error_m, weld_rotation_error_rad = (
-        _grasp_weld_pose_error(mujoco, sim, geometry)
-        if grasp_attached
-        else (None, None)
-    )
+    hand_distance = float(np.linalg.norm(sim.right_hand_pos - object_position))
     return {
         "sim_time_s": float(data.time),
         "position": object_position,
@@ -920,9 +1242,15 @@ def _contact_sample(mujoco, sim, geometry: dict) -> dict:
         "angular_speed_rad_s": float(np.linalg.norm(qvel[3:])),
         "left_contact": left_contact,
         "right_contact": right_contact,
-        "grasp_attached": grasp_attached,
-        "grasp_weld_position_error_m": weld_position_error_m,
-        "grasp_weld_rotation_error_rad": weld_rotation_error_rad,
+        "digit_contacts": digit_contacts,
+        "digit_forces_n": digit_forces,
+        "digit_contact_geometry": digit_contact_geometry,
+        "fingers_open": fingers_open,
+        "hand_joint_positions_rad": hand_joint_positions,
+        "right_hand_site_position_m": np.asarray(sim.right_hand_pos, dtype=float).copy(),
+        "right_hand_site_rotation": np.asarray(
+            data.site_xmat[sim.right_hand_site_id], dtype=float
+        ).reshape(3, 3).copy(),
         "left_force_n": left_force,
         "right_force_n": right_force,
         "hand_distance_m": hand_distance,
@@ -942,11 +1270,6 @@ def _geometry(mujoco, sim) -> dict:
         mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, "m0_target_table_top"
     )
     target_site = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_SITE, "m0_target_site")
-    left_palm = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, "left_palm_pad")
-    right_palm = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, "right_palm_pad")
-    grasp_weld = _name_id(
-        mujoco, model, mujoco.mjtObj.mjOBJ_EQUALITY, GRASP_WELD_NAME
-    )
     geom_shapes = {
         int(mujoco.mjtGeom.mjGEOM_BOX): "box",
         int(mujoco.mjtGeom.mjGEOM_SPHERE): "sphere",
@@ -957,6 +1280,27 @@ def _geometry(mujoco, sim) -> dict:
         _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, name): name
         for name in OBJECT_COLLISION_GEOMS
     }
+    right_digit_geoms = {name: set() for name in RIGHT_HAND_GROUPS}
+    left_arm_geoms = set()
+    right_arm_geoms = set()
+    body_names = {}
+    for geom_id in range(model.ngeom):
+        body_id = int(model.geom_bodyid[geom_id])
+        body_name = body_names.setdefault(
+            body_id,
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id) or "",
+        )
+        if body_name.startswith(("left_shoulder_", "left_elbow_", "left_wrist_")):
+            left_arm_geoms.add(geom_id)
+        if body_name.startswith(("right_shoulder_", "right_elbow_", "right_wrist_", "right_hand_")):
+            right_arm_geoms.add(geom_id)
+        for group in RIGHT_HAND_GROUPS:
+            if body_name.startswith(f"right_hand_{group}_"):
+                right_digit_geoms[group].add(geom_id)
+    hand_qpos_addresses = {}
+    for name in RIGHT_HAND_JOINT_NAMES:
+        joint_id = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        hand_qpos_addresses[name] = int(model.jnt_qposadr[joint_id])
     return {
         "object_body": object_body,
         "object_qpos_adr": int(model.jnt_qposadr[joint]),
@@ -966,10 +1310,11 @@ def _geometry(mujoco, sim) -> dict:
         "target_geom": target_geom,
         "target_center": np.asarray(sim.data.site_xpos[target_site][:2], dtype=float).copy(),
         "target_half_extents": np.asarray(model.geom_size[target_geom][:2], dtype=float).copy(),
-        "left_palm_geom": left_palm,
-        "right_palm_geom": right_palm,
-        "right_palm_body": int(model.geom_bodyid[right_palm]),
-        "grasp_weld": grasp_weld,
+        "right_digit_geoms": right_digit_geoms,
+        "left_arm_geoms": left_arm_geoms,
+        "right_arm_geoms": right_arm_geoms,
+        "hand_qpos_addresses": hand_qpos_addresses,
+        "runtime_equality_count": int(model.neq),
     }
 
 
@@ -997,47 +1342,6 @@ def _object_footprint(mujoco, sim, geometry: dict) -> dict:
     )
 
 
-def _object_pose(sim, geometry: dict) -> dict:
-    data = sim.data
-    position = np.asarray(data.xpos[geometry["object_body"]], dtype=float).copy()
-    quaternion = np.asarray(data.xquat[geometry["object_body"]], dtype=float).copy()
-    return {
-        "sim_time_s": float(data.time),
-        "position_m": position.tolist(),
-        "quaternion_wxyz": quaternion.tolist(),
-    }
-
-
-def _record_weld_event(
-    sim, geometry: dict, monitor: AcceptanceMonitor, event_name: str, mutation
-) -> dict:
-    active_before = bool(sim.data.eq_active[geometry["grasp_weld"]])
-    pose_before = _object_pose(sim, geometry)
-    mutation()
-    active_after = bool(sim.data.eq_active[geometry["grasp_weld"]])
-    pose_after = _object_pose(sim, geometry)
-    position_jump = float(
-        np.linalg.norm(
-            np.asarray(pose_after["position_m"]) - np.asarray(pose_before["position_m"])
-        )
-    )
-    rotation_jump = _quaternion_angular_distance(
-        np.asarray(pose_before["quaternion_wxyz"]),
-        np.asarray(pose_after["quaternion_wxyz"]),
-    )
-    event = {
-        "event": event_name,
-        "sim_time_s": float(sim.data.time),
-        "active_before": active_before,
-        "active_after": active_after,
-        "pose_before": pose_before,
-        "pose_after": pose_after,
-        "pose_jump_m": {"translation": position_jump, "rotation_rad": rotation_jump},
-    }
-    monitor.record_weld_event(event)
-    return event
-
-
 def _install_physics_step_recorder(
     mujoco, sim, geometry: dict, monitor: AcceptanceMonitor, trace_path: Path
 ):
@@ -1051,18 +1355,33 @@ def _install_physics_step_recorder(
             object_id = geometry["object_body"]
             position = np.asarray(data.xpos[object_id], dtype=float).copy()
             quaternion = np.asarray(data.xquat[object_id], dtype=float).copy()
-            contact_distances = [
-                float(data.contact[index].dist)
-                for index in range(data.ncon)
-                if int(data.contact[index].geom1) in geometry["object_geoms"]
-                or int(data.contact[index].geom2) in geometry["object_geoms"]
-            ]
+            contact_distances = []
+            digit_contacts = {name: False for name in RIGHT_HAND_GROUPS}
+            digit_forces_n = {name: 0.0 for name in RIGHT_HAND_GROUPS}
+            left_arm_contact = False
+            for index in range(data.ncon):
+                contact = data.contact[index]
+                first, second = int(contact.geom1), int(contact.geom2)
+                if first not in geometry["object_geoms"] and second not in geometry["object_geoms"]:
+                    continue
+                contact_distances.append(float(contact.dist))
+                other = second if first in geometry["object_geoms"] else first
+                left_arm_contact |= other in geometry["left_arm_geoms"]
+                for group, geom_ids in geometry["right_digit_geoms"].items():
+                    if other in geom_ids:
+                        digit_contacts[group] = True
+                        force = np.zeros(6)
+                        mujoco.mj_contactForce(model, data, index, force)
+                        digit_forces_n[group] += float(np.linalg.norm(force[:3]))
             minimum_distance = min(contact_distances) if contact_distances else math.inf
             monitor.record_physics_step(
                 sim_time=float(data.time),
                 position=position,
                 quaternion_wxyz=quaternion,
                 minimum_contact_distance=minimum_distance,
+                left_arm_contact=left_arm_contact,
+                digit_contacts=digit_contacts,
+                digit_forces_n=digit_forces_n,
             )
             trace.write(
                 json.dumps(
@@ -1080,7 +1399,9 @@ def _install_physics_step_recorder(
                         "object_penetration_m": max(0.0, -minimum_distance)
                         if math.isfinite(minimum_distance)
                         else 0.0,
-                        "grasp_weld_active": bool(data.eq_active[geometry["grasp_weld"]]),
+                        "left_arm_contact": left_arm_contact,
+                        "right_digit_contacts": digit_contacts,
+                        "right_digit_forces_n": digit_forces_n,
                     },
                     allow_nan=False,
                 )
@@ -1095,115 +1416,6 @@ def _install_physics_step_recorder(
         trace.close()
 
     return close
-
-
-def _plan_hand_targets(sim, target_object_position, left_offset, right_offset):
-    import mujoco
-
-    saved_left_q = sim.left_arm_q
-    saved_right_q = sim.right_arm_q
-    if not sim.solve_ik_left(np.asarray(target_object_position) + left_offset):
-        sim.data.qpos[sim.left_arm_qpos_adr] = saved_left_q
-        mujoco.mj_forward(sim.model, sim.data)
-        raise RuntimeError(
-            f"Left arm IK cannot reach object waypoint {target_object_position}; "
-            f"current hand site is {sim.left_hand_pos.tolist()}"
-        )
-    left_target = sim.left_arm_q
-    if not sim.solve_ik_right(np.asarray(target_object_position) + right_offset):
-        sim.data.qpos[sim.left_arm_qpos_adr] = saved_left_q
-        sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
-        mujoco.mj_forward(sim.model, sim.data)
-        raise RuntimeError(
-            f"Right arm IK cannot reach object waypoint {target_object_position}; "
-            f"current hand site is {sim.right_hand_pos.tolist()}"
-        )
-    right_target = sim.right_arm_q
-    sim.data.qpos[sim.left_arm_qpos_adr] = saved_left_q
-    sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
-    mujoco.mj_forward(sim.model, sim.data)
-    return left_target, right_target
-
-
-def _engage_grasp_weld(mujoco, sim, geometry: dict) -> None:
-    """Attach at the measured palm/object pose, without changing object qpos."""
-    model, data = sim.model, sim.data
-    palm_id = geometry["right_palm_body"]
-    object_id = geometry["object_body"]
-    palm_quat_inv = np.empty(4, dtype=float)
-    delta = np.empty(3, dtype=float)
-    relative_position = np.empty(3, dtype=float)
-    relative_quaternion = np.empty(4, dtype=float)
-
-    mujoco.mju_negQuat(palm_quat_inv, data.xquat[palm_id])
-    mujoco.mju_sub3(delta, data.xpos[object_id], data.xpos[palm_id])
-    mujoco.mju_rotVecQuat(relative_position, delta, palm_quat_inv)
-    mujoco.mju_mulQuat(relative_quaternion, palm_quat_inv, data.xquat[object_id])
-
-    weld_id = geometry["grasp_weld"]
-    weld_data = model.eq_data[weld_id]
-    weld_data[:] = 0.0
-    weld_data[3:6] = relative_position
-    weld_data[6:10] = relative_quaternion
-    weld_data[10] = 1.0
-    data.eq_active[weld_id] = 1
-    mujoco.mj_forward(model, data)
-
-
-def _grasp_weld_pose_error(mujoco, sim, geometry: dict) -> tuple[float, float]:
-    data, model = sim.data, sim.model
-    palm_id = geometry["right_palm_body"]
-    object_id = geometry["object_body"]
-    palm_rotation = np.asarray(data.xmat[palm_id], dtype=float).reshape(3, 3)
-    actual_position = palm_rotation.T @ (data.xpos[object_id] - data.xpos[palm_id])
-    expected_position = model.eq_data[geometry["grasp_weld"], 3:6]
-
-    palm_quaternion_inverse = np.empty(4, dtype=float)
-    actual_quaternion = np.empty(4, dtype=float)
-    mujoco.mju_negQuat(palm_quaternion_inverse, data.xquat[palm_id])
-    mujoco.mju_mulQuat(actual_quaternion, palm_quaternion_inverse, data.xquat[object_id])
-    expected_quaternion = model.eq_data[geometry["grasp_weld"], 6:10]
-    dot = float(np.clip(abs(np.dot(actual_quaternion, expected_quaternion)), 0.0, 1.0))
-    return (
-        float(np.linalg.norm(actual_position - expected_position)),
-        float(2.0 * math.acos(dot)),
-    )
-
-
-def _upright_grasp_transform(sim, geometry: dict) -> dict:
-    """Keep the captured weld transform while making the bottle world-upright."""
-    data = sim.data
-    palm_id = geometry["right_palm_body"]
-    object_id = geometry["object_body"]
-    site_id = sim.right_hand_site_id
-    palm_rotation = np.asarray(data.xmat[palm_id], dtype=float).reshape(3, 3)
-    palm_position = np.asarray(data.xpos[palm_id], dtype=float)
-    object_rotation = np.asarray(data.xmat[object_id], dtype=float).reshape(3, 3)
-    object_position = np.asarray(data.xpos[object_id], dtype=float)
-    site_rotation = np.asarray(data.site_xmat[site_id], dtype=float).reshape(3, 3)
-    site_position = np.asarray(data.site_xpos[site_id], dtype=float)
-
-    body_to_object_position = palm_rotation.T @ (object_position - palm_position)
-    body_to_object_rotation = palm_rotation.T @ object_rotation
-    body_to_site_position = palm_rotation.T @ (site_position - palm_position)
-    body_to_site_rotation = palm_rotation.T @ site_rotation
-    target_body_rotation = body_to_object_rotation.T
-
-    return {
-        "body_to_object_position": body_to_object_position,
-        "body_to_site_position": body_to_site_position,
-        "target_site_rotation": target_body_rotation @ body_to_site_rotation,
-        "target_body_rotation": target_body_rotation,
-    }
-
-
-def _hand_position_for_object(transform: dict, object_position: np.ndarray) -> np.ndarray:
-    target_body_rotation = transform["target_body_rotation"]
-    target_body_position = (
-        np.asarray(object_position, dtype=float)
-        - target_body_rotation @ transform["body_to_object_position"]
-    )
-    return target_body_position + target_body_rotation @ transform["body_to_site_position"]
 
 
 def _plan_right_hand_target(
@@ -1294,29 +1506,18 @@ def _plan_left_hand_target(sim, target_hand_position: np.ndarray) -> np.ndarray:
     return target
 
 
-def _plan_right_hand_position(sim, target_hand_position: np.ndarray) -> np.ndarray:
-    """Use upstream position-only IK after the grasp has been released."""
-    import mujoco
-
-    saved_right_q = sim.right_arm_q
-    target_position = np.asarray(target_hand_position, dtype=float)
-    if not sim.solve_ik_right(target_position):
-        hand_position = sim.right_hand_pos.tolist()
-        sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
-        mujoco.mj_forward(sim.model, sim.data)
-        raise RuntimeError(
-            f"Right arm IK cannot reach retreat waypoint {target_position}; "
-            f"current hand site is {hand_position}"
-        )
-
-    target = sim.right_arm_q
-    sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
-    mujoco.mj_forward(sim.model, sim.data)
-    return target
-
-
 def _interpolate(start: np.ndarray, end: np.ndarray, frames: int) -> np.ndarray:
     return np.linspace(np.asarray(start), np.asarray(end), frames + 1)[1:]
+
+
+def _json_value(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (float, np.floating)) and not math.isfinite(float(value)):
+        return None
+    return value
 
 
 def run_demo(args: argparse.Namespace) -> dict:
@@ -1324,24 +1525,27 @@ def run_demo(args: argparse.Namespace) -> dict:
     import cv2
 
     _verify_unitree_mesh_inputs(args)
-    mujoco, PhysicsSim, left_ctrl, right_ctrl, plan_bimanual = load_upstream(args.candidate_root)
-    scene_path = prepare_scene(args.candidate_root, args.mesh_dir, args.output_dir / "model")
+    mujoco, PhysicsSim, left_ctrl, right_ctrl = load_upstream(args.candidate_root)
+    scene_path = prepare_scene(
+        args.candidate_root,
+        args.mesh_dir,
+        args.dex3_root,
+        args.output_dir / "model",
+    )
+    compiled_model = mujoco.MjModel.from_xml_path(str(scene_path))
+    hand_actuators = _configure_hand_controller(mujoco, PhysicsSim, compiled_model)
     sim = PhysicsSim(model_path=str(scene_path))
     geometry = _geometry(mujoco, sim)
     frame_dt = float(sim.model.opt.timestep * (500 // 30))
-    rng = np.random.default_rng(args.seed)
-
-    sim.reset_with_noise(rng, noise_x=0.0, noise_y=0.0)
-    plan = plan_bimanual(sim, sim.box_pos.copy(), rng)
-    if plan is None:
-        raise RuntimeError("Upstream bimanual IK could not plan the source pick and lift")
     sim.reset()
     mujoco.mj_forward(sim.model, sim.data)
+    if geometry["runtime_equality_count"] != 0:
+        raise RuntimeError("M0 single-hand rollout must not contain runtime equality constraints")
 
     initial_position = np.asarray(sim.box_pos, dtype=float).copy()
-    initial_qpos_start = geometry["object_qpos_adr"]
+    object_qpos = geometry["object_qpos_adr"]
     initial_quaternion = np.asarray(
-        sim.data.qpos[initial_qpos_start + 3 : initial_qpos_start + 7], dtype=float
+        sim.data.qpos[object_qpos + 3 : object_qpos + 7], dtype=float
     ).copy()
     monitor = AcceptanceMonitor(
         initial_position=initial_position,
@@ -1349,20 +1553,39 @@ def run_demo(args: argparse.Namespace) -> dict:
         target_half_extents=geometry["target_half_extents"],
         dt=frame_dt,
         target_margin=TARGET_MARGIN_M,
+        runtime_equality_count=geometry["runtime_equality_count"],
     )
     run_identity = _runtime_identity(args, monitor)
-
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.video.parent.mkdir(parents=True, exist_ok=True)
     args.screenshot.parent.mkdir(parents=True, exist_ok=True)
     video = cv2.VideoWriter(
-        str(args.video),
-        cv2.VideoWriter_fourcc(*"mp4v"),
-        1.0 / frame_dt,
-        (640, 480),
+        str(args.video), cv2.VideoWriter_fourcc(*"mp4v"), 1.0 / frame_dt, (640, 480)
     )
     if not video.isOpened():
+        sim.renderer.close()
         raise RuntimeError(f"Could not create demo video: {args.video}")
+
+    hand_ctrl = np.asarray([hand_actuators[name] for name in RIGHT_HAND_JOINT_NAMES], dtype=int)
+    open_hand = np.asarray(RIGHT_HAND_OPEN_POS, dtype=float)
+    closed_hand = np.asarray(RIGHT_HAND_CLOSED_POS, dtype=float)
+    sim.target_pos[:] = sim.data.actuator_length.copy()
+    sim.target_pos[hand_ctrl] = open_hand
+    object_center = initial_position.copy()
+    hand_roll = math.radians(args.hand_roll_deg)
+    hand_rotation = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, math.cos(hand_roll), -math.sin(hand_roll)],
+            [0.0, math.sin(hand_roll), math.cos(hand_roll)],
+        ],
+        dtype=float,
+    )
+    approach_site = object_center + np.asarray(APPROACH_SITE_OFFSET_M, dtype=float)
+    # Keep thumb and opposing fingers on the straight cylindrical body.
+    grasp_site = object_center + np.asarray(GRASP_SITE_OFFSET_M, dtype=float)
+    clear_left = _plan_left_hand_target(sim, np.array([0.23, 0.34, 0.97]))
+    right_approach = _plan_right_hand_target(sim, approach_site, hand_rotation)
 
     controller_stages: dict[str, dict[str, float | int]] = {}
     post_release_trace: list[dict[str, object]] = []
@@ -1372,7 +1595,7 @@ def run_demo(args: argparse.Namespace) -> dict:
     frame_index = 0
 
     def record_post_release_sample(sample: dict) -> None:
-        if trace_start_frame is None or frame_index - trace_start_frame > 60:
+        if trace_start_frame is None or frame_index - trace_start_frame > 90:
             return
         post_release_trace.append(
             {
@@ -1386,15 +1609,16 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "target_contact": sample["target_contact"],
                 "left_contact": sample["left_contact"],
                 "right_contact": sample["right_contact"],
-                "hand_distance_m": sample["hand_distance_m"],
+                "digit_contacts": sample["digit_contacts"],
+                "fingers_open": sample["fingers_open"],
             }
         )
 
     def observe(label: str | None = None) -> dict:
-        nonlocal frame_index, final_sample
+        nonlocal frame_index, final_sample, trace_start_frame
         sample = _contact_sample(mujoco, sim, geometry)
         frame_index += 1
-        record_post_release_sample(sample)
+        release_before = monitor.stages["RELEASE"]
         monitor.update(
             sim_time=sample["sim_time_s"],
             position=sample["position"],
@@ -1402,9 +1626,11 @@ def run_demo(args: argparse.Namespace) -> dict:
             upright=sample["upright"],
             left_contact=sample["left_contact"],
             right_contact=sample["right_contact"],
-            grasp_attached=sample["grasp_attached"],
+            digit_contacts=sample["digit_contacts"],
+            digit_forces_n=sample["digit_forces_n"],
             left_force_n=sample["left_force_n"],
             right_force_n=sample["right_force_n"],
+            fingers_open=sample["fingers_open"],
             target_contact=sample["target_contact"],
             linear_speed=sample["linear_speed_m_s"],
             angular_speed=sample["angular_speed_rad_s"],
@@ -1413,9 +1639,15 @@ def run_demo(args: argparse.Namespace) -> dict:
             state_extent=sample["state_extent"],
             footprint_check=sample["footprint_check"],
         )
+        if release_before is None and monitor.stages["RELEASE"] is not None:
+            trace_start_frame = frame_index
+            controller_stages["RELEASE"] = {
+                "sim_time_s": sample["sim_time_s"],
+                "control_frame": frame_index,
+            }
+        record_post_release_sample(sample)
         sim.renderer.update_scene(sim.data, camera="scene_camera")
-        image_rgb = sim.renderer.render().copy()
-        video.write(cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
+        video.write(cv2.cvtColor(sim.renderer.render().copy(), cv2.COLOR_RGB2BGR))
         final_sample = sample
         if label:
             controller_stages[label] = {
@@ -1423,8 +1655,9 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "control_frame": frame_index,
             }
             print(
-                f"{label}: sim_time={sample['sim_time_s']:.3f}s frame={frame_index} "
-                f"bottle_xyz={np.round(sample['position'], 3).tolist()}",
+                f"{label}: sim_time={sample['sim_time_s']:.3f}s "
+                f"bottle_xyz={np.round(sample['position'], 3).tolist()} "
+                f"digits={sample['digit_contacts']} left={sample['left_contact']}",
                 flush=True,
             )
         for name, stage in monitor.stages.items():
@@ -1434,285 +1667,253 @@ def run_demo(args: argparse.Namespace) -> dict:
                 setattr(observe, "announced", announced)
                 print(
                     f"ACCEPT_{name}: sim_time={stage['sim_time_s']:.3f}s "
-                    f"frame={stage['control_frame']}",
+                    f"digits={sample['digit_contacts']} forces={sample['digit_forces_n']} "
+                    f"hand_q={sample['hand_joint_positions_rad']}",
                     flush=True,
                 )
         if frame_index % 50 == 0:
             print(
                 f"frame={frame_index} sim_time={sample['sim_time_s']:.3f}s "
-                f"left={sample['left_contact']}:{sample['left_force_n']:.1f}N "
-                f"right={sample['right_contact']}:{sample['right_force_n']:.1f}N "
-                f"target={sample['target_contact']}",
+                f"digits={sample['digit_contacts']} "
+                f"forces={np.round([sample['digit_forces_n'][key] for key in RIGHT_HAND_GROUPS], 2).tolist()} "
+                f"hand_q={np.round(list(sample['hand_joint_positions_rad'].values()), 2).tolist()} "
+                f"left={sample['left_contact']} target={sample['target_contact']}",
                 flush=True,
             )
         if frame_index % 25 == 0:
             checkpoint = monitor.result(sample)
             checkpoint.update(run_identity)
-            checkpoint["partial_run"] = True
-            checkpoint["state"] = "RUNNING"
-            checkpoint["stage"] = "SIMULATION"
-            checkpoint["complete"] = False
-            checkpoint["controller_stages"] = controller_stages
-            checkpoint["last_sample"] = {
-                key: (
-                    value.tolist()
-                    if isinstance(value, np.ndarray)
-                    else None
-                    if isinstance(value, (float, np.floating)) and not math.isfinite(float(value))
-                    else value
-                )
-                for key, value in sample.items()
-            }
+            checkpoint.update(
+                {
+                    "partial_run": True,
+                    "state": "RUNNING",
+                    "stage": "SIMULATION",
+                    "complete": False,
+                    "controller_stages": controller_stages,
+                    "waypoint_checks": waypoint_checks,
+                    "controller_parameters": {
+                        "hand_roll_deg": args.hand_roll_deg,
+                        "grasp_site_offset_m": list(GRASP_SITE_OFFSET_M),
+                        "grasp_hold_frames": args.grasp_hold_frames,
+                        "grasp_preload_rad": GRASP_PRELOAD_RAD,
+                        "lift_frames": args.lift_frames,
+                        "commanded_lift_height_m": args.lift_height_m,
+                        "transfer_frames": args.transfer_frames,
+                        "lower_frames": args.lower_frames,
+                    },
+                    "last_sample": _json_value(sample),
+                }
+            )
             args.output_json.write_text(
                 json.dumps(checkpoint, indent=2, allow_nan=False) + "\n", encoding="utf-8"
             )
         return sample
 
-    def move_right_arm(right_targets: np.ndarray) -> None:
-        for right_q in right_targets:
-            sim.target_pos[right_ctrl] = right_q
+    def move_group(
+        indices: np.ndarray,
+        target: np.ndarray,
+        frames: int,
+        *,
+        stop_on_grasp: bool = False,
+    ) -> None:
+        indices = np.asarray(indices, dtype=int)
+        current = sim.target_pos[indices].copy()
+        for values in _interpolate(current, np.asarray(target, dtype=float), frames):
+            sim.target_pos[indices] = values
             sim.step_frame()
             observe()
+            if stop_on_grasp and monitor.stages["GRASP"] is not None:
+                break
+            if monitor.carry_contact_lost:
+                raise RuntimeError("Right Dex3 multi-finger contact was lost during lift/carry")
 
-    def move_left_arm(left_targets: np.ndarray) -> None:
-        for left_q in left_targets:
-            sim.target_pos[left_ctrl] = left_q
-            sim.step_frame()
-            observe()
-
-    def hold_right_arm(right_target: np.ndarray, frames: int) -> None:
+    def hold_group(indices: np.ndarray, target: np.ndarray, frames: int) -> None:
         for _ in range(frames):
-            sim.target_pos[right_ctrl] = right_target
+            sim.target_pos[indices] = target
             sim.step_frame()
             observe()
+            if monitor.carry_contact_required and monitor.carry_contact_lost:
+                raise RuntimeError("Right Dex3 multi-finger contact was lost during lift/carry")
 
     start_wall = time.monotonic()
     physics_trace_path = args.output_json.parent / "m0_physics_trace.jsonl"
     close_physics_recorder = None
-    grasp_weld_event = None
     try:
         close_physics_recorder = _install_physics_step_recorder(
             mujoco, sim, geometry, monitor, physics_trace_path
         )
         observe("START")
-        phase_names = (
-            "PREGRASP",
-            "APPROACH",
-            "SQUEEZE",
-            "GRASP_HOLD",
-            "LIFT",
-            "LIFT_HOLD",
-        )
-        phase_ends = tuple(int(value) for value in plan["phase_ends"])
-        if len(phase_ends) != len(phase_names):
-            raise RuntimeError("upstream grasp plan has an unexpected phase layout")
-        for index in range(plan["n_frames"]):
-            sim.target_pos[left_ctrl] = plan["left_traj"][index]
-            sim.target_pos[right_ctrl] = plan["right_traj"][index]
-            sim.step_frame()
-            sample = observe()
-            for phase_index, phase_end in enumerate(phase_ends):
-                if index + 1 == phase_end:
-                    name = phase_names[phase_index]
-                    controller_stages[name] = {
-                        "sim_time_s": sample["sim_time_s"],
-                        "control_frame": frame_index,
-                    }
-                    print(f"{name}: sim_time={sample['sim_time_s']:.3f}s frame={frame_index}", flush=True)
-
-            if monitor.stages["GRASP"] is not None and grasp_weld_event is None:
-                if (
-                    not sample["right_contact"]
-                    or sample["right_force_n"] < monitor.minimum_grasp_force_n
-                ):
-                    raise RuntimeError(
-                        "right palm contact was absent when bilateral grasp threshold was reached"
-                    )
-                grasp_weld_event = _record_weld_event(
-                    sim,
-                    geometry,
-                    monitor,
-                    "activation",
-                    lambda: _engage_grasp_weld(mujoco, sim, geometry),
-                )
-                print(
-                    "WELD_ACTIVATION: "
-                    f"sim_time={grasp_weld_event['sim_time_s']:.3f}s "
-                    f"translation_jump_m={grasp_weld_event['pose_jump_m']['translation']:.6g} "
-                    f"rotation_jump_rad={grasp_weld_event['pose_jump_m']['rotation_rad']:.6g}",
-                    flush=True,
-                )
-                observe("GRASP_WELD")
-
-        if grasp_weld_event is None or not sim.data.eq_active[geometry["grasp_weld"]]:
-            raise RuntimeError("bilateral palm contact was not sustained long enough to grasp")
-
-        left_retreat_target = _plan_left_hand_target(
-            sim, sim.left_hand_pos + np.array([0.0, 0.0, 0.20])
-        )
-        move_left_arm(
-            _interpolate(sim.left_arm_q, left_retreat_target, args.release_frames),
-        )
-        controller_stages["LEFT_HAND_CLEAR"] = {
+        move_group(left_ctrl, clear_left, max(35, args.approach_frames))
+        controller_stages["LEFT_ARM_CLEAR"] = {
             "sim_time_s": float(sim.data.time),
             "control_frame": frame_index,
         }
-
-        object_at_lift = np.asarray(sim.box_pos, dtype=float).copy()
-        grasp_transform = _upright_grasp_transform(sim, geometry)
-        clearance_z = max(object_at_lift[2] + 0.12, SOURCE_TABLE_TOP_Z + 0.30)
-        clearance_position = np.array(
-            [object_at_lift[0], object_at_lift[1], clearance_z], dtype=float
-        )
-        right_clearance = _plan_right_hand_target(
-            sim,
-            _hand_position_for_object(grasp_transform, clearance_position),
-            grasp_transform["target_site_rotation"],
-        )
-        move_right_arm(
-            _interpolate(sim.right_arm_q, right_clearance, max(25, args.transfer_frames // 3)),
-        )
-        clearance_sample = _contact_sample(mujoco, sim, geometry)
-        if not clearance_sample["upright"]:
-            raise RuntimeError("bottle did not reach an upright pose before lateral transfer")
-        controller_stages["UPRIGHT_CLEARANCE"] = {
+        move_group(right_ctrl, right_approach, args.approach_frames)
+        controller_stages["APPROACH"] = {
             "sim_time_s": float(sim.data.time),
             "control_frame": frame_index,
         }
+        right_grasp = _plan_right_hand_target(sim, grasp_site, hand_rotation)
+        move_group(right_ctrl, right_grasp, max(25, args.close_frames // 2))
+        controller_stages["HAND_AROUND_BOTTLE"] = {
+            "sim_time_s": float(sim.data.time),
+            "control_frame": frame_index,
+        }
+        move_group(hand_ctrl, closed_hand, args.close_frames, stop_on_grasp=True)
+        grasp_sample = final_sample
+        if monitor.stages["GRASP"] is None or grasp_sample is None:
+            raise RuntimeError(
+                "Dex3 did not establish sustained thumb-plus-opposing-finger contact; "
+                f"contacts={None if grasp_sample is None else grasp_sample['digit_contacts']} "
+                f"forces={None if grasp_sample is None else grasp_sample['digit_forces_n']}"
+            )
+        thumb_holding = bool(
+            grasp_sample["digit_contacts"].get("thumb", False)
+            and grasp_sample["digit_forces_n"].get("thumb", 0.0)
+            >= monitor.minimum_thumb_force_n
+        )
+        opposing_holding = any(
+            grasp_sample["digit_contacts"].get(group, False)
+            and grasp_sample["digit_forces_n"].get(group, 0.0)
+            >= monitor.minimum_opposing_force_n
+            for group in ("index", "middle")
+        )
+        if not thumb_holding or not opposing_holding:
+            raise RuntimeError(
+                "Dex3 multi-finger contact was not present at lift start; "
+                f"contacts={grasp_sample['digit_contacts']} "
+                f"forces={grasp_sample['digit_forces_n']}"
+            )
+        monitor.carry_contact_required = True
+        grasp_hold_target = _grasp_hold_target(
+            grasp_sample["hand_joint_positions_rad"]
+        )
+        hold_group(hand_ctrl, grasp_hold_target, args.grasp_hold_frames)
+        grasp_sample = final_sample
+        if grasp_sample is None:
+            raise RuntimeError("Dex3 grasp hold produced no physics sample")
+        thumb_holding = bool(
+            grasp_sample["digit_contacts"].get("thumb", False)
+            and grasp_sample["digit_forces_n"].get("thumb", 0.0)
+            >= monitor.minimum_thumb_force_n
+        )
+        opposing_holding = any(
+            grasp_sample["digit_contacts"].get(group, False)
+            and grasp_sample["digit_forces_n"].get(group, 0.0)
+            >= monitor.minimum_opposing_force_n
+            for group in ("index", "middle")
+        )
+        if not thumb_holding or not opposing_holding:
+            raise RuntimeError(
+                "Dex3 lost multi-finger contact during the pre-lift hold; "
+                f"contacts={grasp_sample['digit_contacts']} "
+                f"forces={grasp_sample['digit_forces_n']}"
+            )
+        waypoint_checks["GRASP_END"] = {
+            "object_position_m": grasp_sample["position"].tolist(),
+            "right_hand_site_position_m": grasp_sample["right_hand_site_position_m"].tolist(),
+            "right_hand_site_rotation": grasp_sample["right_hand_site_rotation"].tolist(),
+            "hand_joint_positions_rad": grasp_sample["hand_joint_positions_rad"],
+            "right_digit_contacts": grasp_sample["digit_contacts"],
+            "right_digit_forces_n": grasp_sample["digit_forces_n"],
+            "right_digit_contact_geometry": grasp_sample["digit_contact_geometry"],
+            "grasp_hold_target_rad": grasp_hold_target.tolist(),
+            "grasp_preload_rad": GRASP_PRELOAD_RAD,
+        }
+        hand_rotation = grasp_sample["right_hand_site_rotation"]
+        controller_stages["GRASP"] = {
+            "sim_time_s": monitor.stages["GRASP"]["sim_time_s"],
+            "control_frame": monitor.stages["GRASP"]["control_frame"],
+        }
 
-        target_lift = np.array(
-            [
-                geometry["target_center"][0],
-                geometry["target_center"][1],
-                clearance_z,
-            ],
+        # Contact force can deflect the arm from its previous position target.
+        # Begin the lift interpolation from the measured pose to avoid pulling
+        # the fingers away from the established grasp on the first control step.
+        sim.target_pos[right_ctrl] = sim.right_arm_q
+        current_site = np.asarray(sim.right_hand_pos, dtype=float)
+        lift_target = _plan_right_hand_target(
+            sim, current_site + np.array([0.0, 0.0, args.lift_height_m]), hand_rotation
+        )
+        move_group(right_ctrl, lift_target, args.lift_frames)
+        lift_sample = _contact_sample(mujoco, sim, geometry)
+        if monitor.carry_contact_lost:
+            raise RuntimeError(
+                "Right Dex3 thumb-plus-opposing-finger contact was lost during lift; "
+                f"contacts={lift_sample['digit_contacts']} forces={lift_sample['digit_forces_n']}"
+            )
+        waypoint_checks["LIFT_END"] = {
+            "object_position_m": lift_sample["position"].tolist(),
+            "right_hand_site_position_m": lift_sample["right_hand_site_position_m"].tolist(),
+            "right_hand_site_rotation": lift_sample["right_hand_site_rotation"].tolist(),
+            "hand_joint_positions_rad": lift_sample["hand_joint_positions_rad"],
+            "right_digit_contacts": lift_sample["digit_contacts"],
+            "right_digit_forces_n": lift_sample["digit_forces_n"],
+            "lift_height_m": float(lift_sample["position"][2] - initial_position[2]),
+        }
+        if monitor.stages["LIFT"] is None:
+            raise RuntimeError("Bottle did not rise at least 0.05 m while held by right Dex3 contact")
+
+        current_object = lift_sample["position"]
+        target_delta = np.array(
+            [geometry["target_center"][0] - current_object[0],
+             geometry["target_center"][1] - current_object[1], 0.0],
             dtype=float,
         )
-        transfer_hand_target = _hand_position_for_object(grasp_transform, target_lift)
-        right_transfer = _plan_right_hand_target(
-            sim, transfer_hand_target, grasp_transform["target_site_rotation"]
+        sim.target_pos[right_ctrl] = sim.right_arm_q
+        transfer_target = _plan_right_hand_target(
+            sim, np.asarray(sim.right_hand_pos, dtype=float) + target_delta, hand_rotation
         )
-        move_right_arm(
-            _interpolate(sim.right_arm_q, right_transfer, args.transfer_frames),
-        )
-        right_transfer = _plan_right_hand_target(
-            sim, transfer_hand_target, grasp_transform["target_site_rotation"]
-        )
-        move_right_arm(
-            _interpolate(sim.right_arm_q, right_transfer, max(60, args.release_frames * 2)),
-        )
-        hold_right_arm(right_transfer, 60)
+        move_group(right_ctrl, transfer_target, args.transfer_frames)
         transfer_sample = _contact_sample(mujoco, sim, geometry)
-        transfer_weld_error = _grasp_weld_pose_error(mujoco, sim, geometry)
+        controller_stages["TRANSFER"] = {
+            "sim_time_s": transfer_sample["sim_time_s"],
+            "control_frame": frame_index,
+        }
         waypoint_checks["TRANSFER_END"] = {
             "object_position_m": transfer_sample["position"].tolist(),
-            "object_quaternion_wxyz": transfer_sample["quaternion_wxyz"].tolist(),
-            "object_upright": transfer_sample["upright"],
-            "right_arm_joint_error_rad": float(np.linalg.norm(sim.right_arm_q - right_transfer)),
-            "grasp_weld_position_error_m": transfer_weld_error[0],
-            "grasp_weld_rotation_error_rad": transfer_weld_error[1],
+            "right_digit_contacts": transfer_sample["digit_contacts"],
+            "right_digit_forces_n": transfer_sample["digit_forces_n"],
+            "footprint": transfer_sample["footprint_check"],
         }
-        print(
-            "TRANSFER_END: "
-            f"object_xyz={np.round(sim.box_pos, 3).tolist()} "
-            f"target_xyz={np.round(target_lift, 3).tolist()} "
-            f"right_site_xyz={np.round(sim.right_hand_pos, 3).tolist()} "
-            f"upright={transfer_sample['upright']} "
-            f"weld_rotation_error_rad={transfer_weld_error[1]:.3f} "
-            f"site_error_m={np.linalg.norm(sim.right_hand_pos - transfer_hand_target):.3f} "
-            f"joint_error_rad={np.linalg.norm(sim.right_arm_q - right_transfer):.3f}",
-            flush=True,
-        )
         if monitor.stages["TRANSFER"] is None:
-            raise RuntimeError("right-hand transfer did not carry the bottle into the target footprint")
-        controller_stages["TRANSFER"] = {
-            "sim_time_s": float(sim.data.time),
-            "control_frame": frame_index,
-        }
-        print(f"TRANSFER: sim_time={sim.data.time:.3f}s frame={frame_index}", flush=True)
+            raise RuntimeError("Right Dex3 contact did not transfer the bottle into the target table region")
 
-        lower_z = TARGET_TABLE_TOP_Z + 0.100 + 0.007
-        target_place = np.array(
-            [geometry["target_center"][0], geometry["target_center"][1], lower_z],
-            dtype=float,
-        )
-        right_lower = _plan_right_hand_target(
+        place_center_z = TARGET_TABLE_TOP_Z + 0.078
+        lower_delta_z = place_center_z - float(transfer_sample["position"][2])
+        sim.target_pos[right_ctrl] = sim.right_arm_q
+        lower_target = _plan_right_hand_target(
             sim,
-            _hand_position_for_object(grasp_transform, target_place),
-            grasp_transform["target_site_rotation"],
+            np.asarray(sim.right_hand_pos, dtype=float) + np.array([0.0, 0.0, lower_delta_z]),
+            hand_rotation,
         )
-        move_right_arm(
-            _interpolate(sim.right_arm_q, right_lower, args.lower_frames),
-        )
-        right_lower = _plan_right_hand_target(
-            sim,
-            _hand_position_for_object(grasp_transform, target_place),
-            grasp_transform["target_site_rotation"],
-        )
-        move_right_arm(
-            _interpolate(sim.right_arm_q, right_lower, max(40, args.release_frames)),
-        )
-        hold_right_arm(right_lower, 40)
+        move_group(right_ctrl, lower_target, args.lower_frames)
+        hold_group(right_ctrl, lower_target, 5)
         lower_sample = _contact_sample(mujoco, sim, geometry)
-        lower_weld_error = _grasp_weld_pose_error(mujoco, sim, geometry)
         waypoint_checks["LOWER_END"] = {
             "object_position_m": lower_sample["position"].tolist(),
-            "object_quaternion_wxyz": lower_sample["quaternion_wxyz"].tolist(),
-            "object_upright": lower_sample["upright"],
-            "target_contact": lower_sample["target_contact"],
-            "right_arm_joint_error_rad": float(np.linalg.norm(sim.right_arm_q - right_lower)),
-            "grasp_weld_position_error_m": lower_weld_error[0],
-            "grasp_weld_rotation_error_rad": lower_weld_error[1],
+            "target_table_contact": lower_sample["target_contact"],
+            "footprint": lower_sample["footprint_check"],
         }
-        print(
-            "LOWER_SETTLED: "
-            f"object_xyz={np.round(lower_sample['position'], 3).tolist()} "
-            f"quaternion_wxyz={np.round(lower_sample['quaternion_wxyz'], 3).tolist()} "
-            f"upright={lower_sample['upright']} "
-            f"target_contact={lower_sample['target_contact']} "
-            f"weld_rotation_error_rad={lower_weld_error[1]:.3f} "
-            f"joint_error_rad={np.linalg.norm(sim.right_arm_q - right_lower):.3f}",
-            flush=True,
-        )
-        controller_stages["LOWER"] = {
+
+        monitor.carry_contact_required = False
+        move_group(hand_ctrl, open_hand, args.open_frames)
+        controller_stages["FINGER_OPEN"] = {
             "sim_time_s": float(sim.data.time),
             "control_frame": frame_index,
         }
-        print(f"LOWER: sim_time={sim.data.time:.3f}s frame={frame_index}", flush=True)
-
-        def release_grasp_weld() -> None:
-            sim.data.eq_active[geometry["grasp_weld"]] = 0
-            mujoco.mj_forward(sim.model, sim.data)
-
-        release_event = _record_weld_event(
-            sim, geometry, monitor, "release", release_grasp_weld
+        retreat_target = _plan_right_hand_target(
+            sim,
+            np.asarray(sim.right_hand_pos, dtype=float) + np.array([-0.12, 0.0, 0.10]),
+            hand_rotation,
         )
-        print(
-            "WELD_RELEASE: "
-            f"sim_time={release_event['sim_time_s']:.3f}s "
-            f"translation_jump_m={release_event['pose_jump_m']['translation']:.6g} "
-            f"rotation_jump_rad={release_event['pose_jump_m']['rotation_rad']:.6g}",
-            flush=True,
-        )
-        trace_start_frame = frame_index
-        controller_stages["DETACH"] = {
+        move_group(right_ctrl, retreat_target, args.retreat_frames)
+        controller_stages["RETREAT"] = {
             "sim_time_s": float(sim.data.time),
             "control_frame": frame_index,
         }
-        record_post_release_sample(_contact_sample(mujoco, sim, geometry))
-        right_retreat_target = sim.right_hand_pos + np.array([-0.04, -0.04, 0.16])
-        right_release = _plan_right_hand_position(sim, right_retreat_target)
-        move_right_arm(
-            _interpolate(sim.right_arm_q, right_release, max(40, args.release_frames)),
-        )
-        controller_stages["RELEASE"] = {
-            "sim_time_s": float(sim.data.time),
-            "control_frame": frame_index,
-        }
-        print(f"RELEASE: sim_time={sim.data.time:.3f}s frame={frame_index}", flush=True)
-
         for _ in range(args.settle_frames):
-            sim.target_pos[right_ctrl] = right_release
+            sim.target_pos[right_ctrl] = retreat_target
+            sim.target_pos[hand_ctrl] = open_hand
             sim.step_frame()
             observe()
             if monitor.stages["PLACE"] is not None:
@@ -1731,7 +1932,7 @@ def run_demo(args: argparse.Namespace) -> dict:
     result.update(
         {
             "issue": 43,
-            "demo": "M0 G1 bottle pick-and-place",
+            "demo": "M0 fixed-base G1, one right Dex3 hand, normal water bottle",
             **_runtime_identity(args, monitor),
             "object_geometry_parameters": [
                 {
@@ -1739,13 +1940,26 @@ def run_demo(args: argparse.Namespace) -> dict:
                     "shape": spec["type"],
                     "position_m": [float(value) for value in spec["pos"].split()],
                     "size": [float(value) for value in spec["size"].split()],
-                    "size_convention": "radius_m, half_length_m"
-                    if spec["type"] in ("cylinder", "capsule")
-                    else "MuJoCo geom half extents/radius in meters",
                     "mass_kg": float(spec["mass"]),
                 }
                 for spec in OBJECT_GEOM_SPECS
             ],
+            "robot_hand": {
+                "model": "Unitree Dex3-1 Rev 1.0 right hand",
+                "parent_body": "right_wrist_yaw_link",
+                "joint_names": list(RIGHT_HAND_JOINT_NAMES),
+                "actuator_ids_by_joint_name": hand_actuators,
+                "g1_body_actuator_count": 29,
+                "total_actuator_count": 36,
+                "left_articulated_hand": False,
+                "palm_roll_deg": args.hand_roll_deg,
+                "grasp_site_offset_m": list(GRASP_SITE_OFFSET_M),
+                "grasp_hold_frames": args.grasp_hold_frames,
+                "grasp_preload_rad": GRASP_PRELOAD_RAD,
+                "position_kp": HAND_POSITION_KP,
+                "velocity_kd": HAND_VELOCITY_KD,
+                "grasp_mode": "measured multi-finger contact and friction only",
+            },
             "acceptance_thresholds": _acceptance_thresholds(monitor),
             "candidate": {
                 "repository": "https://github.com/ozkannceylan/humanoid_vla",
@@ -1753,13 +1967,13 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "license": "MIT",
                 "unitree_mesh_repository": "https://github.com/unitreerobotics/unitree_mujoco",
                 "unitree_mesh_commit": UNITREE_COMMIT,
-                "mujoco_python_version": "3.2.6",
-                "controller": "upstream bimanual Jacobian IK plus PD torque control",
-                "grasp_reference_repository": "https://github.com/maxwellrobotics/g1-ros2",
-                "grasp_reference_commit": "ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff",
-                "grasp_reference_license": "BSD-3-Clause",
-                "physics": "MuJoCo mj_step, 500 Hz physics substeps, pinned base",
-                "grasp": "measured bilateral palm contact gates a runtime right-palm weld; detached before physics-driven release and settling",
+                "dex3_repository": "https://github.com/unitreerobotics/unitree_ros",
+                "dex3_commit": DEX3_COMMIT,
+                "dex3_license": "BSD-3-Clause",
+                "mujoco_python_version": MUJOCO_VERSION,
+                "controller": "pinned G1 PD torque controller with name-resolved right Dex3 joint targets",
+                "physics": "MuJoCo mj_step, 500 Hz physics substeps, fixed base",
+                "grasp": "right Dex3 thumb plus index and/or middle physical friction contact; no runtime equality and no object qpos writes",
             },
             "run": {
                 "seed": args.seed,
@@ -1777,11 +1991,18 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "target_xy_m": geometry["target_center"].tolist(),
                 "target_table_body_xy_m": TARGET_TABLE_BODY_XY.tolist(),
                 "target_table_gap_m": TABLE_GAP_M,
+                "hand_roll_deg": args.hand_roll_deg,
+                "commanded_lift_height_m": args.lift_height_m,
+                "transfer_frames": args.transfer_frames,
+                "lower_frames": args.lower_frames,
                 "target_half_extents_m": geometry["target_half_extents"].tolist(),
                 "bottle_collision_geoms": list(OBJECT_COLLISION_GEOMS),
-                "bottle_total_mass_kg": 0.315,
-                "bottle_body_radius_m": 0.075,
-                "bottle_main_half_height_m": 0.100,
+                "bottle_total_mass_kg": sum(float(spec["mass"]) for spec in OBJECT_GEOM_SPECS),
+                "bottle_body_diameter_m": 2.0 * float(OBJECT_GEOM_SPECS[0]["size"].split()[0]),
+                "bottle_total_height_m": 0.231,
+                "runtime_equality_count": geometry["runtime_equality_count"],
+                "object_qpos_address": geometry["object_qpos_adr"],
+                "object_qpos_written_after_reset": False,
             },
             "artifacts": {
                 "result_json": str(args.output_json),
@@ -1793,7 +2014,9 @@ def run_demo(args: argparse.Namespace) -> dict:
             },
         }
     )
-    args.output_json.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    args.output_json.write_text(
+        json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
     return result
 
 
@@ -1801,6 +2024,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-root", type=Path, required=True)
     parser.add_argument("--unitree-root", type=Path, required=True)
+    parser.add_argument("--dex3-root", type=Path, required=True)
     parser.add_argument("--mesh-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
@@ -1808,13 +2032,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--screenshot", type=Path, required=True)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--transfer-frames", type=int, default=250)
-    parser.add_argument("--lower-frames", type=int, default=35)
-    parser.add_argument("--release-frames", type=int, default=25)
-    parser.add_argument("--settle-frames", type=int, default=100)
+    parser.add_argument("--approach-frames", type=int, default=60)
+    parser.add_argument("--close-frames", type=int, default=60)
+    parser.add_argument("--lift-height-m", type=float, default=DEFAULT_LIFT_HEIGHT_M)
+    parser.add_argument("--hand-roll-deg", type=float, default=DEFAULT_HAND_ROLL_DEG)
+    parser.add_argument("--grasp-hold-frames", type=int, default=DEFAULT_GRASP_HOLD_FRAMES)
+    parser.add_argument("--lift-frames", type=int, default=DEFAULT_LIFT_FRAMES)
+    parser.add_argument("--transfer-frames", type=int, default=DEFAULT_TRANSFER_FRAMES)
+    parser.add_argument("--lower-frames", type=int, default=DEFAULT_LOWER_FRAMES)
+    parser.add_argument("--open-frames", type=int, default=40)
+    parser.add_argument("--retreat-frames", type=int, default=35)
+    parser.add_argument("--settle-frames", type=int, default=200)
     args = parser.parse_args(argv)
-    if min(args.transfer_frames, args.lower_frames, args.release_frames, args.settle_frames) <= 0:
-        parser.error("all phase frame counts must be positive")
+    if abs(args.hand_roll_deg) > 90.0:
+        parser.error("hand roll must be between -90 and 90 degrees")
+    if min(
+        args.approach_frames,
+        args.close_frames,
+        args.grasp_hold_frames,
+        args.lift_height_m,
+        args.lift_frames,
+        args.transfer_frames,
+        args.lower_frames,
+        args.open_frames,
+        args.retreat_frames,
+        args.settle_frames,
+    ) <= 0:
+        parser.error("phase frame counts and lift height must be positive")
     return args
 
 
@@ -1831,6 +2075,16 @@ def main(argv: list[str] | None = None) -> int:
         "complete": False,
         "state": "RUNNING",
         "stage": "RUNTIME_START",
+        "controller_parameters": {
+            "hand_roll_deg": args.hand_roll_deg,
+            "grasp_site_offset_m": list(GRASP_SITE_OFFSET_M),
+            "grasp_hold_frames": args.grasp_hold_frames,
+            "grasp_preload_rad": GRASP_PRELOAD_RAD,
+            "lift_frames": args.lift_frames,
+            "commanded_lift_height_m": args.lift_height_m,
+            "transfer_frames": args.transfer_frames,
+            "lower_frames": args.lower_frames,
+        },
     }
     args.output_json.write_text(
         json.dumps(initial_result, indent=2, allow_nan=False) + "\n", encoding="utf-8"
