@@ -1,7 +1,8 @@
 # ADR-0005: Physics Process Topology
 
-Status: Proposed
-Date: 2026-10-03
+Status: Proposed (maintainer architecture review required; not accepted)
+Proposed: 2026-10-03
+Evidence updated: 2026-10-04
 
 ## Problem
 
@@ -9,15 +10,17 @@ RobotSim needs one authoritative MuJoCo physics state while supporting Unitree G
 
 ## Evaluated Architectures
 
-### A. Unity-hosted MuJoCo
+### A. Unity-hosted direct-load MuJoCo
 
-Unity owns the scene lifecycle and simulation clock. The official MuJoCo Unity package compiles the Unity component hierarchy to MJCF, creates `mjModel` and `mjData`, steps MuJoCo from `FixedUpdate`, and copies MuJoCo state back to Unity transforms.
+Unity owns the process lifecycle and hosts the native MuJoCo runtime. The Unity process loads the original MJCF directly, retains `mjModel` and `mjData` as the only physics state, and may copy read-only model state to Unity transforms for visualization. It does not reconstruct physics from transforms.
+
+This candidate is distinct from the package's component/importer workflow, which converts between MJCF, Unity components, and generated MJCF. The pinned G1 importer round-trip was not equivalent; the Issue #10 direct-load test bypassed that path and passed structural and replay parity.
 
 ### B. Standalone MuJoCo backend
 
 A separate MuJoCo process owns `mjModel`, `mjData`, physics stepping, simulation time, and the vendor-facing low-level control path. Unity consumes timestamped state and owns rendering, sensors, and visual interaction. ROS 2 remains RobotSim's system-integration boundary. No transport is selected here.
 
-Both preserve the existing ADR-0004 responsibility split: MuJoCo is physics truth, Unity is the high-fidelity frontend, and ROS 2 integrates robot and application interfaces.
+Both preserve the existing ADR-0004 responsibility split: MuJoCo is physics truth, Unity is the high-fidelity frontend, and ROS 2 integrates robot and application interfaces. The Issue #10 recommendation remains proposed; it does not select a transport or change ADR-0004.
 
 ## Authoritative Source Findings
 
@@ -43,7 +46,7 @@ In the inspected Python and C++ paths, the bridge accesses MuJoCo arrays while t
 
 The current official AgiBot X2 simulation guide describes `sim_mujoco` as the MuJoCo physics/HAL process that subscribes to joint commands and publishes joint and IMU state, with the separate `mc` process producing commands. The guide presents this as one of two distinct simulation pipelines and says not to drive the same simulation through both. This is evidence that a standalone physics/HAL boundary is compatible with the X2 stack; it is not an X2 model or runtime validation in RobotSim.
 
-## Local Experiment Evidence
+## Initial Local Experiment Evidence (2026-10-03)
 
 ### A. Matched Unity 3.3.6 pair
 
@@ -63,7 +66,12 @@ Using the official Unitree G1 `g1_23dof.xml` and `g1_29dof.xml`, an isolated Pyt
 
 This is a model-load and stepping check with an open-loop input, not a stable walking, controller-fidelity, real-time, or Sim2Real result. The official SDK2/DDS bridge was not run: the WSL environment lacks the SDK2 Python package, and the C++ build prerequisites include CMake and Unitree SDK2, which are not installed. Bridge behavior and message paths above are from pinned upstream source inspection.
 
-## Comparison
+## Initial Comparison (before Issue #10 matched measurements)
+
+The following table records the initial source and design expectations. Measured
+Issue #10 results and their limitations are in
+[`0005_issue10_architecture_review.md`](0005_issue10_architecture_review.md);
+use that evidence where it updates an earlier estimate or unmeasured claim.
 
 | Criterion | A. Unity-hosted | B. Standalone backend |
 |---|---|---|
@@ -95,11 +103,23 @@ If Unity's robot rig cannot reproduce MuJoCo link transforms exactly from root p
 
 Starting estimates, not measurements: 500 Hz physics for a 2 ms model step; up to 1 kHz vendor low-level bridge where the robot contract requires it; 60-120 Hz snapshots for a 30-60 Hz render/sensor frontend, with interpolation against simulation timestamps. Sensor acquisition rates remain sensor-specific. Do not choose shared memory, UDP, ROS 2, Zenoh, or another transport until latency, deployment, and failure-handling requirements are measured.
 
-## Recommendation
+## Current Proposed Recommendation
 
-Prefer B for RobotSim v1: standalone MuJoCo owns model/data, simulation time, and vendor-facing low-level control; Unity is a timestamped visualization and external-sensor client; ROS 2 remains the application/system boundary. The decisive reason is the cost of preserving Unitree's pointer-based SDK2 bridge and its high-frequency work inside a Unity-owned loop, reinforced by the X2 process topology. It is not because the Unity plug-in is incompatible: the official matched 3.3.6 pair passed the minimal end-to-end test on Unity 6.3.
+**Proposed only; not accepted.** Prefer B as the leading RobotSim v1 baseline:
+standalone MuJoCo owns `mjModel`, `mjData`, simulation time, physics stepping,
+and the backend-facing low-level control path; Unity consumes timestamped state
+and owns rendering, external sensor simulation, and visualization; ROS 2
+remains the system-integration boundary. This proposal is supported by the
+standalone process surviving Unity frontend termination, independently
+restarting, and performing better in the matched local hot-path benchmark.
 
-Keep A viable for Unity-centric prototypes or tasks needing direct in-process scene interaction. Revisit this Proposed recommendation after running the official G1 SDK2/DDS bridge and measuring snapshot latency, jitter, and sensor alignment on the target WSL2 setup.
+Keep A technically viable for bounded Unity-centric use: direct loading of the
+original pinned G1 model preserved exact structural, sensor, geometry, and
+tested replay equivalence without the importer round-trip. The matched local
+benchmark does not establish production headroom; the measured queue fixtures
+do not select IPC/DDS transport or QoS. Do not reconstruct robot physics from
+Unity transforms. The complete measurement matrix and proposed wording are in
+[`0005_issue10_architecture_review.md`](0005_issue10_architecture_review.md).
 
 ## Consequences
 
@@ -107,14 +127,17 @@ Keep A viable for Unity-centric prototypes or tasks needing direct in-process sc
 - Unitree SDK2/DDS can remain in a backend process, but its shared-data threading behavior must be reviewed and the RobotSim ROS 2 interface still needs an adapter.
 - Unity needs timestamped pose/joint ingestion, interpolation, stable name/frame mapping, and process supervision.
 - Visual/collision geometry synchronization remains an explicit asset-pipeline responsibility.
-- No transport, production state schema, or rate guarantee is selected by this spike.
+- Unity-hosted direct-load remains a viable implementation path, but physics state and frontend share the Unity process failure domain.
+- No transport, production state schema, QoS policy, or rate guarantee is selected by this proposal.
 
 ## Unresolved Questions
 
 - Does the pinned Unitree SDK2 bridge complete a G1 LowCmd/LowState round trip in this WSL2 environment, and does its shared `mjData` access need a synchronization fix?
 - What state representation best preserves link transforms and Unity sensor alignment without duplicating physical state?
-- What snapshot rate, latency, jitter, and process-restart behavior meet the intended RGB-D/LiDAR workloads?
+- What production transport/QoS, end-to-end latency, jitter, stale-state policy, and process-restart behavior meet the intended RGB-D/LiDAR workloads?
+- How should generation changes/reset samples be delivered when a latest-state queue can coalesce step zero?
 - Which ROS 2 and vendor DDS boundaries are required for the X2 backend and real-robot parity?
+- Does the measured standalone performance preserve enough headroom under rendered Unity, ROS 2, sensors, and high-concurrency workloads?
 - Are all model meshes and SDK dependencies covered by licenses compatible with the intended distribution? The BSD-3-Clause finding above is limited to the pinned `unitree_mujoco` repository.
 
 ## Validation Record
@@ -125,6 +148,9 @@ Keep A viable for Unity-centric prototypes or tasks needing direct in-process sc
 - The test's loaded native library reports version code 336.
 - Unity 6.3 PlayMode: model compile, `mj_step`, changing qpos, and changing Unity Transform; 1 passed, 0 failed.
 - Both official G1 MJCF variants compile with MuJoCo 3.3.6 and advance 1000 steps with finite, changing joint state.
+- The original pinned G1 29-DoF MJCF matches Unity-hosted direct-load structurally and on the canonical 1,000-step replay; native sensor and geometry inventories match exactly.
+- Ten matched standalone-vs-Unity-direct-load performance pairs completed with identical native/model/trace/timestep identity and passed their contention gates.
+- Bounded snapshot, disposable process failure/restart, and Unity marker timestamp fixtures were measured; they do not establish a production transport or full-scene integration.
 - Unitree C++/Python bridge paths, message topics, ownership, and configured rates inspected at the pinned commit; X2 process topology inspected in current official documentation.
 - Unity-generated `Library/`, `Temp/`, `Logs/`, `obj/`, build output, and machine-local settings are ignored. Experiment-only plugin copies and harnesses are outside the repository.
 
@@ -136,7 +162,8 @@ Keep A viable for Unity-centric prototypes or tasks needing direct in-process sc
 
 - Unity's rendered appearance, camera/depth/LiDAR alignment, or GPU sensor performance.
 - A full Unitree SDK2 Python or C++ process, DDS LowCmd/LowState exchange, controller behavior, or deadline performance.
-- Snapshot transport latency/jitter, 500-1000 Hz host throughput, headless/RL scaling, or process supervision.
+- Production IPC/DDS transport latency/jitter and QoS/backpressure, rendered-scene performance headroom, headless/RL scaling, or production process supervision.
+- A full standalone-backend-to-separate-Unity timestamp-alignment path, actual RGB-D/LiDAR acquisition/publication timing, or exact rendering of a reset step-zero state.
 - AgiBot X2 model/runtime integration in RobotSim.
 
 ## References
