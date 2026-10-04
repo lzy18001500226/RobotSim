@@ -26,6 +26,7 @@ a plug-in replacement for RobotSim's pinned full-DoF G1.
   `nq=19, nv=18, nu=12`. The torso and arms are fixed in this model. It is not
   RobotSim's full 29-actuator model.
 - **Policy:** committed `deploy/pre_train/g1/motion.pt` (145,745 bytes),
+  SHA-256 `cf668f75b90d1abf73d2b87612a6e76bccc61ff7e083b63582d3f6aaa3c1759d`,
   TorchScript. The observation is 47 float values: body angular velocity,
   projected gravity, three velocity commands, 12 relative joint positions,
   12 joint velocities, 12 previous actions, and two gait-phase values. The
@@ -52,10 +53,17 @@ a plug-in replacement for RobotSim's pinned full-DoF G1.
   perfectly motionless hold.
 - **Fall/recovery:** no active get-up or fall-recovery behavior is shown by
   this deployment.
+- **Dependencies and effort:** the inference path runs with CPU PyTorch,
+  NumPy, PyYAML and MuJoCo; it does not need Isaac Gym at runtime. The root
+  `setup.py` also lists Isaac Gym/RSL-RL and pins `numpy==1.20`, which is
+  stale for current Python versions. Avoid installing the training package
+  just to run this deployment; the headless reproduction used Python 3.12,
+  `torch==2.14.1+cpu`, NumPy 2.5.3, PyYAML and MuJoCo 3.2.3.
 - **Compatibility and effort:** lowest-cost behavior reference and easiest
-  CPU reproduction. Porting to RobotSim needs a 12-to-29 joint mapping and a
-  decision about the unactuated waist/arms. Model/contact differences also
-  prevent treating this as direct validation of the pinned 29-DoF scene.
+  CPU reproduction after bypassing stale training dependencies. Porting to
+  RobotSim needs a 12-to-29 joint mapping and a decision about the unactuated
+  waist/arms. Model/contact differences also prevent treating this as direct
+  validation of the pinned 29-DoF scene.
 
 ### 2. MuJoCo Playground — best full-DoF CPU policy, but fails neutral hold
 
@@ -71,6 +79,8 @@ a plug-in replacement for RobotSim's pinned full-DoF G1.
   The model is a Playground/Menagerie MJCF, not RobotSim's pinned Unitree
   `g1_29dof.xml` geometry.
 - **Policy:** committed `g1_policy.onnx` (903,543 bytes), CPU ONNX Runtime.
+  SHA-256
+  `db2eb258494c1297c43d2b9ffa94cdbde97654c2a44cbab0b40fd4b990752a5b`.
   Observation width 103 includes local pelvis velocity, gyro, projected
   gravity, velocity command, 29 relative joint angles, 29 joint velocities,
   29 previous actions, and four phase values. Output is 29 joint targets.
@@ -81,8 +91,10 @@ a plug-in replacement for RobotSim's pinned full-DoF G1.
   `python mujoco_playground/experimental/sim2sim/play_g1_joystick.py`.
 - **Reproduction result:** a headless run loaded the exact source
   `OnnxController`, committed ONNX and pinned MJCF/mesh assets, with an
-  injected command source instead of a physical gamepad. It stayed upright
-  and finite through zero, forward, backward, yaw and stop phases. However,
+  injected command source instead of a physical gamepad. The runner bypassed
+  the GUI and joystick only; it did not modify the upstream checkout. It
+  stayed upright and finite through zero, forward, backward, yaw and stop
+  phases. However,
   during 8 s at zero it walked/drifted 1.08 m; during the final 8 s stop it
   drifted 1.12 m. A -0.2 m/s backward command did not produce negative median
   forward velocity. The +0.4 rad/s yaw phase tracked at about 0.43 rad/s.
@@ -108,20 +120,38 @@ a plug-in replacement for RobotSim's pinned full-DoF G1.
   and are not controlled by the locomotion policy.
 - **Policy and evidence:** committed `model_walk.onnx` and
   `model_balance.onnx`; source declares 516 observations (86 values over six
-  history frames), 15 outputs, 50 Hz control and 2 ms physics. The walk /
-  balance selector uses a near-zero command threshold. The benchmark reports
-  survival and recovery under an initial three-second crane hold followed by
+  history frames), 15 outputs, 50 Hz control and 2 ms physics. Each frame
+  contains the velocity command, target posture, gyro, projected gravity,
+  29 joint positions, 29 joint velocities and previous policy action. The
+  action is a scaled joint-position target for 12 leg joints and three waist
+  joints. The walk/balance selector uses a near-zero command threshold. Its
+  command limits are forward `[-0.5, 0.5]` m/s, lateral `[-0.5, 0.5]` m/s and
+  yaw `[-1.0, 1.0]` rad/s, with a 0.5 m/s planar speed cap. The benchmark
+  reports survival under an initial three-second crane hold followed by
   release, waypoint walking and perturbations up to 500 N. It does not report
   a dedicated stationary zero-command hold; its README says a wider
-  walk/balance switch sweep was inert.
-- **Run command:** `./download_weights.sh && ./export_onnx.sh && make && make capture MJWARP_NWORLD=1`,
-  then `./run.sh --policy gr00t_wbc_h066_p012 --engine mujoco --runids 0-0`.
-  The MuJoCo path uses MuJoCo Warp and captured CUDA graphs, with CUDA,
-  TensorRT and NVCC. It is not a CPU deployment path; the build and CUDA
-  version stack make it a poor first experiment on a WSL2 RTX 4060 laptop.
+  walk/balance switch sweep was inert. Bounded forward/backward, yaw and
+  waypoint-stop commands are supported in source, but zero-hold stability is
+  unverified.
+- **Run command:** with the already committed GR00T checkpoints, the focused
+  path is `uv sync --locked && make && make capture MJWARP_NWORLD=1`, then
+  `./run.sh --policy gr00t_wbc_h066_p012 --engine mujoco --runids 0-0`.
+  The README's `download_weights.sh` / `export_onnx.sh` setup prepares the
+  whole policy field and is unnecessary for this committed checkpoint.
+  The Python capture lock pins MuJoCo and MuJoCo Warp to 3.12.0; the C++ build
+  links the local `$MUJOCO` install, which must match. The path uses captured
+  CUDA graphs, CUDA, TensorRT and NVCC. It is not a CPU
+  deployment path. The lock also requires Python 3.14.6, ONNX Runtime 1.29.0
+  and PyTorch 2.14.0. The build and CUDA version stack make it a poor first
+  experiment on a WSL2 RTX 4060 laptop.
+- **Reproduction:** not attempted in Cloud because the selected environment
+  lacks the CUDA/TensorRT device stack and building the CUDA-graph capture
+  would not be a lightweight check.
 - **License/model/fall boundary:** the MIT harness license does not replace
   the checkpoint's NVIDIA Open Model terms. It provides no direct reuse
   evidence for all 29 policy-controlled joints or zero-command standing.
+  The benchmark evaluates perturbation survival while upright; it does not
+  supply a fallen-robot get-up controller.
 
 ## Additional inspected candidate not ranked for reuse
 
@@ -134,6 +164,18 @@ too short to establish a stable hold. The wrapper has no repository license,
 requires external scene and policy files, and its integration test contains
 macOS-specific paths and FFmpeg assumptions. Treat it as a source reference,
 not reusable code.
+
+## Current-path reference
+
+The pinned Unitree RL Lab velocity policy is an included Apache-2.0 ONNX
+artifact (1,658,204 bytes,
+SHA-256 `610c27e463a8f666aa50a06346678c00b4df3859f10b54bcc1f817c28251406f`).
+Its input is 480 float values (five-frame history) and its output is 29 joint
+targets at 50 Hz. Its deployment contract bounds commands to x `[-0.5, 1.0]`
+m/s, y `[-0.3, 0.3]` m/s and yaw `[-0.2, 0.2]` rad/s. This matches
+RobotSim's actuator count better than the RL Gym policy, but it is the policy
+already in the current path; the known elastic-band dependence means that
+matching DoFs alone does not prove free standing.
 
 ## Comparison with RobotSim's current baseline
 
