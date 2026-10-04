@@ -1,10 +1,81 @@
 # Independent technical review: RobotSim PR #41
 
+## Focused re-review of the rollback fix
+
+- Re-reviewed PR head: `5d5d9c8911f04b16c4a26bc9cb6535fa074a5b73`
+- Parent / prior blocking-review head: `2908a7da621f9e39c4f765619561d6aa18303119`
+- Focus: whether the prior rollback race is fixed, with no regressions in the
+  command safety path.
+- Result for this focused re-review: **READY FOR ROUTINE MERGE**.
+
+### Rollback gate and lifecycle
+
+[`onLowState` at the reviewed head](https://github.com/lzy18001500226/RobotSim/blob/5d5d9c8911f04b16c4a26bc9cb6535fa074a5b73/robots/unitree_g1/ros2/robotsim_g1_adapter/src/g1_ros2_adapter.cpp#L118-L128)
+calls [`RollbackInhibit::observeTick`](https://github.com/lzy18001500226/RobotSim/blob/5d5d9c8911f04b16c4a26bc9cb6535fa074a5b73/ros2_ws/src/robotsim_core/include/robotsim_core/rollback_inhibit.hpp#L16-L25)
+when it stores a CRC-valid LowState. A decreasing SDK tick increments an
+epoch, making the gate pending.
+Both command acceptance and command output synchronize through that same gate.
+While pending, `onCommand` rejects input and `publishCommand` does not read the
+buffered command. It emits a full LowCmd with zero-initialized effort values,
+while preserving `mode_machine`, motor mode/other zero setpoints, and recomputing
+the SDK CRC.
+
+The [state timer](https://github.com/lzy18001500226/RobotSim/blob/5d5d9c8911f04b16c4a26bc9cb6535fa074a5b73/robots/unitree_g1/ros2/robotsim_g1_adapter/src/g1_ros2_adapter.cpp#L161-L186)
+snapshots the rollback epoch with the LowState under `state_mutex_`, forces
+`StateTimeline::next` to create a generation even if the simulation timestamp
+has caught up, resets `LatestCommandBuffer` to that generation, and only then
+acknowledges that epoch. A newer rollback epoch is not cleared by
+acknowledging an older one. Once the gate opens, the buffer's generation check
+still rejects old-generation commands; a command in the new generation can
+start again at sequence zero.
+
+The [core regression test](https://github.com/lzy18001500226/RobotSim/blob/5d5d9c8911f04b16c4a26bc9cb6535fa074a5b73/ros2_ws/src/robotsim_core/test/test_core.cpp#L33-L99)
+is deterministic rather than scheduler-dependent. It
+accepts an old-generation command, records a lower tick, attempts output and
+command acceptance before running the generation-reset step, then resets the
+generation and verifies a new-generation command can be accepted and emitted.
+That call order deliberately exercises the former rollback-to-state-timer
+window. It tests the gate and command-buffer behavior; the exact LowCmd zero
+fields and CRC are verified by source inspection rather than a mocked adapter
+output assertion.
+
+### Regression checks
+
+- `mode_machine` is still copied from LowState; every G1 motor field is set and
+  CRC is recomputed after the safe zero-output values are formed.
+- Command freshness continues to use `std::chrono::steady_clock` in the
+  unchanged `LatestCommandBuffer` path. The existing timeout unit test remains.
+- State generation/sequence and command first-sequence behavior are preserved:
+  forced rollback starts a generation at state sequence zero, buffer reset
+  clears its source/sequence history, and the new command test uses sequence
+  zero.
+- No data race was introduced under the adapter's current
+  `rclcpp::spin` single-threaded executor. ROS callbacks/timers own the timeline
+  and command buffer; the independent SDK callback protects LowState and the
+  rollback gate with mutexes. Keep this executor assumption if the adapter is
+  later changed to a multithreaded executor.
+- The rollback mutex is held across SDK `Write`, so output and tick intake have
+  a single serialized order. A write already inside that critical section
+  linearizes before a waiting tick observation; after rollback is observed,
+  subsequent writes are zero torque until generation reset.
+
+### Reported validation
+
+The PR reports 11 ROS/core tests PASS, L2 PASS, L3 PASS, p50/p95/p99 of
+10.370/14.258/16.895 ms, and restart generation plus sequence reset PASS. I
+reviewed the changed code and test source but did not rerun those environment-
+dependent L2/L3 checks. Current GitHub check status and PR commenting could not
+be queried here because the injected GitHub token is invalid; the prior review
+report records its separate evidence for the old head.
+
+No blocking issue remains for the focused rollback review. No production code
+was changed and no merge was performed.
+
 - PR: [#41 — Add minimal ROS 2 workspace and G1 adapter](https://github.com/lzy18001500226/RobotSim/pull/41)
-- Expected and reviewed head: `2908a7da621f9e39c4f765619561d6aa18303119`
+- Initial review head: `2908a7da621f9e39c4f765619561d6aa18303119`
 - Main observed during review: `11aebeb60a1d3c1c2f580c8f4d6bd6907581fd33`
 - Review type: read-only source, contract, workflow, and public CI-status review
-- Result: **REQUEST CHANGES**
+- Initial review result: **REQUEST CHANGES** (blocking rollback race, resolved at the re-reviewed head above)
 
 ## BLOCKING
 
