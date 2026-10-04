@@ -98,7 +98,7 @@ Prefer the sensor/render backend for:
 - optical flow where needed;
 - LiDAR / point cloud.
 
-Unity is the first implementation target, but RobotSim should not make the state/control architecture depend on Unity-specific APIs. A future UE, Isaac, or headless sensor backend should be possible without replacing MuJoCo or robot-control code.
+Unity is the first implementation target, but RobotSim should not make the state/control architecture depend on Unity-specific APIs. A future UE or headless sensor backend should be possible without replacing MuJoCo or robot-control code. Isaac Sim is deliberately **not** a target backend: one of RobotSim's explicit goals is to provide a substantially lighter-weight alternative rather than reproduce an Isaac-based stack.
 
 ## Scene representation
 
@@ -371,7 +371,7 @@ Do not spend current project effort on:
 - a Gazebo production backend;
 - Unity robot physics;
 - a UE sensor backend;
-- an Isaac sensor backend;
+- an Isaac sensor/backend dependency; RobotSim is intended to remain a lighter-weight alternative;
 - duplicated G1/X2 sensor implementations;
 - a universal scene format before concrete scene synchronization requires one;
 - a universal humanoid firmware/runtime before two robot backends establish the shared contract;
@@ -399,6 +399,7 @@ These should drive benchmark/evidence work.
 - This ADR is a proposed refinement and future target.
 - The topology/transport evidence from Issues #10/#11 may revise this proposal.
 - Sensor evidence from #13/#14/#15 may cause Unity-specific choices to change without requiring the MuJoCo/control architecture to be replaced.
+- Replacing Unity with Isaac Sim is not part of the target path; if Unity proves unsuitable, prefer a lighter alternative (for example UE or a dedicated/headless sensor backend) that preserves RobotSim's lightweight design goal.
 
 ## Acceptance rule
 
