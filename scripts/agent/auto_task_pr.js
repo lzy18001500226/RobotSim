@@ -126,7 +126,9 @@ async function ensurePullRequest({ github, context, core }) {
 
   const issue = issueFromBranch(branch);
   const template = Buffer.from(templateFile.content, "base64").toString("utf8").trim();
-  const issueLine = issue ? `- Issue: #${issue}` : "- Issue: not inferred from branch name";
+  const issueLine = issue
+    ? `- Issue: #${issue}\n- Closing reference: Closes #${issue}`
+    : "- Issue: not inferred from branch name";
   const body =
     `${template}\n\n---\n\n## Automated task handoff\n\n` +
     `- Branch: \`${branch}\`\n- Head SHA: \`${run.head_sha}\`\n${issueLine}\n\n` +

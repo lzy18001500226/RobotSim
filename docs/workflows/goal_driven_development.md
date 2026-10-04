@@ -50,7 +50,7 @@ Continue from the Goal and the repository's durable state; inspect the current b
 
 Completion is evidence-based. Apply the minimum levels and status definitions in [the validation contract](../engineering/validation.md), and report each result with its command and evidence. Finish other in-scope work before stopping on a blocker; name the exact unlock action for any required deferred check.
 
-The Goal's thread scope matters: it helps continue one task, but does not automatically discover or switch to other independent repository tasks. Use manually curated GitHub Issues if a durable backlog becomes useful. Do not build a supervisor or queue merely to imitate an issue tracker.
+The Goal's thread scope matters: it helps continue one task, but does not automatically discover or switch to other independent repository tasks. Use manually curated GitHub Issues as the durable task source. Issue #49 authorizes a bounded single-host foreground queue pilot documented in [Local Issue Queue Pilot](local_issue_queue_pilot.md); it does not accept a distributed supervisor or change the Proposed status of [ADR-0006](../adr/0006_goal_mode_first.md).
 
 ## Pause, resume, clear, and review gates
 

@@ -95,6 +95,7 @@ test("absent PR creates one from the main template with conservative Issue metad
   assert.match(mock.calls.create[0].body, /Describe the change/);
   assert.match(mock.calls.create[0].body, /Head SHA: `a{40}`/);
   assert.match(mock.calls.create[0].body, /Issue: #36/);
+  assert.match(mock.calls.create[0].body, /Closes #36/);
   assert.match(mock.calls.create[0].body, /Review required/);
 });
 

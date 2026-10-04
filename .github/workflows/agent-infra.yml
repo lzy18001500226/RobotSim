@@ -34,12 +34,19 @@ jobs:
           scripts/agent/notify_task.py
           scripts/agent/pre_tool_guard.py
           scripts/agent/eval_harness.py
+          scripts/agent/task_queue.py
           tests/test_notify_task.py
           tests/test_pre_tool_guard.py
           tests/test_eval_harness.py
+          tests/test_task_queue.py
 
       - name: Parse Codex hook configuration
         run: python3 -m json.tool .codex/hooks.json > /dev/null
+
+      - name: Parse task queue output schemas
+        run: |
+          python3 -m json.tool scripts/agent/task_result.schema.json > /dev/null
+          python3 -m json.tool scripts/agent/task_review.schema.json > /dev/null
 
       - name: Check diff and local documentation links
         env:
@@ -65,6 +72,8 @@ jobs:
               Path("docs/README.md"),
               Path("docs/checklists/agent_infra_eval.md"),
               Path("docs/workflows/agent_behavior_eval.md"),
+              Path("docs/workflows/goal_driven_development.md"),
+              Path("docs/workflows/local_issue_queue_pilot.md"),
           )
           missing = []
           for document in documents:
