@@ -131,3 +131,59 @@ and public network access. They cannot reproduce it using the exact documented
 command on a fresh checkout until the launcher executable mode (or documented
 invocation) is corrected. No PR code or vendor source was modified by this
 audit.
+
+## Final launcher/evidence-integrity re-review
+
+- Reviewed exact PR head: `5f08abaa748165936676f8b4c36dbe5cbd0adbfb`.
+- This was a read-only review of the final launcher/evidence patch. The PR
+  checkout remained clean; only this report-only branch was updated.
+- The prior executable-bit blocker is resolved: Git records
+  `scripts/run_m0_pick_place.sh` as `100755`, and direct invocation from `/`
+  completed the M0 demo.
+
+### Reproduced behavior
+
+- A fresh invocation writes `PREFLIGHT` / `passed: false` before dependency
+  checks. With a stale prior `PASS` result present and `uv` hidden from `PATH`,
+  the invocation replaced it with a new `PREFLIGHT_FAILED` record and a new run
+  ID. The ordinary failure record parsed as JSON.
+- The exact pinned Humanoid VLA and Unitree MuJoCo commits are checked. Wrong
+  commits and dirty checkouts for both repositories fail closed with actionable
+  diagnostics. An external `ROBOTSIM_M0_MESH_DIR` is rejected unless it
+  resolves to the G1 mesh directory inside the verified Unitree checkout.
+- A reused Python 3.12 environment is rejected; Python 3.10.x is required.
+- The direct exact-head run passed all task and safety checks in CPU/EGL
+  headless mode. Its JSON recorded run ID, RobotSim SHA and clean state, Python
+  and MuJoCo/NumPy/h5py/OpenCV versions, both upstream SHAs, mesh provenance,
+  seed, and output directory. JSON, log, MP4, screenshot, trace, and generated
+  model outputs were present. No manipulation/controller or acceptance logic
+  changed in this patch.
+- Upstream test checkouts used for rejection cases were fixtures under `/tmp`;
+  the pinned vendor checkouts used by the successful run remained clean.
+- No credential handling or hardcoded personal home path was introduced. The
+  selected output directory and checkout paths can appear in result/error
+  fields by design; the output directory is part of the requested run identity.
+
+### BLOCKING: JSON control-character escaping
+
+`scripts/run_m0_pick_place.sh:17-22` escapes backslash, quote, and newline,
+but does not escape other JSON control characters. A valid configured output
+path containing a tab (`ROBOTSIM_M0_OUTPUT_DIR=$'/tmp/...\t...'`) followed by
+an early preflight failure wrote a literal tab into `output_directory` at
+`scripts/run_m0_pick_place.sh:47`; Python `json.loads` rejected the failure
+record with `Invalid control character`. Thus failure records are not
+guaranteed to remain valid JSON for all accepted path values. Escape all JSON
+U+0000–U+001F characters (or use a JSON encoder) before considering the final
+evidence-integrity gate complete.
+
+### CI and review status
+
+The exact-head GitHub checks page showed successful `Agent infrastructure` and
+`G1 MuJoCo smoke` workflows for both `push` and `pull_request` events (four
+successful runs total). `gh` could not authenticate in this environment, so a
+PR review comment could not be posted; this finding is persisted in the existing
+report-only branch instead.
+
+Final focused review status: **REQUEST CHANGES** for the JSON control-character
+edge case. The direct M0 reproduction and the other launcher/evidence checks
+passed.
