@@ -215,8 +215,6 @@ esac
         self.assertTrue(json.loads(stale.read_text(encoding="utf-8"))["passed"])
 
     def test_failure_json_escapes_all_allowed_control_bytes_in_paths(self):
-        # NUL cannot occur in POSIX paths or shell variables. Other JSON
-        # control bytes can, and the launcher must keep failure records valid.
         control_output = self.base / ("outputs-" + "\x01" + "\x0b" + "\x1f")
         completed = self.invoke(
             {
