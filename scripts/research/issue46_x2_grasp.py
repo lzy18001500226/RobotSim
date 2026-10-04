@@ -27,6 +27,7 @@ GRASP_WRIST_Y = float(START[1])
 GRASP_WRIST_Z = 0.78
 LIFT_WRIST_Z = 0.86
 WRIST_YAW_DEG = 180.0
+FINGER_CLOSE_FRACTION = float(os.environ.get("ISSUE46_FINGER_CLOSE_FRACTION", "0.45"))
 ARM = [
     "right_shoulder_pitch_joint",
     "right_shoulder_roll_joint",
@@ -262,6 +263,8 @@ def referenced_meshes() -> dict[str, str]:
 
 def main() -> int:
     wall_start = time.time()
+    if not 0.0 < FINGER_CLOSE_FRACTION <= 1.0:
+        raise ValueError("ISSUE46_FINGER_CLOSE_FRACTION must be in (0, 1]")
     OUT.mkdir(parents=True, exist_ok=True)
     print("EXPERIMENT=RobotSim Issue #46 scratch OmniHand physical grasp")
     print(f"COMMAND=MUJOCO_GL=egl {sys.executable} {Path(__file__)}")
@@ -293,7 +296,7 @@ def main() -> int:
             "grasp_wrist_y_m": GRASP_WRIST_Y,
             "grasp_wrist_z_m": GRASP_WRIST_Z,
             "lift_wrist_z_m": LIFT_WRIST_Z,
-            "finger_close_fraction": 0.45,
+            "finger_close_fraction": FINGER_CLOSE_FRACTION,
             "thumb_roll_rad": 0.25,
             "thumb_abduction_rad": -0.30,
             "thumb_mcp_rad": 0.0,
@@ -390,7 +393,7 @@ def main() -> int:
         elif joint_name.endswith("_dip_joint"):
             target = 1.30
         close_target[i] = np.clip(target, model.jnt_range[joint_id, 0], model.jnt_range[joint_id, 1])
-    close_target = open_target + 0.45 * (close_target - open_target)
+    close_target = open_target + FINGER_CLOSE_FRACTION * (close_target - open_target)
     close_target[list(FINGERS).index("R_thumb_roll_joint")] = 0.25
     close_target[list(FINGERS).index("R_thumb_abad_joint")] = -0.30
     close_target[list(FINGERS).index("R_thumb_mcp_joint")] = 0.0
