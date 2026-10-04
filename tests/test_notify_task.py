@@ -120,20 +120,22 @@ class NotifyTaskTests(unittest.TestCase):
                             "head": {"sha": "a" * 40, "ref": pr_branch},
                             "body": pr_body,
                         }, 200)
-                    query = urllib.parse.parse_qs(parsed.query)
-                    page = int(query.get("page", ["1"])[0])
-                    if comment_pages is not None:
-                        return FakeResponse(comment_pages.get(page, []), 200)
-                    with store_guard:
-                        snapshot = list(stored_comments) if page == 1 else []
-                        if page == 1:
-                            first_page_reads += 1
-                            wait_for_race = race_read_barrier is not None and first_page_reads <= 2
-                        else:
-                            wait_for_race = False
-                    if wait_for_race:
-                        race_read_barrier.wait(timeout=5)
-                    return FakeResponse(snapshot, 200)
+                    if parsed.path.endswith("/issues/comments"):
+                        query = urllib.parse.parse_qs(parsed.query)
+                        page = int(query.get("page", ["1"])[0])
+                        if comment_pages is not None:
+                            return FakeResponse(comment_pages.get(page, []), 200)
+                        with store_guard:
+                            snapshot = list(stored_comments) if page == 1 else []
+                            if page == 1:
+                                first_page_reads += 1
+                                wait_for_race = race_read_barrier is not None and first_page_reads <= 2
+                            else:
+                                wait_for_race = False
+                        if wait_for_race:
+                            race_read_barrier.wait(timeout=5)
+                        return FakeResponse(snapshot, 200)
+                    raise AssertionError(f"unexpected GitHub GET: {parsed.path}")
                 if method == "POST":
                     payload = json.loads(request.data)  # type: ignore[attr-defined]
                     with store_guard:
@@ -572,6 +574,7 @@ class NotifyTaskTests(unittest.TestCase):
             "Closes someoneelse/OtherRepo#44",
             "```text\nCloses #44\n```",
             "Example: `Closes #44`",
+            "Example: `inline code starts\nCloses #44\nand ends here`",
             "    Closes #44",
             "Closes #45",
         )
@@ -1031,6 +1034,8 @@ class NotifyTaskTests(unittest.TestCase):
                     ))
         self.assertEqual(counts["github_post"], 2)
         self.assertEqual(len(stored_comments), 1)
+        self.assertEqual(stored_comments[0]["id"], 101)
+        self.assertGreaterEqual(counts["github_delete"], 1)
         self.assertEqual(sum(outcome.state == "failed" for outcome in outcomes), 1)
         loser = next(outcome for outcome in outcomes if outcome.state == "failed")
         self.assertIn("concurrently used with a different payload", loser.message)
@@ -1045,6 +1050,58 @@ class NotifyTaskTests(unittest.TestCase):
             notify_task.normalize_task_closeout(events[winner_index]),
         )
         self.assertEqual(counts["github_delete"], 1)
+
+    def test_racing_issue_and_pr_destinations_arbitrate_repository_wide(self) -> None:
+        stored_comments: list[dict[str, object]] = []
+        read_barrier = threading.Barrier(2)
+        post_barrier = threading.Barrier(2)
+        transport, requests, counts = self._mock_closeout_transport(
+            comments=stored_comments,
+            race_read_barrier=read_barrier,
+            race_post_barrier=post_barrier,
+        )
+        with tempfile.TemporaryDirectory() as root:
+            issue_settings = self._settings(str(Path(root) / "issue-writer"))
+            pr_settings = self._settings(str(Path(root) / "pr-writer"))
+            issue_event = self._closeout_event(pr_number=None)
+            pr_event = self._closeout_event()
+            self.assertEqual(
+                notify_task.normalize_task_closeout(issue_event)["event_id"],
+                notify_task.normalize_task_closeout(pr_event)["event_id"],
+            )
+            with patch.object(notify_task, "_open_request", side_effect=transport):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    outcomes = list(pool.map(
+                        lambda pair: notify_task.process_task_closeout(pair[0], environ=pair[1]),
+                        ((issue_event, issue_settings), (pr_event, pr_settings)),
+                    ))
+
+        post_paths = {
+            urllib.parse.urlsplit(request.full_url).path
+            for request in requests
+            if request.get_method() == "POST" and "api.github.com" in request.full_url
+        }
+        self.assertEqual(
+            post_paths,
+            {
+                "/repos/lzy18001500226/RobotSim/issues/44/comments",
+                "/repos/lzy18001500226/RobotSim/issues/42/comments",
+            },
+        )
+        self.assertEqual(counts["github_post"], 2)
+        self.assertEqual(len(stored_comments), 1)
+        self.assertEqual(stored_comments[0]["id"], 101)
+        self.assertGreaterEqual(counts["github_delete"], 1)
+        self.assertEqual(sum(outcome.state == "failed" for outcome in outcomes), 1)
+        loser = next(outcome for outcome in outcomes if outcome.state == "failed")
+        self.assertIn("different payload", loser.message)
+        remaining_payload = notify_task.TASK_CLOSEOUT_COMMENT_JSON.search(
+            str(stored_comments[0]["body"])
+        )
+        self.assertIsNotNone(remaining_payload)
+        assert remaining_payload is not None
+        winning_event = json.loads(remaining_payload.group(1))
+        self.assertIn(winning_event["pr_number"], (None, 42))
 
 
 if __name__ == "__main__":

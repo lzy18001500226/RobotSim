@@ -514,12 +514,17 @@ def _github_json(method: str, path: str, token: str, payload: object | None = No
         raise RuntimeError("invalid GitHub API response") from None
 
 
-def _list_issue_comments(issue_number: str, token: str) -> list[dict[str, object]]:
+def _list_repository_issue_comments(token: str) -> list[dict[str, object]]:
+    """List comments across every Issue and PR in the canonical repository.
+
+    Event IDs are repository-global, so target-local scans cannot arbitrate
+    two writers that chose different valid destinations.
+    """
     comments: list[dict[str, object]] = []
     page = 1
     while page <= 1000:
         path = (
-            f"/repos/{ROBOTSIM_REPOSITORY}/issues/{issue_number}/comments"
+            f"/repos/{ROBOTSIM_REPOSITORY}/issues/comments"
             f"?per_page=100&page={page}"
         )
         result = _github_json("GET", path, token)
@@ -614,9 +619,8 @@ def _reconcile_closeout_comments(
     event_id: str,
     actor: str,
     token: str,
-    issue_number: int,
 ) -> tuple[dict[str, object] | None, dict[str, object] | None, bool]:
-    """Converge visible records to the earliest authenticated comment for an event.
+    """Converge repository-wide records to the earliest authenticated comment.
 
     GitHub has no conditional-create operation for Issue comments. Concurrent
     writers therefore reconcile after writing: the lowest comment ID wins,
@@ -643,17 +647,62 @@ def _reconcile_closeout_comments(
             try:
                 _github_json(
                     "DELETE",
-                    f"/repos/{ROBOTSIM_REPOSITORY}/issues/{issue_number}/comments/{comment_id}",
+                    f"/repos/{ROBOTSIM_REPOSITORY}/issues/comments/{comment_id}",
                     token,
                 )
             except RuntimeError as exc:
                 if str(exc) != "HTTP 404":
                     return None, None, False
-        snapshot = _list_issue_comments(str(issue_number), token)
+        snapshot = _list_repository_issue_comments(token)
         remaining = _trusted_closeout_records(snapshot, event_id, actor)
         if len(remaining) == 1 and remaining[0][0].get("id") == canonical_comment.get("id"):
             return remaining[0][0], remaining[0][1], True
     return None, None, False
+
+
+def _without_inline_code_spans(text: str) -> str:
+    """Remove CommonMark backtick spans, including spans crossing line breaks."""
+    runs: list[tuple[int, int, int, bool]] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "`":
+            index += 1
+            continue
+        run_end = index + 1
+        while run_end < len(text) and text[run_end] == "`":
+            run_end += 1
+        # A backslash-escaped delimiter is ordinary text.
+        preceding_slashes = 0
+        cursor = index - 1
+        while cursor >= 0 and text[cursor] == "\\":
+            preceding_slashes += 1
+            cursor -= 1
+        runs.append((index, run_end, run_end - index, preceding_slashes % 2 == 1))
+        index = run_end
+
+    # Match each run to the next equal-length run in one reverse pass. This
+    # avoids repeatedly rescanning long adversarial PR descriptions.
+    next_equal_run: dict[int, int] = {}
+    next_for_run: dict[int, int] = {}
+    for run_index in range(len(runs) - 1, -1, -1):
+        next_for_run[run_index] = next_equal_run.get(runs[run_index][2], -1)
+        next_equal_run[runs[run_index][2]] = run_index
+
+    output: list[str] = []
+    text_cursor = 0
+    run_index = 0
+    while run_index < len(runs):
+        start, end, _, escaped = runs[run_index]
+        closing_index = next_for_run[run_index]
+        if escaped or closing_index < 0:
+            run_index += 1
+            continue
+        closing_end = runs[closing_index][1]
+        output.extend((text[text_cursor:start], " "))
+        text_cursor = closing_end
+        run_index = closing_index + 1
+    output.append(text[text_cursor:])
+    return "".join(output)
 
 
 def _closeout_target(event: Mapping[str, object]) -> tuple[int, str]:
@@ -677,7 +726,14 @@ def _pr_closes_task_issue(pull: Mapping[str, object], task_id: str) -> bool:
     # indented code blocks, inline code spans, and HTML code/pre examples
     # before considering issue references.
     without_html_code = re.sub(r"(?is)<(pre|code)\b[^>]*>.*?</\1\s*>", " ", body)
-    visible_lines: list[str] = []
+    visible_segments: list[str] = []
+    paragraph: list[str] = []
+
+    def finish_paragraph() -> None:
+        if paragraph:
+            visible_segments.append(_without_inline_code_spans("\n".join(paragraph)))
+            paragraph.clear()
+
     fence_character = ""
     fence_length = 0
     for line in without_html_code.splitlines():
@@ -690,14 +746,17 @@ def _pr_closes_task_issue(pull: Mapping[str, object], task_id: str) -> bool:
                     fence_length = 0
             continue
         if fence:
+            finish_paragraph()
             run = fence.group(1)
             fence_character = run[0]
             fence_length = len(run)
             continue
-        if line.startswith("\t") or line.startswith("    "):
+        if not line.strip() or line.startswith("\t") or line.startswith("    "):
+            finish_paragraph()
             continue
-        visible_lines.append(re.sub(r"(`+)(.*?)\1", " ", line))
-    visible_body = "\n".join(visible_lines)
+        paragraph.append(line)
+    finish_paragraph()
+    visible_body = "\x00".join(visible_segments)
     closing_reference = re.compile(
         r"(?i)\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+"
         r"(?:(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)#(?P<qualified_number>[1-9][0-9]*)|"
@@ -763,9 +822,9 @@ def persist_task_closeout(
                     "failed", "pull request description must link the originating Issue with a closing keyword"
                 )
         with _task_closeout_lock(str(event["event_id"]), env):
-            comments = _list_issue_comments(str(target_number), token)
+            comments = _list_repository_issue_comments(token)
             canonical_comment, canonical_event, reconciled = _reconcile_closeout_comments(
-                comments, str(event["event_id"]), actor, token, target_number
+                comments, str(event["event_id"]), actor, token
             )
             if not reconciled:
                 return PersistenceResult("failed", "closeout comments could not be consolidated")
@@ -785,9 +844,9 @@ def persist_task_closeout(
                 return PersistenceResult("failed", "GitHub did not confirm the closeout comment")
             # Re-read after creation. This also lets racing writers consolidate
             # their authenticated records, including conflicting payloads.
-            comments = _list_issue_comments(str(target_number), token)
+            comments = _list_repository_issue_comments(token)
             canonical_comment, canonical_event, reconciled = _reconcile_closeout_comments(
-                comments, str(event["event_id"]), actor, token, target_number
+                comments, str(event["event_id"]), actor, token
             )
             if not reconciled or canonical_event is None or canonical_comment is None:
                 return PersistenceResult("failed", "concurrent closeout comments could not be consolidated")
