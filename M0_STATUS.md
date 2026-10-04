@@ -1,6 +1,8 @@
 # Issue #43 M0 Status
 
-CURRENT STAGE: Phase 7 complete - reproducible RobotSim M0 bottle pick-and-place demo passes twice with the fixed seed.
+CURRENT STAGE: Acceptance-gap revision in progress; the final two-run reproduction is pending.
+
+The previously recorded run metrics below belong to the earlier box-dominant geometry and center-only placement acceptance. They are historical and do not validate this revision.
 
 CHOSEN BASELINE: ozkannceylan/humanoid_vla bimanual G1 MuJoCo controller.
 
@@ -32,4 +34,4 @@ FINAL DEMO COMMAND: `./scripts/run_m0_pick_place.sh`. Default artifacts are unde
 
 KNOWN SHORTCUTS: The G1 base is fixed, object/table poses are deterministic ground truth, and the script uses a measured-contact runtime weld during grasp. The final stable pose is side-lying; upright orientation is reported but is not an acceptance requirement. The adapter runtime pins MuJoCo 3.2.6; the repository's separate G1 smoke suite was validated on MuJoCo 3.3.6.
 
-FINAL STATUS: PASS - ready for final visual review.
+FINAL STATUS: PENDING REVIEW - cylindrical geometry, whole-object footprint acceptance, physics-step integrity, and two fixed-seed reproductions are not yet validated.

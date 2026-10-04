@@ -41,9 +41,10 @@ TARGET_TABLE_XY = TARGET_TABLE_BODY_XY + np.array(
 )
 TARGET_TABLE_BODY_Z = 0.20
 TARGET_TABLE_TOP_Z = TARGET_TABLE_BODY_Z + 0.8
+TARGET_MARGIN_M = 0.03
 OBJECT_BODY_NAME = "green_box"
 OBJECT_JOINT_NAME = "box_joint"
-OBJECT_MAIN_GEOM = "box_geom"
+OBJECT_MAIN_GEOM = "m0_bottle_body"
 GRASP_WELD_NAME = "m0_grasp_weld"
 OBJECT_COLLISION_GEOMS = (
     OBJECT_MAIN_GEOM,
@@ -54,34 +55,34 @@ OBJECT_COLLISION_GEOMS = (
 OBJECT_GEOM_SPECS = (
     {
         "name": OBJECT_MAIN_GEOM,
-        "type": "box",
+        "type": "cylinder",
         "pos": "0 0 0",
-        "size": "0.100 0.075 0.100",
-        "mass": "0.28",
+        "size": "0.075 0.100",
+        "mass": "0.260",
         "rgba": "0.10 0.52 0.72 1",
     },
     {
         "name": "m0_bottle_shoulder",
-        "type": "box",
-        "pos": "0 0 0.125",
-        "size": "0.075 0.056 0.035",
-        "mass": "0.020",
+        "type": "cylinder",
+        "pos": "0 0 0.115",
+        "size": "0.060 0.025",
+        "mass": "0.025",
         "rgba": "0.10 0.52 0.72 1",
     },
     {
         "name": "m0_bottle_neck",
         "type": "cylinder",
-        "pos": "0 0 0.170",
-        "size": "0.025 0.035",
-        "mass": "0.010",
+        "pos": "0 0 0.151",
+        "size": "0.022 0.024",
+        "mass": "0.018",
         "rgba": "0.10 0.52 0.72 1",
     },
     {
         "name": "m0_bottle_cap",
         "type": "cylinder",
-        "pos": "0 0 0.213",
-        "size": "0.028 0.008",
-        "mass": "0.005",
+        "pos": "0 0 0.183",
+        "size": "0.026 0.008",
+        "mass": "0.012",
         "rgba": "0.10 0.20 0.28 1",
     },
 )
@@ -248,6 +249,86 @@ def prepare_scene(candidate_root: Path, mesh_dir: Path, output_dir: Path) -> Pat
     return scene_path
 
 
+def _projected_geom_half_extents_xy(
+    shape: str, rotation: np.ndarray, size: np.ndarray
+) -> np.ndarray:
+    """Return conservative world-XY half extents for a supported MuJoCo geom."""
+    rotation = np.asarray(rotation, dtype=float).reshape(3, 3)
+    size = np.asarray(size, dtype=float)
+    if shape == "box":
+        return np.abs(rotation[:2, :]) @ size[:3]
+    if shape == "sphere":
+        return np.full(2, float(size[0]))
+    if shape in ("cylinder", "capsule"):
+        axis = rotation[:, 2]
+        radial_size = float(size[0])
+        half_length = float(size[1])
+        axial_xy = np.abs(axis[:2])
+        if shape == "cylinder":
+            radial_xy = radial_size * np.sqrt(np.maximum(0.0, 1.0 - axis[:2] ** 2))
+        else:
+            radial_xy = np.full(2, radial_size)
+        return radial_xy + half_length * axial_xy
+    raise ValueError(f"unsupported bottle collision geometry: {shape}")
+
+
+def check_projected_footprint(
+    projected_geoms: list[dict],
+    target_xy: np.ndarray,
+    target_half_extents: np.ndarray,
+    margin: float,
+) -> dict:
+    """Require every projected object geom to clear all four table edges by margin."""
+    target_xy = np.asarray(target_xy, dtype=float).reshape(2)
+    target_half_extents = np.asarray(target_half_extents, dtype=float).reshape(2)
+    inner_half_extents = target_half_extents - float(margin)
+    valid_table = bool(
+        np.all(np.isfinite(target_xy))
+        and np.all(np.isfinite(inner_half_extents))
+        and np.all(inner_half_extents > 0.0)
+        and math.isfinite(margin)
+        and margin >= 0.0
+    )
+    geometries = []
+    for geom in projected_geoms:
+        center_xy = np.asarray(geom["center_xy_m"], dtype=float).reshape(2)
+        half_extents_xy = np.asarray(geom["half_extents_xy_m"], dtype=float).reshape(2)
+        clearances = inner_half_extents - np.abs(center_xy - target_xy) - half_extents_xy
+        finite = bool(np.all(np.isfinite(center_xy)) and np.all(np.isfinite(half_extents_xy)))
+        inside = bool(valid_table and finite and np.all(clearances >= -1e-9))
+        geometries.append(
+            {
+                "name": geom["name"],
+                "center_xy_m": center_xy.tolist(),
+                "half_extents_xy_m": half_extents_xy.tolist(),
+                "edge_clearance_xy_m": clearances.tolist(),
+                "inside_with_margin": inside,
+            }
+        )
+    passed = bool(
+        valid_table and geometries and all(item["inside_with_margin"] for item in geometries)
+    )
+    return {
+        "passed": passed,
+        "configured_margin_m": float(margin),
+        "target_center_xy_m": target_xy.tolist(),
+        "target_half_extents_xy_m": target_half_extents.tolist(),
+        "inner_half_extents_xy_m": inner_half_extents.tolist(),
+        "geometries": geometries,
+    }
+
+
+def _quaternion_angular_distance(first: np.ndarray, second: np.ndarray) -> float:
+    first = np.asarray(first, dtype=float).reshape(4)
+    second = np.asarray(second, dtype=float).reshape(4)
+    first_norm = float(np.linalg.norm(first))
+    second_norm = float(np.linalg.norm(second))
+    if not math.isfinite(first_norm + second_norm) or min(first_norm, second_norm) <= 1e-12:
+        return math.inf
+    dot = float(np.clip(abs(np.dot(first / first_norm, second / second_norm)), 0.0, 1.0))
+    return float(2.0 * math.acos(dot))
+
+
 @dataclass
 class AcceptanceMonitor:
     initial_position: np.ndarray
@@ -255,7 +336,7 @@ class AcceptanceMonitor:
     target_half_extents: np.ndarray
     dt: float
     lift_height: float = 0.05
-    target_margin: float = 0.03
+    target_margin: float = TARGET_MARGIN_M
     minimum_grasp_force_n: float = 2.0
     grasp_frames_required: int = 5
     release_frames_required: int = 5
@@ -265,6 +346,10 @@ class AcceptanceMonitor:
     angular_speed_limit: float = 0.20
     stable_position_radius: float = 0.02
     teleport_step_limit: float = 0.20
+    physics_step_translation_limit: float = 0.005
+    physics_step_angular_jump_limit: float = 0.025
+    weld_event_translation_limit: float = 0.002
+    weld_event_angular_jump_limit: float = math.radians(1.0)
     penetration_limit: float = 0.025
     drop_z_limit: float = 0.50
 
@@ -291,9 +376,19 @@ class AcceptanceMonitor:
         self.max_post_release_linear_speed = 0.0
         self.max_post_release_angular_speed = 0.0
         self.max_object_step = 0.0
+        self.physics_step_count = 0
+        self.max_physics_step_translation = 0.0
+        self.max_physics_step_angular_jump = 0.0
+        self.max_physics_step_penetration = 0.0
+        self.previous_physics_pose: tuple[np.ndarray, np.ndarray] | None = None
+        self.weld_events: list[dict] = []
+        self.max_weld_event_translation = 0.0
+        self.max_weld_event_angular_jump = 0.0
         self.max_penetration = 0.0
         self.last_position: np.ndarray | None = None
         self.stable_anchor: np.ndarray | None = None
+        self.last_footprint_check: dict | None = None
+        self.placement_footprint_check: dict | None = None
         self.finite_state = True
         self.bounded_state = True
         self.dropped = False
@@ -320,9 +415,11 @@ class AcceptanceMonitor:
         minimum_contact_distance: float,
         state_finite: bool,
         state_extent: float,
+        footprint_check: dict,
     ) -> None:
         position = np.asarray(position, dtype=float)
         self.frame_count += 1
+        self.last_footprint_check = footprint_check
         self.finite_state &= bool(
             state_finite
             and np.all(np.isfinite(position))
@@ -344,10 +441,7 @@ class AcceptanceMonitor:
                 self.dropped = True
                 self._fail("object fell below the configured drop-height limit")
 
-        if math.isfinite(minimum_contact_distance):
-            self.max_penetration = max(self.max_penetration, max(0.0, -minimum_contact_distance))
-            if minimum_contact_distance < -self.penetration_limit:
-                self._fail("object penetration exceeded the configured limit")
+        self._record_penetration(minimum_contact_distance)
 
         bilateral = bool(
             left_contact
@@ -387,6 +481,7 @@ class AcceptanceMonitor:
             self.release_frames = 0
 
         if self.stages["RELEASE"] is not None:
+            self.placement_footprint_check = footprint_check
             self.max_post_release_linear_speed = max(
                 self.max_post_release_linear_speed, float(linear_speed)
             )
@@ -398,6 +493,7 @@ class AcceptanceMonitor:
             self.stages["RELEASE"] is not None
             and target_contact
             and inside_target
+            and bool(footprint_check.get("passed", False))
             and linear_speed <= self.linear_speed_limit
             and angular_speed <= self.angular_speed_limit
         )
@@ -417,6 +513,66 @@ class AcceptanceMonitor:
             self.stable_anchor = None
             self.settling_frames = 0
 
+    def _record_penetration(self, minimum_contact_distance: float) -> None:
+        if not math.isfinite(minimum_contact_distance):
+            return
+        penetration = max(0.0, -float(minimum_contact_distance))
+        self.max_penetration = max(self.max_penetration, penetration)
+        if penetration > self.penetration_limit:
+            self._fail("object penetration exceeded the configured limit")
+
+    def record_physics_step(
+        self,
+        *,
+        sim_time: float,
+        position: np.ndarray,
+        quaternion_wxyz: np.ndarray,
+        minimum_contact_distance: float,
+    ) -> None:
+        position = np.asarray(position, dtype=float).reshape(3)
+        quaternion_wxyz = np.asarray(quaternion_wxyz, dtype=float).reshape(4)
+        self.physics_step_count += 1
+        if not (
+            math.isfinite(sim_time)
+            and np.all(np.isfinite(position))
+            and np.all(np.isfinite(quaternion_wxyz))
+        ):
+            self.finite_state = False
+            self._fail("non-finite object pose during a physics step")
+        previous = self.previous_physics_pose
+        if previous is not None and np.all(np.isfinite(position)):
+            translation = float(np.linalg.norm(position - previous[0]))
+            angular_jump = _quaternion_angular_distance(previous[1], quaternion_wxyz)
+            self.max_physics_step_translation = max(
+                self.max_physics_step_translation, translation
+            )
+            self.max_physics_step_angular_jump = max(
+                self.max_physics_step_angular_jump, angular_jump
+            )
+            if translation > self.physics_step_translation_limit:
+                self._fail("object translation exceeded the per-physics-step limit")
+            if angular_jump > self.physics_step_angular_jump_limit:
+                self._fail("object rotation exceeded the per-physics-step limit")
+        if np.all(np.isfinite(position)) and np.all(np.isfinite(quaternion_wxyz)):
+            self.previous_physics_pose = (position.copy(), quaternion_wxyz.copy())
+        if math.isfinite(minimum_contact_distance):
+            penetration = max(0.0, -float(minimum_contact_distance))
+            self.max_physics_step_penetration = max(
+                self.max_physics_step_penetration, penetration
+            )
+            self._record_penetration(minimum_contact_distance)
+
+    def record_weld_event(self, event: dict) -> None:
+        self.weld_events.append(event)
+        translation = float(event["pose_jump_m"]["translation"])
+        angular = float(event["pose_jump_m"]["rotation_rad"])
+        self.max_weld_event_translation = max(self.max_weld_event_translation, translation)
+        self.max_weld_event_angular_jump = max(self.max_weld_event_angular_jump, angular)
+        if translation > self.weld_event_translation_limit:
+            self._fail(f"{event['event']} weld created an object translation snap")
+        if angular > self.weld_event_angular_jump_limit:
+            self._fail(f"{event['event']} weld created an object rotation snap")
+
     def _fail(self, reason: str) -> None:
         if reason not in self.failures:
             self.failures.append(reason)
@@ -426,9 +582,23 @@ class AcceptanceMonitor:
         safety = {
             "FINITE_STATE": self.finite_state,
             "ROBOT_STATE_BOUNDED": self.bounded_state,
-            "NO_TELEPORT": self.max_object_step <= self.teleport_step_limit,
+            "NO_TELEPORT": bool(
+                self.max_object_step <= self.teleport_step_limit
+                and self.max_physics_step_translation <= self.physics_step_translation_limit
+                and self.max_physics_step_angular_jump <= self.physics_step_angular_jump_limit
+            ),
+            "NO_WELD_EVENT_SNAP": bool(
+                self.max_weld_event_translation <= self.weld_event_translation_limit
+                and self.max_weld_event_angular_jump <= self.weld_event_angular_jump_limit
+            ),
             "NO_EXCESSIVE_PENETRATION": self.max_penetration <= self.penetration_limit,
             "NO_DROP": not self.dropped,
+            "TARGET_TABLE_CONTACT": bool(final_sample and final_sample.get("target_contact")),
+            "WHOLE_OBJECT_FOOTPRINT_INSIDE_TARGET": bool(
+                (self.placement_footprint_check or self.last_footprint_check or {}).get(
+                    "passed", False
+                )
+            ),
         }
         final = final_sample or {}
         final_position = final.get("position")
@@ -439,6 +609,9 @@ class AcceptanceMonitor:
                 for name, sample in self.stages.items()
             },
             "safety_checks": safety,
+            "whole_object_footprint": self.placement_footprint_check
+            or self.last_footprint_check,
+            "weld_events": list(self.weld_events),
             "metrics": {
                 "control_frames": self.frame_count,
                 "bilateral_grasp_frames_max": self.max_bilateral_contact_frames,
@@ -455,8 +628,21 @@ class AcceptanceMonitor:
                 "settling_frames_observed_max": self.max_settling_frames,
                 "max_object_step_m": self.max_object_step,
                 "teleport_step_limit_m": self.teleport_step_limit,
+                "physics_steps_observed": self.physics_step_count,
+                "max_physics_step_translation_m": self.max_physics_step_translation,
+                "physics_step_translation_limit_m": self.physics_step_translation_limit,
+                "max_physics_step_angular_jump_rad": self.max_physics_step_angular_jump,
+                "physics_step_angular_jump_limit_rad": self.physics_step_angular_jump_limit,
+                "max_weld_event_translation_m": self.max_weld_event_translation,
+                "weld_event_translation_limit_m": self.weld_event_translation_limit,
+                "max_weld_event_angular_jump_rad": self.max_weld_event_angular_jump,
+                "weld_event_angular_jump_limit_rad": self.weld_event_angular_jump_limit,
                 "max_penetration_m": self.max_penetration,
+                "max_physics_step_penetration_m": self.max_physics_step_penetration,
                 "penetration_limit_m": self.penetration_limit,
+                "target_footprint_margin_m": self.target_margin,
+                "linear_speed_limit_m_s": self.linear_speed_limit,
+                "angular_speed_limit_rad_s": self.angular_speed_limit,
                 "max_post_release_linear_speed_m_s": self.max_post_release_linear_speed,
                 "max_post_release_angular_speed_rad_s": self.max_post_release_angular_speed,
                 "final_position_m": None
@@ -576,6 +762,7 @@ def _contact_sample(mujoco, sim, geometry: dict) -> dict:
         "hand_distance_m": hand_distance,
         "target_contact": target_contact,
         "minimum_contact_distance_m": min(contact_distances) if contact_distances else math.inf,
+        "footprint_check": _object_footprint(mujoco, sim, geometry),
         "state_finite": bool(np.all(np.isfinite(state))),
         "state_extent": state_extent,
     }
@@ -594,8 +781,14 @@ def _geometry(mujoco, sim) -> dict:
     grasp_weld = _name_id(
         mujoco, model, mujoco.mjtObj.mjOBJ_EQUALITY, GRASP_WELD_NAME
     )
+    geom_shapes = {
+        int(mujoco.mjtGeom.mjGEOM_BOX): "box",
+        int(mujoco.mjtGeom.mjGEOM_SPHERE): "sphere",
+        int(mujoco.mjtGeom.mjGEOM_CAPSULE): "capsule",
+        int(mujoco.mjtGeom.mjGEOM_CYLINDER): "cylinder",
+    }
     object_geoms = {
-        _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, name)
+        _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, name): name
         for name in OBJECT_COLLISION_GEOMS
     }
     return {
@@ -603,6 +796,7 @@ def _geometry(mujoco, sim) -> dict:
         "object_qpos_adr": int(model.jnt_qposadr[joint]),
         "object_qvel_adr": int(model.jnt_dofadr[joint]),
         "object_geoms": object_geoms,
+        "geom_shapes": geom_shapes,
         "target_geom": target_geom,
         "target_center": np.asarray(sim.data.site_xpos[target_site][:2], dtype=float).copy(),
         "target_half_extents": np.asarray(model.geom_size[target_geom][:2], dtype=float).copy(),
@@ -613,12 +807,137 @@ def _geometry(mujoco, sim) -> dict:
     }
 
 
+def _object_footprint(mujoco, sim, geometry: dict) -> dict:
+    projected_geoms = []
+    for geom_id, name in geometry["object_geoms"].items():
+        shape = geometry["geom_shapes"].get(int(sim.model.geom_type[geom_id]))
+        if shape is None:
+            raise ValueError(f"unsupported bottle geom type for {name}")
+        rotation = np.asarray(sim.data.geom_xmat[geom_id], dtype=float).reshape(3, 3)
+        projected_geoms.append(
+            {
+                "name": name,
+                "center_xy_m": np.asarray(sim.data.geom_xpos[geom_id][:2], dtype=float),
+                "half_extents_xy_m": _projected_geom_half_extents_xy(
+                    shape, rotation, sim.model.geom_size[geom_id]
+                ),
+            }
+        )
+    return check_projected_footprint(
+        projected_geoms,
+        geometry["target_center"],
+        geometry["target_half_extents"],
+        TARGET_MARGIN_M,
+    )
+
+
+def _object_pose(sim, geometry: dict) -> dict:
+    data = sim.data
+    position = np.asarray(data.xpos[geometry["object_body"]], dtype=float).copy()
+    quaternion = np.asarray(data.xquat[geometry["object_body"]], dtype=float).copy()
+    return {
+        "sim_time_s": float(data.time),
+        "position_m": position.tolist(),
+        "quaternion_wxyz": quaternion.tolist(),
+    }
+
+
+def _record_weld_event(
+    sim, geometry: dict, monitor: AcceptanceMonitor, event_name: str, mutation
+) -> dict:
+    active_before = bool(sim.data.eq_active[geometry["grasp_weld"]])
+    pose_before = _object_pose(sim, geometry)
+    mutation()
+    active_after = bool(sim.data.eq_active[geometry["grasp_weld"]])
+    pose_after = _object_pose(sim, geometry)
+    position_jump = float(
+        np.linalg.norm(
+            np.asarray(pose_after["position_m"]) - np.asarray(pose_before["position_m"])
+        )
+    )
+    rotation_jump = _quaternion_angular_distance(
+        np.asarray(pose_before["quaternion_wxyz"]),
+        np.asarray(pose_after["quaternion_wxyz"]),
+    )
+    event = {
+        "event": event_name,
+        "sim_time_s": float(sim.data.time),
+        "active_before": active_before,
+        "active_after": active_after,
+        "pose_before": pose_before,
+        "pose_after": pose_after,
+        "pose_jump_m": {"translation": position_jump, "rotation_rad": rotation_jump},
+    }
+    monitor.record_weld_event(event)
+    return event
+
+
+def _install_physics_step_recorder(
+    mujoco, sim, geometry: dict, monitor: AcceptanceMonitor, trace_path: Path
+):
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace = trace_path.open("w", encoding="utf-8")
+    original_mj_step = mujoco.mj_step
+
+    def recorded_mj_step(model, data, *args, **kwargs):
+        result = original_mj_step(model, data, *args, **kwargs)
+        if model is sim.model and data is sim.data:
+            object_id = geometry["object_body"]
+            position = np.asarray(data.xpos[object_id], dtype=float).copy()
+            quaternion = np.asarray(data.xquat[object_id], dtype=float).copy()
+            contact_distances = [
+                float(data.contact[index].dist)
+                for index in range(data.ncon)
+                if int(data.contact[index].geom1) in geometry["object_geoms"]
+                or int(data.contact[index].geom2) in geometry["object_geoms"]
+            ]
+            minimum_distance = min(contact_distances) if contact_distances else math.inf
+            monitor.record_physics_step(
+                sim_time=float(data.time),
+                position=position,
+                quaternion_wxyz=quaternion,
+                minimum_contact_distance=minimum_distance,
+            )
+            trace.write(
+                json.dumps(
+                    {
+                        "sim_time_s": float(data.time),
+                        "position_m": position.tolist()
+                        if np.all(np.isfinite(position))
+                        else None,
+                        "quaternion_wxyz": quaternion.tolist()
+                        if np.all(np.isfinite(quaternion))
+                        else None,
+                        "minimum_contact_distance_m": minimum_distance
+                        if math.isfinite(minimum_distance)
+                        else None,
+                        "object_penetration_m": max(0.0, -minimum_distance)
+                        if math.isfinite(minimum_distance)
+                        else 0.0,
+                        "grasp_weld_active": bool(data.eq_active[geometry["grasp_weld"]]),
+                    },
+                    allow_nan=False,
+                )
+                + "\n"
+            )
+        return result
+
+    mujoco.mj_step = recorded_mj_step
+
+    def close() -> None:
+        mujoco.mj_step = original_mj_step
+        trace.close()
+
+    return close
+
+
 def _plan_hand_targets(sim, target_object_position, left_offset, right_offset):
     import mujoco
 
-    saved_qpos = sim.data.qpos.copy()
+    saved_left_q = sim.left_arm_q
+    saved_right_q = sim.right_arm_q
     if not sim.solve_ik_left(np.asarray(target_object_position) + left_offset):
-        sim.data.qpos[:] = saved_qpos
+        sim.data.qpos[sim.left_arm_qpos_adr] = saved_left_q
         mujoco.mj_forward(sim.model, sim.data)
         raise RuntimeError(
             f"Left arm IK cannot reach object waypoint {target_object_position}; "
@@ -626,14 +945,16 @@ def _plan_hand_targets(sim, target_object_position, left_offset, right_offset):
         )
     left_target = sim.left_arm_q
     if not sim.solve_ik_right(np.asarray(target_object_position) + right_offset):
-        sim.data.qpos[:] = saved_qpos
+        sim.data.qpos[sim.left_arm_qpos_adr] = saved_left_q
+        sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
         mujoco.mj_forward(sim.model, sim.data)
         raise RuntimeError(
             f"Right arm IK cannot reach object waypoint {target_object_position}; "
             f"current hand site is {sim.right_hand_pos.tolist()}"
         )
     right_target = sim.right_arm_q
-    sim.data.qpos[:] = saved_qpos
+    sim.data.qpos[sim.left_arm_qpos_adr] = saved_left_q
+    sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
     mujoco.mj_forward(sim.model, sim.data)
     return left_target, right_target
 
@@ -726,7 +1047,7 @@ def _plan_right_hand_target(
 ) -> np.ndarray:
     import mujoco
 
-    saved_qpos = sim.data.qpos.copy()
+    saved_right_q = sim.right_arm_q
     target_position = np.asarray(target_hand_position, dtype=float)
     target_rotation = np.asarray(target_hand_rotation, dtype=float).reshape(3, 3)
     joint_ids = [
@@ -776,7 +1097,7 @@ def _plan_right_hand_target(
             sim.right_arm_hi,
         )
     else:
-        sim.data.qpos[:] = saved_qpos
+        sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
         mujoco.mj_forward(sim.model, sim.data)
         raise RuntimeError(
             "Right arm IK cannot reach pose "
@@ -784,7 +1105,7 @@ def _plan_right_hand_target(
             f"orientation error {np.linalg.norm(rotation_error):.3f} rad)"
         )
 
-    sim.data.qpos[:] = saved_qpos
+    sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
     mujoco.mj_forward(sim.model, sim.data)
     return target
 
@@ -792,17 +1113,17 @@ def _plan_right_hand_target(
 def _plan_left_hand_target(sim, target_hand_position: np.ndarray) -> np.ndarray:
     import mujoco
 
-    saved_qpos = sim.data.qpos.copy()
+    saved_left_q = sim.left_arm_q
     if not sim.solve_ik_left(np.asarray(target_hand_position, dtype=float)):
         hand_position = sim.left_hand_pos.tolist()
-        sim.data.qpos[:] = saved_qpos
+        sim.data.qpos[sim.left_arm_qpos_adr] = saved_left_q
         mujoco.mj_forward(sim.model, sim.data)
         raise RuntimeError(
             f"Left arm IK cannot reach hand waypoint {target_hand_position}; "
             f"current hand site is {hand_position}"
         )
     target = sim.left_arm_q
-    sim.data.qpos[:] = saved_qpos
+    sim.data.qpos[sim.left_arm_qpos_adr] = saved_left_q
     mujoco.mj_forward(sim.model, sim.data)
     return target
 
@@ -811,11 +1132,11 @@ def _plan_right_hand_position(sim, target_hand_position: np.ndarray) -> np.ndarr
     """Use upstream position-only IK after the grasp has been released."""
     import mujoco
 
-    saved_qpos = sim.data.qpos.copy()
+    saved_right_q = sim.right_arm_q
     target_position = np.asarray(target_hand_position, dtype=float)
     if not sim.solve_ik_right(target_position):
         hand_position = sim.right_hand_pos.tolist()
-        sim.data.qpos[:] = saved_qpos
+        sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
         mujoco.mj_forward(sim.model, sim.data)
         raise RuntimeError(
             f"Right arm IK cannot reach retreat waypoint {target_position}; "
@@ -823,7 +1144,7 @@ def _plan_right_hand_position(sim, target_hand_position: np.ndarray) -> np.ndarr
         )
 
     target = sim.right_arm_q
-    sim.data.qpos[:] = saved_qpos
+    sim.data.qpos[sim.right_arm_qpos_adr] = saved_right_q
     mujoco.mj_forward(sim.model, sim.data)
     return target
 
@@ -860,6 +1181,7 @@ def run_demo(args: argparse.Namespace) -> dict:
         target_xy=geometry["target_center"],
         target_half_extents=geometry["target_half_extents"],
         dt=frame_dt,
+        target_margin=TARGET_MARGIN_M,
     )
 
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -921,6 +1243,7 @@ def run_demo(args: argparse.Namespace) -> dict:
             minimum_contact_distance=sample["minimum_contact_distance_m"],
             state_finite=sample["state_finite"],
             state_extent=sample["state_extent"],
+            footprint_check=sample["footprint_check"],
         )
         sim.renderer.update_scene(sim.data, camera="scene_camera")
         image_rgb = sim.renderer.render().copy()
@@ -992,7 +1315,13 @@ def run_demo(args: argparse.Namespace) -> dict:
             observe()
 
     start_wall = time.monotonic()
+    physics_trace_path = args.output_json.parent / "m0_physics_trace.jsonl"
+    close_physics_recorder = None
+    grasp_weld_event = None
     try:
+        close_physics_recorder = _install_physics_step_recorder(
+            mujoco, sim, geometry, monitor, physics_trace_path
+        )
         observe("START")
         phase_names = (
             "PREGRASP",
@@ -1019,16 +1348,32 @@ def run_demo(args: argparse.Namespace) -> dict:
                     }
                     print(f"{name}: sim_time={sample['sim_time_s']:.3f}s frame={frame_index}", flush=True)
 
-        grasp_sample = _contact_sample(mujoco, sim, geometry)
-        if monitor.stages["GRASP"] is None:
+            if monitor.stages["GRASP"] is not None and grasp_weld_event is None:
+                if (
+                    not sample["right_contact"]
+                    or sample["right_force_n"] < monitor.minimum_grasp_force_n
+                ):
+                    raise RuntimeError(
+                        "right palm contact was absent when bilateral grasp threshold was reached"
+                    )
+                grasp_weld_event = _record_weld_event(
+                    sim,
+                    geometry,
+                    monitor,
+                    "activation",
+                    lambda: _engage_grasp_weld(mujoco, sim, geometry),
+                )
+                print(
+                    "WELD_ACTIVATION: "
+                    f"sim_time={grasp_weld_event['sim_time_s']:.3f}s "
+                    f"translation_jump_m={grasp_weld_event['pose_jump_m']['translation']:.6g} "
+                    f"rotation_jump_rad={grasp_weld_event['pose_jump_m']['rotation_rad']:.6g}",
+                    flush=True,
+                )
+                observe("GRASP_WELD")
+
+        if grasp_weld_event is None or not sim.data.eq_active[geometry["grasp_weld"]]:
             raise RuntimeError("bilateral palm contact was not sustained long enough to grasp")
-        if (
-            not grasp_sample["right_contact"]
-            or grasp_sample["right_force_n"] < monitor.minimum_grasp_force_n
-        ):
-            raise RuntimeError("right palm lost measured bottle contact before grasp attachment")
-        _engage_grasp_weld(mujoco, sim, geometry)
-        observe("GRASP_WELD")
 
         left_retreat_target = _plan_left_hand_target(
             sim, sim.left_hand_pos + np.array([0.0, 0.0, 0.20])
@@ -1163,8 +1508,20 @@ def run_demo(args: argparse.Namespace) -> dict:
         }
         print(f"LOWER: sim_time={sim.data.time:.3f}s frame={frame_index}", flush=True)
 
-        sim.data.eq_active[geometry["grasp_weld"]] = 0
-        mujoco.mj_forward(sim.model, sim.data)
+        def release_grasp_weld() -> None:
+            sim.data.eq_active[geometry["grasp_weld"]] = 0
+            mujoco.mj_forward(sim.model, sim.data)
+
+        release_event = _record_weld_event(
+            sim, geometry, monitor, "release", release_grasp_weld
+        )
+        print(
+            "WELD_RELEASE: "
+            f"sim_time={release_event['sim_time_s']:.3f}s "
+            f"translation_jump_m={release_event['pose_jump_m']['translation']:.6g} "
+            f"rotation_jump_rad={release_event['pose_jump_m']['rotation_rad']:.6g}",
+            flush=True,
+        )
         trace_start_frame = frame_index
         controller_stages["DETACH"] = {
             "sim_time_s": float(sim.data.time),
@@ -1189,6 +1546,8 @@ def run_demo(args: argparse.Namespace) -> dict:
             if monitor.stages["PLACE"] is not None:
                 break
     finally:
+        if close_physics_recorder is not None:
+            close_physics_recorder()
         video.release()
         if final_sample is not None:
             sim.renderer.update_scene(sim.data, camera="scene_camera")
@@ -1197,10 +1556,64 @@ def run_demo(args: argparse.Namespace) -> dict:
         sim.renderer.close()
 
     result = monitor.result(final_sample)
+    repo_root = Path(__file__).resolve().parents[2]
+    robotsim_sha = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    robotsim_dirty = bool(
+        subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
     result.update(
         {
             "issue": 43,
             "demo": "M0 G1 bottle pick-and-place",
+            "robotsim_sha": robotsim_sha,
+            "robotsim_dirty": robotsim_dirty,
+            "seed": args.seed,
+            "upstream_shas": {
+                "humanoid_vla": UPSTREAM_COMMIT,
+                "unitree_mujoco_meshes": UNITREE_COMMIT,
+                "grasp_reference": "ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff",
+            },
+            "object_geometry_parameters": [
+                {
+                    "name": spec["name"],
+                    "shape": spec["type"],
+                    "position_m": [float(value) for value in spec["pos"].split()],
+                    "size": [float(value) for value in spec["size"].split()],
+                    "size_convention": "radius_m, half_length_m"
+                    if spec["type"] in ("cylinder", "capsule")
+                    else "MuJoCo geom half extents/radius in meters",
+                    "mass_kg": float(spec["mass"]),
+                }
+                for spec in OBJECT_GEOM_SPECS
+            ],
+            "acceptance_thresholds": {
+                "target_table_margin_m": monitor.target_margin,
+                "bilateral_grasp_force_n_per_palm": monitor.minimum_grasp_force_n,
+                "bilateral_grasp_frames": monitor.grasp_frames_required,
+                "minimum_lift_height_m": monitor.lift_height,
+                "contact_free_release_frames": monitor.release_frames_required,
+                "stable_duration_s": monitor.minimum_stable_duration_s,
+                "linear_speed_m_s": monitor.linear_speed_limit,
+                "angular_speed_rad_s": monitor.angular_speed_limit,
+                "stable_position_radius_m": monitor.stable_position_radius,
+                "control_step_translation_m": monitor.teleport_step_limit,
+                "physics_step_translation_m": monitor.physics_step_translation_limit,
+                "physics_step_angular_jump_rad": monitor.physics_step_angular_jump_limit,
+                "weld_event_translation_snap_m": monitor.weld_event_translation_limit,
+                "weld_event_angular_snap_rad": monitor.weld_event_angular_jump_limit,
+                "maximum_penetration_m": monitor.penetration_limit,
+                "drop_height_m": monitor.drop_z_limit,
+            },
             "candidate": {
                 "repository": "https://github.com/ozkannceylan/humanoid_vla",
                 "commit": UPSTREAM_COMMIT,
@@ -1234,13 +1647,14 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "target_half_extents_m": geometry["target_half_extents"].tolist(),
                 "bottle_collision_geoms": list(OBJECT_COLLISION_GEOMS),
                 "bottle_total_mass_kg": 0.315,
-                "bottle_body_half_width_y_m": 0.075,
+                "bottle_body_radius_m": 0.075,
                 "bottle_main_half_height_m": 0.100,
             },
             "artifacts": {
                 "scene_xml": str(scene_path),
                 "video": str(args.video),
                 "screenshot": str(args.screenshot),
+                "physics_step_trace": str(physics_trace_path),
             },
         }
     )
