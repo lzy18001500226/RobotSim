@@ -12,14 +12,21 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - native Windows uses the process-local lock below.
+    fcntl = None  # type: ignore[assignment]
 
 
 STATUS_LABELS = {
@@ -33,32 +40,58 @@ GITHUB_API_BASE = "https://api.github.com"
 ROBOTSIM_REPOSITORY = "lzy18001500226/RobotSim"
 REQUEST_TIMEOUT_SECONDS = 8
 STALE_CLAIM_SECONDS = 3600
-RESEARCH_SCHEMA_VERSION = "robotsim.research-completion.v1"
-RESEARCH_STATUSES = {"completed", "blocked", "deferred", "cancelled", "failed"}
-RESEARCH_EVENT_FIELDS = {
+TASK_CLOSEOUT_SCHEMA_VERSION = "robotsim.task-closeout.v1"
+TASK_CLOSEOUT_KINDS = {"implementation", "experiment", "research", "review", "audit"}
+TASK_CLOSEOUT_STATUSES = {"completed", "blocked", "deferred", "failed", "cancelled"}
+TASK_CLOSEOUT_FIELDS = {
     "schema_version",
     "event_id",
     "repository",
     "task_id",
+    "attempt_id",
     "worker",
-    "final_status",
+    "task_kind",
+    "status",
     "summary",
+    "branch",
+    "head_sha",
+    "pr_number",
+    "validation",
+    "evidence",
     "blockers",
     "recommended_next_action",
-    "evidence",
-    "timestamp",
+    "completed_at",
 }
-RESEARCH_TASK_ID = re.compile(r"^issue-([1-9][0-9]{0,8})-[a-z0-9][a-z0-9._-]{0,100}$")
-RESEARCH_EVENT_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
+TASK_CLOSEOUT_TASK_ID = re.compile(r"^issue-([1-9][0-9]{0,8})-[a-z0-9][a-z0-9._-]{0,100}$")
+TASK_CLOSEOUT_ATTEMPT_ID = re.compile(
+    r"^(?:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|legacy-[0-9a-f]{32})$"
+)
+TASK_CLOSEOUT_EVENT_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
+TASK_CLOSEOUT_SHA = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+TASK_CLOSEOUT_ENVELOPE_MARKER = "<!-- robotsim.task-closeout.v1"
+TASK_CLOSEOUT_ENVELOPE_RE = re.compile(
+    r"<!--\s*robotsim\.task-closeout\.v1\s*\n(.*?)\n-->", re.S
+)
+TASK_CLOSEOUT_COMMENT_MARKER = re.compile(
+    r"<!-- robotsim-task-closeout:v1:(sha256:[0-9a-f]{64}):([0-9a-f]{64}) -->"
+)
+TASK_CLOSEOUT_COMMENT_JSON = re.compile(
+    r"<!-- robotsim-task-closeout-json:v1\s*\n(.*?)\n-->", re.S
+)
+
+# Backward-compatible input aliases. New persistence always uses task-closeout.v1.
+RESEARCH_SCHEMA_VERSION = "robotsim.research-completion.v1"
+RESEARCH_STATUSES = TASK_CLOSEOUT_STATUSES
+RESEARCH_EVENT_FIELDS = {
+    "schema_version", "event_id", "repository", "task_id", "worker",
+    "final_status", "summary", "blockers", "recommended_next_action",
+    "evidence", "timestamp",
+}
+RESEARCH_TASK_ID = TASK_CLOSEOUT_TASK_ID
+RESEARCH_EVENT_ID = TASK_CLOSEOUT_EVENT_ID
 RESEARCH_ENVELOPE_MARKER = "<!-- robotsim-research-completion:v1"
 RESEARCH_ENVELOPE_RE = re.compile(
     r"<!--\s*robotsim-research-completion:v1\s*\n(.*?)\n-->", re.S
-)
-RESEARCH_COMMENT_MARKER = re.compile(
-    r"<!-- robotsim-research-event:v1:(sha256:[0-9a-f]{64}) -->"
-)
-RESEARCH_COMMENT_JSON = re.compile(
-    r"<!-- robotsim-research-json:v1\s*\n(.*?)\n-->", re.S
 )
 
 _SECRET_ASSIGNMENT = re.compile(
@@ -77,11 +110,13 @@ _RESEARCH_TOKEN_LITERAL = re.compile(
 _LOCAL_PATH = re.compile(
     r"(?i)(?:/home/|/root/|/tmp/|/var/|/workspace/|/workspaces/|/users/|/mnt/|/media/|"
     r"/opt/|/srv/|/private/|/volumes/|/repo/|/app/|/etc/|/run/|/proc/|/sys/|/dev/|"
-    r"[a-z]:[\\/]|~[\\/]|\.\.?/)[^\s,;\"'<>)]*"
+    r"[a-z]:[\\/]|\\\\[^\\/\s]+[\\/]|~[\\/]|\.\.?/)[^\s,;\"'<>)]*"
 )
+_GENERIC_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9/])/(?!/)[^\s,;\"'<>)]*")
 _RESEARCH_SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(?:[A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)|"
-    r"api[_ -]?key|access[_ -]?token|token|key|credential|authorization|password|secret|signature|sig|auth)"
+    r"(?:[A-Z0-9]+[_-])*(?:token|secret|password|signature|sig|auth|credential|"
+    r"api[_ -]?key|access[_ -]?key|access[_ -]?token|key|authorization))"
     r"\s*[:=]\s*([^\s,;]+)"
 )
 _RESEARCH_URL_SECRET_PARAMETER = re.compile(
@@ -100,6 +135,7 @@ _URL_SECRET_PARAMETER = {
     "authorization",
     "credential",
 }
+_URL_USERINFO = re.compile(r"(?i)\bhttps?://[^/@\s:]+:[^/@\s]+@")
 
 
 @dataclass(frozen=True)
@@ -116,12 +152,24 @@ class PersistenceResult:
     message: str
 
 
+_EVENT_LOCKS: dict[str, threading.Lock] = {}
+_EVENT_LOCKS_GUARD = threading.Lock()
+
+
 def _research_event_id(repository: str, task_id: str, worker: str) -> str:
+    """Return the v1 ID only for validating legacy research envelopes."""
     identity = "\0".join((RESEARCH_SCHEMA_VERSION, repository, task_id, worker))
     return "sha256:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _research_text(value: object, field: str, limit: int) -> str:
+def _closeout_event_id(repository: str, task_id: str, attempt_id: str, worker: str) -> str:
+    identity = "\0".join(
+        (TASK_CLOSEOUT_SCHEMA_VERSION, repository, task_id, attempt_id, worker)
+    )
+    return "sha256:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _closeout_text(value: object, field: str, limit: int) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field} must be text")
     try:
@@ -131,13 +179,43 @@ def _research_text(value: object, field: str, limit: int) -> str:
     if len(value) > limit:
         raise ValueError(f"{field} exceeds its maximum length")
     safe = _one_line(value, limit).strip()
+    safe = _URL_USERINFO.sub("https://[redacted]@", safe)
     safe = _RESEARCH_SECRET_ASSIGNMENT.sub("[redacted credential]", safe)
     safe = _RESEARCH_URL_SECRET_PARAMETER.sub("[redacted URL credential]", safe)
     safe = _RESEARCH_TOKEN_LITERAL.sub("[redacted credential]", safe)
-    local_path = _LOCAL_PATH.search(safe)
+    local_path = min(
+        (match for pattern in (_LOCAL_PATH, _GENERIC_ABSOLUTE_PATH) if (match := pattern.search(safe))),
+        key=lambda match: match.start(),
+        default=None,
+    )
     if local_path is not None:
         safe = safe[: local_path.start()] + "[local path omitted]"
     return safe
+
+
+def _identity_text(value: object, field: str, limit: int) -> str:
+    if not isinstance(value, str) or not value or len(value) > limit or value != value.strip():
+        raise ValueError(f"{field} must be non-empty, bounded text without surrounding whitespace")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{field} must contain valid UTF-8 text") from exc
+    if any(
+        (ord(character) <= 0x20 and character != " ") or ord(character) == 0x7F
+        for character in value
+    ) or "  " in value:
+        raise ValueError(f"{field} must not contain control characters or non-canonical spacing")
+    if (
+        _RESEARCH_TOKEN_LITERAL.search(value)
+        or _RESEARCH_SECRET_ASSIGNMENT.search(value)
+        or _BEARER_VALUE.search(value)
+        or _URL_USERINFO.search(value)
+        or _RESEARCH_URL_SECRET_PARAMETER.search(value)
+        or _LOCAL_PATH.search(value)
+        or _GENERIC_ABSOLUTE_PATH.search(value)
+    ):
+        raise ValueError(f"{field} must not contain credentials or local paths")
+    return value
 
 
 def _durable_evidence(value: object) -> list[str]:
@@ -190,75 +268,168 @@ def _durable_evidence(value: object) -> list[str]:
             for key in query_keys
         ):
             raise ValueError("evidence URL contains a credential-like query parameter")
-        if _RESEARCH_TOKEN_LITERAL.search(item) or _BEARER_VALUE.search(item):
+        fragment_keys = (
+            key.lower().replace("-", "_")
+            for key, _ in urllib.parse.parse_qsl(parts.fragment, keep_blank_values=True)
+        )
+        if any(
+            key in _URL_SECRET_PARAMETER
+            or re.search(r"(?:^|_)(?:token|secret|password|signature|sig|auth|credential|api_key|access_key)(?:$|_)", key)
+            for key in fragment_keys
+        ):
+            raise ValueError("evidence URL contains a credential-like fragment")
+        decoded_url = urllib.parse.unquote(item)
+        if (
+            _RESEARCH_TOKEN_LITERAL.search(decoded_url)
+            or _BEARER_VALUE.search(decoded_url)
+            or _RESEARCH_SECRET_ASSIGNMENT.search(parts.fragment)
+        ):
             raise ValueError("evidence URL contains credential-shaped text")
         evidence.append(item)
     return evidence
 
 
-def normalize_research_event(payload: object) -> dict[str, object]:
-    """Validate an envelope and return its canonical, versioned event."""
+def _normalize_timestamp(value: object, field: str) -> str:
+    if not isinstance(value, str) or len(value) > 64:
+        raise ValueError(f"{field} must be an ISO 8601 timestamp with a timezone")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("missing timezone")
+        parsed = parsed.astimezone(timezone.utc).replace(microsecond=0)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError(f"{field} must be an ISO 8601 timestamp with a timezone") from exc
+    return parsed.isoformat().replace("+00:00", "Z")
+
+
+def normalize_task_closeout(payload: object) -> dict[str, object]:
+    """Validate and canonicalize a task-closeout.v1 envelope."""
     if not isinstance(payload, dict):
-        raise ValueError("research completion must be a JSON object")
-    if set(payload) != RESEARCH_EVENT_FIELDS:
-        raise ValueError("research completion has missing or unsupported fields")
-    if payload.get("schema_version") != RESEARCH_SCHEMA_VERSION:
-        raise ValueError("unsupported research completion schema_version")
+        raise ValueError("task closeout must be a JSON object")
+    if set(payload) != TASK_CLOSEOUT_FIELDS:
+        raise ValueError("task closeout has missing or unsupported fields")
+    if payload.get("schema_version") != TASK_CLOSEOUT_SCHEMA_VERSION:
+        raise ValueError("unsupported task-closeout schema_version")
     repository = payload.get("repository")
     if repository != ROBOTSIM_REPOSITORY:
         raise ValueError("repository must be the canonical RobotSim repository")
     task_id = payload.get("task_id")
-    if not isinstance(task_id, str) or RESEARCH_TASK_ID.fullmatch(task_id) is None:
+    if not isinstance(task_id, str) or TASK_CLOSEOUT_TASK_ID.fullmatch(task_id) is None:
         raise ValueError("task_id must identify its issue as issue-<number>-<stable-slug>")
     if _RESEARCH_TOKEN_LITERAL.search(task_id):
         raise ValueError("task_id must not contain credential-shaped text")
-    issue_match = RESEARCH_TASK_ID.fullmatch(task_id)
-    assert issue_match is not None
-    worker = _research_text(payload.get("worker"), "worker", 80)
-    if not worker:
-        raise ValueError("worker must not be empty")
-    final_status = payload.get("final_status")
-    if not isinstance(final_status, str) or final_status not in RESEARCH_STATUSES:
-        raise ValueError("final_status is not an allowed research completion status")
-    summary = _research_text(payload.get("summary"), "summary", 2000)
-    next_action = _research_text(payload.get("recommended_next_action"), "recommended_next_action", 1000)
+    attempt_id = payload.get("attempt_id")
+    if not isinstance(attempt_id, str) or TASK_CLOSEOUT_ATTEMPT_ID.fullmatch(attempt_id) is None:
+        raise ValueError("attempt_id must be a stable per-run identifier")
+    if _RESEARCH_TOKEN_LITERAL.search(attempt_id):
+        raise ValueError("attempt_id must not contain credential-shaped text")
+    worker = _identity_text(payload.get("worker"), "worker", 80)
+    task_kind = payload.get("task_kind")
+    if not isinstance(task_kind, str) or task_kind not in TASK_CLOSEOUT_KINDS:
+        raise ValueError("task_kind is not an allowed task kind")
+    status = payload.get("status")
+    if not isinstance(status, str) or status not in TASK_CLOSEOUT_STATUSES:
+        raise ValueError("status is not an allowed task-closeout status")
+    summary = _closeout_text(payload.get("summary"), "summary", 2000)
+    next_action = _closeout_text(payload.get("recommended_next_action"), "recommended_next_action", 1000)
     if not summary or not next_action:
         raise ValueError("summary and recommended_next_action must not be empty")
+    branch_value = payload.get("branch")
+    branch = None if branch_value is None else _closeout_text(branch_value, "branch", 200)
+    if branch == "":
+        branch = None
+    head_sha_value = payload.get("head_sha")
+    if head_sha_value is not None and (
+        not isinstance(head_sha_value, str) or TASK_CLOSEOUT_SHA.fullmatch(head_sha_value) is None
+    ):
+        raise ValueError("head_sha must be a 40- or 64-character hexadecimal commit ID")
+    head_sha = head_sha_value.lower() if isinstance(head_sha_value, str) else None
+    pr_number_value = payload.get("pr_number")
+    if pr_number_value is not None and (
+        isinstance(pr_number_value, bool)
+        or not isinstance(pr_number_value, int)
+        or not 1 <= pr_number_value <= 999_999_999
+    ):
+        raise ValueError("pr_number must be a positive GitHub pull request number or null")
+    if pr_number_value is not None and (branch is None or head_sha is None):
+        raise ValueError("PR closeouts must include the branch and head_sha")
+    validation_value = payload.get("validation")
+    if not isinstance(validation_value, list) or len(validation_value) > 20:
+        raise ValueError("validation must be a list of at most 20 concise results")
+    validation = [_closeout_text(item, "validation result", 500) for item in validation_value]
+    if any(not item for item in validation):
+        raise ValueError("validation results must not be empty")
     blockers_value = payload.get("blockers")
     if not isinstance(blockers_value, list) or len(blockers_value) > 10:
         raise ValueError("blockers must be a list of at most 10 items")
-    blockers = [_research_text(item, "blocker", 500) for item in blockers_value]
+    blockers = [_closeout_text(item, "blocker", 500) for item in blockers_value]
     if any(not item for item in blockers):
         raise ValueError("blockers must not contain empty items")
     evidence = _durable_evidence(payload.get("evidence"))
-    timestamp_value = payload.get("timestamp")
-    if not isinstance(timestamp_value, str) or len(timestamp_value) > 64:
-        raise ValueError("timestamp must be an ISO 8601 timestamp with a timezone")
-    try:
-        timestamp = datetime.fromisoformat(timestamp_value.replace("Z", "+00:00"))
-        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-            raise ValueError("missing timezone")
-        timestamp = timestamp.astimezone(timezone.utc).replace(microsecond=0)
-    except (ValueError, OverflowError) as exc:
-        raise ValueError("timestamp must be an ISO 8601 timestamp with a timezone") from exc
-    normalized_timestamp = timestamp.isoformat().replace("+00:00", "Z")
-    event_id = _research_event_id(repository, task_id, worker)
+    completed_at = _normalize_timestamp(payload.get("completed_at"), "completed_at")
+    event_id = _closeout_event_id(repository, task_id, attempt_id, worker)
     provided_event_id = payload.get("event_id")
     if not isinstance(provided_event_id, str) or provided_event_id not in {"auto", event_id}:
-        raise ValueError("event_id must be 'auto' or match the deterministic event identity")
+        raise ValueError("event_id must be 'auto' or match this attempt's deterministic identity")
     return {
-        "schema_version": RESEARCH_SCHEMA_VERSION,
+        "schema_version": TASK_CLOSEOUT_SCHEMA_VERSION,
         "event_id": event_id,
         "repository": repository,
         "task_id": task_id,
+        "attempt_id": attempt_id,
         "worker": worker,
-        "final_status": final_status,
+        "task_kind": task_kind,
+        "status": status,
         "summary": summary,
+        "branch": branch,
+        "head_sha": head_sha,
+        "pr_number": pr_number_value,
+        "validation": validation,
+        "evidence": evidence,
         "blockers": blockers,
         "recommended_next_action": next_action,
-        "evidence": evidence,
-        "timestamp": normalized_timestamp,
+        "completed_at": completed_at,
     }
+
+
+def normalize_research_event(payload: object) -> dict[str, object]:
+    """Convert a v1 research envelope into the unified v1 closeout schema."""
+    if not isinstance(payload, dict) or set(payload) != RESEARCH_EVENT_FIELDS:
+        raise ValueError("research completion has missing or unsupported fields")
+    if payload.get("schema_version") != RESEARCH_SCHEMA_VERSION:
+        raise ValueError("unsupported research-completion schema_version")
+    repository = payload.get("repository")
+    task_id = payload.get("task_id")
+    if repository != ROBOTSIM_REPOSITORY or not isinstance(task_id, str):
+        raise ValueError("research completion must identify the canonical repository and Issue")
+    if TASK_CLOSEOUT_TASK_ID.fullmatch(task_id) is None:
+        raise ValueError("task_id must identify its Issue")
+    worker = _closeout_text(payload.get("worker"), "worker", 80)
+    expected_legacy_id = _research_event_id(repository, task_id, worker)
+    if payload.get("event_id") not in {"auto", expected_legacy_id}:
+        raise ValueError("legacy event_id does not match the research event")
+    completed_at = _normalize_timestamp(payload.get("timestamp"), "timestamp")
+    legacy_attempt = "legacy-" + hashlib.sha256(completed_at.encode("ascii")).hexdigest()[:32]
+    unified = {
+        "schema_version": TASK_CLOSEOUT_SCHEMA_VERSION,
+        "event_id": "auto",
+        "repository": repository,
+        "task_id": task_id,
+        "attempt_id": legacy_attempt,
+        "worker": worker,
+        "task_kind": "research",
+        "status": payload.get("final_status"),
+        "summary": payload.get("summary"),
+        "branch": None,
+        "head_sha": None,
+        "pr_number": None,
+        "validation": [],
+        "evidence": payload.get("evidence"),
+        "blockers": payload.get("blockers"),
+        "recommended_next_action": payload.get("recommended_next_action"),
+        "completed_at": completed_at,
+    }
+    return normalize_task_closeout(unified)
 
 
 def _event_json(event: Mapping[str, object], *, pretty: bool = False) -> str:
@@ -271,22 +442,47 @@ def _event_json(event: Mapping[str, object], *, pretty: bool = False) -> str:
     )
 
 
-def _research_comment_body(event: Mapping[str, object]) -> str:
-    # Escape HTML comment terminators while retaining valid, semantically
-    # identical JSON for the duplicate detector.
+def _closeout_payload_digest(event: Mapping[str, object]) -> str:
+    canonical = _event_json(event).replace(">", r"\u003e")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _task_closeout_comment_body(event: Mapping[str, object]) -> str:
+    # The digest binds this discoverable marker to the canonical event payload.
     canonical = _event_json(event).replace(">", r"\u003e")
     display = html.escape(_event_json(event, pretty=True), quote=False)
     event_id = str(event["event_id"])
+    payload_digest = _closeout_payload_digest(event)
+    destination = "PR" if event["pr_number"] is not None else "Issue"
+    number = event["pr_number"]
+    if number is None:
+        issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"]))
+        assert issue_match is not None
+        number = int(issue_match.group(1))
     return (
-        f"<!-- robotsim-research-event:v1:{event_id} -->\n"
-        f"<!-- robotsim-research-json:v1\n{canonical}\n-->\n"
-        "<h3>RobotSim research completion</h3>\n"
+        f"<!-- robotsim-task-closeout:v1:{event_id}:{payload_digest} -->\n"
+        f"<!-- robotsim-task-closeout-json:v1\n{canonical}\n-->\n"
+        f"<h3>RobotSim task closeout · {destination} #{number}</h3>\n"
         f"<pre>\n{display}\n</pre>\n"
     )
 
 
 def _github_token(environ: Mapping[str, str]) -> str:
     return (environ.get("GH_TOKEN") or environ.get("GITHUB_TOKEN") or "").strip()
+
+
+def _github_actor(token: str) -> str:
+    result = _github_json("GET", "/user", token)
+    if (
+        not isinstance(result, dict)
+        or not isinstance(result.get("login"), str)
+        or not result["login"]
+        or len(result["login"]) > 80
+        or result["login"] != result["login"].strip()
+        or any(ord(character) <= 0x20 or ord(character) == 0x7F for character in result["login"])
+    ):
+        raise RuntimeError("could not identify authenticated GitHub account")
+    return result["login"]
 
 
 def _github_json(method: str, path: str, token: str, payload: object | None = None) -> object:
@@ -309,6 +505,8 @@ def _github_json(method: str, path: str, token: str, payload: object | None = No
         raise RuntimeError(f"HTTP {exc.code}") from None
     except Exception as exc:
         raise RuntimeError(type(exc).__name__) from None
+    if not raw:
+        return None
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -333,109 +531,293 @@ def _list_issue_comments(issue_number: str, token: str) -> list[dict[str, object
     raise RuntimeError("GitHub comments pagination limit exceeded")
 
 
-def _existing_event_state(
-    comments: list[dict[str, object]], event: Mapping[str, object]
-) -> str:
+def _trusted_closeout_comments(
+    comments: list[dict[str, object]], event: Mapping[str, object], actor: str
+) -> tuple[str, list[dict[str, object]]]:
     expected_id = str(event["event_id"])
-    found = False
+    found: list[dict[str, object]] = []
+    conflict = False
     for comment in comments:
+        user = comment.get("user")
+        if (
+            not isinstance(user, dict)
+            or not isinstance(user.get("login"), str)
+            or user["login"].casefold() != actor.casefold()
+        ):
+            continue
         body = comment.get("body")
         if not isinstance(body, str):
             continue
-        for marker in RESEARCH_COMMENT_MARKER.finditer(body):
-            if marker.group(1) != expected_id:
-                continue
-            payload = RESEARCH_COMMENT_JSON.search(body)
-            if payload is None:
-                return "conflict"
-            try:
-                stored = json.loads(payload.group(1))
-            except json.JSONDecodeError:
-                return "conflict"
-            if stored != event:
-                return "conflict"
-            found = True
-    return "same" if found else "absent"
+        markers = list(TASK_CLOSEOUT_COMMENT_MARKER.finditer(body))
+        if not any(marker.group(1) == expected_id for marker in markers):
+            continue
+        payloads = list(TASK_CLOSEOUT_COMMENT_JSON.finditer(body))
+        if len(markers) != 1 or len(payloads) != 1:
+            continue
+        marker = markers[0]
+        try:
+            stored = json.loads(payloads[0].group(1))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(stored, dict) or stored.get("event_id") != expected_id:
+            continue
+        expected_digest = _closeout_payload_digest(stored)
+        if marker.group(2) != expected_digest:
+            continue
+        if marker.group(1) != expected_id:
+            continue
+        if stored != event:
+            conflict = True
+        else:
+            found.append(comment)
+    if conflict:
+        return "conflict", found
+    return ("same" if found else "absent"), found
+
+
+def _existing_event_state(
+    comments: list[dict[str, object]], event: Mapping[str, object], actor: str = ""
+) -> str:
+    """Compatibility test helper, backed by authenticated account markers."""
+    return _trusted_closeout_comments(comments, event, actor)[0]
+
+
+@contextmanager
+def _task_closeout_lock(event_id: str, environ: Mapping[str, str]):
+    state_dir = _state_directory(environ)
+    key = hashlib.sha256(f"{state_dir.resolve()}\0{event_id}".encode("utf-8")).hexdigest()
+    with _EVENT_LOCKS_GUARD:
+        local_lock = _EVENT_LOCKS.setdefault(key, threading.Lock())
+    local_lock.acquire()
+    lock_file = None
+    try:
+        state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock_file = (state_dir / f"github-closeout-{key}.lock").open("a+b")
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if lock_file is not None:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+        local_lock.release()
+
+
+def _remove_duplicate_closeout_comments(
+    comments: list[dict[str, object]],
+    event: Mapping[str, object],
+    actor: str,
+    token: str,
+    issue_number: int,
+) -> bool:
+    _, trusted = _trusted_closeout_comments(comments, event, actor)
+    comment_ids = sorted(
+        comment["id"]
+        for comment in trusted
+        if isinstance(comment.get("id"), int) and not isinstance(comment.get("id"), bool)
+    )
+    if len(trusted) > 1 and len(comment_ids) != len(trusted):
+        return False
+    if len(comment_ids) < 2:
+        return True
+    for comment_id in comment_ids[1:]:
+        try:
+            _github_json(
+                "DELETE",
+                f"/repos/{ROBOTSIM_REPOSITORY}/issues/{issue_number}/comments/{comment_id}",
+                token,
+            )
+        except RuntimeError as exc:
+            if str(exc) != "HTTP 404":
+                return False
+    return True
+
+
+def _closeout_target(event: Mapping[str, object]) -> tuple[int, str]:
+    pr_number = event.get("pr_number")
+    if isinstance(pr_number, int) and not isinstance(pr_number, bool):
+        return pr_number, "PR"
+    task_id = str(event["task_id"])
+    issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(task_id)
+    if issue_match is None:
+        raise ValueError("task_id does not identify an originating Issue")
+    return int(issue_match.group(1)), "Issue"
+
+
+def _pr_closes_task_issue(pull: Mapping[str, object], task_id: str) -> bool:
+    issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(task_id)
+    body = pull.get("body")
+    if issue_match is None or not isinstance(body, str):
+        return False
+    issue_number = issue_match.group(1)
+    closing_reference = re.compile(
+        rf"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+"
+        rf"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#{issue_number}\b"
+    )
+    return closing_reference.search(body) is not None
+
+
+def persist_task_closeout(
+    event: Mapping[str, object], *, environ: Mapping[str, str] | None = None
+) -> PersistenceResult:
+    env = os.environ if environ is None else environ
+    try:
+        event = normalize_task_closeout(dict(event))
+    except (ValueError, TypeError) as exc:
+        return PersistenceResult("failed", f"invalid task closeout: {exc}")
+    token = _github_token(env)
+    if not token:
+        return PersistenceResult(
+            "failed",
+            "GitHub closeout persistence unavailable; provide GH_TOKEN or GITHUB_TOKEN with Issue and PR comment read/write access",
+        )
+    try:
+        target_number, target_kind = _closeout_target(event)
+    except ValueError as exc:
+        return PersistenceResult("failed", str(exc))
+    comments_path = f"/repos/{ROBOTSIM_REPOSITORY}/issues/{target_number}/comments"
+    try:
+        actor = _github_actor(token)
+        if target_kind == "PR":
+            pull = _github_json(
+                "GET", f"/repos/{ROBOTSIM_REPOSITORY}/pulls/{target_number}", token
+            )
+            if (
+                not isinstance(pull, dict)
+                or pull.get("number") != target_number
+                or not isinstance(pull.get("base"), dict)
+                or not isinstance(pull["base"].get("repo"), dict)
+                or pull["base"]["repo"].get("full_name") != ROBOTSIM_REPOSITORY
+            ):
+                return PersistenceResult("failed", "pull request is not in the canonical RobotSim repository")
+            head = pull.get("head")
+            if (
+                not isinstance(head, dict)
+                or not isinstance(head.get("sha"), str)
+                or head["sha"].lower() != event["head_sha"]
+                or head.get("ref") != event["branch"]
+            ):
+                return PersistenceResult("failed", "closeout branch/head_sha do not match the current pull request head")
+            if not _pr_closes_task_issue(pull, str(event["task_id"])):
+                return PersistenceResult(
+                    "failed", "pull request description must link the originating Issue with a closing keyword"
+                )
+        with _task_closeout_lock(str(event["event_id"]), env):
+            comments = _list_issue_comments(str(target_number), token)
+            existing, _ = _trusted_closeout_comments(comments, event, actor)
+            if existing == "conflict":
+                return PersistenceResult("failed", "attempt ID already exists with a different closeout payload")
+            if existing == "same":
+                if not _remove_duplicate_closeout_comments(
+                    comments, event, actor, token, target_number
+                ):
+                    return PersistenceResult("failed", "duplicate closeout comments could not be consolidated")
+                return PersistenceResult("duplicate", f"event already exists on {target_kind} #{target_number}")
+            result = _github_json(
+                "POST", comments_path, token,
+                {"body": _task_closeout_comment_body(event)},
+            )
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get("id"), int)
+                or isinstance(result.get("id"), bool)
+            ):
+                return PersistenceResult("failed", "GitHub did not confirm the closeout comment")
+            # Re-read after creation. This also lets racing writers consolidate
+            # their authenticated duplicate comments while retaining one canonical copy.
+            comments = _list_issue_comments(str(target_number), token)
+            existing, _ = _trusted_closeout_comments(comments, event, actor)
+            if existing == "conflict":
+                return PersistenceResult("failed", "attempt ID was concurrently used with a different payload")
+            if existing == "same" and not _remove_duplicate_closeout_comments(
+                comments, event, actor, token, target_number
+            ):
+                return PersistenceResult("failed", "duplicate closeout comments could not be consolidated")
+            return PersistenceResult("persisted", f"event persisted to {target_kind} #{target_number}")
+    except RuntimeError as exc:
+        return PersistenceResult("failed", f"GitHub closeout persistence failed ({exc})")
+    except OSError as exc:
+        return PersistenceResult("failed", f"could not prepare closeout lock ({type(exc).__name__})")
 
 
 def persist_research_event(
     event: Mapping[str, object], *, environ: Mapping[str, str] | None = None
 ) -> PersistenceResult:
-    env = os.environ if environ is None else environ
-    token = _github_token(env)
-    if not token:
-        return PersistenceResult(
-            "failed",
-            "GitHub Issue persistence unavailable; provide GH_TOKEN or GITHUB_TOKEN with comment-write access",
-        )
-    task_id = str(event["task_id"])
-    issue_match = RESEARCH_TASK_ID.fullmatch(task_id)
-    if issue_match is None:
-        return PersistenceResult("failed", "research task_id does not identify an originating Issue")
-    issue_number = issue_match.group(1)
-    try:
-        comments = _list_issue_comments(issue_number, token)
-        existing = _existing_event_state(comments, event)
-        if existing == "same":
-            return PersistenceResult("duplicate", f"event already exists on Issue #{issue_number}")
-        if existing == "conflict":
-            return PersistenceResult("failed", "event_id already exists with a different or invalid payload")
-        result = _github_json(
-            "POST",
-            f"/repos/{ROBOTSIM_REPOSITORY}/issues/{issue_number}/comments",
-            token,
-            {"body": _research_comment_body(event)},
-        )
-        if not isinstance(result, dict) or not isinstance(result.get("id"), int):
-            return PersistenceResult("failed", "GitHub did not confirm the Issue comment")
-        return PersistenceResult("persisted", f"event persisted to Issue #{issue_number}")
-    except RuntimeError as exc:
-        return PersistenceResult("failed", f"GitHub Issue persistence failed ({exc})")
+    """Compatibility alias; all research events use unified closeout storage."""
+    return persist_task_closeout(event, environ=environ)
 
 
-def _research_mail(event: Mapping[str, object], *, environ: Mapping[str, str] | None) -> Outcome:
+def _task_closeout_mail(event: Mapping[str, object], *, environ: Mapping[str, str] | None) -> Outcome:
     event_id = str(event["event_id"])
-    issue_match = RESEARCH_TASK_ID.fullmatch(str(event["task_id"]))
+    issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"]))
     if issue_match is None:
-        return Outcome("failed", "research task_id does not identify an originating Issue")
+        return Outcome("failed", "task_id does not identify an originating Issue")
     issue_number = issue_match.group(1)
-    subject = f"[RobotSim] Research {event['final_status']}: Issue #{issue_number}"
+    subject = f"[RobotSim] {event['status']}: Issue #{issue_number} {event['task_kind']} closeout"
     body = _event_json(event, pretty=True) + "\n"
-    digest = _delivery_digest("research-completion", event_id)
+    digest = _delivery_digest("task-closeout", event_id)
     return _deliver(subject, body, digest, dry_run=False, environ=environ)
 
 
-def extract_research_envelope(message: object) -> tuple[bool, object | None, str]:
-    """Return whether a Stop message contains a research envelope and its parsed body."""
-    if not isinstance(message, str) or RESEARCH_ENVELOPE_MARKER not in message:
+def _research_mail(event: Mapping[str, object], *, environ: Mapping[str, str] | None) -> Outcome:
+    """Backward-compatible wrapper for the former research-only notifier."""
+    return _task_closeout_mail(event, environ=environ)
+
+
+def extract_task_closeout_envelope(message: object) -> tuple[bool, object | None, str]:
+    """Find exactly one unified or legacy marked JSON closeout in a Stop message."""
+    if not isinstance(message, str):
         return False, None, ""
-    matches = list(RESEARCH_ENVELOPE_RE.finditer(message))
-    if len(matches) != 1 or message.count(RESEARCH_ENVELOPE_MARKER) != 1:
-        return True, None, "research completion must contain exactly one marked JSON envelope"
+    has_closeout = TASK_CLOSEOUT_ENVELOPE_MARKER in message
+    has_legacy = RESEARCH_ENVELOPE_MARKER in message
+    if not has_closeout and not has_legacy:
+        return False, None, ""
+    closeout_matches = list(TASK_CLOSEOUT_ENVELOPE_RE.finditer(message))
+    legacy_matches = list(RESEARCH_ENVELOPE_RE.finditer(message))
+    if (
+        int(has_closeout) + int(has_legacy) != 1
+        or len(closeout_matches) + len(legacy_matches) != 1
+        or message.count(TASK_CLOSEOUT_ENVELOPE_MARKER) > 1
+        or message.count(RESEARCH_ENVELOPE_MARKER) > 1
+    ):
+        return True, None, "task closeout must contain exactly one marked JSON envelope"
+    candidate = closeout_matches[0] if closeout_matches else legacy_matches[0]
     try:
-        return True, json.loads(matches[0].group(1)), ""
+        return True, json.loads(candidate.group(1)), ""
     except json.JSONDecodeError:
-        return True, None, "research completion envelope is not valid JSON"
+        return True, None, "task closeout envelope is not valid JSON"
 
 
-def process_research_completion(
+def extract_research_envelope(message: object) -> tuple[bool, object | None, str]:
+    """Backward-compatible name for Stop-envelope extraction."""
+    return extract_task_closeout_envelope(message)
+
+
+def process_task_closeout(
     payload: object,
     *,
     dry_run: bool = False,
     environ: Mapping[str, str] | None = None,
 ) -> Outcome:
     try:
-        event = normalize_research_event(payload)
+        if isinstance(payload, dict) and payload.get("schema_version") == RESEARCH_SCHEMA_VERSION:
+            event = normalize_research_event(payload)
+        else:
+            event = normalize_task_closeout(payload)
     except (ValueError, TypeError) as exc:
-        return Outcome("failed", f"invalid research completion: {exc}")
-    subject = f"[RobotSim] Research {event['final_status']}: {event['task_id']}"
+        return Outcome("failed", f"invalid task closeout: {exc}")
+    issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"]))
+    assert issue_match is not None
+    destination = f"PR #{event['pr_number']}" if event["pr_number"] is not None else f"Issue #{issue_match.group(1)}"
+    subject = f"[RobotSim] {event['status']}: {destination} {event['task_kind']} closeout"
     body = _event_json(event, pretty=True) + "\n"
     if dry_run:
         return Outcome("dry_run", "no GitHub comment or AgentMail request was made", subject, body)
-    persisted = persist_research_event(event, environ=environ)
+    persisted = persist_task_closeout(event, environ=environ)
     if persisted.state == "failed":
         return Outcome("failed", persisted.message, subject, body)
-    mailed = _research_mail(event, environ=environ)
+    mailed = _task_closeout_mail(event, environ=environ)
     prefix = f"GitHub {persisted.message};"
     if mailed.state == "failed":
         return Outcome("failed", f"{prefix} AgentMail delivery failed ({mailed.message})", subject, body)
@@ -446,6 +828,14 @@ def process_research_completion(
     return Outcome("sent", f"{prefix} AgentMail notified", subject, body)
 
 
+def process_research_completion(
+    payload: object,
+    *,
+    dry_run: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> Outcome:
+    """Backward-compatible entry point using the unified closeout path."""
+    return process_task_closeout(payload, dry_run=dry_run, environ=environ)
 def _one_line(value: str, limit: int) -> str:
     value = value.replace("\x00", " ")
     value = _SECRET_ASSIGNMENT.sub(r"\1=[redacted]", value)
@@ -523,6 +913,11 @@ def _claim_delivery(state_dir: Path, digest: str) -> tuple[Path | None, str]:
             return None, "duplicate or already in progress"
         with os.fdopen(descriptor, "w", encoding="ascii") as claim:
             claim.write(str(int(time.time())))
+        # A concurrent sender may have moved its claim to .sent after our
+        # initial sent.exists() check but before this exclusive create.
+        if sent.exists():
+            pending.unlink(missing_ok=True)
+            return None, "duplicate"
         return pending, ""
     return None, "duplicate or already in progress"
 
@@ -702,13 +1097,13 @@ def process_stop_payload(
     if not dry_run and env.get("ROBOTSIM_LOCAL_STOP_HOOK", "").strip() != "1":
         return Outcome("skipped", "local Stop notifications are not enabled")
 
-    has_research_event, research_payload, envelope_problem = extract_research_envelope(
+    has_closeout_event, closeout_payload, envelope_problem = extract_task_closeout_envelope(
         payload.get("last_assistant_message")
     )
-    if has_research_event:
+    if has_closeout_event:
         if envelope_problem:
-            return Outcome("failed", f"invalid research completion: {envelope_problem}")
-        return process_research_completion(research_payload, dry_run=dry_run, environ=environ)
+            return Outcome("failed", f"invalid task closeout: {envelope_problem}")
+        return process_task_closeout(closeout_payload, dry_run=dry_run, environ=environ)
 
     task_id = _stop_event_id(payload)
     if not task_id:
@@ -734,8 +1129,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "event",
-        choices=(*STATUS_LABELS, "research-completion", "stop"),
-        help="terminal outcome, research-completion JSON, or 'stop' for a local Codex Stop payload",
+        choices=(*STATUS_LABELS, "task-closeout", "research-completion", "stop"),
+        help="terminal outcome, structured task closeout JSON, or 'stop' for a local Codex Stop payload",
     )
     parser.add_argument("--task-id", help="stable task/turn identifier used for duplicate protection")
     parser.add_argument("--task", help="short task label to include in the message")
@@ -765,13 +1160,13 @@ def main(argv: list[str] | None = None) -> int:
             outcome = Outcome("skipped", "invalid Stop hook JSON payload")
         else:
             outcome = process_stop_payload(payload, dry_run=args.dry_run)
-    elif args.event == "research-completion":
+    elif args.event in {"task-closeout", "research-completion"}:
         try:
             payload = json.load(sys.stdin)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            outcome = Outcome("failed", "invalid research completion: input is not valid JSON")
+            outcome = Outcome("failed", "invalid task closeout: input is not valid JSON")
         else:
-            outcome = process_research_completion(payload, dry_run=args.dry_run)
+            outcome = process_task_closeout(payload, dry_run=args.dry_run)
     elif not args.task_id or not args.summary:
         _parser().error("Cloud outcome events require --task-id and --summary")
     else:
