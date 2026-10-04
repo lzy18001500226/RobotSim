@@ -42,7 +42,7 @@ The [engineering contracts](docs/engineering/README.md) and relevant records in 
 
 ## Git and PR closeout
 
-- At task closeout, follow the [Codex closeout workflow](docs/setup/codex.md#closeout). Local Codex's trusted project `Stop` hook invokes `scripts/agent/notify_task.py` once per turn; Codex Cloud must invoke it explicitly once before its final answer because project hooks are not assumed to run there. Use the actual terminal outcome. Missing notification configuration or delivery failure is best-effort and does not change the task result.
+- At task closeout, follow the [Codex closeout workflow](docs/setup/codex.md#durable-task-closeout). Emit exactly one structured task-closeout event: Local Codex places its marked envelope in the final message for the trusted `Stop` hook; Codex Cloud explicitly calls `scripts/agent/notify_task.py task-closeout` once before its final answer. Create an attempt ID at task start, reuse it and the exact payload for retries, and use a new ID for a genuine rerun. GitHub is canonical; AgentMail is secondary. Missing delivery configuration does not change the task result, but do not report a durable handoff when GitHub persistence failed.
 - Routine, low-risk tasks have standing authorization to self-review, commit, open a PR, wait for required checks and any configured independent review, and merge once those gates pass. Do not ask for an additional per-merge confirmation.
 - Stop at a reviewable PR for architecture decisions, destructive or high-risk work, dependency/security changes, unresolved GUI/hardware validation, and explicitly review-gated tasks.
 - Never bypass branch protection or force merge. Explicit current-user instructions take precedence.

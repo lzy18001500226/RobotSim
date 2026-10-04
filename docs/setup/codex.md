@@ -31,9 +31,9 @@ Confirm the root and branch are the intended ones, and preserve any existing cha
 
 Codex discovers project hooks from `.codex/hooks.json`; discovery is distinct from project/folder trust and hook approval. Review the hook and trust the real repository checkout through the normal UI before enabling it. Then run `/hooks` in that trusted checkout and confirm both `PreToolUse` and `Stop` are listed and enabled. If a hook is absent or disabled, do not assume it ran. Recheck `/hooks` after changing hook configuration; a changed handler may need renewed trust. Check the repository root, branch, and working-tree status before acting, especially after opening another checkout or worktree. Never bypass hook trust or approval policy, and do not copy project settings into global `~/.codex` configuration.
 
-The local `Stop` hook receives Codex's stop payload, including `session_id`, `turn_id`, `last_assistant_message`, and `stop_hook_active`. It sends one `completed` notification per session/turn only when the local-only `ROBOTSIM_LOCAL_STOP_HOOK=1` opt-in is set, and ignores a recursive Stop event when `stop_hook_active` is true. Normal hook outcomes leave stdout empty, as Codex expects; failures may be diagnosed on stderr. A manual `stop --dry-run` still prints the formatted message without sending mail. The hook does not run for individual tool calls, tests, commits, or progress updates. Notification errors are best-effort and do not change the task result.
+The local `Stop` hook receives Codex's stop payload, including `session_id`, `turn_id`, `last_assistant_message`, and `stop_hook_active`. For ordinary turns it sends one `completed` notification per session/turn. If the final message contains one valid marked task-closeout envelope, it persists that structured closeout instead of sending the generic notification. Both paths require the local-only `ROBOTSIM_LOCAL_STOP_HOOK=1` opt-in; recursive Stop events are ignored. Normal hook outcomes leave stdout empty, as Codex expects; failures may be diagnosed on stderr. A manual `stop --dry-run` still prints formatted output without sending mail or writing a GitHub comment. The hook does not run for individual tool calls, tests, commits, or progress updates. Notification errors are best-effort and do not change the task result.
 
-Project command hooks must not be assumed to run in Codex Cloud. For each Cloud instruction, explicitly call `scripts/agent/notify_task.py` exactly once at closeout, after validation and immediately before the final answer, with the actual terminal outcome (`ready_for_review`, `completed`, or `blocked`). Leave `ROBOTSIM_LOCAL_STOP_HOOK` unset in Cloud: even if project hooks become active there, the Stop handler will skip, so the explicit Cloud closeout remains the only notification path. Use a stable task/turn ID so retries are deduplicated. Do not make a second manual closeout call after the Cloud call.
+Project command hooks must not be assumed to run in Codex Cloud. Explicitly call `scripts/agent/notify_task.py task-closeout` exactly once before the final response for every task kind. Leave `ROBOTSIM_LOCAL_STOP_HOOK` unset in Cloud: even if project hooks become active there, the Stop handler will skip, so the explicit closeout remains the only path. Reuse the same attempt ID and exact payload when retrying; a genuine rerun gets a new attempt ID. Do not make a second generic notification call for the same task.
 
 For current hook behavior, see the [Codex hook configuration types](https://github.com/openai/codex/blob/main/codex-rs/config/src/hook_config.rs), [hook discovery and trust handling](https://github.com/openai/codex/blob/main/codex-rs/hooks/src/engine/discovery.rs), and the [official AGENTS.md guidance](https://developers.openai.com/codex/guides/agents-md).
 
@@ -49,23 +49,24 @@ When notifications are enabled, configure:
 | `AGENTMAIL_INBOX_ID` | `lzy18001500226@agentmail.to` | Non-secret inbox identifier. |
 | `ROBOTSIM_NOTIFY_TO` | Maintainer's normal QQ mailbox | Personal configuration; do not hard-code it in the repository. |
 | `ROBOTSIM_NOTIFY_STATE_DIR` | Optional local state path | Optional; defaults under the user's cache directory, outside the checkout. |
+| `GH_TOKEN` or `GITHUB_TOKEN` | GitHub API token | Secret. Needs Issue and pull-request comment read/write access to `lzy18001500226/RobotSim`; never put it in Git, a command line, a log, or chat. |
 | `ROBOTSIM_LOCAL_STOP_HOOK` | Set to `1` in the local Codex environment only | Local Stop-hook opt-in. Leave unset in Codex Cloud. |
 
 ### Local Codex setup
 
 1. Create an AgentMail API key in the AgentMail account that owns the inbox.
-2. Store the key in the operating system's secret manager or the user's shell secret manager, and expose it to Codex as `AGENTMAIL_API_KEY`. Do not place it in a shell command, shell startup file in plaintext, repository file, or chat.
+2. Store the AgentMail key and GitHub token with Issue/PR comment read/write access in the operating system's secret manager. Expose them as `AGENTMAIL_API_KEY` and `GH_TOKEN` (or `GITHUB_TOKEN`) to Codex. Do not put either value in a shell command, plaintext shell startup file, repository file, or chat.
 3. Set `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and set `ROBOTSIM_NOTIFY_TO` to the maintainer's normal QQ mailbox through the user's local environment/secret manager.
 4. Set `ROBOTSIM_LOCAL_STOP_HOOK=1` in the local Codex environment. Restart local Codex so it receives the configured environment. Trust the actual RobotSim checkout, run `/hooks`, and verify that `Stop` and `PreToolUse` are active.
 
 ### Codex Cloud setup
 
-1. In the Codex Cloud Environment settings, add `AGENTMAIL_API_KEY` as an environment secret. Do not paste it into a task prompt or repository file.
+1. In the Codex Cloud Environment settings, add `AGENTMAIL_API_KEY` and `GH_TOKEN` (or `GITHUB_TOKEN`) as environment secrets. The GitHub token needs Issue and PR comment read/write access to this repository. Do not paste secrets into a task prompt or repository file.
 2. Configure `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and the personal `ROBOTSIM_NOTIFY_TO` value in the Cloud environment's protected variable/secret settings. Do not store the QQ address in this repository, and do not set `ROBOTSIM_LOCAL_STOP_HOOK` in Cloud.
-3. Allow HTTPS access to `api.agentmail.to` in the Cloud environment network settings. A Cloud task must explicitly call the notifier once at closeout; project command hooks are not assumed to run there.
+3. Allow HTTPS access to `api.agentmail.to` for notifications and `api.github.com` for GitHub task-closeout persistence in the Cloud environment network settings. A Cloud task must explicitly call the notifier once at closeout; project command hooks are not assumed to run there.
 4. Notification is opt-in. If configuration is missing or AgentMail is unavailable, the notifier reports a best-effort skip/failure and exits successfully so the task can finish.
 
-For Cloud closeout, use a stable identifier for the instruction/turn and the matching actual outcome. For example:
+The status-only command remains for older, attention-only notifications; it does not create a durable closeout record. Use the structured task-closeout event below for task completion.
 
 ```bash
 python3 scripts/agent/notify_task.py ready_for_review \
@@ -76,14 +77,79 @@ python3 scripts/agent/notify_task.py ready_for_review \
   --issue 28
 ```
 
-Change the event to `completed` or `blocked` when that is the actual terminal outcome. Do not send per-tool, per-test, per-commit, or progress notifications. Messages contain a short task label, worker, branch/issue when available, and final summary. Local state markers and AgentMail's idempotency key prevent duplicate sends for the same event.
+Do not send per-tool, per-test, per-commit, or progress notifications. Messages contain a short task label, worker, branch/issue when available, and final summary. Local state markers and AgentMail's idempotency key prevent duplicate sends for the same generic event.
+
+## Durable task closeout
+
+Every task kind uses one canonical `robotsim.task-closeout.v1` event: implementation, experiment, research, review, or audit. Status is `completed`, `blocked`, `deferred`, `failed`, or `cancelled`. The compact payload records the canonical repository, Issue-shaped `task_id`, `attempt_id`, worker, task kind/status, summary, branch/head SHA/PR when applicable, validation, durable evidence, blockers, next action, and completion time. Unknown fields and transcripts are rejected.
+
+`task_id` has the form `issue-<number>-<stable-slug>`. At task start, create one random attempt ID (for example `python3 -c 'import uuid; print(uuid.uuid4())'`) and retain it with the task notes. A retry of the same closeout reuses that ID and the exact payload. A genuine rerun gets a new ID, including a later `blocked` → `completed` run. Worker is also part of event identity. The `sha256:` event ID is derived from schema version, repository, task ID, attempt ID, and worker, but not status or summary: retries deduplicate, a later attempt is distinct, and changed content under one attempt is rejected. The legacy research envelope derives a compatibility attempt from its timestamp; use the explicit attempt ID for all new work.
+
+Use a concise summary. `evidence` must contain durable public HTTPS references; local paths, private/local hosts, and credential-bearing query/fragment URLs are rejected. Recognized credentials and local filesystem paths in text fields are redacted before persistence. The notifier sends only the structured event, never surrounding final-answer text or a transcript. Local-only Windows/WSL paths are not durable evidence; if useful, describe the diagnostic without the path.
+
+GitHub is the canonical record. If `pr_number` is present, the notifier verifies that PR in the canonical RobotSim repository, requires the PR description to close the originating Issue, and posts the event to that PR's conversation. Otherwise it posts to the Issue number parsed from `task_id`. The closing reference lets someone starting from the Issue discover the PR and then recover the closeout. Comments contain stable hidden markers:
+
+```html
+<!-- robotsim-task-closeout:v1:sha256:<event-hash>:<payload-digest> -->
+<!-- robotsim-task-closeout-json:v1
+{ ... canonical task-closeout.v1 JSON ... }
+-->
+```
+
+The digest binds the marker to its canonical JSON payload; retries accept it only when the GitHub comment author matches the authenticated account and the digest validates. The GitHub token itself is never stored in the comment. Retries scan all repository Issue and PR comment pages, because event identity is repository-global even when an event can be posted to different destinations. After posting, writers re-read authenticated records across the repository, retain the lowest GitHub comment ID as the one canonical record, and delete other valid records wherever they were posted. A same-ID/different-payload writer reports a conflict; it is never treated as a successful retry. The retained comment stays on its original Issue or PR. A local lock serializes concurrent writers only when they share the same state directory. Native Windows has no cross-process `flock`; only its process-local thread lock applies. On Linux/WSL, `flock` protects processes only when they share the same state-directory filesystem. Local and Cloud generally do not share that directory, so repository-wide GitHub comment reconciliation is the cross-host arbitration. GitHub comments remain the canonical durable record. AgentMail is secondary attention/retrieval: if GitHub persistence fails, no mail is sent and no durable handoff is reported; if mail fails after GitHub succeeds, the task result remains persisted and a retry can recover notification delivery.
+
+### Local Codex
+
+Put exactly one marked JSON envelope in the final assistant message. The Stop hook persists it instead of sending the generic completion, so one turn cannot notify through both paths:
+
+```html
+<!-- robotsim.task-closeout.v1
+{
+  "schema_version": "robotsim.task-closeout.v1",
+  "event_id": "auto",
+  "repository": "lzy18001500226/RobotSim",
+  "task_id": "issue-44-unified-task-closeout",
+  "attempt_id": "00000000-0000-4000-8000-000000000001",
+  "worker": "Codex",
+  "task_kind": "implementation",
+  "status": "completed",
+  "summary": "Unified closeout is ready for review.",
+  "branch": "issue/38-research-completion-event",
+  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "pr_number": 42,
+  "validation": ["Python unit tests passed"],
+  "evidence": ["https://github.com/lzy18001500226/RobotSim/pull/42"],
+  "blockers": [],
+  "recommended_next_action": "Review PR #42.",
+  "completed_at": "2026-10-04T12:00:00Z"
+}
+-->
+```
+
+Malformed or multiple envelopes fail closed and do not fall through to a generic notification. Recursive Stop events remain ignored, normal synchronous Stop output stays empty, and failures are reported only on stderr.
+
+### Codex Cloud
+
+Cloud tasks explicitly call the same `task-closeout` command once before returning their final answer; Cloud does not depend on project hooks:
+
+```bash
+python3 scripts/agent/notify_task.py task-closeout <<'JSON'
+{"schema_version":"robotsim.task-closeout.v1","event_id":"auto","repository":"lzy18001500226/RobotSim","task_id":"issue-44-unified-task-closeout","attempt_id":"00000000-0000-4000-8000-000000000001","worker":"Codex Cloud","task_kind":"implementation","status":"completed","summary":"Unified closeout is ready for review.","branch":"issue/38-research-completion-event","head_sha":"0123456789abcdef0123456789abcdef01234567","pr_number":42,"validation":["Python unit tests passed"],"evidence":["https://github.com/lzy18001500226/RobotSim/pull/42"],"blockers":[],"recommended_next_action":"Review PR #42.","completed_at":"2026-10-04T12:00:00Z"}
+JSON
+```
+
+The explicit Cloud command exits nonzero when the payload is invalid or canonical GitHub persistence fails, so the task must not report a durable closeout in that case. AgentMail is secondary: an AgentMail failure after GitHub persistence is reported on stderr but does not change the command's successful exit status. The Local `Stop` hook always exits successfully so persistence failure cannot block turn completion; it keeps stdout empty and sends sanitized diagnostics to stderr.
+
+Do not send a separate generic `completed` call for that task. Once the comment exists, future ChatGPT sessions need only the repository plus Issue or PR number: list that object's comments and parse the JSON comment paired with the `robotsim-task-closeout:v1` marker. Starting from an Issue, follow its linked PR when the closeout is stored there. To recover all attempts, collect every valid marker; use `completed_at` descending to identify the latest closeout, then read `attempt_id`, worker, and status from the structured JSON. No transcript, local path, or conversation history is needed.
+
+The example IDs, SHA, summary, and evidence above are illustrative. Supply the attempt UUID created at task start and, for a PR, the current head branch/SHA and an active closing reference such as `Closes #<task-issue>` or `Closes lzy18001500226/RobotSim#<task-issue>`. References to another repository, unrelated Issues, and references inside code examples do not qualify.
 
 ### Human-gated live tests
 
 The automated tests replace the AgentMail HTTP transport with mocks; CI never sends live email. Do not use Cloud setup validation or `--dry-run` as proof of delivery. After the maintainer configures the real values, the exact live checks still required are:
 
-1. **Local:** restart Codex, trust the real checkout, confirm `Stop` appears in `/hooks`, complete one harmless test instruction, and verify that exactly one short notification reaches the normal QQ mailbox.
-2. **Cloud:** start one harmless Cloud task with the secrets configured, let the Cloud task make its single explicit closeout call with a fresh task ID, and verify that exactly one notification reaches the same QQ mailbox. Do not rely on project hooks for this check.
+1. **Local:** restart Codex, trust the real checkout, confirm `Stop` appears in `/hooks`, complete one harmless test instruction with a fresh attempt ID, and verify the GitHub closeout plus exactly one short notification reaches the normal QQ mailbox.
+2. **Cloud:** start one harmless Cloud task with the secrets configured, let the task make its single explicit closeout call with a fresh attempt ID, and verify the GitHub closeout plus exactly one notification reaches the same QQ mailbox. Do not rely on project hooks for this check.
 
 These are human-gated E2E checks. No real email is sent by this PR's Cloud validation or CI.
 
@@ -111,21 +177,21 @@ Research-only work that does not push an approved task branch is outside this au
 Routine authorized task:
 
 ```text
-validate -> self-review -> commit -> push -> auto-created/detected PR -> required checks/review
-  -> merge only when authorized -> update main -> completed notification
+validate -> self-review -> commit -> push -> auto-created/detected PR (PR body closes task Issue)
+  -> required checks/review -> merge only when authorized -> task-closeout status=completed
 ```
 
 Review-gated task:
 
 ```text
-validate -> self-review -> commit -> push -> auto-created/detected PR
-  -> ready_for_review notification -> stop for review
+validate -> self-review -> commit -> push -> auto-created/detected PR (PR body closes task Issue)
+  -> task-closeout status=completed, next action=review PR -> stop for review
 ```
 
 Blocked task:
 
 ```text
-preserve the relevant evidence -> blocked notification -> stop
+preserve durable evidence -> task-closeout status=blocked -> stop
 ```
 
 Stop at a reviewable PR for architecture decisions, destructive or high-risk changes, dependency/security changes, unresolved GUI/hardware validation, and tasks the user explicitly gates for review. Never bypass branch protection or force merge. Current user instructions always take precedence.
