@@ -33,8 +33,10 @@ jobs:
           python3 -m py_compile
           scripts/agent/notify_task.py
           scripts/agent/pre_tool_guard.py
+          scripts/agent/eval_harness.py
           tests/test_notify_task.py
           tests/test_pre_tool_guard.py
+          tests/test_eval_harness.py
 
       - name: Parse Codex hook configuration
         run: python3 -m json.tool .codex/hooks.json > /dev/null
@@ -57,7 +59,13 @@ jobs:
           from pathlib import Path
           import re
 
-          documents = (Path("AGENTS.md"), Path("docs/setup/codex.md"), Path("docs/README.md"))
+          documents = (
+              Path("AGENTS.md"),
+              Path("docs/setup/codex.md"),
+              Path("docs/README.md"),
+              Path("docs/checklists/agent_infra_eval.md"),
+              Path("docs/workflows/agent_behavior_eval.md"),
+          )
           missing = []
           for document in documents:
               text = document.read_text(encoding="utf-8")
