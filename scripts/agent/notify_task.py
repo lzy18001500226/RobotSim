@@ -144,6 +144,7 @@ class Outcome:
     message: str
     subject: str = ""
     body: str = ""
+    exit_code: int = 0
 
 
 @dataclass(frozen=True)
@@ -531,12 +532,10 @@ def _list_issue_comments(issue_number: str, token: str) -> list[dict[str, object
     raise RuntimeError("GitHub comments pagination limit exceeded")
 
 
-def _trusted_closeout_comments(
-    comments: list[dict[str, object]], event: Mapping[str, object], actor: str
-) -> tuple[str, list[dict[str, object]]]:
-    expected_id = str(event["event_id"])
-    found: list[dict[str, object]] = []
-    conflict = False
+def _trusted_closeout_records(
+    comments: list[dict[str, object]], event_id: str, actor: str
+) -> list[tuple[dict[str, object], dict[str, object]]]:
+    records: list[tuple[dict[str, object], dict[str, object]]] = []
     for comment in comments:
         user = comment.get("user")
         if (
@@ -549,7 +548,7 @@ def _trusted_closeout_comments(
         if not isinstance(body, str):
             continue
         markers = list(TASK_CLOSEOUT_COMMENT_MARKER.finditer(body))
-        if not any(marker.group(1) == expected_id for marker in markers):
+        if not any(marker.group(1) == event_id for marker in markers):
             continue
         payloads = list(TASK_CLOSEOUT_COMMENT_JSON.finditer(body))
         if len(markers) != 1 or len(payloads) != 1:
@@ -559,20 +558,26 @@ def _trusted_closeout_comments(
             stored = json.loads(payloads[0].group(1))
         except json.JSONDecodeError:
             continue
-        if not isinstance(stored, dict) or stored.get("event_id") != expected_id:
+        if not isinstance(stored, dict) or stored.get("event_id") != event_id:
             continue
-        expected_digest = _closeout_payload_digest(stored)
-        if marker.group(2) != expected_digest:
+        try:
+            normalized = normalize_task_closeout(stored)
+        except (TypeError, ValueError):
             continue
-        if marker.group(1) != expected_id:
+        if normalized != stored or marker.group(2) != _closeout_payload_digest(stored):
             continue
-        if stored != event:
-            conflict = True
-        else:
-            found.append(comment)
-    if conflict:
-        return "conflict", found
-    return ("same" if found else "absent"), found
+        records.append((comment, stored))
+    return records
+
+
+def _trusted_closeout_comments(
+    comments: list[dict[str, object]], event: Mapping[str, object], actor: str
+) -> tuple[str, list[dict[str, object]]]:
+    records = _trusted_closeout_records(comments, str(event["event_id"]), actor)
+    matching = [comment for comment, stored in records if stored == event]
+    if any(stored != event for _, stored in records):
+        return "conflict", matching
+    return ("same" if matching else "absent"), matching
 
 
 def _existing_event_state(
@@ -604,34 +609,51 @@ def _task_closeout_lock(event_id: str, environ: Mapping[str, str]):
         local_lock.release()
 
 
-def _remove_duplicate_closeout_comments(
+def _reconcile_closeout_comments(
     comments: list[dict[str, object]],
-    event: Mapping[str, object],
+    event_id: str,
     actor: str,
     token: str,
     issue_number: int,
-) -> bool:
-    _, trusted = _trusted_closeout_comments(comments, event, actor)
-    comment_ids = sorted(
-        comment["id"]
-        for comment in trusted
-        if isinstance(comment.get("id"), int) and not isinstance(comment.get("id"), bool)
-    )
-    if len(trusted) > 1 and len(comment_ids) != len(trusted):
-        return False
-    if len(comment_ids) < 2:
-        return True
-    for comment_id in comment_ids[1:]:
-        try:
-            _github_json(
-                "DELETE",
-                f"/repos/{ROBOTSIM_REPOSITORY}/issues/{issue_number}/comments/{comment_id}",
-                token,
-            )
-        except RuntimeError as exc:
-            if str(exc) != "HTTP 404":
-                return False
-    return True
+) -> tuple[dict[str, object] | None, dict[str, object] | None, bool]:
+    """Converge visible records to the earliest authenticated comment for an event.
+
+    GitHub has no conditional-create operation for Issue comments. Concurrent
+    writers therefore reconcile after writing: the lowest comment ID wins,
+    and every other valid record for that event is removed. Re-reading after
+    deletion makes retries and overlapping reconcilers converge on the same
+    canonical record.
+    """
+    snapshot = comments
+    for _ in range(5):
+        records = _trusted_closeout_records(snapshot, event_id, actor)
+        if not records:
+            return None, None, True
+        if any(
+            not isinstance(comment.get("id"), int) or isinstance(comment.get("id"), bool)
+            for comment, _ in records
+        ):
+            return None, None, False
+        ordered = sorted(records, key=lambda pair: int(pair[0]["id"]))
+        canonical_comment, canonical_event = ordered[0]
+        if len(ordered) == 1:
+            return canonical_comment, canonical_event, True
+        for duplicate_comment, _ in ordered[1:]:
+            comment_id = int(duplicate_comment["id"])
+            try:
+                _github_json(
+                    "DELETE",
+                    f"/repos/{ROBOTSIM_REPOSITORY}/issues/{issue_number}/comments/{comment_id}",
+                    token,
+                )
+            except RuntimeError as exc:
+                if str(exc) != "HTTP 404":
+                    return None, None, False
+        snapshot = _list_issue_comments(str(issue_number), token)
+        remaining = _trusted_closeout_records(snapshot, event_id, actor)
+        if len(remaining) == 1 and remaining[0][0].get("id") == canonical_comment.get("id"):
+            return remaining[0][0], remaining[0][1], True
+    return None, None, False
 
 
 def _closeout_target(event: Mapping[str, object]) -> tuple[int, str]:
@@ -651,11 +673,48 @@ def _pr_closes_task_issue(pull: Mapping[str, object], task_id: str) -> bool:
     if issue_match is None or not isinstance(body, str):
         return False
     issue_number = issue_match.group(1)
+    # GitHub closing keywords in examples are inert. Remove fenced and
+    # indented code blocks, inline code spans, and HTML code/pre examples
+    # before considering issue references.
+    without_html_code = re.sub(r"(?is)<(pre|code)\b[^>]*>.*?</\1\s*>", " ", body)
+    visible_lines: list[str] = []
+    fence_character = ""
+    fence_length = 0
+    for line in without_html_code.splitlines():
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence_character:
+            if fence:
+                run = fence.group(1)
+                if run[0] == fence_character and len(run) >= fence_length and not line[fence.end():].strip():
+                    fence_character = ""
+                    fence_length = 0
+            continue
+        if fence:
+            run = fence.group(1)
+            fence_character = run[0]
+            fence_length = len(run)
+            continue
+        if line.startswith("\t") or line.startswith("    "):
+            continue
+        visible_lines.append(re.sub(r"(`+)(.*?)\1", " ", line))
+    visible_body = "\n".join(visible_lines)
     closing_reference = re.compile(
-        rf"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s+"
-        rf"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#{issue_number}\b"
+        r"(?i)\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+"
+        r"(?:(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)#(?P<qualified_number>[1-9][0-9]*)|"
+        r"#(?P<local_number>[1-9][0-9]*))\b"
     )
-    return closing_reference.search(body) is not None
+    for reference in closing_reference.finditer(visible_body):
+        local_number = reference.group("local_number")
+        if local_number == issue_number:
+            return True
+        if (
+            reference.group("qualified_number") == issue_number
+            and reference.group("owner") is not None
+            and reference.group("owner").casefold() == "lzy18001500226"
+            and reference.group("repo").casefold() == "robotsim"
+        ):
+            return True
+    return False
 
 
 def persist_task_closeout(
@@ -705,14 +764,14 @@ def persist_task_closeout(
                 )
         with _task_closeout_lock(str(event["event_id"]), env):
             comments = _list_issue_comments(str(target_number), token)
-            existing, _ = _trusted_closeout_comments(comments, event, actor)
-            if existing == "conflict":
-                return PersistenceResult("failed", "attempt ID already exists with a different closeout payload")
-            if existing == "same":
-                if not _remove_duplicate_closeout_comments(
-                    comments, event, actor, token, target_number
-                ):
-                    return PersistenceResult("failed", "duplicate closeout comments could not be consolidated")
+            canonical_comment, canonical_event, reconciled = _reconcile_closeout_comments(
+                comments, str(event["event_id"]), actor, token, target_number
+            )
+            if not reconciled:
+                return PersistenceResult("failed", "closeout comments could not be consolidated")
+            if canonical_event is not None:
+                if canonical_event != event:
+                    return PersistenceResult("failed", "attempt ID already exists with a different closeout payload")
                 return PersistenceResult("duplicate", f"event already exists on {target_kind} #{target_number}")
             result = _github_json(
                 "POST", comments_path, token,
@@ -725,16 +784,18 @@ def persist_task_closeout(
             ):
                 return PersistenceResult("failed", "GitHub did not confirm the closeout comment")
             # Re-read after creation. This also lets racing writers consolidate
-            # their authenticated duplicate comments while retaining one canonical copy.
+            # their authenticated records, including conflicting payloads.
             comments = _list_issue_comments(str(target_number), token)
-            existing, _ = _trusted_closeout_comments(comments, event, actor)
-            if existing == "conflict":
+            canonical_comment, canonical_event, reconciled = _reconcile_closeout_comments(
+                comments, str(event["event_id"]), actor, token, target_number
+            )
+            if not reconciled or canonical_event is None or canonical_comment is None:
+                return PersistenceResult("failed", "concurrent closeout comments could not be consolidated")
+            if canonical_event != event:
                 return PersistenceResult("failed", "attempt ID was concurrently used with a different payload")
-            if existing == "same" and not _remove_duplicate_closeout_comments(
-                comments, event, actor, token, target_number
-            ):
-                return PersistenceResult("failed", "duplicate closeout comments could not be consolidated")
-            return PersistenceResult("persisted", f"event persisted to {target_kind} #{target_number}")
+            if canonical_comment.get("id") == result["id"]:
+                return PersistenceResult("persisted", f"event persisted to {target_kind} #{target_number}")
+            return PersistenceResult("duplicate", f"event already exists on {target_kind} #{target_number}")
     except RuntimeError as exc:
         return PersistenceResult("failed", f"GitHub closeout persistence failed ({exc})")
     except OSError as exc:
@@ -806,7 +867,7 @@ def process_task_closeout(
         else:
             event = normalize_task_closeout(payload)
     except (ValueError, TypeError) as exc:
-        return Outcome("failed", f"invalid task closeout: {exc}")
+        return Outcome("failed", f"invalid task closeout: {exc}", exit_code=1)
     issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"]))
     assert issue_match is not None
     destination = f"PR #{event['pr_number']}" if event["pr_number"] is not None else f"Issue #{issue_match.group(1)}"
@@ -816,7 +877,7 @@ def process_task_closeout(
         return Outcome("dry_run", "no GitHub comment or AgentMail request was made", subject, body)
     persisted = persist_task_closeout(event, environ=environ)
     if persisted.state == "failed":
-        return Outcome("failed", persisted.message, subject, body)
+        return Outcome("failed", persisted.message, subject, body, exit_code=1)
     mailed = _task_closeout_mail(event, environ=environ)
     prefix = f"GitHub {persisted.message};"
     if mailed.state == "failed":
@@ -1164,7 +1225,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             payload = json.load(sys.stdin)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            outcome = Outcome("failed", "invalid task closeout: input is not valid JSON")
+            outcome = Outcome("failed", "invalid task closeout: input is not valid JSON", exit_code=1)
         else:
             outcome = process_task_closeout(payload, dry_run=args.dry_run)
     elif not args.task_id or not args.summary:
@@ -1189,7 +1250,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"notify_task: {outcome.state}: {outcome.message}", file=sys.stderr)
     else:
         _print_outcome(outcome)
-    # Mail delivery is best-effort and must never keep a completed turn open.
+    # Local Stop is always non-blocking. Explicit Cloud closeout commands fail
+    # when canonical GitHub persistence failed, but AgentMail remains best-effort.
+    if args.event == "stop" and not args.dry_run:
+        return 0
+    if args.event in {"task-closeout", "research-completion"}:
+        return outcome.exit_code
     return 0
 
 

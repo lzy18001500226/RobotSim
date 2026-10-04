@@ -96,7 +96,7 @@ GitHub is the canonical record. If `pr_number` is present, the notifier verifies
 -->
 ```
 
-The digest binds the marker to its canonical JSON payload; retries accept it only when the GitHub comment author matches the authenticated account and the digest validates. The GitHub token itself is never stored in the comment. Retries scan all comment pages. A same-ID/different-payload event fails instead of overwriting the existing closeout. A local lock serializes concurrent writers on the same machine; after posting, writers re-read comments and consolidate authenticated duplicates. GitHub comments remain the canonical durable record. AgentMail is secondary attention/retrieval: if GitHub persistence fails, no mail is sent and no durable handoff is reported; if mail fails after GitHub succeeds, the task result remains persisted and a retry can recover notification delivery.
+The digest binds the marker to its canonical JSON payload; retries accept it only when the GitHub comment author matches the authenticated account and the digest validates. The GitHub token itself is never stored in the comment. Retries scan all comment pages. A same-ID/different-payload event fails instead of overwriting the existing closeout. A local lock serializes concurrent writers only when they share the same state directory. Native Windows has no cross-process `flock`; only its process-local thread lock applies. On Linux/WSL, `flock` protects processes only when they share the same state-directory filesystem. Local and Cloud generally do not share that directory, so GitHub comment reconciliation is the cross-host arbitration: after posting, writers re-read authenticated records for the event, retain the lowest GitHub comment ID, delete other valid records, and report a conflicting payload as failed. GitHub comments remain the canonical durable record. AgentMail is secondary attention/retrieval: if GitHub persistence fails, no mail is sent and no durable handoff is reported; if mail fails after GitHub succeeds, the task result remains persisted and a retry can recover notification delivery.
 
 ### Local Codex
 
@@ -138,9 +138,11 @@ python3 scripts/agent/notify_task.py task-closeout <<'JSON'
 JSON
 ```
 
+The explicit Cloud command exits nonzero when the payload is invalid or canonical GitHub persistence fails, so the task must not report a durable closeout in that case. AgentMail is secondary: an AgentMail failure after GitHub persistence is reported on stderr but does not change the command's successful exit status. The Local `Stop` hook always exits successfully so persistence failure cannot block turn completion; it keeps stdout empty and sends sanitized diagnostics to stderr.
+
 Do not send a separate generic `completed` call for that task. Once the comment exists, future ChatGPT sessions need only the repository plus Issue or PR number: list that object's comments and parse the JSON comment paired with the `robotsim-task-closeout:v1` marker. Starting from an Issue, follow its linked PR when the closeout is stored there. To recover all attempts, collect every valid marker; use `completed_at` descending to identify the latest closeout, then read `attempt_id`, worker, and status from the structured JSON. No transcript, local path, or conversation history is needed.
 
-The example IDs, SHA, summary, and evidence above are illustrative. Supply the attempt UUID created at task start and, for a PR, the current head branch/SHA and a PR description with `Closes #<task-issue>`; the notifier checks these before it writes.
+The example IDs, SHA, summary, and evidence above are illustrative. Supply the attempt UUID created at task start and, for a PR, the current head branch/SHA and an active closing reference such as `Closes #<task-issue>` or `Closes lzy18001500226/RobotSim#<task-issue>`. References to another repository, unrelated Issues, and references inside code examples do not qualify.
 
 ### Human-gated live tests
 

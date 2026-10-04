@@ -135,10 +135,10 @@ class NotifyTaskTests(unittest.TestCase):
                         race_read_barrier.wait(timeout=5)
                     return FakeResponse(snapshot, 200)
                 if method == "POST":
-                    counts["github_post"] += 1
                     payload = json.loads(request.data)  # type: ignore[attr-defined]
-                    comment_id = 100 + counts["github_post"]
                     with store_guard:
+                        counts["github_post"] += 1
+                        comment_id = 100 + counts["github_post"]
                         stored_comments.append({
                             "id": comment_id,
                             "body": payload["body"],
@@ -562,6 +562,38 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(counts["github_post"], 0)
         self.assertEqual(counts["mail_post"], 0)
 
+    def test_pr_closing_reference_validation_accepts_only_real_canonical_references(self) -> None:
+        task_id = "issue-44-unified-task-closeout"
+        accepted_bodies = (
+            "Closes #44",
+            "Resolves lzy18001500226/RobotSim#44",
+        )
+        rejected_bodies = (
+            "Closes someoneelse/OtherRepo#44",
+            "```text\nCloses #44\n```",
+            "Example: `Closes #44`",
+            "    Closes #44",
+            "Closes #45",
+        )
+        for body in accepted_bodies:
+            with self.subTest(body=body):
+                self.assertTrue(notify_task._pr_closes_task_issue({"body": body}, task_id))
+        for body in rejected_bodies:
+            with self.subTest(body=body):
+                self.assertFalse(notify_task._pr_closes_task_issue({"body": body}, task_id))
+
+    def test_pr_wrong_repository_or_fenced_example_cannot_persist_closeout(self) -> None:
+        for body in ("Closes someoneelse/OtherRepo#44", "```md\nCloses #44\n```"):
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as directory:
+                transport, _, counts = self._mock_closeout_transport(pr_body=body)
+                with patch.object(notify_task, "_open_request", side_effect=transport):
+                    result = notify_task.process_task_closeout(
+                        self._closeout_event(), environ=self._settings(directory)
+                    )
+            self.assertEqual(result.state, "failed")
+            self.assertEqual(counts["github_post"], 0)
+            self.assertEqual(counts["mail_post"], 0)
+
     def test_pr_closeout_rejects_stale_head_sha(self) -> None:
         transport, _, counts = self._mock_closeout_transport()
         with tempfile.TemporaryDirectory() as directory:
@@ -778,12 +810,52 @@ class NotifyTaskTests(unittest.TestCase):
                 contextlib.redirect_stderr(stderr),
             ):
                 code = notify_task.main(["task-closeout"])
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 1)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("HTTP 403", stderr.getvalue())
         self.assertNotIn("fake-github-token", stderr.getvalue())
         self.assertNotIn("fake-test-key", stderr.getvalue())
         urlopen.assert_called_once()
+
+    def test_local_stop_stays_nonblocking_when_github_persistence_fails(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://api.github.com", 403, "Bearer fake-github-token", {}, io.BytesIO(b"secret")
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            payload = self._closeout_stop_payload(self._closeout_event())
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                patch.object(notify_task, "_open_request", side_effect=error),
+                patch.dict("os.environ", settings, clear=True),
+                patch("sys.stdin", io.StringIO(json.dumps(payload))),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = notify_task.main(["stop"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("HTTP 403", stderr.getvalue())
+        self.assertNotIn("fake-github-token", stderr.getvalue())
+
+    def test_cloud_agentmail_failure_does_not_fail_durable_closeout_command(self) -> None:
+        transport, _, _ = self._mock_closeout_transport(fail_mail_attempts=1)
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with (
+                patch.object(notify_task, "_open_request", side_effect=transport),
+                patch.dict("os.environ", settings, clear=True),
+                patch("sys.stdin", io.StringIO(json.dumps(self._closeout_event()))),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = notify_task.main(["task-closeout"])
+        self.assertEqual(code, 0)
+        self.assertIn("GitHub event persisted", stderr.getvalue())
+        self.assertIn("AgentMail delivery failed", stderr.getvalue())
 
     def test_retry_after_ambiguous_github_comment_response_does_not_post_twice(self) -> None:
         transport, _, counts = self._mock_closeout_transport(fail_comment_response_once=True)
@@ -930,6 +1002,49 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(counts["github_post"], 2)
         self.assertGreaterEqual(counts["github_delete"], 1)
         self.assertEqual(len(stored_comments), 1)
+
+    def test_racing_different_payloads_from_separate_state_dirs_keep_one_and_conflict(self) -> None:
+        stored_comments: list[dict[str, object]] = []
+        read_barrier = threading.Barrier(2)
+        post_barrier = threading.Barrier(2)
+        transport, _, counts = self._mock_closeout_transport(
+            comments=stored_comments,
+            race_read_barrier=read_barrier,
+            race_post_barrier=post_barrier,
+        )
+        with tempfile.TemporaryDirectory() as root:
+            local_settings = self._settings(str(Path(root) / "local"))
+            cloud_settings = self._settings(str(Path(root) / "cloud"))
+            events = (
+                self._closeout_event(summary="Local writer payload."),
+                self._closeout_event(summary="Cloud writer payload."),
+            )
+            self.assertEqual(
+                notify_task.normalize_task_closeout(events[0])["event_id"],
+                notify_task.normalize_task_closeout(events[1])["event_id"],
+            )
+            with patch.object(notify_task, "_open_request", side_effect=transport):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    outcomes = list(pool.map(
+                        lambda pair: notify_task.process_task_closeout(pair[0], environ=pair[1]),
+                        zip(events, (local_settings, cloud_settings)),
+                    ))
+        self.assertEqual(counts["github_post"], 2)
+        self.assertEqual(len(stored_comments), 1)
+        self.assertEqual(sum(outcome.state == "failed" for outcome in outcomes), 1)
+        loser = next(outcome for outcome in outcomes if outcome.state == "failed")
+        self.assertIn("concurrently used with a different payload", loser.message)
+        winner_index = next(index for index, outcome in enumerate(outcomes) if outcome.state != "failed")
+        canonical_payload = notify_task.TASK_CLOSEOUT_COMMENT_JSON.search(
+            str(stored_comments[0]["body"])
+        )
+        self.assertIsNotNone(canonical_payload)
+        assert canonical_payload is not None
+        self.assertEqual(
+            json.loads(canonical_payload.group(1)),
+            notify_task.normalize_task_closeout(events[winner_index]),
+        )
+        self.assertEqual(counts["github_delete"], 1)
 
 
 if __name__ == "__main__":
