@@ -10,11 +10,7 @@ UPSTREAM_COMMIT="3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 UNITREE_COMMIT="1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
 GRASP_REFERENCE_COMMIT="ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff"
 SEED="${ROBOTSIM_M0_SEED:-42}"
-if [[ "$SEED" =~ ^[0-9]+$ ]]; then
-    SEED_JSON="$SEED"
-else
-    SEED_JSON=null
-fi
+if [[ "$SEED" =~ ^[0-9]+$ ]]; then SEED_JSON="$SEED"; else SEED_JSON=null; fi
 
 json_quote() {
     local value=${1-}
@@ -22,10 +18,11 @@ json_quote() {
     value=${value//\"/\\\"}
     value=${value//$'\n'/\\n}
     value=${value//$'\r'/\\r}
+    value=${value//$'\t'/\\t}
     printf '"%s"' "$value"
 }
 
-write_preflight_result() {
+write_result() {
     local state="$1"
     local error="$2"
     {
@@ -62,7 +59,7 @@ write_preflight_result() {
 
 CURRENT_STAGE="INITIALIZE"
 ROBOTSIM_SHA="not_checked"
-ROBOTSIM_DIRTY_JSON=false
+ROBOTSIM_DIRTY_JSON=null
 PYTHON_VERSION="not_run"
 MUJOCO_VERSION="not_run"
 NUMPY_VERSION="not_run"
@@ -86,9 +83,9 @@ bootstrap_failure() {
         return 1
     fi
     RESULT_PATH="$OUTPUT_DIR/m0_result.json"
-    write_preflight_result "PREFLIGHT" ""
+    write_result "PREFLIGHT" ""
     CURRENT_STAGE="OUTPUT_DIRECTORY"
-    write_preflight_result "FAILED" "$message"
+    write_result "FAILED" "$message"
     printf '%s; failure result: %s\n' "$message" "$RESULT_PATH" >&2
 }
 
@@ -105,19 +102,19 @@ if ! mkdir "$OUTPUT_DIR" 2>/dev/null; then
     exit 2
 fi
 RESULT_PATH="$OUTPUT_DIR/m0_result.json"
-write_preflight_result "PREFLIGHT" ""
+write_result "PREFLIGHT" ""
 
 on_exit() {
     local status=$?
     if (( status != 0 )); then
-        local existing_run_id=""
-        local existing_state=""
+        local result_run_id=""
+        local result_state=""
         if [[ -f "$RESULT_PATH" ]]; then
-            existing_run_id="$(sed -n 's/^[[:space:]]*"run_id":[[:space:]]*"\([^"]*\)".*/\1/p' "$RESULT_PATH" | head -n 1 || true)"
-            existing_state="$(sed -n 's/^[[:space:]]*"state":[[:space:]]*"\([^"]*\)".*/\1/p' "$RESULT_PATH" | head -n 1 || true)"
+            result_run_id="$(sed -n 's/^[[:space:]]*"run_id":[[:space:]]*"\([^"]*\)".*/\1/p' "$RESULT_PATH" | head -n 1 || true)"
+            result_state="$(sed -n 's/^[[:space:]]*"state":[[:space:]]*"\([^"]*\)".*/\1/p' "$RESULT_PATH" | head -n 1 || true)"
         fi
-        if [[ "$existing_run_id" != "$RUN_ID" || "$existing_state" != "FAILED" ]]; then
-            write_preflight_result "FAILED" "Preflight or launcher failed at ${CURRENT_STAGE} (exit ${status})"
+        if [[ "$result_run_id" != "$RUN_ID" || "$result_state" != "FAILED" ]]; then
+            write_result "FAILED" "Preflight or launcher failed at ${CURRENT_STAGE} (exit ${status})"
         fi
         printf 'M0 invocation %s failed at %s; failure result: %s\n' \
             "$RUN_ID" "$CURRENT_STAGE" "$RESULT_PATH" >&2
@@ -141,7 +138,7 @@ if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)" ]]; th
 else
     ROBOTSIM_DIRTY_JSON=false
 fi
-write_preflight_result "PREFLIGHT" ""
+write_result "PREFLIGHT" ""
 
 ensure_checkout() {
     local label="$1"
@@ -165,21 +162,22 @@ ensure_checkout() {
     local actual
     actual="$(git -C "$path" rev-parse HEAD)"
     printf -v "$sha_var" '%s' "$actual"
-    write_preflight_result "PREFLIGHT" ""
+    write_result "PREFLIGHT" ""
     if [[ "$actual" != "$revision" ]]; then
         printf '%s checkout has the wrong pinned revision\n' "$label" >&2
         return 1
     fi
+
     local status_output
     status_output="$(git -C "$path" status --porcelain --untracked-files=all)"
     if [[ -n "$status_output" ]]; then
         printf -v "$dirty_var" '%s' true
-        write_preflight_result "PREFLIGHT" ""
+        write_result "PREFLIGHT" ""
         printf 'Refusing dirty %s checkout\n' "$label" >&2
         return 1
     fi
     printf -v "$dirty_var" '%s' false
-    write_preflight_result "PREFLIGHT" ""
+    write_result "PREFLIGHT" ""
 }
 
 CURRENT_STAGE="HUMANOID_VLA_CHECKOUT"
@@ -206,7 +204,7 @@ case "$G1_DIR_RESOLVED" in
     *)
         MESH_PATH_CLASS="external_rejected"
         MESH_RELATIVE_PATH="g1_model_directory_resolves_outside_unitree_checkout"
-        write_preflight_result "PREFLIGHT" ""
+        write_result "PREFLIGHT" ""
         printf 'Resolved G1 asset directory escapes the pinned Unitree checkout\n' >&2
         exit 2
         ;;
@@ -217,7 +215,7 @@ case "$VERIFIED_MESH_ROOT" in
     *)
         MESH_PATH_CLASS="external_rejected"
         MESH_RELATIVE_PATH="resolved_g1_mesh_root_escapes_verified_tree"
-        write_preflight_result "PREFLIGHT" ""
+        write_result "PREFLIGHT" ""
         printf 'Resolved G1 mesh root escapes the verified G1 asset directory\n' >&2
         exit 2
         ;;
@@ -226,7 +224,7 @@ MESH_REQUESTED="${ROBOTSIM_M0_MESH_DIR:-$VERIFIED_MESH_ROOT}"
 if ! MESH_DIR="$(realpath -e "$MESH_REQUESTED")" || [[ ! -d "$MESH_DIR" ]]; then
     MESH_PATH_CLASS="missing_or_unresolvable"
     MESH_RELATIVE_PATH="not_available"
-    write_preflight_result "PREFLIGHT" ""
+    write_result "PREFLIGHT" ""
     printf 'G1 mesh directory is missing or cannot be resolved\n' >&2
     exit 2
 fi
@@ -238,12 +236,12 @@ case "$MESH_DIR" in
     *)
         MESH_PATH_CLASS="external_rejected"
         MESH_RELATIVE_PATH="outside_verified_unitree_g1_mesh_tree"
-        write_preflight_result "PREFLIGHT" ""
+        write_result "PREFLIGHT" ""
         printf 'ROBOTSIM_M0_MESH_DIR must resolve inside the pinned Unitree G1 mesh tree\n' >&2
         exit 2
         ;;
 esac
-write_preflight_result "PREFLIGHT" ""
+write_result "PREFLIGHT" ""
 
 CURRENT_STAGE="PYTHON_ENVIRONMENT"
 VENV_DIR="$RUN_ROOT/venv"
@@ -254,7 +252,7 @@ if [[ -e "$VENV_PYTHON" ]]; then
         exit 2
     fi
     PYTHON_VERSION="$("$VENV_PYTHON" -c 'import platform; print(platform.python_version())')"
-    write_preflight_result "PREFLIGHT" ""
+    write_result "PREFLIGHT" ""
     if [[ "$PYTHON_VERSION" != 3.10.* ]]; then
         printf 'Existing M0 venv must use Python 3.10.x; found %s\n' "$PYTHON_VERSION" >&2
         exit 2
@@ -262,7 +260,7 @@ if [[ -e "$VENV_PYTHON" ]]; then
 else
     uv venv --python 3.10 "$VENV_DIR"
     PYTHON_VERSION="$("$VENV_PYTHON" -c 'import platform; print(platform.python_version())')"
-    write_preflight_result "PREFLIGHT" ""
+    write_result "PREFLIGHT" ""
     if [[ "$PYTHON_VERSION" != 3.10.* ]]; then
         printf 'uv created an incompatible Python venv; expected 3.10.x, found %s\n' "$PYTHON_VERSION" >&2
         exit 2
@@ -274,13 +272,11 @@ uv pip install --python "$VENV_PYTHON" -r "$ROOT_DIR/simulation/mujoco/requireme
 read -r MUJOCO_VERSION NUMPY_VERSION H5PY_VERSION OPENCV_VERSION < <(
     "$VENV_PYTHON" -c 'import cv2,h5py,mujoco,numpy; print(mujoco.__version__, numpy.__version__, h5py.__version__, cv2.__version__)'
 )
-write_preflight_result "PREFLIGHT" ""
+write_result "PREFLIGHT" ""
 
 LOG_PATH="$OUTPUT_DIR/run.log"
 VIDEO_PATH="$OUTPUT_DIR/m0_pick_place.mp4"
 SCREENSHOT_PATH="$OUTPUT_DIR/m0_final.png"
-PHYSICS_TRACE_PATH="$OUTPUT_DIR/m0_physics_trace.jsonl"
-
 CURRENT_STAGE="RUNTIME"
 cd "$ROOT_DIR"
 set +e

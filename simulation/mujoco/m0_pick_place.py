@@ -23,6 +23,7 @@ import numpy as np
 MUJOCO_VERSION = "3.2.6"
 UPSTREAM_COMMIT = "3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 UNITREE_COMMIT = "1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
+
 SOURCE_TABLE_TOP_Z = 0.8
 SOURCE_TABLE_XY = np.array([0.3, 0.0], dtype=float)
 SOURCE_TABLE_HALF_EXTENTS = np.array([0.2, 0.12], dtype=float)
