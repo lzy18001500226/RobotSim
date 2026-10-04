@@ -1,12 +1,12 @@
 # Issue #43 M0 Status
 
-CURRENT STAGE: Acceptance-gap revision complete; two clean seed-42 full episodes pass at RobotSim source SHA `b51e8565e8177dc41b06d0026b56207020faee46`.
+CURRENT STAGE: Launcher provenance and reproducibility fixes are in progress. The historical episodes below predate these fixes and are not final evidence for the current launcher revision.
 
-The earlier box-dominant geometry and center-only placement run is superseded; it is not evidence for this revised acceptance. Current evidence follows.
+The earlier box-dominant geometry and center-only placement run is superseded. All measurements below are historical evidence for the prior acceptance-gap code, not validation of the launcher changes now in progress.
 
-## Final Acceptance-Gap Revision
+## Historical Acceptance-Gap Revision
 
-Both final runs used seed 42, the same clean RobotSim source SHA above, and the pinned upstream revisions listed in the launcher. Both result JSON files report `passed: true`, `robotsim_dirty: false`, every task stage and safety check passing, and identical measured acceptance evidence. JSON, physics traces, videos, screenshots, and logs remain outside the repository:
+The earlier acceptance-gap runs used seed 42 and passed the task checks, but their artifacts do not contain the current run identity and mesh provenance contract. They are retained as historical evidence only. JSON, physics traces, videos, screenshots, and logs remain outside the repository:
 
 - Run 1: `/tmp/robotsim-issue43-m0/pr45-final-1/`
 - Run 2: `/tmp/robotsim-issue43-m0/pr45-final-2/`
@@ -33,16 +33,16 @@ WHY SELECTED: MIT-licensed source provides the shortest usable path to a G1 29-D
 
 Other investigated candidates included Robotics-Ark/ark_unitree_g1 `95775cad397e90ca95198b02c0cbeab4d7418bc3` (MIT; G1/Dex3 MuJoCo model and IK hand-motion sequence, but no object scene or task acceptance) and wiscohumanoids/manipulation_sim (generic arm, not G1; no license found).
 
-REPRO COMMAND: From the repository root in WSL2, run `./scripts/run_m0_pick_place.sh`. For the exact tested external checkouts/output, run `ROBOTSIM_M0_CANDIDATE_DIR=/tmp/robotsim43-candidates/humanoid_vla ROBOTSIM_M0_UNITREE_DIR=/tmp/robotsim-issue12-vendor/unitree_mujoco ROBOTSIM_M0_OUTPUT_DIR=/tmp/robotsim-issue43-m0/output ./scripts/run_m0_pick_place.sh`. The launcher verifies both pinned commits and clean checkout state, creates a Python 3.10 environment under `/tmp/robotsim-issue43-m0`, and writes the generated model, logs, JSON, MP4, and PNG outside the repository.
+REPRO COMMAND: From a fresh WSL2 checkout with `git`, `uv`, public network access for first fetch/install, and EGL/Mesa runtime available, run exactly `./scripts/run_m0_pick_place.sh`. The executable launcher verifies both pinned commits and clean checkout state, enforces Python 3.10.x, restricts mesh resolution to the verified Unitree G1 mesh tree, and creates a unique run directory beneath `/tmp/robotsim-issue43-m0/output`. Completed artifacts are JSON, physics trace, log, MP4, and PNG. CPU rendering uses offscreen EGL; no GPU, display, ROS 2, or Unity is required.
 
-WHAT WORKS: The unchanged upstream H-VLA bimanual demo lifts its object 7.6 cm over 174 frames. Both final revision runs complete GRASP at 2.208 s, LIFT at 4.320 s, TRANSFER at 14.592 s, RELEASE at 24.704 s, and PLACE at 28.160 s (882 control frames; 500 Hz physics, 31.25 Hz control). Final object position is `[0.294515, -0.344947, 1.099234]` m, target XY error 0.007386 m, and final linear/angular speeds are 0.008877 m/s and 0.115378 rad/s. The bottle is supported by and fully inside the target tabletop margin. Both results and per-step traces are in the two external run directories above.
+HISTORICAL RUN MEASUREMENTS: The unchanged upstream H-VLA bimanual demo lifted its object 7.6 cm over 174 frames. The prior revision runs completed GRASP at 2.208 s, LIFT at 4.320 s, TRANSFER at 14.592 s, RELEASE at 24.704 s, and PLACE at 28.160 s (882 control frames; 500 Hz physics, 31.25 Hz control). Final object position was `[0.294515, -0.344947, 1.099234]` m, target XY error 0.007386 m, and final linear/angular speeds were 0.008877 m/s and 0.115378 rad/s. Those runs passed the task checks but lack the new run identity/provenance fields.
 
 WHAT FAILED: HMG recorded low-level action replay diverged from its reference trajectory (late maximum state divergence about 2.85) and did not reach task success; its separate WBC-goal replay passed and remains candidate evidence, not the selected adapter. Initial widened-table variants interfered with grasp or prevented stable support and were discarded. No vendor checkout was modified.
 
-AUTOMATIC METRICS: PASS requires bilateral palm force contact (at least 2 N per palm for 5 frames), at least 5 cm lift, all projected bottle collision geoms inside the target tabletop with 3 cm margin, contact-free release for 5 frames, target-table contact, and at least 1.0 s stable time (33 consecutive samples, 1.024 s at 31.25 Hz). Physics-step limits are 5 mm translation and 0.025 rad rotation; weld-event limits are 2 mm and 1 degree; penetration must remain at or below 25 mm. Linear/angular speed limits remain 0.03 m/s and 0.20 rad/s; control-frame translation remains bounded by 0.20 m. Both final-code fixed-seed runs passed every stage and check.
+AUTOMATIC METRICS: PASS requires bilateral palm force contact (at least 2 N per palm for 5 frames), at least 5 cm lift, all projected bottle collision geoms inside the target tabletop with 3 cm margin, contact-free release for 5 frames, target-table contact, and at least 1.0 s stable time (33 consecutive samples, 1.024 s at 31.25 Hz). Physics-step limits are 5 mm translation and 0.025 rad rotation; weld-event limits are 2 mm and 1 degree; penetration must remain at or below 25 mm. Linear/angular speed limits remain 0.03 m/s and 0.20 rad/s; control-frame translation remains bounded by 0.20 m. These acceptance checks passed in the historical pair; the current launcher revision still requires two clean full runs.
 
-FINAL DEMO COMMAND: `ROBOTSIM_M0_CANDIDATE_DIR=/tmp/robotsim43-candidates/humanoid_vla ROBOTSIM_M0_UNITREE_DIR=/tmp/robotsim-issue12-vendor/unitree_mujoco ROBOTSIM_M0_OUTPUT_DIR=/tmp/robotsim-issue43-m0/<run> ./scripts/run_m0_pick_place.sh`. The final two outputs are `pr45-final-1` and `pr45-final-2` under `/tmp/robotsim-issue43-m0/`.
+FINAL DEMO COMMAND: `./scripts/run_m0_pick_place.sh`. Set `ROBOTSIM_M0_CANDIDATE_DIR`, `ROBOTSIM_M0_UNITREE_DIR`, `ROBOTSIM_M0_RUN_DIR`, or `ROBOTSIM_M0_OUTPUT_DIR` only to select cache/output locations. `ROBOTSIM_M0_MESH_DIR` is accepted only when its resolved path is inside the pinned Unitree checkout's `unitree_robots/g1/meshes` tree. Every invocation creates its own run ID and begins with a durable `PREFLIGHT`, `passed: false` result record.
 
 KNOWN SHORTCUTS: The G1 base is fixed, object/table poses are deterministic ground truth, and the script uses a measured-contact runtime weld during grasp. The final stable pose is side-lying; upright orientation is reported but is not an acceptance requirement. The adapter runtime pins MuJoCo 3.2.6; the repository's separate G1 smoke suite was validated on MuJoCo 3.3.6.
 
-FINAL STATUS: PASS - cylindrical bottle geometry, whole-object footprint acceptance, physics-step integrity, penetration limits, weld-event pose integrity, and two clean fixed-seed full episodes are validated. PR #45 remains Draft for independent review.
+FINAL STATUS: PENDING - rerun launcher regression checks and two clean fixed-seed full episodes after provenance, stale-PASS, Python-version, and latest-main integration changes. PR #45 remains Draft.

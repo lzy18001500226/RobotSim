@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import importlib.metadata
 import json
 import math
 import os
 from pathlib import Path
+import platform
 import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+import uuid
 
 import numpy as np
 
@@ -86,6 +89,168 @@ OBJECT_GEOM_SPECS = (
         "rgba": "0.10 0.20 0.28 1",
     },
 )
+
+
+def _git_value(path: Path, *arguments: str) -> str | None:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(path), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _package_version(distribution: str, module_name: str | None = None) -> str | None:
+    module = sys.modules.get(module_name or distribution.replace("-", "_"))
+    module_version = getattr(module, "__version__", None)
+    if module_version is not None:
+        return str(module_version)
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _mesh_provenance(unitree_root: Path, mesh_dir: Path) -> dict:
+    try:
+        unitree_resolved = unitree_root.resolve(strict=True)
+        g1_root = (unitree_resolved / "unitree_robots/g1").resolve(strict=True)
+        g1_root.relative_to(unitree_resolved)
+        mesh_root = (g1_root / "meshes").resolve(strict=True)
+        mesh_root.relative_to(g1_root / "meshes")
+        mesh_resolved = mesh_dir.resolve(strict=True)
+        mesh_resolved.relative_to(mesh_root)
+    except (OSError, ValueError):
+        return {
+            "path_class": "external_rejected",
+            "path_relative_to_unitree": "outside_verified_unitree_g1_mesh_tree",
+        }
+    return {
+        "path_class": "pinned_unitree_g1_mesh_tree",
+        "path_relative_to_unitree": mesh_resolved.relative_to(unitree_resolved).as_posix(),
+    }
+
+
+def _acceptance_thresholds(monitor: "AcceptanceMonitor | None" = None) -> dict:
+    if monitor is None:
+        return {
+            "target_table_margin_m": TARGET_MARGIN_M,
+            "bilateral_grasp_force_n_per_palm": 2.0,
+            "bilateral_grasp_frames": 5,
+            "minimum_lift_height_m": 0.05,
+            "contact_free_release_frames": 5,
+            "stable_duration_s": 1.0,
+            "linear_speed_m_s": 0.03,
+            "angular_speed_rad_s": 0.20,
+            "stable_position_radius_m": 0.02,
+            "control_step_translation_m": 0.20,
+            "physics_step_translation_m": 0.005,
+            "physics_step_angular_jump_rad": 0.025,
+            "weld_event_translation_snap_m": 0.002,
+            "weld_event_angular_snap_rad": math.radians(1.0),
+            "maximum_penetration_m": 0.025,
+            "drop_height_m": 0.50,
+        }
+    return {
+        "target_table_margin_m": monitor.target_margin,
+        "bilateral_grasp_force_n_per_palm": monitor.minimum_grasp_force_n,
+        "bilateral_grasp_frames": monitor.grasp_frames_required,
+        "minimum_lift_height_m": monitor.lift_height,
+        "contact_free_release_frames": monitor.release_frames_required,
+        "stable_duration_s": monitor.minimum_stable_duration_s,
+        "linear_speed_m_s": monitor.linear_speed_limit,
+        "angular_speed_rad_s": monitor.angular_speed_limit,
+        "stable_position_radius_m": monitor.stable_position_radius,
+        "control_step_translation_m": monitor.teleport_step_limit,
+        "physics_step_translation_m": monitor.physics_step_translation_limit,
+        "physics_step_angular_jump_rad": monitor.physics_step_angular_jump_limit,
+        "weld_event_translation_snap_m": monitor.weld_event_translation_limit,
+        "weld_event_angular_snap_rad": monitor.weld_event_angular_jump_limit,
+        "maximum_penetration_m": monitor.penetration_limit,
+        "drop_height_m": monitor.drop_z_limit,
+    }
+
+
+def _runtime_identity(args: argparse.Namespace, monitor: "AcceptanceMonitor | None" = None) -> dict:
+    repo_root = Path(__file__).resolve().parents[2]
+    unitree_root = Path(args.unitree_root)
+    candidate_root = Path(args.candidate_root)
+    unitree_sha = _git_value(unitree_root, "rev-parse", "HEAD")
+    candidate_sha = _git_value(candidate_root, "rev-parse", "HEAD")
+    unitree_dirty = _git_value(unitree_root, "status", "--porcelain", "--untracked-files=all")
+    candidate_dirty = _git_value(candidate_root, "status", "--porcelain", "--untracked-files=all")
+    mujoco_module = sys.modules.get("mujoco")
+    robotsim_dirty = _git_value(repo_root, "status", "--porcelain", "--untracked-files=all")
+    return {
+        "run_id": args.run_id or uuid.uuid4().hex,
+        "robotsim_sha": _git_value(repo_root, "rev-parse", "HEAD"),
+        "robotsim_dirty": None if robotsim_dirty is None else bool(robotsim_dirty),
+        "python_version": platform.python_version(),
+        "mujoco_version": getattr(mujoco_module, "__version__", None)
+        or _package_version("mujoco"),
+        "mujoco_native_version": (
+            mujoco_module.mj_versionString() if mujoco_module is not None else None
+        ),
+        "numpy_version": _package_version("numpy"),
+        "h5py_version": _package_version("h5py"),
+        "opencv_version": _package_version("opencv-python-headless", "cv2"),
+        "upstream_shas": {
+            "humanoid_vla": candidate_sha,
+            "unitree_mujoco": unitree_sha,
+            "grasp_reference": "ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff",
+        },
+        "upstream_dirty": {
+            "humanoid_vla": None if candidate_dirty is None else bool(candidate_dirty),
+            "unitree_mujoco": None if unitree_dirty is None else bool(unitree_dirty),
+        },
+        "mesh_provenance": _mesh_provenance(unitree_root, Path(args.mesh_dir)),
+        "seed": args.seed,
+        "acceptance_thresholds": _acceptance_thresholds(monitor),
+        "output_directory": str(Path(args.output_json).parent.resolve()),
+    }
+
+
+def _verify_unitree_mesh_inputs(args: argparse.Namespace) -> None:
+    candidate_root = Path(args.candidate_root)
+    candidate_sha = _git_value(candidate_root, "rev-parse", "HEAD")
+    if candidate_sha != UPSTREAM_COMMIT:
+        raise RuntimeError(
+            f"Expected Humanoid VLA {UPSTREAM_COMMIT}; found {candidate_sha or 'unavailable'}"
+        )
+    candidate_dirty = _git_value(
+        candidate_root, "status", "--porcelain", "--untracked-files=all"
+    )
+    if candidate_dirty is None or candidate_dirty:
+        raise RuntimeError("Humanoid VLA checkout must be clean")
+    actual_sha = _git_value(Path(args.unitree_root), "rev-parse", "HEAD")
+    if actual_sha != UNITREE_COMMIT:
+        raise RuntimeError(f"Expected Unitree MuJoCo {UNITREE_COMMIT}; found {actual_sha or 'unavailable'}")
+    dirty = _git_value(Path(args.unitree_root), "status", "--porcelain", "--untracked-files=all")
+    if dirty is None or dirty:
+        raise RuntimeError("Unitree MuJoCo mesh checkout must be clean")
+    provenance = _mesh_provenance(Path(args.unitree_root), Path(args.mesh_dir))
+    if provenance["path_class"] != "pinned_unitree_g1_mesh_tree":
+        raise RuntimeError("mesh directory must resolve inside the pinned Unitree G1 mesh tree")
+
+
+def _safe_error(exc: Exception, args: argparse.Namespace) -> str:
+    message = f"{type(exc).__name__}: {exc}"
+    replacements = (
+        (Path(args.candidate_root), "<candidate-root>"),
+        (Path(args.unitree_root), "<unitree-root>"),
+        (Path(args.mesh_dir), "<mesh-dir>"),
+        (Path(args.output_json).parent, "<output-directory>"),
+    )
+    for path, label in replacements:
+        message = message.replace(str(path), label)
+        try:
+            message = message.replace(str(path.resolve()), label)
+        except OSError:
+            pass
+    return message
 
 
 def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
@@ -1157,6 +1322,7 @@ def run_demo(args: argparse.Namespace) -> dict:
     os.environ.setdefault("MUJOCO_GL", "egl")
     import cv2
 
+    _verify_unitree_mesh_inputs(args)
     mujoco, PhysicsSim, left_ctrl, right_ctrl, plan_bimanual = load_upstream(args.candidate_root)
     scene_path = prepare_scene(args.candidate_root, args.mesh_dir, args.output_dir / "model")
     sim = PhysicsSim(model_path=str(scene_path))
@@ -1183,6 +1349,7 @@ def run_demo(args: argparse.Namespace) -> dict:
         dt=frame_dt,
         target_margin=TARGET_MARGIN_M,
     )
+    run_identity = _runtime_identity(args, monitor)
 
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.video.parent.mkdir(parents=True, exist_ok=True)
@@ -1279,7 +1446,11 @@ def run_demo(args: argparse.Namespace) -> dict:
             )
         if frame_index % 25 == 0:
             checkpoint = monitor.result(sample)
+            checkpoint.update(run_identity)
             checkpoint["partial_run"] = True
+            checkpoint["state"] = "RUNNING"
+            checkpoint["stage"] = "SIMULATION"
+            checkpoint["complete"] = False
             checkpoint["controller_stages"] = controller_stages
             checkpoint["last_sample"] = {
                 key: (
@@ -1556,33 +1727,11 @@ def run_demo(args: argparse.Namespace) -> dict:
         sim.renderer.close()
 
     result = monitor.result(final_sample)
-    repo_root = Path(__file__).resolve().parents[2]
-    robotsim_sha = subprocess.run(
-        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    robotsim_dirty = bool(
-        subprocess.run(
-            ["git", "-C", str(repo_root), "status", "--porcelain"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    )
     result.update(
         {
             "issue": 43,
             "demo": "M0 G1 bottle pick-and-place",
-            "robotsim_sha": robotsim_sha,
-            "robotsim_dirty": robotsim_dirty,
-            "seed": args.seed,
-            "upstream_shas": {
-                "humanoid_vla": UPSTREAM_COMMIT,
-                "unitree_mujoco_meshes": UNITREE_COMMIT,
-                "grasp_reference": "ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff",
-            },
+            **_runtime_identity(args, monitor),
             "object_geometry_parameters": [
                 {
                     "name": spec["name"],
@@ -1596,24 +1745,7 @@ def run_demo(args: argparse.Namespace) -> dict:
                 }
                 for spec in OBJECT_GEOM_SPECS
             ],
-            "acceptance_thresholds": {
-                "target_table_margin_m": monitor.target_margin,
-                "bilateral_grasp_force_n_per_palm": monitor.minimum_grasp_force_n,
-                "bilateral_grasp_frames": monitor.grasp_frames_required,
-                "minimum_lift_height_m": monitor.lift_height,
-                "contact_free_release_frames": monitor.release_frames_required,
-                "stable_duration_s": monitor.minimum_stable_duration_s,
-                "linear_speed_m_s": monitor.linear_speed_limit,
-                "angular_speed_rad_s": monitor.angular_speed_limit,
-                "stable_position_radius_m": monitor.stable_position_radius,
-                "control_step_translation_m": monitor.teleport_step_limit,
-                "physics_step_translation_m": monitor.physics_step_translation_limit,
-                "physics_step_angular_jump_rad": monitor.physics_step_angular_jump_limit,
-                "weld_event_translation_snap_m": monitor.weld_event_translation_limit,
-                "weld_event_angular_snap_rad": monitor.weld_event_angular_jump_limit,
-                "maximum_penetration_m": monitor.penetration_limit,
-                "drop_height_m": monitor.drop_z_limit,
-            },
+            "acceptance_thresholds": _acceptance_thresholds(monitor),
             "candidate": {
                 "repository": "https://github.com/ozkannceylan/humanoid_vla",
                 "commit": UPSTREAM_COMMIT,
@@ -1651,6 +1783,8 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "bottle_main_half_height_m": 0.100,
             },
             "artifacts": {
+                "result_json": str(args.output_json),
+                "log": str(args.output_json.parent / "run.log"),
                 "scene_xml": str(scene_path),
                 "video": str(args.video),
                 "screenshot": str(args.screenshot),
@@ -1665,11 +1799,13 @@ def run_demo(args: argparse.Namespace) -> dict:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-root", type=Path, required=True)
+    parser.add_argument("--unitree-root", type=Path, required=True)
     parser.add_argument("--mesh-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--video", type=Path, required=True)
     parser.add_argument("--screenshot", type=Path, required=True)
+    parser.add_argument("--run-id", default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--transfer-frames", type=int, default=250)
     parser.add_argument("--lower-frames", type=int, default=35)
@@ -1683,10 +1819,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    args.run_id = args.run_id or uuid.uuid4().hex
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    identity = _runtime_identity(args)
+    initial_result = {
+        "issue": 43,
+        "demo": "M0 G1 bottle pick-and-place",
+        **identity,
+        "passed": False,
+        "complete": False,
+        "state": "RUNNING",
+        "stage": "RUNTIME_START",
+    }
     args.output_json.write_text(
-        json.dumps({"issue": 43, "passed": False, "state": "RUNNING"}, indent=2) + "\n",
-        encoding="utf-8",
+        json.dumps(initial_result, indent=2, allow_nan=False) + "\n", encoding="utf-8"
     )
     try:
         result = run_demo(args)
@@ -1694,18 +1840,29 @@ def main(argv: list[str] | None = None) -> int:
         try:
             failure = json.loads(args.output_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            failure = {}
+            failure = initial_result
+        failure.update(_runtime_identity(args))
         failure.update(
             {
                 "issue": 43,
                 "demo": "M0 G1 bottle pick-and-place",
                 "passed": False,
-                "error": f"{type(exc).__name__}: {exc}",
+                "complete": False,
+                "state": "FAILED",
+                "stage": "RUNTIME",
+                "error": _safe_error(exc, args),
             }
         )
         args.output_json.write_text(json.dumps(failure, indent=2) + "\n", encoding="utf-8")
         print(f"FAIL: {failure['error']}", file=sys.stderr, flush=True)
         return 1
+    result["state"] = "COMPLETE" if result["passed"] else "FAILED"
+    result["stage"] = "ACCEPTANCE"
+    result["complete"] = True
+    result.setdefault("error", None if result["passed"] else "acceptance checks did not pass")
+    args.output_json.write_text(
+        json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
     print(f"{'PASS' if result['passed'] else 'FAIL'}: {args.output_json}", flush=True)
     print(json.dumps(result["task_stages"], indent=2), flush=True)
     print(json.dumps(result["safety_checks"], indent=2), flush=True)
