@@ -46,6 +46,8 @@ CARRY_CONTACT_FRACTION_MIN = 0.90
 CARRY_CONTACT_MAX_GAP_PHYSICS_STEPS = 25
 DEFAULT_HAND_ROLL_DEG = 20.0
 DEFAULT_GRASP_HOLD_FRAMES = 2
+VIDEO_WIDTH = 960
+VIDEO_HEIGHT = 720
 DEFAULT_LIFT_HEIGHT_M = 0.16
 DEFAULT_LIFT_FRAMES = 15
 DEFAULT_TRANSFER_FRAMES = 30
@@ -719,7 +721,7 @@ class AcceptanceMonitor:
         ) + 1
         self.stages: dict[str, dict[str, float | int] | None] = {
             name: None
-            for name in ("GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE")
+            for name in ("GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE", "SETTLE")
         }
         self.failures: list[str] = []
         self.frame_count = 0
@@ -864,15 +866,26 @@ class AcceptanceMonitor:
                 self.max_post_release_angular_speed, float(angular_speed)
             )
 
-        stable = bool(
+        placement_ready = bool(
             self.stages["RELEASE"] is not None
             and target_contact
             and inside_target
             and bool(footprint_check.get("passed", False))
+            and fingers_open
+            and not right_contact
+            and not left_contact
+        )
+        if placement_ready:
+            self.placement_footprint_check = footprint_check
+            self._stage("PLACE", sim_time)
+
+        stable = bool(
+            self.stages["PLACE"] is not None
+            and placement_ready
             and linear_speed <= self.linear_speed_limit
             and angular_speed <= self.angular_speed_limit
         )
-        if stable:
+        if stable and sim_time > float(self.stages["PLACE"]["sim_time_s"]):
             if (
                 self.stable_anchor is None
                 or np.linalg.norm(position - self.stable_anchor) > self.stable_position_radius
@@ -883,10 +896,11 @@ class AcceptanceMonitor:
                 self.settling_frames += 1
             self.max_settling_frames = max(self.max_settling_frames, self.settling_frames)
             if self.settling_frames >= self.settling_frames_required:
-                self._stage("PLACE", sim_time)
+                self._stage("SETTLE", sim_time)
         else:
-            self.stable_anchor = None
-            self.settling_frames = 0
+            if self.stages["SETTLE"] is None:
+                self.stable_anchor = None
+                self.settling_frames = 0
 
     def _record_penetration(self, minimum_contact_distance: float) -> None:
         if not math.isfinite(minimum_contact_distance):
@@ -976,7 +990,8 @@ class AcceptanceMonitor:
 
     def result(self, final_sample: dict | None) -> dict:
         task_stages = {name: sample is not None for name, sample in self.stages.items()}
-        stage_times = [self.stages[name]["sim_time_s"] for name in ("GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE") if self.stages[name] is not None]
+        stage_order = ("GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE", "SETTLE")
+        stage_times = [self.stages[name]["sim_time_s"] for name in stage_order if self.stages[name] is not None]
         ordered_stages = bool(
             len(stage_times) == len(self.stages)
             and all(first < second for first, second in zip(stage_times, stage_times[1:]))
@@ -999,6 +1014,14 @@ class AcceptanceMonitor:
                 >= CARRY_CONTACT_FRACTION_MIN
             ),
             "ORDERED_TASK_STAGES": ordered_stages,
+            "FREE_PHYSICS_SETTLE": bool(
+                self.stages["SETTLE"] is not None
+                and final_sample
+                and final_sample.get("target_contact")
+                and final_sample.get("fingers_open")
+                and not final_sample.get("right_contact")
+                and not final_sample.get("left_contact")
+            ),
             "LEFT_ARM_CLEAR": not self.left_arm_contact_seen,
             "NO_RUNTIME_EQUALITY_CARRY": self.runtime_equality_count == 0,
             "TRUE_FINGER_OPEN_RELEASE": bool(
@@ -1019,7 +1042,7 @@ class AcceptanceMonitor:
             "passed": bool(all(task_stages.values()) and all(safety.values())),
             "stage_order": [
                 {"name": name, **(self.stages[name] or {})}
-                for name in ("GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE")
+                for name in stage_order
             ],
             "task_stages": {
                 name: {"passed": task_stages[name], **(sample or {})}
@@ -1050,9 +1073,18 @@ class AcceptanceMonitor:
                 "minimum_stable_duration_s": self.minimum_stable_duration_s,
                 "settling_frames_required": self.settling_frames_required,
                 "settling_duration_required_s": (
-                    self.settling_frames_required - 1
+                    self.settling_frames_required
                 ) * self.dt,
                 "settling_frames_observed_max": self.max_settling_frames,
+                "continuous_stable_duration_observed_max_s": (
+                    self.max_settling_frames * self.dt
+                ),
+                "settling_duration_after_place_s": (
+                    None
+                    if self.stages["PLACE"] is None or self.stages["SETTLE"] is None
+                    else self.stages["SETTLE"]["sim_time_s"]
+                    - self.stages["PLACE"]["sim_time_s"]
+                ),
                 "max_object_step_m": self.max_object_step,
                 "teleport_step_limit_m": self.teleport_step_limit,
                 "physics_steps_observed": self.physics_step_count,
@@ -1535,6 +1567,10 @@ def run_demo(args: argparse.Namespace) -> dict:
     compiled_model = mujoco.MjModel.from_xml_path(str(scene_path))
     hand_actuators = _configure_hand_controller(mujoco, PhysicsSim, compiled_model)
     sim = PhysicsSim(model_path=str(scene_path))
+    sim.renderer.close()
+    sim.renderer = mujoco.Renderer(
+        sim.model, height=VIDEO_HEIGHT, width=VIDEO_WIDTH
+    )
     geometry = _geometry(mujoco, sim)
     frame_dt = float(sim.model.opt.timestep * (500 // 30))
     sim.reset()
@@ -1560,7 +1596,10 @@ def run_demo(args: argparse.Namespace) -> dict:
     args.video.parent.mkdir(parents=True, exist_ok=True)
     args.screenshot.parent.mkdir(parents=True, exist_ok=True)
     video = cv2.VideoWriter(
-        str(args.video), cv2.VideoWriter_fourcc(*"mp4v"), 1.0 / frame_dt, (640, 480)
+        str(args.video),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        1.0 / frame_dt,
+        (VIDEO_WIDTH, VIDEO_HEIGHT),
     )
     if not video.isOpened():
         sim.renderer.close()
@@ -1916,7 +1955,7 @@ def run_demo(args: argparse.Namespace) -> dict:
             sim.target_pos[hand_ctrl] = open_hand
             sim.step_frame()
             observe()
-            if monitor.stages["PLACE"] is not None:
+            if monitor.stages["SETTLE"] is not None:
                 break
     finally:
         if close_physics_recorder is not None:
@@ -1980,6 +2019,11 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "simulation_step_s": float(sim.model.opt.timestep),
                 "control_substeps": 500 // 30,
                 "control_step_s": frame_dt,
+                "render": {
+                    "camera": "scene_camera",
+                    "width_px": VIDEO_WIDTH,
+                    "height_px": VIDEO_HEIGHT,
+                },
                 "wall_duration_s": time.monotonic() - start_wall,
                 "initial_position_m": initial_position.tolist(),
                 "initial_quaternion_wxyz": initial_quaternion.tolist(),

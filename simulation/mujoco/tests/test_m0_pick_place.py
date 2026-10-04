@@ -261,9 +261,33 @@ class AcceptanceMonitorTests(unittest.TestCase):
             self.feed(0.288 + frame * 0.032, [0.48, 0.0, 0.86], **opened)
         self.assertIsNotNone(self.monitor.stages["RELEASE"])
 
+        self.feed(
+            0.448,
+            [0.48, 0.0, 0.86],
+            fingers_open=True,
+            target_contact=True,
+        )
+        self.assertIsNotNone(self.monitor.stages["PLACE"])
+        self.assertIsNone(self.monitor.stages["SETTLE"])
+        for frame in range(10):
+            self.feed(
+                0.480 + frame * 0.032,
+                [0.48, 0.0, 0.86],
+                fingers_open=True,
+                target_contact=True,
+            )
+        self.feed(
+            0.800,
+            [0.48, 0.0, 0.86],
+            fingers_open=True,
+            target_contact=True,
+            linear_speed=0.04,
+        )
+        self.assertEqual(self.monitor.settling_frames, 0)
+        self.assertIsNone(self.monitor.stages["SETTLE"])
         for frame in range(self.monitor.settling_frames_required):
             self.feed(
-                0.448 + frame * 0.032,
+                0.832 + frame * 0.032,
                 [0.48, 0.0, 0.86],
                 fingers_open=True,
                 target_contact=True,
@@ -271,7 +295,7 @@ class AcceptanceMonitorTests(unittest.TestCase):
         final_sample = {
             "position": [0.48, 0.0, 0.86],
             "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
-            "sim_time_s": 1.504,
+            "sim_time_s": 1.856,
             "linear_speed_m_s": 0.0,
             "angular_speed_rad_s": 0.0,
             "target_contact": True,
@@ -284,9 +308,18 @@ class AcceptanceMonitorTests(unittest.TestCase):
         self.assertTrue(result["passed"], result)
         self.assertEqual(
             [stage["name"] for stage in result["stage_order"]],
-            ["GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE"],
+            ["GRASP", "LIFT", "TRANSFER", "RELEASE", "PLACE", "SETTLE"],
+        )
+        self.assertGreater(
+            result["task_stages"]["SETTLE"]["sim_time_s"],
+            result["task_stages"]["PLACE"]["sim_time_s"],
+        )
+        self.assertGreaterEqual(
+            result["metrics"]["continuous_stable_duration_observed_max_s"],
+            self.monitor.minimum_stable_duration_s,
         )
         self.assertTrue(result["safety_checks"]["RIGHT_HAND_MULTI_FINGER_CONTACT"])
+        self.assertTrue(result["safety_checks"]["FREE_PHYSICS_SETTLE"])
         self.assertTrue(result["safety_checks"]["LEFT_ARM_CLEAR"])
         self.assertTrue(result["safety_checks"]["NO_RUNTIME_EQUALITY_CARRY"])
         self.assertTrue(result["safety_checks"]["TRUE_FINGER_OPEN_RELEASE"])

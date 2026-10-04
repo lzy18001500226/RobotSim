@@ -1,6 +1,6 @@
 # Issue #43 M0 Status
 
-CURRENT STAGE: Right Dex3-1 single-hand M0 acceptance passes the focused suite and seed-42 end-to-end run. PR #45 is ready for single-hand visual review; it remains unmerged.
+CURRENT STAGE: Right Dex3-1 single-hand M0 acceptance now has distinct PLACE and SETTLE gates. Focused and clean end-to-end validation for the six-gate sequence is pending; PR #45 remains unmerged.
 
 ## Current Single-Hand Acceptance
 
@@ -8,9 +8,9 @@ The current target uses the pinned G1 29-DoF body with one right Unitree Dex3-1 
 
 The 500 mL bottle is represented by four cylindrical collision geoms, with a 65 mm body diameter, 231 mm total height, and 0.50 kg total mass. Bottle friction is 1.5 and hand friction is 2.0. Grasp, carry, and release use measured thumb, index, and middle finger contact with friction only. The runtime creates no equality constraint and does not write bottle qpos after reset.
 
-Seed 42 passed the ordered GRASP -> LIFT -> TRANSFER -> RELEASE -> PLACE checks, including at least 5 cm lift, continuous right-hand multi-finger contact through carry, no left-arm contact, true finger-open release, bounded physics-step motion and penetration, full collision-geometry footprint inside the target table margin, target-table contact, and stable free-physics settle. The review bundle is placed at `/mnt/c/Users/HP/Desktop/Robot/issue43-m0-single-hand-final/` and contains the result JSON, physics trace, log, MP4, and final PNG.
+The required ordered gates are GRASP -> LIFT -> TRANSFER -> RELEASE -> PLACE -> SETTLE. PLACE records the first released, target-supported sample with the complete collision footprint inside the table margin. SETTLE requires a further continuous stable free-physics interval of at least one second. The review bundle will be placed at `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-43-g1-single-hand/` and must contain the result JSON, physics/contact trace, run log, MP4, and final PNG.
 
-Run the documented bare command `./scripts/run_m0_pick_place.sh`; its defaults are the validated single-hand trajectory. The pinned G1 body/controller baseline and existing launcher provenance checks remain in use.
+Reproduce the review packet with `ROBOTSIM_M0_OUTPUT_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-43-g1-single-hand ./scripts/run_m0_pick_place.sh`; its defaults use the pinned G1 body/controller and existing launcher provenance checks. Each run creates an isolated run-ID subdirectory under the requested output directory.
 
 The sections below retain baseline research and reproduction evidence for earlier palm-pad and runtime-weld revisions. Those measurements are historical and do not qualify the current acceptance target.
 
