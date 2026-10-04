@@ -11,6 +11,7 @@ This map identifies the documents that own RobotSim guidance.
 | [`setup/`](setup/) | Host, WSL, Docker, and development-container setup | Setting up or diagnosing the development environment. |
 | [`setup/codex.md`](setup/codex.md) | Local/Cloud Codex boundaries, hooks, notifications, and closeout | Choosing where Codex work runs or finishing a task. |
 | [`workflows/`](workflows/) | Repeatable procedures for baseline bring-up, navigation, and robot porting | Implementing or validating one of those workflows. |
+| [`workflows/05_G1_ROS2_ADAPTER.md`](workflows/05_G1_ROS2_ADAPTER.md) | Build and validate the topology-independent ROS 2 workspace and G1 SDK2 adapter | Working on the initial G1 ROS boundary. |
 | [`workflows/goal_driven_development.md`](workflows/goal_driven_development.md) | Codex prompt-versus-Goal conventions, continuation, evidence, and review gates | Starting multi-step or long-running Codex work. |
 | [`workflows/agent_behavior_eval.md`](workflows/agent_behavior_eval.md) | Executable local Agent behavior fixtures, graders, and manual evidence limits | Evaluating observable Agent infrastructure behavior. |
 | [`skills/`](skills/) | RobotSim technical notes; these are not native Codex Skills. Native project Skills use `.agents/skills/<name>/SKILL.md`. | Working in the corresponding technology area. For validation routing, use the [RobotSim validation-planning Skill](../.agents/skills/robotsim-validation-planning/SKILL.md). |
