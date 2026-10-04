@@ -878,6 +878,7 @@ class AcceptanceMonitor:
 
         placement_ready = bool(
             self.stages["RELEASE"] is not None
+            and sim_time > float(self.stages["RELEASE"]["sim_time_s"])
             and target_contact
             and inside_target
             and bool(footprint_check.get("passed", False))
