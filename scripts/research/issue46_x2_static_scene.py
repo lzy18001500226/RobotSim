@@ -676,8 +676,7 @@ The open-hand close-up uses the existing static `APPROACH_PALM_POS`, solved with
     (OUT / "REPORT.md").write_text(report, encoding="utf-8")
     (OUT / "experiment_commands.txt").write_text(
         f"cd {robot_sim_root}\n"
-        "MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/"
-        "reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review/ "
+        f"MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR={OUT} "
         f"AGIBOT_X2_VENDOR_ROOT={ROOT} {sys.executable} {Path(__file__).resolve()}\n"
         "Renders only: both arm sets at zero for neutral views; both hand joint sets at "
         "zero for every view; the open-pregrasp view changes only right arm qpos. "

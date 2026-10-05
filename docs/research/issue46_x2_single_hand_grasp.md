@@ -13,7 +13,7 @@
 
 ## Static visual baseline for maintainer review
 
-The new 2026-10-05 static morphology review packet is under `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review/`. It includes the canonical overview, front overview, side alignment, separate left/right palm-front and side views, both-hands comparison, open right-hand approach close-up, `static_scene.json`, `REPORT.md`, `run.log`, and exact commands.
+The new 2026-10-05 static morphology review packet is under `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review-final/`. It includes the canonical overview, front overview, side alignment, separate left/right palm-front and side views, both-hands comparison, open right-hand approach close-up, `static_scene.json`, `REPORT.md`, `run.log`, and exact commands.
 
 The X2 scene now calls `add_g1_canonical_table()` from `simulation/mujoco/canonical_manipulation_assets.py`. Its tabletop, four legs, and target site match the accepted G1 XML: table center `[0.300, -0.100] m`, top z `0.800 m`, tabletop half-extents `[0.200, 0.200] m`, 25 mm legs at x/y offsets `+/-0.175 m`, and brown RGBA `[0.6, 0.4, 0.2, 1]`. The G1 reference XML SHA256 is recorded in the JSON. G1 PR #45 is unchanged; migrating its scene to the shared helper remains future work.
 
@@ -32,7 +32,7 @@ The vendor source contains 12 mimic annotations while the compiled model has zer
 Reproduction command:
 
 ```bash
-MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python scripts/research/issue46_x2_static_scene.py
+MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review-final /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python scripts/research/issue46_x2_static_scene.py
 ```
 
 ## Earlier rollout scene and appearance (historical)
