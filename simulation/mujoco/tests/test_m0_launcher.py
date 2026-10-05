@@ -14,7 +14,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 LAUNCHER = REPO_ROOT / "scripts/run_m0_pick_place.sh"
 PINNED_HUMANOID = "3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 PINNED_UNITREE = "1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
-PINNED_DEX3 = "5994d4faef0a9cadd3287f8de0199a67eeb2a259"
 
 
 class RuntimeMeshProvenanceTests(unittest.TestCase):
@@ -56,16 +55,10 @@ class LauncherPreflightTests(unittest.TestCase):
 
         self.candidate = self.base / "humanoid_vla"
         self.unitree = self.base / "unitree_mujoco"
-        self.dex3 = self.base / "unitree_ros_dex3"
         (self.candidate / ".git").mkdir(parents=True)
         meshes = self.unitree / "unitree_robots/g1/meshes"
         meshes.mkdir(parents=True)
         (self.unitree / ".git").mkdir()
-        (self.dex3 / ".git").mkdir(parents=True)
-        dex3_model = self.dex3 / "robots/g1_description/g1_29dof_with_hand_rev_1_0.xml"
-        dex3_model.parent.mkdir(parents=True)
-        dex3_model.write_text("<mujoco/>", encoding="utf-8")
-        (dex3_model.parent / "meshes").mkdir()
         self.external_mesh = self.base / "external-meshes"
         self.external_mesh.mkdir()
         self.run_root = self.base / "run-cache"
@@ -86,14 +79,12 @@ case \"$operation\" in
     if [[ \"$repo\" == \"$TEST_ROOT\" ]]; then printf '%s\\n' \"${TEST_ROBOTSIM_SHA:-test-robotsim-sha}\"
     elif [[ \"$repo\" == \"$TEST_CANDIDATE\" ]]; then printf '%s\\n' \"${TEST_HUMANOID_SHA:-3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12}\"
     elif [[ \"$repo\" == \"$TEST_UNITREE\" ]]; then printf '%s\\n' \"${TEST_UNITREE_SHA:-1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d}\"
-    elif [[ \"$repo\" == \"$TEST_DEX3\" ]]; then printf '%s\\n' \"${TEST_DEX3_SHA:-5994d4faef0a9cadd3287f8de0199a67eeb2a259}\"
     else exit 91; fi
     ;;
   \"status --porcelain --untracked-files=all\")
     if [[ \"$repo\" == \"$TEST_ROOT\" ]]; then printf '%s' \"${TEST_ROBOTSIM_STATUS:-}\"
     elif [[ \"$repo\" == \"$TEST_CANDIDATE\" ]]; then printf '%s' \"${TEST_HUMANOID_STATUS:-}\"
     elif [[ \"$repo\" == \"$TEST_UNITREE\" ]]; then printf '%s' \"${TEST_UNITREE_STATUS:-}\"
-    elif [[ \"$repo\" == \"$TEST_DEX3\" ]]; then printf '%s' \"${TEST_DEX3_STATUS:-}\"
     else exit 92; fi
     ;;
   *) exit 93 ;;
@@ -113,12 +104,10 @@ esac
                 "TEST_ROOT": str(self.repo),
                 "TEST_CANDIDATE": str(self.candidate),
                 "TEST_UNITREE": str(self.unitree),
-                "TEST_DEX3": str(self.dex3),
                 "ROBOTSIM_M0_RUN_DIR": str(self.run_root),
                 "ROBOTSIM_M0_OUTPUT_DIR": str(self.output_root),
                 "ROBOTSIM_M0_CANDIDATE_DIR": str(self.candidate),
                 "ROBOTSIM_M0_UNITREE_DIR": str(self.unitree),
-                "ROBOTSIM_M0_DEX3_DIR": str(self.dex3),
             }
         )
 
@@ -156,6 +145,7 @@ esac
             "opencv_version",
             "upstream_shas",
             "mesh_provenance",
+            "hand_model_provenance",
             "controller_parameters",
             "seed",
             "acceptance_thresholds",
@@ -199,20 +189,12 @@ esac
         self.assertEqual(result["upstream_shas"]["unitree_mujoco"], PINNED_UNITREE)
         self.assertTrue(result["upstream_dirty"]["unitree_mujoco"])
 
-    def test_wrong_dex3_revision_is_durable_failure(self):
-        completed = self.invoke({"TEST_DEX3_SHA": "wrong-dex3-revision"})
-        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        result = self.current_result()
-        self.assert_failure_identity(result)
-        self.assertEqual(result["upstream_shas"]["unitree_ros_dex3"], "wrong-dex3-revision")
-
-    def test_dirty_dex3_checkout_is_durable_failure(self):
-        completed = self.invoke({"TEST_DEX3_STATUS": " M tracked-file"})
-        self.assertNotEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-        result = self.current_result()
-        self.assert_failure_identity(result)
-        self.assertEqual(result["upstream_shas"]["unitree_ros_dex3"], PINNED_DEX3)
-        self.assertTrue(result["upstream_dirty"]["unitree_ros_dex3"])
+    def test_launcher_uses_vendor_stock_hand_source_without_dex3_checkout(self):
+        text = LAUNCHER.read_text(encoding="utf-8")
+        self.assertNotIn("unitree_ros_dex3", text)
+        self.assertNotIn("--dex3-root", text)
+        self.assertIn("unitree_robots/g1/g1_29dof.xml", text)
+        self.assertIn("right_rubber_hand.STL", text)
 
     def test_external_mesh_override_is_rejected_and_recorded(self):
         completed = self.invoke({"ROBOTSIM_M0_MESH_DIR": str(self.external_mesh)})

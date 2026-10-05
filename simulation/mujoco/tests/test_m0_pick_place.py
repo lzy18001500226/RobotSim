@@ -1,34 +1,37 @@
 import ast
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import numpy as np
 
 from simulation.mujoco.m0_pick_place import (
     CARRY_CONTACT_MAX_GAP_PHYSICS_STEPS,
-    DEX3_COMMIT,
     DEFAULT_REPRODUCTION_COMMAND,
     GRASP_PRELOAD_RAD,
+    CANONICAL_TABLE_HALF_EXTENTS,
+    CANONICAL_TABLE_XY,
     OBJECT_COLLISION_GEOMS,
     OBJECT_GEOM_SPECS,
     RIGHT_HAND_CLOSED_POS,
     RIGHT_HAND_JOINT_NAMES,
     RIGHT_HAND_OPEN_POS,
-    SOURCE_TABLE_HALF_EXTENTS,
     SOURCE_TABLE_TOP_Z,
     SOURCE_TABLE_XY,
-    TABLE_GAP_M,
-    TARGET_TABLE_BODY_XY,
-    TARGET_TABLE_BODY_Z,
     TARGET_TABLE_HALF_EXTENTS,
     TARGET_TABLE_SITE_OFFSET_Y_M,
     TARGET_TABLE_TOP_Z,
     AcceptanceMonitor,
     _projected_geom_half_extents_xy,
+    _actuator_ordered_bias,
     _grasp_hold_target,
     check_projected_footprint,
     make_bottle_scene_xml,
+    make_stock_hand_model_xml,
+    run_demo,
 )
 
 
@@ -45,11 +48,30 @@ SCENE_XML = """<mujoco>
     </body>
     <body name="distractor_0"><geom/></body>
   </worldbody>
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+  </visual>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"/>
+    <texture type="2d" name="groundplane" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"/>
+    <material name="groundplane" texture="groundplane"/>
+  </asset>
   <equality><weld name="unused_upstream_weld"/></equality>
 </mujoco>"""
 
 
 class SceneTests(unittest.TestCase):
+    def test_gravity_compensation_bias_is_mapped_by_actuator_joint(self):
+        model = SimpleNamespace(
+            actuator_trnid=np.array([[1, 0], [0, 0], [2, 0]], dtype=int),
+            jnt_dofadr=np.array([2, 0, 1], dtype=int),
+        )
+        np.testing.assert_array_equal(
+            _actuator_ordered_bias(model, np.array([11.0, 22.0, 33.0])),
+            [11.0, 33.0, 22.0],
+        )
+
     def test_grasp_hold_target_applies_bounded_preload_in_name_order(self):
         measured = {
             name: value
@@ -83,7 +105,8 @@ class SceneTests(unittest.TestCase):
         self.assertEqual(visual_global.attrib["offheight"], "720")
         bottle = worldbody.find("body[@name='green_box']")
         self.assertEqual(root.find("include").attrib["file"], "/tmp/g1.xml")
-        self.assertIsNotNone(bottle.find("freejoint[@name='box_joint']"))
+        self.assertIsNotNone(bottle.find("freejoint[@name='bottle_free']"))
+        self.assertEqual(bottle.attrib["pos"], "0.300 -0.100 0.920")
         self.assertIsNotNone(bottle.find("site[@name='box_site']"))
         self.assertEqual(
             [geom.attrib["name"] for geom in bottle.findall("geom")],
@@ -93,45 +116,58 @@ class SceneTests(unittest.TestCase):
             [geom.attrib["type"] for geom in bottle.findall("geom")],
             ["cylinder"] * len(OBJECT_GEOM_SPECS),
         )
-        self.assertEqual(len(OBJECT_GEOM_SPECS), 4)
-        self.assertAlmostEqual(sum(float(spec["mass"]) for spec in OBJECT_GEOM_SPECS), 0.50)
+        self.assertEqual(len(OBJECT_GEOM_SPECS), 1)
+        self.assertAlmostEqual(sum(float(spec["mass"]) for spec in OBJECT_GEOM_SPECS), 0.57)
         bottle_com_z = sum(
             float(spec["mass"]) * float(spec["pos"].split()[2])
             for spec in OBJECT_GEOM_SPECS
         ) / sum(float(spec["mass"]) for spec in OBJECT_GEOM_SPECS)
         self.assertLessEqual(bottle_com_z, 0.01)
-        self.assertAlmostEqual(2 * float(OBJECT_GEOM_SPECS[0]["size"].split()[0]), 0.065)
-        self.assertAlmostEqual(
-            float(OBJECT_GEOM_SPECS[-1]["pos"].split()[2])
-            + float(OBJECT_GEOM_SPECS[-1]["size"].split()[1]),
-            0.153,
-        )
+        self.assertAlmostEqual(2 * float(OBJECT_GEOM_SPECS[0]["size"].split()[0]), 0.075)
+        self.assertAlmostEqual(2 * float(OBJECT_GEOM_SPECS[0]["size"].split()[1]), 0.24)
+        self.assertEqual(OBJECT_GEOM_SPECS[0]["rgba"], "0.12 0.52 0.82 1")
+        self.assertEqual(OBJECT_GEOM_SPECS[0]["friction"], "1.4 0.02 0.001")
+        self.assertEqual(OBJECT_GEOM_SPECS[0]["condim"], "4")
         self.assertIsNone(root.find("equality"))
         self.assertIsNone(worldbody.find("body[@name='red_cube']"))
         self.assertIsNone(worldbody.find("body[@name='distractor_0']"))
 
-        target_table = worldbody.find("body[@name='m0_target_table']")
-        target_top = target_table.find("geom[@name='m0_target_table_top']")
-        target_site = target_table.find("site[@name='m0_target_site']")
+        table = worldbody.find("body[@name='m0_table']")
+        table_top = table.find("geom[@name='m0_table_top']")
+        target_site = table.find("site[@name='m0_target_site']")
+        self.assertEqual(len(worldbody.findall("body")), 2)
+        self.assertIsNone(worldbody.find("body[@name='m0_target_table']"))
+        self.assertIsNone(worldbody.find(".//geom[@name='m0_target_marker']"))
         self.assertEqual(
-            target_table.attrib["pos"],
-            f"{TARGET_TABLE_BODY_XY[0]:.3f} {TARGET_TABLE_BODY_XY[1]:.3f} {TARGET_TABLE_BODY_Z:.3f}",
+            table.attrib["pos"],
+            f"{CANONICAL_TABLE_XY[0]:.3f} {CANONICAL_TABLE_XY[1]:.3f} 0",
         )
-        self.assertAlmostEqual(TARGET_TABLE_TOP_Z, TARGET_TABLE_BODY_Z + 0.8)
+        self.assertAlmostEqual(TARGET_TABLE_TOP_Z, 0.8)
         self.assertAlmostEqual(TARGET_TABLE_TOP_Z, SOURCE_TABLE_TOP_Z)
         self.assertEqual(
-            target_top.attrib["size"],
-            f"{TARGET_TABLE_HALF_EXTENTS[0]:.3f} {TARGET_TABLE_HALF_EXTENTS[1]:.3f} 0.4",
+            table_top.attrib["size"],
+            f"{CANONICAL_TABLE_HALF_EXTENTS[0]:.3f} {CANONICAL_TABLE_HALF_EXTENTS[1]:.3f} 0.025",
+        )
+        self.assertEqual(table_top.attrib["pos"], "0 0 0.775")
+        self.assertEqual(len(table.findall("geom")), 5)
+        self.assertEqual(
+            {geom.attrib["name"] for geom in table.findall("geom")} - {"m0_table_top"},
+            {
+                "m0_table_leg_front_left",
+                "m0_table_leg_front_right",
+                "m0_table_leg_back_left",
+                "m0_table_leg_back_right",
+            },
         )
         self.assertEqual(target_site.attrib["pos"], f"0 {TARGET_TABLE_SITE_OFFSET_Y_M:.3f} 0.805")
-        source_table = worldbody.find("body[@name='table']")
-        source_y = float(source_table.attrib["pos"].split()[1])
-        target_y = float(target_table.attrib["pos"].split()[1])
-        self.assertAlmostEqual(
-            (source_y - SOURCE_TABLE_HALF_EXTENTS[1])
-            - (target_y + TARGET_TABLE_HALF_EXTENTS[1]),
-            TABLE_GAP_M,
-        )
+        self.assertEqual(TARGET_TABLE_HALF_EXTENTS.tolist(), CANONICAL_TABLE_HALF_EXTENTS.tolist())
+        self.assertIsNone(table.find("geom[@name='place_marker']"))
+        self.assertEqual(table_top.attrib["rgba"], "0.6 0.4 0.2 1")
+        skybox = root.find("asset/texture[@type='skybox']")
+        self.assertEqual(skybox.attrib["rgb1"], "0.3 0.5 0.7")
+        ground = root.find("asset/texture[@name='groundplane']")
+        self.assertEqual(ground.attrib["rgb1"], "0.2 0.3 0.4")
+        self.assertEqual(root.find("visual/headlight").attrib["diffuse"], "0.6 0.6 0.6")
 
     def test_rejects_missing_scene_parts(self):
         with self.assertRaisesRegex(ValueError, "no worldbody"):
@@ -139,11 +175,53 @@ class SceneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no green_box"):
             make_bottle_scene_xml("<mujoco><include/><worldbody/></mujoco>", "/tmp/g1.xml")
 
-    def test_right_dex3_joint_set_is_one_hand_and_pinned(self):
-        self.assertEqual(len(DEX3_COMMIT), 40)
-        self.assertEqual(len(RIGHT_HAND_JOINT_NAMES), 7)
-        self.assertTrue(all(name.startswith("right_hand_") for name in RIGHT_HAND_JOINT_NAMES))
-        self.assertEqual(len(set(RIGHT_HAND_JOINT_NAMES)), len(RIGHT_HAND_JOINT_NAMES))
+    def test_restores_vendor_paired_stock_hands_without_scale_or_collision_fakes(self):
+        candidate = (
+            '<mujoco><asset>'
+            '<mesh name="left_rubber_hand" file="left-old.stl"/>'
+            '<mesh name="right_rubber_hand" file="right-old.stl"/>'
+            '</asset><worldbody>'
+            '<body name="left_wrist_yaw_link" pos="0.01 0 0">'
+            '<geom mesh="left_rubber_hand"/><geom name="left_palm_pad"/>'
+            '</body><body name="right_wrist_yaw_link" pos="0.01 0 0">'
+            '<geom mesh="right_rubber_hand"/><geom name="right_palm_pad"/>'
+            '<body name="right_hand_fake"><joint name="right_hand_fake_joint"/></body>'
+            '</body></worldbody><actuator><motor name="body_0"/></actuator></mujoco>'
+        )
+        vendor = (
+            '<mujoco><asset>'
+            '<mesh name="left_rubber_hand" file="left_rubber_hand.STL"/>'
+            '<mesh name="right_rubber_hand" file="right_rubber_hand.STL"/>'
+            '</asset><worldbody>'
+            '<body name="left_wrist_yaw_link" pos="0.046 0 0">'
+            '<geom pos="0.0415 0.003 0" quat="1 0 0 0" type="mesh" '
+            'contype="0" conaffinity="0" mesh="left_rubber_hand"/></body>'
+            '<body name="right_wrist_yaw_link" pos="0.046 0 0">'
+            '<geom pos="0.0415 -0.003 0" quat="1 0 0 0" type="mesh" '
+            'contype="0" conaffinity="0" mesh="right_rubber_hand"/></body>'
+            '</worldbody></mujoco>'
+        )
+        with tempfile.TemporaryDirectory(prefix="robotsim-stock-g1-hands-") as temp:
+            mesh_dir = Path(temp)
+            (mesh_dir / "left_rubber_hand.STL").write_bytes(b"left mesh fixture")
+            (mesh_dir / "right_rubber_hand.STL").write_bytes(b"right mesh fixture")
+            root = ET.fromstring(make_stock_hand_model_xml(candidate, vendor, mesh_dir))
+
+        for side, offset_y in (("left", 0.003), ("right", -0.003)):
+            wrist = root.find(f".//body[@name='{side}_wrist_yaw_link']")
+            hand = wrist.find(f"geom[@mesh='{side}_rubber_hand']")
+            self.assertEqual(wrist.attrib["pos"], "0.046 0 0")
+            self.assertEqual(hand.attrib["pos"], f"0.0415 {offset_y} 0")
+            self.assertEqual(hand.attrib["quat"], "1 0 0 0")
+            self.assertEqual(hand.attrib["contype"], "0")
+            self.assertEqual(hand.attrib["conaffinity"], "0")
+            self.assertIsNone(wrist.find(f"geom[@name='{side}_palm_pad']"))
+            self.assertFalse(any(body.attrib.get("name", "").startswith(f"{side}_hand_") for body in wrist.findall("body")))
+            mesh = root.find(f"asset/mesh[@name='{side}_rubber_hand']")
+            self.assertEqual(Path(mesh.attrib["file"]).name, f"{side}_rubber_hand.STL")
+            self.assertNotIn("scale", mesh.attrib)
+        self.assertEqual([actuator.attrib["name"] for actuator in root.findall("actuator/*")], ["body_0"])
+        self.assertIsNone(root.find(".//joint[@name='right_hand_fake_joint']"))
 
 
 class FootprintTests(unittest.TestCase):
@@ -449,6 +527,22 @@ class IntegrityTests(unittest.TestCase):
         source = source_path.read_text(encoding="utf-8")
         self.assertNotIn("GRASP_WELD_NAME", source)
         self.assertNotIn("record_weld_event", source)
+
+
+class ActiveEntryPointTests(unittest.TestCase):
+    @patch("simulation.mujoco.m0_pick_place._run_paired_dex3_episode")
+    @patch("simulation.mujoco.m0_pick_place._run_stock_hand_visual_audit")
+    def test_demo_uses_stock_hand_audit_without_dex3_fallback(
+        self, stock_audit, dex3_episode
+    ):
+        args = SimpleNamespace()
+        stock_audit.return_value = {"state": "BLOCKED"}
+
+        result = run_demo(args)
+
+        self.assertEqual(result, {"state": "BLOCKED"})
+        stock_audit.assert_called_once_with(args)
+        dex3_episode.assert_not_called()
 
 
 if __name__ == "__main__":

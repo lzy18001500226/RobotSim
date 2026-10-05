@@ -5,13 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_ROOT="${ROBOTSIM_M0_RUN_DIR:-/tmp/robotsim-issue43-m0}"
 CANDIDATE_DIR="${ROBOTSIM_M0_CANDIDATE_DIR:-$RUN_ROOT/checkouts/humanoid_vla}"
 UNITREE_DIR="${ROBOTSIM_M0_UNITREE_DIR:-$RUN_ROOT/checkouts/unitree_mujoco}"
-DEX3_DIR="${ROBOTSIM_M0_DEX3_DIR:-$RUN_ROOT/checkouts/unitree_ros_dex3}"
 OUTPUT_ROOT="${ROBOTSIM_M0_OUTPUT_DIR:-/tmp/robotsim-issue43-m0/output}"
 printf -v REPRODUCTION_OUTPUT_ROOT '%q' "$OUTPUT_ROOT"
 REPRODUCTION_COMMAND="ROBOTSIM_M0_OUTPUT_DIR=$REPRODUCTION_OUTPUT_ROOT ./scripts/run_m0_pick_place.sh"
 UPSTREAM_COMMIT="3d4bf2f040d6cb9f867becf1dc1b97b9dc3bef12"
 UNITREE_COMMIT="1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
-DEX3_COMMIT="5994d4faef0a9cadd3287f8de0199a67eeb2a259"
 GRASP_REFERENCE_COMMIT="ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff"
 SEED="${ROBOTSIM_M0_SEED:-42}"
 HAND_ROLL_DEG="${ROBOTSIM_M0_HAND_ROLL_DEG:-20}"
@@ -80,16 +78,16 @@ write_result() {
         printf '  "numpy_version": %s,\n' "$(json_quote "$NUMPY_VERSION")"
         printf '  "h5py_version": %s,\n' "$(json_quote "$H5PY_VERSION")"
         printf '  "opencv_version": %s,\n' "$(json_quote "$OPENCV_VERSION")"
-        printf '  "upstream_shas": {"humanoid_vla": %s, "unitree_mujoco": %s, "unitree_ros_dex3": %s, "grasp_reference": %s},\n' \
-            "$(json_quote "$CANDIDATE_SHA")" "$(json_quote "$UNITREE_SHA")" "$(json_quote "$DEX3_SHA")" "$(json_quote "$GRASP_REFERENCE_COMMIT")"
-        printf '  "upstream_dirty": {"humanoid_vla": %s, "unitree_mujoco": %s, "unitree_ros_dex3": %s},\n' \
-            "$CANDIDATE_DIRTY_JSON" "$UNITREE_DIRTY_JSON" "$DEX3_DIRTY_JSON"
-        printf '  "expected_upstream_shas": {"humanoid_vla": %s, "unitree_mujoco": %s, "unitree_ros_dex3": %s},\n' \
-            "$(json_quote "$UPSTREAM_COMMIT")" "$(json_quote "$UNITREE_COMMIT")" "$(json_quote "$DEX3_COMMIT")"
+        printf '  "upstream_shas": {"humanoid_vla": %s, "unitree_mujoco": %s, "grasp_reference": %s},\n' \
+            "$(json_quote "$CANDIDATE_SHA")" "$(json_quote "$UNITREE_SHA")" "$(json_quote "$GRASP_REFERENCE_COMMIT")"
+        printf '  "upstream_dirty": {"humanoid_vla": %s, "unitree_mujoco": %s},\n' \
+            "$CANDIDATE_DIRTY_JSON" "$UNITREE_DIRTY_JSON"
+        printf '  "expected_upstream_shas": {"humanoid_vla": %s, "unitree_mujoco": %s},\n' \
+            "$(json_quote "$UPSTREAM_COMMIT")" "$(json_quote "$UNITREE_COMMIT")"
         printf '  "mesh_provenance": {"path_class": %s, "path_relative_to_unitree": %s},\n' \
             "$(json_quote "$MESH_PATH_CLASS")" "$(json_quote "$MESH_RELATIVE_PATH")"
-        printf '  "dex3_model_provenance": {"repository": "unitreerobotics/unitree_ros", "revision": %s, "model": "robots/g1_description/g1_29dof_with_hand_rev_1_0.xml", "mesh_path_class": "pinned_unitree_ros_g1_description_meshes", "mesh_path_relative_to_repository": "robots/g1_description/meshes"},\n' \
-            "$(json_quote "$DEX3_SHA")"
+        printf '  "hand_model_provenance": {"repository": "unitreerobotics/unitree_mujoco", "revision": %s, "model": "unitree_robots/g1/g1_29dof.xml", "meshes": ["unitree_robots/g1/meshes/left_rubber_hand.STL", "unitree_robots/g1/meshes/right_rubber_hand.STL"]},\n' \
+            "$(json_quote "$UNITREE_SHA")"
         printf '  "seed": %s,\n' "$SEED_JSON"
         printf '  "controller_parameters": {"hand_roll_deg": %s, "grasp_hold_frames": %s, "grasp_preload_rad": 0.30, "lift_frames": %s, "commanded_lift_height_m": %s, "transfer_frames": %s, "lower_frames": %s},\n' \
             "$HAND_ROLL_JSON" "$GRASP_HOLD_FRAMES_JSON" "$LIFT_FRAMES_JSON" "$LIFT_HEIGHT_JSON" "$TRANSFER_FRAMES_JSON" "$LOWER_FRAMES_JSON"
@@ -109,10 +107,8 @@ H5PY_VERSION="not_run"
 OPENCV_VERSION="not_run"
 CANDIDATE_SHA="not_checked"
 UNITREE_SHA="not_checked"
-DEX3_SHA="not_checked"
 CANDIDATE_DIRTY_JSON=null
 UNITREE_DIRTY_JSON=null
-DEX3_DIRTY_JSON=null
 MESH_PATH_CLASS="not_checked"
 MESH_RELATIVE_PATH="not_checked"
 
@@ -167,7 +163,7 @@ on_exit() {
             result_run_id="$(sed -n 's/^[[:space:]]*"run_id":[[:space:]]*"\([^"]*\)".*/\1/p' "$RESULT_PATH" | head -n 1 || true)"
             result_state="$(sed -n 's/^[[:space:]]*"state":[[:space:]]*"\([^"]*\)".*/\1/p' "$RESULT_PATH" | head -n 1 || true)"
         fi
-        if [[ "$result_run_id" != "$RUN_ID" || "$result_state" != "FAILED" ]]; then
+        if [[ "$result_run_id" != "$RUN_ID" || ( "$result_state" != "FAILED" && "$result_state" != "BLOCKED" ) ]]; then
             write_result "FAILED" "Preflight or launcher failed at ${CURRENT_STAGE} (exit ${status})"
         fi
         printf 'M0 invocation %s failed at %s; failure result: %s\n' \
@@ -274,31 +270,6 @@ ensure_checkout \
     "$UNITREE_DIR" \
     UNITREE_SHA
 
-CURRENT_STAGE="DEX3_MODEL_CHECKOUT"
-ensure_checkout \
-    "Unitree Dex3 model" \
-    "https://github.com/unitreerobotics/unitree_ros.git" \
-    "$DEX3_COMMIT" \
-    "$DEX3_DIR" \
-    DEX3_SHA
-
-DEX3_DIR_RESOLVED="$(realpath -e "$DEX3_DIR")"
-DEX3_MODEL_PATH="$(realpath -e "$DEX3_DIR_RESOLVED/robots/g1_description/g1_29dof_with_hand_rev_1_0.xml")"
-DEX3_MESH_DIR="$(realpath -e "$DEX3_DIR_RESOLVED/robots/g1_description/meshes")"
-case "$DEX3_MODEL_PATH" in
-    "$DEX3_DIR_RESOLVED"/*) ;;
-    *) printf 'Resolved Dex3 model escapes its pinned checkout\n' >&2; exit 2 ;;
-esac
-case "$DEX3_MESH_DIR" in
-    "$DEX3_DIR_RESOLVED"/*) ;;
-    *) printf 'Resolved Dex3 meshes escape their pinned checkout\n' >&2; exit 2 ;;
-esac
-if [[ ! -f "$DEX3_MODEL_PATH" || ! -d "$DEX3_MESH_DIR" ]]; then
-    printf 'Pinned Dex3 model or hand mesh assets are missing\n' >&2
-    exit 2
-fi
-write_result "PREFLIGHT" ""
-
 CURRENT_STAGE="MESH_PROVENANCE"
 UNITREE_DIR_RESOLVED="$(realpath -e "$UNITREE_DIR")"
 G1_DIR_RESOLVED="$(realpath -e "$UNITREE_DIR_RESOLVED/unitree_robots/g1")"
@@ -377,16 +348,15 @@ read -r MUJOCO_VERSION NUMPY_VERSION H5PY_VERSION OPENCV_VERSION < <(
 )
 write_result "PREFLIGHT" ""
 
-VIDEO_PATH="$OUTPUT_DIR/m0_pick_place.mp4"
-SCREENSHOT_PATH="$OUTPUT_DIR/m0_final.png"
-CURRENT_STAGE="RUNTIME"
+VIDEO_PATH="$OUTPUT_DIR/g1_stock_hand_scene_review.mp4"
+SCREENSHOT_PATH="$OUTPUT_DIR/g1_stock_hand_overview.png"
+CURRENT_STAGE="STOCK_HAND_SCENE_AUDIT"
 cd "$ROOT_DIR"
 set +e
 MUJOCO_GL=egl PYTHONPATH="$CANDIDATE_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" \
     "$VENV_PYTHON" -m simulation.mujoco.m0_pick_place \
         --candidate-root "$CANDIDATE_DIR" \
         --unitree-root "$UNITREE_DIR" \
-        --dex3-root "$DEX3_DIR" \
         --mesh-dir "$MESH_DIR" \
         --output-dir "$OUTPUT_DIR/model" \
         --output-json "$RESULT_PATH" \

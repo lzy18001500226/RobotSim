@@ -31,6 +31,7 @@ UNITREE_COMMIT = "1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d"
 DEX3_COMMIT = "5994d4faef0a9cadd3287f8de0199a67eeb2a259"
 DEX3_MODEL_RELATIVE_PATH = Path("robots/g1_description/g1_29dof_with_hand_rev_1_0.xml")
 DEX3_MESH_RELATIVE_PATH = Path("robots/g1_description/meshes")
+UNITREE_MODEL_RELATIVE_PATH = Path("unitree_robots/g1/g1_29dof.xml")
 RIGHT_HAND_JOINT_NAMES = (
     "right_hand_thumb_0_joint",
     "right_hand_thumb_1_joint",
@@ -39,6 +40,9 @@ RIGHT_HAND_JOINT_NAMES = (
     "right_hand_index_1_joint",
     "right_hand_middle_0_joint",
     "right_hand_middle_1_joint",
+)
+LEFT_HAND_JOINT_NAMES = tuple(
+    name.replace("right_hand_", "left_hand_") for name in RIGHT_HAND_JOINT_NAMES
 )
 RIGHT_HAND_GROUPS = ("thumb", "index", "middle")
 RIGHT_HAND_OPEN_POS = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -61,68 +65,29 @@ GRASP_SITE_OFFSET_M = (-0.035, 0.0, 0.0)
 APPROACH_SITE_OFFSET_M = (-0.105, 0.0, 0.140)
 
 SOURCE_TABLE_TOP_Z = 0.8
-SOURCE_TABLE_XY = np.array([0.3, 0.0], dtype=float)
-SOURCE_TABLE_HALF_EXTENTS = np.array([0.2, 0.12], dtype=float)
-TARGET_TABLE_HALF_EXTENTS = np.array([0.20, 0.10], dtype=float)
-TABLE_GAP_M = 0.02
-TARGET_TABLE_BODY_XY = np.array(
-    [
-        SOURCE_TABLE_XY[0],
-        SOURCE_TABLE_XY[1]
-        - SOURCE_TABLE_HALF_EXTENTS[1]
-        - TARGET_TABLE_HALF_EXTENTS[1]
-        - TABLE_GAP_M,
-    ],
-    dtype=float,
-)
-TARGET_TABLE_SITE_OFFSET_Y_M = 0.04
-TARGET_TABLE_XY = TARGET_TABLE_BODY_XY + np.array(
-    [0.0, TARGET_TABLE_SITE_OFFSET_Y_M], dtype=float
-)
-TARGET_TABLE_BODY_Z = 0.0
-TARGET_TABLE_TOP_Z = TARGET_TABLE_BODY_Z + 0.8
+SOURCE_TABLE_XY = np.array([0.3, -0.1], dtype=float)
+SOURCE_TABLE_HALF_EXTENTS = np.array([0.2, 0.2], dtype=float)
+CANONICAL_TABLE_XY = SOURCE_TABLE_XY.copy()
+CANONICAL_TABLE_HALF_EXTENTS = SOURCE_TABLE_HALF_EXTENTS.copy()
+TARGET_TABLE_XY = CANONICAL_TABLE_XY.copy()
+TARGET_TABLE_HALF_EXTENTS = CANONICAL_TABLE_HALF_EXTENTS.copy()
+TARGET_TABLE_SITE_OFFSET_Y_M = 0.0
+TARGET_TABLE_TOP_Z = SOURCE_TABLE_TOP_Z
 TARGET_MARGIN_M = 0.03
 OBJECT_BODY_NAME = "green_box"
-OBJECT_JOINT_NAME = "box_joint"
-OBJECT_MAIN_GEOM = "m0_bottle_body"
-OBJECT_COLLISION_GEOMS = (
-    OBJECT_MAIN_GEOM,
-    "m0_bottle_shoulder",
-    "m0_bottle_neck",
-    "m0_bottle_cap",
-)
+OBJECT_JOINT_NAME = "bottle_free"
+OBJECT_MAIN_GEOM = "bottle_collision"
+OBJECT_COLLISION_GEOMS = (OBJECT_MAIN_GEOM,)
 OBJECT_GEOM_SPECS = (
     {
         "name": OBJECT_MAIN_GEOM,
         "type": "cylinder",
         "pos": "0 0 0",
-        "size": "0.0325 0.078",
-        "mass": "0.470",
-        "rgba": "0.64 0.84 0.90 0.78",
-    },
-    {
-        "name": "m0_bottle_shoulder",
-        "type": "cylinder",
-        "pos": "0 0 0.084",
-        "size": "0.029 0.020",
-        "mass": "0.015",
-        "rgba": "0.64 0.84 0.90 0.78",
-    },
-    {
-        "name": "m0_bottle_neck",
-        "type": "cylinder",
-        "pos": "0 0 0.118",
-        "size": "0.015 0.019",
-        "mass": "0.010",
-        "rgba": "0.68 0.86 0.91 0.85",
-    },
-    {
-        "name": "m0_bottle_cap",
-        "type": "cylinder",
-        "pos": "0 0 0.145",
-        "size": "0.018 0.008",
-        "mass": "0.005",
-        "rgba": "0.94 0.95 0.91 1",
+        "size": "0.0375 0.12",
+        "mass": "0.57",
+        "rgba": "0.12 0.52 0.82 1",
+        "friction": "1.4 0.02 0.001",
+        "condim": "4",
     },
 )
 
@@ -222,13 +187,10 @@ def _runtime_identity(args: argparse.Namespace, monitor: "AcceptanceMonitor | No
     repo_root = Path(__file__).resolve().parents[2]
     unitree_root = Path(args.unitree_root)
     candidate_root = Path(args.candidate_root)
-    dex3_root = Path(args.dex3_root)
     unitree_sha = _git_value(unitree_root, "rev-parse", "HEAD")
     candidate_sha = _git_value(candidate_root, "rev-parse", "HEAD")
-    dex3_sha = _git_value(dex3_root, "rev-parse", "HEAD")
     unitree_dirty = _git_value(unitree_root, "status", "--porcelain", "--untracked-files=all")
     candidate_dirty = _git_value(candidate_root, "status", "--porcelain", "--untracked-files=all")
-    dex3_dirty = _git_value(dex3_root, "status", "--porcelain", "--untracked-files=all")
     mujoco_module = sys.modules.get("mujoco")
     robotsim_dirty = _git_value(repo_root, "status", "--porcelain", "--untracked-files=all")
     return {
@@ -247,21 +209,20 @@ def _runtime_identity(args: argparse.Namespace, monitor: "AcceptanceMonitor | No
         "upstream_shas": {
             "humanoid_vla": candidate_sha,
             "unitree_mujoco": unitree_sha,
-            "unitree_ros_dex3": dex3_sha,
             "grasp_reference": "ace298393ec6cadc1f4a66e70a3311e1d2c4d7ff",
         },
         "upstream_dirty": {
             "humanoid_vla": None if candidate_dirty is None else bool(candidate_dirty),
             "unitree_mujoco": None if unitree_dirty is None else bool(unitree_dirty),
-            "unitree_ros_dex3": None if dex3_dirty is None else bool(dex3_dirty),
         },
         "mesh_provenance": _mesh_provenance(unitree_root, Path(args.mesh_dir)),
-        "dex3_model_provenance": {
-            "repository": "https://github.com/unitreerobotics/unitree_ros",
-            "revision": dex3_sha,
-            "model": DEX3_MODEL_RELATIVE_PATH.as_posix(),
-            "mesh_path_class": "pinned_unitree_ros_g1_description_meshes",
-            "mesh_path_relative_to_repository": DEX3_MESH_RELATIVE_PATH.as_posix(),
+        "hand_model_provenance": {
+            "repository": "https://github.com/unitreerobotics/unitree_mujoco",
+            "revision": unitree_sha,
+            "model": UNITREE_MODEL_RELATIVE_PATH.as_posix(),
+            "meshes": ["unitree_robots/g1/meshes/left_rubber_hand.STL",
+                       "unitree_robots/g1/meshes/right_rubber_hand.STL"],
+            "configuration": "vendor paired stock G1 rubber hands; no added scale",
         },
         "seed": args.seed,
         "acceptance_thresholds": _acceptance_thresholds(monitor),
@@ -291,20 +252,21 @@ def _verify_unitree_mesh_inputs(args: argparse.Namespace) -> None:
     if provenance["path_class"] != "pinned_unitree_g1_mesh_tree":
         raise RuntimeError("mesh directory must resolve inside the pinned Unitree G1 mesh tree")
 
-    dex3_root = Path(args.dex3_root)
-    actual_dex3 = _git_value(dex3_root, "rev-parse", "HEAD")
-    if actual_dex3 != DEX3_COMMIT:
-        raise RuntimeError(f"Expected Unitree Dex3 model {DEX3_COMMIT}; found {actual_dex3 or 'unavailable'}")
-    dex3_dirty = _git_value(dex3_root, "status", "--porcelain", "--untracked-files=all")
-    if dex3_dirty is None or dex3_dirty:
-        raise RuntimeError("Unitree Dex3 model checkout must be clean")
-    dex3_resolved = dex3_root.resolve(strict=True)
-    model_path = (dex3_resolved / DEX3_MODEL_RELATIVE_PATH).resolve(strict=True)
-    mesh_root = (dex3_resolved / DEX3_MESH_RELATIVE_PATH).resolve(strict=True)
-    if not model_path.is_file() or not mesh_root.is_dir():
-        raise RuntimeError("Pinned Unitree Dex3 model or mesh directory is missing")
-    model_path.relative_to(dex3_resolved)
-    mesh_root.relative_to(dex3_resolved)
+    vendor_model = Path(args.unitree_root) / UNITREE_MODEL_RELATIVE_PATH
+    vendor_root = ET.parse(vendor_model).getroot()
+    for side in ("left", "right"):
+        mesh_name = f"{side}_rubber_hand"
+        mesh = vendor_root.find(f"asset/mesh[@name='{mesh_name}']")
+        wrist = vendor_root.find(f".//body[@name='{side}_wrist_yaw_link']")
+        if mesh is None or wrist is None:
+            raise RuntimeError(f"Pinned Unitree model is missing the {side} stock G1 hand")
+        mesh_path = (Path(args.mesh_dir) / mesh.attrib["file"]).resolve(strict=True)
+        mesh_path.relative_to(Path(args.mesh_dir).resolve(strict=True))
+        if not any(
+            geom.attrib.get("mesh") == mesh_name
+            for geom in wrist.findall("geom")
+        ):
+            raise RuntimeError(f"Pinned Unitree model does not mount {mesh_name} on its wrist")
 
 
 def _safe_error(exc: Exception, args: argparse.Namespace) -> str:
@@ -312,7 +274,6 @@ def _safe_error(exc: Exception, args: argparse.Namespace) -> str:
     replacements = (
         (Path(args.candidate_root), "<candidate-root>"),
         (Path(args.unitree_root), "<unitree-root>"),
-        (Path(args.dex3_root), "<dex3-root>"),
         (Path(args.mesh_dir), "<mesh-dir>"),
         (Path(args.output_json).parent, "<output-directory>"),
     )
@@ -325,10 +286,10 @@ def _safe_error(exc: Exception, args: argparse.Namespace) -> str:
     return message
 
 
-def make_single_right_dex3_model_xml(
+def make_paired_dex3_model_xml(
     model_xml: str, dex3_model_xml: str, dex3_mesh_dir: Path
 ) -> str:
-    """Graft the pinned right Dex3 subtree onto the unchanged 29-DoF G1 model."""
+    """Graft the pinned paired Dex3 subtrees onto the unchanged 29-DoF G1 model."""
     root = ET.fromstring(model_xml)
     dex3_root = ET.fromstring(dex3_model_xml)
     asset = root.find("asset")
@@ -337,19 +298,17 @@ def make_single_right_dex3_model_xml(
     source_actuator = dex3_root.find("actuator")
     wrist = root.find(".//body[@name='right_wrist_yaw_link']")
     source_wrist = dex3_root.find(".//body[@name='right_wrist_yaw_link']")
+    source_left_wrist = dex3_root.find(".//body[@name='left_wrist_yaw_link']")
     left_wrist = root.find(".//body[@name='left_wrist_yaw_link']")
-    if any(item is None for item in (asset, source_asset, actuator, source_actuator, wrist, source_wrist, left_wrist)):
+    if any(item is None for item in (asset, source_asset, actuator, source_actuator, wrist, source_wrist, left_wrist, source_left_wrist)):
         raise ValueError("G1 or pinned Dex3 model is missing required hand integration elements")
 
     base_actuator_names = [item.attrib.get("name") for item in actuator]
     if len(base_actuator_names) != 29:
         raise ValueError(f"Expected the pinned G1 body to retain 29 actuators, found {len(base_actuator_names)}")
-    if any(item.tag == "body" and item.attrib.get("name", "").startswith("left_hand_") for item in left_wrist):
-        raise ValueError("The G1 model unexpectedly contains a left articulated hand")
-
     for parent, obsolete in (
         (wrist, {"right_palm_pad", "right_rubber_hand"}),
-        (left_wrist, {"left_palm_pad"}),
+        (left_wrist, {"left_palm_pad", "left_rubber_hand"}),
     ):
         for child in list(parent):
             if child.tag == "geom" and (
@@ -358,11 +317,15 @@ def make_single_right_dex3_model_xml(
             ):
                 parent.remove(child)
 
+    for mesh in list(asset.findall("mesh")):
+        if mesh.attrib.get("name") in {"left_rubber_hand", "right_rubber_hand"}:
+            asset.remove(mesh)
+
     mesh_root = dex3_mesh_dir.resolve(strict=True)
     existing_meshes = {item.attrib.get("name") for item in asset.findall("mesh")}
     for mesh in source_asset.findall("mesh"):
         name = mesh.attrib.get("name", "")
-        if not name.startswith("right_hand_"):
+        if not name.startswith(("left_hand_", "right_hand_")):
             continue
         if name in existing_meshes:
             raise ValueError(f"G1 model already defines Dex3 mesh {name!r}")
@@ -375,23 +338,26 @@ def make_single_right_dex3_model_xml(
         asset.append(copied_mesh)
         existing_meshes.add(name)
 
-    if not {"right_hand_palm_link", *[name.replace("_joint", "_link") for name in RIGHT_HAND_JOINT_NAMES]} <= existing_meshes:
-        raise ValueError("Pinned Dex3 model is missing one or more right-hand meshes")
-
-    imported = []
-    for child in source_wrist:
-        is_palm_geom = child.tag == "geom" and child.attrib.get("mesh") == "right_hand_palm_link"
-        is_right_digit = child.tag == "body" and child.attrib.get("name", "").startswith("right_hand_")
-        if is_palm_geom or is_right_digit:
-            imported.append(copy.deepcopy(child))
-    if not imported:
-        raise ValueError("Pinned Dex3 model has no right palm or finger subtree")
+    hand_definitions = (
+        ("right", RIGHT_HAND_JOINT_NAMES, wrist, source_wrist),
+        ("left", LEFT_HAND_JOINT_NAMES, left_wrist, source_left_wrist),
+    )
+    expected_meshes = set()
+    for side, joint_names, _, _ in hand_definitions:
+        expected_meshes.add(f"{side}_hand_palm_link")
+        expected_meshes.update(name.replace("_joint", "_link") for name in joint_names)
+    if not expected_meshes <= existing_meshes:
+        raise ValueError(
+            f"Pinned Dex3 model is missing paired-hand meshes: {sorted(expected_meshes - existing_meshes)}"
+        )
 
     joints_found = set()
+    all_hand_joints = set(RIGHT_HAND_JOINT_NAMES + LEFT_HAND_JOINT_NAMES)
+
     def configure_node(node: ET.Element) -> None:
         if node.tag == "joint":
             name = node.attrib.get("name")
-            if name in RIGHT_HAND_JOINT_NAMES:
+            if name in all_hand_joints:
                 joints_found.add(name)
                 node.set("damping", "0.08")
                 node.set("armature", "0.005")
@@ -404,11 +370,29 @@ def make_single_right_dex3_model_xml(
         for descendant in node:
             configure_node(descendant)
 
-    for child in imported:
-        configure_node(child)
-        wrist.append(child)
-    if joints_found != set(RIGHT_HAND_JOINT_NAMES):
-        raise ValueError(f"Pinned Dex3 right hand joint set is incomplete: {sorted(joints_found)}")
+    for side, joint_names, target_wrist, source_side_wrist in hand_definitions:
+        imported = []
+        for child in source_side_wrist:
+            is_palm_geom = (
+                child.tag == "geom"
+                and child.attrib.get("mesh") == f"{side}_hand_palm_link"
+            )
+            is_digit = (
+                child.tag == "body"
+                and child.attrib.get("name", "").startswith(f"{side}_hand_")
+            )
+            if is_palm_geom or is_digit:
+                imported.append(copy.deepcopy(child))
+        if not imported:
+            raise ValueError(f"Pinned Dex3 model has no {side} palm or finger subtree")
+        for child in imported:
+            configure_node(child)
+            target_wrist.append(child)
+        if not set(joint_names) <= joints_found:
+            raise ValueError(
+                f"Pinned Dex3 {side} hand joint set is incomplete: "
+                f"{sorted(set(joint_names) - joints_found)}"
+            )
 
     source_motors = {
         item.attrib.get("name"): item
@@ -419,7 +403,8 @@ def make_single_right_dex3_model_xml(
         item.attrib.get("name"): item
         for item in dex3_root.iter("joint")
     }
-    for name in RIGHT_HAND_JOINT_NAMES:
+    # Keep the active right hand at the historical 29:36 actuator indices.
+    for name in RIGHT_HAND_JOINT_NAMES + LEFT_HAND_JOINT_NAMES:
         if name in {item.attrib.get("name") for item in actuator}:
             raise ValueError(f"G1 model already defines actuator {name!r}")
         motor = source_motors.get(name)
@@ -434,8 +419,70 @@ def make_single_right_dex3_model_xml(
     final_actuator_names = [item.attrib.get("name") for item in actuator]
     if final_actuator_names[:29] != base_actuator_names:
         raise AssertionError("Appending Dex3 actuators changed the pinned G1 actuator mapping")
-    if len(final_actuator_names) != 36:
-        raise AssertionError("Expected 29 G1 actuators followed by seven right Dex3 actuators")
+    if len(final_actuator_names) != 43:
+        raise AssertionError("Expected 29 G1 actuators followed by paired seven-joint Dex3 hands")
+    ET.indent(root, space="  ")
+    return ET.tostring(root, encoding="unicode")
+
+
+def make_stock_hand_model_xml(
+    model_xml: str, vendor_model_xml: str, mesh_dir: Path
+) -> str:
+    """Restore the exact stock hand meshes and wrist mounts from Unitree G1 XML."""
+    root = ET.fromstring(model_xml)
+    vendor = ET.fromstring(vendor_model_xml)
+    asset = root.find("asset")
+    vendor_asset = vendor.find("asset")
+    if asset is None or vendor_asset is None:
+        raise ValueError("G1 models must define asset sections")
+    resolved_mesh_dir = mesh_dir.resolve(strict=True)
+
+    for side in ("left", "right"):
+        mesh_name = f"{side}_rubber_hand"
+        target_wrist = root.find(f".//body[@name='{side}_wrist_yaw_link']")
+        vendor_wrist = vendor.find(f".//body[@name='{side}_wrist_yaw_link']")
+        vendor_mesh = vendor_asset.find(f"mesh[@name='{mesh_name}']")
+        if target_wrist is None or vendor_wrist is None or vendor_mesh is None:
+            raise ValueError(f"Pinned vendor model is missing its {side} stock hand")
+
+        source_geoms = [
+            geom
+            for geom in vendor_wrist.findall("geom")
+            if geom.attrib.get("mesh") == mesh_name
+        ]
+        if len(source_geoms) != 1:
+            raise ValueError(f"Pinned vendor model must mount one {mesh_name} mesh")
+
+        mesh_path = (resolved_mesh_dir / vendor_mesh.attrib["file"]).resolve(strict=True)
+        mesh_path.relative_to(resolved_mesh_dir)
+        for existing in list(asset.findall("mesh")):
+            if existing.attrib.get("name") == mesh_name:
+                asset.remove(existing)
+        restored_mesh = copy.deepcopy(vendor_mesh)
+        restored_mesh.set("file", str(mesh_path))
+        asset.append(restored_mesh)
+
+        target_wrist.set("pos", vendor_wrist.attrib["pos"])
+        if "quat" in vendor_wrist.attrib:
+            target_wrist.set("quat", vendor_wrist.attrib["quat"])
+        else:
+            target_wrist.attrib.pop("quat", None)
+        for child in list(target_wrist):
+            if (
+                child.tag == "geom"
+                and child.attrib.get("mesh") == mesh_name
+            ) or (
+                child.tag == "geom"
+                and child.attrib.get("name") == f"{side}_palm_pad"
+            ) or (
+                child.tag == "body"
+                and child.attrib.get("name", "").startswith(f"{side}_hand_")
+            ):
+                target_wrist.remove(child)
+            elif child.tag == "site" and child.attrib.get("name") == f"{side}_hand_site":
+                child.set("rgba", "0 0 0 0")
+        target_wrist.append(copy.deepcopy(source_geoms[0]))
+
     ET.indent(root, space="  ")
     return ET.tostring(root, encoding="unicode")
 
@@ -455,11 +502,18 @@ def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
     bottle = worldbody.find(f"body[@name='{OBJECT_BODY_NAME}']")
     if bottle is None:
         raise ValueError(f"Candidate scene has no {OBJECT_BODY_NAME} body")
-    freejoint = bottle.find(f"freejoint[@name='{OBJECT_JOINT_NAME}']")
+    freejoint = bottle.find("freejoint")
     if freejoint is None:
         raise ValueError(f"{OBJECT_BODY_NAME} must retain its freejoint")
+    freejoint.set("name", OBJECT_JOINT_NAME)
     site = bottle.find("site[@name='box_site']")
-    bottle.set("pos", "0.3 0 0.878")
+    if site is not None:
+        site.set("rgba", "0 0 0 0")
+    bottle.set(
+        "pos",
+        f"{CANONICAL_TABLE_XY[0]:.3f} {CANONICAL_TABLE_XY[1]:.3f} "
+        f"{TARGET_TABLE_TOP_Z + 0.12:.3f}",
+    )
 
     for child in list(bottle):
         if child is not freejoint and child is not site:
@@ -470,8 +524,6 @@ def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
             "geom",
             {
                 **spec,
-                "friction": "1.5 0.01 0.001",
-                "condim": "4",
                 "solimp": "0.95 0.95 0.001",
                 "solref": "0.01 1",
             },
@@ -482,71 +534,66 @@ def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
         if name == "red_cube" or name.startswith("distractor_"):
             worldbody.remove(body)
 
-    source_table = worldbody.find("body[@name='table']")
-    if source_table is None:
+    table = worldbody.find("body[@name='table']")
+    if table is None:
         raise ValueError("Candidate scene has no source table")
     source_top = next(
-        (geom for geom in source_table.findall("geom") if geom.attrib.get("type") == "box"),
+        (geom for geom in table.findall("geom") if geom.attrib.get("type") == "box"),
         None,
     )
     if source_top is None:
         raise ValueError("Candidate source table has no box top")
-    source_top.set("name", "m0_source_table_top")
-    source_table.set("pos", f"{SOURCE_TABLE_XY[0]:.3f} {SOURCE_TABLE_XY[1]:.3f} 0")
-    source_top.set(
-        "size",
-        f"{SOURCE_TABLE_HALF_EXTENTS[0]:.3f} {SOURCE_TABLE_HALF_EXTENTS[1]:.3f} 0.4",
-    )
-    for geom in list(source_table.findall("geom")):
-        if geom.attrib.get("name") == "place_marker":
-            source_table.remove(geom)
-
-    target_table = ET.SubElement(
-        worldbody,
-        "body",
-        {
-            "name": "m0_target_table",
-            "pos": (
-                f"{TARGET_TABLE_BODY_XY[0]:.3f} {TARGET_TABLE_BODY_XY[1]:.3f} "
-                f"{TARGET_TABLE_BODY_Z:.3f}"
-            ),
-        },
-    )
+    table.set("name", "m0_table")
+    table.set("pos", f"{CANONICAL_TABLE_XY[0]:.3f} {CANONICAL_TABLE_XY[1]:.3f} 0")
+    for geom in list(table.findall("geom")):
+        table.remove(geom)
+    for existing_site in list(table.findall("site")):
+        table.remove(existing_site)
+    table_color = "0.6 0.4 0.2 1"
     ET.SubElement(
-        target_table,
+        table,
         "geom",
         {
-            "name": "m0_target_table_top",
+            "name": "m0_table_top",
             "type": "box",
-            "pos": "0 0 0.4",
+            "pos": "0 0 0.775",
             "size": (
-                f"{TARGET_TABLE_HALF_EXTENTS[0]:.3f} "
-                f"{TARGET_TABLE_HALF_EXTENTS[1]:.3f} 0.4"
+                f"{CANONICAL_TABLE_HALF_EXTENTS[0]:.3f} "
+                f"{CANONICAL_TABLE_HALF_EXTENTS[1]:.3f} 0.025"
             ),
-            "rgba": "0.24 0.34 0.42 1",
+            "rgba": table_color,
             "friction": "1.2 0.01 0.001",
+            "condim": "4",
         },
     )
+    leg_offset_x = CANONICAL_TABLE_HALF_EXTENTS[0] - 0.025
+    leg_offset_y = CANONICAL_TABLE_HALF_EXTENTS[1] - 0.025
+    for name, x_sign, y_sign in (
+        ("front_left", -1, 1),
+        ("front_right", 1, 1),
+        ("back_left", -1, -1),
+        ("back_right", 1, -1),
+    ):
+        ET.SubElement(
+            table,
+            "geom",
+            {
+                "name": f"m0_table_leg_{name}",
+                "type": "box",
+                "pos": f"{x_sign * leg_offset_x:.3f} {y_sign * leg_offset_y:.3f} 0.375",
+                "size": "0.025 0.025 0.375",
+                "rgba": table_color,
+                "friction": "0.9 0.01 0.001",
+            },
+        )
     ET.SubElement(
-        target_table,
-        "geom",
-        {
-            "name": "m0_target_marker",
-            "type": "cylinder",
-            "pos": f"0 {TARGET_TABLE_SITE_OFFSET_Y_M:.3f} 0.803",
-            "size": "0.055 0.002",
-            "rgba": "0.90 0.66 0.16 1",
-            "contype": "0",
-            "conaffinity": "0",
-        },
-    )
-    ET.SubElement(
-        target_table,
+        table,
         "site",
         {
             "name": "m0_target_site",
             "pos": f"0 {TARGET_TABLE_SITE_OFFSET_Y_M:.3f} 0.805",
             "size": "0.005",
+            "rgba": "0 0 0 0",
         },
     )
 
@@ -564,16 +611,13 @@ def make_bottle_scene_xml(scene_xml: str, robot_model_path: str) -> str:
     global_visual.set("offwidth", str(VIDEO_WIDTH))
     global_visual.set("offheight", str(VIDEO_HEIGHT))
 
-    camera = worldbody.find("camera[@name='scene_camera']")
-    if camera is not None:
-        camera.set("pos", "0.4 -1.1 1.7")
-        camera.set("xyaxes", "1 0 0 0 0.55 1")
-
     ET.indent(root, space="  ")
     return ET.tostring(root, encoding="unicode")
 
 
-def prepare_scene(candidate_root: Path, mesh_dir: Path, dex3_root: Path, output_dir: Path) -> Path:
+def prepare_scene(
+    candidate_root: Path, unitree_root: Path, mesh_dir: Path, output_dir: Path
+) -> Path:
     source_model_path = candidate_root / "sim" / "models" / "g1_29dof.xml"
     source_scene_path = candidate_root / "sim" / "g1_with_camera.xml"
     if not source_model_path.is_file() or not source_scene_path.is_file():
@@ -592,11 +636,10 @@ def prepare_scene(candidate_root: Path, mesh_dir: Path, dex3_root: Path, output_
         model_root.insert(0, compiler)
     compiler.set("meshdir", str(mesh_dir.resolve()))
     model_xml = ET.tostring(model_root, encoding="unicode")
-    dex3_model_path = dex3_root / DEX3_MODEL_RELATIVE_PATH
-    dex3_mesh_dir = dex3_root / DEX3_MESH_RELATIVE_PATH
-    dex3_model_xml = dex3_model_path.read_text(encoding="utf-8")
-    integrated_model_xml = make_single_right_dex3_model_xml(
-        model_xml, dex3_model_xml, dex3_mesh_dir
+    vendor_model_path = unitree_root / UNITREE_MODEL_RELATIVE_PATH
+    vendor_model_xml = vendor_model_path.read_text(encoding="utf-8")
+    integrated_model_xml = make_stock_hand_model_xml(
+        model_xml, vendor_model_xml, mesh_dir
     )
     model_root = ET.fromstring(integrated_model_xml)
     ET.indent(model_root, space="  ")
@@ -1199,21 +1242,44 @@ def _configure_hand_controller(mujoco, PhysicsSim, model) -> dict[str, int]:
         raise RuntimeError("Dex3 integration changed one or more G1 body actuator indices")
 
     hand_actuators = {}
-    for name in RIGHT_HAND_JOINT_NAMES:
+    for name in RIGHT_HAND_JOINT_NAMES + LEFT_HAND_JOINT_NAMES:
         actuator_id = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
         joint_id = int(model.actuator_trnid[actuator_id, 0])
         joint_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
         if joint_name != name:
             raise RuntimeError(f"Dex3 actuator {name!r} resolves to unexpected joint {joint_name!r}")
         hand_actuators[name] = actuator_id
-    if model.nu != 36 or sorted(hand_actuators.values()) != list(range(29, 36)):
-        raise RuntimeError("Model must contain 29 preserved G1 actuators plus seven appended Dex3 actuators")
+    right_ids = [hand_actuators[name] for name in RIGHT_HAND_JOINT_NAMES]
+    left_ids = [hand_actuators[name] for name in LEFT_HAND_JOINT_NAMES]
+    if (
+        model.nu != 43
+        or sorted(right_ids) != list(range(29, 36))
+        or sorted(left_ids) != list(range(36, 43))
+    ):
+        raise RuntimeError(
+            "Model must contain 29 preserved G1 actuators followed by paired Dex3 hands"
+        )
 
-    controller_globals["NUM_ACTUATORS"] = 36
-    controller_globals["_ACTUATED_DOF_END"] = 42
-    controller_globals["_KP"] = np.concatenate((old_kp, np.full(7, HAND_POSITION_KP)))
-    controller_globals["_KD"] = np.concatenate((old_kd, np.full(7, HAND_VELOCITY_KD)))
+    controller_globals["NUM_ACTUATORS"] = 43
+    controller_globals["_ACTUATED_DOF_END"] = 49
+    controller_globals["_KP"] = np.concatenate((old_kp, np.full(14, HAND_POSITION_KP)))
+    controller_globals["_KD"] = np.concatenate((old_kd, np.full(14, HAND_VELOCITY_KD)))
+
+    def compute_actuator_ordered_pd_torques(self) -> np.ndarray:
+        q = self.data.actuator_length.copy()
+        qd = self.data.actuator_velocity.copy()
+        tau = controller_globals["_KP"] * (self.target_pos - q) - controller_globals["_KD"] * qd
+        tau += _actuator_ordered_bias(self.model, self.data.qfrc_bias)
+        return np.clip(tau, self._ctrlrange[:, 0], self._ctrlrange[:, 1])
+
+    PhysicsSim._compute_pd_torques = compute_actuator_ordered_pd_torques
     return hand_actuators
+
+
+def _actuator_ordered_bias(model, generalized_bias: np.ndarray) -> np.ndarray:
+    joint_ids = np.asarray(model.actuator_trnid[:, 0], dtype=int)
+    dof_ids = np.asarray(model.jnt_dofadr[joint_ids], dtype=int)
+    return np.asarray(generalized_bias, dtype=float)[dof_ids]
 
 
 def _contact_sample(mujoco, sim, geometry: dict) -> dict:
@@ -1318,7 +1384,7 @@ def _geometry(mujoco, sim) -> dict:
     object_body = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_BODY, OBJECT_BODY_NAME)
     joint = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_JOINT, OBJECT_JOINT_NAME)
     target_geom = _name_id(
-        mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, "m0_target_table_top"
+        mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, "m0_table_top"
     )
     target_site = _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_SITE, "m0_target_site")
     geom_shapes = {
@@ -1341,7 +1407,7 @@ def _geometry(mujoco, sim) -> dict:
             body_id,
             mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id) or "",
         )
-        if body_name.startswith(("left_shoulder_", "left_elbow_", "left_wrist_")):
+        if body_name.startswith(("left_shoulder_", "left_elbow_", "left_wrist_", "left_hand_")):
             left_arm_geoms.add(geom_id)
         if body_name.startswith(("right_shoulder_", "right_elbow_", "right_wrist_", "right_hand_")):
             right_arm_geoms.add(geom_id)
@@ -1571,7 +1637,305 @@ def _json_value(value):
     return value
 
 
+def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    import cv2
+    import mujoco
+
+    _verify_unitree_mesh_inputs(args)
+    mujoco, PhysicsSim, left_ctrl, right_ctrl = load_upstream(args.candidate_root)
+    scene_path = prepare_scene(
+        args.candidate_root,
+        args.unitree_root,
+        args.mesh_dir,
+        args.output_dir,
+    )
+    compiled = mujoco.MjModel.from_xml_path(str(scene_path))
+    sim = PhysicsSim(model_path=str(scene_path))
+    sim.renderer.close()
+    sim.renderer = mujoco.Renderer(
+        sim.model, height=VIDEO_HEIGHT, width=VIDEO_WIDTH
+    )
+    sim.reset()
+    mujoco.mj_forward(sim.model, sim.data)
+
+    finger_joints = []
+    hand_actuators = []
+    for joint_id in range(sim.model.njnt):
+        name = mujoco.mj_id2name(sim.model, mujoco.mjtObj.mjOBJ_JOINT, joint_id) or ""
+        if name.startswith(("left_hand_", "right_hand_")):
+            finger_joints.append(name)
+    for actuator_id in range(sim.model.nu):
+        name = mujoco.mj_id2name(
+            sim.model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id
+        ) or ""
+        if name.startswith(("left_hand_", "right_hand_")):
+            hand_actuators.append(name)
+
+    model_root = ET.parse(args.output_dir / "g1_29dof.xml").getroot()
+    hand_mounts = {}
+    for side in ("left", "right"):
+        hand_name = f"{side}_rubber_hand"
+        wrist = model_root.find(f".//body[@name='{side}_wrist_yaw_link']")
+        hand_geom = next(
+            (
+                geom
+                for geom in wrist.findall("geom")
+                if geom.attrib.get("mesh") == hand_name
+            ),
+            None,
+        ) if wrist is not None else None
+        mesh = model_root.find(f"asset/mesh[@name='{hand_name}']")
+        if wrist is None or hand_geom is None or mesh is None:
+            raise RuntimeError(f"Generated model is missing the vendor {side} stock hand")
+        if finger_joints or hand_actuators:
+            raise RuntimeError("Stock G1 hand audit unexpectedly found hand joints or actuators")
+        hand_mounts[side] = {
+            "body": f"{side}_wrist_yaw_link",
+            "wrist_pos_m": [float(v) for v in wrist.attrib["pos"].split()],
+            "mesh": hand_name,
+            "mesh_file": mesh.attrib["file"],
+            "mesh_scale": mesh.attrib.get("scale", "1 1 1"),
+            "hand_geom_pos_m": [
+                float(v) for v in hand_geom.attrib.get("pos", "0 0 0").split()
+            ],
+            "hand_geom_quat_wxyz": [
+                float(v) for v in hand_geom.attrib.get("quat", "1 0 0 0").split()
+            ],
+            "contype": int(hand_geom.attrib.get("contype", "1")),
+            "conaffinity": int(hand_geom.attrib.get("conaffinity", "1")),
+        }
+
+    object_joint_id = _name_id(
+        mujoco, sim.model, mujoco.mjtObj.mjOBJ_JOINT, OBJECT_JOINT_NAME
+    )
+    object_qpos_address = int(sim.model.jnt_qposadr[object_joint_id])
+    bottle_start = sim.data.qpos[object_qpos_address : object_qpos_address + 7].copy()
+    screenshots_dir = args.output_json.parent / "screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    frames: list[np.ndarray] = []
+    screenshots: dict[str, str] = {}
+
+    def capture(name: str, camera) -> np.ndarray:
+        sim.renderer.update_scene(sim.data, camera=camera)
+        rgb = sim.renderer.render().copy()
+        path = screenshots_dir / name
+        if not cv2.imwrite(str(path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)):
+            raise RuntimeError(f"Could not write scene review screenshot: {path}")
+        screenshots[name] = str(path)
+        frames.append(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        return rgb
+
+    capture("canonical_overview.png", "scene_camera")
+
+    wrist_ids = [
+        _name_id(mujoco, sim.model, mujoco.mjtObj.mjOBJ_BODY, f"{side}_wrist_yaw_link")
+        for side in ("left", "right")
+    ]
+    hands_camera = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(sim.model, hands_camera)
+    hands_camera.lookat[:] = np.mean(sim.data.xpos[wrist_ids], axis=0)
+    hands_camera.distance = 0.82
+    hands_camera.azimuth = 135.0
+    hands_camera.elevation = -15.0
+    capture("stock_hands_closeup.png", hands_camera)
+
+    bottle_camera = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(sim.model, bottle_camera)
+    bottle_camera.lookat[:] = bottle_start[:3]
+    bottle_camera.distance = 0.42
+    bottle_camera.azimuth = 135.0
+    bottle_camera.elevation = -12.0
+    capture("canonical_x2_bottle_closeup.png", bottle_camera)
+
+    pregrasp = {
+        "right_arm_approach_planned": False,
+        "left_hand_clear_attempted": False,
+        "right_hand_site_world_m": None,
+        "right_hand_to_bottle_center_m": None,
+        "left_hand_site_world_m": None,
+        "left_hand_clear_distance_m": None,
+        "planned_approach_site_world_m": None,
+        "planning_errors": {},
+    }
+    if hasattr(sim, "right_hand_site_id"):
+        bottle_center = bottle_start[:3]
+        approach_target = bottle_center + np.asarray(APPROACH_SITE_OFFSET_M)
+        pregrasp["planned_approach_site_world_m"] = approach_target.tolist()
+        left_clear_target = None
+        right_approach_target = None
+        try:
+            left_clear_target = _plan_left_hand_target(
+                sim, np.array([0.23, 0.34, 0.97], dtype=float)
+            )
+            pregrasp["left_hand_clear_attempted"] = True
+        except RuntimeError as exc:
+            pregrasp["planning_errors"]["left_hand_clear"] = str(exc)
+
+        try:
+            hand_roll = math.radians(args.hand_roll_deg)
+            hand_rotation = np.array(
+                [
+                    [1.0, 0.0, 0.0],
+                    [0.0, math.cos(hand_roll), -math.sin(hand_roll)],
+                    [0.0, math.sin(hand_roll), math.cos(hand_roll)],
+                ],
+                dtype=float,
+            )
+            right_approach_target = _plan_right_hand_target(
+                sim, approach_target, hand_rotation
+            )
+            pregrasp["right_arm_approach_planned"] = True
+        except RuntimeError as exc:
+            pregrasp["planning_errors"]["right_arm_approach"] = str(exc)
+
+        if left_clear_target is not None or right_approach_target is not None:
+            sim.target_pos[:] = sim.data.actuator_length.copy()
+            if right_approach_target is not None:
+                sim.target_pos[right_ctrl] = right_approach_target
+            if left_clear_target is not None:
+                sim.target_pos[left_ctrl] = left_clear_target
+            for _ in range(36):
+                sim.step_frame()
+        pregrasp["right_hand_site_world_m"] = sim.data.site_xpos[
+            sim.right_hand_site_id
+        ].tolist()
+        pregrasp["right_hand_to_bottle_center_m"] = float(
+            np.linalg.norm(sim.data.site_xpos[sim.right_hand_site_id] - bottle_center)
+        )
+        pregrasp["left_hand_site_world_m"] = sim.data.site_xpos[
+            sim.left_hand_site_id
+        ].tolist()
+        pregrasp["left_hand_clear_distance_m"] = float(
+            np.linalg.norm(
+                sim.data.site_xpos[sim.left_hand_site_id] - bottle_center
+            )
+        )
+    frames.clear()
+    capture("canonical_overview.png", "scene_camera")
+    hands_camera.lookat[:] = np.mean(sim.data.xpos[wrist_ids], axis=0)
+    capture("stock_hands_closeup.png", hands_camera)
+    bottle_camera.lookat[:] = sim.data.qpos[
+        object_qpos_address : object_qpos_address + 3
+    ]
+    capture("canonical_x2_bottle_closeup.png", bottle_camera)
+    capture("right_stock_hand_near_bottle.png", "scene_camera")
+
+    trace_path = args.output_json.parent / "m0_physics_trace.jsonl"
+    bottle_end = sim.data.qpos[object_qpos_address : object_qpos_address + 7].copy()
+    trace_path.write_text(
+        json.dumps(
+            {
+                "kind": "scene_audit_start_end",
+                "sim_time_s": float(sim.data.time),
+                "bottle_start_pose": bottle_start.tolist(),
+                "bottle_end_pose": bottle_end.tolist(),
+                "bottle_qpos_written_after_reset": False,
+                "right_arm_approach_planned": pregrasp["right_arm_approach_planned"],
+                "manipulation_episode_run": False,
+            },
+            allow_nan=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    video_path = args.output_json.parent / "g1_stock_hand_scene_review.mp4"
+    video = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        2.0,
+        (VIDEO_WIDTH, VIDEO_HEIGHT),
+    )
+    if not video.isOpened():
+        sim.renderer.close()
+        raise RuntimeError(f"Could not create scene review video: {video_path}")
+    try:
+        for frame in frames:
+            for _ in range(4):
+                video.write(frame)
+    finally:
+        video.release()
+        sim.renderer.close()
+
+    capability_blocker = (
+        "The pinned vendor stock G1 hands are unarticulated visual meshes with "
+        "no finger joints, hand actuators, or hand collision geometry. They cannot "
+        "close around or physically support the bottle; no grasp or lift was run."
+    )
+    return {
+        "issue": 43,
+        "demo": "G1 stock-hand morphology and canonical bottle scene audit",
+        **_runtime_identity(args),
+        "state": "BLOCKED",
+        "stage": "HAND_MODEL_CAPABILITY",
+        "passed": False,
+        "complete": False,
+        "error": capability_blocker,
+        "robot_hand": {
+            "model": "Unitree stock G1 rubber hands, paired left/right",
+            "root_cause": (
+                "The prior generated model removed the stock rubber-hand meshes "
+                "and grafted Dex3 meshes. That replacement, rather than a stock "
+                "G1 mesh scale or handedness error, created the abnormal appearance."
+            ),
+            "source_model": UNITREE_MODEL_RELATIVE_PATH.as_posix(),
+            "source_revision": UNITREE_COMMIT,
+            "mounts": hand_mounts,
+            "finger_joints": finger_joints,
+            "finger_actuators": hand_actuators,
+            "hand_collision_geometry": False,
+            "visual_geometry_matches_collision_geometry": False,
+            "capability_blocker": capability_blocker,
+        },
+        "scene": {
+            "environment": "pinned Humanoid VLA G1 default lighting, skybox, and checker floor preserved",
+            "table": {
+                "source": "existing G1 table, converted from solid block to top and four legs",
+                "center_xy_m": CANONICAL_TABLE_XY.tolist(),
+                "top_z_m": TARGET_TABLE_TOP_Z,
+                "half_extents_xy_m": CANONICAL_TABLE_HALF_EXTENTS.tolist(),
+                "support_geom_count": 5,
+            },
+            "bottle": {
+                "source": "X2 grasp script bottle_collision definition",
+                "geometry": "single cylinder",
+                "diameter_m": 0.075,
+                "height_m": 0.24,
+                "mass_kg": 0.57,
+                "rgba": [0.12, 0.52, 0.82, 1.0],
+                "friction": [1.4, 0.02, 0.001],
+                "condim": 4,
+                "free_joint": OBJECT_JOINT_NAME,
+                "pedestal_or_hidden_support": False,
+                "runtime_qpos_write": False,
+                "weld_or_equality": False,
+            },
+        },
+        "pregrasp": pregrasp,
+        "manipulation": {
+            "attempted": False,
+            "lift_screenshot": None,
+            "reason": "stock hand capability blocker; articulated grasp criteria were not weakened",
+        },
+        "artifacts": {
+            "result_json": str(args.output_json),
+            "log": str(args.output_json.parent / "run.log"),
+            "scene_xml": str(args.output_dir / "g1_m0_bottle.xml"),
+            "model_xml": str(args.output_dir / "g1_29dof.xml"),
+            "scene_review_video": str(video_path),
+            "physics_trace": str(trace_path),
+            "screenshots": screenshots,
+        },
+    }
+
+
 def run_demo(args: argparse.Namespace) -> dict:
+    return _run_stock_hand_visual_audit(args)
+
+
+def _run_paired_dex3_episode(args: argparse.Namespace) -> dict:
     os.environ.setdefault("MUJOCO_GL", "egl")
     import cv2
 
@@ -1626,10 +1990,15 @@ def run_demo(args: argparse.Namespace) -> dict:
         raise RuntimeError(f"Could not create demo video: {args.video}")
 
     hand_ctrl = np.asarray([hand_actuators[name] for name in RIGHT_HAND_JOINT_NAMES], dtype=int)
+    left_hand_ctrl = np.asarray(
+        [hand_actuators[name] for name in LEFT_HAND_JOINT_NAMES], dtype=int
+    )
     open_hand = np.asarray(RIGHT_HAND_OPEN_POS, dtype=float)
+    left_open_hand = np.zeros(len(LEFT_HAND_JOINT_NAMES), dtype=float)
     closed_hand = np.asarray(RIGHT_HAND_CLOSED_POS, dtype=float)
     sim.target_pos[:] = sim.data.actuator_length.copy()
     sim.target_pos[hand_ctrl] = open_hand
+    sim.target_pos[left_hand_ctrl] = left_open_hand
     object_center = initial_position.copy()
     hand_roll = math.radians(args.hand_roll_deg)
     hand_rotation = np.array(
@@ -1649,9 +2018,27 @@ def run_demo(args: argparse.Namespace) -> dict:
     controller_stages: dict[str, dict[str, float | int]] = {}
     post_release_trace: list[dict[str, object]] = []
     waypoint_checks: dict[str, dict[str, object]] = {}
+    screenshots_dir = args.output_json.parent / "screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    evidence_screenshots: dict[str, str] = {}
     trace_start_frame: int | None = None
     final_sample = None
     frame_index = 0
+
+    def capture_screenshot(name: str, camera="scene_camera") -> np.ndarray:
+        sim.renderer.update_scene(sim.data, camera=camera)
+        rgb = sim.renderer.render().copy()
+        path = screenshots_dir / name
+        if not cv2.imwrite(str(path), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)):
+            raise RuntimeError(f"Could not write evidence screenshot: {path}")
+        evidence_screenshots[name] = str(path)
+        return rgb
+
+    closeup_camera = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(sim.model, closeup_camera)
+    closeup_camera.distance = 0.52
+    closeup_camera.azimuth = 135.0
+    closeup_camera.elevation = -18.0
 
     def record_post_release_sample(sample: dict) -> None:
         if trace_start_frame is None or frame_index - trace_start_frame > 90:
@@ -1760,6 +2147,26 @@ def run_demo(args: argparse.Namespace) -> dict:
                         "transfer_frames": args.transfer_frames,
                         "lower_frames": args.lower_frames,
                     },
+                    "robot_hand": {
+                        "model": "Unitree Dex3-1 Rev 1.0 paired left/right hands",
+                        "source_model": str(DEX3_MODEL_RELATIVE_PATH),
+                        "source_mesh_directory": str(DEX3_MESH_RELATIVE_PATH),
+                        "source_commit": DEX3_COMMIT,
+                        "right_parent_body": "right_wrist_yaw_link",
+                        "right_joint_names": list(RIGHT_HAND_JOINT_NAMES),
+                        "left_parent_body": "left_wrist_yaw_link",
+                        "left_joint_names": list(LEFT_HAND_JOINT_NAMES),
+                        "actuator_ids_by_joint_name": hand_actuators,
+                        "left_hand_commanded": False,
+                    },
+                    "scene_configuration": {
+                        "table_body_count": 1,
+                        "table_top_geom": "m0_table_top",
+                        "table_top_z_m": TARGET_TABLE_TOP_Z,
+                        "bottle_free_joint": OBJECT_JOINT_NAME,
+                        "visible_or_physical_bottle_pedestal": False,
+                    },
+                    "evidence_screenshots": evidence_screenshots,
                     "last_sample": _json_value(sample),
                 }
             )
@@ -1802,6 +2209,7 @@ def run_demo(args: argparse.Namespace) -> dict:
             mujoco, sim, geometry, monitor, physics_trace_path
         )
         observe("START")
+        capture_screenshot("canonical_overview.png")
         move_group(left_ctrl, clear_left, max(35, args.approach_frames))
         controller_stages["LEFT_ARM_CLEAR"] = {
             "sim_time_s": float(sim.data.time),
@@ -1818,6 +2226,12 @@ def run_demo(args: argparse.Namespace) -> dict:
             "sim_time_s": float(sim.data.time),
             "control_frame": frame_index,
         }
+        closeup_camera.lookat[:] = (
+            np.asarray(sim.right_hand_pos, dtype=float) * 0.65
+            + np.asarray(sim.box_pos, dtype=float) * 0.35
+        )
+        capture_screenshot("pregrasp.png")
+        capture_screenshot("right_hand_closeup.png", closeup_camera)
         move_group(hand_ctrl, closed_hand, args.close_frames, stop_on_grasp=True)
         grasp_sample = final_sample
         if monitor.stages["GRASP"] is None or grasp_sample is None:
@@ -1911,6 +2325,7 @@ def run_demo(args: argparse.Namespace) -> dict:
         }
         if monitor.stages["LIFT"] is None:
             raise RuntimeError("Bottle did not rise at least 0.05 m while held by right Dex3 contact")
+        capture_screenshot("grasp_lift.png")
 
         current_object = lift_sample["position"]
         target_delta = np.array(
@@ -1973,17 +2388,19 @@ def run_demo(args: argparse.Namespace) -> dict:
         for _ in range(args.settle_frames):
             sim.target_pos[right_ctrl] = retreat_target
             sim.target_pos[hand_ctrl] = open_hand
+            sim.target_pos[left_hand_ctrl] = left_open_hand
             sim.step_frame()
             observe()
             if monitor.stages["SETTLE"] is not None:
                 break
+        if monitor.stages["SETTLE"] is not None:
+            capture_screenshot("final_settled.png")
     finally:
         if close_physics_recorder is not None:
             close_physics_recorder()
         video.release()
         if final_sample is not None:
-            sim.renderer.update_scene(sim.data, camera="scene_camera")
-            final_rgb = sim.renderer.render().copy()
+            final_rgb = capture_screenshot("last_rollout_state.png")
             cv2.imwrite(str(args.screenshot), cv2.cvtColor(final_rgb, cv2.COLOR_RGB2BGR))
         sim.renderer.close()
 
@@ -1991,7 +2408,7 @@ def run_demo(args: argparse.Namespace) -> dict:
     result.update(
         {
             "issue": 43,
-            "demo": "M0 fixed-base G1, one right Dex3 hand, normal water bottle",
+            "demo": "M0 fixed-base G1, paired Dex3 hands with right-hand-only grasp, normal water bottle",
             **_runtime_identity(args, monitor),
             "object_geometry_parameters": [
                 {
@@ -2004,13 +2421,26 @@ def run_demo(args: argparse.Namespace) -> dict:
                 for spec in OBJECT_GEOM_SPECS
             ],
             "robot_hand": {
-                "model": "Unitree Dex3-1 Rev 1.0 right hand",
+                "model": "Unitree Dex3-1 Rev 1.0 paired left/right hands",
+                "root_cause": (
+                    "The previous adapter grafted the articulated right Dex3 over the "
+                    "candidate stock right rubber hand but left the static stock left "
+                    "rubber hand in place, mixing hand families; no right-side mesh "
+                    "scale error was found."
+                ),
+                "source_model": str(DEX3_MODEL_RELATIVE_PATH),
+                "source_mesh_directory": str(DEX3_MESH_RELATIVE_PATH),
+                "source_mesh_scale": "pinned vendor mesh declarations preserved without scale overrides",
                 "parent_body": "right_wrist_yaw_link",
                 "joint_names": list(RIGHT_HAND_JOINT_NAMES),
+                "left_parent_body": "left_wrist_yaw_link",
+                "left_joint_names": list(LEFT_HAND_JOINT_NAMES),
                 "actuator_ids_by_joint_name": hand_actuators,
                 "g1_body_actuator_count": 29,
-                "total_actuator_count": 36,
-                "left_articulated_hand": False,
+                "total_actuator_count": 43,
+                "left_articulated_hand": True,
+                "left_hand_commanded": False,
+                "left_hand_open_target_rad": left_open_hand.tolist(),
                 "palm_roll_deg": args.hand_roll_deg,
                 "grasp_site_offset_m": list(GRASP_SITE_OFFSET_M),
                 "grasp_hold_frames": args.grasp_hold_frames,
@@ -2030,7 +2460,7 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "dex3_commit": DEX3_COMMIT,
                 "dex3_license": "BSD-3-Clause",
                 "mujoco_python_version": MUJOCO_VERSION,
-                "controller": "pinned G1 PD torque controller with name-resolved right Dex3 joint targets",
+                "controller": "pinned G1 PD torque controller with name-resolved paired Dex3 joints; only the right hand is commanded",
                 "physics": "MuJoCo mj_step, 500 Hz physics substeps, fixed base",
                 "grasp": "right Dex3 thumb plus index and/or middle physical friction contact; no runtime equality and no object qpos writes",
             },
@@ -2053,8 +2483,10 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "source_table_top_z_m": SOURCE_TABLE_TOP_Z,
                 "target_table_top_z_m": TARGET_TABLE_TOP_Z,
                 "target_xy_m": geometry["target_center"].tolist(),
-                "target_table_body_xy_m": TARGET_TABLE_BODY_XY.tolist(),
-                "target_table_gap_m": TABLE_GAP_M,
+                "canonical_table_center_xy_m": CANONICAL_TABLE_XY.tolist(),
+                "canonical_table_half_extents_m": CANONICAL_TABLE_HALF_EXTENTS.tolist(),
+                "canonical_table_count": 1,
+                "visible_or_physical_bottle_pedestal": False,
                 "hand_roll_deg": args.hand_roll_deg,
                 "commanded_lift_height_m": args.lift_height_m,
                 "transfer_frames": args.transfer_frames,
@@ -2074,6 +2506,7 @@ def run_demo(args: argparse.Namespace) -> dict:
                 "scene_xml": str(scene_path),
                 "video": str(args.video),
                 "screenshot": str(args.screenshot),
+                "evidence_screenshots": evidence_screenshots,
                 "physics_step_trace": str(physics_trace_path),
             },
         }
@@ -2088,7 +2521,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-root", type=Path, required=True)
     parser.add_argument("--unitree-root", type=Path, required=True)
-    parser.add_argument("--dex3-root", type=Path, required=True)
     parser.add_argument("--mesh-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
@@ -2181,17 +2613,24 @@ def main(argv: list[str] | None = None) -> int:
         args.output_json.write_text(json.dumps(failure, indent=2) + "\n", encoding="utf-8")
         print(f"FAIL: {failure['error']}", file=sys.stderr, flush=True)
         return 1
-    result["state"] = "COMPLETE" if result["passed"] else "FAILED"
-    result["stage"] = "ACCEPTANCE"
-    result["complete"] = True
-    result.setdefault("error", None if result["passed"] else "acceptance checks did not pass")
+    if result.get("state") == "BLOCKED":
+        result["passed"] = False
+        result["complete"] = False
+        result["stage"] = "HAND_MODEL_CAPABILITY"
+        result.setdefault("error", "stock G1 hand model cannot satisfy physical grasp requirements")
+        exit_code = 2
+    else:
+        result["state"] = "COMPLETE" if result["passed"] else "FAILED"
+        result["stage"] = "ACCEPTANCE"
+        result["complete"] = True
+        result.setdefault("error", None if result["passed"] else "acceptance checks did not pass")
+        exit_code = 0 if result["passed"] else 1
     args.output_json.write_text(
         json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8"
     )
-    print(f"{'PASS' if result['passed'] else 'FAIL'}: {args.output_json}", flush=True)
-    print(json.dumps(result["task_stages"], indent=2), flush=True)
-    print(json.dumps(result["safety_checks"], indent=2), flush=True)
-    return 0 if result["passed"] else 1
+    print(f"{'BLOCKED' if result['state'] == 'BLOCKED' else 'PASS' if result['passed'] else 'FAIL'}: {args.output_json}", flush=True)
+    print(result.get("error", ""), flush=True)
+    return exit_code
 
 
 if __name__ == "__main__":
