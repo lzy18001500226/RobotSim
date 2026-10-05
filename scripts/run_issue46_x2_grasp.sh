@@ -6,7 +6,7 @@ source_pin="575cc6b988f976c23550e0db85aa1e5475d3652d"
 vendor_root="${AGIBOT_X2_VENDOR_ROOT:-/tmp/robotsim-issue46-agibot-x2-urdf-${source_pin}}"
 venv_root="${ISSUE46_X2_VENV_ROOT:-/tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv}"
 evidence_dir="${ISSUE46_EVIDENCE_DIR:-/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/scene-frame-correction/$(date +%Y%m%d-%H%M%S)}"
-finger_close_fraction="${ISSUE46_FINGER_CLOSE_FRACTION:-0.45}"
+finger_close_fraction="${ISSUE46_FINGER_CLOSE_FRACTION:-1.0}"
 
 mkdir -p "$evidence_dir"
 exec > >(tee "$evidence_dir/run.log") 2>&1

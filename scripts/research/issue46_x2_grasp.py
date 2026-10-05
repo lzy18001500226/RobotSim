@@ -27,24 +27,27 @@ TARGET_TABLE_BODY_XY = np.array([0.30, -0.24])
 TARGET_TABLE_HALF_EXTENTS = np.array([0.20, 0.10])
 TARGET_TABLE_SITE_OFFSET_Y = 0.04
 TABLE_TOP_Z = 0.80
-START = np.array([0.30, 0.0, 0.878])
-GOAL = np.array([0.30, -0.20, 0.878])
-BOTTLE_RADIUS = 0.0325
-BOTTLE_TOP_Z = float(START[2] + 0.153)
-ROBOT_BASE_WORLD = np.array([0.443, 0.323, 0.68])
+START = np.array([0.30, 0.0, TABLE_TOP_Z + 0.1175])
+GOAL = np.array([0.30, -0.20, TABLE_TOP_Z + 0.1175])
+BOTTLE_RADIUS = 0.035
+BOTTLE_TOP_Z = float(START[2] + 0.127)
+ROBOT_BASE_WORLD = np.array([0.38, 0.32, 0.68])
 ROBOT_BASE_YAW = -math.pi / 2.0
 ROBOT_FORWARD_WORLD = np.array([math.cos(ROBOT_BASE_YAW), math.sin(ROBOT_BASE_YAW), 0.0])
 MANIPULATION_APPROACH_WORLD = np.array([0.0, -1.0, 0.0])
-PALM_APPROACH_STANDOFF = 0.140
-PREGRASP_STANDOFF = 0.240
+PALM_APPROACH_STANDOFF = 0.155
+PREGRASP_STANDOFF = 0.200
+APPROACH_STANDOFF = 0.240
 GRASP_PALM_POS = np.array(
     [START[0], START[1] - MANIPULATION_APPROACH_WORLD[1] * PALM_APPROACH_STANDOFF, START[2]]
 )
 PREGRASP_PALM_POS = np.array(
     [START[0], START[1] - MANIPULATION_APPROACH_WORLD[1] * PREGRASP_STANDOFF, START[2]]
 )
-APPROACH_PALM_POS = (PREGRASP_PALM_POS + GRASP_PALM_POS) / 2.0
-LIFT_PALM_Z = float(GRASP_PALM_POS[2] + 0.080)
+APPROACH_PALM_POS = np.array(
+    [START[0], START[1] - MANIPULATION_APPROACH_WORLD[1] * APPROACH_STANDOFF, START[2]]
+)
+LIFT_PALM_Z = float(GRASP_PALM_POS[2] + 0.050)
 PALM_NORMAL_WORLD = MANIPULATION_APPROACH_WORLD.copy()
 FINGER_AXIS_WORLD = MANIPULATION_APPROACH_WORLD.copy()
 PALM_SPREAD_WORLD = np.array([0.0, 0.0, 1.0])
@@ -53,7 +56,8 @@ PALM_TARGET_ROTATION = np.column_stack(
     (PALM_SIDE_WORLD, PALM_SPREAD_WORLD, PALM_NORMAL_WORLD)
 )
 PLACE_PALM_POS = np.array([GOAL[0], GOAL[1], START[2]]) - PALM_NORMAL_WORLD * PALM_APPROACH_STANDOFF
-FINGER_CLOSE_FRACTION = float(os.environ.get("ISSUE46_FINGER_CLOSE_FRACTION", "0.45"))
+FINGER_PRESHAPE_FRACTION = 0.45
+FINGER_CLOSE_FRACTION = float(os.environ.get("ISSUE46_FINGER_CLOSE_FRACTION", "1.0"))
 ARM = [
     "right_shoulder_pitch_joint",
     "right_shoulder_roll_joint",
@@ -104,6 +108,8 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
     spec = mujoco.MjSpec.from_file(str(URDF))
     spec.option.timestep = DT
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    # Keep the fixed pelvis in the kinematic tree so robot/world contacts remain distinct.
+    spec.compiler.fusestatic = False
     base = spec.worldbody.bodies[0]
     base.pos = ROBOT_BASE_WORLD.tolist()
     base.quat = [math.cos(ROBOT_BASE_YAW / 2.0), 0.0, 0.0, math.sin(ROBOT_BASE_YAW / 2.0)]
@@ -111,6 +117,30 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
     base_pos = list(base.pos)
     base_quat = list(base.quat)
     source_xml = ET.parse(URDF).getroot()
+    vendor_visual_color_values = sorted(
+        {
+            color.get("rgba")
+            for color in source_xml.findall(".//visual/material/color")
+            if color.get("rgba")
+        }
+    )
+    parent_by_child = {
+        joint.find("child").get("link"): joint.find("parent").get("link")
+        for joint in source_xml.findall("joint")
+        if joint.find("parent") is not None and joint.find("child") is not None
+    }
+    self_chain_exclusions: list[tuple[str, str]] = []
+    for descendant, parent in parent_by_child.items():
+        ancestor = parent
+        while ancestor:
+            pair = (ancestor, descendant)
+            spec.add_exclude(
+                name=f"self_chain_{len(self_chain_exclusions)}",
+                bodyname1=ancestor,
+                bodyname2=descendant,
+            )
+            self_chain_exclusions.append(pair)
+            ancestor = parent_by_child.get(ancestor)
     wrist = next(b for b in spec.bodies if b.name == "right_wrist_roll_link")
     palm_joint = next(j for j in source_xml.findall("joint") if j.get("name") == "R_palm_joint")
     palm_origin = palm_joint.find("origin")
@@ -158,52 +188,59 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         )
 
     spec.add_texture(
-        name="issue46_sky_gradient",
+        name="skybox",
         type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
         builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
-        rgb1=[0.88, 0.92, 0.96],
-        rgb2=[0.70, 0.78, 0.86],
+        rgb1=[0.30, 0.50, 0.70],
+        rgb2=[0.0, 0.0, 0.0],
         width=512,
         height=3072,
     )
     floor_texture = spec.add_texture(
-        name="issue46_floor_checker",
+        name="groundplane",
         type=mujoco.mjtTexture.mjTEXTURE_2D,
         builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER,
-        rgb1=[0.96, 0.97, 0.98],
-        rgb2=[0.70, 0.75, 0.79],
-        width=512,
-        height=512,
+        mark=mujoco.mjtMark.mjMARK_EDGE,
+        rgb1=[0.50, 0.53, 0.55],
+        rgb2=[0.43, 0.46, 0.48],
+        markrgb=[0.62, 0.64, 0.65],
+        width=300,
+        height=300,
     )
-    floor_material = spec.add_material(name="issue46_floor_material", texrepeat=[2.0, 2.0], reflectance=0.0)
+    floor_material = spec.add_material(name="groundplane", texrepeat=[5.0, 5.0], reflectance=0.2)
     floor_material.textures = [floor_texture.name]
     floor_material.texuniform = True
 
     spec.worldbody.add_geom(
-        name="experiment_ground",
+        name="floor",
         type=mujoco.mjtGeom.mjGEOM_PLANE,
         size=[0.0, 0.0, 0.1],
         material=floor_material.name,
-        rgba=[0.88, 0.90, 0.92, 1.0],
+        group=1,
     )
-    for index, coordinate in enumerate(np.arange(-0.7, 1.11, 0.1)):
+    # The EGL renderer averages this checker into a flat plane at overview scale.
+    # Add a restrained, visual-only grid so the floor has readable depth cues.
+    for index, coordinate in enumerate(np.arange(-0.6, 1.11, 0.1)):
         spec.worldbody.add_geom(
-            name=f"issue46_floor_grid_x_{index}",
+            name=f"floor_grid_x_{index}",
             type=mujoco.mjtGeom.mjGEOM_BOX,
-            pos=[float(coordinate), 0.0, 0.0005],
-            size=[0.0007, 0.6, 0.0005],
-            rgba=[0.49, 0.56, 0.62, 1.0],
+            pos=[float(coordinate), 0.0, 0.00035],
+            size=[0.00045, 0.85, 0.00025],
+            rgba=[0.40, 0.43, 0.45, 1.0],
             contype=0,
             conaffinity=0,
+            group=1,
         )
+    for index, coordinate in enumerate(np.arange(-0.7, 0.81, 0.1)):
         spec.worldbody.add_geom(
-            name=f"issue46_floor_grid_y_{index}",
+            name=f"floor_grid_y_{index}",
             type=mujoco.mjtGeom.mjGEOM_BOX,
-            pos=[0.2, float(coordinate), 0.0005],
-            size=[0.9, 0.0007, 0.0005],
-            rgba=[0.49, 0.56, 0.62, 1.0],
+            pos=[0.25, float(coordinate), 0.00035],
+            size=[0.85, 0.00045, 0.00025],
+            rgba=[0.40, 0.43, 0.45, 1.0],
             contype=0,
             conaffinity=0,
+            group=1,
         )
     spec.worldbody.add_geom(
         name="experiment_source_table",
@@ -211,7 +248,8 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         pos=[float(SOURCE_TABLE_XY[0]), float(SOURCE_TABLE_XY[1]), TABLE_TOP_Z / 2.0],
         size=[float(SOURCE_TABLE_HALF_EXTENTS[0]), float(SOURCE_TABLE_HALF_EXTENTS[1]), TABLE_TOP_Z / 2.0],
         rgba=[0.24, 0.34, 0.42, 1.0],
-        friction=[3.0, 0.01, 0.001],
+        friction=[1.2, 0.01, 0.001],
+        group=1,
     )
     spec.worldbody.add_geom(
         name="experiment_target_table",
@@ -219,7 +257,8 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         pos=[float(TARGET_TABLE_BODY_XY[0]), float(TARGET_TABLE_BODY_XY[1]), TABLE_TOP_Z / 2.0],
         size=[float(TARGET_TABLE_HALF_EXTENTS[0]), float(TARGET_TABLE_HALF_EXTENTS[1]), TABLE_TOP_Z / 2.0],
         rgba=[0.24, 0.34, 0.42, 1.0],
-        friction=[3.0, 0.01, 0.001],
+        friction=[1.2, 0.01, 0.001],
+        group=1,
     )
     spec.worldbody.add_geom(
         name="experiment_target_marker",
@@ -229,48 +268,53 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         rgba=[0.90, 0.66, 0.16, 1.0],
         contype=0,
         conaffinity=0,
+        group=1,
     )
     bottle = spec.worldbody.add_body(name="bottle", pos=START.tolist())
     bottle.add_freejoint(name="bottle_free")
     bottle.add_geom(
-        name="m0_bottle_body",
+        name="bottle_body",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        pos=[0.0, 0.0, 0.0],
-        size=[0.0325, 0.078, 0.0],
-        mass=0.470,
-        rgba=[0.64, 0.84, 0.90, 0.78],
+        pos=[0.0, 0.0, -0.04],
+        size=[0.035, 0.0775, 0.0],
+        mass=0.49,
+        rgba=[0.12, 0.52, 0.82, 1.0],
         friction=[1.4, 0.02, 0.001],
         condim=4,
+        group=1,
     )
     bottle.add_geom(
-        name="m0_bottle_shoulder",
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        pos=[0.0, 0.0, 0.084],
-        size=[0.029, 0.020, 0.0],
-        mass=0.015,
-        rgba=[0.64, 0.84, 0.90, 0.78],
+        name="bottle_shoulder",
+        type=mujoco.mjtGeom.mjGEOM_ELLIPSOID,
+        pos=[0.0, 0.0, 0.0535],
+        size=[0.035, 0.035, 0.026],
+        mass=0.05,
+        rgba=[0.12, 0.52, 0.82, 1.0],
         friction=[1.4, 0.02, 0.001],
         condim=4,
+        group=1,
     )
     bottle.add_geom(
-        name="m0_bottle_neck",
+        name="bottle_neck",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        pos=[0.0, 0.0, 0.118],
-        size=[0.015, 0.019, 0.0],
-        mass=0.010,
-        rgba=[0.68, 0.86, 0.91, 0.85],
+        pos=[0.0, 0.0, 0.0855],
+        size=[0.018, 0.020, 0.0],
+        mass=0.02,
+        rgba=[0.12, 0.52, 0.82, 1.0],
         friction=[1.4, 0.02, 0.001],
         condim=4,
+        group=1,
     )
     bottle.add_geom(
-        name="m0_bottle_cap",
+        name="bottle_cap",
         type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        pos=[0.0, 0.0, 0.145],
-        size=[0.018, 0.008, 0.0],
-        mass=0.005,
-        rgba=[0.94, 0.95, 0.91, 1.0],
+        pos=[0.0, 0.0, 0.1185],
+        size=[0.020, 0.0085, 0.0],
+        mass=0.01,
+        rgba=[0.10, 0.16, 0.21, 1.0],
         friction=[1.4, 0.02, 0.001],
         condim=4,
+        group=1,
     )
 
     effort = {}
@@ -303,19 +347,29 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
     model.opt.timestep = DT
     model.vis.global_.offwidth = 1280
     model.vis.global_.offheight = 720
-    model.vis.headlight.ambient[:] = [0.32, 0.32, 0.32]
-    model.vis.headlight.diffuse[:] = [0.58, 0.58, 0.58]
-    model.vis.headlight.specular[:] = [0.08, 0.08, 0.08]
-    model.vis.rgba.haze[:] = [0.91, 0.93, 0.95, 1.0]
-    model.vis.map.fogstart = 3.0
-    model.vis.map.fogend = 8.0
+    model.vis.headlight.ambient[:] = [0.26, 0.26, 0.26]
+    model.vis.headlight.diffuse[:] = [0.45, 0.45, 0.45]
+    model.vis.headlight.specular[:] = [0.45, 0.45, 0.45]
+    model.vis.rgba.haze[:] = [0.15, 0.25, 0.35, 1.0]
+    model.vis.global_.azimuth = 200.0
+    model.vis.global_.elevation = -20.0
+    fallback_hand_geom_names = []
+    for geom_id in range(model.ngeom):
+        if model.geom_group[geom_id] != 1:
+            continue
+        body_id = int(model.geom_bodyid[geom_id])
+        ancestors = body_ancestors(model, body_id)
+        if any(body_name.startswith(("R_", "L_")) for body_name in ancestors):
+            if np.allclose(model.geom_rgba[geom_id], [0.5, 0.5, 0.5, 1.0]):
+                model.geom_rgba[geom_id] = [0.78, 0.80, 0.83, 1.0]
+                fallback_hand_geom_names.append(name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id))
     for geom_name in (
         "experiment_source_table",
         "experiment_target_table",
-        "m0_bottle_body",
-        "m0_bottle_shoulder",
-        "m0_bottle_neck",
-        "m0_bottle_cap",
+        "bottle_body",
+        "bottle_shoulder",
+        "bottle_neck",
+        "bottle_cap",
     ):
         geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
         model.geom_solref[geom_id] = [0.008, 1.0]
@@ -335,6 +389,12 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         "target_table_geom_id": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "experiment_target_table"),
         "servo_counts": servo_counts,
         "effort_count": len(effort),
+        "self_chain_exclusion_count": len(self_chain_exclusions),
+        "self_chain_exclusions": self_chain_exclusions,
+        "vendor_visual_color_count": len(source_xml.findall(".//visual/material/color")),
+        "vendor_visual_color_values": vendor_visual_color_values,
+        "vendor_visual_texture_count": len(source_xml.findall(".//visual/material/texture")),
+        "fallback_hand_geom_names": fallback_hand_geom_names,
     }
 
 
@@ -497,7 +557,7 @@ def main() -> int:
             "place_palm_position_m": PLACE_PALM_POS.tolist(),
             "lift_palm_z_m": LIFT_PALM_Z,
             "finger_close_fraction": FINGER_CLOSE_FRACTION,
-            "thumb_roll_rad": 0.25,
+            "thumb_roll_rad": 0.65,
             "thumb_abduction_rad": -0.30,
             "thumb_mcp_rad": 0.82,
         },
@@ -519,8 +579,8 @@ def main() -> int:
     initial_bottle_qpos = q0[-7:].copy()
     target_rotation = PALM_TARGET_ROTATION.copy()
     approach_positions = [
-        PREGRASP_PALM_POS.copy(),
         APPROACH_PALM_POS.copy(),
+        PREGRASP_PALM_POS.copy(),
         GRASP_PALM_POS.copy(),
     ]
     pregrasp_route = ik_plan(
@@ -531,6 +591,14 @@ def main() -> int:
         approach_positions,
         target_rotation,
     )
+    pregrasp_route[-1] = ik_plan(
+        model,
+        q0,
+        site_id,
+        arm_ids,
+        [GRASP_PALM_POS],
+        target_rotation,
+    )[0]
     lift_seed = q0.copy()
     lift_seed[arm_qpos] = pregrasp_route[-1]
     lift_target = ik_plan(
@@ -593,12 +661,9 @@ def main() -> int:
             target = 1.30
         close_target[i] = np.clip(target, model.jnt_range[joint_id, 0], model.jnt_range[joint_id, 1])
     close_target = open_target + FINGER_CLOSE_FRACTION * (close_target - open_target)
-    close_target[list(FINGERS).index("R_thumb_roll_joint")] = 0.25
+    close_target[list(FINGERS).index("R_thumb_roll_joint")] = 0.65
     close_target[list(FINGERS).index("R_thumb_abad_joint")] = -0.30
-    thumb_target = open_target.copy()
-    for i, joint_name in enumerate(FINGERS):
-        if joint_name.startswith("R_thumb_"):
-            thumb_target[i] = close_target[i]
+    preshape_target = open_target + FINGER_PRESHAPE_FRACTION * (close_target - open_target)
     hold_targets = data.ctrl.copy()
     for aid in range(model.nu):
         joint_id = int(model.actuator_trnid[aid, 0])
@@ -611,7 +676,7 @@ def main() -> int:
     bottle_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "bottle")
     bottle_geoms = {
         mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
-        for geom_name in ("m0_bottle_body", "m0_bottle_shoulder", "m0_bottle_neck", "m0_bottle_cap")
+        for geom_name in ("bottle_body", "bottle_shoulder", "bottle_neck", "bottle_cap")
     }
     source_table_geom = int(details["source_table_geom_id"])
     target_table_geom = int(details["target_table_geom_id"])
@@ -619,6 +684,22 @@ def main() -> int:
     bottle_qadr = int(model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "bottle_free")])
     bottle_dadr = int(model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "bottle_free")])
     bottle_mass = float(model.body_mass[bottle_body])
+
+    def right_table_contact_bodies() -> set[str]:
+        bodies: set[str] = set()
+        for ci in range(data.ncon):
+            contact = data.contact[ci]
+            g1, g2 = int(contact.geom1), int(contact.geom2)
+            if g1 in table_geoms:
+                other = g2
+            elif g2 in table_geoms:
+                other = g1
+            else:
+                continue
+            ancestors = body_ancestors(model, int(model.geom_bodyid[other]))
+            if any(n.startswith(("R_", "right_")) for n in ancestors):
+                bodies.add(ancestors[0])
+        return bodies
 
     def apply_targets(arm_target: np.ndarray, finger_target: np.ndarray) -> None:
         data.ctrl[:] = hold_targets
@@ -649,8 +730,7 @@ def main() -> int:
         return hand_bodies, left_bodies, table, target_table
 
     initial_right_contacts, initial_left_contacts, initial_table_contact, initial_target_table_contact = contact_state()
-    pregrasp_palm_position = data.site_xpos[site_id].copy()
-    pregrasp_palm_rotation = data.site_xmat[site_id].reshape(3, 3).copy()
+    initial_hand_table_contacts = right_table_contact_bodies()
     if initial_right_contacts or initial_left_contacts:
         raise RuntimeError(
             "Initial robot staging pose contacts the bottle: "
@@ -659,6 +739,8 @@ def main() -> int:
 
     phases: list[dict[str, object]] = []
     contact_events: list[dict[str, object]] = []
+    preclosure_contact_bodies: set[str] = set()
+    all_right_table_contact_bodies: set[str] = set(initial_hand_table_contacts)
     previous_contact: tuple[tuple[str, ...], bool, bool] | None = None
     qpos_assignments_during_rollout = 0
     step_count = 0
@@ -679,8 +761,8 @@ def main() -> int:
 
     camera = mujoco.MjvCamera()
     mujoco.mjv_defaultCamera(camera)
-    camera.lookat[:] = [0.28, 0.02, 0.91]
-    camera.distance = 2.35
+    camera.lookat[:] = [0.30, 0.10, 1.00]
+    camera.distance = 2.65
     camera.azimuth = 135
     camera.elevation = -25
     closeup_camera = mujoco.MjvCamera()
@@ -689,17 +771,32 @@ def main() -> int:
     closeup_camera.distance = 0.82
     closeup_camera.azimuth = 135
     closeup_camera.elevation = -12
+    front_camera = mujoco.MjvCamera()
+    mujoco.mjv_defaultCamera(front_camera)
+    front_camera.lookat[:] = [0.30, 0.20, 1.00]
+    front_camera.distance = 2.20
+    front_camera.azimuth = 90
+    front_camera.elevation = -12
+    side_camera = mujoco.MjvCamera()
+    mujoco.mjv_defaultCamera(side_camera)
+    side_camera.lookat[:] = [0.30, 0.20, 1.00]
+    side_camera.distance = 2.20
+    side_camera.azimuth = 180
+    side_camera.elevation = -12
+    render_option = mujoco.MjvOption()
+    mujoco.mjv_defaultOption(render_option)
+    render_option.geomgroup[0] = 0
+    render_option.sitegroup[:] = 0
     renderer = mujoco.Renderer(model, height=720, width=1280)
     video_writer = imageio.get_writer(OUT / "m0_x2_grasp.mp4", fps=25, codec="libx264", quality=8)
     trace_file = (OUT / "physics_contact_trace.jsonl").open("w", encoding="utf-8")
 
     def save_snapshot(filename: str, snapshot_camera: mujoco.MjvCamera | None = None) -> None:
-        renderer.update_scene(data, camera=snapshot_camera or camera)
+        renderer.update_scene(data, camera=snapshot_camera or camera, scene_option=render_option)
         imageio.imwrite(OUT / filename, renderer.render())
 
     save_snapshot("before_overview.png")
-    save_snapshot("pregrasp.png")
-    save_snapshot("pregrasp_closeup.png", closeup_camera)
+    save_snapshot("approach_start.png")
 
     def run_phase(label: str, steps: int, arm_target: np.ndarray, finger_target: np.ndarray) -> None:
         nonlocal step_count, max_bottle_translation_step, max_bottle_rotation_step, max_penetration
@@ -707,6 +804,7 @@ def main() -> int:
         nonlocal first_target_table_contact, previous_contact
         phase_start = float(data.time)
         phase_robot_bodies: set[str] = set()
+        phase_table_bodies: set[str] = set()
         arm_start = data.ctrl[arm_ctrl].copy()
         fingers_start = data.ctrl[finger_ctrl].copy()
         for k in range(steps):
@@ -725,6 +823,12 @@ def main() -> int:
             max_bottle_rotation_step = max(max_bottle_rotation_step, 2.0 * math.acos(dot))
             maximum_bottle_height = max(maximum_bottle_height, float(new_position[2]))
             right_contacts, left_contacts, table_contact, target_table_contact = contact_state()
+            step_table_bodies = right_table_contact_bodies()
+            phase_table_bodies.update(step_table_bodies)
+            all_right_table_contact_bodies.update(step_table_bodies)
+            if label in ("approach_preshape", "finger_close"):
+                preclosure_contact_bodies.update(right_contacts)
+                preclosure_contact_bodies.update(left_contacts)
             contact_pairs = []
             step_penetration = 0.0
             for ci in range(data.ncon):
@@ -790,6 +894,7 @@ def main() -> int:
                         "bottle_angular_velocity_rad_s": data.qvel[bottle_dadr + 3 : bottle_dadr + 6].tolist(),
                         "right_contact_bodies": sorted(right_contacts),
                         "opposite_hand_contact_bodies": sorted(left_contacts),
+                        "right_hand_table_contact_bodies": sorted(step_table_bodies),
                         "table_contact": table_contact,
                         "target_table_contact": target_table_contact,
                         "bottle_contact_pairs": contact_pairs,
@@ -801,7 +906,7 @@ def main() -> int:
                 + "\n"
             )
             if step_count % 20 == 0:
-                renderer.update_scene(data, camera=camera)
+                renderer.update_scene(data, camera=camera, scene_option=render_option)
                 video_writer.append_data(renderer.render())
             for ci in range(data.ncon):
                 contact = data.contact[ci]
@@ -811,6 +916,7 @@ def main() -> int:
         arm_actual = data.qpos[arm_qpos].copy()
         arm_error = arm_actual - arm_target
         right_now, left_now, table_now, target_table_now = contact_state()
+        table_bodies_now = right_table_contact_bodies()
         phases.append(
             {
                 "name": label,
@@ -823,6 +929,7 @@ def main() -> int:
                 "right_hand_contact_geoms": sorted(right_now),
                 "left_hand_contact_geoms": sorted(left_now),
                 "robot_contact_bodies": sorted(phase_robot_bodies),
+                "right_hand_table_contact_bodies": sorted(phase_table_bodies),
                 "arm_joint_target_rad": arm_target.tolist(),
                 "arm_joint_actual_rad": arm_actual.tolist(),
                 "arm_tracking_error_l2_rad": float(np.linalg.norm(arm_error)),
@@ -831,6 +938,7 @@ def main() -> int:
                 "right_finger_actual_rad": data.qpos[finger_qpos].tolist(),
                 "table_contact": table_now,
                 "target_table_contact": target_table_now,
+                "right_hand_table_contact": bool(table_bodies_now),
                 "palm_frame_position_m": data.site_xpos[site_id].tolist(),
                 "palm_frame_rotation_matrix": data.site_xmat[site_id].reshape(3, 3).tolist(),
             }
@@ -838,17 +946,27 @@ def main() -> int:
         print(
             f"PHASE {label} t={data.time:.6f} bottle={data.qpos[bottle_qadr:bottle_qadr+3].round(5).tolist()} "
             f"palm={data.site_xpos[site_id].round(5).tolist()} ncon={data.ncon} right={sorted(right_now)} "
-            f"table={table_now} target_table={target_table_now}"
+            f"table={table_now} target_table={target_table_now} hand_table={sorted(table_bodies_now)}"
         )
 
     # Only initialization and offline IK assign generalized position state.
     # From this point through settling, bottle qpos is advanced only by mj_step.
-    for waypoint, arm_target in enumerate(pregrasp_route[1:], start=1):
-        run_phase(f"approach_{waypoint}", 500, arm_target, open_target)
-    save_snapshot("open_approach.png")
-    save_snapshot("open_approach_closeup.png", closeup_camera)
-    run_phase("thumb_pregrasp", 500, pregrasp_route[-1], thumb_target)
-    run_phase("finger_wrap", 1100, pregrasp_route[-1], close_target)
+    run_phase("approach_preshape", 500, pregrasp_route[1], preshape_target)
+    pregrasp_right_contacts, pregrasp_left_contacts, _, _ = contact_state()
+    pregrasp_hand_table_contacts = right_table_contact_bodies()
+    pregrasp_palm_position = data.site_xpos[site_id].copy()
+    pregrasp_palm_rotation = data.site_xmat[site_id].reshape(3, 3).copy()
+    pregrasp_arm_pose = data.qpos[arm_qpos].copy()
+    pregrasp_bottle_position = data.qpos[bottle_qadr : bottle_qadr + 3].copy()
+    pregrasp_bottle_translation = float(np.linalg.norm(pregrasp_bottle_position - START))
+    save_snapshot("pregrasp.png")
+    save_snapshot("pregrasp_closeup.png", closeup_camera)
+    save_snapshot("front_view.png", front_camera)
+    save_snapshot("side_view.png", side_camera)
+    run_phase("finger_close", 500, pregrasp_route[1], close_target)
+    run_phase("closed_hand_approach", 500, pregrasp_route[2], close_target)
+    save_snapshot("closed_hand_approach.png")
+    save_snapshot("closed_hand_approach_closeup.png", closeup_camera)
     run_phase("grasp_hold", 500, pregrasp_route[-1], close_target)
     grip_contacts = contact_state()[0]
     print(f"GRASP_GATE right_hand_geoms={sorted(grip_contacts)}")
@@ -938,21 +1056,30 @@ def main() -> int:
         "actual_spread_axis_world": pregrasp_rotation[:, 1].tolist(),
         "actual_palm_normal_world": pregrasp_rotation[:, 2].tolist(),
         "actual_finger_axis_world": pregrasp_rotation[:, 2].tolist(),
-        "opposing_hand_contact_bodies": sorted(initial_left_contacts),
-        "active_hand_contact_bodies_before_closure": sorted(initial_right_contacts),
+        "opposing_hand_contact_bodies": sorted(pregrasp_left_contacts),
+        "active_hand_contact_bodies_before_closure": sorted(pregrasp_right_contacts),
+        "right_hand_table_contact_bodies": sorted(pregrasp_hand_table_contacts),
+        "bottle_translation_before_closure_m": pregrasp_bottle_translation,
+        "preclosure_bottle_contact_bodies": sorted(preclosure_contact_bodies),
+        "finger_preshape_fraction": FINGER_PRESHAPE_FRACTION,
         "arm_joint_order": ARM,
-        "arm_joint_actual_rad": initial_robot_arm_pose.tolist(),
-        "elbow_angle_rad": float(initial_robot_arm_pose[ARM.index("right_elbow_joint")]),
+        "arm_joint_actual_rad": pregrasp_arm_pose.tolist(),
+        "elbow_angle_rad": float(pregrasp_arm_pose[ARM.index("right_elbow_joint")]),
     }
     pregrasp_valid = bool(
         pregrasp_diagnostics["position_error_m"] <= 0.03
         and pregrasp_rotation_error <= 0.10
         and not pregrasp_diagnostics["active_hand_contact_bodies_before_closure"]
         and not pregrasp_diagnostics["opposing_hand_contact_bodies"]
+        and not pregrasp_diagnostics["right_hand_table_contact_bodies"]
+        and not preclosure_contact_bodies
+        and pregrasp_bottle_translation <= 0.002
     )
     (OUT / "frame_diagnostics.json").write_text(json.dumps(pregrasp_diagnostics, indent=2) + "\n")
     gates = {
         "plausible_collision_free_pregrasp": pregrasp_valid,
+        "no_open_hand_approach_push": not preclosure_contact_bodies and pregrasp_bottle_translation <= 0.002,
+        "right_hand_table_contact_free_at_pregrasp": not pregrasp_hand_table_contacts,
         "thumb_plus_at_least_two_other_digit_families_at_grasp": contact_finger_families["thumb"] and active_families >= 3,
         "at_least_three_digit_families_contact_during_lift_and_transfer": carry_valid,
         "opposite_hand_never_assists": first_left_contact is None and not final_left_contacts,
@@ -966,6 +1093,9 @@ def main() -> int:
     passed = all(
         [
             pregrasp_valid,
+            not preclosure_contact_bodies,
+            pregrasp_bottle_translation <= 0.002,
+            not pregrasp_hand_table_contacts,
             len(grip_contacts) >= 2,
             contact_finger_families["thumb"],
             active_families >= 3,
@@ -998,12 +1128,19 @@ def main() -> int:
             "neq": model.neq,
             "servo_counts": details["servo_counts"],
             "effort_limited_joint_count": details["effort_count"],
+            "self_collision_policy": {
+                "policy": "exclude_robot_ancestor_descendant_pairs_only",
+                "excluded_pair_count": details["self_chain_exclusion_count"],
+                "inter_branch_self_collision_enabled": True,
+                "robot_environment_contact_enabled": True,
+                "robot_bottle_contact_enabled": True,
+            },
             "bottle_mass_kg": bottle_mass,
             "bottle_dimensions_m": {
-                "body_diameter": 0.065,
-                "overall_height": 0.231,
-                "total_mass_kg": 0.500,
-                "source": "same collision-geometry specification as G1 M0",
+                "body_diameter": 0.070,
+                "overall_height": 0.2445,
+                "total_mass_kg": 0.570,
+                "source": "current Issue #46 X2 bottle; not the smaller G1 PR #45 bottle",
             },
             "table_top_z_m": TABLE_TOP_Z,
             "table_geometry": {
@@ -1015,16 +1152,33 @@ def main() -> int:
             },
             "control_model": "URDF joint-effort-limited position servos; right arm waypoints from bounded least-squares palm-site IK",
             "runtime_gl": os.environ.get("MUJOCO_GL", "default"),
+            "visual_provenance": {
+                "robot_body_materials": "official pinned X2 URDF visual material colors and mesh assets",
+                "vendor_visual_color_count": details["vendor_visual_color_count"],
+                "vendor_visual_color_values_rgba": details["vendor_visual_color_values"],
+                "vendor_visual_texture_count": details["vendor_visual_texture_count"],
+                "collision_visualization": "collision geoms in group 0 hidden; vendor visual meshes in group 1 retained",
+                "hand_color_fallback": "light neutral only for hand visual meshes with no authored URDF color",
+                "environment": "vendor sky/haze retained; vendor ground checker had identical RGB colors and was replaced with a restrained neutral checker; headlight diffuse/specular reduced to control glare",
+                "floor_checker_rgb1": [0.50, 0.53, 0.55],
+                "floor_checker_rgb2": [0.43, 0.46, 0.48],
+                "headlight_ambient_diffuse_specular": [0.26, 0.45, 0.45],
+            },
+            "canonical_scene_provenance": {
+                "table": "G1 PR #45 M0 source/target table geometry and placement",
+                "bottle": "current X2 Issue #46 70 mm x 244.5 mm, 0.57 kg bottle",
+            },
         }
     )
     report = {
         "status": "PASS" if passed else "FAIL",
         "diagnosis": {
-            "station_root_cause": "The previous fixed-base station kept the X2 torso facing world +X while the canonical source-to-target axis ran along world -Y, so the active arm reached laterally across its body. The scratch station now puts the source table on the robot's forward -Y axis and aligns the torso with that axis.",
+            "station_root_cause": "The fixed-base scratch station places the X2 torso at [0.38, 0.32, 0.68] facing world -Y, perpendicular to the canonical table edge; the canonical bottle at x=0.30 is in the right arm workspace. The torso base frame is fixed and walking is not used.",
+            "collision_conversion_root_cause": "The URDF importer fused fixed links into the world and enabled overlapping parent/descendant collision meshes as independent constraints. The adaptation preserves the fixed body hierarchy and excludes only robot ancestor-descendant pairs; inter-branch, robot-table, and robot-bottle collisions remain enabled.",
             "wrist_palm_root_cause": "The official URDF R_palm_joint transform is present and correctly composed by the converter. The previous task frame treated the wrist-roll origin as the palm frame and added an undocumented 180 degree yaw, so the requested hand normal and finger-extension directions were wrong. The corrected task frame is attached at the URDF palm transform and maps its documented local axes explicitly.",
             "frame_verification": "The compiled right_palm_frame site is attached to right_wrist_roll_link; local position error against the URDF R_palm_joint origin is 0 m and quaternion absolute-dot agreement is 1.0.",
-            "corrected_layer": "Scratch fixed-base scene/station and task-level end-effector frame convention. No URDF, vendor MJCF, joint conversion, or shared controller code was changed.",
-            "canonical_assets": "The scratch scene uses MuJoCo primitives matching the canonical G1 M0 collision specification in simulation/mujoco/m0_pick_place.py: table top at 0.80 m, source half-extents 0.20 by 0.12 m, target half-extents 0.20 by 0.10 m, and a free 65 mm by 231 mm, 0.50 kg bottle. No shared standalone table or bottle asset was found in the inspected M0 scene source.",
+            "corrected_layer": "Scratch fixed-base scene/station, fixed-root URDF conversion collision policy, vendor visual settings, and task-level palm frame. No vendor asset, G1 M0 implementation, or shared architecture code was changed.",
+            "canonical_assets": "The scratch scene matches the G1 M0 table placement and extents from simulation/mujoco/m0_pick_place.py, while retaining the current X2 bottle at 70 mm diameter, 244.5 mm height, and 0.57 kg. The values are recorded as one benchmark contract here; the G1 production path remains untouched.",
         },
         "identity": identity,
         "scene": {
@@ -1045,6 +1199,8 @@ def main() -> int:
             "grasp_palm_target_rotation_matrix": PALM_TARGET_ROTATION.tolist(),
             "robot_initialization_arm_qpos": initial_robot_arm_pose.tolist(),
             "initial_robot_bottle_contacts": sorted(initial_right_contacts | initial_left_contacts),
+            "initial_right_hand_table_contact_bodies": sorted(initial_hand_table_contacts),
+            "right_hand_table_contact_bodies_any_time": sorted(all_right_table_contact_bodies),
             "initial_table_contact": initial_table_contact,
             "initial_target_table_contact": initial_target_table_contact,
             "model_free_bottle_joint": True,
@@ -1082,8 +1238,11 @@ def main() -> int:
             "after_overview_png": str(OUT / "after_overview.png"),
             "pregrasp_png": str(OUT / "pregrasp.png"),
             "pregrasp_closeup_png": str(OUT / "pregrasp_closeup.png"),
-            "open_approach_png": str(OUT / "open_approach.png"),
-            "open_approach_closeup_png": str(OUT / "open_approach_closeup.png"),
+            "front_view_png": str(OUT / "front_view.png"),
+            "side_view_png": str(OUT / "side_view.png"),
+            "closed_hand_approach_png": str(OUT / "closed_hand_approach.png"),
+            "closed_hand_approach_closeup_png": str(OUT / "closed_hand_approach_closeup.png"),
+            "visual_material_closeup_png": str(OUT / "pregrasp_closeup.png"),
             "grasp_png": str(OUT / "grasp.png"),
             "grasp_closeup_png": str(OUT / "grasp_closeup.png"),
             "lift_png": str(OUT / "lift.png"),
@@ -1120,7 +1279,7 @@ def main() -> int:
     print(json.dumps(report, indent=2))
 
     trace_file.close()
-    renderer.update_scene(data, camera=camera)
+    renderer.update_scene(data, camera=camera, scene_option=render_option)
     import imageio.v3 as iio
 
     iio.imwrite(OUT / "final.png", renderer.render())
