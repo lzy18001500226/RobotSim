@@ -76,16 +76,52 @@ TARGET_TABLE_TOP_Z = SOURCE_TABLE_TOP_Z
 TARGET_MARGIN_M = 0.03
 OBJECT_BODY_NAME = "green_box"
 OBJECT_JOINT_NAME = "bottle_free"
-OBJECT_MAIN_GEOM = "bottle_collision"
-OBJECT_COLLISION_GEOMS = (OBJECT_MAIN_GEOM,)
+OBJECT_MAIN_GEOM = "bottle_body"
+OBJECT_COLLISION_GEOMS = (
+    OBJECT_MAIN_GEOM,
+    "bottle_shoulder",
+    "bottle_neck",
+    "bottle_cap",
+)
+OBJECT_TOTAL_HEIGHT_M = 0.2445
 OBJECT_GEOM_SPECS = (
     {
         "name": OBJECT_MAIN_GEOM,
         "type": "cylinder",
-        "pos": "0 0 0",
-        "size": "0.0375 0.12",
-        "mass": "0.57",
+        "pos": "0 0 -0.04",
+        "size": "0.035 0.0775 0",
+        "mass": "0.49",
         "rgba": "0.12 0.52 0.82 1",
+        "friction": "1.4 0.02 0.001",
+        "condim": "4",
+    },
+    {
+        "name": "bottle_shoulder",
+        "type": "ellipsoid",
+        "pos": "0 0 0.0535",
+        "size": "0.035 0.035 0.026",
+        "mass": "0.05",
+        "rgba": "0.12 0.52 0.82 1",
+        "friction": "1.4 0.02 0.001",
+        "condim": "4",
+    },
+    {
+        "name": "bottle_neck",
+        "type": "cylinder",
+        "pos": "0 0 0.0855",
+        "size": "0.018 0.020 0",
+        "mass": "0.02",
+        "rgba": "0.12 0.52 0.82 1",
+        "friction": "1.4 0.02 0.001",
+        "condim": "4",
+    },
+    {
+        "name": "bottle_cap",
+        "type": "cylinder",
+        "pos": "0 0 0.1185",
+        "size": "0.020 0.0085 0",
+        "mass": "0.01",
+        "rgba": "0.10 0.16 0.21 1",
         "friction": "1.4 0.02 0.001",
         "condim": "4",
     },
@@ -661,6 +697,8 @@ def _projected_geom_half_extents_xy(
         return np.abs(rotation[:2, :]) @ size[:3]
     if shape == "sphere":
         return np.full(2, float(size[0]))
+    if shape == "ellipsoid":
+        return np.sqrt((rotation[:2, :3] ** 2) @ (size[:3] ** 2))
     if shape in ("cylinder", "capsule"):
         axis = rotation[:, 2]
         radial_size = float(size[0])
@@ -1392,6 +1430,7 @@ def _geometry(mujoco, sim) -> dict:
         int(mujoco.mjtGeom.mjGEOM_SPHERE): "sphere",
         int(mujoco.mjtGeom.mjGEOM_CAPSULE): "capsule",
         int(mujoco.mjtGeom.mjGEOM_CYLINDER): "cylinder",
+        int(mujoco.mjtGeom.mjGEOM_ELLIPSOID): "ellipsoid",
     }
     object_geoms = {
         _name_id(mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, name): name
@@ -1907,12 +1946,25 @@ def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
                 "support_geom_count": 5,
             },
             "bottle": {
-                "source": "X2 grasp script bottle_collision definition",
-                "geometry": "single cylinder",
-                "diameter_m": 0.075,
-                "height_m": 0.24,
+                "source": "Issue #46 X2 visual demo: scripts/research/issue46_x2_grasp.py",
+                "source_harness_commit": "b62d63174950cef9e1dd8a24da22348c5077b096",
+                "source_script_sha256": "1271f0c357d702a850d72849988fa2e6d2196d1de853c6b58dd7a193974750f1",
+                "geometry": "cylindrical body, ellipsoid shoulder, cylindrical neck, and cylindrical cap",
+                "diameter_m": 0.070,
+                "height_m": OBJECT_TOTAL_HEIGHT_M,
                 "mass_kg": 0.57,
-                "rgba": [0.12, 0.52, 0.82, 1.0],
+                "geom_names": list(OBJECT_COLLISION_GEOMS),
+                "geom_parameters": [
+                    {
+                        "name": spec["name"],
+                        "type": spec["type"],
+                        "position_m": [float(value) for value in spec["pos"].split()],
+                        "size": [float(value) for value in spec["size"].split()],
+                        "mass_kg": float(spec["mass"]),
+                        "rgba": [float(value) for value in spec["rgba"].split()],
+                    }
+                    for spec in OBJECT_GEOM_SPECS
+                ],
                 "friction": [1.4, 0.02, 0.001],
                 "condim": 4,
                 "free_joint": OBJECT_JOINT_NAME,
@@ -2504,7 +2556,7 @@ def _run_paired_dex3_episode(args: argparse.Namespace) -> dict:
                 "bottle_collision_geoms": list(OBJECT_COLLISION_GEOMS),
                 "bottle_total_mass_kg": sum(float(spec["mass"]) for spec in OBJECT_GEOM_SPECS),
                 "bottle_body_diameter_m": 2.0 * float(OBJECT_GEOM_SPECS[0]["size"].split()[0]),
-                "bottle_total_height_m": 0.231,
+                "bottle_total_height_m": OBJECT_TOTAL_HEIGHT_M,
                 "runtime_equality_count": geometry["runtime_equality_count"],
                 "object_qpos_address": geometry["object_qpos_adr"],
                 "object_qpos_written_after_reset": False,

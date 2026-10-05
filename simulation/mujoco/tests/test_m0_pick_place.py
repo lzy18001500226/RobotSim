@@ -17,6 +17,7 @@ from simulation.mujoco.m0_pick_place import (
     CANONICAL_TABLE_XY,
     OBJECT_COLLISION_GEOMS,
     OBJECT_GEOM_SPECS,
+    OBJECT_TOTAL_HEIGHT_M,
     RIGHT_HAND_CLOSED_POS,
     RIGHT_HAND_JOINT_NAMES,
     RIGHT_HAND_OPEN_POS,
@@ -116,20 +117,25 @@ class SceneTests(unittest.TestCase):
         )
         self.assertEqual(
             [geom.attrib["type"] for geom in bottle.findall("geom")],
-            ["cylinder"] * len(OBJECT_GEOM_SPECS),
+            ["cylinder", "ellipsoid", "cylinder", "cylinder"],
         )
-        self.assertEqual(len(OBJECT_GEOM_SPECS), 1)
+        self.assertEqual(len(OBJECT_GEOM_SPECS), 4)
         self.assertAlmostEqual(sum(float(spec["mass"]) for spec in OBJECT_GEOM_SPECS), 0.57)
         bottle_com_z = sum(
             float(spec["mass"]) * float(spec["pos"].split()[2])
             for spec in OBJECT_GEOM_SPECS
         ) / sum(float(spec["mass"]) for spec in OBJECT_GEOM_SPECS)
         self.assertLessEqual(bottle_com_z, 0.01)
-        self.assertAlmostEqual(2 * float(OBJECT_GEOM_SPECS[0]["size"].split()[0]), 0.075)
-        self.assertAlmostEqual(2 * float(OBJECT_GEOM_SPECS[0]["size"].split()[1]), 0.24)
+        self.assertAlmostEqual(2 * float(OBJECT_GEOM_SPECS[0]["size"].split()[0]), 0.070)
+        self.assertAlmostEqual(OBJECT_TOTAL_HEIGHT_M, 0.2445)
+        self.assertEqual(
+            [float(spec["mass"]) for spec in OBJECT_GEOM_SPECS],
+            [0.49, 0.05, 0.02, 0.01],
+        )
         self.assertEqual(OBJECT_GEOM_SPECS[0]["rgba"], "0.12 0.52 0.82 1")
         self.assertEqual(OBJECT_GEOM_SPECS[0]["friction"], "1.4 0.02 0.001")
         self.assertEqual(OBJECT_GEOM_SPECS[0]["condim"], "4")
+        self.assertEqual(OBJECT_GEOM_SPECS[-1]["rgba"], "0.10 0.16 0.21 1")
         self.assertIsNone(root.find("equality"))
         self.assertIsNone(worldbody.find("body[@name='red_cube']"))
         self.assertIsNone(worldbody.find("body[@name='distractor_0']"))
@@ -240,6 +246,18 @@ class FootprintTests(unittest.TestCase):
         )
         np.testing.assert_allclose(upright, [0.075, 0.075])
         np.testing.assert_allclose(horizontal, [0.10, 0.075])
+
+    def test_ellipsoid_projection_tracks_orientation(self):
+        size = np.array([0.035, 0.035, 0.026])
+        np.testing.assert_allclose(
+            _projected_geom_half_extents_xy("ellipsoid", np.eye(3), size),
+            [0.035, 0.035],
+        )
+        rotated = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])
+        np.testing.assert_allclose(
+            _projected_geom_half_extents_xy("ellipsoid", rotated, size),
+            [0.026, 0.035],
+        )
 
     def test_whole_bottle_inside_table_margin_passes(self):
         footprint = check_projected_footprint(
