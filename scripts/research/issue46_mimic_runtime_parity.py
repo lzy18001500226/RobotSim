@@ -363,12 +363,22 @@ def pass_runtime_details(output: Path) -> tuple[Any, Any, Any, Any, Any, Any, An
 def manipulation_setup(scenario: str, pass_pose_reference: dict[str, float]) -> dict[str, Any]:
     model, details = task.build_model()
     data = details["data"]
-    if scenario == "gravity_zero":
+    if scenario in (
+        "gravity_zero",
+        "accepted_hand_state_gravity_zero",
+        "accepted_hand_state_gravity_zero_all_contacts_disabled",
+        "accepted_hand_state_full_targets_forward_each_step_no_contacts_no_gravity",
+        "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts_no_gravity",
+        "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_gravity_zero",
+        "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_contacts_no_gravity",
+    ):
         model.opt.gravity[:] = [0.0, 0.0, 0.0]
     source_joints, relations = source_records()
     refs = spec_refs()
     eq_ids = relation_ids(model)
-    if scenario in ("left_legacy_gain", "pass_profile_left"):
+    if scenario in ("left_legacy_gain", "pass_profile_left", "accepted_hand_state_profile") or scenario.startswith(
+        "accepted_hand_state_full_targets_forward_each_step"
+    ):
         for relation in relations.values():
             driver_name = str(relation["driver_joint"])
             if driver_name.startswith("L_"):
@@ -379,10 +389,24 @@ def manipulation_setup(scenario: str, pass_pose_reference: dict[str, float]) -> 
             raise RuntimeError(f"missing bottle geom {geom_name}")
         model.geom_contype[gid] = 0
         model.geom_conaffinity[gid] = 0
-    if scenario in ("all_contacts_disabled", "gravity_zero_all_contacts_disabled"):
+    if scenario in (
+        "all_contacts_disabled",
+        "gravity_zero_all_contacts_disabled",
+        "accepted_hand_state_all_contacts_disabled",
+        "accepted_hand_state_gravity_zero_all_contacts_disabled",
+        "accepted_hand_state_full_targets_forward_each_step_no_contacts_no_gravity",
+        "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts_no_gravity",
+        "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts",
+        "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_contacts_no_gravity",
+    ):
         model.geom_contype[:] = 0
         model.geom_conaffinity[:] = 0
-    if scenario == "gravity_zero_all_contacts_disabled":
+    if scenario in (
+        "gravity_zero_all_contacts_disabled",
+        "accepted_hand_state_gravity_zero_all_contacts_disabled",
+        "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts_no_gravity",
+        "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_gravity_zero",
+    ):
         model.opt.gravity[:] = [0.0, 0.0, 0.0]
     mujoco.mj_resetData(model, data)
 
@@ -408,15 +432,34 @@ def manipulation_setup(scenario: str, pass_pose_reference: dict[str, float]) -> 
         task.PALM_TARGET_ROTATION,
     )
     data.qpos[arm_qpos] = approach_route[0]
+    accepted_hand_state = scenario.startswith("accepted_hand_state")
     open_target = q0[finger_qpos].copy()
-    for joint_name, value in {
-        "R_thumb_roll_joint": 0.80,
-        "R_thumb_abad_joint": -1.70,
-        "R_index_abad_joint": -0.18,
-        "R_ring_abad_joint": 0.15,
-        "R_pinky_abad_joint": 0.15,
-    }.items():
-        open_target[finger_names.index(joint_name)] = value
+    if accepted_hand_state:
+        for joint_name in all_hand_names:
+            if joint_name not in pass_pose_reference:
+                continue
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            source_axis = np.fromstring(source_joints[joint_name].find("axis").get("xyz", "1 0 0"), sep=" ")
+            sign = 1 if np.dot(source_axis, model.jnt_axis[jid]) >= 0 else -1
+            qadr = int(model.jnt_qposadr[jid])
+            source_target = float(pass_pose_reference[joint_name])
+            data.qpos[qadr] = float(model.qpos0[qadr]) + sign * (source_target - refs.get(joint_name, 0.0))
+        for index, joint_name in enumerate(finger_names):
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            source_axis = np.fromstring(source_joints[joint_name].find("axis").get("xyz", "1 0 0"), sep=" ")
+            sign = 1 if np.dot(source_axis, model.jnt_axis[jid]) >= 0 else -1
+            qadr = int(model.jnt_qposadr[jid])
+            source_target = float(pass_pose_reference[joint_name])
+            open_target[index] = float(model.qpos0[qadr]) + sign * (source_target - refs.get(joint_name, 0.0))
+    else:
+        for joint_name, value in {
+            "R_thumb_roll_joint": 0.80,
+            "R_thumb_abad_joint": -1.70,
+            "R_index_abad_joint": -0.18,
+            "R_ring_abad_joint": 0.15,
+            "R_pinky_abad_joint": 0.15,
+        }.items():
+            open_target[finger_names.index(joint_name)] = value
     data.qpos[finger_qpos] = open_target
     for relation in details["mimic_relations"]:
         driver_q = float(data.qpos[relation["driver_qpos_address"]])
@@ -464,7 +507,7 @@ def manipulation_setup(scenario: str, pass_pose_reference: dict[str, float]) -> 
     data.ctrl[:] = hold_targets
     data.ctrl[arm_ctrl] = approach_route[0]
     data.ctrl[finger_ctrl] = open_target
-    if scenario in ("left_target_only", "left_seed_target", "pass_profile_left"):
+    if scenario in ("left_target_only", "left_seed_target", "pass_profile_left") or accepted_hand_state:
         for joint_name in left_hand_names:
             aid = actuator_map.get(joint_name)
             if aid is None or joint_name not in pass_pose_reference:
@@ -473,6 +516,19 @@ def manipulation_setup(scenario: str, pass_pose_reference: dict[str, float]) -> 
             sign = 1 if np.dot(np.fromstring(source_joints[joint_name].find("axis").get("xyz", "1 0 0"), sep=" "), model.jnt_axis[jid]) >= 0 else -1
             qadr = int(model.jnt_qposadr[jid])
             target = float(model.qpos0[qadr]) + sign * (float(pass_pose_reference[joint_name]) - refs.get(joint_name, 0.0))
+            data.ctrl[aid] = target
+            hold_targets[aid] = target
+    if scenario.startswith("accepted_hand_state_full_targets_forward_each_step"):
+        for joint_name in all_hand_names:
+            aid = actuator_map.get(joint_name)
+            if aid is None or joint_name not in pass_pose_reference:
+                continue
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            source_axis = np.fromstring(source_joints[joint_name].find("axis").get("xyz", "1 0 0"), sep=" ")
+            sign = 1 if np.dot(source_axis, model.jnt_axis[jid]) >= 0 else -1
+            qadr = int(model.jnt_qposadr[jid])
+            source_target = float(pass_pose_reference[joint_name])
+            target = float(model.qpos0[qadr]) + sign * (source_target - refs.get(joint_name, 0.0))
             data.ctrl[aid] = target
             hold_targets[aid] = target
     capture("C_after_controller_target_initialization")
@@ -484,7 +540,17 @@ def manipulation_setup(scenario: str, pass_pose_reference: dict[str, float]) -> 
         "approach_route": approach_route, "open_target": open_target, "preshape_target": preshape_target,
         "hold_targets": hold_targets,
         "bottle_collision_disabled": True,
-        "all_geom_contacts_disabled": scenario in ("all_contacts_disabled", "gravity_zero_all_contacts_disabled"),
+        "open_fingers_during_approach": "open_during_approach" in scenario,
+        "freeze_arm_during_diagnostic": "no_arm_motion" in scenario,
+        "all_geom_contacts_disabled": scenario in (
+            "all_contacts_disabled",
+            "gravity_zero_all_contacts_disabled",
+            "accepted_hand_state_all_contacts_disabled",
+            "accepted_hand_state_gravity_zero_all_contacts_disabled",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts_no_gravity",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_contacts_no_gravity",
+        ),
         "init_snapshots": init_snapshots,
     }
 
@@ -495,10 +561,17 @@ def manipulate_step_control(state: dict[str, Any], index: int, total: int) -> No
     arm_start = np.asarray(state["approach_route"][0], dtype=float)
     arm_target = np.asarray(state["approach_route"][1], dtype=float)
     open_target = np.asarray(state["open_target"], dtype=float)
-    finger_target = np.asarray(state["preshape_target"], dtype=float)
+    finger_target = (
+        open_target
+        if state.get("open_fingers_during_approach")
+        else np.asarray(state["preshape_target"], dtype=float)
+    )
     alpha = (index + 1) / total
     data.ctrl[:] = state["hold_targets"]
-    data.ctrl[state["arm_ctrl"]] = arm_start * (1.0 - alpha) + arm_target * alpha
+    if state.get("freeze_arm_during_diagnostic"):
+        data.ctrl[state["arm_ctrl"]] = arm_start
+    else:
+        data.ctrl[state["arm_ctrl"]] = arm_start * (1.0 - alpha) + arm_target * alpha
     data.ctrl[state["finger_ctrl"]] = open_target * (1.0 - alpha) + finger_target * alpha
 
 
@@ -620,7 +693,11 @@ def execute_scenario(state: dict[str, Any], stage_file, trace_file, pass_step: b
         "bottle_contact_observed": first_bottle_contact,
         "active_rollout_follower_qpos_writes": 0,
         "first_step": first_step_summary,
-        "pass_gate": max_error <= TOLERANCE and max_violation_count == 0 and not any_nan and not first_bottle_contact,
+        "pass_gate": max_error <= TOLERANCE
+        and max_violation_count == 0
+        and not any_nan
+        and not first_bottle_contact
+        and driver_motion_opposed_to_target_count == 0,
     }
 
 
@@ -749,7 +826,31 @@ def run() -> int:
             "left_legacy_gain",
             "pass_profile_left",
             "manipulation_forward_before_step",
+            "accepted_hand_state",
+            "accepted_hand_state_profile",
+            "accepted_hand_state_forward_each_step",
+            "accepted_hand_state_full_targets_forward_each_step",
+            "accepted_hand_state_full_targets_forward_each_step_no_contacts_no_gravity",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts_no_gravity",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_gravity_zero",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_contacts",
+            "accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_contacts_no_gravity",
+            "accepted_hand_state_all_contacts_disabled",
+            "accepted_hand_state_gravity_zero",
+            "accepted_hand_state_gravity_zero_all_contacts_disabled",
         ]
+        requested_scenarios = os.environ.get("ISSUE46_PARITY_SCENARIOS")
+        if requested_scenarios:
+            requested = {item.strip() for item in requested_scenarios.split(",") if item.strip()}
+            unknown = requested.difference(scenarios)
+            if unknown:
+                raise ValueError(f"unknown requested parity scenarios: {sorted(unknown)}")
+            scenarios = [scenario for scenario in scenarios if scenario in requested]
+            if not scenarios:
+                raise ValueError("scenario filter selected no diagnostic scenarios")
         scenario_results = []
         model_profiles = {}
         pass_pose_reference = pass_state["source_pose"]
@@ -763,7 +864,10 @@ def run() -> int:
             # B/C/D/E snapshots are recorded from the exact manipulation init/controller path.
             result = execute_scenario(
                 state, data_file, trace_file,
-                pass_step=(scenario == "manipulation_forward_before_step"),
+                pass_step=(
+                    scenario == "manipulation_forward_before_step"
+                    or "forward_each_step" in scenario
+                ),
             )
             scenario_results.append(result)
         test_summary = {
@@ -811,6 +915,7 @@ def run() -> int:
         "numpy": np.__version__,
         "tolerance_rad": TOLERANCE,
         "approach_steps": APPROACH_STEPS,
+        "scenario_filter": os.environ.get("ISSUE46_PARITY_SCENARIOS"),
         "robot_sim_git": git,
         "vendor_head": subprocess.check_output(["git", "-C", str(task.ROOT), "rev-parse", "HEAD"], text=True).strip(),
         "vendor_status": subprocess.check_output(["git", "-C", str(task.ROOT), "status", "--short"], text=True).strip(),

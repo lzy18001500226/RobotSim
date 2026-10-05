@@ -53,6 +53,25 @@ Thus the active non-bottle contact set is sufficient to explain the original ste
 
 The ablation disables the complete contact set, so it does not identify which of the five individual self-contact pairs contributes most to the left-thumb residual. The gravity/contact-free run retains the actual right arm and hand approach controller; the step-5 right-pinky breach was not further separated into arm motion versus finger-target motion.
 
+## Follow-up Runtime-Parity Isolation (v11-v15)
+
+The later accepted-pose runs isolated load sources while retaining all 12 active mimic equalities, the accepted per-side driver profile (left `18 / 2.4`, right `0.1 / 0.003`), accepted source-coordinate hand targets, and `mj_forward` before every `mj_step`. The bottle remained collision-disabled. These runs supersede the earlier attribution that treated the step-1 failure as one initialization/contact-order defect.
+
+At B/C/D, all mimic residuals were zero and all hand joints were in range. In the frozen-arm, normal-gravity, contacts-enabled run, `mj_forward` exposed eight existing robot self-contact pairs before the first step: right index/middle, middle/ring, ring/pinky; left index/middle, middle/ring, ring/pinky; and left thumb pip/dip against `left_hip_roll_link`. The first post-step failure was `L_thumb_dip_joint`, `0.0050619401 rad` at step 1. This is before any bottle contact. An extra `mj_forward` before the step and holding the right arm/fingers open did not resolve it.
+
+Three one-source-at-a-time ablations then showed that no single one of gravity, self-contact, or arm motion explains the gap:
+
+| Isolated condition (other loads disabled) | First breach | Maximum error | Peak limit violations | Interpretation |
+| --- | --- | ---: | ---: | --- |
+| Robot self-contact retained; gravity off; arm frozen | Step 2, `L_ring_dip_joint`, `0.0077858864 rad` | `0.3415353885 rad` | 4 | Self-contact alone breaks the gate. |
+| Gravity retained; all geom contacts off; arm frozen | Step 2, `L_thumb_pip_joint`, `0.0034610542 rad` | `0.0349712896 rad` | 1 | Gravity alone breaks the gate. |
+| Arm follows the 500-step approach; gravity and all geom contacts off; fingers held open | Step 11, `R_index_dip_joint`, `0.0031246882 rad` | `0.0040801032 rad` | 0 | Arm motion alone breaks the gate. |
+| Arm frozen; gravity and all geom contacts off; fingers held open | No breach over 500 steps | `0 rad` | 0 | This unloaded static control passes, but is not the requested approach-path gate. |
+
+All four follow-up cases had zero NaNs, zero driver-motion-opposed observations, zero bottle contacts, and zero active-rollout follower qpos writes. The arm-motion-only result establishes that the current accepted mimic profile also misses the strict gate under the actual arm trajectory, even without gravity or any collisions. The loaded manipulation path therefore cannot be repaired by only changing the left-hand target, disabling gravity, disabling contacts, freezing the arm, or adding a pre-step forward call.
+
+The earliest runtime configuration differences are now explicit: the accepted free-space builder runs with gravity `[0, 0, 0]`, all geom contacts disabled, and no arm trajectory; the manipulation model runs with gravity `[0, 0, -9.81]`, robot contacts enabled, and an arm trajectory. Timestep (`0.002 s`), integrator (`implicitfast`/`3`), solver (`Newton`/`2`, 100 iterations, `1e-8` tolerance), equality activation, qpos0/ranges/refs/axes, mimic polynomial, solref, solimp, driver actuator mapping, and target coordinate conversion were matched in the accepted-pose comparison. Thus there is no single reset, axis, reference, target-coordinate, or update-order discrepancy left to fix: the accepted low-gain/equality configuration passes only in the unloaded harness and is not robust to these independent runtime loads. The exact unresolved root is insufficient dynamic robustness of the current mimic coupling under the manipulation model's physical loads. No controller, equality, collision, or initialization fix was adopted because changing one source does not satisfy the gate and changing several would become unbounded tuning.
+
 Left-hand state and target ablations do not independently recover the gate. Seeding the accepted interior pose alone gives step-1 error `0.00837668`; setting the left target to the accepted interior value alone gives `0.00625179`; doing both gives `0.00855116`. Restoring the legacy left gains alone gives `0.00422127`, and combining those gains with the accepted left state/target gives `0.00505976`; neither passes, and the legacy-gain variants have larger later maxima. The current low-gain profile is therefore applied to both hands in manipulation, while the integrated PASS applies it only to the right hand.
 
 ## Hypotheses
@@ -80,3 +99,20 @@ wsl.exe -d Ubuntu-22.04 --exec bash -lc 'export MUJOCO_GL=egl; export ISSUE46_PA
 ```
 
 Full evidence: `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/runtime-parity-20261006-v5/` (`result.json`, `runtime_identity.json`, `runtime_comparison.json`, `model_profiles.json`, `step0_pre_post_trace.jsonl`, `all_12_mimic_error_trace.jsonl`, `run.log`). The final result is **FAIL**. Grasp tuning remains paused; no grasp, bottle contact, or manipulation beyond the approach diagnostic was performed.
+
+The follow-up source checkout was RobotSim branch `codex/issue46-lingxi-scene-frames` at `b4993bd1d90b48da396c018482887d0e2fc7dc54` (research script dirty only), with pinned vendor HEAD `575cc6b988f976c23550e0db85aa1e5475d3652d`, Python `3.10.12`, MuJoCo `3.3.6`, and NumPy `1.26.4`.
+
+Follow-up evidence is durable under:
+
+- `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/runtime-parity-20261006-v10/`: accepted-pose, open-hand actual arm approach under normal gravity/robot contacts; first breach step 1 on `L_thumb_dip_joint`, `0.00505958 rad`.
+- `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/runtime-parity-20261006-v11/`: frozen-arm accepted-pose pre/post-step trace and eight initial contact pairs.
+- `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/runtime-parity-20261006-v13/`: unloaded static control (PASS for that ablation only; arm frozen).
+- `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/runtime-parity-20261006-v15/`: the three isolated load-source failures, all-12 traces, model/runtime identity, and run log.
+
+Exact follow-up command used (the v15 evidence directory was empty at invocation; use another fresh directory to repeat it):
+
+```bash
+wsl.exe -d Ubuntu-22.04 --exec bash -lc 'set -o pipefail; export MUJOCO_GL=egl; export ISSUE46_PARITY_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/runtime-parity-20261006-v15; export ISSUE46_PARITY_SCENARIOS=accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_gravity_zero,accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_arm_motion_no_contacts,accepted_hand_state_full_targets_forward_each_step_open_during_approach_no_contacts_no_gravity; /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python /tmp/robotsim-issue46-lingxi-scene-frames/scripts/research/issue46_mimic_runtime_parity.py 2>&1 | tee /tmp/issue46-runtime-parity-v15-run.log'
+```
+
+**Closeout: FAIL — the unchanged `0.003 rad` gate is not met by the actual manipulation runtime.** Only the diagnostic harness and this research report changed; production manipulation, hand morphology, and grasp behavior were not modified. No bottle contact or grasp/lift/placement phase was run.
