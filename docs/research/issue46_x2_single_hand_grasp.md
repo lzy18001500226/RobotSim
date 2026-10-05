@@ -1,6 +1,37 @@
 # RobotSim Issue #46: X2 Single-Hand Bottle Grasp
 
-**Physical manipulation: FAIL. Static morphology/floor review: READY FOR MAINTAINER VISUAL REVIEW.** This update corrects only the static review render and records a read-only handedness audit. The right hand still has not established a stable multi-finger grasp, lifted the required 50 mm, or placed and settled the bottle at the target.
+**Static morphology/floor baseline: maintainer accepted. Physical manipulation: FAIL.** The right hand has not established a stable multi-finger grasp, lifted the required 50 mm, or placed and settled the bottle at the target.
+
+## Latest physical rollout: mimic-coupling follow-up
+
+The clean-head run is preserved at `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/attempts/20261005-mimic-physical-final/`. It contains the complete MP4, overview and phase PNGs, `result.json`, `runtime_identity.json`, `physics_contact_trace.jsonl`, `run.log`, `frame_diagnostics.json`, and `reproduction_command.txt`. The raw run files were not edited.
+
+- RobotSim branch/HEAD: `codex/issue46-lingxi-scene-frames` / `4d1c255fbec21641a5d423bb29896263da0653f4`; run identity records a clean worktree.
+- Vendor source: `AgibotTech/agibot_x2_urdf@575cc6b988f976c23550e0db85aa1e5475d3652d`; model `X2_URDF-v1.4.0/X2-Ultra_omnihand.urdf`.
+- Runtime: WSL2 Ubuntu 22.04, Python 3.10.12, MuJoCo 3.3.6, EGL, timestep `0.002 s`.
+- The compiled MuJoCo model contains all 12 source mimic joint equalities, with each follower omitted from independent position-servo actuation. Their joint names, direction, multiplier, offset, and polynomial coefficients match the pinned URDF. The equality solver uses direct-format `solref=[-10000, -200]`; this setting did not preserve the relations within the existing `0.003 rad` runtime tolerance.
+
+Exact command:
+
+```bash
+MUJOCO_GL=egl ISSUE46_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/attempts/20261005-mimic-physical-final ISSUE46_FINGER_CLOSE_FRACTION=1.0 /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python /tmp/robotsim-issue46-lingxi-scene-frames/scripts/research/issue46_x2_grasp.py
+```
+
+| Gate or measure | Result |
+| --- | --- |
+| Compiled source mimic set | `12/12` names, directions, and coefficients match |
+| Runtime mimic relation error | Failed; max `3.113995 rad` at step `1060`, simulation time `2.120 s`, during closed-hand approach. `R_pinky_dip_joint` was `-1.886569 rad`; the source relation expected `+1.227426 rad`. First tolerance breach was step `1` at `0.002 s` (`R_ring_dip_joint`, `0.011844 rad`). |
+| First right-hand/bottle contact | `2.672 s`, `R_thumb_dip`; the thumb plus two opposing digit-family grasp gate failed |
+| Opposite hand | No contact; gate passed |
+| Maximum lift | `0.004964 m` (`4.964 mm`; required `0.050 m`) |
+| Transfer and target | No qualifying multi-finger carry; final XY error `0.098734 m` |
+| Final bottle | Table contact after `3.0 s` free settling, but tipped (`1.570773 rad` upright tilt) and not successfully placed |
+| Maximum penetration | `0.004916 m` |
+| Forbidden carry/state edits | No bottle weld/equality attachment, and zero bottle qpos writes during rollout |
+
+**Result: FAIL.** The equality metadata matches the source, but the runtime relation error shows that this MuJoCo encoding/configuration is not yet a faithful dynamic mimic implementation for this model. The physical grasp and required lift also fail. Do not proceed with more trajectory tuning until the runtime coupling discrepancy is resolved and measured. The accepted static morphology, floor, table, bottle, and station remain unchanged. No performance conclusion is made.
+
+The model uses MuJoCo joint equality constraints, which the [MuJoCo 3.3.6 XML Reference](https://mujoco.readthedocs.io/en/3.3.6/XMLreference.html#equality-joint) defines as polynomial joint-coordinate constraints. Their compiled polynomial matching is not evidence that the runtime relation is exact; the recorded rollout demonstrates the remaining violation.
 
 ## Source and runtime
 
@@ -27,7 +58,7 @@ The neutral diagnostic sets all 46 left/right hand joints to vendor zero qpos an
 
 The pinned URDF and compiled model preserve distinct palm meshes (`L_palm -> l_palm.stl`, `R_palm -> r_palm.stl`), their separate fixed mounts (`L_palm_joint` rpy approximately `[0, pi, +pi/2]`; `R_palm_joint` approximately `[0, pi, -pi/2]`), mirrored thumb-side placement, and all 46 hand-joint axes/signs/ranges. The model audit reports zero transform/axis/range mismatch; no left mesh or link transform is reused on the right. The side-by-side frontal image makes the mirrored thumb placement visible. The thumb points downward in the arm-zero neutral diagnostic, so the old curled finger qpos was not the sole cause; the separate open-approach image uses the existing task palm target and shows the thumb laterally. No arbitrary wrist quaternion or hand model transform was added.
 
-The vendor source contains 12 mimic annotations while the compiled model has zero equality constraints. This does not affect the zero-pose morphology audit, but coupling/controller semantics remain a limitation for future manipulation work. These images are a static morphology/environment review only and do not change the physical-grasp FAIL result.
+At the time this static packet was captured, the vendor source contained 12 mimic annotations while the static model had zero equality constraints. The later physical follow-up now compiles all 12 source equalities; its runtime coupling failure is documented in the latest rollout section above. These images are a static morphology/environment review only and do not change the physical-grasp FAIL result.
 
 Reproduction command:
 
