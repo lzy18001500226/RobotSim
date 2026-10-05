@@ -1882,9 +1882,11 @@ def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
         "robot_hand": {
             "model": "Unitree stock G1 rubber hands, paired left/right",
             "root_cause": (
-                "The prior generated model removed the stock rubber-hand meshes "
-                "and grafted Dex3 meshes. That replacement, rather than a stock "
-                "G1 mesh scale or handedness error, created the abnormal appearance."
+                "The earlier scene was asymmetric: a stock left hand and a "
+                "Dex3-style right-hand overlay. A later correction mistakenly "
+                "grafted Dex3 hands onto both wrists; the retained generated MJCF "
+                "shows paired Dex3 links and actuators. This audit restores both "
+                "vendor stock rubber-hand meshes from the pinned G1 model."
             ),
             "source_model": UNITREE_MODEL_RELATIVE_PATH.as_posix(),
             "source_revision": UNITREE_COMMIT,
