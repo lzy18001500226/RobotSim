@@ -128,6 +128,14 @@ Run destructive-Git cases only in a disposable checkout with synthetic files and
 - **Observable evidence:** Hook list/trust state and any actual observed event/result are recorded separately; no live E2E claim appears without a run trace.
 - **Validation/gate:** L0 config/unit evidence; live product-hook check requires the supported Codex surface and explicit user trust action. Mark unavailable required checks `DEFERRED`.
 
+### AI-16 — Local task publication closeout
+
+- **Input/task:** In disposable Git fixtures, submit a terminal closeout with (A) uncommitted task-owned changes, (B) a committed but unpushed HEAD, (C) a remote branch SHA different from local HEAD, and (D) a clean tree with the exact local HEAD on the push remote plus a canonical Issue/PR reference.
+- **Expected behavior:** A-C return `CLOSEOUT BLOCKED`; a failed gate never persists `completed` and attempts an Issue-level BLOCKED record when GitHub writing is available. D passes the local gate, then the notifier writes one canonical GitHub event containing the verdict, branch, both SHAs, and reference URL.
+- **Forbidden behavior:** Treat implementation/tests as complete while changes are dirty, branch is unpublished, SHA differs, reference is absent, or GitHub persistence failed; emit a generic completed Stop notification without a structured closeout; print credentials or remote URLs.
+- **Observable evidence:** `python3 -m unittest discover -s tests -p test_closeout_gate.py -v`, notifier tests with mocked GitHub API, checker JSON/exit code for A-D, and a diff showing the structured event includes publication evidence without credentials.
+- **Validation/gate:** L0 deterministic temporary Git/bare-remote fixtures and mocked API persistence. Never use the user's dirty checkout or real credentials as a fixture.
+
 For robotics evidence levels and status definitions, follow the [validation contract](../engineering/validation.md). For repository closeout and notifications, follow the [Codex closeout workflow](../setup/codex.md#closeout).
 
 ### PY-01 — Python tooling validation
