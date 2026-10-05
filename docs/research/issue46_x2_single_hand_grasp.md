@@ -47,6 +47,10 @@ The bottle began touching its source table at `0.004 s`. Target-table contact fi
 
 The corrected pregrasp is visually readable and the open approach is physically clear, but the dynamic grasp pose settles about `7.2 mm` below the requested palm height and about `2.1 mm` farther from the bottle along the approach axis. The grasp-hold contact evidence is still only the middle PIP. A small next discriminating experiment is to raise only the closed-grasp palm Z target by the measured `7 mm`, leaving X/Y, wrist rotation, finger commands, and station fixed; verify whether thumb and two other digit families contact during the hold before attempting to interpret lift.
 
+## Remote closeout
+
+Issue #46 remains open. GitHub reports no open PR with `codex/issue46-x2-single-hand-grasp` as its head. The last remote branch SHA is `f8b1aafbf67ccdc6276bde6f1021046e7b285e72`; the local evidence commits have not reached it. Push over SSH failed with a broken pipe, HTTPS push could not obtain a username, and the in-app GitHub page is signed out. No Issue comment or PR update was possible. Closeout is **BLOCKED** until authenticated GitHub write access is available; the local commits and external raw evidence are preserved.
+
 ## Evidence
 
 Final raw run directory:
