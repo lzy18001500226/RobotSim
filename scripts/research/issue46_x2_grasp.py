@@ -40,6 +40,9 @@ SOURCE_PIN = "575cc6b988f976c23550e0db85aa1e5475d3652d"
 DT = 0.002
 MIMIC_RELATION_TOLERANCE_RAD = 0.003
 MIMIC_SOLREF_DIRECT = [-10000.0, -200.0]
+HAND_JOINT_LIMIT_SOLREF_DIRECT = [-10000.0, -200.0]
+RIGHT_MIMIC_DRIVER_SERVO_KP = 0.1
+RIGHT_MIMIC_DRIVER_SERVO_KV = 0.003
 SOURCE_TABLE_XY = np.array(G1_CANONICAL_TABLE_CENTER_XY, dtype=float)
 SOURCE_TABLE_HALF_EXTENTS = np.array(G1_CANONICAL_TABLE_HALF_EXTENTS, dtype=float)
 TARGET_TABLE_BODY_XY = SOURCE_TABLE_XY.copy()
@@ -291,6 +294,10 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
             effort[joint.get("name")] = float(limit.get("effort"))
 
     spec_joint_by_name = {joint.name: joint for joint in spec.joints if joint.name}
+    for joint in spec.joints:
+        if joint.name and joint.name.startswith(("L_", "R_")) and joint.type == mujoco.mjtJoint.mjJNT_HINGE:
+            joint.solref_limit = HAND_JOINT_LIMIT_SOLREF_DIRECT
+
     mimic_relations = []
     mimic_child_names: set[str] = set()
     for source_joint in source_xml.findall("joint"):
@@ -340,6 +347,7 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
     if len(mimic_relations) != 12:
         raise ValueError(f"Expected the pinned OmniHand's 12 URDF mimic relations, found {len(mimic_relations)}")
 
+    mimic_driver_names = {str(item["driver_joint"]) for item in mimic_relations}
     servo_counts = {"arm": 0, "finger": 0, "other": 0, "mimic_follower_joints": 0}
     for joint in list(spec.joints):
         joint_name = joint.name
@@ -350,6 +358,8 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
             continue
         group = "finger" if joint_name.startswith(("R_", "L_")) else "arm" if "shoulder" in joint_name or "elbow" in joint_name or "wrist" in joint_name else "other"
         kp, kv = (18.0, 2.4) if group == "finger" else (150.0, 22.0) if group == "arm" else (250.0, 30.0)
+        if joint_name.startswith("R_") and joint_name in mimic_driver_names:
+            kp, kv = RIGHT_MIMIC_DRIVER_SERVO_KP, RIGHT_MIMIC_DRIVER_SERVO_KV
         max_force = effort.get(joint_name, 30.0)
         actuator = spec.add_actuator(
             name=f"servo_{joint_name}",
@@ -1331,6 +1341,17 @@ def main() -> int:
                 "target_site_offset_y_m": TARGET_TABLE_SITE_OFFSET_Y,
             },
             "control_model": "URDF joint-effort-limited position servos on independent joints; 12 source-defined URDF mimic relations are MuJoCo joint equalities; right arm waypoints use bounded least-squares palm-site IK",
+            "mimic_driver_controller": {
+                "right_hand_mimic_driver_kp": RIGHT_MIMIC_DRIVER_SERVO_KP,
+                "right_hand_mimic_driver_kv": RIGHT_MIMIC_DRIVER_SERVO_KV,
+                "left_hand_mimic_driver_kp": 18.0,
+                "left_hand_mimic_driver_kv": 2.4,
+                "nonmimic_finger_servo_kp": 18.0,
+                "nonmimic_finger_servo_kv": 2.4,
+                "follower_has_independent_actuator": False,
+                "hand_joint_limit_solref_direct": HAND_JOINT_LIMIT_SOLREF_DIRECT,
+                "validation_scope": "free-space mimic tests only; bottle manipulation not rerun",
+            },
             "runtime_gl": os.environ.get("MUJOCO_GL", "default"),
             "visual_provenance": {
                 "robot_body_materials": "official pinned X2 URDF visual material colors and mesh assets",
