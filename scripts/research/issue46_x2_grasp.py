@@ -69,6 +69,8 @@ PREGRASP_PALM_POS = np.array(
 APPROACH_PALM_POS = np.array(
     [START[0], START[1] - MANIPULATION_APPROACH_WORLD[1] * APPROACH_STANDOFF, START[2]]
 )
+GRASP_PALM_Z_OFFSET_M = float(os.environ.get("ISSUE46_GRASP_PALM_Z_OFFSET_M", "0.0"))
+GRASP_PALM_POS[2] += GRASP_PALM_Z_OFFSET_M
 LIFT_PALM_Z = float(GRASP_PALM_POS[2] + 0.050)
 PALM_NORMAL_WORLD = MANIPULATION_APPROACH_WORLD.copy()
 FINGER_AXIS_WORLD = MANIPULATION_APPROACH_WORLD.copy()
@@ -358,7 +360,7 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
             continue
         group = "finger" if joint_name.startswith(("R_", "L_")) else "arm" if "shoulder" in joint_name or "elbow" in joint_name or "wrist" in joint_name else "other"
         kp, kv = (18.0, 2.4) if group == "finger" else (150.0, 22.0) if group == "arm" else (250.0, 30.0)
-        if joint_name.startswith("R_") and joint_name in mimic_driver_names:
+        if joint_name in mimic_driver_names:
             kp, kv = RIGHT_MIMIC_DRIVER_SERVO_KP, RIGHT_MIMIC_DRIVER_SERVO_KV
         max_force = effort.get(joint_name, 30.0)
         actuator = spec.add_actuator(
@@ -596,6 +598,7 @@ def main() -> int:
         f"MUJOCO_GL={os.environ.get('MUJOCO_GL', 'egl')} "
         f"ISSUE46_EVIDENCE_DIR={OUT} "
         f"ISSUE46_FINGER_CLOSE_FRACTION={FINGER_CLOSE_FRACTION} "
+        f"ISSUE46_GRASP_PALM_Z_OFFSET_M={GRASP_PALM_Z_OFFSET_M} "
         f"{sys.executable} {Path(__file__).resolve()}"
     )
     (OUT / "reproduction_command.txt").write_text(reproduction_command + "\n", encoding="utf-8")
@@ -671,6 +674,7 @@ def main() -> int:
             "place_palm_position_m": PLACE_PALM_POS.tolist(),
             "lift_palm_z_m": LIFT_PALM_Z,
             "finger_close_fraction": FINGER_CLOSE_FRACTION,
+            "grasp_palm_z_offset_m": GRASP_PALM_Z_OFFSET_M,
             "thumb_roll_rad": 0.65,
             "thumb_abduction_rad": -0.30,
             "thumb_mcp_rad": 0.82,
@@ -785,7 +789,20 @@ def main() -> int:
     }.items():
         open_target[finger_joint_names.index(joint_name)] = value
     data.qpos[finger_qpos] = open_target
+    for relation in details["mimic_relations"]:
+        driver_qpos = float(data.qpos[relation["driver_qpos_address"]])
+        data.qpos[relation["follower_qpos_address"]] = (
+            relation["compiled_follower_reference_rad"]
+            + relation["mujoco_polycoef"][0]
+            + relation["mujoco_polycoef"][1]
+            * (driver_qpos - relation["compiled_driver_reference_rad"])
+        )
     mujoco.mj_forward(model, data)
+    initial_mimic_state = mimic_relation_state()
+    initial_mimic_relation_error_max_rad = max(
+        (float(state["error_rad"]) for state in initial_mimic_state.values()),
+        default=0.0,
+    )
     initial_robot_arm_pose = data.qpos[arm_qpos].copy()
     close_target = open_target.copy()
     for i, joint_name in enumerate(finger_joint_names):
@@ -884,6 +901,7 @@ def main() -> int:
     max_bottle_rotation_step = 0.0
     max_penetration = 0.0
     max_mimic_relation_error_rad = 0.0
+    max_mimic_relation_error_during_right_contact_rad = 0.0
     maximum_bottle_height = float(data.qpos[bottle_qadr + 2])
     first_right_contact = None
     first_left_contact = None
@@ -939,6 +957,7 @@ def main() -> int:
         nonlocal step_count, max_bottle_translation_step, max_bottle_rotation_step, max_penetration
         nonlocal maximum_bottle_height, first_right_contact, first_left_contact, first_table_contact
         nonlocal first_target_table_contact, previous_contact, max_mimic_relation_error_rad
+        nonlocal max_mimic_relation_error_during_right_contact_rad
         phase_start = float(data.time)
         phase_mimic_relation_error_max_rad = 0.0
         phase_robot_bodies: set[str] = set()
@@ -975,6 +994,11 @@ def main() -> int:
             max_bottle_rotation_step = max(max_bottle_rotation_step, 2.0 * math.acos(dot))
             maximum_bottle_height = max(maximum_bottle_height, float(new_position[2]))
             right_contacts, left_contacts, table_contact, target_table_contact = contact_state()
+            if right_contacts:
+                max_mimic_relation_error_during_right_contact_rad = max(
+                    max_mimic_relation_error_during_right_contact_rad,
+                    current_mimic_relation_error_max_rad,
+                )
             step_table_bodies = right_table_contact_bodies()
             phase_table_bodies.update(step_table_bodies)
             all_right_table_contact_bodies.update(step_table_bodies)
@@ -1270,6 +1294,9 @@ def main() -> int:
         "free_physics_target_table_supported_settle": not final_contacts and not final_left_contacts and final_target_table_contact,
         "all_12_vendor_mimic_relations_compiled": details["mimic_constraints_match"],
         "mimic_joint_relation_error_within_tolerance": mimic_relations_within_tolerance,
+        "mimic_joint_relation_error_within_tolerance_during_object_contact": (
+            max_mimic_relation_error_during_right_contact_rad <= MIMIC_RELATION_TOLERANCE_RAD
+        ),
         "no_runtime_bottle_weld_or_attachment_constraint": no_bottle_attachment_constraints,
         "no_bottle_qpos_writes_during_rollout": qpos_assignments_during_rollout == 0,
     }
@@ -1317,6 +1344,9 @@ def main() -> int:
             "urdf_mimic_constraints_match_source": details["mimic_constraints_match"],
             "mimic_relation_runtime_tolerance_rad": MIMIC_RELATION_TOLERANCE_RAD,
             "mimic_relation_max_error_rad": max_mimic_relation_error_rad,
+            "mimic_relation_max_error_during_right_hand_bottle_contact_rad": (
+                max_mimic_relation_error_during_right_contact_rad
+            ),
             "effort_limited_joint_count": details["effort_count"],
             "self_collision_policy": {
                 "policy": "exclude_robot_ancestor_descendant_pairs_only",
@@ -1344,13 +1374,13 @@ def main() -> int:
             "mimic_driver_controller": {
                 "right_hand_mimic_driver_kp": RIGHT_MIMIC_DRIVER_SERVO_KP,
                 "right_hand_mimic_driver_kv": RIGHT_MIMIC_DRIVER_SERVO_KV,
-                "left_hand_mimic_driver_kp": 18.0,
-                "left_hand_mimic_driver_kv": 2.4,
+                "left_hand_mimic_driver_kp": RIGHT_MIMIC_DRIVER_SERVO_KP,
+                "left_hand_mimic_driver_kv": RIGHT_MIMIC_DRIVER_SERVO_KV,
                 "nonmimic_finger_servo_kp": 18.0,
                 "nonmimic_finger_servo_kv": 2.4,
                 "follower_has_independent_actuator": False,
                 "hand_joint_limit_solref_direct": HAND_JOINT_LIMIT_SOLREF_DIRECT,
-                "validation_scope": "free-space mimic tests only; bottle manipulation not rerun",
+                "validation_scope": "accepted low-gain profile applied to all mimic drivers; contact behavior measured in this rollout",
             },
             "runtime_gl": os.environ.get("MUJOCO_GL", "default"),
             "visual_provenance": {
@@ -1374,7 +1404,13 @@ def main() -> int:
                 "conversion": "MuJoCo scalar joint equalities; follower joints have no independent servo actuator",
                 "relations": details["mimic_relations"],
                 "compiled_source_match": details["mimic_constraints_match"],
+                "initial_follower_qpos_seeded_before_rollout": True,
+                "initial_follower_qpos_assignment_count": len(details["mimic_relations"]),
+                "initial_relation_error_max_rad": initial_mimic_relation_error_max_rad,
                 "max_runtime_position_error_rad": max_mimic_relation_error_rad,
+                "max_runtime_position_error_during_right_hand_bottle_contact_rad": (
+                    max_mimic_relation_error_during_right_contact_rad
+                ),
                 "runtime_error_tolerance_rad": MIMIC_RELATION_TOLERANCE_RAD,
                 "bottle_attachment_constraint_count": 0 if no_bottle_attachment_constraints else None,
             },
@@ -1472,6 +1508,9 @@ def main() -> int:
         },
         "result": {
             "mimic_relation_error_max_rad": max_mimic_relation_error_rad,
+            "mimic_relation_error_max_during_object_contact_rad": (
+                max_mimic_relation_error_during_right_contact_rad
+            ),
             "mimic_relation_runtime_tolerance_rad": MIMIC_RELATION_TOLERANCE_RAD,
             "maximum_lift_m": bottle_lift,
             "initial_position": START.tolist(),
