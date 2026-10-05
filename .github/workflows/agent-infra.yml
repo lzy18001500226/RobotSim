@@ -35,10 +35,15 @@ jobs:
           scripts/agent/notify_task.py
           scripts/agent/pre_tool_guard.py
           scripts/agent/eval_harness.py
+          scripts/agent/check_governance.py
           tests/test_notify_task.py
           tests/test_closeout_gate.py
           tests/test_pre_tool_guard.py
           tests/test_eval_harness.py
+          tests/test_governance_check.py
+
+      - name: Check runtime and artifact governance
+        run: python3 scripts/agent/check_governance.py
 
       - name: Parse Codex hook configuration
         run: python3 -m json.tool .codex/hooks.json > /dev/null
@@ -65,6 +70,9 @@ jobs:
               Path("AGENTS.md"),
               Path("docs/setup/codex.md"),
               Path("docs/README.md"),
+              Path("docs/engineering/runtime.md"),
+              Path("docs/engineering/validation.md"),
+              Path("scripts/research/README.md"),
               Path("docs/checklists/agent_infra_eval.md"),
               Path("docs/workflows/agent_behavior_eval.md"),
           )

@@ -6,10 +6,23 @@ These conventions apply when runtime code is introduced. They preserve the curre
 
 **RobotSim decision:** use C++17 as the default compiled runtime standard for ROS 2 Humble and Ubuntu 22.04. REP-2000 lists Ubuntu Jammy 22.04 as a Tier 1 Humble platform and C++17 as the minimum language standard. C++17 is sufficient for the current baseline; do not raise the workspace standard for convenience. Before adopting an SDK, pin it and build it with the target compiler and C++17. If an upstream SDK imposes a different requirement, isolate that boundary and document the compatibility decision before changing the workspace standard. The current `third_party/LOCK.md` still contains TODO entries, so vendor compatibility is not yet verified.
 
-- Prefer C++ for robot hardware adapters, actuator command and state paths, control loops, high-rate transport, latency-sensitive perception, and physics/runtime hot paths. Use C where a microcontroller or lower-level ABI calls for it.
+- New production paths default to C++17 for robot hardware adapters, actuator command/state paths, control loops, safety state machines, high-rate transport, timing-sensitive runtime, and vendor SDK integration. Use C where a microcontroller or lower-level ABI calls for it.
 - Python is appropriate for research, offline analysis, data conversion, plotting, training, experiment orchestration, repository tooling, CI, and prototypes. Python is not banned from online algorithms: use it only when the component's update rate, latency, resource, and deployment budgets are explicit and measurements on the target show they are met. A prototype is not production runtime evidence.
 - Model work may use Python/PyTorch for research and export to an optimized runtime representation where deployment needs it.
 - C# belongs in Unity rendering, scene integration, external sensor front-end, editor tooling, and synchronization. It does not become the authority for robot dynamics or low-level control.
+
+## Prototype lifecycle
+
+`scripts/research/` is a temporary research area. It may contain rapid Python or MuJoCo experiments and evidence-generation tools. Production/runtime packages must not depend on this directory, and robot hardware/runtime code must not import or execute its scripts. A successful experiment proves only the behavior measured by that experiment; it does not become maintained production functionality by default.
+
+Each temporary research implementation created or materially changed for a milestone receives one explicit disposition in that milestone's Issue/PR closeout:
+
+- `KEEP-AS-TOOL`: retain a reusable offline or development tool outside robot runtime.
+- `PROMOTE`: move maintained project functionality into its appropriate permanent owner.
+- `PORT-TO-C++`: retain the prototype as evidence and implement production behavior in the appropriate C++/ROS 2 runtime owner.
+- `DELETE`: remove a one-off artifact whose useful behavior or evidence has been superseded.
+
+Active work does not require immediate deletion. A milestone is not fully closed until relevant temporary implementations have a disposition. Record a scoped inventory of files created or changed for that milestone; do not run broad automatic cleanup. The repository must not use Python-file counts or a language-percentage target as a production-readiness rule.
 
 ## Timing and performance
 
