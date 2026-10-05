@@ -1,6 +1,6 @@
 # RobotSim Issue #46: X2 Single-Hand Bottle Grasp
 
-**Physical manipulation: FAIL. Static scene review: READY FOR MAINTAINER VISUAL REVIEW.** This update corrects only the static station and rendering. The right hand still has not established a stable multi-finger grasp, lifted the required 50 mm, or placed and settled the bottle at the target.
+**Physical manipulation: FAIL. Static morphology/floor review: READY FOR MAINTAINER VISUAL REVIEW.** This update corrects only the static review render and records a read-only handedness audit. The right hand still has not established a stable multi-finger grasp, lifted the required 50 mm, or placed and settled the bottle at the target.
 
 ## Source and runtime
 
@@ -13,22 +13,26 @@
 
 ## Static visual baseline for maintainer review
 
-The 2026-10-05 static scene review is under `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-final-review/`. It includes the unchanged `before_overview.png`, canonical three-quarter overview, front view, side-alignment view, hand/material close-up, `static_scene.json`, `run.log`, and exact commands.
+The new 2026-10-05 static morphology review packet is under `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review/`. It includes the canonical overview, front overview, side alignment, separate left/right palm-front and side views, both-hands comparison, open right-hand approach close-up, `static_scene.json`, `REPORT.md`, `run.log`, and exact commands.
 
 The X2 scene now calls `add_g1_canonical_table()` from `simulation/mujoco/canonical_manipulation_assets.py`. Its tabletop, four legs, and target site match the accepted G1 XML: table center `[0.300, -0.100] m`, top z `0.800 m`, tabletop half-extents `[0.200, 0.200] m`, 25 mm legs at x/y offsets `+/-0.175 m`, and brown RGBA `[0.6, 0.4, 0.2, 1]`. The G1 reference XML SHA256 is recorded in the JSON. G1 PR #45 is unchanged; migrating its scene to the shared helper remains future work.
 
 The four-part X2 bottle definition is preserved as the reusable canonical X2 bottle in the same module: blue body, shoulder, neck, and dark cap; 70 mm diameter, 244.5 mm height, and 0.57 kg. It has not been replaced by the pure-cylinder benchmark object. Updating G1 to consume this shared bottle definition is future work.
 
-The pinned vendor URDF's authored white body colors and dark detail colors remain intact. The importer drops name-only OmniHand materials, so the renderer maps the symbolic `silver`, `blue`, `brown`, `white`, `green`, and `orange` names to a documented color palette after model compilation; the URDF provides no numeric RGB values for those named materials, so those six shades are an approximation rather than source-exact RGB. This replaces the earlier uniform gray fallback. The original vendor meshes and black chest detail remain visible. Lighting uses the accepted G1 headlight values (ambient 0.3, diffuse 0.6, specular 0), matching haze and sky gradient, plus a downward directional key light. The checker texture washed out in this EGL view, so the floor is a neutral matte RGBA `[0.42, 0.45, 0.48, 1]`.
+The pinned vendor URDF's authored white body colors and dark detail colors remain intact. The importer drops name-only OmniHand materials, so the renderer maps the symbolic `silver`, `blue`, `brown`, `white`, `green`, and `orange` names to a documented color palette after model compilation; the URDF provides no numeric RGB values for those named materials, so those six shades are an approximation rather than source-exact RGB. This replaces the earlier uniform gray fallback. The original vendor meshes and black chest detail remain visible. Lighting uses the accepted G1 headlight values (ambient 0.3, diffuse 0.6, specular 0), matching haze and sky gradient, plus a downward directional key light. The floor now uses the exact G1 checker texture/material values and correct MuJoCo texture channel. The prior flat-gray fallback has been removed.
 
 X2 starts directly at the station at `[0.38, 0.32, 0.68] m`, yaw `-pi/2`, facing world `-Y`. The G1 table center is directly ahead with an 80 mm lateral offset toward the right-arm workspace. The overview and side image show a forward-facing torso and a naturally bent right-arm reach; walking is not used.
 
-The static hand pose copies the recorded `approach_preshape` arm and finger joint state from the prior run. The renderer calls `mj_forward` only: `mj_step` is not called, the bottle qpos is unchanged, and there is no hand/bottle or hand/table contact in the rendered state. This is a frozen scene pose, not new grasp evidence or a manipulation PASS.
+The neutral diagnostic sets all 46 left/right hand joints to vendor zero qpos and both arm sets to symmetric zero qpos. A separate open right-hand approach image sets only the right arm by one static IK query at the existing `APPROACH_PALM_POS` and `PALM_TARGET_ROTATION`; both hands remain at zero finger qpos. The image isolates the right arm/hand, original bottle, and tabletop. It records no hand/bottle or hand/table contact. Every image uses `mj_forward` only: no `mj_step`, grasp rollout, or bottle qpos write occurs.
+
+The pinned URDF and compiled model preserve distinct palm meshes (`L_palm -> l_palm.stl`, `R_palm -> r_palm.stl`), their separate fixed mounts (`L_palm_joint` rpy approximately `[0, pi, +pi/2]`; `R_palm_joint` approximately `[0, pi, -pi/2]`), mirrored thumb-side placement, and all 46 hand-joint axes/signs/ranges. The model audit reports zero transform/axis/range mismatch; no left mesh or link transform is reused on the right. The side-by-side frontal image makes the mirrored thumb placement visible. The thumb points downward in the arm-zero neutral diagnostic, so the old curled finger qpos was not the sole cause; the separate open-approach image uses the existing task palm target and shows the thumb laterally. No arbitrary wrist quaternion or hand model transform was added.
+
+The vendor source contains 12 mimic annotations while the compiled model has zero equality constraints. This does not affect the zero-pose morphology audit, but coupling/controller semantics remain a limitation for future manipulation work. These images are a static morphology/environment review only and do not change the physical-grasp FAIL result.
 
 Reproduction command:
 
 ```bash
-MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-final-review /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python scripts/research/issue46_x2_static_scene.py
+MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python scripts/research/issue46_x2_static_scene.py
 ```
 
 ## Earlier rollout scene and appearance (historical)

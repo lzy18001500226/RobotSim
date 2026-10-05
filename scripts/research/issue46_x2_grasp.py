@@ -226,6 +226,24 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         width=512,
         height=3072,
     )
+    spec.add_texture(
+        name="groundplane",
+        type=mujoco.mjtTexture.mjTEXTURE_2D,
+        builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER,
+        mark=mujoco.mjtMark.mjMARK_EDGE,
+        rgb1=[0.2, 0.3, 0.4],
+        rgb2=[0.1, 0.2, 0.3],
+        markrgb=[0.8, 0.8, 0.8],
+        width=300,
+        height=300,
+    )
+    spec.add_material(
+        name="groundplane",
+        textures=["", "groundplane"],
+        texuniform=True,
+        texrepeat=[5.0, 5.0],
+        reflectance=0.2,
+    )
     spec.worldbody.add_light(
         name="scene_key_light",
         pos=[0.0, 0.0, 1.5],
@@ -235,8 +253,8 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
     spec.worldbody.add_geom(
         name="floor",
         type=mujoco.mjtGeom.mjGEOM_PLANE,
-        size=[0.0, 0.0, 0.1],
-        rgba=[0.42, 0.45, 0.48, 1.0],
+        size=[0.0, 0.0, 0.05],
+        material="groundplane",
         group=1,
     )
     add_g1_canonical_table(spec)
