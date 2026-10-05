@@ -39,6 +39,7 @@ OUT = Path(os.environ.get("ISSUE46_EVIDENCE_DIR", str(Path(__file__).parent)))
 SOURCE_PIN = "575cc6b988f976c23550e0db85aa1e5475d3652d"
 DT = 0.002
 MIMIC_RELATION_TOLERANCE_RAD = 0.003
+MIMIC_SOLREF_DIRECT = [-10000.0, -200.0]
 SOURCE_TABLE_XY = np.array(G1_CANONICAL_TABLE_CENTER_XY, dtype=float)
 SOURCE_TABLE_HALF_EXTENTS = np.array(G1_CANONICAL_TABLE_HALF_EXTENTS, dtype=float)
 TARGET_TABLE_BODY_XY = SOURCE_TABLE_XY.copy()
@@ -314,7 +315,7 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         follower_ref = float(follower.ref)
         driver_ref = float(driver.ref)
         polycoef = [offset + multiplier * driver_ref - follower_ref, multiplier, 0.0, 0.0, 0.0]
-        spec.add_equality(
+        equality = spec.add_equality(
             name=f"urdf_mimic_{follower_name}",
             type=mujoco.mjtEq.mjEQ_JOINT,
             objtype=mujoco.mjtObj.mjOBJ_JOINT,
@@ -322,6 +323,7 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
             name2=driver_name,
             data=polycoef + [0.0] * 6,
         )
+        equality.solref = MIMIC_SOLREF_DIRECT
         mimic_child_names.add(follower_name)
         mimic_relations.append(
             {
@@ -332,6 +334,7 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
                 "follower_reference_rad": follower_ref,
                 "driver_reference_rad": driver_ref,
                 "mujoco_polycoef": polycoef,
+                "mujoco_solref_direct": MIMIC_SOLREF_DIRECT,
             }
         )
     if len(mimic_relations) != 12:
@@ -375,6 +378,7 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         compiled_mimics[follower_name] = {
             "driver_joint": driver_name,
             "polycoef": model.eq_data[equality_id, :5].tolist(),
+            "solref": model.eq_solref[equality_id].tolist(),
         }
     mimic_constraints_match = (
         model.neq == len(mimic_relations)
@@ -384,6 +388,12 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
             and np.allclose(
                 compiled_mimics[follower]["polycoef"],
                 relation["mujoco_polycoef"],
+                rtol=0.0,
+                atol=1e-12,
+            )
+            and np.allclose(
+                compiled_mimics[follower]["solref"],
+                MIMIC_SOLREF_DIRECT,
                 rtol=0.0,
                 atol=1e-12,
             )
