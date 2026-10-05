@@ -1714,6 +1714,8 @@ def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
     screenshots_dir = args.output_json.parent / "screenshots"
     screenshots_dir.mkdir(parents=True, exist_ok=True)
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    args.video.parent.mkdir(parents=True, exist_ok=True)
+    args.screenshot.parent.mkdir(parents=True, exist_ok=True)
     frames: list[np.ndarray] = []
     screenshots: dict[str, str] = {}
 
@@ -1813,7 +1815,7 @@ def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
             )
         )
     frames.clear()
-    capture("canonical_overview.png", "scene_camera")
+    overview_rgb = capture("canonical_overview.png", "scene_camera")
     hands_camera.lookat[:] = np.mean(sim.data.xpos[wrist_ids], axis=0)
     capture("stock_hands_closeup.png", hands_camera)
     bottle_camera.lookat[:] = sim.data.qpos[
@@ -1821,6 +1823,10 @@ def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
     ]
     capture("canonical_x2_bottle_closeup.png", bottle_camera)
     capture("right_stock_hand_near_bottle.png", "scene_camera")
+    if not cv2.imwrite(
+        str(args.screenshot), cv2.cvtColor(overview_rgb, cv2.COLOR_RGB2BGR)
+    ):
+        raise RuntimeError(f"Could not write overview screenshot: {args.screenshot}")
 
     trace_path = args.output_json.parent / "m0_physics_trace.jsonl"
     bottle_end = sim.data.qpos[object_qpos_address : object_qpos_address + 7].copy()
@@ -1841,7 +1847,7 @@ def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
         encoding="utf-8",
     )
 
-    video_path = args.output_json.parent / "g1_stock_hand_scene_review.mp4"
+    video_path = args.video
     video = cv2.VideoWriter(
         str(video_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
@@ -1926,6 +1932,7 @@ def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
             "model_xml": str(args.output_dir / "g1_29dof.xml"),
             "scene_review_video": str(video_path),
             "physics_trace": str(trace_path),
+            "overview_screenshot": str(args.screenshot),
             "screenshots": screenshots,
         },
     }
