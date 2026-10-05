@@ -38,6 +38,7 @@ URDF = ROOT / "X2_URDF-v1.4.0" / "X2-Ultra_omnihand.urdf"
 OUT = Path(os.environ.get("ISSUE46_EVIDENCE_DIR", str(Path(__file__).parent)))
 SOURCE_PIN = "575cc6b988f976c23550e0db85aa1e5475d3652d"
 DT = 0.002
+MIMIC_RELATION_TOLERANCE_RAD = 0.003
 SOURCE_TABLE_XY = np.array(G1_CANONICAL_TABLE_CENTER_XY, dtype=float)
 SOURCE_TABLE_HALF_EXTENTS = np.array(G1_CANONICAL_TABLE_HALF_EXTENTS, dtype=float)
 TARGET_TABLE_BODY_XY = SOURCE_TABLE_XY.copy()
@@ -88,19 +89,13 @@ FINGERS = {
     "R_thumb_roll_joint": 0.32,
     "R_thumb_abad_joint": -0.72,
     "R_thumb_mcp_joint": 0.55,
-    "R_thumb_pip_joint": 0.75,
-    "R_thumb_dip_joint": 0.82,
     "R_index_abad_joint": -0.10,
     "R_index_pip_joint": 0.70,
-    "R_index_dip_joint": 0.82,
     "R_middle_pip_joint": 0.70,
-    "R_middle_dip_joint": 0.82,
     "R_ring_abad_joint": 0.10,
     "R_ring_pip_joint": 0.70,
-    "R_ring_dip_joint": 0.82,
     "R_pinky_abad_joint": 0.14,
     "R_pinky_pip_joint": 0.70,
-    "R_pinky_dip_joint": 0.82,
 }
 
 
@@ -294,10 +289,61 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         if limit is not None and limit.get("effort") is not None:
             effort[joint.get("name")] = float(limit.get("effort"))
 
-    servo_counts = {"arm": 0, "finger": 0, "other": 0}
+    spec_joint_by_name = {joint.name: joint for joint in spec.joints if joint.name}
+    mimic_relations = []
+    mimic_child_names: set[str] = set()
+    for source_joint in source_xml.findall("joint"):
+        mimic = source_joint.find("mimic")
+        if mimic is None:
+            continue
+        follower_name = source_joint.get("name")
+        driver_name = mimic.get("joint")
+        if not follower_name or not driver_name or follower_name in mimic_child_names:
+            raise ValueError(f"Invalid or duplicate URDF mimic follower: {follower_name}")
+        follower = spec_joint_by_name.get(follower_name)
+        driver = spec_joint_by_name.get(driver_name)
+        if (
+            follower is None
+            or driver is None
+            or follower.type != mujoco.mjtJoint.mjJNT_HINGE
+            or driver.type != mujoco.mjtJoint.mjJNT_HINGE
+        ):
+            raise ValueError(f"URDF mimic relation must connect imported hinge joints: {follower_name} -> {driver_name}")
+        multiplier = float(mimic.get("multiplier", "1"))
+        offset = float(mimic.get("offset", "0"))
+        follower_ref = float(follower.ref)
+        driver_ref = float(driver.ref)
+        polycoef = [offset + multiplier * driver_ref - follower_ref, multiplier, 0.0, 0.0, 0.0]
+        spec.add_equality(
+            name=f"urdf_mimic_{follower_name}",
+            type=mujoco.mjtEq.mjEQ_JOINT,
+            objtype=mujoco.mjtObj.mjOBJ_JOINT,
+            name1=follower_name,
+            name2=driver_name,
+            data=polycoef + [0.0] * 6,
+        )
+        mimic_child_names.add(follower_name)
+        mimic_relations.append(
+            {
+                "follower_joint": follower_name,
+                "driver_joint": driver_name,
+                "multiplier": multiplier,
+                "offset": offset,
+                "follower_reference_rad": follower_ref,
+                "driver_reference_rad": driver_ref,
+                "mujoco_polycoef": polycoef,
+            }
+        )
+    if len(mimic_relations) != 12:
+        raise ValueError(f"Expected the pinned OmniHand's 12 URDF mimic relations, found {len(mimic_relations)}")
+
+    servo_counts = {"arm": 0, "finger": 0, "other": 0, "mimic_follower_joints": 0}
     for joint in list(spec.joints):
         joint_name = joint.name
         if joint_name is None or joint.type != mujoco.mjtJoint.mjJNT_HINGE:
+            continue
+        if joint_name in mimic_child_names:
+            servo_counts["mimic_follower_joints"] += 1
             continue
         group = "finger" if joint_name.startswith(("R_", "L_")) else "arm" if "shoulder" in joint_name or "elbow" in joint_name or "wrist" in joint_name else "other"
         kp, kv = (18.0, 2.4) if group == "finger" else (150.0, 22.0) if group == "arm" else (250.0, 30.0)
@@ -316,6 +362,52 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
 
     model = spec.compile()
     model.opt.timestep = DT
+    expected_mimics = {
+        item["follower_joint"]: item
+        for item in mimic_relations
+    }
+    compiled_mimics = {}
+    for equality_id in range(model.neq):
+        if int(model.eq_type[equality_id]) != int(mujoco.mjtEq.mjEQ_JOINT):
+            continue
+        follower_name = name(model, mujoco.mjtObj.mjOBJ_JOINT, int(model.eq_obj1id[equality_id]))
+        driver_name = name(model, mujoco.mjtObj.mjOBJ_JOINT, int(model.eq_obj2id[equality_id]))
+        compiled_mimics[follower_name] = {
+            "driver_joint": driver_name,
+            "polycoef": model.eq_data[equality_id, :5].tolist(),
+        }
+    mimic_constraints_match = (
+        model.neq == len(mimic_relations)
+        and set(compiled_mimics) == set(expected_mimics)
+        and all(
+            compiled_mimics[follower]["driver_joint"] == relation["driver_joint"]
+            and np.allclose(
+                compiled_mimics[follower]["polycoef"],
+                relation["mujoco_polycoef"],
+                rtol=0.0,
+                atol=1e-12,
+            )
+            for follower, relation in expected_mimics.items()
+        )
+    )
+    if not mimic_constraints_match:
+        raise RuntimeError(f"Compiled MuJoCo model does not preserve the URDF mimic set: {compiled_mimics}")
+    mimic_track = []
+    for relation in mimic_relations:
+        follower_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, relation["follower_joint"])
+        driver_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, relation["driver_joint"])
+        follower_qpos = int(model.jnt_qposadr[follower_id])
+        driver_qpos = int(model.jnt_qposadr[driver_id])
+        polycoef = relation["mujoco_polycoef"]
+        mimic_track.append(
+            {
+                **relation,
+                "follower_qpos_address": follower_qpos,
+                "driver_qpos_address": driver_qpos,
+                "compiled_follower_reference_rad": float(model.qpos0[follower_qpos]),
+                "compiled_driver_reference_rad": float(model.qpos0[driver_qpos]),
+            }
+        )
     model.vis.global_.offwidth = 1280
     model.vis.global_.offheight = 720
     model.vis.headlight.ambient[:] = [0.30, 0.30, 0.30]
@@ -378,6 +470,8 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         "source_table_geom_id": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "m0_table_top"),
         "target_table_geom_id": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "m0_table_top"),
         "servo_counts": servo_counts,
+        "mimic_relations": mimic_track,
+        "mimic_constraints_match": mimic_constraints_match,
         "effort_count": len(effort),
         "self_chain_exclusion_count": len(self_chain_exclusions),
         "self_chain_exclusions": self_chain_exclusions,
@@ -478,8 +572,15 @@ def main() -> int:
     if not 0.0 < FINGER_CLOSE_FRACTION <= 1.0:
         raise ValueError("ISSUE46_FINGER_CLOSE_FRACTION must be in (0, 1]")
     OUT.mkdir(parents=True, exist_ok=True)
+    reproduction_command = (
+        f"MUJOCO_GL={os.environ.get('MUJOCO_GL', 'egl')} "
+        f"ISSUE46_EVIDENCE_DIR={OUT} "
+        f"ISSUE46_FINGER_CLOSE_FRACTION={FINGER_CLOSE_FRACTION} "
+        f"{sys.executable} {Path(__file__).resolve()}"
+    )
+    (OUT / "reproduction_command.txt").write_text(reproduction_command + "\n", encoding="utf-8")
     print("EXPERIMENT=RobotSim Issue #46 scratch OmniHand physical grasp")
-    print(f"COMMAND=MUJOCO_GL=egl {sys.executable} {Path(__file__)}")
+    print(f"COMMAND={reproduction_command}")
     commit = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     dirty = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain"], text=True).strip()
     robot_sim_root = Path(__file__).resolve().parents[2]
@@ -557,7 +658,14 @@ def main() -> int:
     }
     data = details["data"]
     arm_ids, arm_qpos = resolve_joints(model, ARM)
-    finger_ids, finger_qpos = resolve_joints(model, list(FINGERS))
+    finger_joint_names = list(FINGERS)
+    finger_ids, finger_qpos = resolve_joints(model, finger_joint_names)
+    right_hand_joint_names = [
+        joint.get("name")
+        for joint in ET.parse(URDF).getroot().findall("joint")
+        if joint.get("name", "").startswith("R_") and joint.get("type") == "revolute"
+    ]
+    _, right_hand_joint_qpos = resolve_joints(model, right_hand_joint_names)
     actuator_by_joint = {}
     for aid in range(model.nu):
         joint_id = int(model.actuator_trnid[aid, 0])
@@ -565,8 +673,29 @@ def main() -> int:
     arm_ctrl = [actuator_by_joint[idx] for idx in arm_ids]
     finger_ctrl = [actuator_by_joint[idx] for idx in finger_ids]
     site_id = int(details["site_id"])
-    if site_id < 0 or model.neq != 0:
-        raise RuntimeError(f"Invalid palm site or nonzero equality constraints: site={site_id} neq={model.neq}")
+    if site_id < 0 or not details["mimic_constraints_match"] or model.neq != len(details["mimic_relations"]):
+        raise RuntimeError(
+            f"Invalid palm site or URDF mimic constraints: site={site_id} neq={model.neq} "
+            f"mimic_count={len(details['mimic_relations'])}"
+        )
+
+    def mimic_relation_state() -> dict[str, dict[str, object]]:
+        states = {}
+        for relation in details["mimic_relations"]:
+            follower_qpos = float(data.qpos[relation["follower_qpos_address"]])
+            driver_qpos = float(data.qpos[relation["driver_qpos_address"]])
+            expected = relation["compiled_follower_reference_rad"] + relation["mujoco_polycoef"][0]
+            expected += relation["mujoco_polycoef"][1] * (
+                driver_qpos - relation["compiled_driver_reference_rad"]
+            )
+            states[relation["follower_joint"]] = {
+                "driver_joint": relation["driver_joint"],
+                "follower_position_rad": follower_qpos,
+                "driver_position_rad": driver_qpos,
+                "expected_follower_position_rad": float(expected),
+                "error_rad": float(abs(follower_qpos - expected)),
+            }
+        return states
 
     q0 = data.qpos.copy()
     initial_bottle_qpos = q0[-7:].copy()
@@ -634,28 +763,22 @@ def main() -> int:
         "R_ring_abad_joint": 0.15,
         "R_pinky_abad_joint": 0.15,
     }.items():
-        open_target[list(FINGERS).index(joint_name)] = value
+        open_target[finger_joint_names.index(joint_name)] = value
     data.qpos[finger_qpos] = open_target
     mujoco.mj_forward(model, data)
     initial_robot_arm_pose = data.qpos[arm_qpos].copy()
     close_target = open_target.copy()
-    for i, joint_name in enumerate(FINGERS):
+    for i, joint_name in enumerate(finger_joint_names):
         joint_id = finger_ids[i]
         target = FINGERS[joint_name]
         if "thumb_mcp" in joint_name:
             target = 0.82
-        elif "thumb_pip" in joint_name:
-            target = 1.15
-        elif "thumb_dip" in joint_name:
-            target = 1.0
         elif joint_name.endswith("_pip_joint"):
             target = 1.15
-        elif joint_name.endswith("_dip_joint"):
-            target = 1.30
         close_target[i] = np.clip(target, model.jnt_range[joint_id, 0], model.jnt_range[joint_id, 1])
     close_target = open_target + FINGER_CLOSE_FRACTION * (close_target - open_target)
-    close_target[list(FINGERS).index("R_thumb_roll_joint")] = 0.65
-    close_target[list(FINGERS).index("R_thumb_abad_joint")] = -0.30
+    close_target[finger_joint_names.index("R_thumb_roll_joint")] = 0.65
+    close_target[finger_joint_names.index("R_thumb_abad_joint")] = -0.30
     preshape_target = open_target + FINGER_PRESHAPE_FRACTION * (close_target - open_target)
     hold_targets = data.ctrl.copy()
     for aid in range(model.nu):
@@ -740,6 +863,7 @@ def main() -> int:
     max_bottle_translation_step = 0.0
     max_bottle_rotation_step = 0.0
     max_penetration = 0.0
+    max_mimic_relation_error_rad = 0.0
     maximum_bottle_height = float(data.qpos[bottle_qadr + 2])
     first_right_contact = None
     first_left_contact = None
@@ -794,8 +918,9 @@ def main() -> int:
     def run_phase(label: str, steps: int, arm_target: np.ndarray, finger_target: np.ndarray) -> None:
         nonlocal step_count, max_bottle_translation_step, max_bottle_rotation_step, max_penetration
         nonlocal maximum_bottle_height, first_right_contact, first_left_contact, first_table_contact
-        nonlocal first_target_table_contact, previous_contact
+        nonlocal first_target_table_contact, previous_contact, max_mimic_relation_error_rad
         phase_start = float(data.time)
+        phase_mimic_relation_error_max_rad = 0.0
         phase_robot_bodies: set[str] = set()
         phase_table_bodies: set[str] = set()
         arm_start = data.ctrl[arm_ctrl].copy()
@@ -809,6 +934,20 @@ def main() -> int:
             old_quat = data.qpos[bottle_qadr + 3 : bottle_qadr + 7].copy()
             mujoco.mj_step(model, data)
             step_count += 1
+            current_mimic_state = mimic_relation_state()
+            current_mimic_errors = {
+                follower: values["error_rad"]
+                for follower, values in current_mimic_state.items()
+            }
+            current_mimic_relation_error_max_rad = max(current_mimic_errors.values(), default=0.0)
+            phase_mimic_relation_error_max_rad = max(
+                phase_mimic_relation_error_max_rad,
+                current_mimic_relation_error_max_rad,
+            )
+            max_mimic_relation_error_rad = max(
+                max_mimic_relation_error_rad,
+                current_mimic_relation_error_max_rad,
+            )
             new_position = data.qpos[bottle_qadr : bottle_qadr + 3].copy()
             new_quat = data.qpos[bottle_qadr + 3 : bottle_qadr + 7].copy()
             max_bottle_translation_step = max(max_bottle_translation_step, float(np.linalg.norm(new_position - old_position)))
@@ -881,6 +1020,16 @@ def main() -> int:
                         "step": step_count,
                         "simulation_time_s": float(data.time),
                         "phase": label,
+                        "mimic_joint_relation_error_max_rad": current_mimic_relation_error_max_rad,
+                        "mimic_joint_relations": current_mimic_state,
+                        "right_hand_joint_state_rad": {
+                            joint_name: float(data.qpos[qpos_address])
+                            for joint_name, qpos_address in zip(right_hand_joint_names, right_hand_joint_qpos)
+                        },
+                        "right_hand_actuator_target_rad": {
+                            joint_name: float(data.ctrl[actuator_by_joint[joint_id]])
+                            for joint_name, joint_id in zip(finger_joint_names, finger_ids)
+                        },
                         "bottle_position_m": new_position.tolist(),
                         "bottle_quaternion_wxyz": new_quat.tolist(),
                         "bottle_linear_velocity_m_s": data.qvel[bottle_dadr : bottle_dadr + 3].tolist(),
@@ -929,6 +1078,11 @@ def main() -> int:
                 "arm_tracking_error_max_abs_rad": float(np.max(np.abs(arm_error))),
                 "right_finger_target_rad": finger_target.tolist(),
                 "right_finger_actual_rad": data.qpos[finger_qpos].tolist(),
+                "right_hand_joint_state_rad": {
+                    joint_name: float(data.qpos[qpos_address])
+                    for joint_name, qpos_address in zip(right_hand_joint_names, right_hand_joint_qpos)
+                },
+                "mimic_joint_relation_error_max_rad": phase_mimic_relation_error_max_rad,
                 "table_contact": table_now,
                 "target_table_contact": target_table_now,
                 "right_hand_table_contact": bool(table_bodies_now),
@@ -957,6 +1111,7 @@ def main() -> int:
     save_snapshot("front_view.png", front_camera)
     save_snapshot("side_view.png", side_camera)
     run_phase("finger_close", 500, pregrasp_route[1], close_target)
+    save_snapshot("finger_close.png")
     run_phase("closed_hand_approach", 500, pregrasp_route[2], close_target)
     save_snapshot("closed_hand_approach.png")
     save_snapshot("closed_hand_approach_closeup.png", closeup_camera)
@@ -970,9 +1125,12 @@ def main() -> int:
     save_snapshot("lift_closeup.png", closeup_camera)
     for arm_target in transfer_targets:
         run_phase("transfer", 700, arm_target, close_target)
+    save_snapshot("transfer.png")
     run_phase("lower_to_place", 1000, lower_target, close_target)
+    save_snapshot("lower_to_place.png")
     release_time = float(data.time)
     run_phase("finger_open_release", 500, lower_target, open_target)
+    save_snapshot("finger_open_release.png")
     run_phase("retreat_after_release", 600, place_high_target, open_target)
     settle_start = float(data.time)
     run_phase("free_physics_settle", 1500, place_high_target, open_target)
@@ -1069,6 +1227,16 @@ def main() -> int:
         and pregrasp_bottle_translation <= 0.002
     )
     (OUT / "frame_diagnostics.json").write_text(json.dumps(pregrasp_diagnostics, indent=2) + "\n")
+    no_bottle_attachment_constraints = bool(
+        details["mimic_constraints_match"]
+        and model.neq == len(details["mimic_relations"])
+        and all(
+            int(model.eq_type[equality_id]) == int(mujoco.mjtEq.mjEQ_JOINT)
+            and int(model.eq_objtype[equality_id]) == int(mujoco.mjtObj.mjOBJ_JOINT)
+            for equality_id in range(model.neq)
+        )
+    )
+    mimic_relations_within_tolerance = max_mimic_relation_error_rad <= MIMIC_RELATION_TOLERANCE_RAD
     gates = {
         "plausible_collision_free_pregrasp": pregrasp_valid,
         "no_open_hand_approach_push": not preclosure_contact_bodies and pregrasp_bottle_translation <= 0.002,
@@ -1080,7 +1248,9 @@ def main() -> int:
         "bottle_final_footprint_inside_table": final_footprint_inside,
         "final_xy_error_at_most_0_05_m": bottle_target_error <= 0.05,
         "free_physics_target_table_supported_settle": not final_contacts and not final_left_contacts and final_target_table_contact,
-        "no_runtime_weld_or_equality": model.neq == 0,
+        "all_12_vendor_mimic_relations_compiled": details["mimic_constraints_match"],
+        "mimic_joint_relation_error_within_tolerance": mimic_relations_within_tolerance,
+        "no_runtime_bottle_weld_or_attachment_constraint": no_bottle_attachment_constraints,
         "no_bottle_qpos_writes_during_rollout": qpos_assignments_during_rollout == 0,
     }
     passed = all(
@@ -1103,7 +1273,9 @@ def main() -> int:
             float(np.linalg.norm(final_velocity[3:])) <= 0.05,
             final_tilt <= 0.20,
             max_penetration <= 0.02,
-            model.neq == 0,
+            details["mimic_constraints_match"],
+            mimic_relations_within_tolerance,
+            no_bottle_attachment_constraints,
             qpos_assignments_during_rollout == 0,
         ]
     )
@@ -1120,6 +1292,11 @@ def main() -> int:
             "nmesh": model.nmesh,
             "neq": model.neq,
             "servo_counts": details["servo_counts"],
+            "urdf_mimic_relation_count": len(details["mimic_relations"]),
+            "urdf_mimic_relations": details["mimic_relations"],
+            "urdf_mimic_constraints_match_source": details["mimic_constraints_match"],
+            "mimic_relation_runtime_tolerance_rad": MIMIC_RELATION_TOLERANCE_RAD,
+            "mimic_relation_max_error_rad": max_mimic_relation_error_rad,
             "effort_limited_joint_count": details["effort_count"],
             "self_collision_policy": {
                 "policy": "exclude_robot_ancestor_descendant_pairs_only",
@@ -1143,7 +1320,7 @@ def main() -> int:
                 "target_body_center_xy_m": TARGET_TABLE_BODY_XY.tolist(),
                 "target_site_offset_y_m": TARGET_TABLE_SITE_OFFSET_Y,
             },
-            "control_model": "URDF joint-effort-limited position servos; right arm waypoints from bounded least-squares palm-site IK",
+            "control_model": "URDF joint-effort-limited position servos on independent joints; 12 source-defined URDF mimic relations are MuJoCo joint equalities; right arm waypoints use bounded least-squares palm-site IK",
             "runtime_gl": os.environ.get("MUJOCO_GL", "default"),
             "visual_provenance": {
                 "robot_body_materials": "official pinned X2 URDF visual material colors and mesh assets",
@@ -1160,6 +1337,15 @@ def main() -> int:
             "canonical_scene_provenance": {
                 "table": "G1 PR #45 M0 source/target table geometry and placement",
                 "bottle": "current X2 Issue #46 70 mm x 244.5 mm, 0.57 kg bottle",
+            },
+            "vendor_mimic_conversion": {
+                "source": "URDF <mimic> joint/multiplier/offset tags from the pinned OmniHand model",
+                "conversion": "MuJoCo scalar joint equalities; follower joints have no independent servo actuator",
+                "relations": details["mimic_relations"],
+                "compiled_source_match": details["mimic_constraints_match"],
+                "max_runtime_position_error_rad": max_mimic_relation_error_rad,
+                "runtime_error_tolerance_rad": MIMIC_RELATION_TOLERANCE_RAD,
+                "bottle_attachment_constraint_count": 0 if no_bottle_attachment_constraints else None,
             },
         }
     )
@@ -1199,6 +1385,9 @@ def main() -> int:
             "model_free_bottle_joint": True,
             "runtime_weld": False,
             "equality_constraint_count": model.neq,
+            "equality_constraints_are_only_vendor_mimics": details["mimic_constraints_match"],
+            "bottle_attachment_constraint_count": 0 if no_bottle_attachment_constraints else None,
+            "mimic_relation_max_error_rad": max_mimic_relation_error_rad,
             "opposite_hand_contact": first_left_contact is not None,
             "rollout_bottle_qpos_assignments": qpos_assignments_during_rollout,
             "target_footprint_inside_table": final_footprint_inside,
@@ -1227,6 +1416,7 @@ def main() -> int:
             "runtime_identity_json": str(OUT / "runtime_identity.json"),
             "physics_contact_trace_jsonl": str(OUT / "physics_contact_trace.jsonl"),
             "video_mp4": str(OUT / "m0_x2_grasp.mp4"),
+            "reproduction_command": str(OUT / "reproduction_command.txt"),
             "before_overview_png": str(OUT / "before_overview.png"),
             "after_overview_png": str(OUT / "after_overview.png"),
             "pregrasp_png": str(OUT / "pregrasp.png"),
@@ -1234,6 +1424,10 @@ def main() -> int:
             "front_view_png": str(OUT / "front_view.png"),
             "side_view_png": str(OUT / "side_view.png"),
             "closed_hand_approach_png": str(OUT / "closed_hand_approach.png"),
+            "finger_close_png": str(OUT / "finger_close.png"),
+            "transfer_png": str(OUT / "transfer.png"),
+            "lower_to_place_png": str(OUT / "lower_to_place.png"),
+            "finger_open_release_png": str(OUT / "finger_open_release.png"),
             "closed_hand_approach_closeup_png": str(OUT / "closed_hand_approach_closeup.png"),
             "visual_material_closeup_png": str(OUT / "pregrasp_closeup.png"),
             "grasp_png": str(OUT / "grasp.png"),
@@ -1246,6 +1440,8 @@ def main() -> int:
             "final_screenshot_png": str(OUT / "final.png"),
         },
         "result": {
+            "mimic_relation_error_max_rad": max_mimic_relation_error_rad,
+            "mimic_relation_runtime_tolerance_rad": MIMIC_RELATION_TOLERANCE_RAD,
             "maximum_lift_m": bottle_lift,
             "initial_position": START.tolist(),
             "final_position": final_position.tolist(),
