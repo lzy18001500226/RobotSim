@@ -1,18 +1,18 @@
 # Issue #43 M0 Status
 
-CURRENT STAGE: The right Dex3-1 single-hand M0 clean seed-42 run passes the six strictly ordered gates. PR #45 remains open and unmerged.
+CURRENT STAGE: BLOCKED. The pinned vendor stock G1 hands restore the correct paired morphology, but are unarticulated visual meshes with no finger joints, actuators, or collision geometry. They cannot perform the required physical bottle grasp. PR #45 remains open and Draft; earlier Dex3 grasp runs do not qualify this morphology target.
 
-## Current Single-Hand Acceptance
+## Current Morphology and Scene Review
 
-The current target uses the pinned G1 29-DoF body with one right Unitree Dex3-1 Rev 1.0 hand attached below `right_wrist_yaw_link`. The original 29 body actuators remain intact; seven added hand actuators are resolved by joint name. No articulated left hand is present, and the left arm remains clear of the bottle.
+The generated model uses the paired `left_rubber_hand.STL` and `right_rubber_hand.STL` assets from Unitree MuJoCo `unitree_robots/g1/g1_29dof.xml` at commit `1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d`. Both are mounted on the corresponding wrist bodies using the vendor transforms and unit mesh scale. The current model has no articulated hand joints, hand actuators, or hand collision geoms; this is a real manipulation-capability blocker, not a reason to substitute Dex3.
 
-The 500 mL bottle is represented by four cylindrical collision geoms, with a 65 mm body diameter, 231 mm total height, and 0.50 kg total mass. Bottle friction is 1.5 and hand friction is 2.0. Grasp, carry, and release use measured thumb, index, and middle finger contact with friction only. The runtime creates no equality constraint and does not write bottle qpos after reset.
+The visual audit keeps the pinned G1 scene lighting, skybox, and dark checker floor. It uses the existing G1 table location and 0.4 m by 0.4 m footprint, with a physical tabletop and four legs. The bottle copies the actual Issue #46 X2 grasp-script definition: one free-jointed cylinder, 75 mm diameter, 240 mm tall, 0.57 kg, RGBA `[0.12, 0.52, 0.82, 1.0]`, friction `[1.4, 0.02, 0.001]`, and `condim=4`. The X2 reference itself is an envelope cylinder, not a shoulder/neck/cap bottle. The G1 object rests on the table with no pedestal, weld, or runtime qpos write.
 
-The required ordered gates are GRASP -> LIFT -> TRANSFER -> RELEASE -> PLACE -> SETTLE. PLACE records the first released, target-supported sample with the complete collision footprint inside the table margin. SETTLE requires a further continuous stable free-physics interval of at least one second. The review packet is written under `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-43-g1-single-hand/` and contains the result JSON, physics/contact trace, run log, MP4, and final PNG.
+No grasp, lift, or manipulation episode was run. The attempted right-arm approach target did not solve (0.106 m position and 0.466 rad orientation residual); the recorded right-hand site is 0.0606 m from the bottle center at reset. The left hand was moved to a clear reference pose 0.447 m away. The near-bottle image is a scene reference, not a planned pregrasp. No lift screenshot exists because the stock hand cannot physically grasp the bottle.
 
-Reproduce the review packet with `ROBOTSIM_M0_OUTPUT_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-43-g1-single-hand ./scripts/run_m0_pick_place.sh`; its defaults use the pinned G1 body/controller and existing launcher provenance checks. Each run creates an isolated run-ID subdirectory under the requested output directory. The generated model sets an offscreen render buffer matching the 960 x 720 MP4 and PNG evidence.
+Reproduce the morphology/scene audit with `ROBOTSIM_M0_OUTPUT_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-43-g1-stock-hands-canonical ./scripts/run_m0_pick_place.sh`. Each invocation writes an isolated run-ID directory with result JSON, trace, log, MP4, overview, and close-up images. The launcher exits nonzero after recording the expected `BLOCKED` result.
 
-The sections below retain baseline research and reproduction evidence for earlier palm-pad and runtime-weld revisions. Those measurements are historical and do not qualify the current acceptance target.
+The sections below retain baseline research and reproduction evidence for earlier hand, palm-pad, and runtime-weld revisions. Those measurements are historical and do not qualify the current morphology or acceptance target.
 
 The earlier box-dominant geometry and center-only placement run is superseded. The historical measurements below describe the prior acceptance-gap code and are distinct from the final launcher-revision evidence recorded later in this file.
 
