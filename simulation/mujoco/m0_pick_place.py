@@ -2622,6 +2622,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output_json.write_text(json.dumps(failure, indent=2) + "\n", encoding="utf-8")
         print(f"FAIL: {failure['error']}", file=sys.stderr, flush=True)
         return 1
+    result.setdefault("reproduction_command", args.reproduction_command)
     if result.get("state") == "BLOCKED":
         result["passed"] = False
         result["complete"] = False

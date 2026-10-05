@@ -1,4 +1,5 @@
 import ast
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ from simulation.mujoco.m0_pick_place import (
     check_projected_footprint,
     make_bottle_scene_xml,
     make_stock_hand_model_xml,
+    main,
     run_demo,
 )
 
@@ -543,6 +545,39 @@ class ActiveEntryPointTests(unittest.TestCase):
         self.assertEqual(result, {"state": "BLOCKED"})
         stock_audit.assert_called_once_with(args)
         dex3_episode.assert_not_called()
+
+    @patch("simulation.mujoco.m0_pick_place._runtime_identity", return_value={})
+    @patch("simulation.mujoco.m0_pick_place.parse_args")
+    @patch("simulation.mujoco.m0_pick_place.run_demo", return_value={"state": "BLOCKED"})
+    def test_blocked_result_records_exact_reproduction_command(
+        self, run_demo_mock, parse_args_mock, runtime_identity_mock
+    ):
+        reproduction_command = (
+            "ROBOTSIM_M0_OUTPUT_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/"
+            "issue-43-g1-stock-hands-canonical ./scripts/run_m0_pick_place.sh"
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            result_path = Path(tmp_dir) / "m0_result.json"
+            parse_args_mock.return_value = SimpleNamespace(
+                run_id="m0-test-blocked",
+                output_json=result_path,
+                reproduction_command=reproduction_command,
+                hand_roll_deg=20.0,
+                grasp_hold_frames=2,
+                lift_frames=15,
+                lift_height_m=0.16,
+                transfer_frames=30,
+                lower_frames=15,
+            )
+
+            exit_code = main([])
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["state"], "BLOCKED")
+        self.assertEqual(result["reproduction_command"], reproduction_command)
+        run_demo_mock.assert_called_once()
+        runtime_identity_mock.assert_called_once()
 
 
 if __name__ == "__main__":
