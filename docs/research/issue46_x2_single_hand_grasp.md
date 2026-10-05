@@ -1,6 +1,6 @@
 # RobotSim Issue #46: X2 Single-Hand Bottle Grasp
 
-**Status: FAIL.** The corrected station, vendor appearance, canonical table/bottle combination, and collision-free pregrasp are recorded. The right hand did not establish a stable multi-finger grasp, lift the required 50 mm, or place and settle the bottle at the target. This is not ready for X2 single-hand visual review.
+**Physical manipulation: FAIL. Static scene review: READY FOR MAINTAINER VISUAL REVIEW.** This update corrects only the static station and rendering. The right hand still has not established a stable multi-finger grasp, lifted the required 50 mm, or placed and settled the bottle at the target.
 
 ## Source and runtime
 
@@ -11,15 +11,35 @@
 - RobotSim harness commit tested: `b62d63174950cef9e1dd8a24da22348c5077b096`. The run identity marks the worktree dirty because four pre-existing untracked `debug_issue46_*.py` scratch files were present; they were not staged or changed. The tracked harness files were at the recorded commit.
 - The vendor checkout remained clean. No vendor asset was copied into RobotSim or edited.
 
-## Canonical scene and appearance
+## Static visual baseline for maintainer review
 
-The source table uses the G1 PR #45 M0 table definition: top height `0.80 m`, source center `[0.30, 0.00] m`, source half-extents `[0.20, 0.12] m`, target center `[0.30, -0.24] m`, target half-extents `[0.20, 0.10] m`, `0.02 m` gap, and `0.04 m` target-marker offset. The dark blue-gray table color is retained from that scene. The object is the current X2 bottle: `70 mm` body diameter, `244.5 mm` total height, `0.57 kg`; the previous G1 bottle is not used.
+The 2026-10-05 static scene review is under `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-final-review/`. It includes the unchanged `before_overview.png`, canonical three-quarter overview, front view, side-alignment view, hand/material close-up, `static_scene.json`, `run.log`, and exact commands.
 
-The X2 URDF contains 40 visual material color entries, all white (`1 1 1 1`) or black/transparent (`0 0 0 0.5`), and no URDF texture entries. The vendor visual meshes and authored colors are retained, including the black chest logo. A light neutral fallback is applied only to uncolored hand visual geoms. The vendor scene checker used equal RGB colors; although the replacement checker texture is assigned in the compiled model, it renders flat at this EGL overview scale. The latest scene therefore uses a restrained neutral floor with 34 thin, collision-disabled grid geoms. Headlight ambient and diffuse were lowered; specular is `0.45` to retain mesh highlights. The overview camera is closer while keeping the robot, table, and bottle in frame.
+The X2 scene now calls `add_g1_canonical_table()` from `simulation/mujoco/canonical_manipulation_assets.py`. Its tabletop, four legs, and target site match the accepted G1 XML: table center `[0.300, -0.100] m`, top z `0.800 m`, tabletop half-extents `[0.200, 0.200] m`, 25 mm legs at x/y offsets `+/-0.175 m`, and brown RGBA `[0.6, 0.4, 0.2, 1]`. The G1 reference XML SHA256 is recorded in the JSON. G1 PR #45 is unchanged; migrating its scene to the shared helper remains future work.
+
+The four-part X2 bottle definition is preserved as the reusable canonical X2 bottle in the same module: blue body, shoulder, neck, and dark cap; 70 mm diameter, 244.5 mm height, and 0.57 kg. It has not been replaced by the pure-cylinder benchmark object. Updating G1 to consume this shared bottle definition is future work.
+
+The pinned vendor URDF's authored white body colors and dark detail colors remain intact. The importer drops name-only OmniHand materials, so the renderer maps the symbolic `silver`, `blue`, `brown`, `white`, `green`, and `orange` names to a documented color palette after model compilation; the URDF provides no numeric RGB values for those named materials, so those six shades are an approximation rather than source-exact RGB. This replaces the earlier uniform gray fallback. The original vendor meshes and black chest detail remain visible. Lighting uses the accepted G1 headlight values (ambient 0.3, diffuse 0.6, specular 0), matching haze and sky gradient, plus a downward directional key light. The checker texture washed out in this EGL view, so the floor is a neutral matte RGBA `[0.42, 0.45, 0.48, 1]`.
+
+X2 starts directly at the station at `[0.38, 0.32, 0.68] m`, yaw `-pi/2`, facing world `-Y`. The G1 table center is directly ahead with an 80 mm lateral offset toward the right-arm workspace. The overview and side image show a forward-facing torso and a naturally bent right-arm reach; walking is not used.
+
+The static hand pose copies the recorded `approach_preshape` arm and finger joint state from the prior run. The renderer calls `mj_forward` only: `mj_step` is not called, the bottle qpos is unchanged, and there is no hand/bottle or hand/table contact in the rendered state. This is a frozen scene pose, not new grasp evidence or a manipulation PASS.
+
+Reproduction command:
+
+```bash
+MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-final-review /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python scripts/research/issue46_x2_static_scene.py
+```
+
+## Earlier rollout scene and appearance (historical)
+
+The physical trial below used the earlier source/target table arrangement: top height `0.80 m`, source center `[0.30, 0.00] m`, source half-extents `[0.20, 0.12] m`, target center `[0.30, -0.24] m`, target half-extents `[0.20, 0.10] m`, `0.02 m` gap, and `0.04 m` target-marker offset. The object was the current X2 bottle: `70 mm` body diameter, `244.5 mm` total height, `0.57 kg`; the previous G1 bottle was not used.
+
+In that historical run, the converter preserved the 40 inline white or black/translucent URDF colors and vendor meshes, including the black chest logo, but reduced name-only OmniHand materials to its gray default. It then used 34 thin, collision-disabled floor-grid geoms and reduced ambient and diffuse while setting specular to `0.45`. Those settings produced the earlier gray/dark appearance and are superseded by the static visual baseline above.
 
 The X2 fixed base is `[0.38, 0.32, 0.68] m`, yaw `-pi/2`, so its forward axis is world `-Y` and its torso faces the canonical table edge. Walking is not used. The table and bottle lie in front of the robot and within the right arm workspace. The palm frame comes from the vendor `R_palm_joint`; its pregrasp normal is approximately world `-Y`. Measured pregrasp position error is `8.70 mm`, rotation error `0.032 rad`; no preclosure bottle contact, right-hand/table contact, or opposite-hand contact occurred. Bottle translation before closure was `0.186 mm`.
 
-The table values in this scratch scene match the G1 M0 source, but no shared table/bottle-definition refactor was made: the current task leaves G1 PR #45 untouched. Consolidating reusable cross-robot definitions remains follow-up work.
+That rollout still used a duplicated two-table layout. The static-scene update above consolidates the X2 table and bottle definitions in one reusable helper; G1 PR #45 remains untouched, so migrating its scene to consume the helper is still follow-up work.
 
 ## Rollout result
 

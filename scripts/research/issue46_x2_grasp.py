@@ -16,21 +16,38 @@ import numpy as np
 from scipy.optimize import least_squares
 
 
+SIM_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SIM_REPO_ROOT / "simulation" / "mujoco"))
+from canonical_manipulation_assets import (
+    CANONICAL_X2_BOTTLE_DIAMETER_M,
+    CANONICAL_X2_BOTTLE_GEOMS,
+    CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M,
+    CANONICAL_X2_BOTTLE_HEIGHT_M,
+    CANONICAL_X2_BOTTLE_MASS_KG,
+    CANONICAL_X2_BOTTLE_START_BODY_POS,
+    CANONICAL_X2_BOTTLE_TARGET_BODY_POS,
+    G1_CANONICAL_TABLE_CENTER_XY,
+    G1_CANONICAL_TABLE_HALF_EXTENTS,
+    G1_CANONICAL_TABLE_TOP_Z,
+    add_g1_canonical_table,
+)
+
+
 ROOT = Path(os.environ.get("AGIBOT_X2_VENDOR_ROOT", "/tmp/robotsim-issue46-agibot-x2-urdf-575cc6b988f976c23550e0db85aa1e5475d3652d"))
 URDF = ROOT / "X2_URDF-v1.4.0" / "X2-Ultra_omnihand.urdf"
 OUT = Path(os.environ.get("ISSUE46_EVIDENCE_DIR", str(Path(__file__).parent)))
 SOURCE_PIN = "575cc6b988f976c23550e0db85aa1e5475d3652d"
 DT = 0.002
-SOURCE_TABLE_XY = np.array([0.30, 0.0])
-SOURCE_TABLE_HALF_EXTENTS = np.array([0.20, 0.12])
-TARGET_TABLE_BODY_XY = np.array([0.30, -0.24])
-TARGET_TABLE_HALF_EXTENTS = np.array([0.20, 0.10])
-TARGET_TABLE_SITE_OFFSET_Y = 0.04
-TABLE_TOP_Z = 0.80
-START = np.array([0.30, 0.0, TABLE_TOP_Z + 0.1175])
-GOAL = np.array([0.30, -0.20, TABLE_TOP_Z + 0.1175])
-BOTTLE_RADIUS = 0.035
-BOTTLE_TOP_Z = float(START[2] + 0.127)
+SOURCE_TABLE_XY = np.array(G1_CANONICAL_TABLE_CENTER_XY, dtype=float)
+SOURCE_TABLE_HALF_EXTENTS = np.array(G1_CANONICAL_TABLE_HALF_EXTENTS, dtype=float)
+TARGET_TABLE_BODY_XY = SOURCE_TABLE_XY.copy()
+TARGET_TABLE_HALF_EXTENTS = SOURCE_TABLE_HALF_EXTENTS.copy()
+TARGET_TABLE_SITE_OFFSET_Y = 0.0
+TABLE_TOP_Z = G1_CANONICAL_TABLE_TOP_Z
+START = np.array(CANONICAL_X2_BOTTLE_START_BODY_POS, dtype=float)
+GOAL = np.array(CANONICAL_X2_BOTTLE_TARGET_BODY_POS, dtype=float)
+BOTTLE_RADIUS = CANONICAL_X2_BOTTLE_DIAMETER_M / 2.0
+BOTTLE_TOP_Z = float(START[2] + CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[1])
 ROBOT_BASE_WORLD = np.array([0.38, 0.32, 0.68])
 ROBOT_BASE_YAW = -math.pi / 2.0
 ROBOT_FORWARD_WORLD = np.array([math.cos(ROBOT_BASE_YAW), math.sin(ROBOT_BASE_YAW), 0.0])
@@ -124,6 +141,19 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
             if color.get("rgba")
         }
     )
+    vendor_visual_material_by_link: dict[str, str] = {}
+    for link in source_xml.findall("link"):
+        material_names = {
+            material.get("name")
+            for material in (visual.find("material") for visual in link.findall("visual"))
+            if material is not None and material.get("name")
+        }
+        if len(material_names) > 1:
+            raise ValueError(
+                f"Multiple named visual materials on one link are not mapped safely: {link.get('name')}"
+            )
+        if material_names:
+            vendor_visual_material_by_link[link.get("name")] = next(iter(material_names))
     parent_by_child = {
         joint.find("child").get("link"): joint.find("parent").get("link")
         for joint in source_xml.findall("joint")
@@ -196,126 +226,49 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         width=512,
         height=3072,
     )
-    floor_texture = spec.add_texture(
-        name="groundplane",
-        type=mujoco.mjtTexture.mjTEXTURE_2D,
-        builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER,
-        mark=mujoco.mjtMark.mjMARK_EDGE,
-        rgb1=[0.50, 0.53, 0.55],
-        rgb2=[0.43, 0.46, 0.48],
-        markrgb=[0.62, 0.64, 0.65],
-        width=300,
-        height=300,
+    spec.worldbody.add_light(
+        name="scene_key_light",
+        pos=[0.0, 0.0, 1.5],
+        dir=[0.0, 0.0, -1.0],
+        type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL,
     )
-    floor_material = spec.add_material(name="groundplane", texrepeat=[5.0, 5.0], reflectance=0.2)
-    floor_material.textures = [floor_texture.name]
-    floor_material.texuniform = True
-
     spec.worldbody.add_geom(
         name="floor",
         type=mujoco.mjtGeom.mjGEOM_PLANE,
         size=[0.0, 0.0, 0.1],
-        material=floor_material.name,
+        rgba=[0.42, 0.45, 0.48, 1.0],
         group=1,
     )
-    # The EGL renderer averages this checker into a flat plane at overview scale.
-    # Add a restrained, visual-only grid so the floor has readable depth cues.
-    for index, coordinate in enumerate(np.arange(-0.6, 1.11, 0.1)):
-        spec.worldbody.add_geom(
-            name=f"floor_grid_x_{index}",
-            type=mujoco.mjtGeom.mjGEOM_BOX,
-            pos=[float(coordinate), 0.0, 0.00035],
-            size=[0.00045, 0.85, 0.00025],
-            rgba=[0.40, 0.43, 0.45, 1.0],
-            contype=0,
-            conaffinity=0,
-            group=1,
-        )
-    for index, coordinate in enumerate(np.arange(-0.7, 0.81, 0.1)):
-        spec.worldbody.add_geom(
-            name=f"floor_grid_y_{index}",
-            type=mujoco.mjtGeom.mjGEOM_BOX,
-            pos=[0.25, float(coordinate), 0.00035],
-            size=[0.85, 0.00045, 0.00025],
-            rgba=[0.40, 0.43, 0.45, 1.0],
-            contype=0,
-            conaffinity=0,
-            group=1,
-        )
-    spec.worldbody.add_geom(
-        name="experiment_source_table",
-        type=mujoco.mjtGeom.mjGEOM_BOX,
-        pos=[float(SOURCE_TABLE_XY[0]), float(SOURCE_TABLE_XY[1]), TABLE_TOP_Z / 2.0],
-        size=[float(SOURCE_TABLE_HALF_EXTENTS[0]), float(SOURCE_TABLE_HALF_EXTENTS[1]), TABLE_TOP_Z / 2.0],
-        rgba=[0.24, 0.34, 0.42, 1.0],
-        friction=[1.2, 0.01, 0.001],
-        group=1,
-    )
-    spec.worldbody.add_geom(
-        name="experiment_target_table",
-        type=mujoco.mjtGeom.mjGEOM_BOX,
-        pos=[float(TARGET_TABLE_BODY_XY[0]), float(TARGET_TABLE_BODY_XY[1]), TABLE_TOP_Z / 2.0],
-        size=[float(TARGET_TABLE_HALF_EXTENTS[0]), float(TARGET_TABLE_HALF_EXTENTS[1]), TABLE_TOP_Z / 2.0],
-        rgba=[0.24, 0.34, 0.42, 1.0],
-        friction=[1.2, 0.01, 0.001],
-        group=1,
-    )
-    spec.worldbody.add_geom(
-        name="experiment_target_marker",
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        pos=[float(GOAL[0]), float(GOAL[1]), TABLE_TOP_Z + 0.003],
-        size=[0.055, 0.002, 0.0],
-        rgba=[0.90, 0.66, 0.16, 1.0],
-        contype=0,
-        conaffinity=0,
-        group=1,
-    )
+    add_g1_canonical_table(spec)
     bottle = spec.worldbody.add_body(name="bottle", pos=START.tolist())
     bottle.add_freejoint(name="bottle_free")
-    bottle.add_geom(
-        name="bottle_body",
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        pos=[0.0, 0.0, -0.04],
-        size=[0.035, 0.0775, 0.0],
-        mass=0.49,
-        rgba=[0.12, 0.52, 0.82, 1.0],
-        friction=[1.4, 0.02, 0.001],
-        condim=4,
-        group=1,
-    )
-    bottle.add_geom(
-        name="bottle_shoulder",
-        type=mujoco.mjtGeom.mjGEOM_ELLIPSOID,
-        pos=[0.0, 0.0, 0.0535],
-        size=[0.035, 0.035, 0.026],
-        mass=0.05,
-        rgba=[0.12, 0.52, 0.82, 1.0],
-        friction=[1.4, 0.02, 0.001],
-        condim=4,
-        group=1,
-    )
-    bottle.add_geom(
-        name="bottle_neck",
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        pos=[0.0, 0.0, 0.0855],
-        size=[0.018, 0.020, 0.0],
-        mass=0.02,
-        rgba=[0.12, 0.52, 0.82, 1.0],
-        friction=[1.4, 0.02, 0.001],
-        condim=4,
-        group=1,
-    )
-    bottle.add_geom(
-        name="bottle_cap",
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        pos=[0.0, 0.0, 0.1185],
-        size=[0.020, 0.0085, 0.0],
-        mass=0.01,
-        rgba=[0.10, 0.16, 0.21, 1.0],
-        friction=[1.4, 0.02, 0.001],
-        condim=4,
-        group=1,
-    )
+    if not math.isclose(
+        CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[1]
+        - CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[0],
+        CANONICAL_X2_BOTTLE_HEIGHT_M,
+        abs_tol=1e-12,
+    ) or not math.isclose(
+        sum(geom_spec["mass"] for geom_spec in CANONICAL_X2_BOTTLE_GEOMS),
+        CANONICAL_X2_BOTTLE_MASS_KG,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("Shared X2 bottle geometry, height, and mass definitions disagree")
+    geom_types = {
+        "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER,
+        "ellipsoid": mujoco.mjtGeom.mjGEOM_ELLIPSOID,
+    }
+    for geom_spec in CANONICAL_X2_BOTTLE_GEOMS:
+        bottle.add_geom(
+            name=geom_spec["name"],
+            type=geom_types[geom_spec["type"]],
+            pos=list(geom_spec["pos"]),
+            size=list(geom_spec["size"]),
+            mass=geom_spec["mass"],
+            rgba=list(geom_spec["rgba"]),
+            friction=[1.4, 0.02, 0.001],
+            condim=4,
+            group=1,
+        )
 
     effort = {}
     for joint in source_xml.findall("joint"):
@@ -347,25 +300,44 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
     model.opt.timestep = DT
     model.vis.global_.offwidth = 1280
     model.vis.global_.offheight = 720
-    model.vis.headlight.ambient[:] = [0.26, 0.26, 0.26]
-    model.vis.headlight.diffuse[:] = [0.45, 0.45, 0.45]
-    model.vis.headlight.specular[:] = [0.45, 0.45, 0.45]
+    model.vis.headlight.ambient[:] = [0.30, 0.30, 0.30]
+    model.vis.headlight.diffuse[:] = [0.60, 0.60, 0.60]
+    model.vis.headlight.specular[:] = [0.0, 0.0, 0.0]
     model.vis.rgba.haze[:] = [0.15, 0.25, 0.35, 1.0]
     model.vis.global_.azimuth = 200.0
     model.vis.global_.elevation = -20.0
-    fallback_hand_geom_names = []
+    hand_material_geom_assignments = []
+    material_rgba = {
+        "silver": [0.76, 0.79, 0.82, 1.0],
+        "blue": [0.14, 0.34, 0.76, 1.0],
+        "brown": [0.46, 0.31, 0.20, 1.0],
+        "white": [0.98, 0.98, 0.97, 1.0],
+        "green": [0.16, 0.50, 0.30, 1.0],
+        "orange": [0.92, 0.43, 0.14, 1.0],
+    }
+    unmatched_hand_material_links = []
     for geom_id in range(model.ngeom):
         if model.geom_group[geom_id] != 1:
             continue
         body_id = int(model.geom_bodyid[geom_id])
-        ancestors = body_ancestors(model, body_id)
-        if any(body_name.startswith(("R_", "L_")) for body_name in ancestors):
-            if np.allclose(model.geom_rgba[geom_id], [0.5, 0.5, 0.5, 1.0]):
-                model.geom_rgba[geom_id] = [0.78, 0.80, 0.83, 1.0]
-                fallback_hand_geom_names.append(name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id))
+        body_name = name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+        if not body_name.startswith(("R_", "L_")):
+            continue
+        material_name = vendor_visual_material_by_link.get(body_name)
+        if material_name in material_rgba:
+            model.geom_rgba[geom_id] = material_rgba[material_name]
+            hand_material_geom_assignments.append(
+                {
+                    "geom": name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id),
+                    "link": body_name,
+                    "vendor_material_name": material_name,
+                    "renderer_rgba": material_rgba[material_name],
+                }
+            )
+        elif np.allclose(model.geom_rgba[geom_id], [0.5, 0.5, 0.5, 1.0]):
+            unmatched_hand_material_links.append(body_name)
     for geom_name in (
-        "experiment_source_table",
-        "experiment_target_table",
+        "m0_table_top",
         "bottle_body",
         "bottle_shoulder",
         "bottle_neck",
@@ -385,8 +357,8 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         "palm_local_rpy": palm_local_rpy.tolist(),
         "palm_local_quat": palm_local_quat.tolist(),
         "palm_local_rotation": palm_local_rotation.tolist(),
-        "source_table_geom_id": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "experiment_source_table"),
-        "target_table_geom_id": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "experiment_target_table"),
+        "source_table_geom_id": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "m0_table_top"),
+        "target_table_geom_id": mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "m0_table_top"),
         "servo_counts": servo_counts,
         "effort_count": len(effort),
         "self_chain_exclusion_count": len(self_chain_exclusions),
@@ -394,7 +366,10 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         "vendor_visual_color_count": len(source_xml.findall(".//visual/material/color")),
         "vendor_visual_color_values": vendor_visual_color_values,
         "vendor_visual_texture_count": len(source_xml.findall(".//visual/material/texture")),
-        "fallback_hand_geom_names": fallback_hand_geom_names,
+        "vendor_visual_material_by_link": vendor_visual_material_by_link,
+        "hand_material_geom_assignments": hand_material_geom_assignments,
+        "hand_material_rgba_fallback": material_rgba,
+        "unmatched_hand_material_links": sorted(set(unmatched_hand_material_links)),
     }
 
 
