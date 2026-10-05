@@ -451,13 +451,20 @@ def main() -> int:
     right_open_center = (right_open_position + bottle_initial_qpos[:3]) / 2.0
     open_pregrasp_bottle_contacts = bottle_hand_contacts(model, data)
     open_pregrasp_table_contacts = hand_table_contacts(model, data)
+    source_right_hand_links = {
+        joint.find("child").get("link")
+        for joint in ET.parse(URDF).getroot().findall("joint")
+        if joint.get("name", "").startswith("R_")
+    }
     model.geom_group[:] = 0
     for geom_id in range(model.ngeom):
         if int(original_geom_groups[geom_id]) != 1:
             continue
         geom_name = name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
         ancestors = body_ancestors(model, int(model.geom_bodyid[geom_id]))
-        if any(body.startswith(("right_", "R_")) for body in ancestors):
+        if "right_wrist_roll_link" in ancestors or source_right_hand_links.intersection(
+            ancestors
+        ):
             model.geom_group[geom_id] = 2
         elif geom_name in BOTTLE_GEOM_NAMES or geom_name == "m0_table_top":
             model.geom_group[geom_id] = 3
@@ -473,7 +480,7 @@ def main() -> int:
         camera_from_direction(
             right_open_center,
             0.60,
-            right_open_normal + np.array([0.85, 0.0, 0.12]),
+            right_open_normal + np.array([1.5, 0.0, 0.12]),
         ),
         open_pregrasp_option,
     )
@@ -667,7 +674,7 @@ Result: static visual review packet only. No physics step or grasp rollout was r
 
 The accepted table, multipart X2 bottle, station, and robot visual materials are retained. The floor uses the same checker texture/material values and texture channel as the accepted G1 scene: `rgb1=[0.2,0.3,0.4]`, `rgb2=[0.1,0.2,0.3]`, edge marks `[0.8,0.8,0.8]`, repeat `[5,5]`, reflectance `0.2`. The channel correction is required for MuJoCo to render the checker rather than a flat white plane.
 
-The open-hand close-up uses the existing static `APPROACH_PALM_POS`, solved with one IK query for framing. Both hands stay at zero finger qpos; the image isolates the right arm/hand, original bottle, and tabletop, and verifies no hand/bottle or hand/table contact. This is the contact-free approach immediately before the existing pregrasp target, not a rollout or a grasp adjustment.
+The open-hand close-up uses the existing static `APPROACH_PALM_POS`, solved with one IK query for framing. Both hands stay at zero finger qpos; the image isolates the right wrist/hand, original bottle, and tabletop, and verifies no hand/bottle or hand/table contact. This is the contact-free approach immediately before the existing pregrasp target, not a rollout or a grasp adjustment.
 
 ## Evidence
 

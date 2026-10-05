@@ -13,7 +13,7 @@
 
 ## Static visual baseline for maintainer review
 
-The new 2026-10-05 static morphology review packet is under `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review-final/`. It includes the canonical overview, front overview, side alignment, separate left/right palm-front and side views, both-hands comparison, open right-hand approach close-up, `static_scene.json`, `REPORT.md`, `run.log`, and exact commands.
+The new 2026-10-05 static morphology review packet is under `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review-final-v2/`. It includes the canonical overview, front overview, side alignment, separate left/right palm-front and side views, both-hands comparison, open right-hand approach close-up, `static_scene.json`, `REPORT.md`, `run.log`, and exact commands.
 
 The X2 scene now calls `add_g1_canonical_table()` from `simulation/mujoco/canonical_manipulation_assets.py`. Its tabletop, four legs, and target site match the accepted G1 XML: table center `[0.300, -0.100] m`, top z `0.800 m`, tabletop half-extents `[0.200, 0.200] m`, 25 mm legs at x/y offsets `+/-0.175 m`, and brown RGBA `[0.6, 0.4, 0.2, 1]`. The G1 reference XML SHA256 is recorded in the JSON. G1 PR #45 is unchanged; migrating its scene to the shared helper remains future work.
 
@@ -23,7 +23,7 @@ The pinned vendor URDF's authored white body colors and dark detail colors remai
 
 X2 starts directly at the station at `[0.38, 0.32, 0.68] m`, yaw `-pi/2`, facing world `-Y`. The G1 table center is directly ahead with an 80 mm lateral offset toward the right-arm workspace. The overview and side image show a forward-facing torso and a naturally bent right-arm reach; walking is not used.
 
-The neutral diagnostic sets all 46 left/right hand joints to vendor zero qpos and both arm sets to symmetric zero qpos. A separate open right-hand approach image sets only the right arm by one static IK query at the existing `APPROACH_PALM_POS` and `PALM_TARGET_ROTATION`; both hands remain at zero finger qpos. The image isolates the right arm/hand, original bottle, and tabletop. It records no hand/bottle or hand/table contact. Every image uses `mj_forward` only: no `mj_step`, grasp rollout, or bottle qpos write occurs.
+The neutral diagnostic sets all 46 left/right hand joints to vendor zero qpos and both arm sets to symmetric zero qpos. A separate open right-hand approach image sets only the right arm by one static IK query at the existing `APPROACH_PALM_POS` and `PALM_TARGET_ROTATION`; both hands remain at zero finger qpos. The image isolates the right wrist/hand, original bottle, and tabletop. It records no hand/bottle or hand/table contact. Every image uses `mj_forward` only: no `mj_step`, grasp rollout, or bottle qpos write occurs.
 
 The pinned URDF and compiled model preserve distinct palm meshes (`L_palm -> l_palm.stl`, `R_palm -> r_palm.stl`), their separate fixed mounts (`L_palm_joint` rpy approximately `[0, pi, +pi/2]`; `R_palm_joint` approximately `[0, pi, -pi/2]`), mirrored thumb-side placement, and all 46 hand-joint axes/signs/ranges. The model audit reports zero transform/axis/range mismatch; no left mesh or link transform is reused on the right. The side-by-side frontal image makes the mirrored thumb placement visible. The thumb points downward in the arm-zero neutral diagnostic, so the old curled finger qpos was not the sole cause; the separate open-approach image uses the existing task palm target and shows the thumb laterally. No arbitrary wrist quaternion or hand model transform was added.
 
@@ -32,7 +32,7 @@ The vendor source contains 12 mimic annotations while the compiled model has zer
 Reproduction command:
 
 ```bash
-MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review-final /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python scripts/research/issue46_x2_static_scene.py
+MUJOCO_GL=egl ISSUE46_STATIC_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/static-scene/20261005-neutral-hand-review-final-v2 /tmp/robotsim-issue46-x2-prototype-575cc6b9/.venv/bin/python scripts/research/issue46_x2_static_scene.py
 ```
 
 ## Earlier rollout scene and appearance (historical)
