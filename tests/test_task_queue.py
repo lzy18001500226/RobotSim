@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -155,7 +156,21 @@ class TaskQueueTests(unittest.TestCase):
         task_ready = make_issue(labels=("agent:ready",))
         self.assertIsNone(store.claim(task_ready, queue.workspace_plan(task_ready, self.root / "worktrees"), writer_slots=2))
         approved = make_issue(labels=("agent:ready", "human:retry-approved"))
-        self.assertIsNotNone(store.claim(approved, queue.workspace_plan(approved, self.root / "worktrees"), writer_slots=2))
+        released = store.claim(approved, queue.workspace_plan(approved, self.root / "worktrees"), writer_slots=2)
+        self.assertIsNotNone(released)
+        self.assertEqual(released["attempts"], 1)
+
+    def test_distinct_failures_still_stop_at_the_attempt_limit(self) -> None:
+        store = self.store()
+        task = make_issue()
+        self.claim(store, task)
+        for attempt in range(queue.MAX_ATTEMPTS):
+            failed = store.fail(task.number, f"distinct-root-cause-{attempt}")
+            expected = "blocked" if attempt + 1 == queue.MAX_ATTEMPTS else "retry"
+            self.assertEqual(failed["status"], expected)
+            if expected == "retry":
+                self.claim(store, task)
+        self.assertEqual(store.get(task.number)["attempts"], queue.MAX_ATTEMPTS)
 
     def test_state_recovers_after_store_reopen_and_prevents_duplicate_claim(self) -> None:
         path = self.root / "resume.sqlite3"
@@ -169,6 +184,17 @@ class TaskQueueTests(unittest.TestCase):
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.active_count(), 1)
         self.assertIsNone(reopened.claim(task, queue.workspace_plan(task, self.root / "worktrees"), writer_slots=2))
+
+    def test_existing_queue_database_gets_closeout_payload_column(self) -> None:
+        path = self.root / "old-state.sqlite3"
+        with sqlite3.connect(path) as database:
+            database.execute(
+                "CREATE TABLE task_runs (issue_number INTEGER PRIMARY KEY, status TEXT NOT NULL, attempts INTEGER NOT NULL)"
+            )
+        store = queue.RunStore(path)
+        self.addCleanup(store.close)
+        columns = {row[1] for row in store._db.execute("PRAGMA table_info(task_runs)")}
+        self.assertIn("closeout_event_json", columns)
 
     def test_dead_primary_recovers_to_retry_after_restart(self) -> None:
         path = self.root / "interrupted.sqlite3"
@@ -250,6 +276,42 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(released["status"], "merge_eligible")
         self.assertTrue(queue.can_merge(released))
 
+    def test_human_repro_gate_stops_until_explicit_approval(self) -> None:
+        store = self.store()
+        task = make_issue(labels=("agent:review", "human:repro"))
+        self.claim(store, task)
+        store.update(task.number, status="awaiting_pr")
+        gates = queue.derive_human_gates(task, ())
+        self.assertEqual(gates, ("human:repro",))
+        stopped = queue.reconcile_pull_request(
+            store, task.number, make_pull(), human_gates=gates,
+            independent_review_passed=True,
+        )
+        self.assertEqual(stopped["status"], "human_gate")
+        packet = queue.human_review_packet(49, make_pull(), gates=gates)
+        self.assertEqual(packet["next_action"], "Human reproduction check")
+        released = queue.reconcile_pull_request(
+            store, task.number, make_pull(), approved_gates=("human:repro",),
+            independent_review_passed=True,
+        )
+        self.assertEqual(released["status"], "merge_eligible")
+
+    def test_done_is_derived_from_closed_issue_not_just_merged_pr(self) -> None:
+        store = self.store()
+        task = make_issue()
+        self.claim(store, task)
+        store.update(task.number, status="awaiting_pr")
+        merged = queue.PullRequest(
+            50, "https://github.com/lzy18001500226/RobotSim/pull/50",
+            "issue/49-task", "b" * 40, "CLOSED", "success", "approved", merged=True,
+        )
+        waiting = queue.reconcile_pull_request(store, task.number, merged)
+        self.assertEqual(waiting["status"], "awaiting_issue_close")
+        done = queue.reconcile_pull_request(store, task.number, merged, issue_closed=True)
+        self.assertEqual(done["status"], "done")
+        self.assertFalse(queue.can_merge(done))
+        self.assertIsNone(store.claim(task, queue.workspace_plan(task, self.root / "worktrees"), writer_slots=2))
+
     def test_sensitive_change_paths_require_matching_human_gates(self) -> None:
         task = make_issue()
         gates = queue.derive_human_gates(
@@ -304,6 +366,86 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(event["task_id"], "issue-49-symphony-task")
         self.assertEqual(event["attempt_id"], row["attempt_id"])
         self.assertEqual(event["pr_number"], None)
+
+    def test_failed_closeout_retry_reuses_exact_payload_and_is_reported(self) -> None:
+        store = self.store()
+        task = make_issue()
+        row = self.claim(store, task)
+        calls: list[dict[str, object]] = []
+        results = iter((1, 0))
+
+        def notifier(_root: Path, event: object) -> int:
+            self.assertIsInstance(event, dict)
+            calls.append(dict(event))
+            return next(results)
+
+        pilot = queue.TaskQueuePilot(
+            self.root, self.root / "worktrees", self.root, store,
+            object(), object(), notifier=notifier,
+        )
+        first = pilot._emit_closeout(
+            task, row, status="blocked", summary="Blocked on the first call.",
+        )
+        self.assertEqual(first, 1)
+        self.assertIn(task.number, pilot.notification_failures)
+        retry_row = store.get(task.number)
+        self.assertEqual(retry_row["notified"], 0)
+        second = pilot._emit_closeout(
+            task, retry_row, status="blocked", summary="Different retry text must not replace payload.",
+        )
+        self.assertEqual(second, 0)
+        self.assertEqual(calls[0], calls[1])
+        self.assertEqual(store.get(task.number)["notified"], 1)
+        self.assertNotIn(task.number, pilot.notification_failures)
+
+    def test_human_review_handoff_explicitly_notifies_once(self) -> None:
+        store = self.store()
+        task = make_issue(labels=("agent:review",))
+        self.claim(store, task)
+        pull = make_pull()
+        store.update(
+            task.number, status="awaiting_pr",
+            reviewed_head_sha=pull.head_sha, review_report="clear",
+        )
+
+        class Github:
+            def __init__(self) -> None:
+                self.comments: list[str] = []
+                self.status_updates: list[tuple[int, str | None]] = []
+
+            def issue(self, number: int) -> queue.Issue:
+                return task
+
+            def pull_for_branch(self, branch: str) -> queue.PullRequest:
+                return pull
+
+            def changed_paths(self, number: int) -> tuple[str, ...]:
+                return ("apps/unity/demo.unity",)
+
+            def comment(self, number: int, body: str) -> None:
+                self.comments.append(body)
+
+            def set_status(self, number: int, *, add: str | None, remove: object) -> None:
+                self.status_updates.append((number, add))
+
+        github = Github()
+        notifications: list[dict[str, object]] = []
+
+        def notifier(_root: Path, event: object) -> int:
+            self.assertIsInstance(event, dict)
+            notifications.append(dict(event))
+            return 0
+
+        pilot = queue.TaskQueuePilot(
+            self.root, self.root / "worktrees", self.root, store, github,
+            object(), notifier=notifier,
+        )
+        first = pilot.reconcile()
+        second = pilot.reconcile()
+        self.assertEqual(first[0]["status"], "human:visual")
+        self.assertEqual(second[0]["status"], "human:visual")
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0]["status"], "completed")
 
 
 if __name__ == "__main__":

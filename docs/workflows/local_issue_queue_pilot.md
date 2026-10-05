@@ -3,8 +3,8 @@
 This document describes the bounded, single-host pilot authorized by Issue #49. It is a foreground
 local command, not a daemon or distributed scheduler. GitHub Issues own readiness, dependencies,
 human gates, and completion; GitHub PRs own branch, CI, and review state. SQLite stores only local
-writer leases, retry fingerprints, and private review feedback so the same local queue can recover
-after a restart.
+writer leases, retry fingerprints, private review feedback, and an exact pending closeout payload so
+the same local queue can recover after a restart.
 
 ## One-time setup
 
@@ -16,9 +16,9 @@ Create these labels in the repository if they do not exist:
 
 - `agent:ready`, `agent:retry`, `agent:running`, `agent:blocked`, `agent:review`,
   `human:retry-approved`
-- `human:visual`, `human:architecture`, `human:security`, `human:hardware`
-- `human:visual-approved`, `human:architecture-approved`, `human:security-approved`,
-  `human:hardware-approved`
+- `human:visual`, `human:repro`, `human:architecture`, `human:security`, `human:hardware`
+- `human:visual-approved`, `human:repro-approved`, `human:architecture-approved`,
+  `human:security-approved`, `human:hardware-approved`
 
 Mark an eligible Issue `agent:ready`. Dependencies use explicit body lines such as
 `Depends on: #12, #18`; every referenced Issue must be closed. Add `human:architecture`,
@@ -56,20 +56,25 @@ workspace plan without creating a worktree or dispatching Codex.
 
 ## Retry and human gates
 
-The first repeated failure becomes `agent:retry`; the same root-cause fingerprint on the next
-attempt becomes `agent:blocked` and triggers an explicit RobotSim task-closeout notification.
+The same root-cause fingerprint on a second attempt becomes `agent:blocked`. The queue also caps
+an issue at three total primary attempts between maintainer releases, so changing the reported
+root cause cannot create an endless retry loop. A repeated failure or exhausted attempt budget
+triggers an explicit RobotSim task-closeout notification. Failed closeout delivery retains the
+original event payload and retries it on the next queue cycle; the command reports notification
+failure with a nonzero exit instead of silently treating it as delivered.
 Review comments and failed check names are routed to the next primary attempt. A repeated identical
 review/CI root cause also blocks. Inspect the branch and Issue before removing `agent:blocked`,
 marking it ready again, and adding `human:retry-approved`. The pilot consumes that label at dispatch.
 
 After CI and both GitHub and read-only review approve the PR, the queue creates a local and Issue
 comment review packet containing the branch, head SHA, check results, and required human gates. A
-Unity scene/prefab/material/shader change stops at `human:visual`; architecture, security, and
-hardware/safety changes carry their matching gates. Add the matching `human:<gate>-approved` label
-after that review. The queue may then report `merge_eligible`; it never merges. GitHub branch
-protection and the repository's standing merge policy still apply. There is no Codex Stop-hook
-dependency: actionable blocked and human-review transitions explicitly call
-`scripts/agent/notify_task.py task-closeout`.
+Unity scene/prefab/material/shader change stops at `human:visual`; a requested reproduction stops
+at `human:repro`; architecture, security, and hardware/safety changes carry their matching gates.
+Add the matching `human:<gate>-approved` label after that review. The queue may then report
+`merge_eligible`; it never merges. `done` is derived from the canonical GitHub Issue becoming
+closed; there is no separate `agent:done` label. GitHub branch protection and the repository's
+standing merge policy still apply. There is no Codex Stop-hook dependency: actionable blocked and
+human-review transitions explicitly call `scripts/agent/notify_task.py task-closeout`.
 
 The trusted Auto-PR workflow now adds `Closes #<number>` only when the `issue/<number>-...` branch
 match is unambiguous. A dependent Issue becomes eligible only after its dependency is actually

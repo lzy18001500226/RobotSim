@@ -2,8 +2,9 @@
 """Single-host, issue-backed RobotSim task queue pilot.
 
 GitHub Issues and PRs own task and human-gate state. The local SQLite file
-contains only execution leases and retry fingerprints so one workstation can
-bound concurrent Codex writers and recover after a restart.
+contains single-host execution leases, retry fingerprints, review feedback,
+and pending closeout payloads so one workstation can bound Codex writers and
+recover after a restart.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from typing import Callable, Iterable, Mapping, Sequence
 REPOSITORY = "lzy18001500226/RobotSim"
 DEFAULT_WRITER_SLOTS = 2
 MAX_WRITER_SLOTS = 2
+MAX_ATTEMPTS = 3
 READY_LABEL = "agent:ready"
 RETRY_LABEL = "agent:retry"
 RUNNING_LABEL = "agent:running"
@@ -36,14 +38,14 @@ BLOCKED_LABEL = "agent:blocked"
 HUMAN_RETRY_APPROVED = "human:retry-approved"
 REVIEW_LABEL = "agent:review"
 HUMAN_GATES = frozenset(
-    {"human:visual", "human:architecture", "human:security", "human:hardware"}
+    {"human:visual", "human:repro", "human:architecture", "human:security", "human:hardware"}
 )
 HUMAN_GATE_APPROVALS = {gate: f"{gate}-approved" for gate in HUMAN_GATES}
 ACTIVE_STATES = frozenset({"running"})
 CLAIM_BLOCKING_STATES = frozenset({
     "running", "awaiting_pr", "awaiting_ci", "awaiting_review",
     "awaiting_independent_review", "human:visual", "human_gate",
-    "merge_eligible", "pr_closed", "merged",
+    "merge_eligible", "pr_closed", "awaiting_issue_close", "done",
 })
 DEPENDENCY_LINE = re.compile(r"(?im)^\s*(?:depends on|blocked by)\s*:\s*(.*?)\s*$")
 ISSUE_REFERENCE = re.compile(r"#([1-9][0-9]{0,8})\b")
@@ -285,10 +287,19 @@ class RunStore:
                 review_feedback TEXT NOT NULL DEFAULT '',
                 gates_json TEXT NOT NULL DEFAULT '[]',
                 packet_json TEXT NOT NULL DEFAULT '{}',
+                closeout_event_json TEXT NOT NULL DEFAULT '',
                 notified INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             )"""
         )
+        columns = {
+            str(row[1]) for row in self._db.execute("PRAGMA table_info(task_runs)").fetchall()
+        }
+        if "closeout_event_json" not in columns:
+            self._db.execute(
+                "ALTER TABLE task_runs ADD COLUMN closeout_event_json TEXT NOT NULL DEFAULT ''"
+            )
+        self._db.commit()
         if str(self.path) != ":memory:" and self.path.exists():
             os.chmod(self.path, 0o600)
 
@@ -351,7 +362,8 @@ class RunStore:
                 if active >= writer_slots:
                     self._db.rollback()
                     return None
-                attempts = int(prior["attempts"]) + 1 if prior else 1
+                manually_released = prior is not None and prior["status"] == "blocked"
+                attempts = (1 if manually_released else int(prior["attempts"]) + 1) if prior else 1
                 run_id = str(uuid.uuid4())
                 attempt_id = str(uuid.uuid4())
                 worker_id = f"Codex-{run_id[:8]}"
@@ -366,7 +378,10 @@ class RunStore:
                         reviewed_head_sha='', review_report='',
                         branch=excluded.branch, workspace=excluded.workspace, pr_number=NULL,
                         head_sha='', review_feedback_hash='', gates_json='[]', packet_json='{}',
-                        notified=0, updated_at=excluded.updated_at""",
+                        closeout_event_json='', notified=0,
+                        last_failure_hash=CASE WHEN task_runs.status='blocked' THEN '' ELSE task_runs.last_failure_hash END,
+                        same_failure_count=CASE WHEN task_runs.status='blocked' THEN 0 ELSE task_runs.same_failure_count END,
+                        updated_at=excluded.updated_at""",
                     (issue.number, "running", attempts, run_id, attempt_id, worker_id,
                      workspace.branch, workspace.path, now),
                 )
@@ -387,7 +402,7 @@ class RunStore:
                 if row is None:
                     raise KeyError(issue_number)
                 repeated = int(row["same_failure_count"]) + 1 if row["last_failure_hash"] == fingerprint else 1
-                status = "blocked" if repeated >= 2 else "retry"
+                status = "blocked" if repeated >= 2 or int(row["attempts"]) >= MAX_ATTEMPTS else "retry"
                 self._db.execute(
                     "UPDATE task_runs SET status=?,last_failure_hash=?,same_failure_count=?,executor_pid=NULL,executor_start_token='',updated_at=? WHERE issue_number=?",
                     (status, fingerprint, repeated, _now(), issue_number),
@@ -409,7 +424,8 @@ class RunStore:
     def update(self, issue_number: int, **fields: object) -> dict[str, object]:
         allowed = {
             "status", "pr_number", "head_sha", "review_feedback_hash", "gates_json",
-            "review_feedback", "packet_json", "notified", "same_failure_count", "last_failure_hash",
+            "review_feedback", "packet_json", "closeout_event_json", "notified",
+            "same_failure_count", "last_failure_hash",
             "executor_pid", "executor_start_token", "reviewed_head_sha", "review_report",
         }
         if not fields or not fields.keys() <= allowed:
@@ -497,15 +513,22 @@ def reconcile_pull_request(
     human_gates: Iterable[str] = (),
     approved_gates: Iterable[str] = (),
     independent_review_passed: bool = False,
+    issue_closed: bool = False,
 ) -> dict[str, object]:
     row = store.get(issue_number)
     if row is None:
         raise KeyError(issue_number)
+    if issue_closed:
+        fields: dict[str, object] = {"status": "done"}
+        if pull is not None:
+            fields.update(pr_number=pull.number, head_sha=pull.head_sha)
+        return store.update(issue_number, **fields)
     if pull is None:
         return store.update(issue_number, status="awaiting_pr")
     if pull.state.casefold() != "open":
         return store.update(
-            issue_number, status="merged" if pull.merged or pull.state.casefold() == "merged" else "pr_closed",
+            issue_number,
+            status="awaiting_issue_close" if pull.merged or pull.state.casefold() == "merged" else "pr_closed",
             pr_number=pull.number, head_sha=pull.head_sha,
         )
     if pull.checks.casefold() in {"pending", "queued", "in_progress"}:
@@ -572,7 +595,12 @@ def human_review_packet(
         "review_mode": "read-only",
         "human_gates": gate_set,
         "merge_eligible": not gate_set,
-        "next_action": "Human visual/manual review" if "human:visual" in gate_set else "Satisfy listed human gates" if gate_set else "Merge after normal branch protection",
+        "next_action": (
+            "Human visual/manual review" if "human:visual" in gate_set
+            else "Human reproduction check" if "human:repro" in gate_set
+            else "Satisfy listed human gates" if gate_set
+            else "Merge after normal branch protection"
+        ),
     }
 
 
@@ -970,6 +998,7 @@ class TaskQueuePilot:
             raise ValueError("writer_slots must be between 1 and 2")
         self.writer_slots = writer_slots
         self.notifier = notifier
+        self.notification_failures: set[int] = set()
 
     def recover(self) -> list[dict[str, object]]:
         recovered: list[dict[str, object]] = []
@@ -1008,14 +1037,27 @@ class TaskQueuePilot:
     def _emit_closeout(self, issue: Issue, row: Mapping[str, object], *, status: str, summary: str,
                        pr_url: str = "", validation: Sequence[str] = (), blockers: Sequence[str] = ()) -> int:
         if int(row.get("notified") or 0):
+            self.notification_failures.discard(issue.number)
             return 0
-        event = closeout_event(
-            issue, row, status=status, summary=summary, pr_url=pr_url,
-            validation=validation, blockers=blockers,
-        )
+        persisted = str(row.get("closeout_event_json") or "")
+        if persisted:
+            event_value = json.loads(persisted)
+            if not isinstance(event_value, dict):
+                raise RuntimeError("stored task-closeout payload is invalid")
+            event = event_value
+        else:
+            event = closeout_event(
+                issue, row, status=status, summary=summary, pr_url=pr_url,
+                validation=validation, blockers=blockers,
+            )
+            persisted = json.dumps(event, sort_keys=True, separators=(",", ":"))
+            self.store.update(issue.number, closeout_event_json=persisted)
         result = self.notifier(self.repository_root, event)
         if result == 0:
             self.store.update(issue.number, notified=1)
+            self.notification_failures.discard(issue.number)
+        else:
+            self.notification_failures.add(issue.number)
         return result
 
     def dispatch_batch(self, candidates: Sequence[Issue]) -> list[dict[str, object]]:
@@ -1128,7 +1170,8 @@ class TaskQueuePilot:
 
     def reconcile(self, issue_numbers: Iterable[int] | None = None) -> list[dict[str, object]]:
         allowed = {"awaiting_pr", "awaiting_ci", "awaiting_review", "awaiting_independent_review",
-                   "human:visual", "human_gate", "merge_eligible"}
+                   "human:visual", "human_gate", "merge_eligible", "blocked",
+                   "awaiting_issue_close", "pr_closed", "done"}
         rows = self.store.all(allowed)
         if issue_numbers is not None:
             wanted = set(issue_numbers)
@@ -1137,6 +1180,31 @@ class TaskQueuePilot:
         for row in rows:
             number = int(row["issue_number"])
             issue = self.github.issue(number)
+            if issue.state == "CLOSED":
+                pending_closeout = bool(row.get("closeout_event_json")) and not int(row.get("notified") or 0)
+                if pending_closeout or (row["status"] == "blocked" and not int(row.get("notified") or 0)):
+                    self._emit_closeout(
+                        issue, row, status="blocked",
+                        summary="The task is blocked and awaits maintainer action.",
+                        blockers=("Review the recorded failure and explicitly approve any retry.",),
+                    )
+                updated = reconcile_pull_request(
+                    self.store, number, None, issue_closed=True,
+                )
+                self.github.set_status(
+                    number, add=None,
+                    remove=(READY_LABEL, RETRY_LABEL, RUNNING_LABEL, BLOCKED_LABEL, REVIEW_LABEL),
+                )
+                results.append({"issue": number, "status": str(updated["status"])})
+                continue
+            if row["status"] == "blocked":
+                self._emit_closeout(
+                    issue, row, status="blocked",
+                    summary="The task is blocked and awaits maintainer action.",
+                    blockers=("Review the recorded failure and explicitly approve any retry.",),
+                )
+                results.append({"issue": number, "status": "blocked"})
+                continue
             pull = self.github.pull_for_branch(str(row["branch"]))
             feedback = ""
             if pull and pull.state.casefold() == "open" and pull.review.casefold() in {"changes_requested", "changes-requested"}:
@@ -1234,8 +1302,9 @@ class TaskQueuePilot:
                     if approval_label in issue.labels
                 ),
                 independent_review_passed=independent_review_passed,
+                issue_closed=issue.state == "CLOSED",
             )
-            if updated["status"] in {"merged", "pr_closed"}:
+            if updated["status"] in {"done", "awaiting_issue_close", "pr_closed"}:
                 self.github.set_status(
                     number, add=None,
                     remove=(READY_LABEL, RETRY_LABEL, RUNNING_LABEL, BLOCKED_LABEL, REVIEW_LABEL),
@@ -1368,7 +1437,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         dependencies = {number: github.issue(number) for number in dependency_numbers(issue.body)}
         store = RunStore(state_path)
         try:
-            decision = dispatch_decision(issue, dependencies, active_writers=store.active_count(), writer_slots=args.slots)
+            runs = store.all()
+            active_numbers = {
+                int(row["issue_number"]) for row in runs
+                if row["status"] in CLAIM_BLOCKING_STATES
+            }
+            decision = dispatch_decision(
+                issue, dependencies, active_issue_numbers=active_numbers,
+                active_writers=store.active_count(), writer_slots=args.slots,
+            )
             print(json.dumps({"decision": asdict(decision), "workspace": asdict(plan)}, indent=2))
         finally:
             store.close()
@@ -1382,21 +1459,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("could not refresh origin/main before queue work")
         store = RunStore(state_path)
         try:
+            results: dict[str, object] = {}
             pilot = TaskQueuePilot(
                 repository_root, worktree_root, state_path.parent, store, github,
                 LocalCodexExecutor(), writer_slots=args.slots,
             )
-            results: dict[str, object] = {}
             if args.reconcile:
                 results["reconciled"] = pilot.reconcile()
             if args.dispatch:
                 results["recovered"] = pilot.recover()
                 candidates = github.ready_issues()
                 results["dispatched"] = pilot.dispatch_batch(candidates)
+            results["notification_failures"] = sorted(pilot.notification_failures)
             print(json.dumps(results, indent=2, sort_keys=True))
+            return 1 if pilot.notification_failures else 0
         finally:
             store.close()
-        return 0
     _parser().print_help()
     return 0
 
