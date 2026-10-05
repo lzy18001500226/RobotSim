@@ -49,7 +49,7 @@ The corrected pregrasp is visually readable and the open approach is physically 
 
 ## Remote closeout
 
-Issue #46 remains open. GitHub reports no open PR with `codex/issue46-x2-single-hand-grasp` as its head. The last remote branch SHA is `f8b1aafbf67ccdc6276bde6f1021046e7b285e72`; the local evidence commits have not reached it. Push over SSH failed with a broken pipe, HTTPS push could not obtain a username, and the in-app GitHub page is signed out. No Issue comment or PR update was possible. Closeout is **BLOCKED** until authenticated GitHub write access is available; the local commits and external raw evidence are preserved.
+The earlier closeout attempt was blocked by transient push/authentication failures. On 2026-10-05, the evidence branch was pushed successfully to `codex/issue46-x2-single-hand-grasp`; the final exact HEAD and closeout fields are recorded on Issue #46. The issue remains open and no PR was created. The result is **FAIL**: the evidence does not meet the physical-grasp, 50 mm lift, target-footprint, or stable-placement gates.
 
 ## Evidence
 
