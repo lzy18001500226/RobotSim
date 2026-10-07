@@ -165,6 +165,7 @@ def build_model(
     *,
     virtual_transmission: bool = False,
     fixed_contact_probe: bool = False,
+    include_bottle: bool = True,
 ) -> tuple[mujoco.MjModel, dict[str, object]]:
     spec = mujoco.MjSpec.from_file(str(URDF))
     spec.option.timestep = DT
@@ -315,35 +316,36 @@ def build_model(
             friction=[1.0, 0.02, 0.001],
             group=1,
         )
-    bottle = spec.worldbody.add_body(name="bottle", pos=START.tolist())
-    bottle.add_freejoint(name="bottle_free")
-    if not math.isclose(
-        CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[1]
-        - CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[0],
-        CANONICAL_X2_BOTTLE_HEIGHT_M,
-        abs_tol=1e-12,
-    ) or not math.isclose(
-        sum(geom_spec["mass"] for geom_spec in CANONICAL_X2_BOTTLE_GEOMS),
-        CANONICAL_X2_BOTTLE_MASS_KG,
-        abs_tol=1e-12,
-    ):
-        raise ValueError("Shared X2 bottle geometry, height, and mass definitions disagree")
-    geom_types = {
-        "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER,
-        "ellipsoid": mujoco.mjtGeom.mjGEOM_ELLIPSOID,
-    }
-    for geom_spec in CANONICAL_X2_BOTTLE_GEOMS:
-        bottle.add_geom(
-            name=geom_spec["name"],
-            type=geom_types[geom_spec["type"]],
-            pos=list(geom_spec["pos"]),
-            size=list(geom_spec["size"]),
-            mass=geom_spec["mass"],
-            rgba=list(geom_spec["rgba"]),
-            friction=[1.4, 0.02, 0.001],
-            condim=4,
-            group=1,
-        )
+    if include_bottle:
+        bottle = spec.worldbody.add_body(name="bottle", pos=START.tolist())
+        bottle.add_freejoint(name="bottle_free")
+        if not math.isclose(
+            CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[1]
+            - CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[0],
+            CANONICAL_X2_BOTTLE_HEIGHT_M,
+            abs_tol=1e-12,
+        ) or not math.isclose(
+            sum(geom_spec["mass"] for geom_spec in CANONICAL_X2_BOTTLE_GEOMS),
+            CANONICAL_X2_BOTTLE_MASS_KG,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("Shared X2 bottle geometry, height, and mass definitions disagree")
+        geom_types = {
+            "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER,
+            "ellipsoid": mujoco.mjtGeom.mjGEOM_ELLIPSOID,
+        }
+        for geom_spec in CANONICAL_X2_BOTTLE_GEOMS:
+            bottle.add_geom(
+                name=geom_spec["name"],
+                type=geom_types[geom_spec["type"]],
+                pos=list(geom_spec["pos"]),
+                size=list(geom_spec["size"]),
+                mass=geom_spec["mass"],
+                rgba=list(geom_spec["rgba"]),
+                friction=[1.4, 0.02, 0.001],
+                condim=4,
+                group=1,
+            )
 
     effort = {}
     for joint in source_xml.findall("joint"):
@@ -566,7 +568,8 @@ def build_model(
         "bottle_cap",
     ):
         geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name)
-        model.geom_solref[geom_id] = [0.008, 1.0]
+        if geom_id >= 0:
+            model.geom_solref[geom_id] = [0.008, 1.0]
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     return model, {
@@ -588,6 +591,7 @@ def build_model(
         "mimic_implementation": VIRTUAL_TRANSMISSION_LABEL if virtual_transmission else "PASSIVE MUJOCO JOINT EQUALITY",
         "virtual_transmission_enabled": virtual_transmission,
         "virtual_transmission_fixed_contact_probe": fixed_contact_probe,
+        "bottle_included": include_bottle,
         "virtual_follower_actuator_specs": follower_actuator_specs,
         "active_hand_joint_names": sorted(
             joint.get("name")

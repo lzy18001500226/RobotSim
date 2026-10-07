@@ -128,8 +128,16 @@ def contact_rows(model: mujoco.MjModel, data: mujoco.MjData) -> list[dict[str, o
     return rows
 
 
-def make_runtime(fixed_probe: bool = False) -> dict[str, object]:
-    model, details = task.build_model(virtual_transmission=True, fixed_contact_probe=fixed_probe)
+def make_runtime(
+    fixed_probe: bool = False,
+    *,
+    include_bottle: bool = True,
+) -> dict[str, object]:
+    model, details = task.build_model(
+        virtual_transmission=True,
+        fixed_contact_probe=fixed_probe,
+        include_bottle=include_bottle,
+    )
     data = details["data"]
     mujoco.mj_resetData(model, data)
     nodes, joints = source_map(model, details)
@@ -172,8 +180,9 @@ def make_runtime(fixed_probe: bool = False) -> dict[str, object]:
         data.ctrl[aid] = 0.0 if joint_name in hand_joint_names else float(data.qpos[int(model.jnt_qposadr[jid])])
     for geom_name in IGNORED_GEOMS - {"floor", "m0_table_top"}:
         gid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name))
-        model.geom_contype[gid] = 0
-        model.geom_conaffinity[gid] = 0
+        if gid >= 0:
+            model.geom_contype[gid] = 0
+            model.geom_conaffinity[gid] = 0
     mujoco.mj_forward(model, data)
 
     mass = np.zeros((model.nv, model.nv), dtype=float)
