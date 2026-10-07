@@ -339,6 +339,7 @@ class VirtualTransmissionController:
             gear = float(self.model.actuator_gear[actuator_id, 0])
             result[name] = {
                 "target_source_rad": float(self._active_source_targets[name]),
+                "target_velocity_source_rad_s": float(output.get("target_velocity_source_rad_s", 0.0)),
                 "position_source_rad": self.source_position(name),
                 "velocity_source_rad_s": self.source_velocity(name),
                 "target_tracking_error_rad": self.source_position(name) - float(self._active_source_targets[name]),

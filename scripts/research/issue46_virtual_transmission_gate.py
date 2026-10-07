@@ -18,6 +18,9 @@ OUT = Path(os.environ.get("ISSUE46_EVIDENCE_DIR", "/tmp/issue46-virtual-transmis
 ABORT_RAD = 0.010
 # Simulation/control target margin derived from the measured one-step transient.
 SOFT_LIMIT_MARGIN_RAD = 0.0015
+# Discrete controller design: target 20 samples per radian of natural motion.
+CONTROLLER_WN_DT_TARGET = 0.05
+CONTROLLER_DAMPING_RATIO = 1.0
 LEFT_ARM = {
     "left_shoulder_pitch_joint": 0.0,
     "left_shoulder_roll_joint": 0.0,
@@ -175,6 +178,11 @@ def make_runtime(fixed_probe: bool = False) -> dict[str, object]:
 
     mass = np.zeros((model.nv, model.nv), dtype=float)
     mujoco.mj_fullM(model, mass, data.qM)
+    inverse_mass = np.linalg.solve(mass, np.eye(model.nv, dtype=float))
+    dt = float(model.opt.timestep)
+    if abs(dt - task.DT) > 1e-12:
+        raise ValueError(f"controller design expects dt={task.DT}, model has dt={dt}")
+    nominal_wn = CONTROLLER_WN_DT_TARGET / dt
     controller_profile: dict[str, dict[str, float]] = {}
     for joint_name in sorted(hand_joint_names):
         joint = joints[joint_name]
@@ -187,11 +195,35 @@ def make_runtime(fixed_probe: bool = False) -> dict[str, object]:
         pd_headroom = bound - abs(bias)
         if pd_headroom <= 0.0:
             raise ValueError(f"OPEN bias exhausts bounded actuator authority for {joint_name}: |bias|={abs(bias)} Nm, bound={bound} Nm")
-        inverse_column = np.linalg.solve(mass, np.eye(model.nv, dtype=float)[:, dof])
-        effective_inertia = 1.0 / float(inverse_column[dof])
-        kp = pd_headroom / SOFT_LIMIT_MARGIN_RAD
-        damping_ratio = 1.0
-        kv = 2.0 * damping_ratio * float(np.sqrt(effective_inertia * kp))
+        inverse_mass_diagonal = float(inverse_mass[dof, dof])
+        if not np.isfinite(inverse_mass_diagonal) or inverse_mass_diagonal <= 0.0:
+            raise ValueError(f"invalid inverse mass diagonal for {joint_name}: {inverse_mass_diagonal}")
+        # 1/(M^-1)_ii is the scalar inertia seen by a generalized torque at this DOF
+        # when the other model coordinates are free to respond.
+        effective_inertia = 1.0 / inverse_mass_diagonal
+        # Keep the nominal sampled bandwidth fixed, then lower it only if the
+        # existing actuator headroom cannot support the selected position-error budget.
+        effort_limited_wn = float(np.sqrt(pd_headroom / (effective_inertia * SOFT_LIMIT_MARGIN_RAD)))
+        wn = min(nominal_wn, effort_limited_wn)
+        if not np.isfinite(wn) or wn <= 0.0:
+            raise ValueError(f"no positive bounded controller bandwidth for {joint_name}: wn={wn}")
+        damping_ratio = CONTROLLER_DAMPING_RATIO
+        kp = effective_inertia * wn * wn
+        kv = 2.0 * damping_ratio * effective_inertia * wn
+        wn_dt = wn * dt
+        beta = 2.0 * damping_ratio * wn_dt
+        alpha = wn_dt * wn_dt
+        # Semi-implicit sampled double-integrator model with a zero-order-held
+        # PD command. MuJoCo step responses below remain the acceptance evidence.
+        discrete_matrix = np.array([
+            [1.0 - alpha, dt * (1.0 - beta)],
+            [-dt * wn * wn, 1.0 - beta],
+        ], dtype=float)
+        discrete_poles = np.linalg.eigvals(discrete_matrix)
+
+        def predicted_acceleration(position_error: float, velocity_error: float = 0.0) -> float:
+            return abs(wn * wn * position_error + 2.0 * damping_ratio * wn * velocity_error)
+
         controller_profile[joint_name] = {
             "source_effort_limit_nm": float(joint["effort_limit"]),
             "simulation_effort_bound_nm": float(torque_cap),
@@ -199,10 +231,29 @@ def make_runtime(fixed_probe: bool = False) -> dict[str, object]:
             "open_qfrc_bias_nm": bias,
             "pd_torque_headroom_nm": pd_headroom,
             "operational_error_budget_rad": SOFT_LIMIT_MARGIN_RAD,
-            "kp_nm_per_rad": kp,
+            "effective_inertia_method": "1 / (M^-1)[dof,dof], full MuJoCo articulated mass matrix at operational OPEN reset; other coordinates free to respond",
             "effective_joint_inertia_kg_m2_equiv": effective_inertia,
+            "inverse_mass_diagonal_per_kg_m2": inverse_mass_diagonal,
+            "nominal_wn_rad_s": nominal_wn,
+            "selected_wn_rad_s": wn,
+            "selected_wn_dt": wn_dt,
+            "target_wn_dt": CONTROLLER_WN_DT_TARGET,
+            "wn_effort_cap_rad_s": effort_limited_wn,
+            "sample_rate_hz": 1.0 / dt,
+            "natural_frequency_hz": wn / (2.0 * np.pi),
+            "samples_per_natural_period": (2.0 * np.pi / wn) / dt,
             "damping_ratio": damping_ratio,
+            "kp_nm_per_rad": kp,
             "kv_nms_per_rad": kv,
+            "discrete_model": "semi-implicit sampled double integrator, zero-order-held PD; actual MuJoCo step responses separately validated",
+            "discrete_state_matrix": discrete_matrix.tolist(),
+            "discrete_poles_real_imag": [[float(np.real(pole)), float(np.imag(pole))] for pole in discrete_poles],
+            "discrete_pole_max_magnitude": float(np.max(np.abs(discrete_poles))),
+            "predicted_acceleration_at_prior_failure_error_rad_s2": predicted_acceleration(0.00040655),
+            "predicted_acceleration_at_prior_failure_error_and_speed_rad_s2": predicted_acceleration(0.00040655, 0.203276),
+            "predicted_acceleration_at_operational_margin_rad_s2": predicted_acceleration(SOFT_LIMIT_MARGIN_RAD),
+            "predicted_acceleration_at_0p01_rad_error_rad_s2": predicted_acceleration(0.01),
+            "actuator_gear": float(model.actuator_gear[aid, 0]),
         }
 
     transmission = VirtualTransmissionController(
