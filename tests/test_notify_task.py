@@ -4,6 +4,7 @@ import contextlib
 import concurrent.futures
 import io
 import json
+import subprocess
 import threading
 import tempfile
 import unittest
@@ -32,6 +33,38 @@ class FakeResponse:
 
 
 class NotifyTaskTests(unittest.TestCase):
+    def setUp(self) -> None:
+        def published_gate(
+            _repo: object,
+            *,
+            task_id: str,
+            branch: str,
+            head_sha: str,
+            pr_number: int | None = None,
+            documented_unrelated: object = (),
+        ) -> dict[str, object]:
+            issue_number = task_id.split("-", 2)[1]
+            reference = (
+                f"https://github.com/{notify_task.ROBOTSIM_REPOSITORY}/pull/{pr_number}"
+                if pr_number is not None
+                else f"https://github.com/{notify_task.ROBOTSIM_REPOSITORY}/issues/{issue_number}"
+            )
+            return {
+                "ok": True,
+                "status": "PASS",
+                "branch": branch,
+                "local_head": head_sha,
+                "remote_head": head_sha,
+                "reference_url": reference,
+                "dirty_paths": [],
+                "allowed_unrelated": {},
+                "blockers": [],
+            }
+
+        gate_patch = patch.object(notify_task, "check_closeout", side_effect=published_gate)
+        gate_patch.start()
+        self.addCleanup(gate_patch.stop)
+
     def _settings(self, directory: str) -> dict[str, str]:
         return {
             "AGENTMAIL_API_KEY": "fake-test-key",
@@ -73,7 +106,12 @@ class NotifyTaskTests(unittest.TestCase):
             "branch": "issue/38-research-completion-event",
             "head_sha": "a" * 40,
             "pr_number": 42,
-            "validation": ["python3 -m unittest discover -s tests: passed"],
+            "validation": [
+                "Reproduction command: python3 -m unittest discover -s tests -v",
+                "Validation result: passed",
+                "Evidence/output: tests/test_notify_task.py",
+                "Limitations: GitHub API transport mocked",
+            ],
             "evidence": ["https://github.com/lzy18001500226/RobotSim/pull/42"],
             "blockers": [],
             "recommended_next_action": "Review PR #42.",
@@ -81,6 +119,21 @@ class NotifyTaskTests(unittest.TestCase):
         }
         event.update(changes)
         return event
+
+    def _published_event(self, event: dict[str, object] | None = None) -> dict[str, object]:
+        stored = notify_task.normalize_task_closeout(event or self._closeout_event())
+        issue_number = str(stored["task_id"]).split("-", 2)[1]
+        reference = (
+            f"https://github.com/{notify_task.ROBOTSIM_REPOSITORY}/pull/{stored['pr_number']}"
+            if stored["pr_number"] is not None
+            else f"https://github.com/{notify_task.ROBOTSIM_REPOSITORY}/issues/{issue_number}"
+        )
+        if reference not in stored["evidence"]:
+            stored["evidence"].append(reference)
+        stored["validation"].append(
+            f"Closeout verdict: PASS; publication verified: branch={stored['branch']}; local_head={stored['head_sha']}; remote_head={stored['head_sha']}; GitHub={reference}"
+        )
+        return notify_task.normalize_task_closeout(stored)
 
     def _mock_closeout_transport(
         self,
@@ -318,7 +371,7 @@ class NotifyTaskTests(unittest.TestCase):
             first_request.get_header("Idempotency-key"), second_request.get_header("Idempotency-key")
         )
 
-    def test_successful_stop_hook_send_has_empty_stdout(self) -> None:
+    def test_stop_without_closeout_does_not_claim_completion(self) -> None:
         payload = {
             "session_id": "mock-session-id",
             "turn_id": "mock-turn-id",
@@ -333,7 +386,6 @@ class NotifyTaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             stdout = io.StringIO()
             with (
-                patch.object(notify_task, "_branch_at", return_value="issue/28-agentmail-notifications"),
                 patch.object(notify_task, "_send") as send,
                 patch.dict("os.environ", self._settings(directory), clear=True),
                 patch("sys.stdin", io.StringIO(json.dumps(payload))),
@@ -343,13 +395,7 @@ class NotifyTaskTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stdout.getvalue(), "")
-        send.assert_called_once()
-        body = send.call_args.args[1]
-        self.assertIn("Task: Local Codex turn", body)
-        self.assertIn("Worker: Local Codex", body)
-        self.assertIn("Branch: issue/28-agentmail-notifications", body)
-        self.assertIn("Issue: #28", body)
-        self.assertIn("Summary: Issue #28 complete", body)
+        send.assert_not_called()
 
     def test_recursive_stop_event_has_empty_stdout_and_does_not_send(self) -> None:
         payload = {
@@ -369,7 +415,7 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         send.assert_not_called()
 
-    def test_duplicate_stop_event_has_empty_stdout_and_sends_once(self) -> None:
+    def test_repeated_stop_without_closeout_never_sends_completion(self) -> None:
         payload = {
             "session_id": "same-session",
             "turn_id": "same-turn",
@@ -381,7 +427,6 @@ class NotifyTaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             stdout = io.StringIO()
             with (
-                patch.object(notify_task, "_branch_at", return_value=""),
                 patch.object(notify_task, "_send") as send,
                 patch.dict("os.environ", self._settings(directory), clear=True),
                 contextlib.redirect_stdout(stdout),
@@ -393,9 +438,9 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(first_code, 0)
         self.assertEqual(second_code, 0)
         self.assertEqual(stdout.getvalue(), "")
-        send.assert_called_once()
+        send.assert_not_called()
 
-    def test_different_turn_ids_in_one_session_notify_independently(self) -> None:
+    def test_different_turns_without_closeout_never_send_completion(self) -> None:
         payload = {
             "session_id": "shared-session",
             "turn_id": "turn-one",
@@ -416,10 +461,7 @@ class NotifyTaskTests(unittest.TestCase):
                     with patch("sys.stdin", io.StringIO(json.dumps(event))):
                         self.assertEqual(notify_task.main(["stop"]), 0)
         self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual(send.call_count, 2)
-        self.assertNotEqual(
-            send.call_args_list[0].args[3], send.call_args_list[1].args[3]
-        )
+        send.assert_not_called()
 
     def test_missing_stop_hook_configuration_is_silent_and_non_blocking(self) -> None:
         payload = {
@@ -474,7 +516,7 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         send.assert_not_called()
 
-    def test_stop_dry_run_keeps_manual_output_without_local_opt_in(self) -> None:
+    def test_stop_dry_run_without_closeout_does_not_format_completion(self) -> None:
         payload = {
             "session_id": "dry-session",
             "turn_id": "dry-turn",
@@ -491,8 +533,8 @@ class NotifyTaskTests(unittest.TestCase):
         ):
             code = notify_task.main(["stop", "--dry-run"])
         self.assertEqual(code, 0)
-        self.assertIn("Dry run: no AgentMail request was made", stdout.getvalue())
-        self.assertIn("[RobotSim] Completed: Dry-run turn.", stdout.getvalue())
+        self.assertIn("no terminal completion was recorded", stdout.getvalue())
+        self.assertNotIn("[RobotSim] Completed:", stdout.getvalue())
 
     def test_dry_run_does_not_read_configuration_or_call_agentmail(self) -> None:
         stdout = io.StringIO()
@@ -559,7 +601,7 @@ class NotifyTaskTests(unittest.TestCase):
             settings = self._settings(directory)
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
-        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.state, "blocked")
         self.assertIn("must link the originating Issue", result.message)
         self.assertEqual(counts["github_post"], 0)
         self.assertEqual(counts["mail_post"], 0)
@@ -593,7 +635,7 @@ class NotifyTaskTests(unittest.TestCase):
                     result = notify_task.process_task_closeout(
                         self._closeout_event(), environ=self._settings(directory)
                     )
-            self.assertEqual(result.state, "failed")
+            self.assertEqual(result.state, "blocked")
             self.assertEqual(counts["github_post"], 0)
             self.assertEqual(counts["mail_post"], 0)
 
@@ -604,7 +646,7 @@ class NotifyTaskTests(unittest.TestCase):
             event = self._closeout_event(head_sha="b" * 40)
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 result = notify_task.process_task_closeout(event, environ=settings)
-        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.state, "blocked")
         self.assertIn("branch/head_sha do not match", result.message)
         self.assertEqual(counts["github_post"], 0)
 
@@ -614,7 +656,7 @@ class NotifyTaskTests(unittest.TestCase):
             settings = self._settings(directory)
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
-        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.state, "blocked")
         self.assertIn("branch/head_sha do not match", result.message)
         self.assertEqual(counts["github_post"], 0)
 
@@ -658,7 +700,7 @@ class NotifyTaskTests(unittest.TestCase):
                 )
         self.assertEqual(first.state, "sent")
         self.assertEqual(retry.state, "duplicate")
-        self.assertEqual(changed.state, "failed")
+        self.assertEqual(changed.state, "blocked")
         self.assertIn("different closeout payload", changed.message)
         self.assertEqual(counts["github_post"], 1)
         self.assertEqual(counts["mail_post"], 1)
@@ -775,7 +817,91 @@ class NotifyTaskTests(unittest.TestCase):
         stored = notify_task.TASK_CLOSEOUT_COMMENT_JSON.search(body)
         self.assertIsNotNone(stored)
         assert stored is not None
-        self.assertEqual(json.loads(stored.group(1)), notify_task.normalize_task_closeout(self._closeout_event()))
+        self.assertEqual(json.loads(stored.group(1)), self._published_event())
+
+    def test_publication_gate_failure_persists_blocked_issue_record(self) -> None:
+        gate = {
+            "ok": False,
+            "status": "CLOSEOUT BLOCKED",
+            "branch": "codex/issue-work",
+            "local_head": "b" * 40,
+            "remote_head": "a" * 40,
+            "reference_url": "https://github.com/lzy18001500226/RobotSim/pull/42",
+            "dirty_paths": [],
+            "allowed_unrelated": {},
+            "blockers": ["remote branch SHA differs from local HEAD"],
+        }
+        transport, requests, counts = self._mock_closeout_transport()
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            with (
+                patch.object(notify_task, "check_closeout", return_value=gate),
+                patch.object(notify_task, "_open_request", side_effect=transport),
+            ):
+                result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
+
+        self.assertEqual(result.state, "blocked")
+        self.assertEqual(result.exit_code, 2)
+        self.assertTrue(result.message.startswith("CLOSEOUT BLOCKED:"))
+        self.assertEqual(counts["github_post"], 1)
+        self.assertEqual(counts["mail_post"], 0)
+        post = next(request for request in requests if request.get_method() == "POST")
+        self.assertTrue(post.full_url.endswith("/issues/44/comments"))
+        body = json.loads(post.data)["body"]
+        payload = notify_task.TASK_CLOSEOUT_COMMENT_JSON.search(body)
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        stored = json.loads(payload.group(1))
+        self.assertEqual(stored["status"], "blocked")
+        self.assertIsNone(stored["pr_number"])
+        self.assertIn("b" * 40, stored["validation"][-1])
+        self.assertIn("a" * 40, stored["validation"][-1])
+        self.assertIn("remote branch SHA differs", stored["blockers"][-1])
+
+    def test_publication_gate_without_explicit_pass_fails_closed(self) -> None:
+        gate = {
+            "ok": False,
+            "branch": "codex/issue-work",
+            "local_head": "b" * 40,
+            "remote_head": "a" * 40,
+            "blockers": [],
+        }
+        transport, requests, counts = self._mock_closeout_transport()
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(notify_task, "check_closeout", return_value=gate),
+                patch.object(notify_task, "_open_request", side_effect=transport),
+            ):
+                result = notify_task.process_task_closeout(
+                    self._closeout_event(), environ=self._settings(directory)
+                )
+
+        self.assertEqual(result.state, "blocked")
+        self.assertIn("publication gate did not confirm closeout", result.message)
+        self.assertEqual(counts["github_post"], 1)
+        self.assertEqual(counts["mail_post"], 0)
+        post = next(request for request in requests if request.get_method() == "POST")
+        payload = notify_task.TASK_CLOSEOUT_COMMENT_JSON.search(json.loads(post.data)["body"])
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(json.loads(payload.group(1))["status"], "blocked")
+
+    def test_github_cli_token_fallback_is_captured_and_not_logged(self) -> None:
+        result = subprocess.CompletedProcess(["gh", "auth", "token"], 0, "synthetic-token\n", "")
+        with (
+            patch.object(notify_task.shutil, "which", return_value="/usr/bin/gh"),
+            patch.object(notify_task.subprocess, "run", return_value=result) as run,
+        ):
+            token = notify_task._github_token({})
+        self.assertEqual(token, "synthetic-token")
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/gh", "auth", "token"])
+        self.assertIs(run.call_args.kwargs["stdout"], subprocess.PIPE)
+        self.assertIs(run.call_args.kwargs["stderr"], subprocess.PIPE)
+
+    def test_status_only_completed_command_is_rejected(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            notify_task.main(["completed", "--task-id", "task-1", "--summary", "Done"])
+        self.assertEqual(raised.exception.code, 2)
 
     def test_stop_rejects_multiple_or_malformed_closeout_envelopes(self) -> None:
         transport, _, _ = self._mock_closeout_transport()
@@ -813,7 +939,7 @@ class NotifyTaskTests(unittest.TestCase):
                 contextlib.redirect_stderr(stderr),
             ):
                 code = notify_task.main(["task-closeout"])
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("HTTP 403", stderr.getvalue())
         self.assertNotIn("fake-github-token", stderr.getvalue())
@@ -867,7 +993,7 @@ class NotifyTaskTests(unittest.TestCase):
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 first = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
                 retry = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
-        self.assertEqual(first.state, "failed")
+        self.assertEqual(first.state, "blocked")
         self.assertIn("GitHub closeout persistence failed", first.message)
         self.assertEqual(retry.state, "sent")
         self.assertEqual(counts["github_post"], 1)
@@ -893,7 +1019,7 @@ class NotifyTaskTests(unittest.TestCase):
             settings.pop("GITHUB_TOKEN")
             with patch.object(notify_task, "_open_request") as urlopen:
                 result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
-        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.state, "blocked")
         self.assertIn("GitHub closeout persistence unavailable", result.message)
         urlopen.assert_not_called()
 
@@ -955,7 +1081,7 @@ class NotifyTaskTests(unittest.TestCase):
         event = notify_task.normalize_task_closeout(self._closeout_event())
         existing = {
             "id": 555,
-            "body": notify_task._task_closeout_comment_body(event),
+            "body": notify_task._task_closeout_comment_body(self._published_event()),
             "user": {"login": "robotsim-test"},
         }
         pages = {1: [{"id": i, "body": "unrelated"} for i in range(100)], 2: [existing]}
@@ -1036,10 +1162,10 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(len(stored_comments), 1)
         self.assertEqual(stored_comments[0]["id"], 101)
         self.assertGreaterEqual(counts["github_delete"], 1)
-        self.assertEqual(sum(outcome.state == "failed" for outcome in outcomes), 1)
-        loser = next(outcome for outcome in outcomes if outcome.state == "failed")
+        self.assertEqual(sum(outcome.state == "blocked" for outcome in outcomes), 1)
+        loser = next(outcome for outcome in outcomes if outcome.state == "blocked")
         self.assertIn("concurrently used with a different payload", loser.message)
-        winner_index = next(index for index, outcome in enumerate(outcomes) if outcome.state != "failed")
+        winner_index = next(index for index, outcome in enumerate(outcomes) if outcome.state != "blocked")
         canonical_payload = notify_task.TASK_CLOSEOUT_COMMENT_JSON.search(
             str(stored_comments[0]["body"])
         )
@@ -1047,7 +1173,7 @@ class NotifyTaskTests(unittest.TestCase):
         assert canonical_payload is not None
         self.assertEqual(
             json.loads(canonical_payload.group(1)),
-            notify_task.normalize_task_closeout(events[winner_index]),
+            self._published_event(events[winner_index]),
         )
         self.assertEqual(counts["github_delete"], 1)
 
@@ -1092,8 +1218,8 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(len(stored_comments), 1)
         self.assertEqual(stored_comments[0]["id"], 101)
         self.assertGreaterEqual(counts["github_delete"], 1)
-        self.assertEqual(sum(outcome.state == "failed" for outcome in outcomes), 1)
-        loser = next(outcome for outcome in outcomes if outcome.state == "failed")
+        self.assertEqual(sum(outcome.state == "blocked" for outcome in outcomes), 1)
+        loser = next(outcome for outcome in outcomes if outcome.state == "blocked")
         self.assertIn("different payload", loser.message)
         remaining_payload = notify_task.TASK_CLOSEOUT_COMMENT_JSON.search(
             str(stored_comments[0]["body"])

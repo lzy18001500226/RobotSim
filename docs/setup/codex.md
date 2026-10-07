@@ -49,13 +49,13 @@ When notifications are enabled, configure:
 | `AGENTMAIL_INBOX_ID` | `lzy18001500226@agentmail.to` | Non-secret inbox identifier. |
 | `ROBOTSIM_NOTIFY_TO` | Maintainer's normal QQ mailbox | Personal configuration; do not hard-code it in the repository. |
 | `ROBOTSIM_NOTIFY_STATE_DIR` | Optional local state path | Optional; defaults under the user's cache directory, outside the checkout. |
-| `GH_TOKEN` or `GITHUB_TOKEN` | GitHub API token | Secret. Needs Issue and pull-request comment read/write access to `lzy18001500226/RobotSim`; never put it in Git, a command line, a log, or chat. |
+| `GH_TOKEN` or `GITHUB_TOKEN` | Optional GitHub API token | Secret. Needs Issue and pull-request comment read/write access to `lzy18001500226/RobotSim`; never put it in Git, a command line, a log, or chat. When absent, the notifier can use an already-authenticated `gh auth token` installation. |
 | `ROBOTSIM_LOCAL_STOP_HOOK` | Set to `1` in the local Codex environment only | Local Stop-hook opt-in. Leave unset in Codex Cloud. |
 
 ### Local Codex setup
 
 1. Create an AgentMail API key in the AgentMail account that owns the inbox.
-2. Store the AgentMail key and GitHub token with Issue/PR comment read/write access in the operating system's secret manager. Expose them as `AGENTMAIL_API_KEY` and `GH_TOKEN` (or `GITHUB_TOKEN`) to Codex. Do not put either value in a shell command, plaintext shell startup file, repository file, or chat.
+2. Store the AgentMail key and, if needed, GitHub token with Issue/PR comment read/write access in the operating system's secret manager. Expose them as `AGENTMAIL_API_KEY` and optionally `GH_TOKEN` (or `GITHUB_TOKEN`) to Codex, or use an already-authenticated GitHub CLI. The notifier captures `gh auth token` without printing it. Do not put a credential in a shell command, plaintext shell startup file, repository file, or chat.
 3. Set `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and set `ROBOTSIM_NOTIFY_TO` to the maintainer's normal QQ mailbox through the user's local environment/secret manager.
 4. Set `ROBOTSIM_LOCAL_STOP_HOOK=1` in the local Codex environment. Restart local Codex so it receives the configured environment. Trust the actual RobotSim checkout, run `/hooks`, and verify that `Stop` and `PreToolUse` are active.
 
@@ -64,9 +64,11 @@ When notifications are enabled, configure:
 1. In the Codex Cloud Environment settings, add `AGENTMAIL_API_KEY` and `GH_TOKEN` (or `GITHUB_TOKEN`) as environment secrets. The GitHub token needs Issue and PR comment read/write access to this repository. Do not paste secrets into a task prompt or repository file.
 2. Configure `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and the personal `ROBOTSIM_NOTIFY_TO` value in the Cloud environment's protected variable/secret settings. Do not store the QQ address in this repository, and do not set `ROBOTSIM_LOCAL_STOP_HOOK` in Cloud.
 3. Allow HTTPS access to `api.agentmail.to` for notifications and `api.github.com` for GitHub task-closeout persistence in the Cloud environment network settings. A Cloud task must explicitly call the notifier once at closeout; project command hooks are not assumed to run there.
-4. Notification is opt-in. If configuration is missing or AgentMail is unavailable, the notifier reports a best-effort skip/failure and exits successfully so the task can finish.
+4. AgentMail notification is optional. GitHub task-closeout persistence is not: if neither GitHub environment credentials nor an authenticated `gh` CLI can write the canonical Issue/PR comment, closeout is `CLOSEOUT BLOCKED`.
 
-The status-only command remains for older, attention-only notifications; it does not create a durable closeout record. Use the structured task-closeout event below for task completion.
+Git transport authentication and GitHub API authentication are separate. An SSH key that can push a branch does not authorize the notifier to create Issue/PR comments, and an HTTPS Git credential is not automatically reused by the notifier. Use an already-authenticated `gh` CLI or the documented environment secret; if neither exists, do not call the closeout published.
+
+The `ready_for_review` status-only command is for attention only; it cannot record task completion. Use the structured task-closeout event below for every terminal task result.
 
 ```bash
 python3 scripts/agent/notify_task.py ready_for_review \
@@ -81,7 +83,27 @@ Do not send per-tool, per-test, per-commit, or progress notifications. Messages 
 
 ## Durable task closeout
 
-Every task kind uses one canonical `robotsim.task-closeout.v1` event: implementation, experiment, research, review, or audit. Status is `completed`, `blocked`, `deferred`, `failed`, or `cancelled`. The compact payload records the canonical repository, Issue-shaped `task_id`, `attempt_id`, worker, task kind/status, summary, branch/head SHA/PR when applicable, validation, durable evidence, blockers, next action, and completion time. Unknown fields and transcripts are rejected.
+Every task kind uses one canonical `robotsim.task-closeout.v1` event: implementation, experiment, research, review, or audit. Status is `completed`, `blocked`, `deferred`, `failed`, or `cancelled` (`completed` records PASS, `failed` records FAIL, and the other terminal non-pass states record BLOCKED). The compact payload records the canonical repository, Issue-shaped `task_id`, `attempt_id`, worker, task kind/status, summary, branch/head SHA/PR when applicable, validation, durable evidence, blockers, next action, and completion time. Unknown fields and transcripts are rejected.
+
+### Mandatory publication gate
+
+Do not report a task as done after implementation/tests alone. Before any terminal closeout, review and commit all intended task-owned changes, preserve unrelated data, push the task branch, and verify that the push remote has exactly the local HEAD SHA. Then update the corresponding PR or Issue with the structured closeout. Record the status, branch, local and remote SHA, canonical GitHub URL, exact reproduction command, validation result, durable evidence/output reference, and remaining limitations/blockers. If any prerequisite or the GitHub update fails, report `CLOSEOUT BLOCKED`, not `DONE`.
+
+Run the deterministic local gate from the RobotSim checkout; use the task Issue in `task_id` and include `--pr-number` when a PR exists:
+
+```bash
+python3 scripts/agent/closeout_gate.py \
+  --task-id issue-123-example-task \
+  --branch "$(git branch --show-current)" \
+  --head-sha "$(git rev-parse HEAD)" \
+  --pr-number 456
+```
+
+The gate checks the attached checkout, non-default task branch, exact reported HEAD, `git status --porcelain` (including untracked files), the configured `origin` push URL's branch SHA, and the Issue/PR reference. Exit code `2` is `CLOSEOUT BLOCKED`. It does not push, stage, commit, create a PR, or hide unrelated changes. To permit unrelated dirty files, record an exact relative path and a reason in a validation entry using `Unrelated repository path: <path>/ | reason: <why>`; a trailing slash scopes that documented exception to one subtree. Never use a wildcard or broad parent exception for owned task files.
+
+Include concise `validation` entries for `Reproduction command: <exact command>`, `Validation result: <pass/fail/deferred plus result>`, `Evidence/output: <repository-relative path or durable URL>`, and `Limitations: <none or concrete limits>`. Do not use absolute personal paths: the notifier sanitizes them, and raw local paths are not durable references.
+
+The notifier re-runs the gate immediately before writing GitHub. On a failed gate it never writes a `completed` record: it changes the closeout to BLOCKED and attempts to persist that diagnostic on the originating Issue. The CLI exits `2` even if that blocked record was saved. If GitHub persistence itself fails, no durable closeout exists and the final answer remains `CLOSEOUT BLOCKED`. A successful gate appends the exact branch, local/remote SHA, result label, and PR/Issue URL to the canonical record. The Stop hook without a structured envelope now records no terminal completion and sends no generic `completed` notification.
 
 `task_id` has the form `issue-<number>-<stable-slug>`. At task start, create one random attempt ID (for example `python3 -c 'import uuid; print(uuid.uuid4())'`) and retain it with the task notes. A retry of the same closeout reuses that ID and the exact payload. A genuine rerun gets a new ID, including a later `blocked` → `completed` run. Worker is also part of event identity. The `sha256:` event ID is derived from schema version, repository, task ID, attempt ID, and worker, but not status or summary: retries deduplicate, a later attempt is distinct, and changed content under one attempt is rejected. The legacy research envelope derives a compatibility attempt from its timestamp; use the explicit attempt ID for all new work.
 

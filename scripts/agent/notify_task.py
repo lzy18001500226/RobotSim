@@ -10,6 +10,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -22,6 +23,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
+
+try:
+    from .closeout_gate import check_closeout
+except ImportError:  # pragma: no cover - direct script execution
+    from closeout_gate import check_closeout
 
 try:
     import fcntl
@@ -469,7 +475,26 @@ def _task_closeout_comment_body(event: Mapping[str, object]) -> str:
 
 
 def _github_token(environ: Mapping[str, str]) -> str:
-    return (environ.get("GH_TOKEN") or environ.get("GITHUB_TOKEN") or "").strip()
+    token = (environ.get("GH_TOKEN") or environ.get("GITHUB_TOKEN") or "").strip()
+    if token:
+        return token
+    gh = shutil.which("gh")
+    if not gh:
+        return ""
+    try:
+        result = subprocess.run(
+            [gh, "auth", "token"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    token = result.stdout.strip()
+    return token if result.returncode == 0 and token and "\n" not in token else ""
 
 
 def _github_actor(token: str) -> str:
@@ -788,7 +813,7 @@ def persist_task_closeout(
     if not token:
         return PersistenceResult(
             "failed",
-            "GitHub closeout persistence unavailable; provide GH_TOKEN or GITHUB_TOKEN with Issue and PR comment read/write access",
+            "GitHub closeout persistence unavailable; configure GH_TOKEN/GITHUB_TOKEN or authenticate the GitHub CLI with Issue and PR comment read/write access",
         )
     try:
         target_number, target_kind = _closeout_target(event)
@@ -919,6 +944,7 @@ def process_task_closeout(
     *,
     dry_run: bool = False,
     environ: Mapping[str, str] | None = None,
+    cwd: str | os.PathLike[str] | None = None,
 ) -> Outcome:
     try:
         if isinstance(payload, dict) and payload.get("schema_version") == RESEARCH_SCHEMA_VERSION:
@@ -926,17 +952,115 @@ def process_task_closeout(
         else:
             event = normalize_task_closeout(payload)
     except (ValueError, TypeError) as exc:
-        return Outcome("failed", f"invalid task closeout: {exc}", exit_code=1)
+        return Outcome("blocked", f"CLOSEOUT BLOCKED: invalid task closeout: {exc}", exit_code=2)
+
+    documented_unrelated = [
+        item for item in event["validation"]
+        if isinstance(item, str) and item.startswith("Unrelated repository path: ")
+    ]
+    gate = check_closeout(
+        Path.cwd() if cwd is None else cwd,
+        task_id=str(event["task_id"]),
+        branch=str(event["branch"] or ""),
+        head_sha=str(event["head_sha"] or ""),
+        pr_number=event["pr_number"] if isinstance(event["pr_number"], int) else None,
+        documented_unrelated=documented_unrelated,
+    )
+    issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"]))
+    assert issue_match is not None
+    issue_url = f"https://github.com/{ROBOTSIM_REPOSITORY}/issues/{issue_match.group(1)}"
+    reference_url = str(gate.get("reference_url") or issue_url)
+    local_head = str(gate.get("local_head") or "unavailable")
+    remote_head = str(gate.get("remote_head") or "unpublished-or-unavailable")
+    actual_branch = str(gate.get("branch") or event["branch"] or "unavailable")
+    gate_blockers = [str(item) for item in gate.get("blockers", [])]
+    if gate.get("ok") is not True and not gate_blockers:
+        gate_blockers.append("publication gate did not confirm closeout")
+    result_labels = {
+        "completed": "PASS",
+        "failed": "FAIL",
+        "blocked": "BLOCKED",
+        "deferred": "BLOCKED",
+        "cancelled": "BLOCKED",
+    }
+    if len(event["validation"]) >= 20:
+        gate_blockers.append("closeout validation list has no room for publication evidence")
+    if reference_url not in event["evidence"] and len(event["evidence"]) >= 20:
+        gate_blockers.append("closeout evidence list has no room for the canonical GitHub URL")
+    if not gate_blockers:
+        if reference_url not in event["evidence"]:
+            event["evidence"].append(reference_url)
+        event["validation"].append(
+            f"Closeout verdict: {result_labels[str(event['status'])]}; publication verified: branch={actual_branch}; local_head={local_head}; remote_head={remote_head}; GitHub={reference_url}"
+        )
+    else:
+        original_status = str(event["status"])
+        event["status"] = "blocked"
+        event["pr_number"] = None
+        event["branch"] = actual_branch if actual_branch != "unavailable" else event["branch"]
+        if local_head != "unavailable":
+            event["head_sha"] = local_head
+        event["summary"] = f"CLOSEOUT BLOCKED after task result {original_status}: {event['summary']}"
+        gate_detail = (
+            f"Closeout verdict: BLOCKED; original task result={result_labels[original_status]}; "
+            f"branch={actual_branch}; local_head={local_head}; remote_head={remote_head}; "
+            f"GitHub={issue_url}; blockers={'; '.join(gate_blockers)}"
+        )
+        if len(event["validation"]) < 20:
+            event["validation"].append(gate_detail)
+        else:
+            event["validation"][-1] = gate_detail
+        event["blockers"] = (list(event["blockers"]) + [
+            "CLOSEOUT BLOCKED: " + "; ".join(gate_blockers)
+        ])[:10]
+        evidence = list(event["evidence"])
+        if reference_url not in evidence:
+            evidence.append(reference_url)
+        if issue_url not in evidence:
+            evidence.append(issue_url)
+        event["evidence"] = evidence[-20:]
+        reference_url = issue_url
+
+    try:
+        event = normalize_task_closeout(event)
+    except (ValueError, TypeError) as exc:
+        return Outcome("blocked", f"CLOSEOUT BLOCKED: could not record publication result ({exc})", exit_code=2)
+
     issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"]))
     assert issue_match is not None
     destination = f"PR #{event['pr_number']}" if event["pr_number"] is not None else f"Issue #{issue_match.group(1)}"
     subject = f"[RobotSim] {event['status']}: {destination} {event['task_kind']} closeout"
     body = _event_json(event, pretty=True) + "\n"
+    if gate_blockers:
+        if dry_run:
+            return Outcome(
+                "blocked",
+                f"CLOSEOUT BLOCKED: {'; '.join(gate_blockers)}",
+                subject,
+                body,
+                exit_code=2,
+            )
+        persisted = persist_task_closeout(event, environ=environ)
+        if persisted.state == "failed":
+            return Outcome(
+                "blocked",
+                f"CLOSEOUT BLOCKED: {'; '.join(gate_blockers)}; GitHub update failed ({persisted.message})",
+                subject,
+                body,
+                exit_code=2,
+            )
+        return Outcome(
+            "blocked",
+            f"CLOSEOUT BLOCKED: {'; '.join(gate_blockers)}; blocked record persisted to Issue #{issue_match.group(1)}",
+            subject,
+            body,
+            exit_code=2,
+        )
     if dry_run:
         return Outcome("dry_run", "no GitHub comment or AgentMail request was made", subject, body)
     persisted = persist_task_closeout(event, environ=environ)
     if persisted.state == "failed":
-        return Outcome("failed", persisted.message, subject, body, exit_code=1)
+        return Outcome("blocked", f"CLOSEOUT BLOCKED: GitHub update failed ({persisted.message})", subject, body, exit_code=2)
     mailed = _task_closeout_mail(event, environ=environ)
     prefix = f"GitHub {persisted.message};"
     if mailed.state == "failed":
@@ -1172,37 +1296,6 @@ def _issue_from_context(branch: str, summary: str) -> str:
     return match.group(1) if match else ""
 
 
-def _summary_from_stop(message: object) -> str:
-    if not isinstance(message, str) or not message.strip():
-        return "Codex turn completed"
-    for line in message.splitlines():
-        candidate = _one_line(line.strip(" #*-`\t"), 120)
-        if candidate and candidate.casefold().rstrip(":") not in {"summary", "result", "completed", "final"}:
-            return candidate
-    return "Codex turn completed"
-
-
-def _stop_event_id(payload: Mapping[str, object]) -> str:
-    session_id = payload.get("session_id")
-    turn_id = payload.get("turn_id")
-    if not isinstance(session_id, str) or not session_id.strip():
-        return ""
-    if isinstance(turn_id, str) and turn_id.strip():
-        event_data = f"{session_id}\0{turn_id}"
-    else:
-        # Older payloads may omit Codex's current turn_id extension. Transcript
-        # size plus the last answer distinguishes consecutive fallback events.
-        transcript = payload.get("transcript_path")
-        transcript_size = ""
-        if isinstance(transcript, str) and transcript:
-            try:
-                transcript_size = str(Path(transcript).stat().st_size)
-            except OSError:
-                pass
-        event_data = f"{session_id}\0{transcript_size}\0{payload.get('last_assistant_message', '')}"
-    return "local-stop-" + hashlib.sha256(event_data.encode("utf-8")).hexdigest()
-
-
 def process_stop_payload(
     payload: object,
     *,
@@ -1222,26 +1315,17 @@ def process_stop_payload(
     )
     if has_closeout_event:
         if envelope_problem:
-            return Outcome("failed", f"invalid task closeout: {envelope_problem}")
-        return process_task_closeout(closeout_payload, dry_run=dry_run, environ=environ)
+            return Outcome("blocked", f"CLOSEOUT BLOCKED: invalid task closeout: {envelope_problem}", exit_code=2)
+        return process_task_closeout(
+            closeout_payload,
+            dry_run=dry_run,
+            environ=environ,
+            cwd=payload.get("cwd") if isinstance(payload.get("cwd"), str) else None,
+        )
 
-    task_id = _stop_event_id(payload)
-    if not task_id:
-        return Outcome("skipped", "Stop payload has no session identifier")
-
-    summary = _summary_from_stop(payload.get("last_assistant_message"))
-    branch = _branch_at(payload.get("cwd"))
-    issue = _issue_from_context(branch, summary)
-    return notify(
-        "completed",
-        task_id,
-        summary,
-        task="Local Codex turn",
-        worker="Local Codex",
-        branch=branch,
-        issue=issue,
-        dry_run=dry_run,
-        environ=environ,
+    return Outcome(
+        "skipped",
+        "no structured task-closeout envelope; no terminal completion was recorded",
     )
 
 
@@ -1249,8 +1333,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "event",
-        choices=(*STATUS_LABELS, "task-closeout", "research-completion", "stop"),
-        help="terminal outcome, structured task closeout JSON, or 'stop' for a local Codex Stop payload",
+        choices=("ready_for_review", "task-closeout", "research-completion", "stop"),
+        help="attention notification, structured task closeout JSON, or 'stop' for a local Codex Stop payload",
     )
     parser.add_argument("--task-id", help="stable task/turn identifier used for duplicate protection")
     parser.add_argument("--task", help="short task label to include in the message")
@@ -1284,9 +1368,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             payload = json.load(sys.stdin)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            outcome = Outcome("failed", "invalid task closeout: input is not valid JSON", exit_code=1)
+            outcome = Outcome("blocked", "CLOSEOUT BLOCKED: input is not valid JSON", exit_code=2)
         else:
-            outcome = process_task_closeout(payload, dry_run=args.dry_run)
+            outcome = process_task_closeout(payload, dry_run=args.dry_run, cwd=Path.cwd())
     elif not args.task_id or not args.summary:
         _parser().error("Cloud outcome events require --task-id and --summary")
     else:
@@ -1305,7 +1389,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.event == "stop" and not args.dry_run:
         # Codex Stop hooks accept empty stdout or a Stop result object. Keep
         # routine outcomes silent; only diagnostics use stderr.
-        if outcome.state == "failed":
+        if outcome.state in {"failed", "blocked"}:
             print(f"notify_task: {outcome.state}: {outcome.message}", file=sys.stderr)
     else:
         _print_outcome(outcome)
