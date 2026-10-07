@@ -1,12 +1,10 @@
 # Issue #46: X2 OmniPicker 1-DOF SIMULATION_ONLY_M0
 
-Status: **FAIL - Stage 5 fixed-object initial-penetration preflight**
+Status: **FAIL - fixed-object CLOSE exceeded the paired-jaw tracking bound before bilateral contact**
 
 ## Outcome
 
-Stages 3 and 4 passed. Stage 5 stopped before its first physics step because the diagnostic cylinder intersects the wrist and multiple picker links at initialization. The final bounded fixture correction reduced the wrist overlap only from 34.261 mm to 33.858 mm. No fixed-object contact rollout, bottle hold, or lift was attempted.
-
-The contacts reported at time zero are from an invalid overlapping initial geometry. Their solver force values are not evidence of stable grasp or contact behavior.
+The accepted Stage 3 OPEN hold and Stage 4 open-close-hold-reopen motion passed without contact. The fixture-only recovery replaced body-origin placement with an analytically derived pose from the compiled OPEN collision meshes. Its zero-step preflight passed with no initial robot-fixture contact or penetration. During the fixed-object CLOSE, the narrow jaw contacted the cylinder first, but the paired-aperture relation error exceeded its existing 0.020 rad diagnostic bound at step 850 / 1.700 s, before the wide jaw contacted it. The run stopped before bilateral contact, hold, or reopen. Bottle hold and lift were not run.
 
 ## Source and runtime identity
 
@@ -54,11 +52,14 @@ The two jaw servos are internal implementation details driven from the shared ap
 | --- | --- | --- |
 | 3 - OPEN hold, 2 s | PASS: 1000 steps; no source limit violation, contact, NaN, actuator saturation, or rollout qpos write; qvel settled; max relation error 0.000372644 rad | run2/open_hold_result.json and open_hold_trace.jsonl |
 | 4 - open, close, hold, reopen, settle | PASS: 3125 steps / 6.25 s; no source limit violation, contact, NaN, actuator saturation, or rollout qpos write; max speed 0.748107 rad/s; max relation error 0.000372644 rad | run2/no_contact_motion_result.json and no_contact_motion_trace.jsonl |
-| 5 - fixed-object contact | FAIL before stepping: 0 steps; max initial penetration 0.0338583 m at right_wrist_roll_link; other overlaps at R_hand_narrow1_Link (0.00241190 m), R_hand_narrow_loop_Link (0.0185614 m), and R_hand_wide_loop_Link (0.00819942 m) | run3/fixed_object_result.json and fixed_object_trace.jsonl |
-| 6 - bottle hold | NOT RUN | Stage 5 failed |
-| 7 - 30 mm lift | NOT RUN | Stage 5 failed |
+| Fixture recovery - zero-step preflight | PASS: zero fixture contacts; no penetrating/touching collidable geoms; minimum collision-enabled clearance 1.004 mm at right_wrist_roll_link; intended narrow/wide jaw clearances 40.622 mm / 59.058 mm | 20261007-fixture-recovery-run1/fixed_object_result.json and fixed_object_open_fixture.png |
+| Fixed-object CLOSE | FAIL: first contact at step 834 / 1.668 s on `R_hand_narrow3_Link` only; relation error reached 0.021374 rad at step 850 / 1.700 s against the unchanged 0.020 rad M0 bound; no bilateral frames; stopped before hold/reopen | 20261007-fixture-recovery-run1/fixed_object_result.json, fixed_object_trace.jsonl, and fixed_object_one_step_diagnosis.json |
+| Bottle hold | NOT RUN | Fixed-object CLOSE failed before bilateral contact |
+| 1 / 5 / 30 mm lift | NOT RUN | Bottle hold was not attempted |
 
-Stage 5 had one bounded geometry correction after the first preflight: the fixture cylinder half-height was reduced and its center lowered. The rerun still intersects the wrist and loop links, so the experiment stops here without further placement tuning.
+The recovered fixed cylinder retained its original 20 mm radius and 25 mm half-height. Its X/Y center is the midpoint between the nearest compiled collision-surface witnesses on `R_hand_narrow3_Link` and `R_hand_wide3_Link`. Its vertical placement keeps the cylinder top 1 mm below the lowest vertex of the compiled right-wrist collision mesh. At the accepted OPEN pose, the actual target surface witnesses are 103.091 mm apart; the narrow and wide target geoms have 40.622 mm and 59.058 mm signed clearances to the fixture. The minimum collision-enabled clearance over the right hand/arm is 1.004 mm. No body origins or arbitrary XYZ offsets were used.
+
+The first cylinder contact was on the narrow side only. Across the stopped run, maximum penetration was 0.416 mm, maximum measured normal force was 0.0775 N, maximum jaw speed was 0.7481 rad/s, maximum jaw acceleration was 75.6624 rad/s^2, and peak applied jaw efforts were 0.01141 Nm / 0.02506 Nm against caps of 0.23807 Nm / 0.25389 Nm. There were no source position violations, non-finite state, actuator saturation, or active-rollout qpos writes. These measurements do not establish stable bilateral contact. One bounded termination-state diagnosis is preserved; no further diagnosis or simulation was run.
 
 The first open-hold attempt in run1 tripped a harness-only acceleration bound of 2.34383 rad/s^2 at step 1, observing 11.8322 rad/s^2. The bounded one-step diagnosis showed no contacts, finite state, no source-limit violation, and no actuator saturation; the later open-hold trace settled. That arbitrary bound was not a task requirement and was removed from the acceptance gate without changing targets or controller gains. The full 2 s open hold and full no-contact motion then passed in run2. Both raw attempts are retained.
 
@@ -68,11 +69,11 @@ External evidence root:
 
     /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/omnipicker-1dof-m0/
 
-The run folders retain source audit, runtime identity, controller derivation, stage JSON, JSONL traces, one-step diagnosis, and no-contact PNGs. No MP4 was produced because the fixed-object stage failed before rollout. The no-contact PNGs were generated but were not visually reviewed in this closeout.
+The run folders retain source audit, runtime identity, controller derivation, stage JSON, JSONL traces, the single termination-state diagnosis, and PNGs. The fixture OPEN close-up is `20261007-fixture-recovery-run1/fixed_object_open_fixture.png`. No MP4 was produced because the fixed-object CLOSE stopped before bilateral contact, hold, or reopen. Raw evidence was left unchanged.
 
-The exact commands used are in the external run folders' experiment_commands.txt. The full pipeline command in run2 reached the first failed stage. The final bounded Stage 5 rerun command in run3 was:
+The exact fixture-recovery command is preserved in `20261007-fixture-recovery-run1/experiment_commands.txt` and was:
 
-    wsl.exe -d Ubuntu-22.04 -- bash -lc 'source /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/activate && python3 /tmp/robotsim-issue46-omnipicker-1dof-m0-20261007/scripts/research/issue46_omnipicker_1dof_m0.py --output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/omnipicker-1dof-m0/20261007-run3 --stage-only fixed_object'
+    wsl.exe -d Ubuntu-22.04 -- bash -lc 'source /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/activate && python3 /tmp/robotsim-issue46-omnipicker-1dof-m0-20261007/scripts/research/issue46_omnipicker_1dof_m0.py --output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/omnipicker-1dof-m0/20261007-fixture-recovery-run1 --stage-only fixed_object'
 
 Use a fresh output directory when reproducing; the retained raw run directories should not be reused.
 

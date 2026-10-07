@@ -47,6 +47,10 @@ CONTACT_FRICTION_ASSUMPTION = 1.4
 CONTACT_NORMAL_DESIGN_FACTOR = 2.0
 GRAVITY_M_S2 = 9.81
 POSE_LOCK_SOLREF = [0.002, 1.0]
+FIXTURE_TARGET_BODIES = ("R_hand_narrow3_Link", "R_hand_wide3_Link")
+FIXTURE_RADIUS_M = 0.020
+FIXTURE_HALF_HEIGHT_M = 0.025
+FIXTURE_WRIST_CLEARANCE_M = 0.001
 
 RIGHT_DRIVER = "right_claw_joint"
 RIGHT_FOLLOWER = "R_hand_wide1_joint"
@@ -237,23 +241,144 @@ def add_canonical_scene(spec: mujoco.MjSpec, bottle: bool) -> None:
             )
 
 
-def fixed_object_position() -> list[float]:
-    spec = mujoco.MjSpec.from_file(str(X2_ROOT / X2_URDF_REL))
-    spec.compiler.fusestatic = False
-    spec.option.timestep = TIMESTEP
-    pelvis = next(body for body in spec.bodies if body.name == "pelvis")
-    pelvis.pos = BASE_WORLD.tolist()
-    pelvis.quat = [math.cos(BASE_YAW / 2.0), 0.0, 0.0, math.sin(BASE_YAW / 2.0)]
-    model = spec.compile()
-    data = mujoco.MjData(model)
-    mujoco.mj_resetData(model, data)
-    data.qpos[qpos_id(model, RIGHT_DRIVER)] = aperture_targets(1.0)["right_claw_joint_target_rad"]
-    data.qpos[qpos_id(model, RIGHT_FOLLOWER)] = aperture_targets(1.0)["R_hand_wide1_joint_target_rad"]
-    mujoco.mj_forward(model, data)
-    narrow = data.xpos[body_id(model, "R_hand_narrow3_Link")]
-    wide = data.xpos[body_id(model, "R_hand_wide3_Link")]
-    center = 0.5 * (narrow + wide)
-    return [float(center[0]), float(center[1]), float(center[2] - 0.015)]
+def collision_geom_id(model: mujoco.MjModel, body_name: str) -> int:
+    bid = body_id(model, body_name)
+    matches = [gid for gid in range(model.ngeom)
+               if int(model.geom_bodyid[gid]) == bid
+               and (int(model.geom_contype[gid]) or int(model.geom_conaffinity[gid]))]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected one compiled collision geom on {body_name}, found {matches}")
+    return matches[0]
+
+
+def geom_mesh_world_vertices(model: mujoco.MjModel, data: mujoco.MjData, geom_id: int) -> np.ndarray:
+    if int(model.geom_type[geom_id]) != int(mujoco.mjtGeom.mjGEOM_MESH):
+        raise RuntimeError("Pinned wrist collision geometry is expected to be a mesh")
+    mesh_id = int(model.geom_dataid[geom_id])
+    start = int(model.mesh_vertadr[mesh_id])
+    count = int(model.mesh_vertnum[mesh_id])
+    local = model.mesh_vert[start:start + count]
+    rotation = data.geom_xmat[geom_id].reshape(3, 3)
+    return local @ rotation.T + data.geom_xpos[geom_id]
+
+
+def derive_fixture_geometry() -> dict[str, Any]:
+    model, _ = build_model("open_hold")
+    data = initialize(model)
+    narrow_id = collision_geom_id(model, FIXTURE_TARGET_BODIES[0])
+    wide_id = collision_geom_id(model, FIXTURE_TARGET_BODIES[1])
+    segment = np.zeros(6, dtype=float)
+    jaw_gap = float(mujoco.mj_geomDistance(model, data, narrow_id, wide_id, 1.0, segment))
+    if jaw_gap <= 2.0 * FIXTURE_RADIUS_M:
+        raise RuntimeError(f"Open jaw surface gap cannot contain the fixed cylinder: {jaw_gap=}")
+    narrow_surface = segment[:3].copy()
+    wide_surface = segment[3:].copy()
+    jaw_normal = wide_surface - narrow_surface
+    jaw_normal /= float(np.linalg.norm(jaw_normal))
+    jaw_midpoint = 0.5 * (narrow_surface + wide_surface)
+
+    wrist_records = []
+    for body_name in ("right_wrist_yaw_link", "right_wrist_pitch_link", "right_wrist_roll_link"):
+        geom_id = collision_geom_id(model, body_name)
+        vertices = geom_mesh_world_vertices(model, data, geom_id)
+        index = int(np.argmin(vertices[:, 2]))
+        wrist_records.append({
+            "body": body_name,
+            "geom_id": geom_id,
+            "mesh": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH,
+                                       int(model.geom_dataid[geom_id])),
+            "lowest_world_vertex_m": vertices[index].tolist(),
+        })
+    lowest_wrist = min(wrist_records, key=lambda row: row["lowest_world_vertex_m"][2])
+    cylinder_top = float(lowest_wrist["lowest_world_vertex_m"][2]) - FIXTURE_WRIST_CLEARANCE_M
+    center = [float(jaw_midpoint[0]), float(jaw_midpoint[1]),
+              cylinder_top - FIXTURE_HALF_HEIGHT_M]
+
+    urdf = ET.parse(X2_ROOT / X2_URDF_REL).getroot()
+    source_links = {link.get("name", ""): link for link in urdf.findall("link")}
+    surfaces = []
+    for body_name, geom_id, point, inward_normal in (
+            (FIXTURE_TARGET_BODIES[0], narrow_id, narrow_surface, jaw_normal),
+            (FIXTURE_TARGET_BODIES[1], wide_id, wide_surface, -jaw_normal)):
+        collision = source_links[body_name].find("collision")
+        mesh = collision.find("geometry/mesh") if collision is not None else None
+        surfaces.append({
+            "body": body_name,
+            "geom_id": geom_id,
+            "compiled_mesh": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH,
+                                                int(model.geom_dataid[geom_id])),
+            "source_collision_mesh": None if mesh is None else mesh.get("filename"),
+            "surface_world_m": point.tolist(),
+            "inward_contact_normal_world": inward_normal.tolist(),
+        })
+    return {
+        "source_of_geometry": "compiled pinned X2 collision meshes at accepted OPEN qpos; no body-origin reference",
+        "target_surfaces": surfaces,
+        "closest_open_surface_gap_m": jaw_gap,
+        "narrow_to_wide_corridor_normal_world": jaw_normal.tolist(),
+        "jaw_surface_midpoint_world_m": jaw_midpoint.tolist(),
+        "wrist_collision_meshes": wrist_records,
+        "wrist_clearance_rule": "cylinder top is 1 mm below the lowest compiled right-wrist collision-mesh vertex",
+        "wrist_clearance_margin_m": FIXTURE_WRIST_CLEARANCE_M,
+        "cylinder": {"type": "vertical fixed cylinder", "radius_m": FIXTURE_RADIUS_M,
+                     "half_height_m": FIXTURE_HALF_HEIGHT_M, "center_world_m": center,
+                     "position_rule": "X/Y are the midpoint of the two intended jaw-surface witnesses; Z follows the wrist collision envelope"},
+    }
+
+
+def fixture_geometry_preflight(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, Any]:
+    fixture_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "m0_fixed_contact_cylinder")
+    if fixture_id < 0:
+        raise RuntimeError("Fixed fixture geom is missing from compiled model")
+    rows = []
+    target_by_body = {body: role for body, role in zip(FIXTURE_TARGET_BODIES,
+                                                         ("intended_narrow_jaw", "intended_wide_jaw"))}
+    for geom_id in range(model.ngeom):
+        if geom_id == fixture_id:
+            continue
+        body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY,
+                                 int(model.geom_bodyid[geom_id])) or "world"
+        if not (body.lower().startswith("right_") or body.startswith("R_")):
+            continue
+        collision_enabled = bool(
+            (int(model.geom_contype[fixture_id]) & int(model.geom_conaffinity[geom_id]))
+            or (int(model.geom_contype[geom_id]) & int(model.geom_conaffinity[fixture_id]))
+        )
+        segment = np.zeros(6, dtype=float)
+        distance = float(mujoco.mj_geomDistance(model, data, fixture_id, geom_id, 1.0, segment))
+        mesh_id = int(model.geom_dataid[geom_id]) if int(model.geom_type[geom_id]) == int(mujoco.mjtGeom.mjGEOM_MESH) else -1
+        role = target_by_body.get(body)
+        if role is None and "wrist" in body.lower():
+            role = "wrist"
+        elif role is None and "loop" in body.lower():
+            role = "jaw_loop"
+        elif role is None:
+            role = "other_right_hand_or_arm"
+        rows.append({
+            "body": body,
+            "geom_id": geom_id,
+            "compiled_mesh": None if mesh_id < 0 else mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_MESH, mesh_id),
+            "collision_enabled_with_fixture": collision_enabled,
+            "role": role,
+            "signed_distance_m": distance,
+            "penetration_m": max(0.0, -distance),
+            "witness_segment_world_m": segment.tolist(),
+        })
+    collidable = [row for row in rows if row["collision_enabled_with_fixture"]]
+    target = [row for row in collidable if row["role"].startswith("intended_")]
+    failures = [row for row in collidable if row["signed_distance_m"] <= 0.0]
+    fixture_contacts = [row for row in contact_rows(model, data)
+                        if contact_has_object(row, "m0_fixed_contact_cylinder")]
+    return {
+        "status": "PASS" if not failures and len(target) == len(FIXTURE_TARGET_BODIES) else "FAIL",
+        "physics_steps_before_check": 0,
+        "fixture_robot_contact_count": len(fixture_contacts),
+        "fixture_robot_contacts": fixture_contacts,
+        "distances": rows,
+        "minimum_collidable_clearance_m": min((row["signed_distance_m"] for row in collidable), default=None),
+        "intended_jaw_clearances_m": {row["body"]: row["signed_distance_m"] for row in target},
+        "penetrating_or_touching_collidable_geoms": failures,
+    }
 
 
 def build_model(stage: str, params: dict[str, Any] | None = None) -> tuple[mujoco.MjModel, dict[str, Any]]:
@@ -325,11 +450,13 @@ def build_model(stage: str, params: dict[str, Any] | None = None) -> tuple[mujoc
             )
             arm_actuators[joint_name] = act_name
 
+    fixture_derivation = None
     if stage == "fixed_object":
-        pos = fixed_object_position()
+        fixture_derivation = derive_fixture_geometry()
         spec.worldbody.add_geom(
             name="m0_fixed_contact_cylinder", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-            pos=pos, size=[0.020, 0.025, 0.0], rgba=[0.92, 0.46, 0.08, 1.0],
+            pos=fixture_derivation["cylinder"]["center_world_m"],
+            size=[FIXTURE_RADIUS_M, FIXTURE_HALF_HEIGHT_M, 0.0], rgba=[0.92, 0.46, 0.08, 1.0],
             friction=[1.4, 0.02, 0.001], condim=4, group=1,
         )
     if stage in {"bottle_hold", "lift"}:
@@ -357,6 +484,8 @@ def build_model(stage: str, params: dict[str, Any] | None = None) -> tuple[mujoc
     params["source_effort_limits_nm"] = source_efforts
     params["equality_names"] = equality_names
     params["arm_actuator_names"] = arm_actuators
+    if fixture_derivation is not None:
+        params["fixture_geometry_derivation"] = fixture_derivation
     return model, params
 
 
@@ -594,6 +723,10 @@ def contact_rows(model: mujoco.MjModel, data: mujoco.MjData) -> list[dict[str, A
     return rows
 
 
+def is_jaw_contact_body(body_name: str, family: str) -> bool:
+    return body_name.startswith(f"R_hand_{family}") and "loop" not in body_name.lower()
+
+
 def contact_has_object(contact: dict[str, Any], object_name: str) -> bool:
     return object_name in {str(contact.get("body1")), str(contact.get("body2")),
                            str(contact.get("geom1")), str(contact.get("geom2"))}
@@ -799,6 +932,7 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
     time_by_phase: dict[str, float] = {}
     phase_frames: dict[str, int] = {}
     object_contact_frames_by_phase: dict[str, int] = {}
+    bilateral_contact_frames_by_phase: dict[str, int] = {}
     contact_pair_frames: dict[str, int] = {}
     object_contact_frames = 0
     expected_object = "m0_fixed_contact_cylinder" if stage == "fixed_object" else "m0_bottle"
@@ -820,10 +954,30 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
     bottle_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "m0_bottle")
     if bottle_body_id >= 0:
         initial_bottle_z = float(data.xpos[bottle_body_id][2])
-    if initial_penetrations:
+    fixture_preflight = None
+    fixture_initial_contacts = []
+    if stage == "fixed_object":
+        fixture_preflight = fixture_geometry_preflight(model, data)
+        fixture_initial_contacts = [row for row in init_contacts
+                                    if contact_has_object(row, "m0_fixed_contact_cylinder")]
+        if fixture_preflight["status"] != "PASS":
+            first_gate_failure = {"gate": "zero-step fixture geometry preflight",
+                                  "preflight": fixture_preflight}
+        elif fixture_initial_contacts:
+            first_gate_failure = {"gate": "zero-step fixture initial contact",
+                                  "contacts": fixture_initial_contacts}
+        else:
+            fixture_pose = build_info["fixture_geometry_derivation"]["cylinder"]["center_world_m"]
+            camera.lookat[:] = fixture_pose
+            camera.distance = 0.34
+            camera.azimuth = 145
+            camera.elevation = -18
+    elif initial_penetrations:
         first_gate_failure = {"gate": "initial penetration", "contacts": initial_penetrations}
 
     with trace_path.open("w", encoding="utf-8") as stream:
+        if stage == "fixed_object" and fixture_preflight and fixture_preflight["status"] == "PASS":
+            save_frame(renderer, model, data, evidence, "fixed_object_open_fixture.png", camera)
         if stage in {"bottle_hold", "lift"}:
             save_frame(renderer, model, data, evidence, "bottle_pregrasp.png", camera)
         step = 0
@@ -860,6 +1014,7 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
                     if abs(float(record["requested_torque_nm"])) > controller["per_joint"][name]["effort_cap_nm"] * 0.999:
                         saturation_steps[name] += 1
                 object_contacts = []
+                frame_jaw_families: set[str] = set()
                 for contact in contacts:
                     pair = "|".join(sorted(str(v) for v in (contact["body1"], contact["body2"])))
                     contact_pair_frames[pair] = contact_pair_frames.get(pair, 0) + 1
@@ -868,13 +1023,17 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
                     bodies = {str(contact["body1"]), str(contact["body2"])}
                     if contact_has_object(contact, expected_object):
                         object_contacts.append(contact)
-                        if any("R_hand_narrow" in body for body in bodies):
+                        if any(is_jaw_contact_body(body, "narrow") for body in bodies):
                             jaw_contact_families.add("narrow")
-                        if any("R_hand_wide" in body for body in bodies):
+                            frame_jaw_families.add("narrow")
+                        if any(is_jaw_contact_body(body, "wide") for body in bodies):
                             jaw_contact_families.add("wide")
+                            frame_jaw_families.add("wide")
                 if object_contacts:
                     object_contact_frames += 1
                     object_contact_frames_by_phase[phase] = object_contact_frames_by_phase.get(phase, 0) + 1
+                if {"narrow", "wide"}.issubset(frame_jaw_families):
+                    bilateral_contact_frames_by_phase[phase] = bilateral_contact_frames_by_phase.get(phase, 0) + 1
                 finite_values = np.concatenate((data.qpos, data.qvel, data.qacc))
                 nonfinite = nonfinite or not bool(np.isfinite(finite_values).all())
                 bottle_z = float(data.xpos[bottle_body_id][2]) if bottle_body_id >= 0 else None
@@ -921,6 +1080,11 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
                 if stage == "fixed_object" and max_penetration > 0.006:
                     first_gate_failure = {"gate": "fixed-object penetration bound", "step": step,
                                           "observed_m": max_penetration, "bound_m": 0.006}
+                if stage == "fixed_object":
+                    qvel_bound = 1.5 * controller["predicted_peak_joint_velocity_rad_s"] + 0.05
+                    if max_qvel > qvel_bound:
+                        first_gate_failure = {"gate": "fixed-object jaw velocity bound", "step": step,
+                                              "observed_rad_s": max_qvel, "bound_rad_s": qvel_bound}
                 if stage in {"bottle_hold", "lift"} and max_penetration > 0.008:
                     first_gate_failure = {"gate": "bottle/contact penetration bound", "step": step,
                                           "observed_m": max_penetration, "bound_m": 0.008}
@@ -978,9 +1142,9 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
         contact_loss = not any(contact_has_object(c, expected_object) for c in final["contacts"])
         if not {"narrow", "wide"}.issubset(jaw_contact_families):
             first_gate_failure = {"gate": "opposing jaw contact", "families": sorted(jaw_contact_families)}
-        elif object_contact_frames_by_phase.get("CONTACT_HOLD", 0) < 0.80 * phase_frames.get("CONTACT_HOLD", 1):
-            first_gate_failure = {"gate": "fixed-object loaded contact persistence",
-                                  "fraction": object_contact_frames_by_phase.get("CONTACT_HOLD", 0) /
+        elif bilateral_contact_frames_by_phase.get("CONTACT_HOLD", 0) < 0.80 * phase_frames.get("CONTACT_HOLD", 1):
+            first_gate_failure = {"gate": "fixed-object bilateral contact persistence",
+                                  "fraction": bilateral_contact_frames_by_phase.get("CONTACT_HOLD", 0) /
                                              max(phase_frames.get("CONTACT_HOLD", 1), 1),
                                   "required": 0.80}
         elif not contact_loss:
@@ -1019,9 +1183,13 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
         "effort_caps_nm": {n: controller["per_joint"][n]["effort_cap_nm"] for n in controller["per_joint"]},
         "jaw_actuator_saturation_steps": saturation_steps,
         "initial_contacts": init_contacts,
+        "fixture_geometry_derivation": build_info.get("fixture_geometry_derivation"),
+        "fixture_open_preflight": fixture_preflight,
+        "fixture_initial_contacts": fixture_initial_contacts,
         "contact_pair_frame_counts": contact_pair_frames,
         "jaw_contact_families": sorted(jaw_contact_families),
         "object_contact_frames_by_phase": object_contact_frames_by_phase,
+        "bilateral_contact_frames_by_phase": bilateral_contact_frames_by_phase,
         "phase_frame_counts": phase_frames,
         "object_contact_fraction": object_contact_frames / max(row_count, 1),
         "hold_contact_fraction": object_contact_frames_by_phase.get("HOLD", 0) /
