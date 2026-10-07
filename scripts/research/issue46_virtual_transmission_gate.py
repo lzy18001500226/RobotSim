@@ -135,12 +135,76 @@ def make_runtime(fixed_probe: bool = False) -> dict[str, object]:
         raise AssertionError("initial pose may not assign follower coordinates")
     for joint_name, coordinate in INITIAL_POSE.items():
         set_initial_source_position(model, data, joints[joint_name], coordinate)
-    mujoco.mj_forward(model, data)
     actuator_by_joint = {int(model.actuator_trnid[aid, 0]): aid for aid in range(model.nu)}
+    initial_state_active = {
+        joint_name: source_position(model, data, joints[joint_name])
+        for joint_name in details["active_hand_joint_names"]
+    }
+    initial_active = {
+        joint_name: min(
+            float(joints[joint_name]["upper"]) - SOFT_LIMIT_MARGIN_RAD,
+            max(float(joints[joint_name]["lower"]) + SOFT_LIMIT_MARGIN_RAD, coordinate),
+        )
+        for joint_name, coordinate in initial_state_active.items()
+    }
+    initialization_qpos_write_count = len(INITIAL_POSE)
+    for joint_name, target in initial_active.items():
+        set_initial_source_position(model, data, joints[joint_name], target)
+        initialization_qpos_write_count += 1
+    for relation in details["mimic_relations"]:
+        driver = str(relation["driver_joint"])
+        follower = str(relation["follower_joint"])
+        target = float(relation["multiplier"]) * initial_active[driver] + float(relation["offset"])
+        low = float(joints[follower]["lower"]) + SOFT_LIMIT_MARGIN_RAD
+        high = float(joints[follower]["upper"]) - SOFT_LIMIT_MARGIN_RAD
+        if not low <= target <= high:
+            raise ValueError(f"operational OPEN follower target outside soft range for {follower}: {target} not in [{low}, {high}]")
+        set_initial_source_position(model, data, joints[follower], target)
+        initialization_qpos_write_count += 1
+    data.qvel[:] = 0.0
+    hand_joint_names = set(details["active_hand_joint_names"]) | follower_names
     for aid in range(model.nu):
         jid = int(model.actuator_trnid[aid, 0])
         joint_name = name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
-        data.ctrl[aid] = 0.0 if joint_name in follower_names else float(data.qpos[int(model.jnt_qposadr[jid])])
+        data.ctrl[aid] = 0.0 if joint_name in hand_joint_names else float(data.qpos[int(model.jnt_qposadr[jid])])
+    for geom_name in IGNORED_GEOMS - {"floor", "m0_table_top"}:
+        gid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name))
+        model.geom_contype[gid] = 0
+        model.geom_conaffinity[gid] = 0
+    mujoco.mj_forward(model, data)
+
+    mass = np.zeros((model.nv, model.nv), dtype=float)
+    mujoco.mj_fullM(model, mass, data.qM)
+    controller_profile: dict[str, dict[str, float]] = {}
+    for joint_name in sorted(hand_joint_names):
+        joint = joints[joint_name]
+        aid = actuator_by_joint[int(joint["joint_id"])]
+        dof = int(joint["dof"])
+        is_follower = joint_name in follower_names
+        torque_cap = task.VIRTUAL_FOLLOWER_MAX_TORQUE_NM if is_follower else task.VIRTUAL_ACTIVE_MAX_TORQUE_NM
+        bound = min(float(torque_cap), float(joint["effort_limit"]))
+        bias = float(data.qfrc_bias[dof])
+        pd_headroom = bound - abs(bias)
+        if pd_headroom <= 0.0:
+            raise ValueError(f"OPEN bias exhausts bounded actuator authority for {joint_name}: |bias|={abs(bias)} Nm, bound={bound} Nm")
+        inverse_column = np.linalg.solve(mass, np.eye(model.nv, dtype=float)[:, dof])
+        effective_inertia = 1.0 / float(inverse_column[dof])
+        kp = pd_headroom / SOFT_LIMIT_MARGIN_RAD
+        damping_ratio = 1.0
+        kv = 2.0 * damping_ratio * float(np.sqrt(effective_inertia * kp))
+        controller_profile[joint_name] = {
+            "source_effort_limit_nm": float(joint["effort_limit"]),
+            "simulation_effort_bound_nm": float(torque_cap),
+            "effective_effort_bound_nm": bound,
+            "open_qfrc_bias_nm": bias,
+            "pd_torque_headroom_nm": pd_headroom,
+            "operational_error_budget_rad": SOFT_LIMIT_MARGIN_RAD,
+            "kp_nm_per_rad": kp,
+            "effective_joint_inertia_kg_m2_equiv": effective_inertia,
+            "damping_ratio": damping_ratio,
+            "kv_nms_per_rad": kv,
+        }
+
     transmission = VirtualTransmissionController(
         model,
         data,
@@ -153,18 +217,17 @@ def make_runtime(fixed_probe: bool = False) -> dict[str, object]:
         kv_nms_per_rad=task.VIRTUAL_FOLLOWER_SERVO_KV_NMS_PER_RAD,
         max_torque_nm=task.VIRTUAL_FOLLOWER_MAX_TORQUE_NM,
         soft_limit_margin_rad=SOFT_LIMIT_MARGIN_RAD,
+        kp_by_joint={joint: row["kp_nm_per_rad"] for joint, row in controller_profile.items()},
+        kv_by_joint={joint: row["kv_nms_per_rad"] for joint, row in controller_profile.items()},
+        bias_feedforward=True,
     )
-    initial_state_active = {joint_name: transmission.source_position(joint_name) for joint_name in transmission.active_joint_names}
-    initial_active = {
-        joint_name: transmission.operational_target_from_state(joint_name, coordinate)
-        for joint_name, coordinate in initial_state_active.items()
-    }
     transmission.command_active_sources(initial_active)
-    for geom_name in IGNORED_GEOMS - {"floor", "m0_table_top"}:
-        gid = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, geom_name))
-        model.geom_contype[gid] = 0
-        model.geom_conaffinity[gid] = 0
+    transmission.write_internal_controls()
     mujoco.mj_forward(model, data)
+    details["virtual_transmission_controller_profile"] = controller_profile
+    for follower, spec in details["virtual_follower_actuator_specs"].items():
+        spec["kp_nm_per_rad"] = controller_profile[follower]["kp_nm_per_rad"]
+        spec["kv_nms_per_rad"] = controller_profile[follower]["kv_nms_per_rad"]
     return {
         "model": model,
         "data": data,
@@ -174,6 +237,8 @@ def make_runtime(fixed_probe: bool = False) -> dict[str, object]:
         "actuator_by_joint": actuator_by_joint,
         "initial_active": initial_active,
         "initial_state_active": initial_state_active,
+        "controller_profile": controller_profile,
+        "initialization_qpos_write_count": initialization_qpos_write_count,
         "initial_follower_qpos": {
             f: float(data.qpos[int(model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f)])])
             for f in follower_names
@@ -207,6 +272,7 @@ def diagnostics(runtime: dict[str, object]) -> dict[str, object]:
             "within_velocity_limit": abs(velocity) <= speed_limit + 1e-9,
         })
     relations = transmission.measure()
+    active_states = transmission.active_measure()
     contacts = contact_rows(model, data)
     self_contacts = [
         row for row in contacts
@@ -221,11 +287,21 @@ def diagnostics(runtime: dict[str, object]) -> dict[str, object]:
         force = float(data.actuator_force[aid]) * float(model.actuator_gear[aid, 0])
         bound = float(spec["max_torque_nm"])
         efforts.append({"follower_joint": follower, "force_nm": force, "bound_nm": bound, "within_bound": abs(force) <= bound + 1e-10})
-    target_error = max((abs(float(row["target_tracking_error_rad"])) for row in relations.values()), default=0.0)
+    active_efforts = []
+    for joint_name, row in active_states.items():
+        force = float(row["actual_actuator_force_nm"])
+        bound = float(row["effort_limit_nm"])
+        active_efforts.append({"active_joint": joint_name, "force_nm": force, "bound_nm": bound, "within_bound": abs(force) <= bound + 1e-10})
+    active_target_error = max((abs(float(row["target_tracking_error_rad"])) for row in active_states.values()), default=0.0)
+    follower_target_error = max((abs(float(row["target_tracking_error_rad"])) for row in relations.values()), default=0.0)
+    target_error = max(active_target_error, follower_target_error)
     relation_error = max((abs(float(row["source_relation_error_rad"])) for row in relations.values()), default=0.0)
     return {
         "time_s": float(data.time),
         "mimic_relations": relations,
+        "active_joint_states": active_states,
+        "active_target_tracking_error_max_rad": active_target_error,
+        "follower_target_tracking_error_max_rad": follower_target_error,
         "target_tracking_error_max_rad": target_error,
         "source_relation_error_max_rad": relation_error,
         "source_joint_limits": limits,
@@ -235,7 +311,10 @@ def diagnostics(runtime: dict[str, object]) -> dict[str, object]:
         "robot_self_contacts": self_contacts,
         "max_self_penetration_m": max((float(row["penetration_m"]) for row in self_contacts), default=0.0),
         "follower_efforts": efforts,
+        "active_efforts": active_efforts,
         "follower_effort_violation": any(not row["within_bound"] for row in efforts),
+        "active_effort_violation": any(not row["within_bound"] for row in active_efforts),
+        "actuator_effort_violation": any(not row["within_bound"] for row in efforts + active_efforts),
         "finite": bool(np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all() and np.isfinite(data.qacc).all()),
         "max_abs_qvel_rad_s": float(np.max(np.abs(data.qvel))) if data.qvel.size else 0.0,
         "max_abs_qacc_rad_s2": float(np.max(np.abs(data.qacc))) if data.qacc.size else 0.0,
@@ -307,6 +386,8 @@ def execute_trial(
         "label": label,
         "steps": 0,
         "target_tracking_error_max_rad": 0.0,
+        "active_target_tracking_error_max_rad": 0.0,
+        "follower_target_tracking_error_max_rad": 0.0,
         "source_relation_error_max_rad": 0.0,
         "diagnostic_0p003_exceedances": 0,
         "abort_0p010_exceedances": 0,
@@ -316,7 +397,8 @@ def execute_trial(
         "nan_seen": False,
         "max_self_penetration_m": 0.0,
         "max_follower_force_nm": 0.0,
-        "follower_force_bound_violation": False,
+        "max_active_force_nm": 0.0,
+        "actuator_force_bound_violation": False,
         "max_abs_qvel_rad_s": 0.0,
         "max_abs_qacc_rad_s2": 0.0,
         "probe_contact_steps": 0,
@@ -346,6 +428,8 @@ def execute_trial(
             state = diagnostics(runtime)
             summary["steps"] = step_index
             summary["target_tracking_error_max_rad"] = max(float(summary["target_tracking_error_max_rad"]), float(state["target_tracking_error_max_rad"]))
+            summary["active_target_tracking_error_max_rad"] = max(float(summary["active_target_tracking_error_max_rad"]), float(state["active_target_tracking_error_max_rad"]))
+            summary["follower_target_tracking_error_max_rad"] = max(float(summary["follower_target_tracking_error_max_rad"]), float(state["follower_target_tracking_error_max_rad"]))
             summary["source_relation_error_max_rad"] = max(float(summary["source_relation_error_max_rad"]), float(state["source_relation_error_max_rad"]))
             if state["target_tracking_error_max_rad"] > 0.003 or state["source_relation_error_max_rad"] > 0.003:
                 summary["diagnostic_0p003_exceedances"] += 1
@@ -365,8 +449,9 @@ def execute_trial(
             summary["velocity_limit_violation_count"] += len(state["velocity_limit_violations"])
             summary["nan_seen"] = bool(summary["nan_seen"]) or not bool(state["finite"])
             summary["max_self_penetration_m"] = max(float(summary["max_self_penetration_m"]), float(state["max_self_penetration_m"]))
-            summary["follower_force_bound_violation"] = bool(summary["follower_force_bound_violation"]) or bool(state["follower_effort_violation"])
+            summary["actuator_force_bound_violation"] = bool(summary["actuator_force_bound_violation"]) or bool(state["actuator_effort_violation"])
             summary["max_follower_force_nm"] = max(float(summary["max_follower_force_nm"]), max((abs(float(row["force_nm"])) for row in state["follower_efforts"]), default=0.0))
+            summary["max_active_force_nm"] = max(float(summary["max_active_force_nm"]), max((abs(float(row["force_nm"])) for row in state["active_efforts"]), default=0.0))
             summary["max_abs_qvel_rad_s"] = max(float(summary["max_abs_qvel_rad_s"]), float(state["max_abs_qvel_rad_s"]))
             summary["max_abs_qacc_rad_s2"] = max(float(summary["max_abs_qacc_rad_s2"]), float(state["max_abs_qacc_rad_s2"]))
             summary["follower_positive_work_j"] += float(work["positive_work_step_j"])
@@ -389,6 +474,8 @@ def execute_trial(
                 "source_joint_limit_violations": state["position_limit_violations"],
                 "source_joint_velocity_violations": state["velocity_limit_violations"],
                 "follower_efforts": state["follower_efforts"],
+                "active_efforts": state["active_efforts"],
+                "active_joint_states": state["active_joint_states"],
                 "contacts": state["contacts"],
                 "max_self_penetration_m": state["max_self_penetration_m"],
                 "qvel_max_abs_rad_s": state["max_abs_qvel_rad_s"],
@@ -397,23 +484,23 @@ def execute_trial(
                 "active_rollout_follower_qpos_writes": 0,
             }, separators=(",", ":")) + "\n")
             trace_file.flush()
-            if not state["finite"] or summary["first_abort"] or summary["position_limit_violation_count"] or summary["velocity_limit_violation_count"] or summary["follower_force_bound_violation"]:
+            if not state["finite"] or summary["first_abort"] or summary["position_limit_violation_count"] or summary["velocity_limit_violation_count"] or summary["actuator_force_bound_violation"]:
                 break
-        if summary["first_abort"] or summary["nan_seen"] or summary["position_limit_violation_count"] or summary["velocity_limit_violation_count"] or summary["follower_force_bound_violation"]:
+        if summary["first_abort"] or summary["nan_seen"] or summary["position_limit_violation_count"] or summary["velocity_limit_violation_count"] or summary["actuator_force_bound_violation"]:
             break
     summary["passed"] = (
         summary["first_abort"] is None
         and summary["position_limit_violation_count"] == 0
         and summary["velocity_limit_violation_count"] == 0
         and not summary["nan_seen"]
-        and not summary["follower_force_bound_violation"]
+        and not summary["actuator_force_bound_violation"]
         and float(summary["max_self_penetration_m"]) <= 1e-12
     )
     summary["first_failed_gate"] = None if summary["passed"] else (
         "mimic geometry exceeded 0.010 rad" if summary["first_abort"] else
         "source joint limit/velocity violation" if summary["position_limit_violation_count"] or summary["velocity_limit_violation_count"] else
         "numerical instability" if summary["nan_seen"] else
-        "follower effort bound" if summary["follower_force_bound_violation"] else
+        "actuator effort bound" if summary["actuator_force_bound_violation"] else
         "self-penetration during trial"
     )
     if fixed_probe:

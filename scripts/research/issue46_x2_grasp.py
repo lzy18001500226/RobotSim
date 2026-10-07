@@ -437,22 +437,28 @@ def build_model(
         kp, kv = (18.0, 2.4) if group == "finger" else (150.0, 22.0) if group == "arm" else (250.0, 30.0)
         max_force = effort.get(joint_name, 30.0)
         if virtual_transmission and group == "finger":
-            kp = VIRTUAL_ACTIVE_SERVO_KP_NM_PER_RAD
-            kv = VIRTUAL_ACTIVE_SERVO_KV_NMS_PER_RAD
             max_force = min(VIRTUAL_ACTIVE_MAX_TORQUE_NM, max_force)
         elif joint_name in mimic_driver_names:
             kp = RIGHT_MIMIC_DRIVER_SERVO_KP * MIMIC_DRIVER_GAIN_SCALE
             kv = RIGHT_MIMIC_DRIVER_SERVO_KV * MIMIC_DRIVER_GAIN_SCALE
+        virtual_hand_motor = virtual_transmission and group == "finger"
         actuator = spec.add_actuator(
             name=f"servo_{joint_name}",
             trntype=mujoco.mjtTrn.mjTRN_JOINT,
             target=joint_name,
-            ctrllimited=bool(joint.limited),
-            ctrlrange=list(joint.range) if joint.limited else [0.0, 0.0],
+            ctrllimited=bool(joint.limited) if not virtual_hand_motor else True,
+            ctrlrange=(
+                [-max_force, max_force]
+                if virtual_hand_motor
+                else list(joint.range) if joint.limited else [0.0, 0.0]
+            ),
             forcelimited=True,
             forcerange=[-max_force, max_force],
         )
-        actuator.set_to_position(kp=kp, kv=kv)
+        if virtual_hand_motor:
+            actuator.set_to_motor()
+        else:
+            actuator.set_to_position(kp=kp, kv=kv)
         servo_counts[group] += 1
 
     model = spec.compile()

@@ -43,6 +43,9 @@ class VirtualTransmissionController:
         kv_nms_per_rad: float,
         max_torque_nm: float,
         soft_limit_margin_rad: float,
+        kp_by_joint: Mapping[str, float] | None = None,
+        kv_by_joint: Mapping[str, float] | None = None,
+        bias_feedforward: bool = False,
     ) -> None:
         values = (kp_nm_per_rad, kv_nms_per_rad, max_torque_nm, soft_limit_margin_rad)
         if not all(np.isfinite(values)) or kp_nm_per_rad <= 0.0 or kv_nms_per_rad < 0.0 or max_torque_nm <= 0.0 or soft_limit_margin_rad <= 0.0:
@@ -53,6 +56,7 @@ class VirtualTransmissionController:
         self.kv = float(kv_nms_per_rad)
         self.max_torque_nm = float(max_torque_nm)
         self.soft_limit_margin_rad = float(soft_limit_margin_rad)
+        self.bias_feedforward = bool(bias_feedforward)
         self._relations = [dict(relation) for relation in relations]
         self._coordinates = {
             joint_name: self._compile_coordinate(joint_name, node, joint_references)
@@ -68,6 +72,20 @@ class VirtualTransmissionController:
             raise ValueError("every URDF mimic driver must be a public active source coordinate")
         if len(self._followers) != len(self._relations):
             raise ValueError("URDF mimic follower names must be unique")
+        configured_kp = dict(kp_by_joint or {})
+        configured_kv = dict(kv_by_joint or {})
+        self._kp_by_joint = {
+            name: float(configured_kp.get(name, self.kp))
+            for name in self._coordinates
+        }
+        self._kv_by_joint = {
+            name: float(configured_kv.get(name, self.kv))
+            for name in self._coordinates
+        }
+        if any(not np.isfinite(value) or value <= 0.0 for value in self._kp_by_joint.values()):
+            raise ValueError("per-joint kp values must be finite and positive")
+        if any(not np.isfinite(value) or value < 0.0 for value in self._kv_by_joint.values()):
+            raise ValueError("per-joint kv values must be finite and nonnegative")
         self._actuator_by_name: dict[str, int] = {}
         for joint_name, coordinate in self._coordinates.items():
             actuator_id = actuator_by_joint.get(coordinate.joint_id)
@@ -75,7 +93,13 @@ class VirtualTransmissionController:
                 raise ValueError(f"joint has no internal/active actuator: {joint_name}")
             self._actuator_by_name[joint_name] = int(actuator_id)
         self._last_source_target: dict[str, float] = {}
+        self._active_source_targets = {
+            name: self.source_position(name)
+            for name in self._active
+        }
+        self._last_active_target = dict(self._active_source_targets)
         self._last_output: dict[str, dict[str, float | bool | str]] = {}
+        self._last_active_output: dict[str, dict[str, float | bool | str]] = {}
         self.total_signed_work_j = 0.0
         self.total_positive_work_j = 0.0
         self.peak_abs_step_work_j = 0.0
@@ -146,10 +170,7 @@ class VirtualTransmissionController:
         return min(high, max(low, value))
 
     def active_target_sources(self) -> dict[str, float]:
-        return {
-            name: self._source_target_from_ctrl(name)
-            for name in self._active
-        }
+        return dict(self._active_source_targets)
 
     def _raw_target(self, name: str, source_target: float) -> float:
         coordinate = self._coordinates[name]
@@ -186,10 +207,7 @@ class VirtualTransmissionController:
                     f"{derived} not in [{low}, {high}]"
                 )
 
-        for name, value in validated.items():
-            coordinate = self._coordinates[name]
-            actuator_id = self._actuator_by_name[name]
-            self.data.ctrl[actuator_id] = self._raw_target(name, value)
+        self._active_source_targets.update(validated)
 
     def hold_current_active_state(self) -> None:
         current = {
@@ -197,18 +215,12 @@ class VirtualTransmissionController:
             for name in self._active
         }
         self.command_active_sources(current)
-        self._last_source_target = {
-            driver: self.source_position(driver, float(self.data.ctrl[self._actuator_by_name[driver]]))
-            for driver in self._drivers
-        }
-
-    def _source_target_from_ctrl(self, name: str) -> float:
-        return self.source_position(name, float(self.data.ctrl[self._actuator_by_name[name]]))
 
     def write_internal_controls(self) -> dict[str, dict[str, float | bool | str]]:
-        """Expand driver targets and apply bounded follower PD motor efforts."""
+        """Apply bounded bias-aware active and internally derived follower torques."""
+        mujoco.mj_forward(self.model, self.data)
         dt = float(self.model.opt.timestep)
-        driver_targets = {name: self._source_target_from_ctrl(name) for name in self._drivers}
+        driver_targets = {name: self._active_source_targets[name] for name in self._drivers}
         driver_velocities: dict[str, float] = {}
         for name, target in driver_targets.items():
             previous = self._last_source_target.get(name, self.source_position(name))
@@ -216,6 +228,48 @@ class VirtualTransmissionController:
             if not np.isfinite(velocity) or abs(velocity) > self._coordinates[name].velocity_limit + 1e-8:
                 raise ValueError(f"derived source target velocity exceeds limit for {name}: {velocity}")
             driver_velocities[name] = velocity
+
+        active_output: dict[str, dict[str, float | bool | str]] = {}
+        for name in self._active:
+            coordinate = self._coordinates[name]
+            target = self._active_source_targets[name]
+            previous = self._last_active_target.get(name, self.source_position(name))
+            target_velocity = (target - previous) / dt
+            if not np.isfinite(target_velocity) or abs(target_velocity) > coordinate.velocity_limit + 1e-8:
+                raise ValueError(f"active target velocity exceeds source limit for {name}: {target_velocity}")
+            raw_position_error = self._raw_target(name, target) - float(self.data.qpos[coordinate.qpos])
+            raw_target_velocity = coordinate.axis_sign * target_velocity
+            raw_velocity_error = raw_target_velocity - float(self.data.qvel[coordinate.dof])
+            kp = self._kp_by_joint[name]
+            kv = self._kv_by_joint[name]
+            bias_ff = float(self.data.qfrc_bias[coordinate.dof]) if self.bias_feedforward else 0.0
+            requested_torque = bias_ff + kp * raw_position_error + kv * raw_velocity_error
+            actuator_id = self._actuator_by_name[name]
+            gear = float(self.model.actuator_gear[actuator_id, 0])
+            if not np.isfinite(gear) or abs(gear) < 1e-12:
+                raise ValueError(f"invalid active motor gear for {name}: {gear}")
+            effort_bound = min(self.max_torque_nm, coordinate.effort_limit) * abs(gear)
+            torque = float(np.clip(requested_torque, -effort_bound, effort_bound))
+            command = torque / gear
+            if bool(self.model.actuator_ctrllimited[actuator_id]):
+                low, high = self.model.actuator_ctrlrange[actuator_id]
+                command = float(np.clip(command, float(low), float(high)))
+            self.data.ctrl[actuator_id] = command
+            active_output[name] = {
+                "target_source_rad": float(target),
+                "target_velocity_source_rad_s": float(target_velocity),
+                "position_source_rad": self.source_position(name),
+                "velocity_source_rad_s": self.source_velocity(name),
+                "raw_position_error_rad": float(raw_position_error),
+                "raw_velocity_error_rad_s": float(raw_velocity_error),
+                "bias_feedforward_nm": bias_ff,
+                "kp_nm_per_rad": kp,
+                "kv_nms_per_rad": kv,
+                "requested_torque_nm": requested_torque,
+                "commanded_torque_nm": torque,
+                "effort_limit_nm": effort_bound,
+                "saturated": abs(requested_torque) > effort_bound + 1e-12,
+            }
 
         output: dict[str, dict[str, float | bool | str]] = {}
         for relation in self._relations:
@@ -235,7 +289,10 @@ class VirtualTransmissionController:
             raw_target_velocity = coordinate.axis_sign * target_velocity
             position_error = raw_target - float(self.data.qpos[coordinate.qpos])
             velocity_error = raw_target_velocity - float(self.data.qvel[coordinate.dof])
-            requested_torque = self.kp * position_error + self.kv * velocity_error
+            kp = self._kp_by_joint[follower]
+            kv = self._kv_by_joint[follower]
+            bias_ff = float(self.data.qfrc_bias[coordinate.dof]) if self.bias_feedforward else 0.0
+            requested_torque = bias_ff + kp * position_error + kv * velocity_error
             effort_bound = min(self.max_torque_nm, coordinate.effort_limit)
             torque = float(np.clip(requested_torque, -effort_bound, effort_bound))
             actuator_id = self._actuator_by_name[follower]
@@ -259,14 +316,41 @@ class VirtualTransmissionController:
                 "follower_velocity_source_rad_s": self.source_velocity(follower),
                 "follower_position_error_to_target_rad": self.source_position(follower) - target,
                 "requested_torque_nm": requested_torque,
+                "bias_feedforward_nm": bias_ff,
+                "kp_nm_per_rad": kp,
+                "kv_nms_per_rad": kv,
                 "commanded_torque_nm": torque,
                 "effort_limit_nm": effort_bound,
                 "motor_gear": gear,
                 "saturated": abs(requested_torque) > effort_bound + 1e-12,
             }
         self._last_source_target.update(driver_targets)
+        self._last_active_target.update(self._active_source_targets)
         self._last_output = output
+        self._last_active_output = active_output
         return output
+
+    def active_measure(self) -> dict[str, dict[str, float | bool | str]]:
+        result: dict[str, dict[str, float | bool | str]] = {}
+        for name in self._active:
+            coordinate = self._coordinates[name]
+            output = self._last_active_output.get(name, {})
+            actuator_id = self._actuator_by_name[name]
+            gear = float(self.model.actuator_gear[actuator_id, 0])
+            result[name] = {
+                "target_source_rad": float(self._active_source_targets[name]),
+                "position_source_rad": self.source_position(name),
+                "velocity_source_rad_s": self.source_velocity(name),
+                "target_tracking_error_rad": self.source_position(name) - float(self._active_source_targets[name]),
+                "bias_feedforward_nm": float(output.get("bias_feedforward_nm", 0.0)),
+                "pd_torque_nm": float(output.get("requested_torque_nm", 0.0)) - float(output.get("bias_feedforward_nm", 0.0)),
+                "requested_torque_nm": float(output.get("requested_torque_nm", 0.0)),
+                "commanded_torque_nm": float(output.get("commanded_torque_nm", 0.0)),
+                "actual_actuator_force_nm": float(self.data.actuator_force[actuator_id]) * gear,
+                "effort_limit_nm": float(output.get("effort_limit_nm", min(self.max_torque_nm, coordinate.effort_limit))),
+                "saturated": bool(output.get("saturated", False)),
+            }
+        return result
 
     def measure(self) -> dict[str, dict[str, float | bool | str]]:
         result: dict[str, dict[str, float | bool | str]] = {}
@@ -277,7 +361,7 @@ class VirtualTransmissionController:
             offset = float(relation["offset"])
             driver_state = self.source_position(driver)
             follower_state = self.source_position(follower)
-            driver_target = self._source_target_from_ctrl(driver)
+            driver_target = self._active_source_targets[driver]
             follower_target = multiplier * driver_target + offset
             target_error = follower_state - follower_target
             state_error = follower_state - (multiplier * driver_state + offset)
@@ -297,6 +381,9 @@ class VirtualTransmissionController:
                 "target_tracking_error_rad": target_error,
                 "source_relation_error_rad": state_error,
                 "command_relation_error_rad": follower_target - (multiplier * driver_target + offset),
+                "bias_feedforward_nm": float(output.get("bias_feedforward_nm", 0.0)),
+                "pd_torque_nm": float(output.get("requested_torque_nm", 0.0)) - float(output.get("bias_feedforward_nm", 0.0)),
+                "requested_torque_nm": float(output.get("requested_torque_nm", 0.0)),
                 "commanded_torque_nm": float(output.get("commanded_torque_nm", 0.0)),
                 "actual_actuator_force_nm": float(self.data.actuator_force[actuator_id]) * gear,
                 "effort_limit_nm": float(output.get("effort_limit_nm", min(self.max_torque_nm, self._coordinates[follower].effort_limit))),
