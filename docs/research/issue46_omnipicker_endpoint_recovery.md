@@ -75,7 +75,8 @@ Raw evidence is preserved externally at `C:\Users\HP\Desktop\Robot\reviews\issue
 Exact reproduction command (use a new empty output directory):
 
 ```bash
-MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python scripts/research/issue46_omnipicker_endpoint_recovery.py --source-root /tmp/robotsim-issue46-virtual-transmission-vendor-20261007 --sdk-root /tmp/robotsim-issue46-agillink-c238 --x1-infer-root /tmp/robotsim-issue46-x1-infer-9e0 --output <new-empty-output-directory>
+cd /tmp/robotsim-issue46-omnipicker-dynamic-20261007
+MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python scripts/research/issue46_omnipicker_endpoint_recovery.py --source-root /tmp/robotsim-issue46-virtual-transmission-vendor-20261007 --sdk-root /tmp/robotsim-issue46-agillink-c238 --x1-infer-root /tmp/robotsim-issue46-x1-infer-9e0 --output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/omnipicker-dynamic/20261007-constrained-open-hold-v3-rerun
 ```
 
 Source position topology and mimic relation are source-derived. The velocity/effort bounds used here are `SIMULATION_ONLY_M0` engineering parameters because the pinned X2 URDF provides zero placeholders and an exact X2 hardware dynamic calibration has not been established.
