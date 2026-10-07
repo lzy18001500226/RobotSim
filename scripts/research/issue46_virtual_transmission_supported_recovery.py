@@ -364,17 +364,20 @@ def cubic_smooth_blend_exact(start: dict[str, float], end: dict[str, float], alp
     return gate.smooth_blend(start, end, u)
 
 
-def controller_hand_records(runtime: dict[str, object]) -> dict[str, dict[str, float]]:
+def controller_hand_records(runtime: dict[str, object]) -> dict[str, dict[str, object]]:
     transmission = runtime["transmission"]
-    records: dict[str, dict[str, float]] = {}
+    records: dict[str, dict[str, object]] = {}
     for joint_name, output in transmission.active_measure().items():
         records[joint_name] = {
             "target_position_source_rad": float(output["target_source_rad"]),
             "target_velocity_source_rad_s": float(output["target_velocity_source_rad_s"]),
             "position_error_source_rad": float(output["target_source_rad"]) - float(output["position_source_rad"]),
             "velocity_error_source_rad_s": float(output["target_velocity_source_rad_s"]) - float(output["velocity_source_rad_s"]),
+            "actual_velocity_source_rad_s": float(output["velocity_source_rad_s"]),
             "pd_torque_nm": float(output["pd_torque_nm"]),
             "bias_feedforward_torque_nm": float(output["bias_feedforward_nm"]),
+            "dynamic_coupling_feedforward_nm": float(output.get("dynamic_coupling_feedforward_nm", 0.0)),
+            "dynamic_coupling_by_driver_nm": dict(output.get("dynamic_coupling_by_driver_nm", {})),
             "requested_torque_nm": float(output["requested_torque_nm"]),
             "commanded_torque_after_clipping_nm": float(output["commanded_torque_nm"]),
             "effort_limit_nm": float(output["effort_limit_nm"]),
@@ -385,8 +388,11 @@ def controller_hand_records(runtime: dict[str, object]) -> dict[str, dict[str, f
             "target_velocity_source_rad_s": float(output["follower_target_velocity_source_rad_s"]),
             "position_error_source_rad": float(output["follower_target_source_rad"]) - float(output["follower_position_source_rad"]),
             "velocity_error_source_rad_s": float(output["follower_target_velocity_source_rad_s"]) - float(output["follower_velocity_source_rad_s"]),
+            "actual_velocity_source_rad_s": float(output["follower_velocity_source_rad_s"]),
             "pd_torque_nm": float(output["pd_torque_nm"]),
             "bias_feedforward_torque_nm": float(output["bias_feedforward_nm"]),
+            "dynamic_coupling_feedforward_nm": float(output["dynamic_coupling_feedforward_nm"]),
+            "dynamic_coupling_by_driver_nm": dict(output["dynamic_coupling_by_driver_nm"]),
             "requested_torque_nm": float(output["requested_torque_nm"]),
             "commanded_torque_after_clipping_nm": float(output["commanded_torque_nm"]),
             "effort_limit_nm": float(output["effort_limit_nm"]),
@@ -396,7 +402,7 @@ def controller_hand_records(runtime: dict[str, object]) -> dict[str, dict[str, f
 
 def detailed_joint_step(
     runtime: dict[str, object],
-    controller_records: dict[str, dict[str, float]],
+    controller_records: dict[str, dict[str, object]],
     joint_names: tuple[str, ...],
     target_acceleration: dict[str, float],
 ) -> dict[str, dict[str, object]]:
@@ -433,6 +439,8 @@ def detailed_joint_step(
                 "bias_feedforward_torque_nm": float(target["bias_feedforward_torque_nm"]),
                 "requested_torque_before_clipping_nm": float(target["requested_torque_nm"]),
                 "commanded_torque_after_clipping_nm": float(target["commanded_torque_after_clipping_nm"]),
+                "dynamic_coupling_feedforward_nm": float(target["dynamic_coupling_feedforward_nm"]),
+                "dynamic_coupling_by_driver_nm": target["dynamic_coupling_by_driver_nm"],
                 "effort_limit_nm": float(target["effort_limit_nm"]),
                 "qfrc_bias_raw_nm": float(data.qfrc_bias[int(joint["dof"])]),
                 "qfrc_bias_source_nm": int(joint["axis_sign"]) * float(data.qfrc_bias[int(joint["dof"])]),
@@ -596,6 +604,8 @@ def run_supported_trial(
     detailed_joint_names: tuple[str, ...] = (),
     operational_target_margin_rad: float | None = None,
     controller_profile_override: dict[str, dict[str, float]] | None = None,
+    reject_sustained_follower_reverse: bool = False,
+    check_final_settle: bool = False,
 ) -> tuple[dict[str, object], dict[str, object]]:
     runtime = gate.make_runtime(
         fixed_probe=fixed_probe,
@@ -622,6 +632,8 @@ def run_supported_trial(
         "max_abs_support_reaction_nm": 0.0,
         "max_support_motion_by_group_rad": {},
         "max_whole_body_coupling_torque_nm": 0.0,
+        "max_abs_dynamic_coupling_feedforward_nm": 0.0,
+        "max_dynamic_coupling_by_driver_nm": {},
         "diagnostic_0p003_samples": 0,
         "abort_0p010_samples": 0,
         "position_limit_violation_samples": 0,
@@ -638,6 +650,7 @@ def run_supported_trial(
         "initial_support_controls": initial_controls,
         "operational_target_margin_rad": runtime["operational_target_margin_rad"],
         "controller_gain_profile_frozen": controller_profile_override is not None,
+        "follower_reverse_samples": 0,
     }
     failure = None
     if initial["source_position_limit_violations"]:
@@ -660,6 +673,9 @@ def run_supported_trial(
         for joint_name in runtime["transmission"].active_joint_names + runtime["transmission"].follower_joint_names
     }
     final_hold_samples: list[dict[str, object]] = []
+    follower_target_direction: dict[str, int] = {}
+    follower_direction_steps: dict[str, int] = {}
+    follower_direction_hold_steps = max(1, round(0.05 / float(model.opt.timestep)))
     for phase, duration, requested_hand_targets, requested_support_targets in phases:
         if failure:
             break
@@ -678,6 +694,7 @@ def run_supported_trial(
             "max_mimic_error_rad": 0.0,
             "max_target_error_rad": 0.0,
             "max_support_effort_nm": 0.0,
+            "max_abs_dynamic_coupling_feedforward_nm": 0.0,
             "max_support_motion_by_group_rad": {},
             "final_state": None,
         }
@@ -689,6 +706,31 @@ def run_supported_trial(
             runtime["transmission"].command_active_sources(active_targets)
             runtime["transmission"].write_internal_controls()
             hand_reference = controller_hand_records(runtime)
+            reverse_violations = []
+            if reject_sustained_follower_reverse:
+                for joint_name in runtime["transmission"].follower_joint_names:
+                    target_velocity = float(hand_reference[joint_name]["target_velocity_source_rad_s"])
+                    actual_velocity = float(hand_reference[joint_name]["actual_velocity_source_rad_s"])
+                    direction = 1 if target_velocity > 0.0 else -1 if target_velocity < 0.0 else 0
+                    previous_direction = follower_target_direction.get(joint_name, 0)
+                    if direction == 0:
+                        follower_direction_steps[joint_name] = 0
+                    elif direction != previous_direction:
+                        follower_direction_steps[joint_name] = 1
+                    else:
+                        follower_direction_steps[joint_name] = follower_direction_steps.get(joint_name, 0) + 1
+                    follower_target_direction[joint_name] = direction
+                    if (
+                        direction != 0
+                        and follower_direction_steps.get(joint_name, 0) >= follower_direction_hold_steps
+                        and actual_velocity * direction < 0.0
+                    ):
+                        reverse_violations.append({
+                            "joint": joint_name,
+                            "target_velocity_source_rad_s": target_velocity,
+                            "actual_velocity_source_rad_s": actual_velocity,
+                            "same_direction_samples": follower_direction_steps[joint_name],
+                        })
             hand_target_acceleration = {}
             for joint_name, target in hand_reference.items():
                 velocity = float(target["target_velocity_source_rad_s"])
@@ -742,6 +784,19 @@ def run_supported_trial(
             )
             phase_stats["max_mimic_error_rad"] = max(float(phase_stats["max_mimic_error_rad"]), float(state["source_mimic_error_max_rad"]))
             phase_stats["max_target_error_rad"] = max(float(phase_stats["max_target_error_rad"]), float(state["target_tracking_error_max_rad"]))
+            coupling_peak = max((abs(float(row["dynamic_coupling_feedforward_nm"])) for row in hand_reference.values()), default=0.0)
+            phase_stats["max_abs_dynamic_coupling_feedforward_nm"] = max(
+                float(phase_stats["max_abs_dynamic_coupling_feedforward_nm"]), coupling_peak
+            )
+            result["max_abs_dynamic_coupling_feedforward_nm"] = max(
+                float(result["max_abs_dynamic_coupling_feedforward_nm"]), coupling_peak
+            )
+            for hand_joint, record in hand_reference.items():
+                for driver_joint, term in dict(record["dynamic_coupling_by_driver_nm"]).items():
+                    driver_peaks = result["max_dynamic_coupling_by_driver_nm"]
+                    driver_peaks[driver_joint] = max(
+                        abs(float(term)), abs(float(driver_peaks.get(driver_joint, 0.0)))
+                    )
             phase_stats["max_support_effort_nm"] = max(float(phase_stats["max_support_effort_nm"]), float(state["support_max_abs_effort_nm"]))
             for group, group_state in state["support_motion_by_group"].items():
                 phase_stats["max_support_motion_by_group_rad"][group] = max(
@@ -800,6 +855,7 @@ def run_supported_trial(
                 "support_controls": support_controls,
                 "state": state,
                 "hand_reference_dynamics": hand_reference,
+                "follower_reverse_violations": reverse_violations,
                 "active_rollout_follower_qpos_writes": 0,
             }
             if detailed_before is not None:
@@ -817,12 +873,20 @@ def run_supported_trial(
                 failure = "bounded support actuator effort"
             elif state["hand_effort_bound_violation"]:
                 failure = "bounded hand actuator effort"
-            elif max(float(state["source_mimic_error_max_rad"]), float(state["target_tracking_error_max_rad"])) > HAND_ABORT_RAD:
+            elif reverse_violations:
+                failure = "follower reversed against a sustained monotonic target"
+            elif (
+                max(float(state["source_mimic_error_max_rad"]), float(state["target_tracking_error_max_rad"]))
+                >= HAND_ABORT_RAD if reject_sustained_follower_reverse
+                else max(float(state["source_mimic_error_max_rad"]), float(state["target_tracking_error_max_rad"])) > HAND_ABORT_RAD
+            ):
                 failure = "hand tracking exceeded 0.010 rad abort ceiling"
             elif max((float(group["max_abs_motion_rad"]) for group in state["support_motion_by_group"].values()), default=0.0) > PREVALIDATION_SUPPORT_DRIFT_LIMIT_RAD:
                 failure = "supported non-hand posture tracking"
-            if phase == "final_open_hold" and k >= duration - min(25, duration):
+            if phase == "final_open_hold":
                 final_hold_samples.append(state)
+            if reverse_violations:
+                result["follower_reverse_samples"] = int(result["follower_reverse_samples"]) + len(reverse_violations)
             if failure:
                 result["first_failure"] = {"phase": phase, "step": step_index, "time_s": float(data.time), "gate": failure, "state": state}
                 break
@@ -836,8 +900,9 @@ def run_supported_trial(
     result["first_failed_gate"] = failure
     result["damped_response"] = None
     if label.startswith("stage3_"):
-        final_speed = max((float(row["hand_max_abs_qvel_rad_s"]) for row in final_hold_samples), default=0.0)
-        final_error = max((float(row["target_tracking_error_max_rad"]) for row in final_hold_samples), default=0.0)
+        final_window = final_hold_samples[-25:]
+        final_speed = max((float(row["hand_max_abs_qvel_rad_s"]) for row in final_window), default=0.0)
+        final_error = max((float(row["target_tracking_error_max_rad"]) for row in final_window), default=0.0)
         response_pass = final_speed <= max(1e-9, 0.10 * peak_hand_speed) and final_error <= HAND_ABORT_RAD
         result["damped_response"] = {
             "passed": response_pass,
@@ -850,6 +915,72 @@ def run_supported_trial(
         if result["passed"] and not response_pass:
             result["passed"] = False
             result["first_failed_gate"] = "representative hand response did not damp to the open hold"
+    if check_final_settle:
+        settle_window = final_hold_samples[-100:]
+        joint_names = sorted(final_hold_samples[-1]["hand_states"]) if final_hold_samples else []
+
+        def window_rms(samples: list[dict[str, object]], value_fn) -> float:
+            values = [value_fn(sample, joint_name) for sample in samples for joint_name in joint_names]
+            return float(np.sqrt(np.mean(np.square(values)))) if values else float("inf")
+
+        def velocity(sample, joint_name):
+            return float(sample["hand_states"][joint_name]["source_velocity_rad_s"])
+
+        def acceleration(sample, joint_name):
+            return float(sample["hand_states"][joint_name]["source_acceleration_rad_s2"])
+
+        def tracking_error(sample, joint_name):
+            state = sample["hand_states"][joint_name]
+            return float(state["source_position_rad"]) - float(state["target_position_rad"])
+
+        early_window, late_window = settle_window[:50], settle_window[50:]
+        early_rms = {
+            "qvel_rad_s": window_rms(early_window, velocity),
+            "qacc_rad_s2": window_rms(early_window, acceleration),
+            "tracking_error_rad": window_rms(early_window, tracking_error),
+        }
+        late_rms = {
+            "qvel_rad_s": window_rms(late_window, velocity),
+            "qacc_rad_s2": window_rms(late_window, acceleration),
+            "tracking_error_rad": window_rms(late_window, tracking_error),
+        }
+        final_window = final_hold_samples[-25:]
+        final_speed = max((float(row["hand_max_abs_qvel_rad_s"]) for row in final_window), default=float("inf"))
+        final_error = max((float(row["target_tracking_error_max_rad"]) for row in final_window), default=float("inf"))
+        no_growth = all(late_rms[key] <= early_rms[key] for key in early_rms)
+        settle_pass = (
+            len(settle_window) == 100
+            and final_speed <= max(1e-9, 0.10 * peak_hand_speed)
+            and final_error <= HAND_ABORT_RAD
+            and no_growth
+        )
+        result["final_settling"] = {
+            "passed": settle_pass,
+            "samples": len(settle_window),
+            "window_duration_s": len(settle_window) * float(model.opt.timestep),
+            "late_25_step_max_qvel_rad_s": final_speed,
+            "late_25_step_max_target_error_rad": final_error,
+            "global_peak_qvel_rad_s": peak_hand_speed,
+            "velocity_decay_ratio_limit": 0.10,
+            "tracking_error_ceiling_rad": HAND_ABORT_RAD,
+            "early_half_rms": early_rms,
+            "late_half_rms": late_rms,
+            "no_growing_oscillation": no_growth,
+            "qacc_peak_rad_s2": float(result["max_abs_hand_qacc_rad_s2"]),
+            "qacc_finite_throughout": bool(result["max_abs_hand_qacc_rad_s2"] < float("inf")),
+        }
+        if result["passed"] and not settle_pass:
+            failure = "final open hold did not settle without growing oscillation"
+            result["passed"] = False
+            result["first_failed_gate"] = failure
+            result["first_failure"] = {
+                "phase": "final_open_hold",
+                "step": result["completed_steps"],
+                "time_s": float(data.time),
+                "gate": failure,
+                "state": final_hold_samples[-1] if final_hold_samples else {},
+                "settling": result["final_settling"],
+            }
     if fixed_probe:
         result["stable_external_contact_pass"] = result["probe_contact_steps"] > 0 and result["max_probe_force_n"] > 0.0
         if result["passed"] and not result["stable_external_contact_pass"]:
@@ -870,6 +1001,66 @@ def run_supported_trial(
     }
     result["controller_profile"] = runtime["controller_profile"]
     return result, runtime
+
+
+def run_stage6_full_hand(
+    trace_path: Path,
+    *,
+    operational_target_margin_rad: float | None = None,
+    controller_profile_override: dict[str, dict[str, float]] | None = None,
+) -> dict[str, object]:
+    runtime_preview = gate.make_runtime(
+        include_bottle=False,
+        operational_target_margin_rad=operational_target_margin_rad,
+        controller_profile_override=controller_profile_override,
+    )
+    initialize_support(runtime_preview)
+    start = dict(runtime_preview["initial_active"])
+    closed = {**start, **gate.feasible_driver_targets(runtime_preview)}
+    partial = minimum_jerk_blend(start, closed, 0.5)
+    phases = [
+        ("open_hold", 200, start, {}),
+        ("close", REFERENCE_DURATION_STEPS, closed, {}),
+        ("partial", REFERENCE_DURATION_STEPS, partial, {}),
+        ("closed_return", REFERENCE_DURATION_STEPS, closed, {}),
+        ("closed_hold", 300, closed, {}),
+        ("reopen", REFERENCE_DURATION_STEPS, start, {}),
+        ("final_open_hold", 250, start, {}),
+    ]
+    with trace_path.open("w", encoding="utf-8") as trace:
+        result, runtime = run_supported_trial(
+            "stage6_final_full_hand",
+            phases,
+            trace,
+            operational_target_margin_rad=operational_target_margin_rad,
+            controller_profile_override=controller_profile_override,
+            reject_sustained_follower_reverse=True,
+            check_final_settle=True,
+        )
+    result["stage"] = "6 - final full-hand validation"
+    result["required_sequence"] = ["OPEN", "CLOSE", "PARTIAL", "CLOSED HOLD", "REOPEN", "OPEN HOLD"]
+    result["executed_phases"] = [phase[0] for phase in phases]
+    result["fixed_gates"] = {
+        "source_position_limits": result["position_limit_violation_samples"] == 0,
+        "source_velocity_limits": result["velocity_limit_violation_samples"] == 0,
+        "follower_tracking_below_0p010_rad": float(result["max_hand_target_error_rad"]) < HAND_ABORT_RAD,
+        "no_sustained_reverse_against_monotonic_target": int(result["follower_reverse_samples"]) == 0,
+        "qvel_and_qacc_finite_with_peaks_recorded": bool(result["initial"]["finite"]) and math.isfinite(float(result["max_abs_hand_qacc_rad_s2"])),
+        "bounded_actuator_effort": not bool(result["hand_effort_bound_violation"]) and not bool(result["support_effort_bound_violation"]),
+        "final_settle_without_growing_oscillation": bool(result.get("final_settling", {}).get("passed", False)),
+        "no_follower_qpos_writes": int(result["active_rollout_follower_qpos_writes"]) == 0,
+    }
+    result["all_fixed_gates_passed"] = all(result["fixed_gates"].values())
+    result["passed"] = bool(result["passed"]) and bool(result["all_fixed_gates_passed"])
+    result["status"] = "PASS" if result["passed"] else "FAIL"
+    result["trace_path"] = str(trace_path)
+    result["runtime"] = {
+        **result["runtime"],
+        "timestep_s": float(runtime["model"].opt.timestep),
+        "mujoco_python_version": mujoco.__version__,
+        "mujoco_native_version": mujoco.mj_versionString(),
+    }
+    return result
 
 
 def original_return_overshoot_audit(trace_path: Path, previous_trace_path: Path) -> dict[str, object]:
@@ -1487,6 +1678,58 @@ def runtime_identity() -> dict[str, object]:
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
+    if "--stage6-final-full-hand" in sys.argv:
+        previous_dir = Path(os.environ.get("ISSUE46_PREVIOUS_EVIDENCE_DIR", ""))
+        stage3_path = previous_dir / "stage3_damping_corrected_result.json"
+        identity_path = previous_dir / "damping_correction_identity.json"
+        if not stage3_path.is_file() or not identity_path.is_file():
+            raise RuntimeError("Stage 6 requires the preserved Stage 3 PASS result and damping identity")
+        stage3 = json.loads(stage3_path.read_text(encoding="utf-8"))
+        correction = json.loads(identity_path.read_text(encoding="utf-8"))
+        trials = list(stage3.get("results", []))
+        if stage3.get("status") != "PASS" or len(trials) != 4 or not all(row.get("passed") for row in trials):
+            raise RuntimeError("preserved Stage 3 result is not a four-case PASS")
+        if any(int(row.get("active_rollout_follower_qpos_writes", -1)) != 0 for row in trials):
+            raise RuntimeError("preserved Stage 3 evidence reports a follower qpos write")
+        if correction.get("accepted_robot_sim_head") != subprocess.check_output(
+            ["git", "-C", str(task.SIM_REPO_ROOT), "rev-parse", "HEAD"], text=True
+        ).strip():
+            raise RuntimeError("damping correction identity belongs to a different RobotSim HEAD")
+        if abs(float(correction.get("derived_kv_multiplier", 0.0)) - 4.97032338287281) > 1e-12:
+            raise RuntimeError("preserved damping correction is not the accepted 4.97032338287281x correction")
+        profiles = [row.get("controller_profile") for row in trials]
+        if any(profile is None for profile in profiles) or any(profile != profiles[0] for profile in profiles[1:]):
+            raise RuntimeError("Stage 3 cases do not share one identical frozen controller profile")
+        margins = {float(row["operational_target_margin_rad"]) for row in trials}
+        if len(margins) != 1:
+            raise RuntimeError("Stage 3 cases do not share one operational target margin")
+        margin = margins.pop()
+        identity = runtime_identity()
+        if not identity["vendor_pin_matches"]:
+            raise RuntimeError("current vendor checkout does not match the pinned source")
+        result = run_stage6_full_hand(
+            OUT / "stage6_final_full_hand_trace.jsonl",
+            operational_target_margin_rad=margin,
+            controller_profile_override=profiles[0],
+        )
+        result["runtime_identity"] = identity
+        result["stage3_reference_result"] = str(stage3_path)
+        result["damping_correction_identity"] = correction
+        write_json(OUT / "stage6_final_full_hand_result.json", result)
+        print(json.dumps({
+            "status": result["status"],
+            "passed": result["passed"],
+            "first_failed_gate": result["first_failed_gate"],
+            "completed_steps": result["completed_steps"],
+            "max_hand_target_error_rad": result["max_hand_target_error_rad"],
+            "max_hand_qvel_rad_s": result["max_abs_hand_qvel_rad_s"],
+            "max_hand_qacc_rad_s2": result["max_abs_hand_qacc_rad_s2"],
+            "max_dynamic_coupling_feedforward_nm": result["max_abs_dynamic_coupling_feedforward_nm"],
+            "follower_reverse_samples": result["follower_reverse_samples"],
+            "fixed_gates": result["fixed_gates"],
+            "trace_path": result["trace_path"],
+        }, indent=2))
+        return 0 if result["passed"] else 2
     if "--final-endpoint-margin" in sys.argv:
         return run_final_endpoint_margin_iteration()
     if "--audit-original-stage3" in sys.argv:

@@ -98,7 +98,7 @@ class VirtualTransmissionController:
             for name in self._active
         }
         self._last_active_target = dict(self._active_source_targets)
-        self._last_output: dict[str, dict[str, float | bool | str]] = {}
+        self._last_output: dict[str, dict[str, object]] = {}
         self._last_active_output: dict[str, dict[str, float | bool | str]] = {}
         self.total_signed_work_j = 0.0
         self.total_positive_work_j = 0.0
@@ -216,7 +216,7 @@ class VirtualTransmissionController:
         }
         self.command_active_sources(current)
 
-    def write_internal_controls(self) -> dict[str, dict[str, float | bool | str]]:
+    def write_internal_controls(self) -> dict[str, dict[str, object]]:
         """Apply bounded bias-aware active and internally derived follower torques."""
         mujoco.mj_forward(self.model, self.data)
         dt = float(self.model.opt.timestep)
@@ -271,7 +271,11 @@ class VirtualTransmissionController:
                 "saturated": abs(requested_torque) > effort_bound + 1e-12,
             }
 
-        output: dict[str, dict[str, float | bool | str]] = {}
+        # Evaluate the current active-driver accelerations without advancing time.
+        mujoco.mj_forward(self.model, self.data)
+        mass = np.empty((self.model.nv, self.model.nv), dtype=float)
+        mujoco.mj_fullM(self.model, mass, self.data.qM)
+        output: dict[str, dict[str, object]] = {}
         for relation in self._relations:
             follower = str(relation["follower_joint"])
             driver = str(relation["driver_joint"])
@@ -292,7 +296,18 @@ class VirtualTransmissionController:
             kp = self._kp_by_joint[follower]
             kv = self._kv_by_joint[follower]
             bias_ff = float(self.data.qfrc_bias[coordinate.dof]) if self.bias_feedforward else 0.0
-            requested_torque = bias_ff + kp * position_error + kv * velocity_error
+            coupling_by_driver = {
+                driver_name: float(
+                    mass[coordinate.dof, self._coordinates[driver_name].dof]
+                    * self.data.qacc[self._coordinates[driver_name].dof]
+                )
+                for driver_name in sorted(self._drivers)
+            }
+            if not np.isfinite(list(coupling_by_driver.values())).all():
+                raise ValueError(f"non-finite dynamic coupling estimate for {follower}")
+            coupling_feedforward = float(sum(coupling_by_driver.values()))
+            pd_torque = kp * position_error + kv * velocity_error
+            requested_torque = bias_ff + pd_torque + coupling_feedforward
             effort_bound = min(self.max_torque_nm, coordinate.effort_limit)
             torque = float(np.clip(requested_torque, -effort_bound, effort_bound))
             actuator_id = self._actuator_by_name[follower]
@@ -317,6 +332,9 @@ class VirtualTransmissionController:
                 "follower_position_error_to_target_rad": self.source_position(follower) - target,
                 "requested_torque_nm": requested_torque,
                 "bias_feedforward_nm": bias_ff,
+                "pd_torque_nm": pd_torque,
+                "dynamic_coupling_feedforward_nm": coupling_feedforward,
+                "dynamic_coupling_by_driver_nm": coupling_by_driver,
                 "kp_nm_per_rad": kp,
                 "kv_nms_per_rad": kv,
                 "commanded_torque_nm": torque,
@@ -324,6 +342,7 @@ class VirtualTransmissionController:
                 "motor_gear": gear,
                 "saturated": abs(requested_torque) > effort_bound + 1e-12,
             }
+        mujoco.mj_forward(self.model, self.data)
         self._last_source_target.update(driver_targets)
         self._last_active_target.update(self._active_source_targets)
         self._last_output = output
@@ -344,7 +363,7 @@ class VirtualTransmissionController:
                 "velocity_source_rad_s": self.source_velocity(name),
                 "target_tracking_error_rad": self.source_position(name) - float(self._active_source_targets[name]),
                 "bias_feedforward_nm": float(output.get("bias_feedforward_nm", 0.0)),
-                "pd_torque_nm": float(output.get("requested_torque_nm", 0.0)) - float(output.get("bias_feedforward_nm", 0.0)),
+                "pd_torque_nm": float(output.get("pd_torque_nm", float(output.get("requested_torque_nm", 0.0)) - float(output.get("bias_feedforward_nm", 0.0)))),
                 "requested_torque_nm": float(output.get("requested_torque_nm", 0.0)),
                 "commanded_torque_nm": float(output.get("commanded_torque_nm", 0.0)),
                 "actual_actuator_force_nm": float(self.data.actuator_force[actuator_id]) * gear,
@@ -353,8 +372,8 @@ class VirtualTransmissionController:
             }
         return result
 
-    def measure(self) -> dict[str, dict[str, float | bool | str]]:
-        result: dict[str, dict[str, float | bool | str]] = {}
+    def measure(self) -> dict[str, dict[str, object]]:
+        result: dict[str, dict[str, object]] = {}
         for relation in self._relations:
             follower = str(relation["follower_joint"])
             driver = str(relation["driver_joint"])
@@ -383,7 +402,9 @@ class VirtualTransmissionController:
                 "source_relation_error_rad": state_error,
                 "command_relation_error_rad": follower_target - (multiplier * driver_target + offset),
                 "bias_feedforward_nm": float(output.get("bias_feedforward_nm", 0.0)),
-                "pd_torque_nm": float(output.get("requested_torque_nm", 0.0)) - float(output.get("bias_feedforward_nm", 0.0)),
+                "dynamic_coupling_feedforward_nm": float(output.get("dynamic_coupling_feedforward_nm", 0.0)),
+                "dynamic_coupling_by_driver_nm": dict(output.get("dynamic_coupling_by_driver_nm", {})),
+                "pd_torque_nm": float(output.get("pd_torque_nm", 0.0)),
                 "requested_torque_nm": float(output.get("requested_torque_nm", 0.0)),
                 "commanded_torque_nm": float(output.get("commanded_torque_nm", 0.0)),
                 "actual_actuator_force_nm": float(self.data.actuator_force[actuator_id]) * gear,
