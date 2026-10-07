@@ -17,6 +17,8 @@ Project plans and workflows provide context or procedures; they are not task que
 
 For implementation placement and RobotSim runtime/validation rules, follow [`docs/engineering/README.md`](docs/engineering/README.md). For multi-step work that needs persistent continuation, follow [`docs/workflows/goal_driven_development.md`](docs/workflows/goal_driven_development.md); Goals are thread-scoped and do not authorize actions beyond the user's request.
 
+Keep research experiments under `scripts/research/`; production/runtime code must not depend on them. Apply the [runtime prototype lifecycle](docs/engineering/runtime.md#prototype-lifecycle) and [test/evidence retention rules](docs/engineering/validation.md#test-retention-and-generated-evidence), and record a disposition for temporary milestone code before closing that milestone.
+
 ## Architecture boundaries
 
 The [engineering contracts](docs/engineering/README.md) and relevant records in [`docs/adr/`](docs/adr/) own architecture, runtime, and evidence details. Read affected records before changing an established boundary; do not treat a proposed ADR as accepted.

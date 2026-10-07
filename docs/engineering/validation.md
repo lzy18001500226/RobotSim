@@ -27,6 +27,16 @@ Validation is an evidence ladder, not a checklist every change must exhaust. Cho
 
 The matrix is a floor, not permission to omit a directly affected integration level. If a ROS or Unity integration cannot run in the current environment, report the missing environment and exact deferred check. Python tests do not establish behavior of a C++ production path.
 
+## Test retention and generated evidence
+
+Permanent root `tests/` and package-local tests are maintained regression coverage. Do not remove a test because it is old. One-off debug probes, diagnostic scripts, temporary visual experiments, and ad-hoc reproduction harnesses belong in research or evidence tooling, not in the permanent test suite by default.
+
+When production code replaces a prototype, preserve the useful behavior checks in the permanent suite. Remove a duplicated or superseded temporary harness only after equivalent permanent coverage exists. A small, licensed fixture up to 1 MiB may be tracked under `tests/fixtures/` or `data/fixtures/` when a maintained test needs it; keep fixtures minimal and explain their purpose in the owning test.
+
+Keep generated PNG/MP4 output, large JSON/JSONL traces, rendered frames, temporary compiled MJCF/XML, and experiment logs outside tracked source. Local `reviews/` and evidence directories are not production source. Track source models, configuration, and deliberately small fixtures only when they are inputs to maintained functionality or tests. Do not commit generated output merely because a run produced it; store it in an external evidence location and link that location from the Issue/PR record when durable access is needed.
+
+After a major milestone, perform a scoped hygiene review of files created or changed for that milestone and assign each temporary implementation one disposition from the [runtime prototype lifecycle](runtime.md#prototype-lifecycle). This is a review gate, not authorization for broad deletion. Dynamic imports, generated paths, and ambiguous model-output provenance still need human review; the CI guard checks only direct source references and recognizable generated-output conventions.
+
 ## Evidence and performance claims
 
 Use one status per applicable check:
