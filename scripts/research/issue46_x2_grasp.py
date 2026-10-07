@@ -31,6 +31,7 @@ from canonical_manipulation_assets import (
     G1_CANONICAL_TABLE_TOP_Z,
     add_g1_canonical_table,
 )
+from issue46_virtual_transmission import MODEL_LABEL as VIRTUAL_TRANSMISSION_LABEL
 
 
 ROOT = Path(os.environ.get("AGIBOT_X2_VENDOR_ROOT", "/tmp/robotsim-issue46-agibot-x2-urdf-575cc6b988f976c23550e0db85aa1e5475d3652d"))
@@ -42,6 +43,12 @@ MIMIC_RELATION_TOLERANCE_RAD = 0.003
 MIMIC_SOLREF_DIRECT = [-10000.0, -200.0]
 MIMIC_EQ_SOLREF_SCALE = float(os.environ.get("ISSUE46_MIMIC_EQ_SOLREF_SCALE", "1.0"))
 HAND_JOINT_LIMIT_SOLREF_DIRECT = [-10000.0, -200.0]
+VIRTUAL_FOLLOWER_SERVO_KP_NM_PER_RAD = 0.02
+VIRTUAL_FOLLOWER_SERVO_KV_NMS_PER_RAD = 0.0006
+VIRTUAL_FOLLOWER_MAX_TORQUE_NM = 0.05
+VIRTUAL_ACTIVE_SERVO_KP_NM_PER_RAD = 0.02
+VIRTUAL_ACTIVE_SERVO_KV_NMS_PER_RAD = 0.0006
+VIRTUAL_ACTIVE_MAX_TORQUE_NM = 0.05
 RIGHT_MIMIC_DRIVER_SERVO_KP = 0.1
 RIGHT_MIMIC_DRIVER_SERVO_KV = 0.003
 MIMIC_DRIVER_GAIN_SCALE = float(os.environ.get("ISSUE46_MIMIC_DRIVER_GAIN_SCALE", "1.0"))
@@ -154,7 +161,11 @@ def body_ancestors(model: mujoco.MjModel, body_id: int) -> list[str]:
     return names
 
 
-def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
+def build_model(
+    *,
+    virtual_transmission: bool = False,
+    fixed_contact_probe: bool = False,
+) -> tuple[mujoco.MjModel, dict[str, object]]:
     spec = mujoco.MjSpec.from_file(str(URDF))
     spec.option.timestep = DT
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -291,6 +302,19 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         group=1,
     )
     add_g1_canonical_table(spec)
+    if fixed_contact_probe:
+        spec.worldbody.add_geom(
+            name="virtual_transmission_fixed_contact_probe",
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            pos=[0.30, 0.07, 0.95],
+            size=[0.010, 0.0, 0.0],
+            rgba=[0.18, 0.55, 0.84, 1.0],
+            contype=1,
+            conaffinity=1,
+            condim=4,
+            friction=[1.0, 0.02, 0.001],
+            group=1,
+        )
     bottle = spec.worldbody.add_body(name="bottle", pos=START.tolist())
     bottle.add_freejoint(name="bottle_free")
     if not math.isclose(
@@ -356,15 +380,16 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         follower_ref = float(follower.ref)
         driver_ref = float(driver.ref)
         polycoef = [offset + multiplier * driver_ref - follower_ref, multiplier, 0.0, 0.0, 0.0]
-        equality = spec.add_equality(
-            name=f"urdf_mimic_{follower_name}",
-            type=mujoco.mjtEq.mjEQ_JOINT,
-            objtype=mujoco.mjtObj.mjOBJ_JOINT,
-            name1=follower_name,
-            name2=driver_name,
-            data=polycoef + [0.0] * 6,
-        )
-        equality.solref = [value * MIMIC_EQ_SOLREF_SCALE for value in MIMIC_SOLREF_DIRECT]
+        if not virtual_transmission:
+            equality = spec.add_equality(
+                name=f"urdf_mimic_{follower_name}",
+                type=mujoco.mjtEq.mjEQ_JOINT,
+                objtype=mujoco.mjtObj.mjOBJ_JOINT,
+                name1=follower_name,
+                name2=driver_name,
+                data=polycoef + [0.0] * 6,
+            )
+            equality.solref = [value * MIMIC_EQ_SOLREF_SCALE for value in MIMIC_SOLREF_DIRECT]
         mimic_child_names.add(follower_name)
         mimic_relations.append(
             {
@@ -383,19 +408,41 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
 
     mimic_driver_names = {str(item["driver_joint"]) for item in mimic_relations}
     servo_counts = {"arm": 0, "finger": 0, "other": 0, "mimic_follower_joints": 0}
+    follower_actuator_specs: dict[str, dict[str, float]] = {}
     for joint in list(spec.joints):
         joint_name = joint.name
         if joint_name is None or joint.type != mujoco.mjtJoint.mjJNT_HINGE:
             continue
         if joint_name in mimic_child_names:
             servo_counts["mimic_follower_joints"] += 1
+            if virtual_transmission:
+                max_torque = min(VIRTUAL_FOLLOWER_MAX_TORQUE_NM, effort[joint_name])
+                actuator = spec.add_actuator(
+                    name=f"internal_mimic_servo_{joint_name}",
+                    trntype=mujoco.mjtTrn.mjTRN_JOINT,
+                    target=joint_name,
+                    ctrllimited=True,
+                    ctrlrange=[-max_torque, max_torque],
+                    forcelimited=True,
+                    forcerange=[-max_torque, max_torque],
+                )
+                actuator.set_to_motor()
+                follower_actuator_specs[joint_name] = {
+                    "kp_nm_per_rad": VIRTUAL_FOLLOWER_SERVO_KP_NM_PER_RAD,
+                    "kv_nms_per_rad": VIRTUAL_FOLLOWER_SERVO_KV_NMS_PER_RAD,
+                    "max_torque_nm": max_torque,
+                }
             continue
         group = "finger" if joint_name.startswith(("R_", "L_")) else "arm" if "shoulder" in joint_name or "elbow" in joint_name or "wrist" in joint_name else "other"
         kp, kv = (18.0, 2.4) if group == "finger" else (150.0, 22.0) if group == "arm" else (250.0, 30.0)
-        if joint_name in mimic_driver_names:
+        max_force = effort.get(joint_name, 30.0)
+        if virtual_transmission and group == "finger":
+            kp = VIRTUAL_ACTIVE_SERVO_KP_NM_PER_RAD
+            kv = VIRTUAL_ACTIVE_SERVO_KV_NMS_PER_RAD
+            max_force = min(VIRTUAL_ACTIVE_MAX_TORQUE_NM, max_force)
+        elif joint_name in mimic_driver_names:
             kp = RIGHT_MIMIC_DRIVER_SERVO_KP * MIMIC_DRIVER_GAIN_SCALE
             kv = RIGHT_MIMIC_DRIVER_SERVO_KV * MIMIC_DRIVER_GAIN_SCALE
-        max_force = effort.get(joint_name, 30.0)
         actuator = spec.add_actuator(
             name=f"servo_{joint_name}",
             trntype=mujoco.mjtTrn.mjTRN_JOINT,
@@ -426,7 +473,11 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
             "solref": model.eq_solref[equality_id].tolist(),
         }
     mimic_constraints_match = (
-        model.neq == len(mimic_relations)
+        model.neq == 0
+        and set(expected_mimics) == mimic_child_names
+        and set(follower_actuator_specs) == set(expected_mimics)
+        if virtual_transmission
+        else model.neq == len(mimic_relations)
         and set(compiled_mimics) == set(expected_mimics)
         and all(
             compiled_mimics[follower]["driver_joint"] == relation["driver_joint"]
@@ -528,6 +579,17 @@ def build_model() -> tuple[mujoco.MjModel, dict[str, object]]:
         "joint_refs": {joint.name: float(joint.ref) for joint in spec.joints if joint.name},
         "mimic_relations": mimic_track,
         "mimic_constraints_match": mimic_constraints_match,
+        "mimic_implementation": VIRTUAL_TRANSMISSION_LABEL if virtual_transmission else "PASSIVE MUJOCO JOINT EQUALITY",
+        "virtual_transmission_enabled": virtual_transmission,
+        "virtual_transmission_fixed_contact_probe": fixed_contact_probe,
+        "virtual_follower_actuator_specs": follower_actuator_specs,
+        "active_hand_joint_names": sorted(
+            joint.get("name")
+            for joint in source_xml.findall("joint")
+            if joint.get("type") == "revolute"
+            and joint.get("name", "").startswith(("L_", "R_"))
+            and joint.get("name") not in mimic_child_names
+        ),
         "effort_count": len(effort),
         "self_chain_exclusion_count": len(self_chain_exclusions),
         "self_chain_exclusions": self_chain_exclusions,
