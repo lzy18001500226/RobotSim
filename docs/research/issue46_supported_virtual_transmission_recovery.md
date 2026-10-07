@@ -1,5 +1,64 @@
 # Issue #46 Supported Virtual-Transmission Recovery
 
+## Final endpoint-margin iteration: FAIL at representative thumb settling
+
+**FAIL - Stage 2 representative case 2 did not settle to the operational OPEN hold.** This was the final authorized OmniHand repair iteration. The follower-aware endpoint margin prevented the earlier source hard-limit crossing, but the thumb follower remained above the fixed final-settling speed criterion. The run stopped at that first failed case. Full-hand prevalidation, bottle HOLD, and the 1 mm / 5 mm extension were not run.
+
+### Endpoint margin derivation
+
+The prior smooth-return evidence showed an `R_thumb_dip_joint` lower-limit crossing of `8.62906053e-6 rad`, maximum target tracking error `0.00285180638 rad`, maximum mimic residual `0.00137822456 rad`, terminal reference speed `4.37484653e-7 rad/s`, peak hand speed `0.0296628853 rad/s`, and peak acceleration `0.113792258 rad/s^2` at `dt=0.002 s`. The one-step integration allowance was `5.95533551e-5 rad`.
+
+The single derived margin was:
+
+```text
+max(0.00198424251 rad endpoint target/state excursion,
+    0.00285180638 rad maximum tracking error)
++ 0.00137822456 rad maximum mimic residual
++ 0.000000000875 rad terminal target travel
++ 0.00005955336 rad one-step integration allowance
+= 0.00428958517 rad, rounded up to 0.00430 rad
+```
+
+The former operational margin was `0.00150 rad`; the new operational margin is `0.00430 rad`. Source hard joint limits were unchanged. The margin was applied to active target intervals and derived follower target intervals. All 32 saved kp/kv entries matched the frozen controller profile exactly; the controller design margin remained `0.00150 rad`, and the wn*dt, damping, effort bounds, and mimic mapping were unchanged. Of the 32 hand joints, 22 were near an OPEN endpoint. The margin is 0.503% of the smallest source range among those endpoint-near joints (`0.85521133 rad`); the narrowest source range across all hand joints is `0.17453293 rad`.
+
+Examples from the endpoint audit: an active finger PIP OPEN target moved from `0.00150` to `0.00430 rad`; its 1.097-ratio DIP follower target moved from `0.0016455` to `0.0047171 rad`. These are operational targets, not altered source limits.
+
+### Representative cases and first failure
+
+- **Case 1, `R_index_dip` follower: PASS.** The `R_index_pip_joint` driver moved `+0.01 rad`, returned smoothly, and settled. Maximum mimic residual was `0.00083163471 rad`, maximum target error `0.00144888958 rad`, peak hand speed `0.0283854421 rad/s`, peak acceleration `0.113788752 rad/s^2`, and maximum effort `0.03953487 Nm`. There were no limit violations, self-penetration, contacts, or follower qpos writes.
+- **Case 2, thumb follower: FAIL.** The `R_thumb_mcp_joint` driver moved `+0.01 rad`; the 1.097-ratio `R_thumb_pip_joint` follower remained in motion after the 250-step final OPEN hold. The fixed gate allows final-25-step maximum speed no greater than 10% of peak hand speed: `0.00296615870 rad/s`. The measured final-25-step maximum was `0.00650454394 rad/s` (2.1929x the limit). Final target error was `0.00053244303 rad`, under its `0.010 rad` bound. Whole-case maximum mimic residual was `0.00137855672 rad`, peak hand speed `0.0296615870 rad/s`, peak acceleration `0.1058976162 rad/s^2`, and maximum effort `0.03953487 Nm`, under the unchanged `0.05 Nm` simulation bound.
+- The failed thumb case had zero hard position-limit violations, zero velocity-limit violations, zero self-penetration, zero contacts, finite state, no effort or mimic-abort violations, and zero active-rollout follower qpos writes. At the final sample, hand speed was `0.00545332116 rad/s`, acceleration `0.0246866792 rad/s^2`, mimic residual `0.00028080609 rad`, and target error `0.00053244303 rad`.
+- The permitted bounded diagnosis read the already-saved trace only. It confirmed residual thumb follower motion exceeded the fixed settling criterion; no additional simulation or parameter change was made. The remaining two representative cases did not run.
+
+### Stop and runtime identity
+
+This result is a settling-time failure after the endpoint correction, not a source-limit crossing or bottle-contact result. Per the final-iteration stop rule, Stage 3 full-hand prevalidation, Stage 4 bottle HOLD, and the 1 mm / 5 mm extension were not run. No bottle contact was attempted. This does not establish a bottle failure or justify an architecture switch; the OmniHand path remains uncleared for manipulation pending maintainer review.
+
+- RobotSim base HEAD: `e95749715a58405c4c352ece565b6d44c8808de1`.
+- AgiBot vendor pin and observed HEAD: `575cc6b988f976c23550e0db85aa1e5475d3652d`.
+- Source URDF SHA-256: `344c188605f307474456749525259ad8ca2e7b356d9ef3c50ad887f228045259`.
+- Python 3.10.12; MuJoCo Python/native 3.3.6; native library SHA-256 `b9173509d0c282a9b24b7f5825a40177a9967df0cd6395a9dc39522196e44495`; WSL2 Linux x86_64; timestep `0.002 s`.
+
+### Reproduction and evidence
+
+The final iteration was invoked with:
+
+```bash
+set -o pipefail
+cd /tmp/robotsim-issue46-virtual-transmission-resume-20261007
+env AGIBOT_X2_VENDOR_ROOT=/tmp/robotsim-issue46-virtual-transmission-vendor-20261007 \
+  ISSUE46_PREVIOUS_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/smooth-reference-recovery-03 \
+  ISSUE46_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/final-endpoint-margin-04 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python -u \
+  scripts/research/issue46_virtual_transmission_supported_recovery.py --final-endpoint-margin \
+  2>&1 | tee /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/final-endpoint-margin-04/run.log
+```
+
+The output directory did not exist when `tee` opened `run.log`; the harness created it later, so `tee` reported that it could not open the log. The authorized simulation completed and wrote its JSON/JSONL evidence, but **no `run.log` exists**. This is a logging gap; the console summary was retained in the task output. Do not treat a reconstructed log as raw evidence.
+
+The external packet is `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/final-endpoint-margin-04/`. It contains `final_margin_derivation.json`, `endpoint_target_audit.json`, the frozen controller profile and comparison, `stage3_representative_hand_result.json`, the 140 MB `stage3_representative_hand_trace.jsonl`, `failure_diagnosis.json`, `final_iteration_result.json`, and `runtime_identity.json`. The raw files were not edited after collection. PR #53 remains Draft; no merge or bottle experiment occurred.
+
 ## Latest iteration: smooth-reference recovery
 
 **FAIL - Stage 3 source hard position limit.** The 1.0 s minimum-jerk reference passed the representative `R_index_dip` follower case, resolving the previously observed 0.000106315 rad index-follower lower-limit crossing. The second case, a `+0.01 rad` command to `R_thumb_mcp_joint`, crossed the unchanged lower limit of `R_thumb_dip_joint` during return to OPEN at step 1170 / 2.340 s. The measured position was `-0.00000862906 rad` against a 0 rad lower limit. The run stopped there; the remaining representative cases, full-hand prevalidation, and bottle contact were not run.

@@ -132,7 +132,16 @@ def make_runtime(
     fixed_probe: bool = False,
     *,
     include_bottle: bool = True,
+    operational_target_margin_rad: float | None = None,
+    controller_profile_override: dict[str, dict[str, float]] | None = None,
 ) -> dict[str, object]:
+    operational_margin = (
+        SOFT_LIMIT_MARGIN_RAD
+        if operational_target_margin_rad is None
+        else float(operational_target_margin_rad)
+    )
+    if not np.isfinite(operational_margin) or operational_margin <= 0.0:
+        raise ValueError(f"invalid operational target margin: {operational_margin}")
     model, details = task.build_model(
         virtual_transmission=True,
         fixed_contact_probe=fixed_probe,
@@ -153,8 +162,8 @@ def make_runtime(
     }
     initial_active = {
         joint_name: min(
-            float(joints[joint_name]["upper"]) - SOFT_LIMIT_MARGIN_RAD,
-            max(float(joints[joint_name]["lower"]) + SOFT_LIMIT_MARGIN_RAD, coordinate),
+            float(joints[joint_name]["upper"]) - operational_margin,
+            max(float(joints[joint_name]["lower"]) + operational_margin, coordinate),
         )
         for joint_name, coordinate in initial_state_active.items()
     }
@@ -166,8 +175,8 @@ def make_runtime(
         driver = str(relation["driver_joint"])
         follower = str(relation["follower_joint"])
         target = float(relation["multiplier"]) * initial_active[driver] + float(relation["offset"])
-        low = float(joints[follower]["lower"]) + SOFT_LIMIT_MARGIN_RAD
-        high = float(joints[follower]["upper"]) - SOFT_LIMIT_MARGIN_RAD
+        low = float(joints[follower]["lower"]) + operational_margin
+        high = float(joints[follower]["upper"]) - operational_margin
         if not low <= target <= high:
             raise ValueError(f"operational OPEN follower target outside soft range for {follower}: {target} not in [{low}, {high}]")
         set_initial_source_position(model, data, joints[follower], target)
@@ -240,6 +249,8 @@ def make_runtime(
             "open_qfrc_bias_nm": bias,
             "pd_torque_headroom_nm": pd_headroom,
             "operational_error_budget_rad": SOFT_LIMIT_MARGIN_RAD,
+            "operational_target_margin_rad": operational_margin,
+            "gain_profile_frozen_from_reference": False,
             "effective_inertia_method": "1 / (M^-1)[dof,dof], full MuJoCo articulated mass matrix at operational OPEN reset; other coordinates free to respond",
             "effective_joint_inertia_kg_m2_equiv": effective_inertia,
             "inverse_mass_diagonal_per_kg_m2": inverse_mass_diagonal,
@@ -265,6 +276,22 @@ def make_runtime(
             "actuator_gear": float(model.actuator_gear[aid, 0]),
         }
 
+    if controller_profile_override is not None:
+        if set(controller_profile_override) != set(controller_profile):
+            raise ValueError("frozen controller profile does not cover exactly the current hand coordinates")
+        frozen_profile: dict[str, dict[str, float]] = {}
+        for joint_name, reference_row in controller_profile_override.items():
+            row = dict(reference_row)
+            for gain_name in ("kp_nm_per_rad", "kv_nms_per_rad"):
+                value = float(row[gain_name])
+                if not np.isfinite(value) or value < 0.0 or (gain_name.startswith("kp") and value <= 0.0):
+                    raise ValueError(f"invalid frozen {gain_name} for {joint_name}: {value}")
+            row["operational_target_margin_rad"] = operational_margin
+            row["gain_profile_frozen_from_reference"] = True
+            row["gain_profile_reference_operational_margin_rad"] = SOFT_LIMIT_MARGIN_RAD
+            frozen_profile[joint_name] = row
+        controller_profile = frozen_profile
+
     transmission = VirtualTransmissionController(
         model,
         data,
@@ -276,7 +303,7 @@ def make_runtime(
         kp_nm_per_rad=task.VIRTUAL_FOLLOWER_SERVO_KP_NM_PER_RAD,
         kv_nms_per_rad=task.VIRTUAL_FOLLOWER_SERVO_KV_NMS_PER_RAD,
         max_torque_nm=task.VIRTUAL_FOLLOWER_MAX_TORQUE_NM,
-        soft_limit_margin_rad=SOFT_LIMIT_MARGIN_RAD,
+        soft_limit_margin_rad=operational_margin,
         kp_by_joint={joint: row["kp_nm_per_rad"] for joint, row in controller_profile.items()},
         kv_by_joint={joint: row["kv_nms_per_rad"] for joint, row in controller_profile.items()},
         bias_feedforward=True,
@@ -298,6 +325,7 @@ def make_runtime(
         "initial_active": initial_active,
         "initial_state_active": initial_state_active,
         "controller_profile": controller_profile,
+        "operational_target_margin_rad": operational_margin,
         "initialization_qpos_write_count": initialization_qpos_write_count,
         "initial_follower_qpos": {
             f: float(data.qpos[int(model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f)])])

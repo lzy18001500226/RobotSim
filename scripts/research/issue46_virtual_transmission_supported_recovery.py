@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import subprocess
@@ -21,6 +22,11 @@ PREVALIDATION_SUPPORT_DRIFT_LIMIT_RAD = 0.02
 HAND_ABORT_RAD = 0.010
 REFERENCE_DURATION_S = 1.0
 REFERENCE_DURATION_STEPS = round(REFERENCE_DURATION_S / task.DT)
+FINAL_MARGIN_ROUNDING_RAD = 1e-4
+FINAL_OPERATIONAL_MARGIN_INPUTS = Path(os.environ.get(
+    "ISSUE46_PREVIOUS_EVIDENCE_DIR",
+    "/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/smooth-reference-recovery-03",
+))
 
 
 def write_json(path: Path, value: object) -> None:
@@ -588,8 +594,15 @@ def run_supported_trial(
     fixed_probe: bool = False,
     reference_blend=minimum_jerk_blend,
     detailed_joint_names: tuple[str, ...] = (),
+    operational_target_margin_rad: float | None = None,
+    controller_profile_override: dict[str, dict[str, float]] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
-    runtime = gate.make_runtime(fixed_probe=fixed_probe, include_bottle=False)
+    runtime = gate.make_runtime(
+        fixed_probe=fixed_probe,
+        include_bottle=False,
+        operational_target_margin_rad=operational_target_margin_rad,
+        controller_profile_override=controller_profile_override,
+    )
     initialize_support(runtime)
     model, data = runtime["model"], runtime["data"]
     initial_controls = apply_posture_support(runtime)
@@ -623,6 +636,8 @@ def run_supported_trial(
         "active_rollout_follower_qpos_writes": 0,
         "fixed_probe": fixed_probe,
         "initial_support_controls": initial_controls,
+        "operational_target_margin_rad": runtime["operational_target_margin_rad"],
+        "controller_gain_profile_frozen": controller_profile_override is not None,
     }
     failure = None
     if initial["source_position_limit_violations"]:
@@ -853,6 +868,7 @@ def run_supported_trial(
         "initialization_qpos_writes_before_t0": int(runtime["initialization_qpos_write_count"]),
         "active_rollout_follower_qpos_writes": 0,
     }
+    result["controller_profile"] = runtime["controller_profile"]
     return result, runtime
 
 
@@ -990,17 +1006,26 @@ def original_return_overshoot_audit(trace_path: Path, previous_trace_path: Path)
     }
 
 
-def representative_hand_trials(trace_path: Path) -> list[dict[str, object]]:
+def representative_hand_trials(
+    trace_path: Path,
+    *,
+    operational_target_margin_rad: float | None = None,
+    controller_profile_override: dict[str, dict[str, float]] | None = None,
+) -> list[dict[str, object]]:
     checks = [
         ("R_index_dip_follower", "R_index_pip_joint", 0.01),
         ("R_thumb_pip_follower", "R_thumb_mcp_joint", 0.01),
         ("active_finger_driver", "R_middle_pip_joint", 0.01),
         ("active_thumb_driver", "R_thumb_roll_joint", 0.01),
     ]
+    runtime_options = {
+        "operational_target_margin_rad": operational_target_margin_rad,
+        "controller_profile_override": controller_profile_override,
+    }
     results = []
     with trace_path.open("w", encoding="utf-8") as trace:
         for label, joint_name, delta in checks:
-            runtime = gate.make_runtime(include_bottle=False)
+            runtime = gate.make_runtime(include_bottle=False, **runtime_options)
             initialize_support(runtime)
             start = dict(runtime["initial_active"])
             low, high = runtime["transmission"].operational_limits(joint_name)
@@ -1016,7 +1041,7 @@ def representative_hand_trials(trace_path: Path) -> list[dict[str, object]]:
                 ("source_return", REFERENCE_DURATION_STEPS, start, {}),
                 ("final_open_hold", 250, start, {}),
             ]
-            result, _ = run_supported_trial(f"stage3_{label}", one_trial, trace)
+            result, _ = run_supported_trial(f"stage3_{label}", one_trial, trace, **runtime_options)
             result["tested_coordinate"] = joint_name
             result["commanded_source_delta_rad"] = target - start[joint_name]
             result["reference_profile"] = {
@@ -1031,10 +1056,19 @@ def representative_hand_trials(trace_path: Path) -> list[dict[str, object]]:
     return results
 
 
-def run_stage4(trace_path: Path) -> list[dict[str, object]]:
+def run_stage4(
+    trace_path: Path,
+    *,
+    operational_target_margin_rad: float | None = None,
+    controller_profile_override: dict[str, dict[str, float]] | None = None,
+) -> list[dict[str, object]]:
+    runtime_options = {
+        "operational_target_margin_rad": operational_target_margin_rad,
+        "controller_profile_override": controller_profile_override,
+    }
     results: list[dict[str, object]] = []
     with trace_path.open("w", encoding="utf-8") as trace:
-        runtime = gate.make_runtime(include_bottle=False)
+        runtime = gate.make_runtime(include_bottle=False, **runtime_options)
         initialize_support(runtime)
         start = dict(runtime["initial_active"])
         closed = {**start, **gate.feasible_driver_targets(runtime)}
@@ -1045,13 +1079,13 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
             ("closed_hold", 300, closed, {}),
             ("reopen", REFERENCE_DURATION_STEPS, start, {}),
         ]
-        result, _ = run_supported_trial("stage4_full_hand_open_close", phases, trace)
+        result, _ = run_supported_trial("stage4_full_hand_open_close", phases, trace, **runtime_options)
         result["gate_name"] = "OPEN HOLD -> CLOSE -> PARTIAL -> CLOSED HOLD -> REOPEN"
         results.append(result)
         if not result["passed"]:
             return results
 
-        runtime = gate.make_runtime(include_bottle=False)
+        runtime = gate.make_runtime(include_bottle=False, **runtime_options)
         initialize_support(runtime)
         arm_names = task.ARM
         arm_ids = [int(runtime["joints"][joint]["joint_id"]) for joint in arm_names]
@@ -1074,7 +1108,7 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
                     float(raw_target[i]) - float(runtime["model"].qpos0[qpos])
                 )
             arm_phases.append((f"right_arm_to_approach_{index + 1}", 600, start, goal))
-        result, _ = run_supported_trial("stage4_supported_right_arm_motion", arm_phases, trace)
+        result, _ = run_supported_trial("stage4_supported_right_arm_motion", arm_phases, trace, **runtime_options)
         result["gate_name"] = "supported right-arm IK motion with the left arm and body support held"
         result["ik_route_raw_joint_targets"] = np.asarray(arm_route).tolist()
         results.append(result)
@@ -1084,7 +1118,7 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
         relation_drivers = sorted({str(row["driver_joint"]) for row in runtime["details"]["mimic_relations"]})
         for driver in relation_drivers:
             for direction in (-1.0, 1.0):
-                runtime = gate.make_runtime(include_bottle=False)
+                runtime = gate.make_runtime(include_bottle=False, **runtime_options)
                 initialize_support(runtime)
                 start = dict(runtime["initial_active"])
                 low, high = runtime["transmission"].operational_limits(driver)
@@ -1098,7 +1132,12 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
                     ("driver_return", REFERENCE_DURATION_STEPS, start, {}),
                     ("final_open_hold", 25, start, {}),
                 ]
-                result, _ = run_supported_trial(f"stage4_driver_perturb_{driver}_{direction:+.0f}x0p01", phases, trace)
+                result, _ = run_supported_trial(
+                    f"stage4_driver_perturb_{driver}_{direction:+.0f}x0p01",
+                    phases,
+                    trace,
+                    **runtime_options,
+                )
                 result["gate_name"] = "valid single source-driver perturbation and return"
                 result["driver_joint"] = driver
                 result["requested_delta_rad"] = target - start[driver]
@@ -1106,7 +1145,7 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
                 if not result["passed"]:
                     return results
 
-        runtime = gate.make_runtime(fixed_probe=True, include_bottle=False)
+        runtime = gate.make_runtime(fixed_probe=True, include_bottle=False, **runtime_options)
         initialize_support(runtime)
         start = dict(runtime["initial_active"])
         right_close = {**start, **{
@@ -1119,10 +1158,300 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
             ("fixed_probe_hold", 500, right_close, {}),
             ("open_from_fixed_probe", REFERENCE_DURATION_STEPS, start, {}),
         ]
-        result, _ = run_supported_trial("stage4_fixed_object_fingertip_contact", phases, trace, fixed_probe=True)
+        result, _ = run_supported_trial(
+            "stage4_fixed_object_fingertip_contact",
+            phases,
+            trace,
+            fixed_probe=True,
+            **runtime_options,
+        )
         result["gate_name"] = "supported fixed-object fingertip contact"
         results.append(result)
     return results
+
+
+def derive_final_open_margin(previous_dir: Path) -> dict[str, object]:
+    stage3_path = previous_dir / "stage3_representative_hand_result.json"
+    trace_path = previous_dir / "stage3_representative_hand_trace.jsonl"
+    if not stage3_path.is_file() or not trace_path.is_file():
+        raise FileNotFoundError("final margin derivation requires the preserved prior Stage 3 JSON and trace")
+    stage3 = json.loads(stage3_path.read_text(encoding="utf-8"))
+    trials = list(stage3.get("results", []))
+    if stage3.get("status") != "FAIL" or not trials:
+        raise ValueError("expected the preserved Stage 3 endpoint-crossing failure packet")
+    failed = next((trial for trial in trials if not trial.get("passed")), None)
+    if failed is None or failed.get("first_failed_gate") != "source hard position limit":
+        raise ValueError("preserved Stage 3 does not contain the expected source hard-limit failure")
+    first_failure = failed.get("first_failure") or {}
+    failure_state = first_failure.get("state") or {}
+    violations = failure_state.get("source_position_limit_violations") or []
+    if not violations:
+        raise ValueError("preserved first failure lacks a source position-limit crossing")
+    crossing = violations[0]
+    crossing_joint = str(crossing["joint"])
+    crossing_state = failure_state["hand_states"][crossing_joint]
+    dynamic_undershoot = abs(
+        float(crossing_state["target_position_rad"]) - float(crossing_state["source_position_rad"])
+    )
+
+    passing = next((trial for trial in trials if trial.get("passed")), None)
+    if passing is None:
+        raise ValueError("preserved Stage 3 has no completed smooth-reference case for terminal-velocity measurement")
+    passing_rows = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    return_rows = [
+        row for row in passing_rows
+        if row.get("trial") == passing["label"] and row.get("phase") == "source_return"
+    ]
+    if not return_rows:
+        raise ValueError("preserved passing case lacks its smooth-return terminal sample")
+    terminal_row = max(return_rows, key=lambda row: int(row["step"]))
+    terminal_velocity = max(
+        (
+            abs(float(record["target_velocity_source_rad_s"]))
+            for record in terminal_row["hand_reference_dynamics"].values()
+        ),
+        default=0.0,
+    )
+    dt = float(task.DT)
+    tracking_error = max(float(trial["max_hand_target_error_rad"]) for trial in trials)
+    mimic_residual = max(float(trial["max_source_mimic_error_rad"]) for trial in trials)
+    peak_qvel = max(float(trial["max_abs_hand_qvel_rad_s"]) for trial in trials)
+    peak_qacc = max(float(trial["max_abs_hand_qacc_rad_s2"]) for trial in trials)
+    integration_allowance = dt * peak_qvel + 0.5 * dt * dt * peak_qacc
+    tracked_excursion = max(dynamic_undershoot, tracking_error)
+    unrounded_margin = tracked_excursion + mimic_residual + terminal_velocity * dt + integration_allowance
+    margin = math.ceil(unrounded_margin / FINAL_MARGIN_ROUNDING_RAD - 1e-12) * FINAL_MARGIN_ROUNDING_RAD
+    return {
+        "status": "DERIVED",
+        "method": "max(measured endpoint target-to-state excursion, max target tracking error) + max mimic residual + terminal target travel + one-step integration allowance; rounded upward to 0.0001 rad",
+        "source_limits_modified": False,
+        "controller_design_margin_rad": gate.SOFT_LIMIT_MARGIN_RAD,
+        "timestep_s": dt,
+        "inputs": {
+            "failed_joint": crossing_joint,
+            "measured_endpoint_target_to_state_excursion_rad": dynamic_undershoot,
+            "measured_lower_limit_crossing_rad": max(0.0, -float(crossing["lower_margin_rad"])),
+            "max_target_tracking_error_rad": tracking_error,
+            "max_mimic_residual_rad": mimic_residual,
+            "smooth_reference_terminal_target_velocity_rad_s": terminal_velocity,
+            "terminal_target_travel_allowance_rad": terminal_velocity * dt,
+            "max_actual_hand_speed_rad_s": peak_qvel,
+            "max_actual_hand_acceleration_rad_s2": peak_qacc,
+            "one_step_integration_allowance_rad": integration_allowance,
+        },
+        "tracked_excursion_rad": tracked_excursion,
+        "unrounded_required_margin_rad": unrounded_margin,
+        "rounding_increment_rad": FINAL_MARGIN_ROUNDING_RAD,
+        "selected_operational_open_margin_rad": margin,
+        "selected_margin_is_negligible_relative_to_finger_range": margin < 0.01,
+        "controller_gains_or_design_constants_changed": False,
+        "prior_stage3_result": str(stage3_path),
+        "prior_stage3_trace": str(trace_path),
+    }
+
+
+def open_target_map(runtime: dict[str, object]) -> dict[str, float]:
+    targets = dict(runtime["initial_active"])
+    for relation in runtime["details"]["mimic_relations"]:
+        driver = str(relation["driver_joint"])
+        follower = str(relation["follower_joint"])
+        targets[follower] = float(relation["multiplier"]) * targets[driver] + float(relation["offset"])
+    return targets
+
+
+def build_endpoint_target_audit(
+    old_runtime: dict[str, object],
+    new_runtime: dict[str, object],
+    margin_rad: float,
+) -> dict[str, object]:
+    old_targets = open_target_map(old_runtime)
+    new_targets = open_target_map(new_runtime)
+    followers = set(new_runtime["transmission"].follower_joint_names)
+    names = sorted(old_targets)
+    rows = []
+    invalid = []
+    for joint_name in names:
+        joint = new_runtime["joints"][joint_name]
+        lower, upper = float(joint["lower"]), float(joint["upper"])
+        old_value, new_value = old_targets[joint_name], new_targets[joint_name]
+        low_new, high_new = new_runtime["transmission"].operational_limits(joint_name)
+        endpoint = "lower" if abs(old_value - lower) <= abs(old_value - upper) else "upper"
+        row = {
+            "joint": joint_name,
+            "coordinate_type": "follower" if joint_name in followers else "active",
+            "source_hard_limits_rad": {"lower": lower, "upper": upper},
+            "source_hard_limits_unchanged": (
+                lower == float(old_runtime["joints"][joint_name]["lower"])
+                and upper == float(old_runtime["joints"][joint_name]["upper"])
+            ),
+            "nearest_endpoint_from_old_open": endpoint,
+            "old_operational_open_target_rad": old_value,
+            "new_operational_open_target_rad": new_value,
+            "old_target_distance_to_nearest_endpoint_rad": min(old_value - lower, upper - old_value),
+            "new_target_distance_to_nearest_endpoint_rad": min(new_value - lower, upper - new_value),
+            "new_operational_target_interval_rad": [low_new, high_new],
+            "new_target_inside_operational_interval": low_new <= new_value <= high_new,
+            "target_changed_rad": new_value - old_value,
+            "endpoint_near_open_posture": min(
+                min(old_value - lower, upper - old_value),
+                min(new_value - lower, upper - new_value),
+            ) <= margin_rad + 1e-12,
+        }
+        rows.append(row)
+        if not row["source_hard_limits_unchanged"] or not row["new_target_inside_operational_interval"]:
+            invalid.append(joint_name)
+    old_profile = old_runtime["controller_profile"]
+    new_profile = new_runtime["controller_profile"]
+    gains_equal = all(
+        old_profile[name][key] == new_profile[name][key]
+        for name in old_profile
+        for key in ("kp_nm_per_rad", "kv_nms_per_rad")
+    )
+    minimum_range = min(
+        float(new_runtime["joints"][name]["upper"]) - float(new_runtime["joints"][name]["lower"])
+        for name in names
+    )
+    return {
+        "status": "PASS" if not invalid and gains_equal else "FAIL",
+        "operational_open_margin_rad": margin_rad,
+        "minimum_hand_source_range_rad": minimum_range,
+        "margin_fraction_of_minimum_hand_range": margin_rad / minimum_range,
+        "source_hard_limits_modified": False,
+        "controller_gains_exactly_preserved": gains_equal,
+        "controller_design_constants": {
+            "wn_dt": gate.CONTROLLER_WN_DT_TARGET,
+            "damping_ratio": gate.CONTROLLER_DAMPING_RATIO,
+            "effort_bounds_unchanged": True,
+            "mimic_mapping_unchanged": True,
+        },
+        "endpoint_near_rows": [row for row in rows if row["endpoint_near_open_posture"]],
+        "all_hand_target_rows": rows,
+        "invalid_joints": invalid,
+    }
+
+
+def run_final_endpoint_margin_iteration() -> int:
+    OUT.mkdir(parents=True, exist_ok=True)
+    reserved = [
+        "final_margin_derivation.json",
+        "endpoint_target_audit.json",
+        "stage3_representative_hand_result.json",
+        "stage3_representative_hand_trace.jsonl",
+    ]
+    if any((OUT / filename).exists() for filename in reserved):
+        raise FileExistsError(f"refusing to overwrite existing final-iteration evidence in {OUT}")
+    derivation = derive_final_open_margin(FINAL_OPERATIONAL_MARGIN_INPUTS)
+    margin = float(derivation["selected_operational_open_margin_rad"])
+    write_json(OUT / "final_margin_derivation.json", derivation)
+    identity = runtime_identity()
+    identity["robot_sim_worktree_status"] = subprocess.check_output(
+        ["git", "-C", str(task.SIM_REPO_ROOT), "status", "--short", "--branch"], text=True
+    ).strip()
+    write_json(OUT / "runtime_identity.json", identity)
+
+    reference_runtime = gate.make_runtime(include_bottle=False)
+    candidate_runtime = gate.make_runtime(
+        include_bottle=False,
+        operational_target_margin_rad=margin,
+        controller_profile_override=reference_runtime["controller_profile"],
+    )
+    initialize_support(candidate_runtime)
+    target_audit = build_endpoint_target_audit(reference_runtime, candidate_runtime, margin)
+    initial_support_state = support_diagnostics(candidate_runtime)
+    target_audit["candidate_initial_support_state"] = initial_support_state
+    target_audit["status"] = "PASS" if (
+        target_audit["status"] == "PASS"
+        and not initial_support_state["source_position_limit_violations"]
+        and not initial_support_state["source_velocity_limit_violations"]
+        and not initial_support_state["self_contacts"]
+        and float(initial_support_state["max_self_penetration_m"]) <= 1e-12
+        and initial_support_state["finite"]
+        and float(initial_support_state["source_mimic_error_max_rad"]) <= 1e-9
+    ) else "FAIL"
+    target_audit["gain_profile_reference"] = "original accepted 0.0015 rad profile; exact per-joint kp/kv copied"
+    write_json(OUT / "endpoint_target_audit.json", target_audit)
+    write_json(OUT / "controller_profile.json", {
+        "design_margin_rad": gate.SOFT_LIMIT_MARGIN_RAD,
+        "operational_target_margin_rad": margin,
+        "exact_gain_match": target_audit["controller_gains_exactly_preserved"],
+        "profile": candidate_runtime["controller_profile"],
+    })
+    if target_audit["status"] != "PASS":
+        write_json(OUT / "final_iteration_result.json", {
+            "status": "FAIL",
+            "stop_stage": "1_target_preflight",
+            "first_failure": target_audit,
+            "conditional_stages_not_run": ["2 representative cases", "3 full-hand validation", "4 bottle hold", "5 mm extension"],
+        })
+        return 2
+
+    stage3 = representative_hand_trials(
+        OUT / "stage3_representative_hand_trace.jsonl",
+        operational_target_margin_rad=margin,
+        controller_profile_override=reference_runtime["controller_profile"],
+    )
+    stage3_passed = len(stage3) == 4 and all(bool(row["passed"]) for row in stage3)
+    stage3_result = {
+        "status": "PASS" if stage3_passed else "FAIL",
+        "passed": stage3_passed,
+        "operational_target_margin_rad": margin,
+        "controller_gains_frozen_from_original_profile": True,
+        "required_cases": ["R_index_dip follower", "R_thumb_dip / thumb follower", "active finger driver", "active thumb driver"],
+        "results": stage3,
+    }
+    write_json(OUT / "stage3_representative_hand_result.json", stage3_result)
+    if not stage3_passed:
+        first = next(row for row in stage3 if not row["passed"])
+        final = {
+            "status": "FAIL",
+            "stop_stage": "2_representative_cases",
+            "first_failure": first.get("first_failure_diagnosis") or first.get("first_failure") or {"gate": first.get("first_failed_gate"), "label": first["label"]},
+            "stage1_target_audit": target_audit,
+            "stage2_representative_cases": stage3_result,
+            "conditional_stages_not_run": ["3 full-hand prevalidation", "4 bottle close/hold", "5 mm extension"],
+            "runtime_identity": identity,
+        }
+        write_json(OUT / "final_iteration_result.json", final)
+        print(json.dumps({"status": "FAIL", "stop_stage": final["stop_stage"], "first_failure": final["first_failure"], "evidence_dir": str(OUT)}, indent=2))
+        return 2
+
+    stage4 = run_stage4(
+        OUT / "stage4_full_hand_prevalidation_trace.jsonl",
+        operational_target_margin_rad=margin,
+        controller_profile_override=reference_runtime["controller_profile"],
+    )
+    stage4_passed = bool(stage4) and all(bool(row["passed"]) for row in stage4)
+    stage4_result = {
+        "status": "PASS" if stage4_passed else "FAIL",
+        "passed": stage4_passed,
+        "operational_target_margin_rad": margin,
+        "results": stage4,
+    }
+    write_json(OUT / "stage4_full_hand_prevalidation_result.json", stage4_result)
+    final = {
+        "status": "PASS" if stage4_passed else "FAIL",
+        "stop_stage": "3_full_hand_prevalidation" if not stage4_passed else "3_full_hand_prevalidation_complete",
+        "first_failure": next((row.get("first_failure_diagnosis") or row.get("first_failure") or {"gate": row.get("first_failed_gate"), "label": row["label"]} for row in stage4 if not row["passed"]), None),
+        "stage1_target_audit": target_audit,
+        "stage2_representative_cases": stage3_result,
+        "stage3_full_hand_prevalidation": stage4_result,
+        "conditional_stages_not_run": ["4 bottle close and hold", "5 mm extension"] if not stage4_passed else ["4 bottle close and hold", "5 mm extension require a virtual-transmission bottle-hold harness"],
+        "runtime_identity": identity,
+    }
+    write_json(OUT / "final_iteration_result.json", final)
+    print(json.dumps({
+        "status": final["status"],
+        "stop_stage": final["stop_stage"],
+        "first_failure": final["first_failure"],
+        "stage3_representatives": [{"label": row["label"], "passed": row["passed"], "first_failed_gate": row["first_failed_gate"]} for row in stage3],
+        "stage4_trials": [{"label": row["label"], "passed": row["passed"], "first_failed_gate": row["first_failed_gate"]} for row in stage4],
+        "evidence_dir": str(OUT),
+    }, indent=2))
+    return 0 if stage4_passed else 2
 
 
 def runtime_identity() -> dict[str, object]:
@@ -1158,6 +1487,8 @@ def runtime_identity() -> dict[str, object]:
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
+    if "--final-endpoint-margin" in sys.argv:
+        return run_final_endpoint_margin_iteration()
     if "--audit-original-stage3" in sys.argv:
         previous_dir = Path(os.environ.get("ISSUE46_PREVIOUS_EVIDENCE_DIR", ""))
         previous_trace = previous_dir / "stage3_representative_hand_trace.jsonl"
