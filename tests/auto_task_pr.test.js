@@ -22,6 +22,7 @@ function setup({
   targetRepository = `${OWNER}/${REPO}`,
   targetIsFork = false,
   event = "push",
+  conclusion = "success",
 } = {}) {
   const calls = { getRef: [], list: [], getContent: [], create: [] };
   const logs = [];
@@ -33,6 +34,7 @@ function setup({
       repository: { full_name: targetRepository, fork: targetIsFork },
       workflow_run: {
         event,
+        conclusion,
         head_branch: branch,
         head_sha: sha,
         head_repository: {
@@ -142,6 +144,20 @@ test("wrong branch and non-push workflow runs are rejected before API calls", as
   });
 });
 
+test("only successful source workflow runs can create or reuse a PR", async (t) => {
+  for (const conclusion of ["failure", "cancelled", "skipped"]) {
+    await t.test(conclusion, async () => {
+      const mock = setup({ conclusion });
+      const result = await ensurePullRequest(mock);
+
+      assert.equal(result.state, "skipped");
+      assert.equal(mock.calls.getRef.length, 0);
+      assert.equal(mock.calls.list.length, 0);
+      assert.equal(mock.calls.create.length, 0);
+    });
+  }
+});
+
 test("fork and noncanonical repository events are rejected before API calls", async (t) => {
   await t.test("fork source", async () => {
     const mock = setup({ sourceRepository: "someone/RobotSim" });
@@ -185,6 +201,18 @@ test("a deleted task branch is ignored without creating a PR", async () => {
   assert.equal(mock.calls.create.length, 0);
 });
 
+test("a stale workflow SHA is ignored when the task branch advanced", async () => {
+  const mock = setup();
+  mock.setRefSha(SHA_TWO);
+
+  const result = await ensurePullRequest(mock);
+
+  assert.equal(result.state, "skipped");
+  assert.equal(mock.calls.getRef.length, 1);
+  assert.equal(mock.calls.list.length, 0);
+  assert.equal(mock.calls.create.length, 0);
+});
+
 test("a closed or merged PR is not reopened or recreated for a reused branch", async (t) => {
   for (const mergedAt of [null, "2026-01-01T00:00:00Z"]) {
     await t.test(mergedAt ? "merged" : "closed without merge", async () => {
@@ -206,6 +234,7 @@ test("the workflow uses a workflow_run from main and never executes the task bra
   const infraName = /^name:\s*(.+)$/m.exec(infra)?.[1];
   assert.ok(infraName);
   assert.match(workflow, /workflow_run:/);
+  assert.match(workflow, /github\.event\.workflow_run\.conclusion == 'success'/);
   assert.ok(workflow.includes(`      - ${infraName}`));
   assert.match(workflow, /ref: main/);
   assert.match(workflow, /persist-credentials: false/);

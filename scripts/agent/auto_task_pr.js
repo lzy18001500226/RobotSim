@@ -94,6 +94,9 @@ async function ensurePullRequest({ github, context, core }) {
     return skip(core, "event is not from the canonical RobotSim repository");
   }
   if (run.event !== "push") return skip(core, "source workflow was not triggered by a branch push");
+  if (run.conclusion !== "success") {
+    return skip(core, "source workflow did not conclude successfully");
+  }
 
   const branch = run.head_branch;
   if (!isTaskBranch(branch)) return skip(core, "source branch is outside issue/** and codex/**");

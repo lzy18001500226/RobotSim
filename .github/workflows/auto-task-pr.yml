@@ -16,7 +16,10 @@ concurrency:
 
 jobs:
   ensure-pull-request:
-    if: github.repository == 'lzy18001500226/RobotSim' && github.event.repository.fork == false
+    if: >-
+      github.repository == 'lzy18001500226/RobotSim' &&
+      github.event.repository.fork == false &&
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
