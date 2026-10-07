@@ -19,6 +19,8 @@ import issue46_x2_grasp as task  # noqa: E402
 OUT = Path(os.environ.get("ISSUE46_EVIDENCE_DIR", "/tmp/issue46-supported-fixed-body"))
 PREVALIDATION_SUPPORT_DRIFT_LIMIT_RAD = 0.02
 HAND_ABORT_RAD = 0.010
+REFERENCE_DURATION_S = 1.0
+REFERENCE_DURATION_STEPS = round(REFERENCE_DURATION_S / task.DT)
 
 
 def write_json(path: Path, value: object) -> None:
@@ -337,6 +339,119 @@ def support_audit(runtime: dict[str, object]) -> dict[str, object]:
     }
 
 
+def minimum_jerk_blend(start: dict[str, float], end: dict[str, float], alpha: float) -> dict[str, float]:
+    u = min(1.0, max(0.0, float(alpha)))
+    if u == 0.0:
+        return dict(start)
+    if u == 1.0:
+        return dict(end)
+    s = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+    return {key: start[key] + s * (end[key] - start[key]) for key in start}
+
+
+def cubic_smooth_blend_exact(start: dict[str, float], end: dict[str, float], alpha: float) -> dict[str, float]:
+    u = min(1.0, max(0.0, float(alpha)))
+    if u == 0.0:
+        return dict(start)
+    if u == 1.0:
+        return dict(end)
+    return gate.smooth_blend(start, end, u)
+
+
+def controller_hand_records(runtime: dict[str, object]) -> dict[str, dict[str, float]]:
+    transmission = runtime["transmission"]
+    records: dict[str, dict[str, float]] = {}
+    for joint_name, output in transmission.active_measure().items():
+        records[joint_name] = {
+            "target_position_source_rad": float(output["target_source_rad"]),
+            "target_velocity_source_rad_s": float(output["target_velocity_source_rad_s"]),
+            "position_error_source_rad": float(output["target_source_rad"]) - float(output["position_source_rad"]),
+            "velocity_error_source_rad_s": float(output["target_velocity_source_rad_s"]) - float(output["velocity_source_rad_s"]),
+            "pd_torque_nm": float(output["pd_torque_nm"]),
+            "bias_feedforward_torque_nm": float(output["bias_feedforward_nm"]),
+            "requested_torque_nm": float(output["requested_torque_nm"]),
+            "commanded_torque_after_clipping_nm": float(output["commanded_torque_nm"]),
+            "effort_limit_nm": float(output["effort_limit_nm"]),
+        }
+    for joint_name, output in transmission.measure().items():
+        records[joint_name] = {
+            "target_position_source_rad": float(output["follower_target_source_rad"]),
+            "target_velocity_source_rad_s": float(output["follower_target_velocity_source_rad_s"]),
+            "position_error_source_rad": float(output["follower_target_source_rad"]) - float(output["follower_position_source_rad"]),
+            "velocity_error_source_rad_s": float(output["follower_target_velocity_source_rad_s"]) - float(output["follower_velocity_source_rad_s"]),
+            "pd_torque_nm": float(output["pd_torque_nm"]),
+            "bias_feedforward_torque_nm": float(output["bias_feedforward_nm"]),
+            "requested_torque_nm": float(output["requested_torque_nm"]),
+            "commanded_torque_after_clipping_nm": float(output["commanded_torque_nm"]),
+            "effort_limit_nm": float(output["effort_limit_nm"]),
+        }
+    return records
+
+
+def detailed_joint_step(
+    runtime: dict[str, object],
+    controller_records: dict[str, dict[str, float]],
+    joint_names: tuple[str, ...],
+    target_acceleration: dict[str, float],
+) -> dict[str, dict[str, object]]:
+    model, data, transmission = runtime["model"], runtime["data"], runtime["transmission"]
+    relation_by_joint = {}
+    for relation in runtime["details"]["mimic_relations"]:
+        relation_by_joint[str(relation["driver_joint"])] = relation
+        relation_by_joint[str(relation["follower_joint"])] = relation
+    result: dict[str, dict[str, object]] = {}
+    for joint_name in joint_names:
+        joint = runtime["joints"][joint_name]
+        target = controller_records[joint_name]
+        current_position = transmission.source_position(joint_name)
+        current_velocity = transmission.source_velocity(joint_name)
+        lower = float(joint["lower"])
+        upper = float(joint["upper"])
+        result[joint_name] = {
+            "source_axis_sign": int(joint["axis_sign"]),
+            "source_limits_rad": {"lower": lower, "upper": upper},
+            "source_velocity_limit_rad_s": float(joint["velocity_limit"]),
+            "operational_soft_limits_rad": dict(zip(("lower", "upper"), transmission.operational_limits(joint_name))),
+            "target_position_source_rad": float(target["target_position_source_rad"]),
+            "target_velocity_source_rad_s": float(target["target_velocity_source_rad_s"]),
+            "target_acceleration_source_rad_s2": float(target_acceleration[joint_name]),
+            "pre_step": {
+                "raw_qpos": float(data.qpos[int(joint["qpos"])]),
+                "raw_qvel_rad_s": float(data.qvel[int(joint["dof"])]),
+                "source_qpos_rad": current_position,
+                "source_qvel_rad_s": current_velocity,
+                "source_qacc_rad_s2": int(joint["axis_sign"]) * float(data.qacc[int(joint["dof"])]),
+                "position_error_target_minus_actual_rad": float(target["position_error_source_rad"]),
+                "velocity_error_target_minus_actual_rad_s": float(target["velocity_error_source_rad_s"]),
+                "pd_torque_nm": float(target["pd_torque_nm"]),
+                "bias_feedforward_torque_nm": float(target["bias_feedforward_torque_nm"]),
+                "requested_torque_before_clipping_nm": float(target["requested_torque_nm"]),
+                "commanded_torque_after_clipping_nm": float(target["commanded_torque_after_clipping_nm"]),
+                "effort_limit_nm": float(target["effort_limit_nm"]),
+                "qfrc_bias_raw_nm": float(data.qfrc_bias[int(joint["dof"])]),
+                "qfrc_bias_source_nm": int(joint["axis_sign"]) * float(data.qfrc_bias[int(joint["dof"])]),
+                "source_lower_limit_margin_rad": current_position - lower,
+            },
+            "relation": None,
+        }
+        relation = relation_by_joint.get(joint_name)
+        if relation is not None:
+            driver = str(relation["driver_joint"])
+            follower = str(relation["follower_joint"])
+            result[joint_name]["relation"] = {
+                "driver_joint": driver,
+                "follower_joint": follower,
+                "multiplier": float(relation["multiplier"]),
+                "offset_rad": float(relation["offset"]),
+                "source_residual_rad": (
+                    transmission.source_position(follower)
+                    - float(relation["multiplier"]) * transmission.source_position(driver)
+                    - float(relation["offset"])
+                ),
+            }
+    return result
+
+
 def stage2_failure_gate(state: dict[str, object]) -> str | None:
     if not state["finite"]:
         return "non-finite simulation state"
@@ -471,6 +586,8 @@ def run_supported_trial(
     trace_file,
     *,
     fixed_probe: bool = False,
+    reference_blend=minimum_jerk_blend,
+    detailed_joint_names: tuple[str, ...] = (),
 ) -> tuple[dict[str, object], dict[str, object]]:
     runtime = gate.make_runtime(fixed_probe=fixed_probe, include_bottle=False)
     initialize_support(runtime)
@@ -485,6 +602,8 @@ def run_supported_trial(
         "max_hand_target_error_rad": 0.0,
         "max_abs_hand_qvel_rad_s": 0.0,
         "max_abs_hand_qacc_rad_s2": 0.0,
+        "max_abs_hand_target_velocity_rad_s": 0.0,
+        "max_abs_hand_target_acceleration_rad_s2": 0.0,
         "max_abs_hand_effort_nm": 0.0,
         "max_abs_support_effort_nm": 0.0,
         "max_abs_support_reaction_nm": 0.0,
@@ -521,6 +640,10 @@ def run_supported_trial(
     support_targets = dict(runtime["fixed_body_support"]["reference_source_positions"])
     step_index = 0
     peak_hand_speed = 0.0
+    previous_target_velocity = {
+        joint_name: 0.0
+        for joint_name in runtime["transmission"].active_joint_names + runtime["transmission"].follower_joint_names
+    }
     final_hold_samples: list[dict[str, object]] = []
     for phase, duration, requested_hand_targets, requested_support_targets in phases:
         if failure:
@@ -535,6 +658,8 @@ def run_supported_trial(
             "steps": duration,
             "max_abs_hand_qvel_rad_s": 0.0,
             "max_abs_hand_qacc_rad_s2": 0.0,
+            "max_abs_hand_target_velocity_rad_s": 0.0,
+            "max_abs_hand_target_acceleration_rad_s2": 0.0,
             "max_mimic_error_rad": 0.0,
             "max_target_error_rad": 0.0,
             "max_support_effort_nm": 0.0,
@@ -543,25 +668,63 @@ def run_supported_trial(
         }
         for k in range(duration):
             alpha = (k + 1) / duration
-            active_targets = gate.smooth_blend(phase_start_hand, phase_goal_hand, alpha)
-            active_targets = {
-                joint: min(
-                    runtime["transmission"].operational_limits(joint)[1],
-                    max(runtime["transmission"].operational_limits(joint)[0], value),
-                )
-                for joint, value in active_targets.items()
-            }
-            support_targets = gate.smooth_blend(phase_start_support, phase_goal_support, alpha)
+            active_targets = reference_blend(phase_start_hand, phase_goal_hand, alpha)
+            support_targets = reference_blend(phase_start_support, phase_goal_support, alpha)
             support_controls = apply_posture_support(runtime, support_targets)
             runtime["transmission"].command_active_sources(active_targets)
             runtime["transmission"].write_internal_controls()
+            hand_reference = controller_hand_records(runtime)
+            hand_target_acceleration = {}
+            for joint_name, target in hand_reference.items():
+                velocity = float(target["target_velocity_source_rad_s"])
+                acceleration = (velocity - previous_target_velocity.get(joint_name, 0.0)) / float(model.opt.timestep)
+                previous_target_velocity[joint_name] = velocity
+                target["target_acceleration_source_rad_s2"] = acceleration
+                hand_target_acceleration[joint_name] = acceleration
+            detailed_before = detailed_joint_step(
+                runtime, hand_reference, detailed_joint_names, hand_target_acceleration
+            ) if detailed_joint_names else None
             mujoco.mj_step(model, data)
             state = support_diagnostics(runtime, support_targets)
+            if detailed_before is not None:
+                for joint_name, detail in detailed_before.items():
+                    joint = runtime["joints"][joint_name]
+                    dof = int(joint["dof"])
+                    actuator_force = float(data.qfrc_actuator[dof])
+                    detail["post_step"] = {
+                        "raw_qpos": float(data.qpos[int(joint["qpos"])]),
+                        "raw_qvel_rad_s": float(data.qvel[dof]),
+                        "source_qpos_rad": gate.source_position(model, data, joint),
+                        "source_qvel_rad_s": gate.source_velocity(data, joint),
+                        "source_qacc_rad_s2": int(joint["axis_sign"]) * float(data.qacc[dof]),
+                        "qfrc_actuator_raw_nm": actuator_force,
+                        "qfrc_actuator_source_nm": int(joint["axis_sign"]) * actuator_force,
+                        "qfrc_constraint_raw_nm": float(data.qfrc_constraint[dof]),
+                        "qfrc_constraint_source_nm": int(joint["axis_sign"]) * float(data.qfrc_constraint[dof]),
+                        "source_lower_limit_margin_rad": gate.source_position(model, data, joint) - float(joint["lower"]),
+                    }
+                    relation = detail["relation"]
+                    if relation is not None:
+                        driver = str(relation["driver_joint"])
+                        follower = str(relation["follower_joint"])
+                        relation["source_residual_rad"] = (
+                            gate.source_position(model, data, runtime["joints"][follower])
+                            - float(relation["multiplier"]) * gate.source_position(model, data, runtime["joints"][driver])
+                            - float(relation["offset_rad"])
+                        )
             step_index += 1
             hand_speed = float(state["hand_max_abs_qvel_rad_s"])
             peak_hand_speed = max(peak_hand_speed, hand_speed)
             phase_stats["max_abs_hand_qvel_rad_s"] = max(float(phase_stats["max_abs_hand_qvel_rad_s"]), hand_speed)
             phase_stats["max_abs_hand_qacc_rad_s2"] = max(float(phase_stats["max_abs_hand_qacc_rad_s2"]), float(state["hand_max_abs_qacc_rad_s2"]))
+            phase_stats["max_abs_hand_target_velocity_rad_s"] = max(
+                float(phase_stats["max_abs_hand_target_velocity_rad_s"]),
+                max((abs(float(row["target_velocity_source_rad_s"])) for row in hand_reference.values()), default=0.0),
+            )
+            phase_stats["max_abs_hand_target_acceleration_rad_s2"] = max(
+                float(phase_stats["max_abs_hand_target_acceleration_rad_s2"]),
+                max((abs(float(value)) for value in hand_target_acceleration.values()), default=0.0),
+            )
             phase_stats["max_mimic_error_rad"] = max(float(phase_stats["max_mimic_error_rad"]), float(state["source_mimic_error_max_rad"]))
             phase_stats["max_target_error_rad"] = max(float(phase_stats["max_target_error_rad"]), float(state["target_tracking_error_max_rad"]))
             phase_stats["max_support_effort_nm"] = max(float(phase_stats["max_support_effort_nm"]), float(state["support_max_abs_effort_nm"]))
@@ -574,6 +737,14 @@ def run_supported_trial(
             result["max_hand_target_error_rad"] = max(float(result["max_hand_target_error_rad"]), float(state["target_tracking_error_max_rad"]))
             result["max_abs_hand_qvel_rad_s"] = max(float(result["max_abs_hand_qvel_rad_s"]), hand_speed)
             result["max_abs_hand_qacc_rad_s2"] = max(float(result["max_abs_hand_qacc_rad_s2"]), float(state["hand_max_abs_qacc_rad_s2"]))
+            result["max_abs_hand_target_velocity_rad_s"] = max(
+                float(result["max_abs_hand_target_velocity_rad_s"]),
+                max((abs(float(row["target_velocity_source_rad_s"])) for row in hand_reference.values()), default=0.0),
+            )
+            result["max_abs_hand_target_acceleration_rad_s2"] = max(
+                float(result["max_abs_hand_target_acceleration_rad_s2"]),
+                max((abs(float(value)) for value in hand_target_acceleration.values()), default=0.0),
+            )
             result["max_abs_hand_effort_nm"] = max(float(result["max_abs_hand_effort_nm"]), float(state["hand_max_abs_effort_nm"]))
             result["max_abs_support_effort_nm"] = max(float(result["max_abs_support_effort_nm"]), float(state["support_max_abs_effort_nm"]))
             result["max_abs_support_reaction_nm"] = max(float(result["max_abs_support_reaction_nm"]), float(state["support_max_abs_constraint_reaction_nm"]))
@@ -613,8 +784,11 @@ def run_supported_trial(
                 "support_targets_source_rad": support_targets,
                 "support_controls": support_controls,
                 "state": state,
+                "hand_reference_dynamics": hand_reference,
                 "active_rollout_follower_qpos_writes": 0,
             }
+            if detailed_before is not None:
+                row["detailed_hand"] = detailed_before
             trace_file.write(json.dumps(row, separators=(",", ":")) + "\n")
             if not state["finite"]:
                 failure = "non-finite simulation state"
@@ -682,6 +856,140 @@ def run_supported_trial(
     return result, runtime
 
 
+def original_return_overshoot_audit(trace_path: Path, previous_trace_path: Path) -> dict[str, object]:
+    driver = "R_index_pip_joint"
+    follower = "R_index_dip_joint"
+    relation = None
+    runtime_preview = gate.make_runtime(include_bottle=False)
+    initialize_support(runtime_preview)
+    for item in runtime_preview["details"]["mimic_relations"]:
+        if str(item["driver_joint"]) == driver and str(item["follower_joint"]) == follower:
+            relation = item
+            break
+    if relation is None:
+        raise RuntimeError(f"missing source mimic relation {driver} -> {follower}")
+    start = dict(runtime_preview["initial_active"])
+    goal = dict(start)
+    goal[driver] = min(
+        runtime_preview["transmission"].operational_limits(driver)[1],
+        start[driver] + 0.01,
+    )
+    phases = [
+        ("supported_open_hold", 100, start, {}),
+        ("source_step", 100, goal, {}),
+        ("source_step_hold", 100, goal, {}),
+        ("source_return", 100, start, {}),
+        ("final_open_hold", 100, start, {}),
+    ]
+    with trace_path.open("w", encoding="utf-8") as trace_file:
+        result, runtime = run_supported_trial(
+            "stage1_original_return_audit",
+            phases,
+            trace_file,
+            reference_blend=cubic_smooth_blend_exact,
+            detailed_joint_names=(driver, follower),
+        )
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return_rows = [row for row in rows if row["phase"] in ("source_return", "final_open_hold")]
+    follower_trace = [row["detailed_hand"][follower] for row in return_rows]
+    driver_trace = [row["detailed_hand"][driver] for row in rows]
+    actual_positions = [float(row["post_step"]["source_qpos_rad"]) for row in follower_trace]
+    follower_target_positions = [float(row["target_position_source_rad"]) for row in follower_trace]
+    dynamic_undershoot = max(
+        target - actual for target, actual in zip(follower_target_positions, actual_positions)
+    )
+    driver_open = float(start[driver])
+    follower_open = float(relation["multiplier"]) * driver_open + float(relation["offset"])
+    lower = float(runtime["joints"][follower]["lower"])
+    follower_operational = runtime["transmission"].operational_limits(follower)
+    driver_operational = runtime["transmission"].operational_limits(driver)
+    target_inside_operational = all(
+        driver_operational[0] - 1e-12 <= float(row["detailed_hand"][driver]["target_position_source_rad"]) <= driver_operational[1] + 1e-12
+        and follower_operational[0] - 1e-12 <= float(row["detailed_hand"][follower]["target_position_source_rad"]) <= follower_operational[1] + 1e-12
+        for row in rows
+    )
+    baseline_rows = [
+        json.loads(line)
+        for line in previous_trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and json.loads(line).get("trial") == "stage3_R_index_dip_follower"
+    ]
+    baseline_by_step = {int(row["step"]): row for row in baseline_rows}
+    audit_by_step = {int(row["step"]): row for row in rows}
+    compared_steps = sorted(set(baseline_by_step) & set(audit_by_step))
+    max_position_delta = max((
+        abs(
+            float(baseline_by_step[step]["state"]["hand_states"][follower]["source_position_rad"])
+            - float(audit_by_step[step]["detailed_hand"][follower]["post_step"]["source_qpos_rad"])
+        )
+        for step in compared_steps
+    ), default=float("inf"))
+    baseline_step = int((result.get("first_failure") or {}).get("step", -1))
+    failure_joint = next((
+        item["joint"]
+        for item in ((result.get("first_failure") or {}).get("state") or {}).get("source_position_limit_violations", [])
+        if item.get("joint") == follower
+    ), None)
+    return {
+        "status": "PASS" if result.get("first_failed_gate") == "source hard position limit" and failure_joint == follower and max_position_delta <= 1e-12 else "FAIL",
+        "stage": "1 - detailed replay of saved Stage 3 return transient",
+        "classification": "B - operational OPEN target has insufficient dynamic margin",
+        "classification_basis": "The cubic smoothstep target stays within its operational range and follows the source relation exactly, but the follower's damped response continues below its OPEN target far enough to cross the unchanged hard lower limit.",
+        "original_reference_profile": {
+            "shape": "cubic smoothstep",
+            "ramp_duration_s": 0.2,
+            "source_driver_delta_rad": float(goal[driver] - start[driver]),
+            "peak_driver_target_velocity_rad_s": max(abs(float(row["target_velocity_source_rad_s"])) for row in driver_trace),
+            "peak_follower_target_velocity_rad_s": max(abs(float(row["detailed_hand"][follower]["target_velocity_source_rad_s"])) for row in rows),
+        },
+        "runtime": {
+            "python": platform.python_version(),
+            "mujoco": mujoco.__version__,
+            "timestep_s": float(runtime["model"].opt.timestep),
+            "controller_profile": runtime["controller_profile"],
+            "soft_limit_margin_rad": gate.SOFT_LIMIT_MARGIN_RAD,
+            "source_joint_limits_modified": False,
+            "controller_gains_modified": False,
+            "active_rollout_follower_qpos_writes": 0,
+        },
+        "source_relation": {
+            "driver": driver,
+            "follower": follower,
+            "multiplier": float(relation["multiplier"]),
+            "offset_rad": float(relation["offset"]),
+            "driver_source_limits_rad": [float(runtime["joints"][driver]["lower"]), float(runtime["joints"][driver]["upper"])],
+            "follower_source_limits_rad": [lower, float(runtime["joints"][follower]["upper"])],
+            "driver_open_target_rad": driver_open,
+            "follower_derived_open_target_rad": follower_open,
+            "follower_open_target_distance_to_hard_lower_rad": follower_open - lower,
+            "target_position_ranges_rad": {
+                "driver": [min(float(row["target_position_source_rad"]) for row in driver_trace), max(float(row["target_position_source_rad"]) for row in driver_trace)],
+                "follower": [min(float(row["detailed_hand"][follower]["target_position_source_rad"]) for row in rows), max(float(row["detailed_hand"][follower]["target_position_source_rad"]) for row in rows)],
+            },
+            "target_position_ever_outside_operational_soft_range": not target_inside_operational,
+            "dynamic_undershoot_below_follower_target_during_return_rad": dynamic_undershoot,
+            "max_hard_lower_limit_crossing_rad": max(max(0.0, lower - position) for position in actual_positions),
+            "first_crossing_step": baseline_step,
+            "first_crossing_time_s": float((result.get("first_failure") or {}).get("time_s", -1.0)),
+            "first_crossing_follower_state": (result.get("first_failure") or {}).get("state", {}).get("hand_states", {}).get(follower),
+            "max_abs_driver_target_velocity_rad_s": max(abs(float(row["target_velocity_source_rad_s"])) for row in driver_trace),
+            "max_abs_follower_target_velocity_rad_s": max(abs(float(row["detailed_hand"][follower]["target_velocity_source_rad_s"])) for row in rows),
+            "max_abs_driver_target_acceleration_rad_s2": max(abs(float(row["target_acceleration_source_rad_s2"])) for row in driver_trace),
+            "max_abs_follower_target_acceleration_rad_s2": max(abs(float(row["detailed_hand"][follower]["target_acceleration_source_rad_s2"])) for row in rows),
+            "max_abs_follower_actual_velocity_during_return_rad_s": max(abs(float(row["post_step"]["source_qvel_rad_s"])) for row in follower_trace),
+            "first_failure_gate": result.get("first_failed_gate"),
+            "failure_diagnosis": result.get("first_failure_diagnosis"),
+        },
+        "saved_trace_comparison": {
+            "previous_stage3_trace": str(previous_trace_path),
+            "compared_steps": len(compared_steps),
+            "max_abs_follower_position_delta_rad": max_position_delta,
+            "same_first_crossing_step": baseline_step == 422,
+            "matches_saved_failure_within_1e-12": max_position_delta <= 1e-12 and baseline_step == 422,
+        },
+        "trace_path": str(trace_path),
+    }
+
+
 def representative_hand_trials(trace_path: Path) -> list[dict[str, object]]:
     checks = [
         ("R_index_dip_follower", "R_index_pip_joint", 0.01),
@@ -703,14 +1011,20 @@ def representative_hand_trials(trace_path: Path) -> list[dict[str, object]]:
             goal[joint_name] = target
             one_trial = [
                 ("supported_open_hold", 100, start, {}),
-                ("source_step", 100, goal, {}),
+                ("source_step", REFERENCE_DURATION_STEPS, goal, {}),
                 ("source_step_hold", 100, goal, {}),
-                ("source_return", 100, start, {}),
-                ("final_open_hold", 100, start, {}),
+                ("source_return", REFERENCE_DURATION_STEPS, start, {}),
+                ("final_open_hold", 250, start, {}),
             ]
             result, _ = run_supported_trial(f"stage3_{label}", one_trial, trace)
             result["tested_coordinate"] = joint_name
             result["commanded_source_delta_rad"] = target - start[joint_name]
+            result["reference_profile"] = {
+                "shape": "quintic minimum-jerk",
+                "duration_s": REFERENCE_DURATION_S,
+                "duration_steps": REFERENCE_DURATION_STEPS,
+                "source_position_target_clamping": False,
+            }
             results.append(result)
             if not result["passed"]:
                 break
@@ -726,10 +1040,10 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
         closed = {**start, **gate.feasible_driver_targets(runtime)}
         phases = [
             ("open_hold", 200, start, {}),
-            ("close", 600, closed, {}),
-            ("partial", 400, gate.smooth_blend(start, closed, 0.5), {}),
+            ("close", REFERENCE_DURATION_STEPS, closed, {}),
+            ("partial", REFERENCE_DURATION_STEPS, minimum_jerk_blend(start, closed, 0.5), {}),
             ("closed_hold", 300, closed, {}),
-            ("reopen", 600, start, {}),
+            ("reopen", REFERENCE_DURATION_STEPS, start, {}),
         ]
         result, _ = run_supported_trial("stage4_full_hand_open_close", phases, trace)
         result["gate_name"] = "OPEN HOLD -> CLOSE -> PARTIAL -> CLOSED HOLD -> REOPEN"
@@ -779,9 +1093,9 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
                 goal[driver] = target
                 phases = [
                     ("supported_open_hold", 25, start, {}),
-                    ("driver_perturb", 50, goal, {}),
+                    ("driver_perturb", REFERENCE_DURATION_STEPS, goal, {}),
                     ("driver_perturb_hold", 50, goal, {}),
-                    ("driver_return", 50, start, {}),
+                    ("driver_return", REFERENCE_DURATION_STEPS, start, {}),
                     ("final_open_hold", 25, start, {}),
                 ]
                 result, _ = run_supported_trial(f"stage4_driver_perturb_{driver}_{direction:+.0f}x0p01", phases, trace)
@@ -801,9 +1115,9 @@ def run_stage4(trace_path: Path) -> list[dict[str, object]]:
             if joint.startswith("R_")
         }}
         phases = [
-            ("close_to_fixed_probe", 900, right_close, {}),
+            ("close_to_fixed_probe", REFERENCE_DURATION_STEPS, right_close, {}),
             ("fixed_probe_hold", 500, right_close, {}),
-            ("open_from_fixed_probe", 700, start, {}),
+            ("open_from_fixed_probe", REFERENCE_DURATION_STEPS, start, {}),
         ]
         result, _ = run_supported_trial("stage4_fixed_object_fingertip_contact", phases, trace, fixed_probe=True)
         result["gate_name"] = "supported fixed-object fingertip contact"
@@ -844,6 +1158,30 @@ def runtime_identity() -> dict[str, object]:
 
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
+    if "--audit-original-stage3" in sys.argv:
+        previous_dir = Path(os.environ.get("ISSUE46_PREVIOUS_EVIDENCE_DIR", ""))
+        previous_trace = previous_dir / "stage3_representative_hand_trace.jsonl"
+        if not previous_trace.is_file():
+            raise RuntimeError("--audit-original-stage3 requires ISSUE46_PREVIOUS_EVIDENCE_DIR with the saved Stage 3 trace")
+        audit = original_return_overshoot_audit(OUT / "stage1_return_overshoot_trace.jsonl", previous_trace)
+        audit["reproduction_command"] = (
+            f"cd {task.SIM_REPO_ROOT} && env "
+            f"AGIBOT_X2_VENDOR_ROOT={task.ROOT} "
+            f"ISSUE46_PREVIOUS_EVIDENCE_DIR={previous_dir} ISSUE46_EVIDENCE_DIR={OUT} "
+            f"PYTHONDONTWRITEBYTECODE=1 {sys.executable} -u {Path(__file__).resolve()} --audit-original-stage3"
+        )
+        write_json(OUT / "stage1_return_overshoot_audit.json", audit)
+        print(json.dumps({
+            "status": audit["status"],
+            "classification": audit["classification"],
+            "crossing_step": audit["source_relation"]["first_crossing_step"],
+            "crossing_time_s": audit["source_relation"]["first_crossing_time_s"],
+            "open_margin_rad": audit["source_relation"]["follower_open_target_distance_to_hard_lower_rad"],
+            "return_undershoot_rad": audit["source_relation"]["dynamic_undershoot_below_follower_target_during_return_rad"],
+            "saved_trace_match": audit["saved_trace_comparison"]["matches_saved_failure_within_1e-12"],
+            "trace_path": audit["trace_path"],
+        }, indent=2))
+        return 0 if audit["status"] == "PASS" else 2
     if "--continue-after-stage2" in sys.argv:
         identity = json.loads((OUT / "runtime_identity.json").read_text(encoding="utf-8"))
         stage1 = json.loads((OUT / "stage1_support_audit.json").read_text(encoding="utf-8"))

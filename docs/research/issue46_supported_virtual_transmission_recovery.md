@@ -1,10 +1,65 @@
 # Issue #46 Supported Virtual-Transmission Recovery
 
-## Result
+## Latest iteration: smooth-reference recovery
+
+**FAIL - Stage 3 source hard position limit.** The 1.0 s minimum-jerk reference passed the representative `R_index_dip` follower case, resolving the previously observed 0.000106315 rad index-follower lower-limit crossing. The second case, a `+0.01 rad` command to `R_thumb_mcp_joint`, crossed the unchanged lower limit of `R_thumb_dip_joint` during return to OPEN at step 1170 / 2.340 s. The measured position was `-0.00000862906 rad` against a 0 rad lower limit. The run stopped there; the remaining representative cases, full-hand prevalidation, and bottle contact were not run.
+
+### Gates and first failure
+
+- **Stage 1 audit: PASS.** The original 422-step index return trace was replayed with detailed torque/state instrumentation and matched the saved trace exactly (`max_abs_follower_position_delta_rad=0`). It classified the original index failure as insufficient dynamic margin at the operational OPEN endpoint: the derived `R_index_dip_joint` target was 0.0016455 rad above its 0 rad hard lower limit, while its measured return undershoot was 0.00175181548 rad, producing the recorded 0.00010631548 rad crossing at step 422 / 0.844 s. Targets remained inside operational soft limits.
+- **Stage 2 supported OPEN hold: PASS, reused.** The previously accepted 1,000-step / 2.0 s hold evidence was copied unchanged into this packet; the stage was not rerun.
+- **Reference choice.** One 1.0 s quintic minimum-jerk transition was selected without a duration sweep. For a 0.01 rad driver move its peak target speed is 0.01875 rad/s and peak acceleration is about 0.057735 rad/s^2; the 1.097 follower ratio gives 0.0205685 rad/s and 0.0633341 rad/s^2. Those targets are far below the relevant 21 rad/s source velocity limit. The prior 0.2 s cubic return reached 0.082264 rad/s at the follower while undershooting the 0.0016455 rad OPEN margin, so the slower profile was selected using that measured response and endpoint margin. The passing index case then measured peak actual speed 0.0283864 rad/s and decayed to 0.00201690 rad/s over its final 25 steps.
+- **Stage 3 case 1: PASS.** `R_index_pip_joint` drove the `R_index_dip_joint` follower by +0.01 rad, followed by a 1.0 s minimum-jerk return and hold. Peak mimic residual was 0.000831738 rad, peak hand speed 0.0283864 rad/s, peak acceleration 0.113792 rad/s^2, maximum effort 0.0395442 Nm, and maximum target error 0.00144909 rad. It had no position/velocity-limit violations, contacts, or follower qpos writes; the final 25-step response was damped.
+- **Stage 3 case 2: FAIL.** The `R_thumb_mcp_joint` +0.01 rad case failed on `R_thumb_dip_joint` at step 1170 / 2.339999999999964 s in `source_return`. At the first failure, the source target was 0.00197561345 rad with target velocity -0.00127963 rad/s; actual position was -0.00000862906 rad, velocity -0.00661930 rad/s, and acceleration 0.0882758 rad/s^2. The source lower limit was 0 rad, so the crossing was 0.00000862906 rad. The target was inside its operational range. The failure snapshot had mimic residual 0.000635097 rad and target tracking error 0.00198424 rad; the whole trial maximum mimic residual was 0.00137822 rad, below the 0.010 rad manipulation abort ceiling. There were no velocity-limit violations, contacts, initial penetration, non-finite values, or active-rollout follower qpos writes. Peak trial hand speed/acceleration were 0.0296629 rad/s and 0.105908 rad/s^2; maximum effort was 0.0395442 Nm, within the existing 0.05 Nm bound.
+
+This failure is a first-gate stop, not evidence that the remaining reference cases or contact behavior pass. No gains, effort limits, source limits, mimic mapping, or physical model were changed. No bottle contact occurred. No further diagnosis or tuning was run after the first-failure state snapshot.
+
+### Runtime provenance
+
+- Python 3.10.12; MuJoCo Python/native 3.3.6; timestep 0.002 s; WSL2 Linux x86_64.
+- Native MuJoCo library SHA-256: `b9173509d0c282a9b24b7f5825a40177a9967df0cd6395a9dc39522196e44495`.
+- AgiBot vendor pin and observed HEAD: `575cc6b988f976c23550e0db85aa1e5475d3652d`.
+- Source URDF SHA-256: `344c188605f307474456749525259ad8ca2e7b356d9ef3c50ad887f228045259`.
+- The carried-forward `runtime_identity.json` records RobotSim base HEAD `2347e76beab320f8da3089514ff4086201f5ee67` from the accepted Stage 1/2 packet. The Stage 3 continuation itself ran from task checkout HEAD `3469d335632eb40d8e53bd65ec4c2828ef6ff541` with the research harness modified for this recovery. The identity file was preserved unchanged and does not identify that harness diff.
+
+### Reproduction commands
+
+Stage 1 saved-trace audit:
+
+```bash
+cd /tmp/robotsim-issue46-virtual-transmission-resume-20261007
+env AGIBOT_X2_VENDOR_ROOT=/tmp/robotsim-issue46-virtual-transmission-vendor-20261007 \
+  ISSUE46_PREVIOUS_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/supported-fixed-body-recovery-02 \
+  ISSUE46_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/smooth-reference-recovery-03 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python -u \
+  scripts/research/issue46_virtual_transmission_supported_recovery.py --audit-original-stage3
+```
+
+Stage 3 continuation using the preserved Stage 1/2 evidence:
+
+```bash
+cd /tmp/robotsim-issue46-virtual-transmission-resume-20261007
+env AGIBOT_X2_VENDOR_ROOT=/tmp/robotsim-issue46-virtual-transmission-vendor-20261007 \
+  ISSUE46_EVIDENCE_DIR=/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/smooth-reference-recovery-03 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python -u \
+  scripts/research/issue46_virtual_transmission_supported_recovery.py --continue-after-stage2
+```
+
+### Evidence packet
+
+The external evidence directory is:
+
+`/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/virtual-transmission-20261007/smooth-reference-recovery-03/`
+
+It contains the preserved Stage 1/2 JSON and traces, `stage1_return_overshoot_audit.json` and its full JSONL trace, `stage3_representative_hand_result.json` and its full JSONL trace, `supported_recovery_result.json`, the runtime identity, and the complete Stage 3 log. The raw evidence was not edited after collection. PR #53 remains Draft; no merge or bottle experiment was performed.
+
+## Previous unsmoothed Stage 3 result
 
 **FAIL - Stage 3 source hard position limit.** The supported fixed-body setup passed its initial audit and 2 s operational OPEN hold. The first representative hand command then drove `R_index_dip_joint` 0.000106315 rad below its unchanged source lower limit while returning to OPEN. The task stopped at that first failed gate. No controller tuning, bottle contact, or later-stage experiment was performed.
 
-## Runtime identity
+### Runtime identity
 
 - RobotSim base HEAD observed by the run: `2347e76beab320f8da3089514ff4086201f5ee67`; the tested working tree also contained the research harness changes included with this report.
 - AgiBot source: `575cc6b988f976c23550e0db85aa1e5475d3652d`, matching the pinned vendor checkout.
@@ -12,19 +67,19 @@
 - Native library SHA-256: `b9173509d0c282a9b24b7f5825a40177a9967df0cd6395a9dc39522196e44495`.
 - Source URDF SHA-256: `344c188605f307474456749525259ad8ca2e7b356d9ef3c50ad887f228045259`.
 
-## Gate results
+### Gate results
 
-### Stage 1 - support audit: PASS
+#### Stage 1 - support audit: PASS
 
 The bottle-disabled model had `nq=nv=nu=63`, `neq=0`. The base was fixed by model topology. All 31 non-hand robot DOFs were classified and supported: 12 leg, 3 waist, 2 head, and 14 arm joints. Existing source-bounded position actuators held the reference posture; no support gain or source-limit changes were made. Gravity compensation shifted the control target by `qfrc_bias / (gear^2 * kp)` and clamped the result to each source hard range. Support target groups used the existing 250/30 (non-arm) and 150/22 (arm) position/velocity gains; actuator effort ranges remained source-bounded. There were no intentionally free robot DOFs, no initial self-penetration, and no rollout qpos writes.
 
-### Stage 2 - supported OPEN hold: PASS
+#### Stage 2 - supported OPEN hold: PASS
 
 The clean supported hold completed 1,000 steps (2.0000000000000013 s). It had zero source position or velocity violations, finite state, no self-penetration, and zero post-start qpos writes. Maximum support effort was 2.1770209723 Nm; maximum hand effort was 0.0395441485 Nm against the existing 0.05 Nm simulation bound. Maximum hand speed/acceleration were `3.01e-15 rad/s` and `1.77e-12 rad/s^2`. Maximum mimic residual was `5.33e-16 rad`. Maximum supported motion was 0.000284444 rad in the legs and below `1.24e-18 rad` in the other groups.
 
-### Stage 3 - representative hand cases: FAIL, stopped on first case
+#### Stage 3 - representative hand cases: FAIL, stopped on first case
 
-Only the first required case ran: a source-valid `+0.01 rad` step to `R_index_pip_joint`, then return and OPEN hold. At step 422 / 0.844 s during final OPEN hold, `R_index_dip_joint` had `q=-0.0001063154808 rad` against source limits `[0, 1.8325957146] rad`; velocity was `-0.11754156 rad/s`, within its 21 rad/s limit. The lower-limit overshoot was 0.000106315 rad.
+Only the first required case ran: a source-valid `+0.01 rad` step to `R_index_pip_joint`, then return and OPEN hold. At step 422 / 0.844 s during `source_return`, `R_index_dip_joint` had `q=-0.0001063154808 rad` against source limits `[0, 1.8325957146] rad`; velocity was `-0.11754156 rad/s`, within its 21 rad/s limit. The lower-limit overshoot was 0.000106315 rad.
 
 There were no contacts, self-contacts, velocity-limit violations, NaNs, or active-rollout follower qpos writes. Maximum hand effort was 0.03954416 Nm; maximum support effort was 2.17709660 Nm. Maximum hand qvel/qacc were 0.148257 rad/s and 1.252878 rad/s^2. Maximum mimic residual was 0.00570335 rad: above the 0.003 rad diagnostic target but below the 0.010 rad engineering abort ceiling. Maximum target tracking error was 0.00970213 rad.
 
@@ -32,7 +87,7 @@ One read-only decomposition at the first failing state found `qfrc_actuator=-9.2
 
 The remaining three representative cases, Stage 4 full-hand prevalidation, and Stage 5 bottle contact were **NOT RUN**. Bottle geometry/contact was absent from this diagnostic model. Do not interpret this result as a virtual-transmission manipulation pass.
 
-## Reproduction
+### Reproduction
 
 From a clean evidence directory, run the current research harness with the pinned vendor/runtime paths:
 
@@ -58,7 +113,7 @@ env AGIBOT_X2_VENDOR_ROOT=/tmp/robotsim-issue46-virtual-transmission-vendor-2026
   scripts/research/issue46_virtual_transmission_supported_recovery.py --continue-after-stage2
 ```
 
-## Evidence
+### Evidence
 
 Raw logs, JSON results, and full JSONL traces are preserved outside the repository at:
 
