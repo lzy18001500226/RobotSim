@@ -1,4 +1,4 @@
-# ADR-0007: Proposed bounded GitHub-Issue-driven orchestration pilot
+# ADR-0008: Proposed bounded GitHub-Issue-driven orchestration pilot
 
 Status: Proposed
 
