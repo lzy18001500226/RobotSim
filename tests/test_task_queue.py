@@ -311,6 +311,12 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(git_dir, workspace / ".git")
         self.assertEqual(workspace.stat().st_mode & 0o777, 0o700)
         self.assertFalse((git_dir / "objects/info/alternates").exists())
+        self.assertEqual(subprocess.check_output(
+            ["git", "-C", str(workspace), "config", "--local", "--get", "user.name"], text=True,
+        ).strip(), "RobotSim Test")
+        self.assertEqual(subprocess.check_output(
+            ["git", "-C", str(workspace), "config", "--local", "--get", "user.email"], text=True,
+        ).strip(), "robotsim-test@example.invalid")
         command = queue.codex_command(workspace)
         self.assertNotIn("--add-dir", command)
         self.assertEqual(command[command.index("--sandbox") + 1], "workspace-write")

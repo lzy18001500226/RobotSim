@@ -2071,6 +2071,18 @@ def _assert_branch_not_checked_out(
             raise RuntimeError("issue branch is already checked out in another workspace")
 
 
+def _inherit_commit_identity(source: Path, target: Path) -> None:
+    for key in ("user.name", "user.email", "commit.gpgsign", "user.signingkey", "gpg.format"):
+        value = _git_run(source, "config", "--local", "--get", key)
+        if value.returncode == 1:
+            continue
+        if value.returncode:
+            raise RuntimeError("could not read local commit identity from the source repository")
+        configured = _git_run(target, "config", "--local", key, value.stdout.rstrip("\n"))
+        if configured.returncode:
+            raise RuntimeError("could not preserve local commit identity in the issue checkout")
+
+
 def _clone_task_checkout(
     source: Path,
     plan: WorkspacePlan,
@@ -2089,6 +2101,7 @@ def _clone_task_checkout(
     if clone.returncode:
         raise RuntimeError("could not create the isolated issue checkout")
     os.chmod(target, 0o700)
+    _inherit_commit_identity(source, target)
     for args in (
         ("remote", "set-url", "origin", fetch_url),
         ("remote", "set-url", "--push", "origin", push_url),
