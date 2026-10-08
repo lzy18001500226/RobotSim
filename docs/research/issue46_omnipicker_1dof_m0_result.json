@@ -1,0 +1,135 @@
+{
+  "issue": 46,
+  "architecture": "SIMULATION_ONLY_M0_1DOF_OMNIPICKER",
+  "status": "FAIL",
+  "first_failed_gate": "Corrected fixed-object zero-step collision preflight",
+  "source": {
+    "repository": "https://github.com/AgibotTech/agibot_x2_urdf",
+    "commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+    "urdf": "X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+    "urdf_sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d",
+    "license": "Mulan PSL v2",
+    "right_driver": {
+      "name": "right_claw_joint",
+      "range_rad": [-1.0, 0.0]
+    },
+    "right_follower": {
+      "name": "R_hand_wide1_joint",
+      "range_rad": [0.0, 1.0]
+    },
+    "mimic": {
+      "equation": "q_follower = -q_driver",
+      "multiplier": -1.0,
+      "offset_rad": 0.0
+    }
+  },
+  "runtime": {
+    "python": "3.10.12",
+    "mujoco_python": "3.3.6",
+    "mujoco_native": "3.3.6",
+    "native_library_sha256": "b9173509d0c282a9b24b7f5825a40177a9967df0cd6395a9dc39522196e44495",
+    "mujoco_gl": "egl",
+    "numpy": "1.26.4",
+    "timestep_s": 0.002,
+    "solver": "Newton",
+    "iterations": 100,
+    "integrator": "Euler"
+  },
+  "controller": {
+    "public_command": "aperture_ratio",
+    "range": [0.0, 1.0],
+    "endpoint_margin_rad": 0.001,
+    "driver_target": "-(0.001 + 0.998 * aperture_ratio)",
+    "follower_target": "-driver_target",
+    "open_targets_rad": [-0.999, 0.999],
+    "closed_targets_rad": [-0.001, 0.001],
+    "motion_reference": "minimum jerk",
+    "motion_duration_s": 2.5,
+    "jaw_gains_and_effort_caps": {
+      "right_claw_joint": {
+        "kp_nm_per_rad": 0.005311594119130363,
+        "kd_nm_s_per_rad": 0.0013278985297825907,
+        "effort_cap_nm": 0.2380705710105672
+      },
+      "R_hand_wide1_joint": {
+        "kp_nm_per_rad": 0.010911462396815307,
+        "kd_nm_s_per_rad": 0.0027278655992038266,
+        "effort_cap_nm": 0.2538932928038361
+      }
+    },
+    "predicted_peak_velocity_rad_s": 0.7485,
+    "predicted_peak_acceleration_rad_s2": 0.9219129098419946,
+    "parameters_label": "SIMULATION_ONLY_M0 engineering parameters"
+  },
+  "stages": {
+    "open_hold": {
+      "status": "PASS",
+      "steps": 1000,
+      "duration_s": 2.0,
+      "max_relation_error_rad": 0.0003726440536648834,
+      "max_qvel_rad_s": 0.02366434980428493,
+      "max_qacc_rad_s2": 11.832174902142466,
+      "source_limit_violations": 0,
+      "contacts": 0,
+      "actuator_saturation_steps": 0,
+      "active_rollout_qpos_writes": 0
+    },
+    "no_contact_motion": {
+      "status": "PASS",
+      "steps": 3125,
+      "duration_s": 6.25,
+      "max_relation_error_rad": 0.0003726440536648834,
+      "max_qvel_rad_s": 0.748106879845197,
+      "max_qacc_rad_s2": 11.832174902142466,
+      "source_limit_violations": 0,
+      "contacts": 0,
+      "actuator_saturation_steps": 0,
+      "active_rollout_qpos_writes": 0
+    },
+    "fixed_object": {
+      "status": "FAIL",
+      "steps": 0,
+      "simulation_time_s": 0.0,
+      "fixture_center_world_m": [
+        0.07335674136685658,
+        0.32752261781796965,
+        0.5448953346818568
+      ],
+      "minimum_collidable_clearance_m": -0.03205180348576758,
+      "open_jaw_clearances_m": {
+        "R_hand_narrow3_Link": 0.030126859894529137,
+        "R_hand_wide3_Link": 0.030353999130713964
+      },
+      "initial_penetrations_m_by_body": {
+        "right_wrist_roll_link": 0.03205180348576758,
+        "R_hand_narrow1_Link": 0.003452827470649703,
+        "R_hand_narrow_loop_Link": 0.016847161268573538,
+        "R_hand_wide1_Link": 0.0022878715244967324,
+        "R_hand_wide_loop_Link": 0.009914336876959425
+      },
+      "closure_clearances_monotonically_decrease": true,
+      "first_geometric_contact_aperture_ratio": {
+        "R_hand_narrow3_Link": 0.34,
+        "R_hand_wide3_Link": 0.20
+      },
+      "bottle_hold_or_lift_attempted": false
+    }
+  },
+  "integrity": {
+    "right_jaw_equality_used": false,
+    "right_follower_external_command": false,
+    "follower_qpos_writes": 0,
+    "object_qpos_writes": 0,
+    "weld_or_mocap_attachment": false,
+    "left_hand_assistance": false
+  },
+  "evidence_directory": "/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/omnipicker-1dof-m0",
+  "video_produced": false,
+  "claim_boundary": "The X2 OmniPicker source geometry, joint ranges, and mimic mapping are source-derived. The paired-jaw actuator model is a SIMULATION_ONLY_M0 engineering abstraction and is not a validated model of the real X2 OmniPicker transmission or hardware dynamics.",
+  "limitations": [
+    "The one corrected fixture placement still fails the zero-step robot-collision preflight: the wrist and four non-target hand links intersect the fixture.",
+    "The recorded-trace reconstruction used mj_forward only; the corrected-scene preflight used zero mj_step calls. No corrected fixed-object dynamics, bottle hold, or lift was run.",
+    "No MP4 was produced.",
+    "Stage 3 and 4 PNGs were generated but not visually reviewed."
+  ]
+}

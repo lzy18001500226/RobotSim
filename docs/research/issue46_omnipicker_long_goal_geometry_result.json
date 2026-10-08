@@ -1,0 +1,60 @@
+{
+  "status": "BLOCKED",
+  "stopped_at": "static_geometry_feasibility",
+  "reason": "Three distinct authorized right-arm geometry candidates did not yield a demonstrated collision-free source-limited pregrasp corridor at the accepted fixed station.",
+  "global_infeasibility_proven": false,
+  "physics_steps": 0,
+  "fixed_object_contact_tested": false,
+  "bottle_contact_tested": false,
+  "bottle_hold_tested": false,
+  "bottle_lift_tested": false,
+  "object_state_writes": 0,
+  "candidates_used": 3,
+  "candidate_budget": 3,
+  "source": {
+    "repository": "https://github.com/AgibotTech/agibot_x2_urdf",
+    "commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+    "urdf": "X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+    "urdf_sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d"
+  },
+  "runtime": {
+    "python": "3.10.12",
+    "mujoco_python": "3.3.6",
+    "mujoco_native": "3.3.6",
+    "mujoco_native_sha256": "b9173509d0c282a9b24b7f5825a40177a9967df0cd6395a9dc39522196e44495",
+    "numpy": "1.26.4",
+    "mujoco_gl": "egl"
+  },
+  "candidates": [
+    {
+      "id": 1,
+      "approach": "fixed wrist orientation, compiled jaw-gap target at bottle body center",
+      "best_target_residual_m": 0.042248,
+      "jaw_axis_angular_error_rad": 0.4029,
+      "first_blocker": "right wrist-yaw collision geometry intersected bottle shoulder by 0.009095 m at next proposed pose",
+      "raw_trace_available": false,
+      "evidence_quality": "rounded result recovered from preceding experiment notes"
+    },
+    {
+      "id": 2,
+      "approach": "horizontal jaw-axis constraint, elbow seed -0.10 rad",
+      "best_target_residual_m": 0.271531,
+      "first_blocker": "front-left canonical table leg blocked improving steps against right wrist-roll and narrow-jaw collision geometry",
+      "raw_trace_available": false,
+      "evidence_quality": "rounded result recovered from preceding experiment notes"
+    },
+    {
+      "id": 3,
+      "approach": "horizontal jaw-axis constraint, elbow seed -1.00 rad",
+      "target_residual_m": 0.2975436415804677,
+      "initial_penetrations_m": {
+        "table_top_right_wrist_roll": 0.041774498986830465,
+        "front_left_leg_right_wrist_roll": 0.052624788776075564,
+        "front_left_leg_narrow_jaw": 0.002156413031673653
+      },
+      "raw_trace_available": true,
+      "raw_trace": "geometry-candidate-3/candidate-3-zero-step.json"
+    }
+  ],
+  "next_maintainer_decision": "Authorize changing X2 base-to-table station placement or approve a different right-arm approach side before any contact test."
+}
