@@ -76,6 +76,25 @@ class WorkerSecurityTests(unittest.TestCase):
             self.assertEqual(target.stat().st_mode & 0o777, 0o700)
             self.assertEqual((target / "auth.json").stat().st_mode & 0o777, 0o600)
 
+    def test_codex_session_must_be_bound_to_private_profile_before_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            self.assertFalse(worker_security.worker_profile_owns_session(profile, "legacy-session"))
+
+            worker_security.record_worker_session(profile, "private-session-62")
+
+            self.assertTrue(worker_security.worker_profile_owns_session(profile, "private-session-62"))
+            self.assertFalse(worker_security.worker_profile_owns_session(profile, "legacy-session"))
+            marker = profile / worker_security.WORKER_SESSION_MARKER
+            self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+
+    def test_codex_session_marker_rejects_unsafe_identifiers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            with self.assertRaisesRegex(ValueError, "invalid Codex session"):
+                worker_security.record_worker_session(profile, "../outside")
+            self.assertFalse(worker_security.worker_profile_owns_session(profile, "../outside"))
+
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"), "bubblewrap unavailable")
     def test_bubblewrap_hides_coordinator_path_and_environment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from typing import Mapping, Sequence
 BASE_WORKER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 HIDDEN_ROOTS = ("/home", "/root", "/tmp", "/run", "/mnt", "/media", "/var/tmp")
 WORKER_PERMISSION_PROFILE = "robotsim_worker"
+WORKER_SESSION_MARKER = ".robotsim-codex-session"
 
 
 def codex_permission_profile_overrides(*, read_only: bool) -> tuple[str, ...]:
@@ -113,6 +115,36 @@ def prepare_worker_codex_home(
     finally:
         temporary.unlink(missing_ok=True)
     return worker_home
+
+
+def worker_profile_owns_session(codex_home: Path, session_id: str) -> bool:
+    """Resume only a session previously created in this private Codex profile."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", session_id):
+        return False
+    marker = codex_home / WORKER_SESSION_MARKER
+    if marker.is_symlink() or not marker.is_file():
+        return False
+    try:
+        return marker.read_text(encoding="utf-8").strip() == session_id
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def record_worker_session(codex_home: Path, session_id: str) -> None:
+    """Bind a Codex thread ID to the private profile that created it."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", session_id):
+        raise ValueError("invalid Codex session id")
+    marker = codex_home / WORKER_SESSION_MARKER
+    if marker.is_symlink():
+        raise RuntimeError("isolated Codex session marker is a symlink")
+    temporary = codex_home / f".{WORKER_SESSION_MARKER}-{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(session_id + "\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _under_masked_root(path: Path) -> bool:

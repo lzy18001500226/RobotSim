@@ -1235,7 +1235,7 @@ class LocalCodexExecutor:
         try:
             runtime = worker_security.resolve_codex_runtime()
             environment = worker_security.build_worker_environment(path_entries=runtime.path_entries)
-            if packet.codex_session_id:
+            if worker_security.worker_profile_owns_session(codex_home, packet.codex_session_id):
                 command = codex_resume_command(
                     packet.codex_session_id, result_path,
                     workspace=workspace,
@@ -1293,8 +1293,10 @@ class LocalCodexExecutor:
                             continue
                         session_id = event.get("thread_id")
                         if (event.get("type") == "thread.started" and isinstance(session_id, str)
-                                and session_id and on_session is not None):
-                            on_session(session_id)
+                                and session_id):
+                            worker_security.record_worker_session(codex_home, session_id)
+                            if on_session is not None:
+                                on_session(session_id)
                 except Exception as exc:
                     reader_errors.append(exc)
 
