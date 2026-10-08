@@ -1,0 +1,11 @@
+Working checkout: /home/lzy18001500226/robotsim-issue46-omnipicker-collision-audit-20261008
+Branch: research/issue46-omnipicker-collision-audit-20261008
+Runtime: Python 3.10.12, MuJoCo 3.3.6, MUJOCO_GL=egl
+
+A. Official Menagerie Robotiq 2F-85 with canonical bottle:
+MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python scripts/research/issue46_root_cause_abc.py --phase reference --output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/root-cause-abc-20261008/reference-6
+
+B/C. Pinned source OmniPicker and collision-only counterfactual:
+MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python scripts/research/issue46_root_cause_abc.py --phase x2 --output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/root-cause-abc-20261008/x2-geometry-8
+
+The run outputs contain runtime_identity.json with exact runner and source hashes, plus result.json and raw closure/contact geometry traces. See REPORT.md for measurements and limitations.
