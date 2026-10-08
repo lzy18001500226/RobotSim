@@ -1050,30 +1050,14 @@ def codex_worktree_write_dirs(workspace: Path) -> tuple[Path, ...]:
             raise RuntimeError("cannot determine isolated Git worktree metadata")
         return result.stdout.strip()
 
+    root = workspace.resolve()
     git_dir = Path(git_value("--path-format=absolute", "--git-dir")).resolve()
     common_dir = Path(git_value("--path-format=absolute", "--git-common-dir")).resolve()
-    if git_dir == common_dir:
+    if git_dir == root / ".git" and common_dir == git_dir:
         return ()
-    if not git_dir.is_relative_to(common_dir / "worktrees"):
-        raise RuntimeError("task workspace Git metadata is outside the repository worktree store")
-
-    branch_result = subprocess.run(
-        ["git", "-C", str(workspace), "symbolic-ref", "--quiet", "--short", "HEAD"],
-        text=True, capture_output=True, check=False,
+    raise RuntimeError(
+        "task checkout must keep its Git metadata inside the writable workspace"
     )
-    branch = branch_result.stdout.strip()
-    if branch_result.returncode or re.fullmatch(r"issue/[0-9]+-task", branch) is None:
-        raise RuntimeError("task worktree must use its deterministic issue branch")
-
-    writable_dirs = (
-        git_dir,
-        common_dir / "objects",
-        common_dir / "refs" / "heads" / "issue",
-        common_dir / "logs" / "refs" / "heads" / "issue",
-    )
-    if any(not path.is_dir() for path in writable_dirs):
-        raise RuntimeError("required Git worktree metadata directory is missing")
-    return writable_dirs
 
 
 def codex_command(workspace: Path, *, read_only: bool = False) -> list[str]:
@@ -2048,43 +2032,338 @@ class TaskQueuePilot:
         return results
 
 
+def _git_run(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repository), *arguments],
+        text=True, capture_output=True, check=False,
+    )
+
+
+def _git_output(repository: Path, *arguments: str) -> str:
+    result = _git_run(repository, *arguments)
+    if result.returncode:
+        raise RuntimeError("Git operation failed while preparing the issue checkout")
+    return result.stdout.strip()
+
+
+def _is_standalone_checkout(repository: Path) -> bool:
+    try:
+        git_dir = Path(_git_output(repository, "rev-parse", "--path-format=absolute", "--git-dir")).resolve()
+        common_dir = Path(_git_output(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+    except RuntimeError:
+        return False
+    return git_dir == repository.resolve() / ".git" and common_dir == git_dir
+
+
+def _assert_branch_not_checked_out(
+    source: Path, branch: str, allowed_path: Path | None = None
+) -> None:
+    allowed = allowed_path.resolve() if allowed_path is not None else None
+    listing = _git_output(source, "worktree", "list", "--porcelain")
+    for block in listing.split("\n\n"):
+        fields = dict(
+            line.split(" ", 1) for line in block.splitlines() if " " in line
+        )
+        if fields.get("branch") != f"refs/heads/{branch}":
+            continue
+        path = Path(fields["worktree"]).resolve()
+        if path != allowed:
+            raise RuntimeError("issue branch is already checked out in another workspace")
+
+
+def _clone_task_checkout(
+    source: Path,
+    plan: WorkspacePlan,
+    target: Path,
+    *,
+    expected_head: str | None = None,
+    allowed_worktree_path: Path | None = None,
+) -> Path:
+    _assert_branch_not_checked_out(source, plan.branch, allowed_worktree_path)
+    fetch_url = _git_output(source, "remote", "get-url", "origin")
+    push_url = _git_output(source, "remote", "get-url", "--push", "origin")
+    clone = subprocess.run(
+        ["git", "clone", "--no-hardlinks", "--no-checkout", str(source), str(target)],
+        text=True, capture_output=True, check=False,
+    )
+    if clone.returncode:
+        raise RuntimeError("could not create the isolated issue checkout")
+    os.chmod(target, 0o700)
+    for args in (
+        ("remote", "set-url", "origin", fetch_url),
+        ("remote", "set-url", "--push", "origin", push_url),
+        ("fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"),
+    ):
+        result = _git_run(target, *args)
+        if result.returncode:
+            raise RuntimeError("could not configure or refresh the isolated issue checkout")
+
+    local_branch = _git_run(source, "show-ref", "--verify", "--quiet", f"refs/heads/{plan.branch}")
+    if local_branch.returncode == 0:
+        fetched = _git_run(
+            target, "fetch", "--no-tags", str(source),
+            f"+refs/heads/{plan.branch}:refs/heads/{plan.branch}",
+        )
+        if fetched.returncode:
+            raise RuntimeError("could not preserve the existing issue branch")
+        checkout = _git_run(target, "checkout", plan.branch)
+    elif local_branch.returncode == 1:
+        remote_branch = _git_run(
+            target, "ls-remote", "--exit-code", "--heads", "origin",
+            f"refs/heads/{plan.branch}",
+        )
+        if remote_branch.returncode == 0:
+            fetched = _git_run(
+                target, "fetch", "--no-tags", "origin",
+                f"+refs/heads/{plan.branch}:refs/remotes/origin/{plan.branch}",
+            )
+            if fetched.returncode:
+                raise RuntimeError("could not fetch the existing remote issue branch")
+            checkout = _git_run(target, "checkout", "-b", plan.branch, f"origin/{plan.branch}")
+        elif remote_branch.returncode == 2:
+            checkout = _git_run(target, "checkout", "-b", plan.branch, plan.base_ref)
+        else:
+            raise RuntimeError("could not inspect the remote issue branch")
+    else:
+        raise RuntimeError("could not inspect the local issue branch")
+    if checkout.returncode:
+        raise RuntimeError("could not check out the deterministic issue branch")
+
+    branch = _git_output(target, "branch", "--show-current")
+    head = _git_output(target, "rev-parse", "HEAD")
+    if branch != plan.branch or (expected_head is not None and head != expected_head):
+        raise RuntimeError("isolated issue checkout does not preserve the expected branch and HEAD")
+    if not _is_standalone_checkout(target):
+        raise RuntimeError("issue checkout Git metadata is not private to its workspace")
+    return target
+
+
+def _migration_paths(target: Path) -> tuple[Path, Path]:
+    return (
+        target.with_name(f".{target.name}.standalone-migration"),
+        target.with_name(f".{target.name}.standalone-migration.json"),
+    )
+
+
+def _write_migration_marker(path: Path, marker: Mapping[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def _read_migration_marker(
+    path: Path, plan: WorkspacePlan, head: str | None = None
+) -> dict[str, object]:
+    try:
+        marker = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("linked-worktree migration marker is invalid; preserve both checkouts") from exc
+    if (
+        not isinstance(marker, dict)
+        or marker.get("schema_version") != 1
+        or marker.get("issue_number") != plan.issue_number
+        or marker.get("branch") != plan.branch
+        or marker.get("target_path") != str(Path(plan.path).expanduser().resolve())
+        or not isinstance(marker.get("ready"), bool)
+    ):
+        raise RuntimeError("linked-worktree migration marker does not match this issue checkout")
+    marker_head = marker.get("head_sha")
+    if (
+        not isinstance(marker_head, str)
+        or len(marker_head) != 40
+        or any(character not in "0123456789abcdef" for character in marker_head)
+        or (head is not None and marker_head != head)
+    ):
+        raise RuntimeError("linked-worktree migration marker has an unexpected HEAD")
+    return marker
+
+
+def _copy_ignored_files(source: Path, destination: Path) -> None:
+    listed = _git_run(source, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+    if listed.returncode:
+        raise RuntimeError("could not inventory ignored files before checkout migration")
+    for name in listed.stdout.split("\0"):
+        if not name:
+            continue
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or relative.parts[0] == ".git":
+            raise RuntimeError("ignored file path is unsafe to preserve during checkout migration")
+        old_path = source / relative
+        new_path = destination / relative
+        for root, candidate in ((source, old_path.parent), (destination, new_path.parent)):
+            try:
+                candidate.relative_to(root)
+            except ValueError as exc:
+                raise RuntimeError("ignored file path escaped its checkout during migration") from exc
+            parent = candidate
+            while parent != root:
+                if parent.is_symlink():
+                    raise RuntimeError("ignored file has a symlink parent; preserve it for inspection")
+                parent = parent.parent
+        if old_path.is_symlink():
+            if new_path.is_dir() and not new_path.is_symlink():
+                shutil.rmtree(new_path)
+            elif new_path.exists() or new_path.is_symlink():
+                new_path.unlink()
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            new_path.symlink_to(os.readlink(old_path))
+        elif old_path.is_dir():
+            if new_path.is_symlink():
+                new_path.unlink()
+            elif new_path.exists() and not new_path.is_dir():
+                new_path.unlink()
+            shutil.copytree(old_path, new_path, dirs_exist_ok=True, symlinks=True)
+        elif old_path.is_file():
+            if new_path.is_dir() and not new_path.is_symlink():
+                shutil.rmtree(new_path)
+            elif new_path.is_symlink():
+                new_path.unlink()
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old_path, new_path, follow_symlinks=False)
+        else:
+            raise RuntimeError("unsupported ignored file type in linked issue workspace")
+
+
+def _migrate_linked_checkout(
+    source: Path, plan: WorkspacePlan, target: Path, expected_head: str
+) -> Path:
+    stage, marker_path = _migration_paths(target)
+    if stage.is_symlink() or marker_path.is_symlink():
+        raise RuntimeError("migration staging path is a symlink; preserve it for inspection")
+    original_git_dir = Path(
+        _git_output(target, "rev-parse", "--path-format=absolute", "--git-dir")
+    ).resolve()
+    if (original_git_dir / "index.lock").exists():
+        raise RuntimeError("legacy issue checkout has an index lock; preserve and inspect it before migration")
+    expected_marker = {
+        "schema_version": 1,
+        "issue_number": plan.issue_number,
+        "branch": plan.branch,
+        "head_sha": expected_head,
+        "target_path": str(target),
+        "ready": False,
+    }
+    if marker_path.exists():
+        marker = _read_migration_marker(marker_path, plan, expected_head)
+        if not target.exists() and marker["ready"]:
+            if stage.is_symlink() or not stage.is_dir() or not _is_standalone_checkout(stage):
+                raise RuntimeError("completed migration checkout is missing or invalid; preserve it for inspection")
+            if (
+                _git_output(stage, "branch", "--show-current") != plan.branch
+                or _git_output(stage, "rev-parse", "HEAD") != expected_head
+            ):
+                raise RuntimeError("completed migration checkout has an unexpected branch or HEAD")
+            os.replace(stage, target)
+            if not _is_standalone_checkout(target):
+                raise RuntimeError("recovered issue checkout is not isolated; preserve it for inspection")
+            marker_path.unlink(missing_ok=True)
+            return target
+        if not target.exists():
+            raise RuntimeError("incomplete migration lost its source checkout; preserve the staging data")
+        if stage.exists():
+            if stage.is_symlink() or not stage.is_dir() or not _is_standalone_checkout(stage):
+                raise RuntimeError("migration staging checkout is invalid; preserve it for inspection")
+            if (
+                _git_output(stage, "branch", "--show-current") != plan.branch
+                or _git_output(stage, "rev-parse", "HEAD") != expected_head
+                or _git_output(stage, "status", "--porcelain", "--untracked-files=all")
+            ):
+                raise RuntimeError("migration staging checkout changed; preserve it for inspection")
+    elif stage.exists():
+        raise RuntimeError("unmarked migration staging data exists; preserve it for inspection")
+    else:
+        _write_migration_marker(marker_path, expected_marker)
+
+    if not stage.exists():
+        _clone_task_checkout(
+            source, plan, stage, expected_head=expected_head,
+            allowed_worktree_path=target,
+        )
+    _copy_ignored_files(target, stage)
+    expected_marker["ready"] = True
+    _write_migration_marker(marker_path, expected_marker)
+
+    if (
+        _git_output(target, "branch", "--show-current") != plan.branch
+        or _git_output(target, "rev-parse", "HEAD") != expected_head
+        or _git_output(target, "status", "--porcelain", "--untracked-files=all")
+        or Path(_git_output(target, "rev-parse", "--path-format=absolute", "--git-dir")).resolve() != original_git_dir
+        or (original_git_dir / "index.lock").exists()
+        or _git_output(source, "rev-parse", f"refs/heads/{plan.branch}") != expected_head
+    ):
+        raise RuntimeError("legacy issue checkout changed during migration; preserve both checkouts")
+    registered = _git_output(source, "worktree", "list", "--porcelain")
+    if f"worktree {target}" not in registered.splitlines():
+        raise RuntimeError("legacy issue checkout is not registered with the source repository")
+    removed = _git_run(source, "worktree", "remove", "--force", str(target))
+    if removed.returncode or target.exists():
+        raise RuntimeError("could not safely detach the legacy issue checkout")
+    os.replace(stage, target)
+    if (
+        not _is_standalone_checkout(target)
+        or _git_output(target, "branch", "--show-current") != plan.branch
+        or _git_output(target, "rev-parse", "HEAD") != expected_head
+    ):
+        raise RuntimeError("migrated issue checkout is not isolated")
+    marker_path.unlink(missing_ok=True)
+    return target
+
+
 def create_worktree(
     repository_root: Path, plan: WorkspacePlan, *, allow_dirty: bool = False
 ) -> Path:
     repo = repository_root.resolve()
-    target = Path(plan.path)
+    target = Path(plan.path).expanduser().resolve()
+    stage, marker_path = _migration_paths(target)
+    if stage.is_symlink() or marker_path.is_symlink():
+        raise RuntimeError("issue checkout migration path is a symlink; preserve it for inspection")
     if target.exists():
-        result = subprocess.run(
-            ["git", "-C", str(target), "branch", "--show-current"],
-            text=True, capture_output=True, check=False,
-        )
-        if result.returncode or result.stdout.strip() != plan.branch:
+        branch_result = _git_run(target, "branch", "--show-current")
+        if branch_result.returncode or branch_result.stdout.strip() != plan.branch:
             raise RuntimeError("existing issue workspace does not match its deterministic branch")
-        status = subprocess.run(
-            ["git", "-C", str(target), "status", "--porcelain"],
-            text=True, capture_output=True, check=False,
-        )
+        status = _git_run(target, "status", "--porcelain", "--untracked-files=all")
         if status.returncode or (status.stdout.strip() and not allow_dirty):
             raise RuntimeError("existing issue workspace has local changes; preserve and inspect it before resume")
+        if _is_standalone_checkout(target):
+            if marker_path.exists():
+                if marker_path.is_symlink() or stage.exists():
+                    raise RuntimeError("migration marker conflicts with the completed task checkout")
+                marker = _read_migration_marker(marker_path, plan)
+                if not marker["ready"] or stage.exists():
+                    raise RuntimeError("migration marker conflicts with the completed task checkout")
+                marker_path.unlink(missing_ok=True)
+            return target
+        if status.stdout.strip():
+            raise RuntimeError("legacy linked issue workspace has local changes; preserve and inspect it before migration")
+        head = _git_output(target, "rev-parse", "HEAD")
+        branch_ref = _git_run(repo, "rev-parse", f"refs/heads/{plan.branch}")
+        if branch_ref.returncode or branch_ref.stdout.strip() != head:
+            raise RuntimeError("legacy issue branch no longer matches its worktree HEAD")
+        git_dir = Path(
+            _git_output(target, "rev-parse", "--path-format=absolute", "--git-dir")
+        ).resolve()
+        if (git_dir / "index.lock").exists():
+            raise RuntimeError("legacy issue checkout has an index lock; preserve and inspect it before migration")
+        return _migrate_linked_checkout(repo, plan, target, head)
+    if marker_path.exists() and stage.exists():
+        if marker_path.is_symlink() or stage.is_symlink():
+            raise RuntimeError("migration recovery path is a symlink; preserve it for inspection")
+        marker = _read_migration_marker(marker_path, plan)
+        if not marker["ready"] or not _is_standalone_checkout(stage):
+            raise RuntimeError("incomplete issue checkout migration; preserve the staging data")
+        if (
+            _git_output(stage, "branch", "--show-current") != plan.branch
+            or _git_output(stage, "rev-parse", "HEAD") != marker["head_sha"]
+        ):
+            raise RuntimeError("staged issue checkout has an unexpected branch or HEAD")
+        os.replace(stage, target)
+        marker_path.unlink(missing_ok=True)
         return target
+    if stage.exists() or marker_path.exists():
+        raise RuntimeError("unmatched issue checkout migration data exists; preserve it for inspection")
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    existing_branch = subprocess.run(
-        ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", f"refs/heads/{plan.branch}"],
-        text=True, capture_output=True, check=False,
-    ).returncode == 0
-    command = ["git", "-C", str(repo), "worktree", "add"]
-    command.extend(
-        (str(target), plan.branch)
-        if existing_branch
-        else ("-b", plan.branch, str(target), plan.base_ref)
-    )
-    result = subprocess.run(
-        command,
-        text=True, capture_output=True, check=False,
-    )
-    if result.returncode:
-        raise RuntimeError(f"git worktree creation failed ({result.returncode})")
-    return target
+    return _clone_task_checkout(repo, plan, target)
 
 
 def review_packet_path(state_directory: Path, issue_number: int) -> Path:

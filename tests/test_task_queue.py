@@ -285,9 +285,12 @@ class TaskQueueTests(unittest.TestCase):
         workflow.write_text("trusted goal workflow\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
         subprocess.run(["git", "-C", str(repository), "commit", "-m", "baseline"], check=True, capture_output=True)
+        remote = self.root / "origin.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repository), "remote", "add", "origin", str(remote)], check=True)
         subprocess.run(
-            ["git", "-C", str(repository), "update-ref", "refs/remotes/origin/main", "HEAD"],
-            check=True,
+            ["git", "-C", str(repository), "push", "--set-upstream", "origin", "main"],
+            check=True, capture_output=True, text=True,
         )
 
         plan = queue.workspace_plan(make_issue(), self.root / "worktrees")
@@ -299,30 +302,34 @@ class TaskQueueTests(unittest.TestCase):
             ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             text=True,
         ).strip())
-        self.assertEqual(writable_dirs[0], Path(subprocess.check_output(
+        git_dir = Path(subprocess.check_output(
             ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-dir"],
             text=True,
-        ).strip()))
-        self.assertIn(common_dir / "objects", writable_dirs)
-        self.assertIn(common_dir / "refs/heads/issue", writable_dirs)
-        self.assertIn(common_dir / "logs/refs/heads/issue", writable_dirs)
-        self.assertNotIn(common_dir, writable_dirs)
+        ).strip())
+        self.assertEqual(writable_dirs, ())
+        self.assertEqual(git_dir, common_dir)
+        self.assertEqual(git_dir, workspace / ".git")
+        self.assertEqual(workspace.stat().st_mode & 0o777, 0o700)
+        self.assertFalse((git_dir / "objects/info/alternates").exists())
         command = queue.codex_command(workspace)
-        self.assertEqual(command.count("--add-dir"), len(writable_dirs))
+        self.assertNotIn("--add-dir", command)
         self.assertEqual(command[command.index("--sandbox") + 1], "workspace-write")
         self.assertNotIn("--danger-full-access", command)
         read_only = queue.codex_command(workspace, read_only=True)
         self.assertEqual(read_only[read_only.index("--sandbox") + 1], "read-only")
         self.assertNotIn("--add-dir", read_only)
         resume = queue.codex_resume_command("session-49", self.root / "result.json", workspace=workspace)
-        roots_option = resume[resume.index("--config") + 1]
-        self.assertTrue(roots_option.startswith("sandbox_workspace_write.writable_roots=["))
+        self.assertNotIn("--config", resume)
         baseline_head = subprocess.check_output(
             ["git", "-C", str(repository), "rev-parse", "main"], text=True,
         ).strip()
-        remote = self.root / "origin.git"
-        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
-        subprocess.run(["git", "-C", str(repository), "remote", "add", "origin", str(remote)], check=True)
+        self.assertNotEqual(
+            subprocess.run(
+                ["git", "-C", str(repository), "show-ref", "--verify", "--quiet", f"refs/heads/{plan.branch}"],
+                check=False,
+            ).returncode,
+            0,
+        )
         (workspace / "worktree-edit-probe.txt").write_text("task worktree edit\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(workspace), "add", "worktree-edit-probe.txt"], check=True)
         subprocess.run(
@@ -353,6 +360,115 @@ class TaskQueueTests(unittest.TestCase):
             queue.create_worktree(repository, plan)
         self.assertEqual(queue.create_worktree(repository, plan, allow_dirty=True), workspace)
         self.assertEqual((workspace / "AGENTS.md").read_text(encoding="utf-8"), "untrusted task-branch guidance\n")
+
+    def test_clean_linked_issue_checkout_migrates_and_preserves_ignored_files(self) -> None:
+        repository = self.root / "legacy-repo"
+        repository.mkdir()
+        for command in (
+            ["git", "init", "--initial-branch=main", str(repository)],
+            ["git", "-C", str(repository), "config", "user.name", "RobotSim Test"],
+            ["git", "-C", str(repository), "config", "user.email", "robotsim-test@example.invalid"],
+        ):
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        (repository / ".gitignore").write_text("docs/research/\n", encoding="utf-8")
+        (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "-m", "baseline"],
+            check=True, capture_output=True, text=True,
+        )
+        remote = self.root / "legacy-origin.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repository), "remote", "add", "origin", str(remote)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "push", "--set-upstream", "origin", "main"],
+            check=True, capture_output=True, text=True,
+        )
+        task = make_issue(71)
+        plan = queue.workspace_plan(task, self.root / "legacy-worktrees")
+        legacy = Path(plan.path)
+        legacy.parent.mkdir(parents=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "worktree", "add", "-b", plan.branch, str(legacy), "origin/main"],
+            check=True, capture_output=True, text=True,
+        )
+        expected_head = subprocess.check_output(["git", "-C", str(legacy), "rev-parse", "HEAD"], text=True).strip()
+        ignored_file = legacy / "docs/research/evidence.txt"
+        ignored_file.parent.mkdir(parents=True)
+        ignored_file.write_text("retain this local evidence\n", encoding="utf-8")
+
+        migrated = queue.create_worktree(repository, plan)
+
+        self.assertEqual(migrated, legacy)
+        self.assertEqual(subprocess.check_output(["git", "-C", str(migrated), "branch", "--show-current"], text=True).strip(), plan.branch)
+        self.assertEqual(subprocess.check_output(["git", "-C", str(migrated), "rev-parse", "HEAD"], text=True).strip(), expected_head)
+        self.assertEqual((migrated / "docs/research/evidence.txt").read_text(encoding="utf-8"), "retain this local evidence\n")
+        self.assertEqual(queue.codex_worktree_write_dirs(migrated), ())
+        self.assertEqual(Path(subprocess.check_output(
+            ["git", "-C", str(migrated), "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True,
+        ).strip()), migrated / ".git")
+        self.assertFalse((migrated / ".git/objects/info/alternates").exists())
+        registered_worktrees = subprocess.check_output(
+            ["git", "-C", str(repository), "worktree", "list", "--porcelain"], text=True,
+        ).splitlines()
+        self.assertNotIn(f"worktree {migrated}", registered_worktrees)
+        self.assertEqual(subprocess.run(
+            ["git", "-C", str(repository), "show-ref", "--verify", "--quiet", f"refs/heads/{plan.branch}"],
+            check=False,
+        ).returncode, 0)
+        stage, marker = queue._migration_paths(migrated)
+        self.assertFalse(stage.exists())
+        self.assertFalse(marker.exists())
+
+    def test_dirty_linked_issue_checkout_is_preserved_without_migration(self) -> None:
+        repository = self.root / "dirty-legacy-repo"
+        repository.mkdir()
+        for command in (
+            ["git", "init", "--initial-branch=main", str(repository)],
+            ["git", "-C", str(repository), "config", "user.name", "RobotSim Test"],
+            ["git", "-C", str(repository), "config", "user.email", "robotsim-test@example.invalid"],
+        ):
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "-m", "baseline"],
+            check=True, capture_output=True, text=True,
+        )
+        remote = self.root / "dirty-legacy-origin.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repository), "remote", "add", "origin", str(remote)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "push", "--set-upstream", "origin", "main"],
+            check=True, capture_output=True, text=True,
+        )
+        conflict_plan = queue.workspace_plan(make_issue(73), self.root / "conflict-worktrees")
+        conflict_path = self.root / "already-checked-out-73"
+        subprocess.run(
+            ["git", "-C", str(repository), "worktree", "add", "-b", conflict_plan.branch,
+             str(conflict_path), "origin/main"],
+            check=True, capture_output=True, text=True,
+        )
+        with self.assertRaisesRegex(RuntimeError, "already checked out"):
+            queue.create_worktree(repository, conflict_plan)
+        self.assertFalse(Path(conflict_plan.path).exists())
+
+        plan = queue.workspace_plan(make_issue(72), self.root / "dirty-legacy-worktrees")
+        legacy = Path(plan.path)
+        legacy.parent.mkdir(parents=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "worktree", "add", "-b", plan.branch, str(legacy), "origin/main"],
+            check=True, capture_output=True, text=True,
+        )
+        edit = legacy / "uncommitted.txt"
+        edit.write_text("do not discard\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "local changes"):
+            queue.create_worktree(repository, plan)
+        self.assertTrue((legacy / ".git").is_file())
+        self.assertEqual(edit.read_text(encoding="utf-8"), "do not discard\n")
+        self.assertIn(f"worktree {legacy}", subprocess.check_output(
+            ["git", "-C", str(repository), "worktree", "list", "--porcelain"], text=True,
+        ).splitlines())
 
     def test_open_dependency_prevents_dispatch(self) -> None:
         task = make_issue(body="Depends on: #12, #13")
