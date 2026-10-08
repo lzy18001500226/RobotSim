@@ -1,0 +1,44 @@
+{
+  "diagnostic": "same reset state, mj_forward only; zero mj_step calls",
+  "effective_inertia_kg_m2": 0.000253485258061645,
+  "effective_bias_nm": -0.03644914509155102,
+  "cases": [
+    {
+      "case": "zero_torque",
+      "ctrl_nm": 0.0,
+      "qacc_driver_rad_s2": 140.8931057223752,
+      "qacc_follower_rad_s2": -139.92029733544817,
+      "qfrc_bias_driver_nm": -0.011385410869131238,
+      "qfrc_bias_follower_nm": 0.02506373422241978,
+      "qfrc_actuator_driver_nm": 0.0,
+      "qfrc_constraint_driver_nm": -0.0003982279860462514,
+      "qfrc_constraint_follower_nm": -0.0003982279860462514,
+      "mimic_residual_rad": 0.0
+    },
+    {
+      "case": "controller_feedforward",
+      "ctrl_nm": -0.03644914509155102,
+      "qacc_driver_rad_s2": -38.58144375657431,
+      "qacc_follower_rad_s2": -12.894381724275235,
+      "qfrc_bias_driver_nm": -0.011385410869131238,
+      "qfrc_bias_follower_nm": 0.02506373422241978,
+      "qfrc_actuator_driver_nm": -0.03644914509155102,
+      "qfrc_constraint_driver_nm": 0.02107209866483675,
+      "qfrc_constraint_follower_nm": 0.02107209866483675,
+      "mimic_residual_rad": 0.0
+    },
+    {
+      "case": "opposite_sign",
+      "ctrl_nm": 0.03644914509155102,
+      "qacc_driver_rad_s2": 320.3676552013247,
+      "qacc_follower_rad_s2": -266.9462129466211,
+      "qfrc_bias_driver_nm": -0.011385410869131238,
+      "qfrc_bias_follower_nm": 0.02506373422241978,
+      "qfrc_actuator_driver_nm": 0.03644914509155102,
+      "qfrc_constraint_driver_nm": -0.02186855463692925,
+      "qfrc_constraint_follower_nm": -0.02186855463692925,
+      "mimic_residual_rad": 0.0
+    }
+  ],
+  "conclusion": "Actuator sign/gear is responsive in the expected direction, but the projected single-coordinate inertia/bias feedforward does not hold the compiled compliant-constraint model at the open endpoint. No parameter change or follow-up simulation was performed."
+}
