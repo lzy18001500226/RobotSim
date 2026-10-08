@@ -29,6 +29,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 
 REPOSITORY = "lzy18001500226/RobotSim"
@@ -2083,6 +2084,22 @@ def _inherit_commit_identity(source: Path, target: Path) -> None:
             raise RuntimeError("could not preserve local commit identity in the issue checkout")
 
 
+def _validate_remote_url(url: str) -> None:
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise RuntimeError("origin remote URL cannot be copied without exposing credentials") from exc
+    scp_remote = re.match(r"^([^/@:]+)@[^/:]+:", url)
+    has_credential = (
+        parsed.password is not None
+        or (parsed.username is not None and not (parsed.scheme == "ssh" and parsed.username == "git"))
+        or (scp_remote is not None and scp_remote.group(1) != "git")
+        or bool(parsed.query or parsed.fragment)
+    )
+    if has_credential:
+        raise RuntimeError("origin remote URL contains inline credentials; configure a credential helper")
+
+
 def _clone_task_checkout(
     source: Path,
     plan: WorkspacePlan,
@@ -2094,6 +2111,8 @@ def _clone_task_checkout(
     _assert_branch_not_checked_out(source, plan.branch, allowed_worktree_path)
     fetch_url = _git_output(source, "remote", "get-url", "origin")
     push_url = _git_output(source, "remote", "get-url", "--push", "origin")
+    _validate_remote_url(fetch_url)
+    _validate_remote_url(push_url)
     clone = subprocess.run(
         ["git", "clone", "--no-hardlinks", "--no-checkout", str(source), str(target)],
         text=True, capture_output=True, check=False,

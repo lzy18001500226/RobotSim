@@ -69,9 +69,11 @@ Each writer is a `codex exec` process in a standalone issue checkout, with Codex
 sandbox. Its Git metadata stays under that task directory, so the writer needs no extra writable
 roots for shared refs or objects. No approval-bypass option is used. A clean legacy linked checkout
 is migrated at the same path and branch, with ignored files copied; a dirty checkout or ambiguous
-migration state fails closed for inspection. A separate Codex review uses `read-only`, holds no
-writer slot, and runs only when the local checkout is clean and exactly matches the PR head. A retry
-keeps the same `run_id`, `worker_id`, issue branch, and Codex session while creating a new
+migration state fails closed for inspection. Checkout setup carries only allowlisted local author
+and signing settings and rejects remote URLs with inline credentials; authentication must come from
+the normal credential helper or SSH agent. A separate Codex review uses `read-only`, holds no writer
+slot, and runs only when the local checkout is clean and exactly matches the PR head. A retry keeps
+the same `run_id`, `worker_id`, issue branch, and Codex session while creating a new
 `attempt_id`; Codex resumes that session with the new CI/review feedback. The queue records a
 sanitized append-only event history and result summaries, not transcripts. Private review feedback
 stays in the user-only SQLite state file.

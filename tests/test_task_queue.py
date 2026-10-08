@@ -476,6 +476,35 @@ class TaskQueueTests(unittest.TestCase):
             ["git", "-C", str(repository), "worktree", "list", "--porcelain"], text=True,
         ).splitlines())
 
+    def test_inline_remote_credentials_are_rejected_without_disclosure(self) -> None:
+        repository = self.root / "credential-url-repo"
+        repository.mkdir()
+        subprocess.run(
+            ["git", "init", "--initial-branch=main", str(repository)],
+            check=True, capture_output=True, text=True,
+        )
+        (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "-c", "user.name=RobotSim Test",
+             "-c", "user.email=robotsim-test@example.invalid", "commit", "-m", "baseline"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "remote", "add", "origin", "https://github.com/example/RobotSim.git"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "remote", "set-url", "--push", "origin",
+             "https://user:synthetic-secret@github.com/example/RobotSim.git"],
+            check=True,
+        )
+        plan = queue.workspace_plan(make_issue(74), self.root / "credential-url-worktrees")
+        with self.assertRaisesRegex(RuntimeError, "inline credentials") as raised:
+            queue.create_worktree(repository, plan)
+        self.assertNotIn("synthetic-secret", str(raised.exception))
+        self.assertFalse(Path(plan.path).exists())
+
     def test_open_dependency_prevents_dispatch(self) -> None:
         task = make_issue(body="Depends on: #12, #13")
         dependencies = {12: make_issue(12), 13: make_issue(13, state="CLOSED")}
