@@ -333,6 +333,32 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertIn("ROBOTSIM_NOTIFY_TO", result.message)
         urlopen.assert_not_called()
 
+    def test_config_preflight_reports_only_missing_setting_names(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch.dict("os.environ", {"AGENTMAIL_INBOX_ID": "synthetic-inbox"}, clear=True),
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = notify_task.main(["config-preflight"])
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(report, {
+            "ready": False,
+            "missing_settings": ["AGENTMAIL_API_KEY", "ROBOTSIM_NOTIFY_TO"],
+        })
+        self.assertNotIn("synthetic-inbox", stdout.getvalue())
+
+    def test_config_preflight_success_never_exposes_setting_values(self) -> None:
+        settings = {
+            "AGENTMAIL_API_KEY": "synthetic-inert-value",
+            "AGENTMAIL_INBOX_ID": "synthetic-inbox",
+            "ROBOTSIM_NOTIFY_TO": "synthetic-recipient",
+        }
+        self.assertEqual(
+            notify_task.config_preflight(settings),
+            {"ready": True, "missing_settings": []},
+        )
+
     def test_repeated_task_event_is_deduplicated_locally(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = self._settings(directory)
@@ -1017,7 +1043,10 @@ class NotifyTaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             settings = self._settings(directory)
             settings.pop("GITHUB_TOKEN")
-            with patch.object(notify_task, "_open_request") as urlopen:
+            with (
+                patch.object(notify_task.shutil, "which", return_value=None),
+                patch.object(notify_task, "_open_request") as urlopen,
+            ):
                 result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
         self.assertEqual(result.state, "blocked")
         self.assertIn("GitHub closeout persistence unavailable", result.message)

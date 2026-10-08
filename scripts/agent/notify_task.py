@@ -1125,6 +1125,13 @@ def _load_settings(environ: Mapping[str, str]) -> tuple[dict[str, str] | None, s
     }, ""
 
 
+def config_preflight(environ: Mapping[str, str] | None = None) -> dict[str, object]:
+    """Report only which AgentMail setting names are missing."""
+    env = os.environ if environ is None else environ
+    missing = [name for name in REQUIRED_SETTINGS if not env.get(name, "").strip()]
+    return {"ready": not missing, "missing_settings": missing}
+
+
 def _state_directory(environ: Mapping[str, str]) -> Path:
     configured = environ.get("ROBOTSIM_NOTIFY_STATE_DIR", "").strip()
     if configured:
@@ -1333,7 +1340,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "event",
-        choices=("ready_for_review", "task-closeout", "research-completion", "stop"),
+        choices=("ready_for_review", "task-closeout", "research-completion", "config-preflight", "stop"),
         help="attention notification, structured task closeout JSON, or 'stop' for a local Codex Stop payload",
     )
     parser.add_argument("--task-id", help="stable task/turn identifier used for duplicate protection")
@@ -1357,6 +1364,10 @@ def _print_outcome(outcome: Outcome) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.event == "config-preflight":
+        result = config_preflight()
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result["ready"] else 1
     if args.event == "stop":
         try:
             payload = json.load(sys.stdin)

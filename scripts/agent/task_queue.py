@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -34,6 +35,7 @@ REPOSITORY = "lzy18001500226/RobotSim"
 DEFAULT_WRITER_SLOTS = 2
 MAX_WRITER_SLOTS = 2
 MAX_ATTEMPTS = 3
+MAX_NOTIFICATION_ATTEMPTS = 3
 READY_LABEL = "agent:ready"
 RETRY_LABEL = "agent:retry"
 RUNNING_LABEL = "agent:running"
@@ -125,6 +127,15 @@ class PullRequest:
     review: str
     check_details: tuple[dict[str, str], ...] = ()
     merged: bool = False
+    head_repository: str = REPOSITORY
+    base_branch: str = "main"
+    cross_repository: bool = False
+
+
+@dataclass(frozen=True)
+class CloseoutResult:
+    exit_code: int
+    state: str
 
 
 def dependency_numbers(body: str) -> tuple[int, ...]:
@@ -302,6 +313,8 @@ class RunStore:
                 packet_json TEXT NOT NULL DEFAULT '{}',
                 closeout_event_json TEXT NOT NULL DEFAULT '',
                 notified INTEGER NOT NULL DEFAULT 0,
+                notification_state TEXT NOT NULL DEFAULT 'not_started',
+                notification_attempts INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             )"""
         )
@@ -330,6 +343,14 @@ class RunStore:
         if "codex_session_id" not in columns:
             self._db.execute(
                 "ALTER TABLE task_runs ADD COLUMN codex_session_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "notification_state" not in columns:
+            self._db.execute(
+                "ALTER TABLE task_runs ADD COLUMN notification_state TEXT NOT NULL DEFAULT 'not_started'"
+            )
+        if "notification_attempts" not in columns:
+            self._db.execute(
+                "ALTER TABLE task_runs ADD COLUMN notification_attempts INTEGER NOT NULL DEFAULT 0"
             )
         self._db.commit()
         if str(self.path) != ":memory:" and self.path.exists():
@@ -468,7 +489,8 @@ class RunStore:
                         reviewed_head_sha='', review_report='',
                         branch=excluded.branch, workspace=excluded.workspace, pr_number=NULL,
                         head_sha='', review_feedback_hash='', gates_json='[]', packet_json='{}',
-                        closeout_event_json='', notified=0,
+                        closeout_event_json='', notified=0, notification_state='not_started',
+                        notification_attempts=0,
                         last_failure_hash=CASE WHEN task_runs.status='blocked' THEN '' ELSE task_runs.last_failure_hash END,
                         same_failure_count=CASE WHEN task_runs.status='blocked' THEN 0 ELSE task_runs.same_failure_count END,
                         updated_at=excluded.updated_at""",
@@ -524,6 +546,7 @@ class RunStore:
         allowed = {
             "status", "pr_number", "head_sha", "review_feedback_hash", "gates_json",
             "review_feedback", "packet_json", "closeout_event_json", "notified",
+            "notification_state", "notification_attempts",
             "same_failure_count", "last_failure_hash",
             "executor_pid", "executor_start_token", "codex_session_id",
             "reviewed_head_sha", "review_report",
@@ -571,13 +594,12 @@ def _same_process(pid: int, start_token: str) -> bool:
 
 
 def review_checkout_matches(workspace: Path, branch: str, head_sha: str) -> bool:
-    current = subprocess.run(
-        ["git", "-C", str(workspace), "rev-parse", "HEAD"],
-        text=True, capture_output=True, check=False,
-    )
+    current = workspace_head_sha(workspace, branch)
+    return current is not None and current.casefold() == head_sha.casefold()
 
 
-def workspace_head_sha(workspace: Path, expected_branch: str) -> str | None:
+def workspace_current_head(workspace: Path, expected_branch: str) -> str | None:
+    """Return the exact HEAD for the expected task branch, even when dirty."""
     branch = subprocess.run(
         ["git", "-C", str(workspace), "branch", "--show-current"],
         text=True, capture_output=True, check=False,
@@ -586,30 +608,33 @@ def workspace_head_sha(workspace: Path, expected_branch: str) -> str | None:
         ["git", "-C", str(workspace), "rev-parse", "HEAD"],
         text=True, capture_output=True, check=False,
     )
-    status = subprocess.run(
-        ["git", "-C", str(workspace), "status", "--porcelain"],
-        text=True, capture_output=True, check=False,
-    )
     sha = head.stdout.strip()
-    if (branch.returncode or head.returncode or status.returncode
-            or branch.stdout.strip() != expected_branch or status.stdout.strip()
+    if (branch.returncode or head.returncode
+            or branch.stdout.strip() != expected_branch
             or not re.fullmatch(r"[0-9a-f]{40,64}", sha)):
         return None
     return sha
-    current_branch = subprocess.run(
-        ["git", "-C", str(workspace), "branch", "--show-current"],
+
+
+def git_common_dir(path: Path) -> Path | None:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
         text=True, capture_output=True, check=False,
     )
+    if result.returncode:
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
+def workspace_head_sha(workspace: Path, expected_branch: str) -> str | None:
+    sha = workspace_current_head(workspace, expected_branch)
     status = subprocess.run(
         ["git", "-C", str(workspace), "status", "--porcelain"],
         text=True, capture_output=True, check=False,
     )
-    return (
-        current.returncode == current_branch.returncode == status.returncode == 0
-        and current.stdout.strip().casefold() == head_sha.casefold()
-        and current_branch.stdout.strip() == branch
-        and not status.stdout.strip()
-    )
+    if sha is None or status.returncode or status.stdout.strip():
+        return None
+    return sha
 
 
 def record_execution_success(store: RunStore, issue_number: int, head_sha: str) -> dict[str, object]:
@@ -632,6 +657,110 @@ def route_review_feedback(store: RunStore, issue_number: int, feedback: str) -> 
         review_feedback_hash=digest,
         review_feedback=feedback[:12000],
     )
+
+
+def _last_successful_checkpoint(events: Sequence[Mapping[str, object]]) -> dict[str, object] | None:
+    for event in reversed(events):
+        kind = str(event.get("event_type") or "")
+        details_value = json.loads(str(event.get("details_json") or "{}"))
+        details = details_value if isinstance(details_value, dict) else {}
+        successful = kind in {"task_branch_published", "recovered_published_branch"}
+        if kind == "pull_request_observed":
+            successful = str(details.get("checks", "")).casefold() in {"success", "passed"}
+        if successful:
+            result: dict[str, object] = {
+                "event": kind,
+                "at": event.get("created_at"),
+                "head_sha": event.get("head_sha") or details.get("head_sha") or None,
+            }
+            pr_number = event.get("pr_number") or details.get("pull_number")
+            if pr_number is not None:
+                result["pr_number"] = pr_number
+            return result
+    return None
+
+
+def build_status_report(
+    store: RunStore,
+    github: object,
+    *,
+    repository_root: Path,
+    state_path: Path,
+    worktree_root: Path,
+    writer_slots: int,
+) -> dict[str, object]:
+    """Build a compact operational view without prompts, feedback, or transcripts."""
+    ready = getattr(github, "ready_issues")()
+    tasks: list[dict[str, object]] = []
+    for row in store.all():
+        number = int(row["issue_number"])
+        workspace = Path(str(row["workspace"]))
+        branch = str(row["branch"])
+        local_head = workspace_current_head(workspace, branch)
+        try:
+            remote_head = getattr(github, "branch_sha")(repository_root, branch)
+        except Exception:
+            remote_head = None
+        events = store.events(number)
+        last_event = events[-1] if events else None
+        task: dict[str, object] = {
+            "issue": number,
+            "status": row["status"],
+            "run_id": row["run_id"],
+            "attempt_id": row["attempt_id"],
+            "worker": row["worker_id"],
+            "attempts": row["attempts"],
+            "same_failure_count": row["same_failure_count"],
+            "failure_fingerprint": row["last_failure_hash"] or None,
+            "branch": branch,
+            "worktree": str(workspace),
+            "local_head": local_head,
+            "recorded_head": row["head_sha"] or None,
+            "remote_head": remote_head,
+            "pr_number": row["pr_number"],
+            "notification_state": row.get("notification_state") or "not_started",
+            "notification_attempts": row.get("notification_attempts", 0),
+            "last_successful_checkpoint": _last_successful_checkpoint(events),
+            "event_count": len(events),
+            "last_event": (
+                {"event": last_event["event_type"], "status": last_event["status"],
+                 "at": last_event["created_at"]}
+                if last_event is not None else None
+            ),
+        }
+        tasks.append(task)
+    task_buckets = {
+        "running_workers": [item for item in tasks if item["status"] == "running"],
+        "blocked_tasks": [item for item in tasks if item["status"] == "blocked"],
+        "waiting_ci": [item for item in tasks if item["status"] == "awaiting_ci"],
+        "waiting_human_approval": [
+            item for item in tasks
+            if item["status"] in {
+                "awaiting_review", "awaiting_independent_review", "human:visual",
+                "human_gate", "merge_eligible", "awaiting_issue_close",
+            }
+        ],
+    }
+    command = shlex.join([
+        "python3", "scripts/agent/task_queue.py", "--state", str(state_path),
+        "--worktree-root", str(worktree_root), "--slots", str(writer_slots), "--reconcile",
+    ])
+    checkpoints = [
+        {"issue": item["issue"], **item["last_successful_checkpoint"]}
+        for item in tasks if item["last_successful_checkpoint"] is not None
+    ]
+    return {
+        "max_writable_slots": MAX_WRITER_SLOTS,
+        "configured_writable_slots": writer_slots,
+        "ready_issues": [
+            {"issue": item.number, "title": item.title, "url": item.url}
+            for item in ready
+        ],
+        **task_buckets,
+        "tasks": tasks,
+        "last_successful_checkpoints": checkpoints,
+        "reproduction_command": command,
+    }
 
 
 def reconcile_pull_request(
@@ -744,6 +873,67 @@ def can_merge(run: Mapping[str, object]) -> bool:
     return run.get("status") == "merge_eligible" and not json.loads(str(run.get("gates_json") or "[]"))
 
 
+def validate_closeout_identity(
+    issue: Issue,
+    run: Mapping[str, object],
+    *,
+    status: str,
+    head_sha: str | None,
+    remote_head_sha: str | None,
+    pull: PullRequest | None,
+    pr_url: str,
+) -> None:
+    """Reject a closeout unless its issue, worktree, remote, and PR agree."""
+    issue_number = int(issue.number)
+    expected_branch = f"issue/{issue_number}-task"
+    if run.get("issue_number") != issue_number:
+        raise ValueError("closeout run belongs to a different Issue")
+    if run.get("branch") != expected_branch:
+        raise ValueError("closeout branch does not match the task Issue")
+    if Path(str(run.get("workspace") or "")).name != f"issue-{issue_number}":
+        raise ValueError("closeout worktree path does not match the task Issue")
+    try:
+        attempt_id = str(run.get("attempt_id") or "")
+        if str(uuid.UUID(attempt_id)) != attempt_id:
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise ValueError("closeout attempt ID is invalid") from None
+    if not str(run.get("worker_id") or "").strip():
+        raise ValueError("closeout worker identity is missing")
+
+    recorded_sha = str(run.get("head_sha") or "").lower()
+    local_sha = (head_sha or recorded_sha).lower()
+    if local_sha and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", local_sha):
+        raise ValueError("closeout worktree HEAD is invalid")
+    if recorded_sha and local_sha and recorded_sha != local_sha:
+        raise ValueError("closeout worktree HEAD differs from the recorded task HEAD")
+    remote_sha = (remote_head_sha or "").lower()
+    if remote_sha and local_sha and remote_sha != local_sha:
+        raise ValueError("closeout remote HEAD differs from the task worktree HEAD")
+    if status == "completed" and (not local_sha or remote_sha != local_sha):
+        raise ValueError("completed closeout requires matching local and remote task HEADs")
+
+    recorded_pr = run.get("pr_number")
+    if pull is None:
+        if recorded_pr is not None or pr_url:
+            raise ValueError("closeout PR association could not be verified")
+        if status == "completed":
+            raise ValueError("completed closeout requires a verified PR association")
+        return
+    if (
+        recorded_pr != pull.number
+        or pull.branch != expected_branch
+        or pull.head_repository != REPOSITORY
+        or pull.base_branch != "main"
+        or pull.cross_repository
+        or not local_sha
+        or pull.head_sha.lower() != local_sha
+        or (pr_url and pr_url != pull.url)
+        or pull.url != f"https://github.com/{REPOSITORY}/pull/{pull.number}"
+    ):
+        raise ValueError("closeout PR number, URL, branch, or head does not match the task")
+
+
 def closeout_event(
     issue: Issue,
     run: Mapping[str, object],
@@ -753,9 +943,28 @@ def closeout_event(
     pr_url: str = "",
     validation: Sequence[str] = (),
     blockers: Sequence[str] = (),
+    head_sha: str | None = None,
+    remote_head_sha: str | None = None,
+    pull: PullRequest | None = None,
 ) -> dict[str, object]:
     if status not in {"completed", "blocked"}:
         raise ValueError("queue closeout status must be completed or blocked")
+    validate_closeout_identity(
+        issue, run, status=status, head_sha=head_sha,
+        remote_head_sha=remote_head_sha, pull=pull, pr_url=pr_url,
+    )
+    exact_head = (head_sha or run.get("head_sha") or None)
+    closeout_validation = list(validation)[:18]
+    if exact_head:
+        remote = remote_head_sha or "unavailable"
+        closeout_validation.append(
+            f"Task identity verified: Issue #{issue.number}; branch={run['branch']}; "
+            f"local_head={exact_head}; remote_head={remote}"
+        )
+    if pull is not None:
+        closeout_validation.append(
+            f"PR association verified: #{pull.number}; branch={pull.branch}; head={pull.head_sha}"
+        )
     return {
         "schema_version": "robotsim.task-closeout.v1",
         "event_id": "auto",
@@ -767,11 +976,11 @@ def closeout_event(
         "status": status,
         "summary": summary[:2000],
         "branch": run["branch"],
-        "head_sha": run.get("head_sha") or None,
+        "head_sha": exact_head,
         # Persist queue-pilot closeout on the source Issue; the Auto-PR body
         # cannot safely be assumed to close the Issue.
         "pr_number": None,
-        "validation": list(validation)[:20],
+        "validation": closeout_validation[:20],
         "evidence": [pr_url] if pr_url else [],
         "blockers": list(blockers)[:10],
         "recommended_next_action": "Review the task state and human gates." if status == "completed" else "Resolve the blocker or manually mark the Issue ready after review.",
@@ -779,19 +988,31 @@ def closeout_event(
     }
 
 
-def invoke_closeout(repository_root: Path, event: Mapping[str, object]) -> int:
-    """Explicit local queue notification; no Codex Stop hook dependency."""
+def invoke_closeout(
+    repository_root: Path,
+    event: Mapping[str, object],
+    task_workspace: Path,
+) -> CloseoutResult:
+    """Run closeout validation from the task worktree, not the queue checkout."""
     notifier = repository_root / "scripts/agent/notify_task.py"
-    result = subprocess.run(
-        [sys.executable, str(notifier), "task-closeout"],
-        cwd=repository_root,
-        input=json.dumps(event, separators=(",", ":")),
-        text=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    return result.returncode
+    try:
+        result = subprocess.run(
+            [sys.executable, str(notifier), "task-closeout"],
+            cwd=task_workspace,
+            input=json.dumps(event, separators=(",", ":")),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return CloseoutResult(1, "failed")
+    output = result.stdout + "\n" + result.stderr
+    match = re.search(r"(?m)^notify_task: (sent|duplicate|skipped|failed|blocked):", output)
+    state = match.group(1) if match else "unknown"
+    exit_code = result.returncode
+    if state in {"failed", "blocked", "unknown"} and exit_code == 0:
+        exit_code = 1
+    return CloseoutResult(exit_code, state)
 
 
 def independent_review_prompt(
@@ -1093,13 +1314,15 @@ class GitHubCLI:
     def pull_for_branch(self, branch: str) -> PullRequest | None:
         values = self._run_json([
             "pr", "list", "--repo", self.repository, "--state", "all", "--head", branch,
-            "--limit", "1", "--json",
-            "number,url,state,mergedAt,headRefName,headRefOid,reviewDecision,statusCheckRollup",
+            "--limit", "2", "--json",
+            "number,url,state,mergedAt,headRefName,headRefOid,headRepository,baseRefName,isCrossRepository,reviewDecision,statusCheckRollup",
         ])
         if not isinstance(values, list):
             raise RuntimeError("gh pr list returned an invalid result")
         if not values:
             return None
+        if len(values) > 1:
+            raise RuntimeError("multiple pull requests target the same task branch")
         value = values[0]
         if not isinstance(value, dict):
             raise RuntimeError("gh pr list returned an invalid pull request")
@@ -1121,9 +1344,16 @@ class GitHubCLI:
             check_state = "pending"
         else:
             check_state = "success"
-        required = ("number", "url", "headRefName", "headRefOid")
+        required = ("number", "url", "headRefName", "headRefOid", "baseRefName", "isCrossRepository")
         if any(not isinstance(value.get(key), (str, int)) for key in required):
             raise RuntimeError("gh pr list omitted required branch/head metadata")
+        head_repository_value = value.get("headRepository")
+        head_repository = (
+            str(head_repository_value.get("nameWithOwner") or "")
+            if isinstance(head_repository_value, dict) else ""
+        )
+        if not head_repository:
+            raise RuntimeError("gh pr list omitted the head repository identity")
         return PullRequest(
             number=int(value["number"]),
             url=str(value["url"]),
@@ -1134,6 +1364,9 @@ class GitHubCLI:
             review=str(value.get("reviewDecision") or "REVIEW_REQUIRED").casefold(),
             check_details=tuple(details),
             merged=bool(value.get("mergedAt")),
+            head_repository=head_repository,
+            base_branch=str(value["baseRefName"]),
+            cross_repository=bool(value["isCrossRepository"]),
         )
 
     def review_feedback(self, pull_number: int) -> str:
@@ -1233,7 +1466,7 @@ class TaskQueuePilot:
         executor: LocalCodexExecutor,
         *,
         writer_slots: int = DEFAULT_WRITER_SLOTS,
-        notifier: Callable[[Path, Mapping[str, object]], int] = invoke_closeout,
+        notifier: Callable[[Path, Mapping[str, object], Path], int | CloseoutResult] = invoke_closeout,
     ):
         self.repository_root = repository_root.resolve()
         self.worktree_root = worktree_root
@@ -1291,31 +1524,136 @@ class TaskQueuePilot:
                 recovered.append(row)
         return recovered
 
-    def _emit_closeout(self, issue: Issue, row: Mapping[str, object], *, status: str, summary: str,
-                       pr_url: str = "", validation: Sequence[str] = (), blockers: Sequence[str] = ()) -> int:
+    def _emit_closeout(
+        self,
+        issue: Issue,
+        row: Mapping[str, object],
+        *,
+        status: str,
+        summary: str,
+        pr_url: str = "",
+        validation: Sequence[str] = (),
+        blockers: Sequence[str] = (),
+        pull: PullRequest | None = None,
+    ) -> int:
+        if row.get("issue_number") != issue.number:
+            raise ValueError("closeout run belongs to a different Issue")
         if int(row.get("notified") or 0):
             self.notification_failures.discard(issue.number)
             return 0
+
+        def reject_identity(reason: str) -> int:
+            current = self.store.get(issue.number)
+            if current is not None and current.get("notification_state") != "identity_rejected":
+                self.store.update(issue.number, notification_state="identity_rejected")
+            events = self.store.events(issue.number)
+            repeated = False
+            if events and events[-1]["event_type"] == "closeout_identity_rejected":
+                try:
+                    repeated = json.loads(str(events[-1]["details_json"])).get("reason") == reason
+                except (TypeError, json.JSONDecodeError):
+                    repeated = False
+            if not repeated:
+                self.store.record_event(
+                    issue.number, "closeout_identity_rejected", {"reason": reason},
+                )
+            self.notification_failures.add(issue.number)
+            return 1
+
+        attempts = int(row.get("notification_attempts") or 0)
+        if attempts >= MAX_NOTIFICATION_ATTEMPTS:
+            self.store.update(
+                issue.number, notified=1, notification_state="exhausted",
+            )
+            self.notification_failures.add(issue.number)
+            return 1
+
+        workspace = Path(str(row.get("workspace") or ""))
+        branch = str(row.get("branch") or "")
+        expected_branch = f"issue/{issue.number}-task"
+        if (
+            branch != expected_branch
+            or workspace.name != f"issue-{issue.number}"
+        ):
+            return reject_identity("task worktree is outside its deterministic issue workspace")
+        if (
+            git_common_dir(workspace) is None
+            or git_common_dir(workspace) != git_common_dir(self.repository_root)
+        ):
+            return reject_identity("task worktree belongs to a different Git repository")
+        local_head = workspace_current_head(workspace, branch)
+        if local_head is None:
+            return reject_identity("task worktree branch or HEAD unavailable")
+        branch_sha = getattr(self.github, "branch_sha", None)
+        try:
+            remote_head = branch_sha(self.repository_root, branch) if callable(branch_sha) else None
+        except Exception:
+            return reject_identity("task remote HEAD could not be verified")
+        if pull is None and row.get("pr_number") is not None:
+            pull_query = getattr(self.github, "pull_for_branch", None)
+            try:
+                pull = pull_query(branch) if callable(pull_query) else None
+            except Exception:
+                return reject_identity("task PR association could not be verified")
+        if not pr_url and pull is not None:
+            pr_url = pull.url
+        try:
+            event = closeout_event(
+                issue, row, status=status, summary=summary, pr_url=pr_url,
+                validation=validation, blockers=blockers, head_sha=local_head,
+                remote_head_sha=remote_head, pull=pull,
+            )
+        except ValueError as exc:
+            return reject_identity(str(exc))
+
         persisted = str(row.get("closeout_event_json") or "")
         if persisted:
             event_value = json.loads(persisted)
             if not isinstance(event_value, dict):
                 raise RuntimeError("stored task-closeout payload is invalid")
+            for field in ("task_id", "attempt_id", "branch", "head_sha", "evidence"):
+                if event_value.get(field) != event.get(field):
+                    return reject_identity(f"stored closeout {field} no longer matches task identity")
             event = event_value
         else:
-            event = closeout_event(
-                issue, row, status=status, summary=summary, pr_url=pr_url,
-                validation=validation, blockers=blockers,
-            )
             persisted = json.dumps(event, sort_keys=True, separators=(",", ":"))
-            self.store.update(issue.number, closeout_event_json=persisted)
-        result = self.notifier(self.repository_root, event)
-        if result == 0:
-            self.store.update(issue.number, notified=1)
-            self.notification_failures.discard(issue.number)
+
+        attempt_number = attempts + 1
+        self.store.update(
+            issue.number,
+            closeout_event_json=persisted,
+            notification_state="pending",
+            notification_attempts=attempt_number,
+        )
+        raw_result = self.notifier(self.repository_root, event, workspace)
+        if isinstance(raw_result, CloseoutResult):
+            exit_code, delivery_state = raw_result.exit_code, raw_result.state
         else:
+            exit_code = int(raw_result)
+            delivery_state = "sent" if exit_code == 0 else "failed"
+        retryable = exit_code != 0 or delivery_state in {"failed", "blocked", "unknown"}
+        exhausted = retryable and attempt_number >= MAX_NOTIFICATION_ATTEMPTS
+        if exhausted:
+            final_state = "exhausted"
+            done = 1
+        elif retryable:
+            final_state = delivery_state
+            done = 0
+        else:
+            final_state = delivery_state
+            done = 1
+        self.store.update(
+            issue.number, notified=done, notification_state=final_state,
+        )
+        self.store.record_event(
+            issue.number, "closeout_notification_attempt",
+            {"attempt": attempt_number, "state": final_state},
+        )
+        if retryable:
             self.notification_failures.add(issue.number)
-        return result
+            return exit_code or 1
+        self.notification_failures.discard(issue.number)
+        return 0
 
     def dispatch_batch(self, candidates: Sequence[Issue]) -> list[dict[str, object]]:
         runs = self.store.all()
@@ -1542,6 +1880,30 @@ class TaskQueuePilot:
                 continue
             pull = self.github.pull_for_branch(str(row["branch"]))
             if pull is not None:
+                try:
+                    remote_head = self.github.branch_sha(
+                        self.repository_root, str(row["branch"]),
+                    )
+                except Exception:
+                    remote_head = None
+                if (
+                    pull.branch != row["branch"]
+                    or pull.head_repository != REPOSITORY
+                    or pull.base_branch != "main"
+                    or pull.cross_repository
+                    or remote_head is None
+                    or remote_head.casefold() != pull.head_sha.casefold()
+                    or pull.url != f"https://github.com/{REPOSITORY}/pull/{pull.number}"
+                ):
+                    self.store.record_event(
+                        number, "pull_request_identity_rejected",
+                        {"reason": "PR branch, URL, or head does not match the current task branch"},
+                    )
+                    results.append({
+                        "issue": number, "status": row["status"],
+                        "reason": "pull request identity could not be verified",
+                    })
+                    continue
                 self.store.record_event(number, "pull_request_observed", {
                     "pull_number": pull.number, "head_sha": pull.head_sha,
                     "checks": pull.checks, "review": pull.review,
@@ -1567,6 +1929,7 @@ class TaskQueuePilot:
                         summary="The same failing required checks repeated after a fix attempt.",
                         pr_url=pull.url,
                         blockers=("CI reported the same root-cause failure twice.",),
+                        pull=pull,
                     )
                 results.append({"issue": number, "status": updated["status"], "pr": pull.number})
                 continue
@@ -1574,7 +1937,7 @@ class TaskQueuePilot:
                 if not feedback:
                     feedback = "GitHub requests changes but returned no review text; inspect the PR's review details before editing."
                 updated = route_review_feedback(self.store, number, feedback)
-                self.store.update(number, pr_number=pull.number, head_sha=pull.head_sha)
+                updated = self.store.update(number, pr_number=pull.number, head_sha=pull.head_sha)
                 self._set_outcome_label(number, str(updated["status"]))
                 if updated["status"] == "blocked":
                     self._emit_closeout(
@@ -1582,6 +1945,7 @@ class TaskQueuePilot:
                         summary="The same review feedback remained after a fix attempt.",
                         pr_url=pull.url,
                         blockers=("The same independent-review root cause repeated twice.",),
+                        pull=pull,
                     )
                 results.append({"issue": number, "status": updated["status"], "pr": pull.number})
                 continue
@@ -1623,6 +1987,7 @@ class TaskQueuePilot:
                                 summary="The same read-only review findings repeated after a fix attempt.",
                                 pr_url=pull.url,
                                 blockers=("The same independent-review root cause repeated twice.",),
+                                pull=pull,
                             )
                         results.append({"issue": number, "status": updated["status"], "pr": pull.number})
                         continue
@@ -1675,6 +2040,7 @@ class TaskQueuePilot:
                     summary="The task branch and validation packet are ready for human review.",
                     pr_url=pull.url,
                     validation=(f"CI: {pull.checks}", f"Independent review: {pull.review}"),
+                    pull=pull,
                 )
                 updated["review_packet_path"] = str(packet_path)
             results.append({"issue": number, "status": updated["status"],
@@ -1777,6 +2143,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-ready", action="store_true", help="list current GitHub issues marked agent:ready/retry")
     parser.add_argument("--plan-issue", type=int, help="print a deterministic packet for one ready GitHub Issue")
     parser.add_argument("--show-state", type=int, help="print sanitized durable run and event evidence for one Issue")
+    parser.add_argument("--status-report", action="store_true", help="print a sanitized operational report for all local queue tasks")
     parser.add_argument("--dispatch", action="store_true", help="dispatch one bounded local Codex batch")
     parser.add_argument("--reconcile", action="store_true", help="reconcile stored branches, Auto-PRs, CI, and review state")
     parser.add_argument("--watch", action="store_true", help="continuously recover, reconcile, and dispatch until stopped")
@@ -1790,10 +2157,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if not 1 <= args.slots <= MAX_WRITER_SLOTS:
         raise SystemExit("--slots must be 1 or 2")
-    if args.watch and (args.list_ready or args.plan_issue is not None or args.show_state is not None or args.dispatch or args.reconcile):
+    if args.watch and (args.list_ready or args.plan_issue is not None or args.show_state is not None or args.status_report or args.dispatch or args.reconcile):
         raise SystemExit("--watch cannot be combined with one-shot queue commands")
-    if args.show_state is not None and (args.list_ready or args.plan_issue is not None or args.dispatch or args.reconcile):
+    if args.show_state is not None and (args.list_ready or args.plan_issue is not None or args.status_report or args.dispatch or args.reconcile):
         raise SystemExit("--show-state cannot be combined with queue commands")
+    if args.status_report and (args.list_ready or args.plan_issue is not None or args.dispatch or args.reconcile):
+        raise SystemExit("--status-report cannot be combined with queue commands")
     if args.watch_issue and not args.watch:
         raise SystemExit("--watch-issue requires --watch")
     if args.stop_at_review_checkpoint and not args.watch:
@@ -1842,6 +2211,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "run": row,
                 "events": store.events(args.show_state),
             }, indent=2, sort_keys=True))
+        finally:
+            store.close()
+        return 0
+    if args.status_report:
+        store = RunStore(state_path)
+        try:
+            report = build_status_report(
+                store, github, repository_root=repository_root, state_path=state_path,
+                worktree_root=worktree_root, writer_slots=args.slots,
+            )
+            print(json.dumps(report, indent=2, sort_keys=True))
         finally:
             store.close()
         return 0

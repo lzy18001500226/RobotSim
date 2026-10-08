@@ -35,6 +35,8 @@ python3 scripts/agent/task_queue.py --list-ready
 python3 scripts/agent/task_queue.py --plan-issue 123
 python3 scripts/agent/task_queue.py --dispatch --reconcile
 python3 scripts/agent/task_queue.py --show-state 123
+python3 scripts/agent/task_queue.py --status-report
+python3 scripts/agent/notify_task.py config-preflight
 ```
 
 For unattended continuation through Auto-PR and CI updates, use one watcher for the shared state
@@ -82,6 +84,11 @@ execution complete, the watcher requires a clean issue worktree and verifies the
 stops at `awaiting_review`/human-review states when `--stop-at-review-checkpoint` is set. The queue
 never merges. `--reconcile` alone refreshes `origin/main` and updates stored PR state. `--plan-issue`
 prints a decision and workspace plan without creating a worktree or dispatching Codex.
+`--status-report` prints ready/running/blocked/CI/human-gated task summaries, each task's worktree
+and current/remote SHA, retry fingerprint, last successful checkpoint, notification state, and a
+reproduction command. It omits prompts and review feedback. Closeout validation runs from the exact
+task worktree and checks the deterministic Issue branch, local HEAD, remote HEAD, and any associated
+PR head before publishing the Issue record.
 
 ## Retry and human gates
 
@@ -89,8 +96,10 @@ The same root-cause fingerprint on a second attempt becomes `agent:blocked`. The
 an issue at three total primary attempts between maintainer releases, so changing the reported
 root cause cannot create an endless retry loop. A repeated failure or exhausted attempt budget
 triggers an explicit RobotSim task-closeout notification. Failed closeout delivery retains the
-original event payload and retries it on the next queue cycle; the command reports notification
-failure with a nonzero exit instead of silently treating it as delivered.
+original event payload and retries it for at most three attempts across queue cycles. The durable
+notification state distinguishes sent, skipped, failed, blocked, and exhausted outcomes; a skipped
+AgentMail delivery does not erase the persisted GitHub closeout. The command reports retryable
+notification failure with a nonzero exit instead of silently treating it as delivered.
 Review comments and failed check names are routed to the next primary attempt. A repeated identical
 review/CI root cause also blocks. Inspect the branch and Issue before removing `agent:blocked`,
 marking it ready again, and adding `human:retry-approved`. The pilot consumes that label at dispatch.

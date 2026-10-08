@@ -10,6 +10,8 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from scripts.agent import task_queue as queue
 
@@ -49,6 +51,37 @@ class TaskQueueTests(unittest.TestCase):
         assert row is not None
         return row
 
+    def create_task_workspace(self, task: queue.Issue) -> tuple[Path, str]:
+        repository = self.root / "queue-repository"
+        if not repository.exists():
+            repository.mkdir()
+            commands = (
+                ["git", "init", "--initial-branch=main", str(repository)],
+                ["git", "-C", str(repository), "config", "user.name", "RobotSim Test"],
+                ["git", "-C", str(repository), "config", "user.email", "robotsim-test@example.invalid"],
+            )
+            for command in commands:
+                subprocess.run(command, check=True, capture_output=True, text=True)
+            (repository / "README.md").write_text("queue fixture\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repository), "commit", "-m", "queue fixture"],
+                check=True, capture_output=True, text=True,
+            )
+        self.queue_repository = repository
+        plan = queue.workspace_plan(task, self.root / "worktrees")
+        workspace = Path(plan.path)
+        workspace.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "worktree", "add", "-b", plan.branch, str(workspace), "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        result = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        return workspace, result.stdout.strip()
+
     def test_ready_issue_is_dispatchable_with_deterministic_workspace(self) -> None:
         task = make_issue()
         decision = queue.dispatch_decision(task, {})
@@ -63,6 +96,177 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(first, renamed)
         self.assertEqual(first.branch, "issue/49-task")
         self.assertTrue(first.path.endswith("/issue-49"))
+
+    def test_review_checkout_matches_checks_branch_head_and_clean_state(self) -> None:
+        task = make_issue()
+        workspace, head = self.create_task_workspace(task)
+        self.assertTrue(queue.review_checkout_matches(workspace, "issue/49-task", head))
+        self.assertFalse(queue.review_checkout_matches(workspace, "codex/issue-61", head))
+        self.assertFalse(queue.review_checkout_matches(workspace, "issue/49-task", "b" * 40))
+        (workspace / "README.md").write_text("dirty task fixture\n", encoding="utf-8")
+        self.assertFalse(queue.review_checkout_matches(workspace, "issue/49-task", head))
+
+    def test_closeout_rejects_cross_issue_and_infra_branch_identities(self) -> None:
+        store = self.store()
+        issue49 = make_issue(49)
+        row49 = self.claim(store, issue49)
+        with self.assertRaisesRegex(ValueError, "different Issue"):
+            queue.closeout_event(make_issue(62), row49, status="blocked", summary="Mismatch")
+        wrong_branch = dict(row49, branch="codex/issue-61-orchestration-pilot")
+        with self.assertRaisesRegex(ValueError, "branch does not match"):
+            queue.closeout_event(issue49, wrong_branch, status="blocked", summary="Mismatch")
+
+    def test_simultaneous_issue_runs_keep_distinct_closeout_identity(self) -> None:
+        store = self.store()
+        issue49 = make_issue(49)
+        issue62 = make_issue(62)
+        run49 = self.claim(store, issue49)
+        run62 = store.claim(issue62, queue.workspace_plan(issue62, self.root / "worktrees"), writer_slots=2)
+        self.assertIsNotNone(run62)
+        assert run62 is not None
+        event49 = queue.closeout_event(
+            issue49, run49, status="blocked", summary="Issue 49 stopped."
+        )
+        event62 = queue.closeout_event(
+            issue62, run62, status="blocked", summary="Issue 62 stopped."
+        )
+        self.assertEqual(event49["task_id"], "issue-49-symphony-task")
+        self.assertEqual(event49["branch"], "issue/49-task")
+        self.assertEqual(event62["task_id"], "issue-62-symphony-task")
+        self.assertEqual(event62["branch"], "issue/62-task")
+        self.assertNotEqual(event49["attempt_id"], event62["attempt_id"])
+
+    def test_closeout_rejects_unrelated_infrastructure_worktree(self) -> None:
+        store = self.store()
+        task = make_issue()
+        row = self.claim(store, task)
+        _valid_workspace, _valid_head = self.create_task_workspace(task)
+        outside = self.root / "robotsim-infra" / "issue-49"
+        outside.mkdir(parents=True)
+        subprocess.run(
+            ["git", "init", "--initial-branch", "issue/49-task", str(outside)],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(["git", "-C", str(outside), "config", "user.name", "RobotSim Test"], check=True)
+        subprocess.run(["git", "-C", str(outside), "config", "user.email", "robotsim-test@example.invalid"], check=True)
+        (outside / "README.md").write_text("unrelated infrastructure tree\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(outside), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(outside), "commit", "-m", "unrelated"], check=True, capture_output=True, text=True)
+        calls: list[dict[str, object]] = []
+
+        def notifier(_root: Path, event: object, _workspace: Path) -> int:
+            calls.append(dict(event))
+            return 0
+
+        pilot = queue.TaskQueuePilot(
+            self.queue_repository, self.root / "worktrees", self.root, store,
+            object(), object(), notifier=notifier,
+        )
+        self.assertEqual(
+            pilot._emit_closeout(
+                task, dict(row, workspace=outside.as_posix()),
+                status="blocked", summary="Must not bind to an infra worktree.",
+            ),
+            1,
+        )
+        self.assertEqual(calls, [])
+        persisted = store.get(task.number)
+        self.assertEqual(persisted["closeout_event_json"], "")
+        self.assertEqual(persisted["notification_state"], "identity_rejected")
+
+    def test_closeout_requires_exact_remote_head_and_pr_association(self) -> None:
+        store = self.store()
+        task = make_issue()
+        row = self.claim(store, task)
+        workspace, head = self.create_task_workspace(task)
+        row = store.update(task.number, head_sha=head, pr_number=50)
+        pull = queue.PullRequest(
+            50, "https://github.com/lzy18001500226/RobotSim/pull/50",
+            "issue/49-task", head, "OPEN", "success", "approved",
+        )
+        event = queue.closeout_event(
+            task, row, status="completed", summary="Ready for review.",
+            pr_url=pull.url, head_sha=head, remote_head_sha=head, pull=pull,
+        )
+        self.assertEqual(event["head_sha"], head)
+        self.assertIn(pull.url, event["evidence"])
+        self.assertTrue(any(str(item).startswith("PR association verified") for item in event["validation"]))
+        with self.assertRaisesRegex(ValueError, "verified PR association"):
+            queue.closeout_event(
+                task, dict(row, pr_number=None), status="completed", summary="No PR.",
+                head_sha=head, remote_head_sha=head,
+            )
+        with self.assertRaisesRegex(ValueError, "remote HEAD"):
+            queue.closeout_event(
+                task, row, status="completed", summary="Mismatch.",
+                head_sha=head, remote_head_sha="b" * 40, pull=pull, pr_url=pull.url,
+            )
+        wrong_pull = queue.PullRequest(
+            51, "https://github.com/lzy18001500226/RobotSim/pull/51",
+            "codex/issue-61-orchestration-pilot", head, "OPEN", "success", "approved",
+        )
+        with self.assertRaisesRegex(ValueError, "PR number, URL, branch, or head"):
+            queue.closeout_event(
+                task, row, status="completed", summary="Mismatch.",
+                head_sha=head, remote_head_sha=head, pull=wrong_pull, pr_url=wrong_pull.url,
+            )
+        wrong_repository_pull = queue.PullRequest(
+            50, pull.url, "issue/49-task", head, "OPEN", "success", "approved",
+            head_repository="another-owner/RobotSim",
+        )
+        with self.assertRaisesRegex(ValueError, "PR number, URL, branch, or head"):
+            queue.closeout_event(
+                task, row, status="completed", summary="Wrong head repository.",
+                head_sha=head, remote_head_sha=head, pull=wrong_repository_pull,
+                pr_url=wrong_repository_pull.url,
+            )
+        wrong_base_pull = queue.PullRequest(
+            50, pull.url, "issue/49-task", head, "OPEN", "success", "approved",
+            base_branch="develop",
+        )
+        with self.assertRaisesRegex(ValueError, "PR number, URL, branch, or head"):
+            queue.closeout_event(
+                task, row, status="completed", summary="Wrong base branch.",
+                head_sha=head, remote_head_sha=head, pull=wrong_base_pull,
+                pr_url=wrong_base_pull.url,
+            )
+        fork_pull = queue.PullRequest(
+            50, pull.url, "issue/49-task", head, "OPEN", "success", "approved",
+            cross_repository=True,
+        )
+        with self.assertRaisesRegex(ValueError, "PR number, URL, branch, or head"):
+            queue.closeout_event(
+                task, row, status="completed", summary="Fork PR.",
+                head_sha=head, remote_head_sha=head, pull=fork_pull, pr_url=fork_pull.url,
+            )
+
+    def test_reconcile_rejects_stale_pr_head_without_advancing_task_state(self) -> None:
+        store = self.store()
+        task = make_issue()
+        self.claim(store, task)
+        before = store.update(task.number, status="awaiting_pr")
+        pull = make_pull()
+
+        class Github:
+            def issue(self, _number: int) -> queue.Issue:
+                return task
+
+            def pull_for_branch(self, _branch: str) -> queue.PullRequest:
+                return pull
+
+            def branch_sha(self, _root: Path, _branch: str) -> str:
+                return "b" * 40
+
+        pilot = queue.TaskQueuePilot(
+            self.root, self.root / "worktrees", self.root, store,
+            Github(), object(), notifier=lambda _root, _event, _workspace: 0,
+        )
+        result = pilot.reconcile()
+        after = store.get(task.number)
+        self.assertEqual(result[0]["status"], "awaiting_pr")
+        self.assertEqual(after["status"], before["status"])
+        self.assertEqual(after["pr_number"], before["pr_number"])
+        self.assertEqual(store.events(task.number)[-1]["event_type"], "pull_request_identity_rejected")
 
     def test_worktree_is_isolated_and_reusable_at_the_same_issue_path(self) -> None:
         repository = self.root / "repo"
@@ -105,9 +309,40 @@ class TaskQueueTests(unittest.TestCase):
         self.assertNotIn(common_dir, writable_dirs)
         command = queue.codex_command(workspace)
         self.assertEqual(command.count("--add-dir"), len(writable_dirs))
+        self.assertEqual(command[command.index("--sandbox") + 1], "workspace-write")
+        self.assertNotIn("--danger-full-access", command)
+        read_only = queue.codex_command(workspace, read_only=True)
+        self.assertEqual(read_only[read_only.index("--sandbox") + 1], "read-only")
+        self.assertNotIn("--add-dir", read_only)
         resume = queue.codex_resume_command("session-49", self.root / "result.json", workspace=workspace)
         roots_option = resume[resume.index("--config") + 1]
         self.assertTrue(roots_option.startswith("sandbox_workspace_write.writable_roots=["))
+        baseline_head = subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "main"], text=True,
+        ).strip()
+        remote = self.root / "origin.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "-C", str(repository), "remote", "add", "origin", str(remote)], check=True)
+        (workspace / "worktree-edit-probe.txt").write_text("task worktree edit\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(workspace), "add", "worktree-edit-probe.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(workspace), "commit", "-m", "task worktree edit"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(workspace), "push", "--set-upstream", "origin", plan.branch],
+            check=True, capture_output=True, text=True,
+        )
+        pushed_head = subprocess.check_output(
+            ["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{plan.branch}"], text=True,
+        ).strip()
+        task_head = subprocess.check_output(
+            ["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        self.assertEqual(pushed_head, task_head)
+        self.assertEqual(subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "main"], text=True,
+        ).strip(), baseline_head)
         self.assertEqual(queue.create_worktree(repository, plan), workspace)
         self.assertFalse(subprocess.check_output(["git", "-C", str(repository), "status", "--porcelain"], text=True).strip())
         (workspace / "AGENTS.md").write_text("untrusted task-branch guidance\n", encoding="utf-8")
@@ -219,11 +454,12 @@ class TaskQueueTests(unittest.TestCase):
         store = self.store()
         task = make_issue()
         first = self.claim(store, task)
+        workspace, head = self.create_task_workspace(task)
         store.set_codex_session(task.number, "ci-session")
         store.update(task.number, status="awaiting_pr")
         failed_pull = queue.PullRequest(
             50, "https://github.com/lzy18001500226/RobotSim/pull/50",
-            "issue/49-task", "c" * 40, "OPEN", "failure", "review_required",
+            "issue/49-task", head, "OPEN", "failure", "review_required",
             check_details=({"name": "Agent infrastructure checks", "state": "failure"},),
         )
 
@@ -234,12 +470,15 @@ class TaskQueueTests(unittest.TestCase):
             def pull_for_branch(self, branch: str) -> queue.PullRequest:
                 return failed_pull
 
+            def branch_sha(self, _root: Path, branch: str) -> str | None:
+                return head if branch == failed_pull.branch else None
+
             def set_status(self, number: int, *, add: str | None, remove: object) -> None:
                 return None
 
         pilot = queue.TaskQueuePilot(
-            self.root, self.root / "worktrees", self.root, store,
-            Github(), object(), notifier=lambda _root, _event: 0,
+            self.queue_repository, self.root / "worktrees", self.root, store,
+            Github(), object(), notifier=lambda _root, _event, _workspace: 0,
         )
         self.assertEqual(pilot.reconcile()[0]["status"], "retry")
         retry = store.claim(task, queue.workspace_plan(task, self.root / "worktrees"), writer_slots=2)
@@ -314,6 +553,8 @@ class TaskQueueTests(unittest.TestCase):
         self.addCleanup(store.close)
         columns = {row[1] for row in store._db.execute("PRAGMA table_info(task_runs)")}
         self.assertIn("closeout_event_json", columns)
+        self.assertIn("notification_state", columns)
+        self.assertIn("notification_attempts", columns)
 
     def test_dead_primary_recovers_to_retry_after_restart(self) -> None:
         path = self.root / "interrupted.sqlite3"
@@ -341,6 +582,33 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(recovered[0]["status"], "retry")
         self.assertEqual(reopened.active_count(), 0)
         self.assertIsNotNone(reopened.claim(task, queue.workspace_plan(task, self.root / "worktrees"), writer_slots=2))
+
+    def test_recovery_keeps_writer_slot_when_remote_state_is_unavailable(self) -> None:
+        store = self.store()
+        task = make_issue()
+        claimed = store.claim(
+            task, queue.workspace_plan(task, self.root / "worktrees"), writer_slots=1,
+        )
+        self.assertIsNotNone(claimed)
+        store.update(task.number, executor_pid=2_000_000_000, executor_start_token="no-such-process")
+
+        class Github:
+            def branch_pushed(self, _root: Path, _branch: str) -> bool | None:
+                return None
+
+        pilot = queue.TaskQueuePilot(
+            self.root, self.root / "worktrees", self.root, store, Github(), object(),
+            writer_slots=1,
+        )
+        recovered = pilot.recover()
+        self.assertEqual(recovered[0]["status"], "running")
+        self.assertEqual(store.get(task.number)["status"], "running")
+        self.assertEqual(store.active_count(), 1)
+        next_issue = make_issue(50)
+        self.assertIsNone(store.claim(
+            next_issue, queue.workspace_plan(next_issue, self.root / "worktrees"),
+            writer_slots=1,
+        ))
 
     def test_duplicate_dispatch_for_same_issue_is_rejected(self) -> None:
         store = self.store()
@@ -527,17 +795,22 @@ class TaskQueueTests(unittest.TestCase):
         store = self.store()
         task = make_issue()
         row = self.claim(store, task)
+        self.create_task_workspace(task)
         calls: list[dict[str, object]] = []
         results = iter((1, 0))
 
-        def notifier(_root: Path, event: object) -> int:
+        def notifier(_root: Path, event: object, _workspace: Path) -> int:
             self.assertIsInstance(event, dict)
             calls.append(dict(event))
             return next(results)
 
+        class Github:
+            def branch_sha(self, _root: Path, _branch: str) -> None:
+                return None
+
         pilot = queue.TaskQueuePilot(
-            self.root, self.root / "worktrees", self.root, store,
-            object(), object(), notifier=notifier,
+            self.queue_repository, self.root / "changed-worktree-root", self.root, store,
+            Github(), object(), notifier=notifier,
         )
         first = pilot._emit_closeout(
             task, row, status="blocked", summary="Blocked on the first call.",
@@ -552,15 +825,157 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(second, 0)
         self.assertEqual(calls[0], calls[1])
         self.assertEqual(store.get(task.number)["notified"], 1)
+        self.assertEqual(store.get(task.number)["notification_state"], "sent")
+        self.assertEqual(store.get(task.number)["notification_attempts"], 2)
         self.assertNotIn(task.number, pilot.notification_failures)
+
+    def test_pending_closeout_notification_resumes_after_store_restart(self) -> None:
+        path = self.root / "pending-closeout.sqlite3"
+        first_store = queue.RunStore(path)
+        task = make_issue()
+        row = self.claim(first_store, task)
+        self.create_task_workspace(task)
+        first_payloads: list[dict[str, object]] = []
+
+        def fail_once(_root: Path, event: object, _workspace: Path) -> int:
+            first_payloads.append(dict(event))
+            return 1
+
+        class Github:
+            def branch_sha(self, _root: Path, _branch: str) -> None:
+                return None
+
+        first_pilot = queue.TaskQueuePilot(
+            self.queue_repository, self.root / "worktrees", self.root, first_store,
+            Github(), object(), notifier=fail_once,
+        )
+        self.assertEqual(first_pilot._emit_closeout(
+            task, row, status="blocked", summary="Blocked until retry.",
+        ), 1)
+        self.assertEqual(first_store.get(task.number)["notification_state"], "failed")
+        first_store.close()
+
+        second_store = queue.RunStore(path)
+        self.addCleanup(second_store.close)
+        second_payloads: list[dict[str, object]] = []
+
+        def succeed(_root: Path, event: object, _workspace: Path) -> int:
+            second_payloads.append(dict(event))
+            return 0
+
+        second_pilot = queue.TaskQueuePilot(
+            self.queue_repository, self.root / "worktrees", self.root, second_store,
+            Github(), object(), notifier=succeed,
+        )
+        self.assertEqual(second_pilot._emit_closeout(
+            task, second_store.get(task.number), status="blocked",
+            summary="The retry must preserve the original event.",
+        ), 0)
+        self.assertEqual(first_payloads[0], second_payloads[0])
+        self.assertEqual(second_store.get(task.number)["notification_state"], "sent")
+        self.assertEqual(second_store.get(task.number)["notification_attempts"], 2)
+
+    def test_closeout_notifier_runs_from_the_task_worktree(self) -> None:
+        repository = self.root / "queue-repository"
+        workspace = self.root / "worktrees" / "issue-49"
+        mock_result = SimpleNamespace(
+            returncode=0, stdout="notify_task: skipped: missing settings: AGENTMAIL_API_KEY\n",
+            stderr="",
+        )
+        with patch.object(queue.subprocess, "run", return_value=mock_result) as run:
+            result = queue.invoke_closeout(repository, {"task_id": "issue-49-symphony-task"}, workspace)
+        self.assertEqual(result, queue.CloseoutResult(0, "skipped"))
+        self.assertEqual(run.call_args.kwargs["cwd"], workspace)
+        self.assertEqual(run.call_args.args[0][-1], "task-closeout")
+
+    def test_closeout_notification_retry_exhaustion_is_durable(self) -> None:
+        store = self.store()
+        task = make_issue()
+        row = self.claim(store, task)
+        self.create_task_workspace(task)
+        calls = 0
+
+        def notifier(_root: Path, _event: object, _workspace: Path) -> int:
+            nonlocal calls
+            calls += 1
+            return 1
+
+        class Github:
+            def branch_sha(self, _root: Path, _branch: str) -> None:
+                return None
+
+        pilot = queue.TaskQueuePilot(
+            self.queue_repository, self.root / "worktrees", self.root, store,
+            Github(), object(), notifier=notifier,
+        )
+        for _ in range(queue.MAX_NOTIFICATION_ATTEMPTS):
+            row = store.get(task.number)
+            pilot._emit_closeout(task, row, status="blocked", summary="Blocked.")
+        row = store.get(task.number)
+        self.assertEqual(calls, queue.MAX_NOTIFICATION_ATTEMPTS)
+        self.assertEqual(row["notification_state"], "exhausted")
+        self.assertEqual(row["notification_attempts"], queue.MAX_NOTIFICATION_ATTEMPTS)
+
+    def test_status_report_omits_prompts_and_reports_operational_identity(self) -> None:
+        store = self.store()
+        task = make_issue()
+        row = self.claim(store, task)
+        store.update(task.number, review_feedback="private review transcript")
+
+        class Github:
+            def ready_issues(self) -> list[queue.Issue]:
+                return [task]
+
+            def branch_sha(self, _root: Path, _branch: str) -> None:
+                return None
+
+        report = queue.build_status_report(
+            store, Github(), repository_root=self.root, state_path=self.root / "state.sqlite3",
+            worktree_root=self.root / "worktrees", writer_slots=2,
+        )
+        encoded = json.dumps(report)
+        self.assertEqual(report["running_workers"][0]["issue"], task.number)
+        self.assertEqual(report["running_workers"][0]["attempt_id"], row["attempt_id"])
+        self.assertIn("reproduction_command", report)
+        self.assertNotIn("private review transcript", encoded)
+        self.assertNotIn("review_feedback", encoded)
+
+    def test_status_report_surfaces_issue_close_gate_and_pr_checkpoint(self) -> None:
+        store = self.store()
+        task = make_issue()
+        self.claim(store, task)
+        store.record_event(task.number, "pull_request_observed", {
+            "pull_number": 88, "head_sha": "a" * 40, "checks": "success",
+        })
+        store.update(task.number, status="awaiting_issue_close")
+
+        class Github:
+            def ready_issues(self) -> list[queue.Issue]:
+                return []
+
+            def branch_sha(self, _root: Path, _branch: str) -> None:
+                return None
+
+        report = queue.build_status_report(
+            store, Github(), repository_root=self.root, state_path=self.root / "state.sqlite3",
+            worktree_root=self.root / "worktrees", writer_slots=2,
+        )
+        self.assertEqual(report["waiting_human_approval"][0]["issue"], task.number)
+        self.assertEqual(
+            report["tasks"][0]["last_successful_checkpoint"]["pr_number"], 88,
+        )
 
     def test_human_review_handoff_explicitly_notifies_once(self) -> None:
         store = self.store()
         task = make_issue(labels=("agent:review",))
         self.claim(store, task)
-        pull = make_pull()
+        workspace, head = self.create_task_workspace(task)
+        pull = queue.PullRequest(
+            50, "https://github.com/lzy18001500226/RobotSim/pull/50",
+            "issue/49-task", head, "OPEN", "success", "approved",
+        )
         store.update(
-            task.number, status="awaiting_pr",
+            task.number, status="awaiting_pr", head_sha=head, pr_number=pull.number,
             reviewed_head_sha=pull.head_sha, review_report="clear",
         )
 
@@ -575,6 +990,9 @@ class TaskQueueTests(unittest.TestCase):
             def pull_for_branch(self, branch: str) -> queue.PullRequest:
                 return pull
 
+            def branch_sha(self, _root: Path, branch: str) -> str | None:
+                return head if branch == pull.branch else None
+
             def changed_paths(self, number: int) -> tuple[str, ...]:
                 return ("apps/unity/demo.unity",)
 
@@ -587,13 +1005,14 @@ class TaskQueueTests(unittest.TestCase):
         github = Github()
         notifications: list[dict[str, object]] = []
 
-        def notifier(_root: Path, event: object) -> int:
+        def notifier(_root: Path, event: object, task_workspace: Path) -> int:
             self.assertIsInstance(event, dict)
+            self.assertEqual(task_workspace, workspace)
             notifications.append(dict(event))
             return 0
 
         pilot = queue.TaskQueuePilot(
-            self.root, self.root / "worktrees", self.root, store, github,
+            self.queue_repository, self.root / "worktrees", self.root, store, github,
             object(), notifier=notifier,
         )
         first = pilot.reconcile()
