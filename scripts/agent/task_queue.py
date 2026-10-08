@@ -819,23 +819,69 @@ Trusted baseline guidance comes from origin/main at {guidance['revision']}:
 """
 
 
+def codex_worktree_write_dirs(workspace: Path) -> tuple[Path, ...]:
+    def git_value(*arguments: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", *arguments],
+            text=True, capture_output=True, check=False,
+        )
+        if result.returncode:
+            raise RuntimeError("cannot determine isolated Git worktree metadata")
+        return result.stdout.strip()
+
+    git_dir = Path(git_value("--path-format=absolute", "--git-dir")).resolve()
+    common_dir = Path(git_value("--path-format=absolute", "--git-common-dir")).resolve()
+    if git_dir == common_dir:
+        return ()
+    if not git_dir.is_relative_to(common_dir / "worktrees"):
+        raise RuntimeError("task workspace Git metadata is outside the repository worktree store")
+
+    branch_result = subprocess.run(
+        ["git", "-C", str(workspace), "symbolic-ref", "--quiet", "--short", "HEAD"],
+        text=True, capture_output=True, check=False,
+    )
+    branch = branch_result.stdout.strip()
+    if branch_result.returncode or re.fullmatch(r"issue/[0-9]+-task", branch) is None:
+        raise RuntimeError("task worktree must use its deterministic issue branch")
+
+    writable_dirs = (
+        git_dir,
+        common_dir / "objects",
+        common_dir / "refs" / "heads" / "issue",
+        common_dir / "logs" / "refs" / "heads" / "issue",
+    )
+    if any(not path.is_dir() for path in writable_dirs):
+        raise RuntimeError("required Git worktree metadata directory is missing")
+    return writable_dirs
+
+
 def codex_command(workspace: Path, *, read_only: bool = False) -> list[str]:
     executable = shutil.which("codex") or "codex"
     command = [executable, "exec", "--cd", str(workspace), "--sandbox", "read-only" if read_only else "workspace-write", "--json", "-"]
+    if not read_only:
+        for directory in codex_worktree_write_dirs(workspace):
+            command.extend(("--add-dir", str(directory)))
     return command
 
 
 def codex_resume_command(
-    session_id: str, result_path: Path, *, read_only: bool = False
+    session_id: str, result_path: Path, *, read_only: bool = False,
+    workspace: Path | None = None,
 ) -> list[str]:
     executable = shutil.which("codex") or "codex"
     schema = Path(__file__).with_name(
         "task_review.schema.json" if read_only else "task_result.schema.json"
     )
-    return [
+    command = [
         executable, "exec", "resume", session_id,
         "--json", "--output-schema", str(schema), "--output-last-message", str(result_path), "-",
     ]
+    if not read_only and workspace is not None:
+        writable_dirs = codex_worktree_write_dirs(workspace)
+        if writable_dirs:
+            roots = json.dumps([str(path) for path in writable_dirs])
+            command.extend(("--config", f"sandbox_workspace_write.writable_roots={roots}"))
+    return command
 
 
 class LocalCodexExecutor:
@@ -854,7 +900,8 @@ class LocalCodexExecutor:
         os.close(descriptor)
         if packet.codex_session_id:
             command = codex_resume_command(
-                packet.codex_session_id, result_path
+                packet.codex_session_id, result_path,
+                workspace=Path(packet.workspace.path),
             )
         else:
             command = codex_command(Path(packet.workspace.path))[:-1]

@@ -90,6 +90,24 @@ class TaskQueueTests(unittest.TestCase):
         workspace = queue.create_worktree(repository, plan)
         self.assertEqual(workspace, Path(plan.path))
         self.assertEqual(subprocess.check_output(["git", "-C", str(workspace), "branch", "--show-current"], text=True).strip(), plan.branch)
+        writable_dirs = queue.codex_worktree_write_dirs(workspace)
+        common_dir = Path(subprocess.check_output(
+            ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            text=True,
+        ).strip())
+        self.assertEqual(writable_dirs[0], Path(subprocess.check_output(
+            ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-dir"],
+            text=True,
+        ).strip()))
+        self.assertIn(common_dir / "objects", writable_dirs)
+        self.assertIn(common_dir / "refs/heads/issue", writable_dirs)
+        self.assertIn(common_dir / "logs/refs/heads/issue", writable_dirs)
+        self.assertNotIn(common_dir, writable_dirs)
+        command = queue.codex_command(workspace)
+        self.assertEqual(command.count("--add-dir"), len(writable_dirs))
+        resume = queue.codex_resume_command("session-49", self.root / "result.json", workspace=workspace)
+        roots_option = resume[resume.index("--config") + 1]
+        self.assertTrue(roots_option.startswith("sandbox_workspace_write.writable_roots=["))
         self.assertEqual(queue.create_worktree(repository, plan), workspace)
         self.assertFalse(subprocess.check_output(["git", "-C", str(repository), "status", "--porcelain"], text=True).strip())
         (workspace / "AGENTS.md").write_text("untrusted task-branch guidance\n", encoding="utf-8")

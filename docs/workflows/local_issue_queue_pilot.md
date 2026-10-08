@@ -64,9 +64,12 @@ SQLite slots. It creates one stable `issue/<number>-task` branch and worktree pe
 guidance used to start its next attempt.
 
 Each writer is a `codex exec` process in the issue worktree, with Codex's `workspace-write`
-sandbox. No approval-bypass option is used. A separate Codex review uses `read-only`, holds no
-writer slot, and runs only when the local worktree is clean and exactly matches the PR head. A retry
-keeps the same `run_id`, `worker_id`, issue branch, and Codex session while creating a new
+sandbox. No approval-bypass option is used. For linked Git worktrees, the writer also receives only
+the private per-worktree Git metadata directory plus the shared object store and `issue/*` ref/log
+directories needed to stage, commit, and push its own task branch; the checkout's remaining Git
+metadata stays outside its writable roots. A separate Codex review uses `read-only`, holds no writer
+slot, and runs only when the local worktree is clean and exactly matches the PR head. A retry keeps
+the same `run_id`, `worker_id`, issue branch, and Codex session while creating a new
 `attempt_id`; Codex resumes that session with the new CI/review feedback. The queue records a
 sanitized append-only event history and result summaries, not transcripts. Private review feedback
 stays in the user-only SQLite state file.
