@@ -1,6 +1,6 @@
 # Issue #46 Gripper Root-Cause A/B/C Benchmark
 
-**Verdict: C. Genuine source-geometry interference is present in the two tested X2 configurations.** This is a bounded result for those configurations, not proof that the X2 OmniPicker cannot grasp this bottle in every pose. The tip-frame offset is also measurable, and the MuJoCo hull slightly overstates one fingertip contact, but neither explains the much larger wrist/loop intersections. No X2 physics rollout was run because the tested OPEN configurations already have active bottle collisions.
+**Overnight continuation result: BLOCKED — the source-faithful OPEN static preflight still fails. Current overall classification: E, inconclusive between source-geometry interference and an over-conservative collision representation.** The earlier bounded classification C applied to the configurations in the initial comparison and did not establish global gripper/bottle incompatibility. The new source contact-frame and collision-representation evidence below narrows the cause but does not establish the intended physical envelope of the wrist collision asset. No X2 physics rollout was run because no tested OPEN configuration passed static preflight.
 
 No production model, controller, accepted scene, or shared contract was changed. Issue #46 remains open and PR #58 remains Draft. The experiment used isolated source checkouts and external evidence storage.
 
@@ -101,3 +101,54 @@ The external evidence directory contains full JSON identities/results, the 101-s
 - [Menagerie Robotiq 2F-85 at the tested pin](https://github.com/google-deepmind/mujoco_menagerie/tree/0059d4335f8156206f63a35662313385f7ad6d74/robotiq_2f85).
 - [MuJoCo 3.3.6 collision selection and filtering](https://mujoco.readthedocs.io/en/3.3.6/computation/index.html#collision-detection): parent/child filtering and `contype`/`conaffinity` are separate from geometric distance queries.
 - [MuJoCo 3.3.6 mesh collision reference](https://mujoco.readthedocs.io/en/3.3.6/XMLreference.html#asset-mesh): mesh geoms use their convex hull for collision; non-convex geometry needs convex decomposition or another supported representation.
+
+## Overnight Continuation: Contact Frame and Collision Representation
+
+The earlier known-good Robotiq 2F-85 control remains PASS and was not repeated: bilateral contact persisted through the 1 s hold and a real 33.045 mm lift, with the canonical 0.570 kg bottle unsupported by the table at the end. This validates the bottle and the basic physical-contact/carriage harness. It is not evidence of X2 capability.
+
+### Why the prior full-robot target put the wrist into the bottle
+
+The previous full-arm solver transferred the isolated bottle-relative transform of `R_omnipicker_base_link` to the full scene, then solved the seven source-limited arm joints for that endpoint. The saved endpoint residual was approximately 0.054–0.056 mm and 0.00865–0.0122 degrees. Thus the reported 38.841 mm wrist-roll overlap was not an IK convergence error or an arm-joint frame conversion error: the arm reached the requested tool pose, and that candidate pose placed the wrist-roll collision envelope 38.841 mm into the bottle body, with the narrow/wide loop links also inside by 28.155/28.092 mm while the jaws were OPEN. The collision-aware endpoint gate rejected that candidate; it was not accepted as a valid pose or path.
+
+The previous target was a geometric bottle-relative `R_omnipicker_base_link` pose, not a vendor-defined TCP. Its functional jaw region could span the bottle, but the chosen gripper orientation also placed the wrist/loop envelope through the bottle. The source-frame follow-up independently reconstructed orientation from compiled opposing jaw witnesses and the fingertip-to-base chain, then solved the source surfaces directly against the canonical cylinder. The jaw gap is 70.000293 mm at aperture ratio 0.580188882; the jaw normal (narrow to wide) is `[0.013146293, -0.999878744, -0.008346935]`, and the finger axis (tip to base) is `[0.000132166, -0.008345918, 0.999965163]`. The resulting right-elbow root pose is position `[0.297878691, 0.024764212, 1.244412551]` m with rotation matrix:
+
+```text
+[[ 0.013146293, -0.999878744, -0.008346935],
+ [ 0.999913575,  0.013146938, -0.000022432],
+ [ 0.000132166, -0.008345918,  0.999965163]]
+```
+
+At the solved contact aperture, the compiled narrow/wide distal surfaces are 1.1748/1.0000 micrometers from the bottle-body cylinder. The surface-centering translation correction was only `-1.6810e-7 m`. This directly verifies the target frame and jaw-center solution. It does not make the source-faithful OPEN state valid: OPEN still has 11 active, unfiltered robot-bottle contacts across wrist, loop, and proximal jaw structures; the minimum compiled distance is -58.086 mm at `right_wrist_roll_link`. OPEN table clearance is +51.784 mm, so table placement is not the cause of this preflight failure. The functional distal surfaces are not the structures creating the first OPEN collision.
+
+### Wrist mesh and collision counterfactuals
+
+The pinned URDF assigns distinct meshes to `right_wrist_roll_link`: collision uses `right_wrist_roll_link.stl` (35,822 triangles, extents 99.633 x 71.043 x 204.628 mm), while visual uses `right_wrist_roll_extend_link.stl` (62,884 triangles, extents 83.700 x 45.151 x 78.367 mm). Their URDF origins and scales are both zero/one. The collision mesh convex-hull volume is 3.3611 times the visual mesh hull volume, and 69.0% of collision vertices lie outside the visual convex hull. In the source-frame OPEN pose, sampled source collision triangles reach -34.792 mm relative to the bottle-body cylinder, with 35.0% of samples inside; sampled visual triangles remain +23.423 mm clear, with none inside. This is strong evidence of a collision-envelope discrepancy, but the URDF alone does not establish whether the extra collision geometry models an intentionally hidden extension or is over-conservative.
+
+Three static collision variants were compared at the same derived frame. None is an approved physical model:
+
+| Variant | OPEN active bottle contacts | Minimum distance | Result |
+|---|---:|---:|---|
+| Pinned source collision meshes | 11 | -58.086 mm, right wrist roll | FAIL |
+| Diagnostic wrist collision replaced by its official visual STL | 10 | -35.489 mm, right wrist roll | FAIL; loops and proximal links still contact, and MuJoCo convex-hull collision still reports overlap |
+| Diagnostic one-convex-hull-per-exact-vertex-connected-source-mesh-component across the right elbow/wrist/gripper subtree | 38 | -56.153 mm, right wrist roll | FAIL; all source triangle components retained, but the decomposition did not open the corridor |
+
+The component-hull diagnostic decomposed 81 mesh-connected components across 12 collision links. It changed collision approximation only; source visuals, triangle assets, mesh scale, link origins, joint tree, source ranges, and bottle remained. The larger contact-row count is not interpreted as improved physical fidelity. No wrist/loop geometry was disabled. These static results complete the authorized collision-representation comparison but do not justify replacing the production model.
+
+### Stage result and remaining decision
+
+- A. Robotiq baseline: PASS, completed in the earlier run and not repeated.
+- B. OmniPicker contact frame and interference: source kinematics/tree remain consistent; the source-derived jaw contact frame is centered to micrometer scale. Source-faithful OPEN still fails from wrist, loop, and proximal-link contacts.
+- C. Collision representation: the visual/collision wrist mesh envelope differs substantially; neither the visual-mesh substitution nor the source-component hull diagnostic passes OPEN. Both are diagnostic-only.
+- X2 bottle contact, hold, and lift: NOT RUN. The static OPEN preflight is the stopping gate; no active-rollout object state writes or X2 dynamics occurred in this continuation.
+
+**Classification: E — inconclusive.** The exact unresolved distinction is whether the pinned wrist collision STL's larger envelope is intended hardware geometry or an over-conservative/incorrect collision asset, and how the loop/proximal collision surfaces should be interpreted if the wrist asset is corrected. The immediate observed blocker is a source-faithful OPEN collision, not controller/contact-force behavior. The result does not prove global source gripper/bottle incompatibility.
+
+The next maintainer decision is to confirm the intended physical/collision interpretation of the two pinned wrist meshes and loop geometry before authorizing any production collision-model correction or further source-faithful grasp search. No collision model, accepted scene, controller, source limit, or shared contract was changed.
+
+Exact continuation command (already executed; the raw output is preserved and was not rerun during closeout):
+
+```bash
+MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python scripts/research/issue46_root_cause_frame_followup.py --output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/root-cause-abc-20261008/overnight-frame-collision-20261008/frame-2
+```
+
+The output includes `result.json` with runtime identity and source mesh hashes, `source_contact_frame.json`, `static_state_comparison.csv`, `wrist_visual_collision_comparison.json`, both PNGs, the extracted source subtree, the diagnostic URDFs and generated component OBJ meshes. The runner SHA-256 is `d04d658a20967ad8545dd7e7a6cee2faecefa33ea61b291163335ab026d9296e`; native MuJoCo is 3.3.6 with SHA-256 `b9173509d0c282a9b24b7f5825a40177a9967df0cd6395a9dc39522196e44495`; X2 source remains pinned to `575cc6b988f976c23550e0db85aa1e5475d3652d` under Mulan PSL v2. Raw evidence is under `C:\Users\HP\Desktop\Robot\reviews\issue-46-x2-single-hand\root-cause-abc-20261008\overnight-frame-collision-20261008\frame-2\`. The 105-file raw-output integrity manifest is `frame-2.evidence_manifest.sha256` beside that directory (SHA-256 `58846ec51e4ab3e7f91c425a8dd39788f8291eaccef111cc7a5108e960e2dd95`).
