@@ -38,6 +38,8 @@ BASE_YAW = -math.pi / 2.0
 LEFT_DRIVER_HOLD = -0.5
 ENDPOINT_MARGIN_RAD = 0.001
 APERTURE_RELATION_DIAGNOSTIC_RAD = 0.02
+CONTACT_FORCE_BEARING_MIN_N = 1e-6
+CONTACT_ACCELERATION_BOUND_RAD_S2 = 2.0 * 75.6624308578453
 JAW_NATURAL_FREQUENCY_RAD_S = 8.0
 DAMPING_RATIO = 1.0
 MOTION_DURATION_S = 2.5
@@ -50,7 +52,6 @@ POSE_LOCK_SOLREF = [0.002, 1.0]
 FIXTURE_TARGET_BODIES = ("R_hand_narrow3_Link", "R_hand_wide3_Link")
 FIXTURE_RADIUS_M = 0.020
 FIXTURE_HALF_HEIGHT_M = 0.025
-FIXTURE_WRIST_CLEARANCE_M = 0.001
 
 RIGHT_DRIVER = "right_claw_joint"
 RIGHT_FOLLOWER = "R_hand_wide1_joint"
@@ -289,10 +290,7 @@ def derive_fixture_geometry() -> dict[str, Any]:
                                        int(model.geom_dataid[geom_id])),
             "lowest_world_vertex_m": vertices[index].tolist(),
         })
-    lowest_wrist = min(wrist_records, key=lambda row: row["lowest_world_vertex_m"][2])
-    cylinder_top = float(lowest_wrist["lowest_world_vertex_m"][2]) - FIXTURE_WRIST_CLEARANCE_M
-    center = [float(jaw_midpoint[0]), float(jaw_midpoint[1]),
-              cylinder_top - FIXTURE_HALF_HEIGHT_M]
+    center = jaw_midpoint.tolist()
 
     urdf = ET.parse(X2_ROOT / X2_URDF_REL).getroot()
     source_links = {link.get("name", ""): link for link in urdf.findall("link")}
@@ -318,11 +316,10 @@ def derive_fixture_geometry() -> dict[str, Any]:
         "narrow_to_wide_corridor_normal_world": jaw_normal.tolist(),
         "jaw_surface_midpoint_world_m": jaw_midpoint.tolist(),
         "wrist_collision_meshes": wrist_records,
-        "wrist_clearance_rule": "cylinder top is 1 mm below the lowest compiled right-wrist collision-mesh vertex",
-        "wrist_clearance_margin_m": FIXTURE_WRIST_CLEARANCE_M,
+        "wrist_clearance_rule": "wrist collision geometry is checked by the zero-step compiled-geom preflight; it does not set fixture height",
         "cylinder": {"type": "vertical fixed cylinder", "radius_m": FIXTURE_RADIUS_M,
                      "half_height_m": FIXTURE_HALF_HEIGHT_M, "center_world_m": center,
-                     "position_rule": "X/Y are the midpoint of the two intended jaw-surface witnesses; Z follows the wrist collision envelope"},
+                     "position_rule": "XYZ center is the midpoint of the two intended compiled jaw-surface witnesses"},
     }
 
 
@@ -338,7 +335,7 @@ def fixture_geometry_preflight(model: mujoco.MjModel, data: mujoco.MjData) -> di
             continue
         body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY,
                                  int(model.geom_bodyid[geom_id])) or "world"
-        if not (body.lower().startswith("right_") or body.startswith("R_")):
+        if body == "world":
             continue
         collision_enabled = bool(
             (int(model.geom_contype[fixture_id]) & int(model.geom_conaffinity[geom_id]))
@@ -378,6 +375,46 @@ def fixture_geometry_preflight(model: mujoco.MjModel, data: mujoco.MjData) -> di
         "minimum_collidable_clearance_m": min((row["signed_distance_m"] for row in collidable), default=None),
         "intended_jaw_clearances_m": {row["body"]: row["signed_distance_m"] for row in target},
         "penetrating_or_touching_collidable_geoms": failures,
+    }
+
+
+def fixture_closure_geometry_check(model: mujoco.MjModel) -> dict[str, Any]:
+    fixture_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "m0_fixed_contact_cylinder")
+    target_ids = {name: collision_geom_id(model, name) for name in FIXTURE_TARGET_BODIES}
+    probe = initialize(model)
+    samples = []
+    monotonic_tolerance_m = 1e-6
+    for aperture in np.linspace(1.0, 0.0, 51):
+        targets = aperture_targets(float(aperture))
+        probe.qpos[qpos_id(model, RIGHT_DRIVER)] = targets["right_claw_joint_target_rad"]
+        probe.qpos[qpos_id(model, RIGHT_FOLLOWER)] = targets["R_hand_wide1_joint_target_rad"]
+        probe.qvel[:] = 0.0
+        mujoco.mj_forward(model, probe)
+        distances = {}
+        for name, geom_id in target_ids.items():
+            segment = np.zeros(6, dtype=float)
+            distances[name] = float(mujoco.mj_geomDistance(model, probe, fixture_id, geom_id, 1.0, segment))
+        samples.append({"aperture_ratio": float(aperture), "clearances_m": distances})
+
+    monotonic = {
+        name: all(samples[i + 1]["clearances_m"][name] <=
+                  samples[i]["clearances_m"][name] + monotonic_tolerance_m
+                  for i in range(len(samples) - 1))
+        for name in target_ids
+    }
+    contact_aperture = {
+        name: next((sample["aperture_ratio"] for sample in samples
+                    if sample["clearances_m"][name] <= 0.0), None)
+        for name in target_ids
+    }
+    return {
+        "status": "PASS" if all(monotonic.values()) and all(v is not None for v in contact_aperture.values()) else "FAIL",
+        "physics_steps": 0,
+        "aperture_samples": len(samples),
+        "monotonic_tolerance_m": monotonic_tolerance_m,
+        "clearances_monotonically_decrease": monotonic,
+        "first_geometric_contact_aperture_ratio": contact_aperture,
+        "samples": samples,
     }
 
 
@@ -935,6 +972,7 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
     bilateral_contact_frames_by_phase: dict[str, int] = {}
     contact_pair_frames: dict[str, int] = {}
     object_contact_frames = 0
+    object_contact_seen = False
     expected_object = "m0_fixed_contact_cylinder" if stage == "fixed_object" else "m0_bottle"
     jaw_contact_families: set[str] = set()
     max_penetration = 0.0
@@ -942,6 +980,9 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
     max_qvel = 0.0
     max_qacc = 0.0
     max_relation = 0.0
+    max_precontact_relation = 0.0
+    max_contact_relation = 0.0
+    contact_hold_samples: list[dict[str, Any]] = []
     max_effort: dict[str, float] = {RIGHT_DRIVER: 0.0, RIGHT_FOLLOWER: 0.0}
     saturation_steps = {RIGHT_DRIVER: 0, RIGHT_FOLLOWER: 0}
     hard_limit_violations: list[dict[str, Any]] = []
@@ -955,9 +996,11 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
     if bottle_body_id >= 0:
         initial_bottle_z = float(data.xpos[bottle_body_id][2])
     fixture_preflight = None
+    fixture_closure = None
     fixture_initial_contacts = []
     if stage == "fixed_object":
         fixture_preflight = fixture_geometry_preflight(model, data)
+        fixture_closure = fixture_closure_geometry_check(model)
         fixture_initial_contacts = [row for row in init_contacts
                                     if contact_has_object(row, "m0_fixed_contact_cylinder")]
         if fixture_preflight["status"] != "PASS":
@@ -966,6 +1009,9 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
         elif fixture_initial_contacts:
             first_gate_failure = {"gate": "zero-step fixture initial contact",
                                   "contacts": fixture_initial_contacts}
+        elif fixture_closure["status"] != "PASS":
+            first_gate_failure = {"gate": "zero-step jaw closure geometry",
+                                  "closure_geometry": fixture_closure}
         else:
             fixture_pose = build_info["fixture_geometry_derivation"]["cylinder"]["center_world_m"]
             camera.lookat[:] = fixture_pose
@@ -1023,17 +1069,33 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
                     bodies = {str(contact["body1"]), str(contact["body2"])}
                     if contact_has_object(contact, expected_object):
                         object_contacts.append(contact)
-                        if any(is_jaw_contact_body(body, "narrow") for body in bodies):
+                        force_bearing = float(contact["normal_force_n"]) > CONTACT_FORCE_BEARING_MIN_N
+                        if force_bearing and any(is_jaw_contact_body(body, "narrow") for body in bodies):
                             jaw_contact_families.add("narrow")
                             frame_jaw_families.add("narrow")
-                        if any(is_jaw_contact_body(body, "wide") for body in bodies):
+                        if force_bearing and any(is_jaw_contact_body(body, "wide") for body in bodies):
                             jaw_contact_families.add("wide")
                             frame_jaw_families.add("wide")
                 if object_contacts:
+                    object_contact_seen = True
                     object_contact_frames += 1
                     object_contact_frames_by_phase[phase] = object_contact_frames_by_phase.get(phase, 0) + 1
+                    max_contact_relation = max(max_contact_relation, abs(relation))
+                elif not object_contact_seen:
+                    max_precontact_relation = max(max_precontact_relation, abs(relation))
                 if {"narrow", "wide"}.issubset(frame_jaw_families):
                     bilateral_contact_frames_by_phase[phase] = bilateral_contact_frames_by_phase.get(phase, 0) + 1
+                if stage == "fixed_object" and phase == "CONTACT_HOLD":
+                    contact_hold_samples.append({
+                        "step": step,
+                        "driver_qvel_rad_s": float(data.qvel[dof_id(model, RIGHT_DRIVER)]),
+                        "follower_qvel_rad_s": float(data.qvel[dof_id(model, RIGHT_FOLLOWER)]),
+                        "driver_qacc_rad_s2": float(data.qacc[dof_id(model, RIGHT_DRIVER)]),
+                        "follower_qacc_rad_s2": float(data.qacc[dof_id(model, RIGHT_FOLLOWER)]),
+                        "relation_error_rad": relation,
+                        "penetration_m": max((float(c["penetration_m"]) for c in object_contacts), default=0.0),
+                        "bilateral": {"narrow", "wide"}.issubset(frame_jaw_families),
+                    })
                 finite_values = np.concatenate((data.qpos, data.qvel, data.qacc))
                 nonfinite = nonfinite or not bool(np.isfinite(finite_values).all())
                 bottle_z = float(data.xpos[bottle_body_id][2]) if bottle_body_id >= 0 else None
@@ -1066,10 +1128,12 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
                     first_gate_failure = {"gate": "source position limit", **hard_limit_violations[0]}
                 elif not np.isfinite(finite_values).all():
                     first_gate_failure = {"gate": "finite state", "step": step}
-                elif max_relation > APERTURE_RELATION_DIAGNOSTIC_RAD:
+                elif max_relation > APERTURE_RELATION_DIAGNOSTIC_RAD and (
+                        stage != "fixed_object" or not object_contact_seen):
                     first_gate_failure = {"gate": "shared aperture relation tracking", "step": step,
                                           "observed_rad": max_relation,
-                                          "bound_rad": APERTURE_RELATION_DIAGNOSTIC_RAD}
+                                          "bound_rad": APERTURE_RELATION_DIAGNOSTIC_RAD,
+                                          "scope": "free motion before first fixed-object contact" if stage == "fixed_object" else "no-contact motion"}
                 if stage in {"open_hold", "no_contact_motion"} and contacts:
                     first_gate_failure = {"gate": "no-contact dynamics", "step": step, "contacts": contacts}
                 if stage in {"open_hold", "no_contact_motion"}:
@@ -1085,6 +1149,10 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
                     if max_qvel > qvel_bound:
                         first_gate_failure = {"gate": "fixed-object jaw velocity bound", "step": step,
                                               "observed_rad_s": max_qvel, "bound_rad_s": qvel_bound}
+                    elif max_qacc > CONTACT_ACCELERATION_BOUND_RAD_S2:
+                        first_gate_failure = {"gate": "fixed-object jaw acceleration bound", "step": step,
+                                              "observed_rad_s2": max_qacc,
+                                              "bound_rad_s2": CONTACT_ACCELERATION_BOUND_RAD_S2}
                 if stage in {"bottle_hold", "lift"} and max_penetration > 0.008:
                     first_gate_failure = {"gate": "bottle/contact penetration bound", "step": step,
                                           "observed_m": max_penetration, "bound_m": 0.008}
@@ -1137,16 +1205,41 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
                                   "bound_rad_s": 0.02}
 
     contact_loss = None
+    contact_hold_windows: list[dict[str, Any]] = []
+    contact_hold_growing_oscillation = False
+    if stage == "fixed_object" and contact_hold_samples:
+        for start in range(0, len(contact_hold_samples), 100):
+            window = contact_hold_samples[start:start + 100]
+            if not window:
+                continue
+            contact_hold_windows.append({
+                "step_start": window[0]["step"], "step_end": window[-1]["step"],
+                "peak_abs_qvel_rad_s": max(max(abs(x["driver_qvel_rad_s"]), abs(x["follower_qvel_rad_s"])) for x in window),
+                "peak_abs_qacc_rad_s2": max(max(abs(x["driver_qacc_rad_s2"]), abs(x["follower_qacc_rad_s2"])) for x in window),
+                "peak_abs_relation_error_rad": max(abs(x["relation_error_rad"]) for x in window),
+                "peak_penetration_m": max(x["penetration_m"] for x in window),
+                "bilateral_contact_fraction": sum(bool(x["bilateral"]) for x in window) / len(window),
+            })
+        if len(contact_hold_windows) >= 3:
+            tail = contact_hold_windows[-3:]
+            contact_hold_growing_oscillation = any(
+                all(tail[i + 1][key] > tail[i][key] for i in range(2))
+                for key in ("peak_abs_qvel_rad_s", "peak_abs_qacc_rad_s2",
+                            "peak_abs_relation_error_rad", "peak_penetration_m")
+            )
     if stage == "fixed_object" and first_gate_failure is None:
         final = json.loads(trace_path.read_text(encoding="utf-8").splitlines()[-1])
         contact_loss = not any(contact_has_object(c, expected_object) for c in final["contacts"])
         if not {"narrow", "wide"}.issubset(jaw_contact_families):
             first_gate_failure = {"gate": "opposing jaw contact", "families": sorted(jaw_contact_families)}
-        elif bilateral_contact_frames_by_phase.get("CONTACT_HOLD", 0) < 0.80 * phase_frames.get("CONTACT_HOLD", 1):
+        elif bilateral_contact_frames_by_phase.get("CONTACT_HOLD", 0) < phase_frames.get("CONTACT_HOLD", 1):
             first_gate_failure = {"gate": "fixed-object bilateral contact persistence",
                                   "fraction": bilateral_contact_frames_by_phase.get("CONTACT_HOLD", 0) /
                                              max(phase_frames.get("CONTACT_HOLD", 1), 1),
-                                  "required": 0.80}
+                                  "required": 1.0}
+        elif contact_hold_growing_oscillation:
+            first_gate_failure = {"gate": "fixed-object contact-hold growing oscillation",
+                                  "windows": contact_hold_windows[-3:]}
         elif not contact_loss:
             first_gate_failure = {"gate": "reopen contact loss", "final_contacts": final["contacts"]}
 
@@ -1179,17 +1272,25 @@ def run_stage(stage: str, evidence: Path, controller: dict[str, Any], source: di
         "max_abs_jaw_qacc_rad_s2": max_qacc,
         "max_shared_aperture_relation_error_rad": max_relation,
         "shared_aperture_relation_diagnostic_bound_rad": APERTURE_RELATION_DIAGNOSTIC_RAD,
+        "shared_aperture_relation_diagnostic_scope": "hard synchronization gate before first object contact; diagnostic-only after contact, when bilateral physical-contact stability gates apply",
+        "contact_force_bearing_minimum_n": CONTACT_FORCE_BEARING_MIN_N,
+        "contact_acceleration_bound_rad_s2": CONTACT_ACCELERATION_BOUND_RAD_S2,
+        "max_precontact_shared_aperture_relation_error_rad": max_precontact_relation,
+        "max_contact_shared_aperture_relation_error_rad": max_contact_relation,
         "max_jaw_effort_nm": max_effort,
         "effort_caps_nm": {n: controller["per_joint"][n]["effort_cap_nm"] for n in controller["per_joint"]},
         "jaw_actuator_saturation_steps": saturation_steps,
         "initial_contacts": init_contacts,
         "fixture_geometry_derivation": build_info.get("fixture_geometry_derivation"),
         "fixture_open_preflight": fixture_preflight,
+        "fixture_closure_geometry": fixture_closure,
         "fixture_initial_contacts": fixture_initial_contacts,
         "contact_pair_frame_counts": contact_pair_frames,
         "jaw_contact_families": sorted(jaw_contact_families),
         "object_contact_frames_by_phase": object_contact_frames_by_phase,
         "bilateral_contact_frames_by_phase": bilateral_contact_frames_by_phase,
+        "contact_hold_stability_windows": contact_hold_windows,
+        "contact_hold_growing_oscillation": contact_hold_growing_oscillation,
         "phase_frame_counts": phase_frames,
         "object_contact_fraction": object_contact_frames / max(row_count, 1),
         "hold_contact_fraction": object_contact_frames_by_phase.get("HOLD", 0) /
@@ -1397,6 +1498,7 @@ def runtime_identity() -> dict[str, Any]:
     libraries = sorted(package_dir.glob("libmujoco.so*"))
     if not libraries:
         libraries = sorted(package_dir.glob("**/libmujoco.so*"))
+    script_path = Path(__file__).resolve()
     return {
         "python": sys.version,
         "platform": platform.platform(),
@@ -1404,6 +1506,8 @@ def runtime_identity() -> dict[str, Any]:
         "mujoco_native_version": mujoco.mj_versionString(),
         "mujoco_module_path": str(Path(mujoco.__file__).resolve()),
         "native_libraries": [{"path": str(path), "sha256": sha256(path)} for path in libraries],
+        "experiment_script": str(script_path),
+        "experiment_script_sha256": sha256(script_path),
         "MUJOCO_GL": os.environ.get("MUJOCO_GL"),
         "numpy": np.__version__,
     }
@@ -1417,17 +1521,40 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=OUTPUT_DEFAULT)
     parser.add_argument("--stage-only", choices=("open_hold", "no_contact_motion", "fixed_object", "bottle_hold"))
+    parser.add_argument("--preflight-only", action="store_true",
+                        help="compile the fixed-object scene and run zero-step geometry/contact checks only")
     args = parser.parse_args()
+    if args.preflight_only and args.stage_only not in (None, "fixed_object"):
+        parser.error("--preflight-only can only be combined with --stage-only fixed_object")
     evidence = args.output
     evidence.mkdir(parents=True, exist_ok=False)
     (evidence / "experiment_commands.txt").write_text(
         "wsl.exe -d Ubuntu-22.04 -- bash -lc 'source /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/activate && python3 "
         f"{Path(__file__)} --output {evidence}"
-        f"{' --stage-only ' + args.stage_only if args.stage_only else ''}'\n", encoding="utf-8")
+        f"{' --stage-only ' + args.stage_only if args.stage_only else ''}"
+        f"{' --preflight-only' if args.preflight_only else ''}'\n", encoding="utf-8")
     source = verify_inputs(evidence)
     identity = runtime_identity()
     (evidence / "runtime_identity.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
     write_json(evidence / "source_audit.json", source)
+    if args.preflight_only:
+        model, build = build_model("fixed_object")
+        data = initialize(model)
+        preflight = fixture_geometry_preflight(model, data)
+        result = {"status": preflight["status"], "physics_steps": 0,
+                  "fixture_geometry_derivation": build["fixture_geometry_derivation"],
+                  "fixture_open_preflight": preflight,
+                  "fixture_closure_geometry": fixture_closure_geometry_check(model),
+                  "source": source, "runtime": identity,
+                  "controller_parameters_changed": False}
+        result["status"] = "PASS" if result["fixture_open_preflight"]["status"] == "PASS" and result["fixture_closure_geometry"]["status"] == "PASS" else "FAIL"
+        write_json(evidence / "fixture_preflight.json", result)
+        (evidence / "REPORT.md").write_text(
+            "# Issue #46 fixed-object zero-step preflight\n\n"
+            f"Status: **{result['status']}**\n\n"
+            "No `mj_step` calls were made. The compiled fixture and robot were checked from a clean reset with `mj_forward` only.\n",
+            encoding="utf-8")
+        return 0 if preflight["status"] == "PASS" else 2
     if not np.allclose(aperture_targets(1.0)["R_hand_wide1_joint_target_rad"],
                        -aperture_targets(1.0)["right_claw_joint_target_rad"]):
         raise RuntimeError("Shared aperture mapping does not preserve the source ratio")

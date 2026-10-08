@@ -2,7 +2,7 @@
   "issue": 46,
   "architecture": "SIMULATION_ONLY_M0_1DOF_OMNIPICKER",
   "status": "FAIL",
-  "first_failed_gate": "Stage 5 fixed-object initial-penetration preflight",
+  "first_failed_gate": "Corrected fixed-object zero-step collision preflight",
   "source": {
     "repository": "https://github.com/AgibotTech/agibot_x2_urdf",
     "commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
@@ -90,14 +90,27 @@
       "status": "FAIL",
       "steps": 0,
       "simulation_time_s": 0.0,
-      "first_penetration": {
-        "body": "right_wrist_roll_link",
-        "depth_m": 0.03385829206668741
+      "fixture_center_world_m": [
+        0.07335674136685658,
+        0.32752261781796965,
+        0.5448953346818568
+      ],
+      "minimum_collidable_clearance_m": -0.03205180348576758,
+      "open_jaw_clearances_m": {
+        "R_hand_narrow3_Link": 0.030126859894529137,
+        "R_hand_wide3_Link": 0.030353999130713964
       },
-      "additional_initial_penetrations_m": {
-        "R_hand_narrow1_Link": 0.0024118950041622437,
-        "R_hand_narrow_loop_Link": 0.01856138979240522,
-        "R_hand_wide_loop_Link": 0.008199420567427186
+      "initial_penetrations_m_by_body": {
+        "right_wrist_roll_link": 0.03205180348576758,
+        "R_hand_narrow1_Link": 0.003452827470649703,
+        "R_hand_narrow_loop_Link": 0.016847161268573538,
+        "R_hand_wide1_Link": 0.0022878715244967324,
+        "R_hand_wide_loop_Link": 0.009914336876959425
+      },
+      "closure_clearances_monotonically_decrease": true,
+      "first_geometric_contact_aperture_ratio": {
+        "R_hand_narrow3_Link": 0.34,
+        "R_hand_wide3_Link": 0.20
       },
       "bottle_hold_or_lift_attempted": false
     }
@@ -114,8 +127,8 @@
   "video_produced": false,
   "claim_boundary": "The X2 OmniPicker source geometry, joint ranges, and mimic mapping are source-derived. The paired-jaw actuator model is a SIMULATION_ONLY_M0 engineering abstraction and is not a validated model of the real X2 OmniPicker transmission or hardware dynamics.",
   "limitations": [
-    "Stage 5 fixed-object preflight fails because the fixture intersects the wrist and hand loop links.",
-    "No dynamic fixed-object contact, bottle hold, or lift was run.",
+    "The one corrected fixture placement still fails the zero-step robot-collision preflight: the wrist and four non-target hand links intersect the fixture.",
+    "The recorded-trace reconstruction used mj_forward only; the corrected-scene preflight used zero mj_step calls. No corrected fixed-object dynamics, bottle hold, or lift was run.",
     "No MP4 was produced.",
     "Stage 3 and 4 PNGs were generated but not visually reviewed."
   ]
