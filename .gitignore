@@ -31,3 +31,26 @@ Thumbs.db
 
 third_party/install/
 apps/unity/local/
+
+# Unity-generated project data and machine-local editor state
+/apps/unity/project/[Ll]ibrary/
+/apps/unity/project/[Tt]emp/
+/apps/unity/project/[Ll]ogs/
+/apps/unity/project/[Oo]bj/
+/apps/unity/project/[Bb]uild/
+/apps/unity/project/[Bb]uilds/
+/apps/unity/project/[Mm]emoryCaptures/
+/apps/unity/project/[Rr]ecordings/
+/apps/unity/project/[Uu]serSettings/
+/apps/unity/project/.vs/
+/apps/unity/project/*.csproj
+/apps/unity/project/*.sln
+/apps/unity/project/*.user
+/apps/unity/project/*.suo
+/apps/unity/project/*.pidb
+/apps/unity/project/*.booproj
+/apps/unity/project/*.svd
+/apps/unity/project/*.pdb
+/apps/unity/project/*.mdb
+/apps/unity/project/*.opendb
+/apps/unity/project/*.VC.db
