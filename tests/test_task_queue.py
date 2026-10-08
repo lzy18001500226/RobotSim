@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import sqlite3
+import io
 import json
+import sqlite3
 import subprocess
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -1090,6 +1092,71 @@ class TaskQueueTests(unittest.TestCase):
         self.assertIn("reproduction_command", report)
         self.assertNotIn("private review transcript", encoded)
         self.assertNotIn("review_feedback", encoded)
+
+    def test_status_report_does_not_migrate_or_write_legacy_state(self) -> None:
+        path = self.root / "legacy-state.sqlite3"
+        with sqlite3.connect(path) as database:
+            database.execute(
+                """CREATE TABLE task_runs (
+                    issue_number INTEGER PRIMARY KEY, status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL, last_failure_hash TEXT NOT NULL,
+                    same_failure_count INTEGER NOT NULL, run_id TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL, worker_id TEXT NOT NULL,
+                    branch TEXT NOT NULL, workspace TEXT NOT NULL,
+                    pr_number INTEGER, head_sha TEXT NOT NULL, updated_at TEXT NOT NULL
+                )"""
+            )
+            database.execute(
+                """CREATE TABLE task_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    issue_number INTEGER NOT NULL, run_id TEXT NOT NULL,
+                    attempt_id TEXT NOT NULL, worker_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL, status TEXT NOT NULL,
+                    head_sha TEXT NOT NULL DEFAULT '', pr_number INTEGER,
+                    details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+                )"""
+            )
+            database.execute(
+                "INSERT INTO task_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (62, "blocked", 2, "fingerprint", 2, "run", "attempt", "worker",
+                 "issue/62-task", (self.root / "issue-62").as_posix(), None, "", "old-time"),
+            )
+        original_bytes = path.read_bytes()
+
+        class Github:
+            def ready_issues(self) -> list[queue.Issue]:
+                return []
+
+            def branch_sha(self, _root: Path, _branch: str) -> None:
+                return None
+
+        with patch.object(queue, "GitHubCLI", return_value=Github()):
+            with redirect_stdout(io.StringIO()) as output:
+                result = queue.main([
+                    "--status-report", "--state", str(path),
+                    "--worktree-root", str(self.root / "worktrees"),
+                ])
+
+        self.assertEqual(result, 0)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["blocked_tasks"][0]["issue"], 62)
+        self.assertEqual(report["blocked_tasks"][0]["notification_state"], "not_started")
+        self.assertEqual(path.read_bytes(), original_bytes)
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+            columns = {row[1] for row in database.execute("PRAGMA table_info(task_runs)")}
+            self.assertNotIn("notification_state", columns)
+            self.assertNotIn("notification_attempts", columns)
+
+        missing_path = self.root / "missing-state" / "state.sqlite3"
+        with patch.object(queue, "GitHubCLI", return_value=Github()):
+            with redirect_stdout(io.StringIO()) as output:
+                result = queue.main([
+                    "--status-report", "--state", str(missing_path),
+                    "--worktree-root", str(self.root / "worktrees"),
+                ])
+        self.assertEqual(result, 0)
+        self.assertEqual(json.loads(output.getvalue())["tasks"], [])
+        self.assertFalse(missing_path.parent.exists())
 
     def test_status_report_surfaces_issue_close_gate_and_pr_checkpoint(self) -> None:
         store = self.store()

@@ -280,11 +280,21 @@ stable root_cause identifier for a blocked attempt; never include credentials or
 class RunStore:
     """Local single-host leases and retry metadata; Issues remain authoritative."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, read_only: bool = False):
         self.path = path.expanduser()
+        self._guard = threading.RLock()
+        if read_only and str(self.path) != ":memory:":
+            if self.path.exists():
+                database_uri = self.path.resolve().as_uri() + "?mode=ro"
+                self._db = sqlite3.connect(
+                    database_uri, uri=True, timeout=30, check_same_thread=False,
+                )
+                self._db.row_factory = sqlite3.Row
+                self._db.execute("PRAGMA query_only=ON")
+                return
+            self.path = Path(":memory:")
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self._guard = threading.RLock()
         self._db = sqlite3.connect(str(self.path), timeout=30, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA busy_timeout=30000")
@@ -2526,7 +2536,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             store.close()
         return 0
     if args.status_report:
-        store = RunStore(state_path)
+        store = RunStore(state_path, read_only=True)
         try:
             report = build_status_report(
                 store, github, repository_root=repository_root, state_path=state_path,

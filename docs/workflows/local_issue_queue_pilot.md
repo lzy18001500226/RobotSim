@@ -88,9 +88,10 @@ never merges. `--reconcile` alone refreshes `origin/main` and updates stored PR 
 prints a decision and workspace plan without creating a worktree or dispatching Codex.
 `--status-report` prints ready/running/blocked/CI/human-gated task summaries, each task's worktree
 and current/remote SHA, retry fingerprint, last successful checkpoint, notification state, and a
-reproduction command. It omits prompts and review feedback. Closeout validation runs from the exact
-task worktree and checks the deterministic Issue branch, local HEAD, remote HEAD, and any associated
-PR head before publishing the Issue record.
+reproduction command. It opens an existing SQLite state file read-only, performs no compatibility
+migrations, and creates no state file when none exists. It omits prompts and review feedback.
+Closeout validation runs from the exact task worktree and checks the deterministic Issue branch,
+local HEAD, remote HEAD, and any associated PR head before publishing the Issue record.
 
 ## Retry and human gates
 
