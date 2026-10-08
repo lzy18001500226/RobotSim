@@ -1,6 +1,6 @@
-# ADR-0008: Proposed bounded GitHub-Issue-driven orchestration pilot
+# ADR-0008: Bounded GitHub-Issue-driven orchestration pilot
 
-Status: Proposed
+Status: Accepted
 
 Supersedes: none
 
