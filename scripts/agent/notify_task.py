@@ -732,7 +732,12 @@ def _without_inline_code_spans(text: str) -> str:
 
 def _closeout_target(event: Mapping[str, object]) -> tuple[int, str]:
     pr_number = event.get("pr_number")
-    if isinstance(pr_number, int) and not isinstance(pr_number, bool):
+    # A non-pass event belongs on the Issue so it cannot auto-close on merge.
+    if (
+        isinstance(pr_number, int)
+        and not isinstance(pr_number, bool)
+        and event.get("status") == "completed"
+    ):
         return pr_number, "PR"
     task_id = str(event["task_id"])
     issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(task_id)
@@ -741,12 +746,10 @@ def _closeout_target(event: Mapping[str, object]) -> tuple[int, str]:
     return int(issue_match.group(1)), "Issue"
 
 
-def _pr_closes_task_issue(pull: Mapping[str, object], task_id: str) -> bool:
-    issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(task_id)
+def _visible_pr_body(pull: Mapping[str, object]) -> str | None:
     body = pull.get("body")
-    if issue_match is None or not isinstance(body, str):
-        return False
-    issue_number = issue_match.group(1)
+    if not isinstance(body, str):
+        return None
     # GitHub closing keywords in examples are inert. Remove fenced and
     # indented code blocks, inline code spans, and HTML code/pre examples
     # before considering issue references.
@@ -781,7 +784,38 @@ def _pr_closes_task_issue(pull: Mapping[str, object], task_id: str) -> bool:
             continue
         paragraph.append(line)
     finish_paragraph()
-    visible_body = "\x00".join(visible_segments)
+    return "\x00".join(visible_segments)
+
+
+def _pr_references_task_issue(pull: Mapping[str, object], task_id: str) -> bool:
+    issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(task_id)
+    visible_body = _visible_pr_body(pull)
+    if issue_match is None or visible_body is None:
+        return False
+    issue_number = issue_match.group(1)
+    reference = re.compile(
+        r"(?<![A-Za-z0-9_])(?:(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+))?"
+        r"#(?P<number>[1-9][0-9]*)\b"
+    )
+    for match in reference.finditer(visible_body):
+        if match.group("number") != issue_number:
+            continue
+        owner, repo = match.group("owner"), match.group("repo")
+        if owner is None or (
+            owner.casefold() == "lzy18001500226"
+            and repo is not None
+            and repo.casefold() == "robotsim"
+        ):
+            return True
+    return False
+
+
+def _pr_closes_task_issue(pull: Mapping[str, object], task_id: str) -> bool:
+    issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(task_id)
+    visible_body = _visible_pr_body(pull)
+    if issue_match is None or visible_body is None:
+        return False
+    issue_number = issue_match.group(1)
     closing_reference = re.compile(
         r"(?i)\b(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+"
         r"(?:(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)#(?P<qualified_number>[1-9][0-9]*)|"
@@ -822,13 +856,14 @@ def persist_task_closeout(
     comments_path = f"/repos/{ROBOTSIM_REPOSITORY}/issues/{target_number}/comments"
     try:
         actor = _github_actor(token)
-        if target_kind == "PR":
+        pr_number = event.get("pr_number")
+        if isinstance(pr_number, int) and not isinstance(pr_number, bool):
             pull = _github_json(
-                "GET", f"/repos/{ROBOTSIM_REPOSITORY}/pulls/{target_number}", token
+                "GET", f"/repos/{ROBOTSIM_REPOSITORY}/pulls/{pr_number}", token
             )
             if (
                 not isinstance(pull, dict)
-                or pull.get("number") != target_number
+                or pull.get("number") != pr_number
                 or not isinstance(pull.get("base"), dict)
                 or not isinstance(pull["base"].get("repo"), dict)
                 or pull["base"]["repo"].get("full_name") != ROBOTSIM_REPOSITORY
@@ -842,9 +877,17 @@ def persist_task_closeout(
                 or head.get("ref") != event["branch"]
             ):
                 return PersistenceResult("failed", "closeout branch/head_sha do not match the current pull request head")
-            if not _pr_closes_task_issue(pull, str(event["task_id"])):
+            if event["status"] == "completed" and not _pr_closes_task_issue(
+                pull, str(event["task_id"]),
+            ):
                 return PersistenceResult(
                     "failed", "pull request description must link the originating Issue with a closing keyword"
+                )
+            if event["status"] != "completed" and not _pr_references_task_issue(
+                pull, str(event["task_id"]),
+            ):
+                return PersistenceResult(
+                    "failed", "pull request description must reference the originating Issue"
                 )
         with _task_closeout_lock(str(event["event_id"]), env):
             comments = _list_repository_issue_comments(token)

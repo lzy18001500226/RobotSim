@@ -110,7 +110,7 @@ The notifier re-runs the gate immediately before writing GitHub. On a failed gat
 
 Use a concise summary. `evidence` must contain durable public HTTPS references; local paths, private/local hosts, and credential-bearing query/fragment URLs are rejected. Recognized credentials and local filesystem paths in text fields are redacted before persistence. The notifier sends only the structured event, never surrounding final-answer text or a transcript. Local-only Windows/WSL paths are not durable evidence; if useful, describe the diagnostic without the path.
 
-GitHub is the canonical record. If `pr_number` is present, the notifier verifies that PR in the canonical RobotSim repository, requires the PR description to close the originating Issue, and posts the event to that PR's conversation. Otherwise it posts to the Issue number parsed from `task_id`. The closing reference lets someone starting from the Issue discover the PR and then recover the closeout. Comments contain stable hidden markers:
+GitHub is the canonical record. If `pr_number` is present, the notifier verifies that PR in the canonical RobotSim repository and checks its current branch and head SHA. A `completed` event also requires the PR description to close the originating Issue and is posted to the PR conversation. A non-completed event requires a visible reference to the originating Issue and is posted on that Issue, avoiding a closing reference that could close work which is still blocked or deferred. Without `pr_number`, the event is posted to the Issue number parsed from `task_id`. Comments contain stable hidden markers:
 
 ```html
 <!-- robotsim-task-closeout:v1:sha256:<event-hash>:<payload-digest> -->
