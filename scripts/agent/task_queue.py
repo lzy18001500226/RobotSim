@@ -23,6 +23,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from dataclasses import asdict, dataclass
@@ -30,6 +31,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
+
+try:
+    from . import worker_security
+except ImportError:  # Running this module as a script from scripts/agent.
+    import worker_security
 
 
 REPOSITORY = "lzy18001500226/RobotSim"
@@ -43,6 +49,15 @@ RUNNING_LABEL = "agent:running"
 BLOCKED_LABEL = "agent:blocked"
 HUMAN_RETRY_APPROVED = "human:retry-approved"
 REVIEW_LABEL = "agent:review"
+ISSUE_COMMIT_PATH_ALLOWLISTS = {
+    62: frozenset({
+        "docs/research/issue49-queue-e2e-note.md",
+        "tests/test_issue49_recovery_probe.py",
+    }),
+}
+ISSUE_WORKSPACE_WRITE_ROOTS = {
+    62: (".git", "docs/research", "tests"),
+}
 HUMAN_GATES = frozenset(
     {"human:visual", "human:repro", "human:architecture", "human:security", "human:hardware"}
 )
@@ -115,6 +130,7 @@ class TaskPacket:
     prompt: str
     result_path: str
     codex_session_id: str = ""
+    workspace_write_roots: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -253,7 +269,7 @@ def render_task(
 
 Follow the repository instructions and Goal workflow below. GitHub Issue/PR state is authoritative.
 Do not merge. Preserve architecture, credential/security, hardware/safety, and visual/manual gates.
-Commit and push only this issue branch when the task is reviewable so the existing Auto-PR workflow can act.
+Do not push or contact GitHub. The trusted coordinator validates and publishes this exact issue branch after you finish.
 Do not claim Unity, WSL, MuJoCo, ROS, DDS, or hardware validation unless it actually ran in its supported environment.
 Task guidance was read from {guidance['revision']} on origin/main; do not replace it with branch-local guidance.
 
@@ -316,6 +332,7 @@ class RunStore:
                 review_report TEXT NOT NULL DEFAULT '',
                 branch TEXT NOT NULL,
                 workspace TEXT NOT NULL,
+                base_sha TEXT NOT NULL DEFAULT '',
                 pr_number INTEGER,
                 head_sha TEXT NOT NULL DEFAULT '',
                 review_feedback_hash TEXT NOT NULL DEFAULT '',
@@ -362,6 +379,10 @@ class RunStore:
         if "notification_attempts" not in columns:
             self._db.execute(
                 "ALTER TABLE task_runs ADD COLUMN notification_attempts INTEGER NOT NULL DEFAULT 0"
+            )
+        if "base_sha" not in columns:
+            self._db.execute(
+                "ALTER TABLE task_runs ADD COLUMN base_sha TEXT NOT NULL DEFAULT ''"
             )
         self._db.commit()
         if str(self.path) != ":memory:" and self.path.exists():
@@ -449,6 +470,32 @@ class RunStore:
             self._append_event(row, "codex_session_started", {"session_id": session_id})
             self._db.commit()
             return row
+
+    def set_base_sha(self, issue_number: int, base_sha: str) -> dict[str, object]:
+        if not re.fullmatch(r"[0-9a-f]{40,64}", base_sha):
+            raise ValueError("invalid task base SHA")
+        with self._guard:
+            self._db.execute("BEGIN IMMEDIATE")
+            row = self._row(issue_number)
+            if row is None:
+                self._db.rollback()
+                raise KeyError(issue_number)
+            prior = str(row.get("base_sha") or "")
+            if prior and prior != base_sha:
+                self._db.rollback()
+                raise RuntimeError("task base SHA is immutable for this run")
+            if not prior:
+                self._db.execute(
+                    "UPDATE task_runs SET base_sha=?,updated_at=? WHERE issue_number=?",
+                    (base_sha, _now(), issue_number),
+                )
+                row = self._row(issue_number)
+                assert row is not None
+                self._append_event(row, "task_base_pinned", {"base_sha": base_sha})
+            self._db.commit()
+            result = self._row(issue_number)
+            assert result is not None
+            return result
 
     def active_count(self) -> int:
         with self._guard:
@@ -610,15 +657,9 @@ def review_checkout_matches(workspace: Path, branch: str, head_sha: str) -> bool
 
 
 def workspace_current_head(workspace: Path, expected_branch: str) -> str | None:
-    """Return the exact HEAD for the expected task branch, even when dirty."""
-    branch = subprocess.run(
-        ["git", "-C", str(workspace), "branch", "--show-current"],
-        text=True, capture_output=True, check=False,
-    )
-    head = subprocess.run(
-        ["git", "-C", str(workspace), "rev-parse", "HEAD"],
-        text=True, capture_output=True, check=False,
-    )
+    """Return the exact HEAD using Git settings that cannot run worker helpers."""
+    branch = _task_git_run(workspace, "branch", "--show-current")
+    head = _task_git_run(workspace, "rev-parse", "HEAD")
     sha = head.stdout.strip()
     if (branch.returncode or head.returncode
             or branch.stdout.strip() != expected_branch
@@ -628,10 +669,7 @@ def workspace_current_head(workspace: Path, expected_branch: str) -> str | None:
 
 
 def git_common_dir(path: Path) -> Path | None:
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        text=True, capture_output=True, check=False,
-    )
+    result = _task_git_run(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if result.returncode:
         return None
     return Path(result.stdout.strip()).resolve()
@@ -639,10 +677,7 @@ def git_common_dir(path: Path) -> Path | None:
 
 def workspace_head_sha(workspace: Path, expected_branch: str) -> str | None:
     sha = workspace_current_head(workspace, expected_branch)
-    status = subprocess.run(
-        ["git", "-C", str(workspace), "status", "--porcelain"],
-        text=True, capture_output=True, check=False,
-    )
+    status = _task_git_run(workspace, "status", "--porcelain", "--untracked-files=all")
     if sha is None or status.returncode or status.stdout.strip():
         return None
     return sha
@@ -1071,108 +1106,101 @@ def codex_worktree_write_dirs(workspace: Path) -> tuple[Path, ...]:
     )
 
 
-def codex_command(workspace: Path, *, read_only: bool = False) -> list[str]:
-    executable = shutil.which("codex") or "codex"
-    command = [executable, "exec", "--cd", str(workspace), "--sandbox", "read-only" if read_only else "workspace-write", "--json", "-"]
+def codex_command(
+    workspace: Path,
+    *,
+    read_only: bool = False,
+    executable: str | None = None,
+    worker_path: str = worker_security.BASE_WORKER_PATH,
+    workspace_write_roots: Sequence[str] | None = None,
+) -> list[str]:
+    executable = executable or shutil.which("codex") or "codex"
+    command = [
+        executable, "exec", "--ignore-user-config", "--strict-config",
+        "--cd", "/home",
+        "--config", "approval_policy=on-request",
+        "--config", "shell_environment_policy.inherit=none",
+        "--config", f"shell_environment_policy.set.PATH={json.dumps(worker_path)}",
+        "--config", "history.persistence=none",
+    ]
+    for override in worker_security.codex_permission_profile_overrides(read_only=read_only):
+        command.extend(("--config", override))
     if not read_only:
-        for directory in codex_worktree_write_dirs(workspace):
-            command.extend(("--add-dir", str(directory)))
+        if workspace_write_roots is None:
+            roots = tuple(
+                directory.relative_to(workspace.resolve()).as_posix()
+                for directory in codex_worktree_write_dirs(workspace)
+            )
+        else:
+            roots = tuple(workspace_write_roots)
+        for root in roots:
+            command.extend(("--add-dir", f"/home/{root}"))
+    command.extend(("--json", "-"))
     return command
 
 
 def codex_resume_command(
     session_id: str, result_path: Path, *, read_only: bool = False,
     workspace: Path | None = None,
+    executable: str | None = None,
+    worker_path: str = worker_security.BASE_WORKER_PATH,
+    workspace_write_roots: Sequence[str] | None = None,
 ) -> list[str]:
-    executable = shutil.which("codex") or "codex"
-    schema = Path(__file__).with_name(
-        "task_review.schema.json" if read_only else "task_result.schema.json"
-    )
+    executable = executable or shutil.which("codex") or "codex"
+    schema_name = "task_review.schema.json" if read_only else "task_result.schema.json"
     command = [
         executable, "exec", "resume", session_id,
-        "--json", "--output-schema", str(schema), "--output-last-message", str(result_path), "-",
+        "--ignore-user-config", "--strict-config", "--cd", "/home",
+        "--config", "approval_policy=on-request",
+        "--config", "shell_environment_policy.inherit=none",
+        "--config", f"shell_environment_policy.set.PATH={json.dumps(worker_path)}",
+        "--config", "history.persistence=none",
     ]
-    if not read_only and workspace is not None:
-        writable_dirs = codex_worktree_write_dirs(workspace)
-        if writable_dirs:
-            roots = json.dumps([str(path) for path in writable_dirs])
-            command.extend(("--config", f"sandbox_workspace_write.writable_roots={roots}"))
+    for override in worker_security.codex_permission_profile_overrides(read_only=read_only):
+        command.extend(("--config", override))
+    if not read_only:
+        if workspace_write_roots is None and workspace is not None:
+            roots = tuple(
+                directory.relative_to(workspace.resolve()).as_posix()
+                for directory in codex_worktree_write_dirs(workspace)
+            )
+        else:
+            roots = tuple(workspace_write_roots or ())
+        for root in roots:
+            command.extend(("--add-dir", f"/home/{root}"))
+    command.extend((
+        "--json", "--output-schema", f"/run/task-input/{schema_name}",
+        "--output-last-message", "/var/tmp/result.json", "-",
+    ))
     return command
 
 
 class LocalCodexExecutor:
-    """Small subprocess adapter. Approval/sandbox policy remains Codex-owned."""
+    """Launch Codex behind the Linux worker boundary; publication stays coordinator-owned."""
 
-    def execute(
-        self,
-        packet: TaskPacket,
-        on_started: Callable[[int], None] | None = None,
-        on_session: Callable[[str], None] | None = None,
-    ) -> "ExecutionResult":
-        schema = Path(__file__).with_name("task_result.schema.json")
-        result_path = Path(packet.result_path)
+    def __init__(self) -> None:
+        worker_security.verify_bubblewrap()
+
+    @staticmethod
+    def _io_directories(result_path: Path, schema: Path) -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
         result_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(result_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(descriptor)
-        if packet.codex_session_id:
-            command = codex_resume_command(
-                packet.codex_session_id, result_path,
-                workspace=Path(packet.workspace.path),
-            )
-        else:
-            command = codex_command(Path(packet.workspace.path))[:-1]
-            command.extend(("--output-schema", str(schema), "--output-last-message", str(result_path), "-"))
-        process = subprocess.Popen(
-            command,
-            text=True,
-            cwd=packet.workspace.path,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            start_new_session=True,
-        )
-        reader_errors: list[Exception] = []
+        temporary = tempfile.TemporaryDirectory(prefix=".codex-worker-", dir=result_path.parent)
+        root = Path(temporary.name)
+        os.chmod(root, 0o700)
+        input_directory = root / "input"
+        output_directory = root / "output"
+        input_directory.mkdir(mode=0o700)
+        output_directory.mkdir(mode=0o700)
+        schema_copy = input_directory / schema.name
+        shutil.copyfile(schema, schema_copy)
+        os.chmod(schema_copy, 0o400)
+        os.chmod(input_directory, 0o500)
+        return temporary, input_directory, output_directory
 
-        def read_events() -> None:
-            assert process.stdout is not None
-            try:
-                for line in process.stdout:
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(event, dict):
-                        continue
-                    session_id = event.get("thread_id")
-                    if (event.get("type") == "thread.started" and isinstance(session_id, str)
-                            and session_id and on_session is not None):
-                        on_session(session_id)
-            except Exception as exc:
-                reader_errors.append(exc)
-
-        reader = threading.Thread(target=read_events, name="codex-jsonl-reader", daemon=True)
-        reader.start()
+    @staticmethod
+    def _read_result(path: Path, exit_code: int) -> "ExecutionResult":
         try:
-            if on_started is not None:
-                on_started(process.pid)
-            assert process.stdin is not None
-            process.stdin.write(packet.prompt)
-            process.stdin.close()
-            process.wait()
-            reader.join(timeout=10)
-            if reader.is_alive() or reader_errors:
-                raise RuntimeError("could not persist Codex session metadata")
-        except Exception:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=10)
-            raise
-        exit_code = int(process.returncode or 0)
-        try:
-            value = json.loads(result_path.read_text(encoding="utf-8"))
+            value = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(value, dict):
                 raise ValueError
             outcome = value.get("outcome")
@@ -1189,29 +1217,153 @@ class LocalCodexExecutor:
             )
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return ExecutionResult(exit_code or 1, "blocked", "unclassified executor result unavailable", "")
+
+    def execute(
+        self,
+        packet: TaskPacket,
+        on_started: Callable[[int], None] | None = None,
+        on_session: Callable[[str], None] | None = None,
+    ) -> "ExecutionResult":
+        schema = Path(__file__).with_name("task_result.schema.json")
+        result_path = Path(packet.result_path)
+        workspace = Path(packet.workspace.path)
+        state_directory = result_path.parent.parent
+        codex_home = worker_security.prepare_worker_codex_home(
+            state_directory, packet.issue_number, profile="writer",
+        )
+        temporary, input_directory, output_directory = self._io_directories(result_path, schema)
+        try:
+            runtime = worker_security.resolve_codex_runtime()
+            environment = worker_security.build_worker_environment(path_entries=runtime.path_entries)
+            if packet.codex_session_id:
+                command = codex_resume_command(
+                    packet.codex_session_id, result_path,
+                    workspace=workspace,
+                    executable=str(runtime.host_executable),
+                    worker_path=environment["PATH"],
+                    workspace_write_roots=packet.workspace_write_roots,
+                )
+            else:
+                command = codex_command(
+                    workspace,
+                    executable=str(runtime.host_executable),
+                    worker_path=environment["PATH"],
+                    workspace_write_roots=packet.workspace_write_roots,
+                )[:-1]
+                command.extend((
+                    "--output-schema", f"/run/task-input/{schema.name}",
+                    "--output-last-message", "/var/tmp/result.json", "-",
+                ))
+            isolated_command, environment = worker_security.build_isolated_command(
+                command,
+                workspace=workspace,
+                codex_home=codex_home,
+                input_directory=input_directory,
+                output_directory=output_directory,
+                workspace_write_roots=(
+                    tuple(workspace / root for root in packet.workspace_write_roots)
+                    if packet.workspace_write_roots is not None else None
+                ),
+                runtime=runtime,
+            )
+            process = subprocess.Popen(
+                isolated_command,
+                text=True,
+                cwd="/",
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                start_new_session=True,
+            )
+            reader_errors: list[Exception] = []
+
+            def read_events() -> None:
+                assert process.stdout is not None
+                try:
+                    for line in process.stdout:
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(event, dict):
+                            continue
+                        session_id = event.get("thread_id")
+                        if (event.get("type") == "thread.started" and isinstance(session_id, str)
+                                and session_id and on_session is not None):
+                            on_session(session_id)
+                except Exception as exc:
+                    reader_errors.append(exc)
+
+            reader = threading.Thread(target=read_events, name="codex-jsonl-reader", daemon=True)
+            reader.start()
+            try:
+                if on_started is not None:
+                    on_started(process.pid)
+                assert process.stdin is not None
+                process.stdin.write(packet.prompt)
+                process.stdin.close()
+                process.wait()
+                reader.join(timeout=10)
+                if reader.is_alive() or reader_errors:
+                    raise RuntimeError("could not persist Codex session metadata")
+            except Exception:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=10)
+                raise
+            exit_code = int(process.returncode or 0)
+            return self._read_result(output_directory / "result.json", exit_code)
         finally:
+            temporary.cleanup()
             result_path.unlink(missing_ok=True)
 
     def review(self, issue: Issue, workspace: Path, branch: str, report_path: Path) -> ReviewResult | None:
         schema = Path(__file__).with_name("task_review.schema.json")
         report_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(report_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(descriptor)
-        command = codex_command(workspace, read_only=True)[:-1]
-        command.extend(("--output-schema", str(schema), "--output-last-message", str(report_path), "-"))
+        state_directory = report_path.parent.parent
+        codex_home = worker_security.prepare_worker_codex_home(
+            state_directory, issue.number, profile="reviewer",
+        )
+        temporary, input_directory, output_directory = self._io_directories(report_path, schema)
         try:
-            result = subprocess.run(
+            runtime = worker_security.resolve_codex_runtime()
+            environment = worker_security.build_worker_environment(path_entries=runtime.path_entries)
+            command = codex_command(
+                workspace,
+                read_only=True,
+                executable=str(runtime.host_executable),
+                worker_path=environment["PATH"],
+            )[:-1]
+            command.extend((
+                "--output-schema", f"/run/task-input/{schema.name}",
+                "--output-last-message", "/var/tmp/result.json", "-",
+            ))
+            isolated_command, environment = worker_security.build_isolated_command(
                 command,
+                workspace=workspace,
+                codex_home=codex_home,
+                input_directory=input_directory,
+                output_directory=output_directory,
+                read_only=True,
+                runtime=runtime,
+            )
+            result = subprocess.run(
+                isolated_command,
                 input=independent_review_prompt(issue, branch, read_default_guidance(workspace)),
                 text=True,
-                cwd=workspace,
+                cwd="/",
+                env=environment,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
             )
             if result.returncode:
                 return None
-            value = json.loads(report_path.read_text(encoding="utf-8"))
+            value = json.loads((output_directory / "result.json").read_text(encoding="utf-8"))
             if not isinstance(value, dict) or value.get("verdict") not in {"clear", "changes_requested"}:
                 return None
             findings = value.get("findings")
@@ -1226,6 +1378,7 @@ class LocalCodexExecutor:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
         finally:
+            temporary.cleanup()
             report_path.unlink(missing_ok=True)
 
 
@@ -1566,16 +1719,35 @@ class TaskQueuePilot:
         workspace = Path(str(row.get("workspace") or ""))
         branch = str(row.get("branch") or "")
         expected_branch = f"issue/{issue.number}-task"
+        expected_workspace = Path(
+            workspace_plan(issue, self.worktree_root).path
+        ).resolve()
+        workspace_common_dir = git_common_dir(workspace)
+        repository_common_dir = git_common_dir(self.repository_root)
+        trusted_linked_workspace = (
+            workspace_common_dir is not None
+            and workspace_common_dir == repository_common_dir
+        )
         if (
             branch != expected_branch
-            or workspace.name != f"issue-{issue.number}"
+            or workspace.is_symlink()
+            or (
+                workspace.resolve() != expected_workspace
+                and not trusted_linked_workspace
+            )
         ):
             return reject_identity("task worktree is outside its deterministic issue workspace")
         if (
-            git_common_dir(workspace) is None
-            or git_common_dir(workspace) != git_common_dir(self.repository_root)
+            workspace_common_dir is None
+            or (
+                not trusted_linked_workspace
+                and (
+                    not _is_standalone_checkout(workspace)
+                    or bool(_task_git_output(workspace, "remote"))
+                )
+            )
         ):
-            return reject_identity("task worktree belongs to a different Git repository")
+            return reject_identity("task workspace is not a private checkout of the expected repository")
         local_head = workspace_current_head(workspace, branch)
         if local_head is None:
             return reject_identity("task worktree branch or HEAD unavailable")
@@ -1690,6 +1862,9 @@ class TaskQueuePilot:
                 workspace = create_worktree(
                     self.repository_root, plan, allow_dirty=resumed_attempt
                 )
+                _pin_task_base(self.store, issue.number, workspace, row)
+                row = self.store.get(issue.number)
+                assert row is not None
                 feedback = str(row.get("review_feedback") or "")
                 prompt = render_task(
                     issue, self.repository_root, review_feedback=feedback,
@@ -1701,6 +1876,7 @@ class TaskQueuePilot:
                     str(self.state_directory / "reports" /
                         f"issue-{issue.number}-{row['run_id']}-{row['attempt_id']}.json"),
                     str(row.get("codex_session_id") or ""),
+                    ISSUE_WORKSPACE_WRITE_ROOTS.get(issue.number),
                 )
                 self.github.set_status(
                     issue.number,
@@ -1744,17 +1920,24 @@ class TaskQueuePilot:
                     outcome = ExecutionResult(outcome, "completed" if outcome == 0 else "blocked", None, "")
                 exit_code = outcome.exit_code
                 if exit_code == 0 and outcome.outcome == "completed":
-                    local_sha = workspace_head_sha(Path(packet.workspace.path), packet.workspace.branch)
-                    remote_sha = self.github.branch_sha(self.repository_root, packet.workspace.branch)
+                    try:
+                        local_sha = _publish_validated_task_branch(
+                            self.repository_root, Path(packet.workspace.path), issue.number,
+                            base_sha=str(self.store.get(issue.number)["base_sha"]),
+                        )
+                        remote_sha = self.github.branch_sha(self.repository_root, packet.workspace.branch)
+                    except Exception:
+                        local_sha = None
+                        remote_sha = None
                     if local_sha is None or remote_sha != local_sha:
-                        cause = "task-branch-not-pushed"
+                        cause = "coordinator-task-branch-publication-failed"
                         row = self.store.fail(issue.number, cause)
                         self._set_outcome_label(issue.number, str(row["status"]))
                         if row["status"] == "blocked":
                             self._emit_closeout(
                                 issue, row, status="blocked",
-                                summary="The task branch was not published after two completion attempts.",
-                                blockers=("Local and remote task branch SHAs did not match.",),
+                                summary="The trusted coordinator could not validate and publish the task branch after two attempts.",
+                                blockers=("Coordinator branch validation or exact remote SHA verification failed.",),
                             )
                         exit_code = 1
                     else:
@@ -2050,6 +2233,27 @@ def _git_run(repository: Path, *arguments: str) -> subprocess.CompletedProcess[s
     )
 
 
+def _task_git_run(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_PAGER": "cat",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    })
+    return subprocess.run(
+        [
+            "git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+            "-c", "core.pager=cat", "-c", "diff.external=",
+            "-C", str(repository), *arguments,
+        ],
+        text=True, capture_output=True, check=False, env=environment,
+    )
+
+
 def _git_output(repository: Path, *arguments: str) -> str:
     result = _git_run(repository, *arguments)
     if result.returncode:
@@ -2059,11 +2263,42 @@ def _git_output(repository: Path, *arguments: str) -> str:
 
 def _is_standalone_checkout(repository: Path) -> bool:
     try:
-        git_dir = Path(_git_output(repository, "rev-parse", "--path-format=absolute", "--git-dir")).resolve()
-        common_dir = Path(_git_output(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+        git_dir = Path(_task_git_output(repository, "rev-parse", "--path-format=absolute", "--git-dir")).resolve()
+        common_dir = Path(_task_git_output(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
     except RuntimeError:
         return False
     return git_dir == repository.resolve() / ".git" and common_dir == git_dir
+
+
+def _task_git_output(repository: Path, *arguments: str) -> str:
+    result = _task_git_run(repository, *arguments)
+    if result.returncode:
+        raise RuntimeError("task Git metadata could not be verified")
+    return result.stdout.strip()
+
+
+def _pin_task_base(
+    store: RunStore,
+    issue_number: int,
+    workspace: Path,
+    row: Mapping[str, object],
+) -> str:
+    existing = str(row.get("base_sha") or "")
+    if existing:
+        if not re.fullmatch(r"[0-9a-f]{40,64}", existing):
+            raise RuntimeError("stored task base SHA is invalid")
+        return existing
+    if row.get("codex_session_id"):
+        raise RuntimeError("cannot resume a Codex session without its pinned task base")
+
+    base = _task_git_output(workspace, "rev-parse", "--verify", "refs/remotes/origin/main^{commit}")
+    head = _task_git_output(workspace, "rev-parse", "--verify", "HEAD^{commit}")
+    status = _task_git_run(workspace, "status", "--porcelain", "--untracked-files=all")
+    if not re.fullmatch(r"[0-9a-f]{40,64}", base) or head != base:
+        raise RuntimeError("legacy task checkout cannot be tied to a clean coordinator base")
+    if status.returncode or status.stdout.strip():
+        raise RuntimeError("cannot pin a task base after workspace edits have begun")
+    return str(store.set_base_sha(issue_number, base)["base_sha"])
 
 
 def _assert_branch_not_checked_out(
@@ -2083,15 +2318,221 @@ def _assert_branch_not_checked_out(
 
 
 def _inherit_commit_identity(source: Path, target: Path) -> None:
-    for key in ("user.name", "user.email", "commit.gpgsign", "user.signingkey", "gpg.format"):
+    identity: dict[str, str] = {}
+    for key in ("user.name", "user.email"):
         value = _git_run(source, "config", "--local", "--get", key)
-        if value.returncode == 1:
-            continue
-        if value.returncode:
-            raise RuntimeError("could not read local commit identity from the source repository")
-        configured = _git_run(target, "config", "--local", key, value.stdout.rstrip("\n"))
+        if value.returncode or not value.stdout.strip():
+            raise RuntimeError("source repository must have a local Git author identity")
+        identity[key] = value.stdout.rstrip("\n")
+        if "\n" in identity[key] or "\r" in identity[key]:
+            raise RuntimeError("source repository Git author identity is invalid")
+    for key, value in identity.items():
+        configured = _git_run(target, "config", "--local", key, value)
         if configured.returncode:
             raise RuntimeError("could not preserve local commit identity in the issue checkout")
+    for key, value in (("commit.gpgsign", "false"), ("push.default", "nothing")):
+        configured = _git_run(target, "config", "--local", key, value)
+        if configured.returncode:
+            raise RuntimeError("could not lock down issue checkout Git defaults")
+    for key in ("user.signingkey", "gpg.format", "gpg.program", "credential.helper"):
+        _task_git_run(target, "config", "--local", "--unset-all", key)
+
+
+def _remove_worker_remotes(target: Path, branch: str) -> None:
+    remotes = _task_git_run(target, "remote")
+    if remotes.returncode:
+        raise RuntimeError("could not inspect task checkout remotes")
+    names = remotes.stdout.splitlines()
+    if any(name != "origin" for name in names):
+        raise RuntimeError("task checkout contains an unexpected Git remote")
+    if "origin" in names:
+        for arguments in (
+            ("remote", "get-url", "origin"),
+            ("remote", "get-url", "--push", "origin"),
+        ):
+            result = _task_git_run(target, *arguments)
+            if result.returncode:
+                raise RuntimeError("task checkout origin cannot be safely removed")
+            _validate_remote_url(result.stdout.strip())
+        removed = _task_git_run(target, "config", "--local", "--remove-section", "remote.origin")
+        if removed.returncode:
+            raise RuntimeError("could not remove the task checkout Git remote")
+    for key in (f"branch.{branch}.remote", f"branch.{branch}.merge"):
+        _task_git_run(target, "config", "--local", "--unset-all", key)
+    for key in ("credential.helper", "http.extraheader", "core.sshCommand"):
+        _task_git_run(target, "config", "--local", "--unset-all", key)
+    configured = _task_git_run(target, "config", "--local", "push.default", "nothing")
+    if configured.returncode:
+        raise RuntimeError("could not disable implicit task checkout pushes")
+
+
+def _local_commit_identity(repository: Path) -> tuple[str, str]:
+    values: list[str] = []
+    for key in ("user.name", "user.email"):
+        result = _task_git_run(repository, "config", "--local", "--get", key)
+        value = result.stdout.rstrip("\n")
+        if result.returncode or not value or "\n" in value or "\r" in value:
+            raise RuntimeError("local task commit identity is unavailable")
+        values.append(value)
+    return values[0], values[1]
+
+
+def _validate_task_commit_scope(workspace: Path, base_sha: str, issue_number: int) -> None:
+    allowed_paths = ISSUE_COMMIT_PATH_ALLOWLISTS.get(issue_number)
+    if allowed_paths is None:
+        return
+    commits = _task_git_run(workspace, "rev-list", "--reverse", f"{base_sha}..HEAD")
+    merges = _task_git_run(workspace, "rev-list", "--merges", f"{base_sha}..HEAD")
+    if commits.returncode or merges.returncode or merges.stdout.strip():
+        raise RuntimeError("disposable Issue task contains an invalid commit history")
+    for sha in commits.stdout.splitlines():
+        changed = _task_git_run(
+            workspace, "diff-tree", "--no-commit-id", "--name-only", "--no-renames",
+            "-r", "-z", sha,
+        )
+        if changed.returncode:
+            raise RuntimeError("could not validate disposable Issue commit scope")
+        paths = {path for path in changed.stdout.split("\x00") if path}
+        if not paths or not paths.issubset(allowed_paths):
+            raise RuntimeError("disposable Issue commit exceeds its exact path allowlist")
+
+
+def _validate_task_checkout_for_publish(
+    repository_root: Path,
+    workspace: Path,
+    issue_number: int,
+    base_sha: str,
+) -> str:
+    expected_branch = f"issue/{issue_number}-task"
+    if workspace.resolve().name != f"issue-{issue_number}":
+        raise RuntimeError("task workspace path does not match the Issue identity")
+    if not _is_standalone_checkout(workspace):
+        raise RuntimeError("task checkout is not a private standalone Git repository")
+    branch = _task_git_output(workspace, "branch", "--show-current")
+    if branch != expected_branch:
+        raise RuntimeError("task checkout branch does not match the Issue identity")
+    common_dir = Path(_task_git_output(
+        workspace, "rev-parse", "--path-format=absolute", "--git-common-dir",
+    )).resolve()
+    if common_dir != workspace.resolve() / ".git":
+        raise RuntimeError("task checkout Git metadata is outside its workspace")
+    remotes = _task_git_output(workspace, "remote")
+    if remotes:
+        raise RuntimeError("task checkout still has a remote and cannot be published")
+    if not re.fullmatch(r"[0-9a-f]{40,64}", base_sha):
+        raise RuntimeError("coordinator task base SHA is invalid")
+    git_directory = workspace.resolve() / ".git"
+    metadata_paths = (
+        git_directory / "objects/info/alternates",
+        git_directory / "info/grafts",
+        git_directory / "shallow",
+    )
+    if any(path.exists() or path.is_symlink() for path in metadata_paths):
+        raise RuntimeError("task checkout uses an alternate, grafted, or shallow object view")
+    replace_refs = _task_git_run(workspace, "for-each-ref", "--format=%(refname)", "refs/replace")
+    if replace_refs.returncode or replace_refs.stdout.strip():
+        raise RuntimeError("task checkout has replacement refs")
+    trusted_main = _task_git_run(
+        repository_root, "merge-base", "--is-ancestor", base_sha, "refs/remotes/origin/main",
+    )
+    if trusted_main.returncode:
+        raise RuntimeError("task base is not reachable from the coordinator's origin/main")
+    task_ancestry = _task_git_run(workspace, "merge-base", "--is-ancestor", base_sha, "HEAD")
+    if task_ancestry.returncode:
+        raise RuntimeError("task branch does not descend from its coordinator-pinned base")
+    head = _task_git_output(workspace, "rev-parse", "HEAD")
+    if not re.fullmatch(r"[0-9a-f]{40,64}", head):
+        raise RuntimeError("task checkout HEAD is not a full commit SHA")
+    status = _task_git_run(workspace, "status", "--porcelain", "--untracked-files=all")
+    if status.returncode or status.stdout.strip():
+        raise RuntimeError("task checkout must be clean before publication")
+    commits = _task_git_run(workspace, "rev-list", "--reverse", f"{base_sha}..HEAD")
+    if commits.returncode or not commits.stdout.strip():
+        raise RuntimeError("task completion must contain at least one commit beyond origin/main")
+    _validate_task_commit_scope(workspace, base_sha, issue_number)
+    expected_name, expected_email = _local_commit_identity(repository_root)
+    for sha in commits.stdout.splitlines():
+        metadata = _task_git_run(
+            workspace, "show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce", sha,
+        )
+        if metadata.returncode:
+            raise RuntimeError("task commit identity could not be verified")
+        identity = metadata.stdout.rstrip("\n").split("\x00")
+        if identity != [expected_name, expected_email, expected_name, expected_email]:
+            raise RuntimeError("task branch contains a commit from an unexpected identity")
+    return head
+
+
+def _canonical_robot_sim_remote(url: str) -> bool:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return False
+    scp_remote = re.fullmatch(r"git@github\.com:([^?#]+)", url, flags=re.IGNORECASE)
+    if scp_remote:
+        path = scp_remote.group(1)
+    elif parsed.scheme in {"https", "ssh"} and parsed.hostname and parsed.hostname.casefold() == "github.com":
+        if parsed.username not in ({None} if parsed.scheme == "https" else {None, "git"}):
+            return False
+        if parsed.password or parsed.query or parsed.fragment or parsed.port not in (None, 22, 443):
+            return False
+        path = parsed.path.lstrip("/")
+    else:
+        return False
+    return path.removesuffix(".git").casefold() == REPOSITORY.casefold()
+
+
+def _publish_validated_task_branch(
+    repository_root: Path,
+    workspace: Path,
+    issue_number: int,
+    *,
+    base_sha: str,
+    remote: str = "origin",
+    require_canonical_remote: bool = True,
+) -> str:
+    head = _validate_task_checkout_for_publish(repository_root, workspace, issue_number, base_sha)
+    if require_canonical_remote:
+        remote_url = _git_output(repository_root, "remote", "get-url", "--push", remote)
+        _validate_remote_url(remote_url)
+        if not _canonical_robot_sim_remote(remote_url):
+            raise RuntimeError("coordinator push remote is not the canonical RobotSim repository")
+
+    temporary_ref = f"refs/robotsim/task-queue/issue-{issue_number}-{uuid.uuid4().hex}"
+    object_directory = Path(_task_git_output(workspace, "rev-parse", "--path-format=absolute", "--git-path", "objects"))
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = str(object_directory.resolve())
+    update = subprocess.run(
+        ["git", "-C", str(repository_root), "update-ref", temporary_ref, head],
+        text=True, capture_output=True, check=False, env=environment,
+    )
+    if update.returncode:
+        raise RuntimeError("coordinator could not import the validated task commit")
+    try:
+        branch = f"issue/{issue_number}-task"
+        pushed = subprocess.run(
+            ["git", "-C", str(repository_root), "push", "--porcelain", remote,
+             f"{temporary_ref}:refs/heads/{branch}"],
+            text=True, capture_output=True, check=False, env=environment,
+        )
+        if pushed.returncode:
+            raise RuntimeError("coordinator push failed; task branch was not changed forcibly")
+        verified = subprocess.run(
+            ["git", "-C", str(repository_root), "ls-remote", "--exit-code", remote,
+             f"refs/heads/{branch}"],
+            text=True, capture_output=True, check=False, env=environment,
+        )
+        fields = verified.stdout.strip().split()
+        if verified.returncode or len(fields) != 2 or fields != [head, f"refs/heads/{branch}"]:
+            raise RuntimeError("coordinator could not verify the published task branch SHA")
+    finally:
+        removed = subprocess.run(
+            ["git", "-C", str(repository_root), "update-ref", "-d", temporary_ref],
+            text=True, capture_output=True, check=False, env=environment,
+        )
+        if removed.returncode:
+            raise RuntimeError("coordinator could not remove its temporary task publication ref")
+    return head
 
 
 def _validate_remote_url(url: str) -> None:
@@ -2177,6 +2618,7 @@ def _clone_task_checkout(
         raise RuntimeError("isolated issue checkout does not preserve the expected branch and HEAD")
     if not _is_standalone_checkout(target):
         raise RuntimeError("issue checkout Git metadata is not private to its workspace")
+    _remove_worker_remotes(target, plan.branch)
     return target
 
 
@@ -2361,10 +2803,10 @@ def create_worktree(
     if stage.is_symlink() or marker_path.is_symlink():
         raise RuntimeError("issue checkout migration path is a symlink; preserve it for inspection")
     if target.exists():
-        branch_result = _git_run(target, "branch", "--show-current")
+        branch_result = _task_git_run(target, "branch", "--show-current")
         if branch_result.returncode or branch_result.stdout.strip() != plan.branch:
             raise RuntimeError("existing issue workspace does not match its deterministic branch")
-        status = _git_run(target, "status", "--porcelain", "--untracked-files=all")
+        status = _task_git_run(target, "status", "--porcelain", "--untracked-files=all")
         if status.returncode or (status.stdout.strip() and not allow_dirty):
             raise RuntimeError("existing issue workspace has local changes; preserve and inspect it before resume")
         if _is_standalone_checkout(target):
@@ -2375,10 +2817,11 @@ def create_worktree(
                 if not marker["ready"] or stage.exists():
                     raise RuntimeError("migration marker conflicts with the completed task checkout")
                 marker_path.unlink(missing_ok=True)
+            _remove_worker_remotes(target, plan.branch)
             return target
         if status.stdout.strip():
             raise RuntimeError("legacy linked issue workspace has local changes; preserve and inspect it before migration")
-        head = _git_output(target, "rev-parse", "HEAD")
+        head = _task_git_output(target, "rev-parse", "HEAD")
         branch_ref = _git_run(repo, "rev-parse", f"refs/heads/{plan.branch}")
         if branch_ref.returncode or branch_ref.stdout.strip() != head:
             raise RuntimeError("legacy issue branch no longer matches its worktree HEAD")

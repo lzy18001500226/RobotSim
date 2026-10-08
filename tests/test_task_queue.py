@@ -294,6 +294,11 @@ class TaskQueueTests(unittest.TestCase):
             ["git", "-C", str(repository), "push", "--set-upstream", "origin", "main"],
             check=True, capture_output=True, text=True,
         )
+        subprocess.run(
+            ["git", "-C", str(repository), "fetch", "--no-tags", "origin",
+             "+refs/heads/main:refs/remotes/origin/main"],
+            check=True, capture_output=True, text=True,
+        )
 
         plan = queue.workspace_plan(make_issue(), self.root / "worktrees")
         workspace = queue.create_worktree(repository, plan)
@@ -319,15 +324,39 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(subprocess.check_output(
             ["git", "-C", str(workspace), "config", "--local", "--get", "user.email"], text=True,
         ).strip(), "robotsim-test@example.invalid")
+        self.assertEqual(subprocess.check_output(["git", "-C", str(workspace), "remote"], text=True).strip(), "")
+        self.assertNotEqual(subprocess.run(
+            ["git", "-C", str(workspace), "config", "--local", "--get", "branch.issue/49-task.remote"],
+            check=False, capture_output=True, text=True,
+        ).returncode, 0)
         command = queue.codex_command(workspace)
-        self.assertNotIn("--add-dir", command)
-        self.assertEqual(command[command.index("--sandbox") + 1], "workspace-write")
+        self.assertNotIn("--sandbox", command)
         self.assertNotIn("--danger-full-access", command)
+        self.assertIn("--ignore-user-config", command)
+        self.assertIn("--strict-config", command)
+        self.assertIn("default_permissions=robotsim_worker", command)
+        filesystem_override = next(
+            value for value in command
+            if value.startswith("permissions.robotsim_worker.filesystem=")
+        )
+        self.assertIn('"/root" = "deny"', filesystem_override)
+        self.assertIn("permissions.robotsim_worker.network.enabled=false", command)
+        self.assertIn("shell_environment_policy.inherit=none", command)
+        add_dirs = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "--add-dir"]
+        self.assertNotIn("/root", add_dirs)
+        self.assertNotIn("/var/tmp", add_dirs)
+        self.assertIn("history.persistence=none", command)
         read_only = queue.codex_command(workspace, read_only=True)
-        self.assertEqual(read_only[read_only.index("--sandbox") + 1], "read-only")
+        self.assertNotIn("--sandbox", read_only)
+        review_filesystem = next(
+            value for value in read_only
+            if value.startswith("permissions.robotsim_worker.filesystem=")
+        )
+        self.assertIn('"/home" = "read"', review_filesystem)
         self.assertNotIn("--add-dir", read_only)
         resume = queue.codex_resume_command("session-49", self.root / "result.json", workspace=workspace)
-        self.assertNotIn("--config", resume)
+        self.assertNotIn("--sandbox", resume)
+        self.assertIn("--strict-config", resume)
         baseline_head = subprocess.check_output(
             ["git", "-C", str(repository), "rev-parse", "main"], text=True,
         ).strip()
@@ -344,9 +373,27 @@ class TaskQueueTests(unittest.TestCase):
             ["git", "-C", str(workspace), "commit", "-m", "task worktree edit"],
             check=True, capture_output=True, text=True,
         )
+        task_head = subprocess.check_output(
+            ["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        trusted_base = baseline_head
+        task_git = workspace / ".git"
+        alternate = task_git / "objects/info/alternates"
+        alternate.parent.mkdir(parents=True, exist_ok=True)
+        alternate.write_text("/untrusted/object-store\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "alternate, grafted, or shallow"):
+            queue._publish_validated_task_branch(
+                repository, workspace, plan.issue_number, base_sha=trusted_base,
+                require_canonical_remote=False,
+            )
+        alternate.unlink()
         subprocess.run(
-            ["git", "-C", str(workspace), "push", "--set-upstream", "origin", plan.branch],
+            ["git", "-C", str(workspace), "update-ref", "refs/remotes/origin/main", task_head],
             check=True, capture_output=True, text=True,
+        )
+        published_head = queue._publish_validated_task_branch(
+            repository, workspace, plan.issue_number, base_sha=trusted_base,
+            require_canonical_remote=False,
         )
         pushed_head = subprocess.check_output(
             ["git", "--git-dir", str(remote), "rev-parse", f"refs/heads/{plan.branch}"], text=True,
@@ -354,6 +401,7 @@ class TaskQueueTests(unittest.TestCase):
         task_head = subprocess.check_output(
             ["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True,
         ).strip()
+        self.assertEqual(published_head, task_head)
         self.assertEqual(pushed_head, task_head)
         self.assertEqual(subprocess.check_output(
             ["git", "-C", str(repository), "rev-parse", "main"], text=True,
@@ -602,6 +650,8 @@ class TaskQueueTests(unittest.TestCase):
         )
         self.assertEqual(command[1:4], ["exec", "resume", "resume-session"])
         self.assertNotIn("--sandbox", command)
+        self.assertIn("default_permissions=robotsim_worker", command)
+        self.assertIn("permissions.robotsim_worker.network.enabled=false", command)
 
     def test_ci_failure_context_reuses_owner_then_blocks_same_root_cause(self) -> None:
         store = self.store()
@@ -924,8 +974,13 @@ class TaskQueueTests(unittest.TestCase):
             },
         )
         self.assertIn("Correct the timestamp reset handling.", prompt)
-        self.assertIn("--sandbox", queue.codex_command(self.root, read_only=True))
-        self.assertIn("read-only", queue.codex_command(self.root, read_only=True))
+        review_command = queue.codex_command(self.root, read_only=True)
+        self.assertIn("default_permissions=robotsim_worker", review_command)
+        review_filesystem = next(
+            value for value in review_command
+            if value.startswith("permissions.robotsim_worker.filesystem=")
+        )
+        self.assertIn('"/home" = "read"', review_filesystem)
 
     def test_next_task_waits_for_issue_dependency_to_close(self) -> None:
         task = make_issue(60, body="Depends on: #49")
@@ -943,6 +998,73 @@ class TaskQueueTests(unittest.TestCase):
         self.assertEqual(event["task_id"], "issue-49-symphony-task")
         self.assertEqual(event["attempt_id"], row["attempt_id"])
         self.assertEqual(event["pr_number"], None)
+
+    def test_task_base_sha_is_immutable_in_run_state(self) -> None:
+        store = self.store()
+        task = make_issue()
+        self.claim(store, task)
+
+        pinned = store.set_base_sha(task.number, "a" * 40)
+
+        self.assertEqual(pinned["base_sha"], "a" * 40)
+        self.assertEqual(store.set_base_sha(task.number, "a" * 40)["base_sha"], "a" * 40)
+        with self.assertRaisesRegex(RuntimeError, "immutable"):
+            store.set_base_sha(task.number, "b" * 40)
+
+    def test_disposable_issue_scope_checks_every_commit_not_only_final_diff(self) -> None:
+        repository = self.root / "scope-repository"
+        repository.mkdir()
+        for command in (
+            ["git", "init", "--initial-branch=main", str(repository)],
+            ["git", "-C", str(repository), "config", "user.name", "RobotSim Test"],
+            ["git", "-C", str(repository), "config", "user.email", "robotsim-test@example.invalid"],
+        ):
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        (repository / "README.md").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "-m", "base"],
+            check=True, capture_output=True, text=True,
+        )
+        base_sha = subprocess.check_output(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        subprocess.run(
+            ["git", "-C", str(repository), "checkout", "-b", "issue/62-task"],
+            check=True, capture_output=True, text=True,
+        )
+
+        note = repository / "docs/research/issue49-queue-e2e-note.md"
+        probe = repository / "tests/test_issue49_recovery_probe.py"
+        note.parent.mkdir(parents=True)
+        probe.parent.mkdir(parents=True)
+        note.write_text("fixture note\n", encoding="utf-8")
+        probe.write_text("pass\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "-m", "allowed fixture files"],
+            check=True, capture_output=True, text=True,
+        )
+        queue._validate_task_commit_scope(repository, base_sha, 62)
+
+        source = repository / "robots/unitree_g1/controller.cpp"
+        source.parent.mkdir(parents=True)
+        source.write_text("temporary production change\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repository), "add", "robots"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "-m", "out of scope"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "rm", "robots/unitree_g1/controller.cpp"],
+            check=True, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "-m", "revert out of scope"],
+            check=True, capture_output=True, text=True,
+        )
+        with self.assertRaisesRegex(RuntimeError, "exact path allowlist"):
+            queue._validate_task_commit_scope(repository, base_sha, 62)
 
     def test_failed_closeout_retry_reuses_exact_payload_and_is_reported(self) -> None:
         store = self.store()
