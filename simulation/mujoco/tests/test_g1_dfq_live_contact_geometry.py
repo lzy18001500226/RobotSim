@@ -1,10 +1,16 @@
 from pathlib import Path
 import sys
 import unittest
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+
+# This test exercises contact-geometry math only; rendering is not part of the
+# headless smoke dependency set.
+cv2_stub = ModuleType("cv2")
+cv2_stub.__version__ = "unused-by-contact-geometry-test"
+sys.modules.setdefault("cv2", cv2_stub)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import g1_dfq_grasp_core as core
