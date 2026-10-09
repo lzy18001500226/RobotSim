@@ -1277,13 +1277,27 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         nonlocal effort_mode_active
         if effort_mode_active:
             raise GateFailure("Simulation-only effort mode was activated more than once")
+        handoff_references = gates.effort_handoff_references(channel_close_targets)
+        handoff_channels = {}
         for channel, aid in hand_ids.items():
-            effort_q_reference[channel] = joint_qpos(
-                model, data, channel_joint_names[channel]
-            )
+            actual_qpos = joint_qpos(model, data, channel_joint_names[channel])
+            effort_q_reference[channel] = handoff_references[channel]
+            handoff_channels[channel] = {
+                "joint": channel_joint_names[channel],
+                "commanded_position_target_rad": handoff_references[channel],
+                "qpos_at_handoff_rad": actual_qpos,
+                "closure_direction_error_rad": closure_directions[channel]
+                * (handoff_references[channel] - actual_qpos),
+            }
             model.actuator_gainprm[aid, :] = 0.0
             model.actuator_biasprm[aid, :] = 0.0
             data.ctrl[aid] = 0.0
+        result["simulation_effort_mode_handoff"] = {
+            "reference_source": "last bounded CLOSE/HOLD commanded position target",
+            "position_targets_preserved": True,
+            "qpos_written": False,
+            "channels": handoff_channels,
+        }
         for digit in contact_controller_state:
             contact_controller_state[digit] = "SIMULATION_ONLY_TORQUE_IMPEDANCE"
         effort_mode_active = True

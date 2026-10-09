@@ -6,6 +6,7 @@ from simulation.mujoco.g1_dfq_grasp_gates import (
     CHANNELS,
     GATE_NAMES,
     evaluate_gates,
+    effort_handoff_references,
     is_contact_control_state,
     load_ready_summary,
     minimum_safe_brake_scale,
@@ -53,6 +54,22 @@ def passing_result():
 
 
 class GraspGateTests(unittest.TestCase):
+    def test_effort_mode_handoff_preserves_bounded_position_preload(self):
+        targets = {channel: 0.0 for channel in CHANNELS}
+        targets["index_proximal"] = 0.305
+        references = effort_handoff_references(targets)
+        self.assertEqual(references, targets)
+        actual_qpos = 0.301
+        self.assertAlmostEqual(references["index_proximal"] - actual_qpos, 0.004)
+
+    def test_effort_mode_handoff_rejects_missing_or_nonfinite_target(self):
+        with self.assertRaises(ValueError):
+            effort_handoff_references({})
+        targets = {channel: 0.0 for channel in CHANNELS}
+        targets["thumb_proximal_pitch"] = float("nan")
+        with self.assertRaises(ValueError):
+            effort_handoff_references(targets)
+
     @staticmethod
     def opposing_contacts():
         return [

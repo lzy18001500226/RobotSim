@@ -40,6 +40,17 @@ _RESULTANT_DIRECTIONS = np.asarray([
 _RESULTANT_COVER_FACTOR = 0.90
 
 
+def effort_handoff_references(commanded_position_targets: dict[str, float]) -> dict[str, float]:
+    """Preserve the final bounded position commands when entering effort mode."""
+    missing = [channel for channel in CHANNELS if channel not in commanded_position_targets]
+    if missing:
+        raise ValueError(f"missing effort handoff targets for {missing}")
+    references = {channel: float(commanded_position_targets[channel]) for channel in CHANNELS}
+    if not np.all(np.isfinite(list(references.values()))):
+        raise ValueError("effort handoff targets must be finite")
+    return references
+
+
 def minimum_safe_brake_scale(peak_at_scale, ceiling: float, *, iterations: int = 24):
     """Return the least braking scale meeting a speed ceiling on a monotone interval."""
     if float(peak_at_scale(0.0)) <= ceiling:
