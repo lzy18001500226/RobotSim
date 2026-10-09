@@ -55,7 +55,8 @@ def build_fixture(source_xml: Path, menagerie_root: Path, canonical, out: Path,
                   pad_midpoint_offset_world_m: np.ndarray,
                   carriage_bias_compensation: bool,
                   carriage_stiffness_scale: float,
-                  coupler_limit_activation_margin_rad: float) -> tuple[mujoco.MjModel, dict[str, Any]]:
+                  coupler_limit_activation_margin_rad: float,
+                  neutralize_spring_preload: bool = False) -> tuple[mujoco.MjModel, dict[str, Any]]:
     root = ET.parse(source_xml).getroot()
     root.find("compiler").set("meshdir", str((menagerie_root / "robotiq_2f85" / "assets").resolve()))
     option = root.find("option")
@@ -88,6 +89,22 @@ def build_fixture(source_xml: Path, menagerie_root: Path, canonical, out: Path,
             if name not in joint_nodes:
                 raise RuntimeError(f"Pinned gripper model has no {name}")
             joint_nodes[name].set("margin", f"{coupler_limit_activation_margin_rad:.12g}")
+    spring_default_joint = root.find('.//default[@class="spring_link"]/joint')
+    spring_reference_change = None
+    if neutralize_spring_preload:
+        if spring_default_joint is None or "springref" not in spring_default_joint.attrib:
+            raise RuntimeError("Pinned gripper model has no spring_link springref")
+        springref_source = float(spring_default_joint.get("springref"))
+        springref_neutral = 0.0
+        spring_default_joint.set("springref", f"{springref_neutral:.12g}")
+        spring_reference_change = {
+            "parameter": "springref",
+            "source_value_rad": springref_source,
+            "diagnostic_value_rad": springref_neutral,
+            "spring_stiffness_source_and_diagnostic_nm_per_rad": float(spring_default_joint.get("stiffness")),
+            "spring_damping_source_and_diagnostic_nms_per_rad": float(spring_default_joint.get("damping")),
+            "classification": "SIMULATION_ONLY spring-preload neutralization",
+        }
     ET.SubElement(actuator, "position", {
         "name": LIFT_ACTUATOR, "joint": LIFT_JOINT,
         "kp": f"{lift_kp:.12g}", "kv": f"{lift_kv:.12g}",
@@ -144,6 +161,11 @@ def build_fixture(source_xml: Path, menagerie_root: Path, canonical, out: Path,
             if coupler_limit_activation_margin_rad > 0.0 else "source coupler-limit settings"
         ),
         "coupler_limit_activation_margin_simulation_derived_rad": coupler_limit_activation_margin_rad,
+        "spring_reference_change": spring_reference_change,
+        "source_spring_reference_rad": (float(spring_default_joint.get("springref"))
+                                         if spring_reference_change is None else spring_reference_change["source_value_rad"]),
+        "compiled_spring_reference_rad": (float(spring_default_joint.get("springref"))
+                                           if spring_default_joint is not None else None),
         "coupler_joint_ranges_rad": {
             name: model.jnt_range[m0.obj_id(model, mujoco.mjtObj.mjOBJ_JOINT, name)].astype(float).tolist()
             for name in ("left_coupler_joint", "right_coupler_joint")
@@ -249,6 +271,31 @@ def static_clearances(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, A
         "minimum_non_gripping_robot_to_bottle_m": min((d["distance_m"] for d in non_grip), default=None),
         "minimum_robot_to_table_m": min((d["distance_m"] for d in table), default=None),
         "active_contacts": contact_rows(model, data),
+    }
+
+
+def bottle_table_clearance(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, Any]:
+    bottle_geoms = [gid for gid in range(model.ngeom)
+                    if geom_label(model, gid)[0] == "m0_bottle" and
+                    (model.geom_contype[gid] or model.geom_conaffinity[gid])]
+    table_geoms = [gid for gid in range(model.ngeom)
+                   if geom_label(model, gid)[0].startswith("m0_table") and
+                   (model.geom_contype[gid] or model.geom_conaffinity[gid])]
+    segment = np.zeros(6, dtype=np.float64)
+    pairs = []
+    for bottle_gid in bottle_geoms:
+        for table_gid in table_geoms:
+            distance = float(mujoco.mj_geomDistance(model, data, bottle_gid, table_gid, 1.0, segment))
+            pairs.append({
+                "bottle_geom": geom_label(model, bottle_gid)[1],
+                "table_geom": geom_label(model, table_gid)[1],
+                "signed_distance_m": distance,
+            })
+    nearest = min(pairs, key=lambda row: row["signed_distance_m"]) if pairs else None
+    return {
+        "minimum_signed_clearance_m": nearest["signed_distance_m"] if nearest else None,
+        "nearest_geom_pair": nearest,
+        "all_bottle_table_geom_distances": pairs,
     }
 
 
@@ -375,6 +422,7 @@ def phase_steps(model: mujoco.MjModel, data: mujoco.MjData, name: str,
         table_contact_samples += int(bool(table))
         non_gripping_bottle_contact_samples += int(bool(non_gripping_bottle))
         state = object_state(model, data)
+        table_clearance = bottle_table_clearance(model, data)
         if trace:
             previous = trace[-1]
             sample_dt = float(data.time - previous["time_s"])
@@ -394,7 +442,8 @@ def phase_steps(model: mujoco.MjModel, data: mujoco.MjData, name: str,
         max_lift = max(max_lift, lift)
         gripper_joints = joint_dynamic_state(model, data, (
             "right_driver_joint", "right_coupler_joint", "right_follower_joint",
-            "left_driver_joint", "left_coupler_joint", "left_follower_joint"))
+            "right_spring_link_joint", "left_driver_joint", "left_coupler_joint",
+            "left_follower_joint", "left_spring_link_joint"))
         contact_forces = contact_force_summary(crows)
         carriage = carriage_state(model, data, lift_target_m, lift_id)
         row = {
@@ -416,6 +465,7 @@ def phase_steps(model: mujoco.MjModel, data: mujoco.MjData, name: str,
             "table_bottle_contact": bool(table),
             "non_gripping_bottle_contact": bool(non_gripping_bottle),
             "contacts": crows,
+            "bottle_table_full_geometry_clearance": table_clearance,
             "source_joint_limit_violations": m0.all_limited_joint_checks(model, data, {})[0],
             "qpos_writes_after_rollout_start": 0,
         }
@@ -445,6 +495,11 @@ def phase_steps(model: mujoco.MjModel, data: mujoco.MjData, name: str,
         "final_object_state": object_state(model, data),
         "final_table_normal_force_n": bottle_rows[-1]["table_normal_force_sum_n"] if bottle_rows else None,
         "final_source_limit_violations": bottle_rows[-1]["source_joint_limit_violations"] if bottle_rows else [],
+        "minimum_bottle_table_full_geometry_clearance_m": min(
+            (row["bottle_table_full_geometry_clearance"]["minimum_signed_clearance_m"]
+             for row in bottle_rows
+             if row["bottle_table_full_geometry_clearance"]["minimum_signed_clearance_m"] is not None),
+            default=None),
     }
 
 
@@ -462,6 +517,12 @@ def main() -> int:
                         help="simulation-derived fixture carriage servo stiffness scale; damping scales by sqrt(scale)")
     parser.add_argument("--coupler-limit-activation-margin-rad", type=float, default=0.0,
                         help="SIMULATION_ONLY solver activation margin on the two Robotiq coupler limits; hard ranges stay unchanged")
+    parser.add_argument("--neutralize-spring-preload", action="store_true",
+                        help="SIMULATION_ONLY derived-model correction: set spring_link springref to its reset coordinate (0 rad), retaining source stiffness/damping")
+    parser.add_argument("--close-duration-s", type=float, default=0.60,
+                        help="duration of the smooth OPEN-to-CLOSE driver command; changes trajectory timing only")
+    parser.add_argument("--grip-close-target", type=float, default=255.0,
+                        help="source actuator command endpoint in [0,255]; a value below 255 may stop before measured coupler overtravel")
     parser.add_argument("--airborne-clearance-target-m", type=float, default=0.001,
                         help="fixture carriage target for the >=1 mm bottle-airborne gate; bounded to 1-2 mm")
     parser.add_argument("--five-mm-carriage-target-m", type=float, default=0.005,
@@ -492,6 +553,10 @@ def main() -> int:
             raise ValueError("carriage servo stiffness scale must be positive")
         if not 0.0 <= args.coupler_limit_activation_margin_rad <= 0.001:
             raise ValueError("coupler limit activation margin must be between 0 and 0.001 rad")
+        if not 0.60 <= args.close_duration_s <= 1.50:
+            raise ValueError("close duration must be between 0.60 and 1.50 seconds")
+        if not 0.0 < args.grip_close_target <= 255.0:
+            raise ValueError("gripper close target must be in (0,255]")
         if not 0.001 <= args.airborne_clearance_target_m <= 0.002:
             raise ValueError("airborne clearance target must be between 0.001 and 0.002 m")
         if not 0.005 <= args.five_mm_carriage_target_m <= 0.008:
@@ -520,8 +585,26 @@ def main() -> int:
                                         np.asarray(args.pad_midpoint_offset_world_m, dtype=float),
                                         args.carriage_bias_compensation,
                                         args.carriage_servo_stiffness_scale,
-                                        args.coupler_limit_activation_margin_rad)
+                                        args.coupler_limit_activation_margin_rad,
+                                        args.neutralize_spring_preload)
         result["fixture_identity"] = identity
+        result["model_configuration"] = (
+            "SIMULATION_ONLY_DIAGNOSTIC" if identity["spring_reference_change"] is not None or
+            args.coupler_limit_activation_margin_rad > 0.0 else "SOURCE_FAITHFUL_GRIPPER"
+        )
+        result["SIMULATION_ONLY_MODEL_CHANGES"] = {
+            "spring_reference_neutralization": identity["spring_reference_change"],
+            "coupler_limit_activation_margin_rad": args.coupler_limit_activation_margin_rad,
+            "fixture_carriage_and_controller": {
+                "added_for_isolated_test": True,
+                "carriage_bias_compensation": args.carriage_bias_compensation,
+                "carriage_servo_stiffness_scale": args.carriage_servo_stiffness_scale,
+                "not_applied_to_bottle": True,
+            },
+            "bottle_geometry_mass_friction_and_gravity_changed": False,
+            "source_joint_ranges_changed": False,
+            "bottle_force_attachment_or_state_write": False,
+        }
         data = mujoco.MjData(model)
         mujoco.mj_resetData(model, data)
         mujoco.mj_forward(model, data)
@@ -573,6 +656,7 @@ def main() -> int:
             "airborne_clearance_command_target_m": args.airborne_clearance_target_m,
             "five_mm_carriage_command_target_m": args.five_mm_carriage_target_m,
             "five_mm_command_target_simulation_derived": args.five_mm_carriage_target_m != 0.005,
+            "close_duration_s": args.close_duration_s,
             "large_lift_move_duration_s_simulation_derived": args.large_lift_move_duration_s,
             "thirty_mm_carriage_command_target_m": args.thirty_mm_carriage_target_m,
             "thirty_mm_command_target_simulation_derived": args.thirty_mm_carriage_target_m != 0.030,
@@ -581,6 +665,16 @@ def main() -> int:
             "actuator_effort_cap_n": float(model.actuator_forcerange[lift_actuator_id, 1]),
             "source_joint_limits_changed": False,
             "bottle_force_or_state_applied": False,
+        }
+        grip_actuator_id = m0.obj_id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, GRIP_ACTUATOR)
+        result["gripper_command"] = {
+            "source_actuator": GRIP_ACTUATOR,
+            "source_control_range": model.actuator_ctrlrange[grip_actuator_id].astype(float).tolist(),
+            "close_target": args.grip_close_target,
+            "close_duration_s": args.close_duration_s,
+            "source_actuator_force_range_n": model.actuator_forcerange[grip_actuator_id].astype(float).tolist(),
+            "close_target_is_simulation_derived": args.grip_close_target != 255.0,
+            "actuator_force_range_changed": False,
         }
         renderer = mujoco.Renderer(model, height=720, width=1280)
         camera = mujoco.MjvCamera()
@@ -603,10 +697,10 @@ def main() -> int:
             phases.append(phase_steps(model, data, "OPEN", 0.20, 0, 0, 0, 0,
                                       writer, renderer, camera, trace_rows, contact_rows_all, phases, baseline_com_z,
                                       lift_bias_compensation_n, lift_kp))
-            phases.append(phase_steps(model, data, "CLOSE", 0.60, 0, 255, 0, 0,
+            phases.append(phase_steps(model, data, "CLOSE", args.close_duration_s, 0, args.grip_close_target, 0, 0,
                                       writer, renderer, camera, trace_rows, contact_rows_all, phases, baseline_com_z,
                                       lift_bias_compensation_n, lift_kp))
-            hold = phase_steps(model, data, "HOLD", 1.0, 255, 255, 0, 0,
+            hold = phase_steps(model, data, "HOLD", 1.0, args.grip_close_target, args.grip_close_target, 0, 0,
                                writer, renderer, camera, trace_rows, contact_rows_all, phases, baseline_com_z,
                                lift_bias_compensation_n, lift_kp)
             phases.append(hold)
@@ -623,7 +717,15 @@ def main() -> int:
                                         "bottle_com_slip_during_hold_xy_m": hold_slip,
                                         "bottle_com_height_change_during_hold_m": float(hold_end["center_of_mass_world_m"][2] - hold_start["center_of_mass_world_m"][2]),
                                         "bilateral_hold_pass": bilateral_hold_pass}
+            bottle_mass_kg = float(canonical.CANONICAL_X2_BOTTLE_MASS_KG)
+            result["physical_hold"]["bottle_weight_n"] = bottle_mass_kg * 9.81
+            result["physical_hold"]["mean_pad_vertical_support_n"] = float(np.mean([
+                r["contact_force_summary"]["pad_bottle"]["vertical_force_on_bottle_sum_n"]
+                for r in hold_rows])) if hold_rows else 0.0
+            result["physical_hold"]["mean_table_normal_force_n"] = float(np.mean([
+                r["table_normal_force_sum_n"] for r in hold_rows])) if hold_rows else 0.0
             lift_milestones = []
+            lift_gate_failures = []
             first_failed_lift_gate = None
             if bilateral_hold_pass:
                 previous = 0.0
@@ -634,12 +736,12 @@ def main() -> int:
                 for required_height, target_height in milestone_specs:
                     label_mm = int(round(required_height * 1000))
                     move_duration_s = args.large_lift_move_duration_s if required_height >= 0.030 else 0.30
-                    move = phase_steps(model, data, f"LIFT_{label_mm}MM", move_duration_s, 255, 255, previous, target_height,
+                    move = phase_steps(model, data, f"LIFT_{label_mm}MM", move_duration_s, args.grip_close_target, args.grip_close_target, previous, target_height,
                                        writer, renderer, camera, trace_rows, contact_rows_all, phases, baseline_com_z,
                                        lift_bias_compensation_n, lift_kp)
                     phases.append(move)
                     hold_duration = 1.0 if required_height >= 0.050 else 0.20
-                    hold_lift = phase_steps(model, data, f"HOLD_{label_mm}MM", hold_duration, 255, 255, target_height, target_height,
+                    hold_lift = phase_steps(model, data, f"HOLD_{label_mm}MM", hold_duration, args.grip_close_target, args.grip_close_target, target_height, target_height,
                                             writer, renderer, camera, trace_rows, contact_rows_all, phases, baseline_com_z,
                                             lift_bias_compensation_n, lift_kp)
                     phases.append(hold_lift)
@@ -649,9 +751,11 @@ def main() -> int:
                                                 any(c["kind"] == "pad_bottle" and c["pad_side"] == "right" for c in end_contacts))
                     non_gripping_contact_at_end = any(c["kind"] == "other_bottle" for c in end_contacts)
                     real_com_lift = float(object_state(model, data)["center_of_mass_world_m"][2] - baseline_com_z)
+                    minimum_hold_clearance = hold_lift["minimum_bottle_table_full_geometry_clearance_m"]
                     milestone_gate_pass = bool(
                         real_com_lift >= required_height and
                         hold_lift["table_contact_persistence_fraction"] == 0.0 and
+                        minimum_hold_clearance is not None and minimum_hold_clearance > 0.0 and
                         hold_lift["non_gripping_bottle_contact_persistence_fraction"] == 0.0 and
                         hold_lift["bilateral_contact_persistence_fraction"] >= 0.80 and
                         bilateral_contact_at_end and not table_contact_at_end and not non_gripping_contact_at_end)
@@ -663,6 +767,9 @@ def main() -> int:
                         "peak_com_lift_during_move_m": move["max_object_lift_from_settled_com_m"],
                         "table_contact_at_end": table_contact_at_end,
                         "table_contact_persistence_fraction_during_hold": hold_lift["table_contact_persistence_fraction"],
+                        "minimum_bottle_table_full_geometry_clearance_during_move_m": move["minimum_bottle_table_full_geometry_clearance_m"],
+                        "minimum_bottle_table_full_geometry_clearance_during_hold_m": minimum_hold_clearance,
+                        "table_contact_transient_during_move": move["table_contact_persistence_fraction"] > 0.0,
                         "non_gripping_bottle_contact_at_end": non_gripping_contact_at_end,
                         "non_gripping_bottle_contact_persistence_fraction_during_hold": hold_lift["non_gripping_bottle_contact_persistence_fraction"],
                         "bilateral_contact_at_end": bool(bilateral_contact_at_end),
@@ -671,16 +778,29 @@ def main() -> int:
                     lift_milestones.append(milestone)
                     previous = target_height
                     if not milestone_gate_pass:
-                        if hold_lift["table_contact_persistence_fraction"] > 0.0:
-                            first_failed_lift_gate = "BOTTLE_NOT_AIRBORNE"
+                        if hold_lift["table_contact_persistence_fraction"] > 0.0 or (minimum_hold_clearance is not None and minimum_hold_clearance <= 0.0):
+                            failure_name = "BOTTLE_NOT_AIRBORNE"
                         elif hold_lift["non_gripping_bottle_contact_persistence_fraction"] > 0.0:
-                            first_failed_lift_gate = "NON_GRIPPING_BOTTLE_CONTACT"
+                            failure_name = "NON_GRIPPING_BOTTLE_CONTACT"
                         elif not bilateral_contact_at_end or hold_lift["bilateral_contact_persistence_fraction"] < 0.80:
-                            first_failed_lift_gate = "BILATERAL_CONTACT_LOST"
+                            failure_name = "BILATERAL_CONTACT_LOST"
                         else:
-                            first_failed_lift_gate = f"LIFT_{label_mm}MM"
-                        break
+                            failure_name = f"LIFT_{label_mm}MM"
+                        if first_failed_lift_gate is None:
+                            first_failed_lift_gate = failure_name
+                        lift_gate_failures.append({
+                            "required_bottle_lift_m": required_height,
+                            "failure": failure_name,
+                            "table_contact_persistence_fraction": hold_lift["table_contact_persistence_fraction"],
+                            "minimum_bottle_table_clearance_m": minimum_hold_clearance,
+                            "bilateral_contact_persistence_fraction": hold_lift["bilateral_contact_persistence_fraction"],
+                            "non_gripping_contact_persistence_fraction": hold_lift["non_gripping_bottle_contact_persistence_fraction"],
+                        })
+                        if (hold_lift["bilateral_contact_persistence_fraction"] < 0.80 or
+                                not bilateral_contact_at_end or non_gripping_contact_at_end):
+                            break
             result["lift_milestones"] = lift_milestones
+            result["lift_gate_failures"] = lift_gate_failures
             result["first_failed_lift_gate"] = first_failed_lift_gate
             reached_50mm_hold = bool(lift_milestones and lift_milestones[-1]["required_bottle_lift_m"] == 0.050 and
                                      lift_milestones[-1]["gate_pass"])
@@ -688,7 +808,7 @@ def main() -> int:
             result["release_attempted"] = reached_50mm_hold
             if reached_50mm_hold:
                 held_lift_position = float(data.qpos[m0.qpos_id(model, LIFT_JOINT)])
-                grip_phase = phase_steps(model, data, "RELEASE", 0.60, 255, 0, held_lift_position,
+                grip_phase = phase_steps(model, data, "RELEASE", 0.60, args.grip_close_target, 0, held_lift_position,
                                          held_lift_position, writer, renderer, camera,
                                          trace_rows, contact_rows_all, phases, baseline_com_z,
                                          lift_bias_compensation_n, lift_kp)
@@ -710,9 +830,61 @@ def main() -> int:
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
         result["phase_results"] = phases
         result["release_pad_contact_count_at_end"] = release_contact_count
+        release_rows = [r for r in trace_rows if r["phase"] == "RELEASE"]
+        free_settle_rows = [r for r in trace_rows if r["phase"] == "FREE_SETTLE"]
+        release_end_com_z = (float(release_rows[-1]["object"]["center_of_mass_world_m"][2])
+                             if release_rows else None)
+        free_settle_min_com_z = min(
+            (float(r["object"]["center_of_mass_world_m"][2]) for r in free_settle_rows),
+            default=None)
+        free_settle_table_contact = any(r["table_bottle_contact"] for r in free_settle_rows)
+        result["physical_release"] = {
+            "release_phase_ran": bool(release_rows),
+            "pad_contact_samples_during_release": sum(
+                any(c["kind"] == "pad_bottle" for c in r["contacts"]) for r in release_rows),
+            "pad_contact_count_at_release_end": release_contact_count,
+            "release_end_bottle_com_z_m": release_end_com_z,
+            "free_settle_min_bottle_com_z_m": free_settle_min_com_z,
+            "downward_bottle_motion_after_release_m": (
+                release_end_com_z - free_settle_min_com_z
+                if release_end_com_z is not None and free_settle_min_com_z is not None else None),
+            "table_support_regained_during_free_settle": free_settle_table_contact,
+            "bottle_qpos_writes_after_rollout_start": 0,
+            "runtime_bottle_attachment_or_mocap": False,
+        }
+        result["physical_release"]["pass"] = bool(
+            reached_50mm_hold and release_contact_count == 0 and free_settle_rows and
+            result["physical_release"]["downward_bottle_motion_after_release_m"] is not None and
+            result["physical_release"]["downward_bottle_motion_after_release_m"] > 0.001 and
+            free_settle_table_contact)
         all_limit_failures = [r for r in trace_rows if r["source_joint_limit_violations"]]
         result["source_joint_limit_status"] = "FAIL" if all_limit_failures else "PASS"
         result["source_joint_limit_first_failure"] = all_limit_failures[0] if all_limit_failures else None
+        coupler_joint_ids = {
+            name: m0.obj_id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            for name in ("left_coupler_joint", "right_coupler_joint")
+        }
+        result["coupler_limit_excursion_summary"] = {}
+        for name, jid in coupler_joint_ids.items():
+            qadr = int(model.jnt_qposadr[jid])
+            lo, hi = (float(v) for v in model.jnt_range[jid])
+            values = [float(row["gripper_joints"][name]["qpos"]) for row in trace_rows]
+            lower_excursion = max((lo - q for q in values), default=0.0)
+            upper_excursion = max((q - hi for q in values), default=0.0)
+            result["coupler_limit_excursion_summary"][name] = {
+                "source_range_rad": [lo, hi],
+                "minimum_qpos_rad": min(values, default=None),
+                "maximum_qpos_rad": max(values, default=None),
+                "maximum_lower_limit_excursion_rad": max(0.0, lower_excursion),
+                "maximum_upper_limit_excursion_rad": max(0.0, upper_excursion),
+                "first_trace_qpos_rad": values[0] if values else None,
+            }
+        result["peak_hand_joint_speed_rad_s"] = max(
+            (abs(float(state["qvel"])) for row in trace_rows
+             for state in row["gripper_joints"].values()), default=0.0)
+        result["peak_hand_joint_acceleration_rad_s2"] = max(
+            (abs(float(state["qacc"])) for row in trace_rows
+             for state in row["gripper_joints"].values()), default=0.0)
         result["qpos_writes_after_rollout_start"] = 0
         result["bottle_qpos_writes_after_rollout_start"] = 0
         result["runtime_bottle_attachment_or_mocap"] = False
@@ -725,6 +897,52 @@ def main() -> int:
         result["lift_milestones_reached_and_airborne_m"] = reached
         result["diagnostic_physics_result"] = "PASS" if (bilateral_hold_pass and 0.050 in reached and
                                                             result["source_joint_limit_status"] == "PASS") else "FAIL_NON_ACCEPTANCE"
+        result["SOURCE_COUPLER_LIMIT_COMPLIANCE"] = {
+            "diagnostic_configuration_result": result["source_joint_limit_status"],
+            "source_faithful_baseline_result": "FAIL",
+            "source_faithful_baseline_evidence": "preserved source-faithful baseline: first 1 ms step, both couplers +1.209308176e-5 rad beyond upper range 0 rad",
+            "source_joint_ranges_unchanged": True,
+            "first_violation": result["source_joint_limit_first_failure"],
+            "source_faithful_gripper_configuration": result["model_configuration"] == "SOURCE_FAITHFUL_GRIPPER",
+        }
+        gate_by_height = {int(round(m["required_bottle_lift_m"] * 1000)): m["gate_pass"]
+                          for m in lift_milestones}
+        hold50 = next((m["hold"] for m in lift_milestones if m["required_bottle_lift_m"] == 0.050), None)
+        five_mm_rows = [r for r in trace_rows if r["phase"] == "HOLD_5MM"]
+        five_mm_pad_support = float(np.mean([
+            r["contact_force_summary"]["pad_bottle"]["vertical_force_on_bottle_sum_n"]
+            for r in five_mm_rows])) if five_mm_rows else 0.0
+        five_mm_table_force = float(np.mean([r["table_normal_force_sum_n"] for r in five_mm_rows])) if five_mm_rows else 0.0
+        result["table_load_transfer"] = {
+            "bottle_weight_n": bottle_mass_kg * 9.81,
+            "initial_hold_mean_pad_vertical_support_n": result["physical_hold"]["mean_pad_vertical_support_n"],
+            "initial_hold_mean_table_normal_force_n": result["physical_hold"]["mean_table_normal_force_n"],
+            "five_mm_hold_mean_pad_vertical_support_n": five_mm_pad_support,
+            "five_mm_hold_mean_table_normal_force_n": five_mm_table_force,
+            "five_mm_hold_minimum_full_geometry_clearance_m": next(
+                (m["minimum_bottle_table_full_geometry_clearance_during_hold_m"]
+                 for m in lift_milestones if m["required_bottle_lift_m"] == 0.005), None),
+        }
+        table_load_pass = bool(
+            five_mm_rows and five_mm_table_force < 0.05 and
+            five_mm_pad_support >= 0.90 * bottle_mass_kg * 9.81 and
+            result["table_load_transfer"]["five_mm_hold_minimum_full_geometry_clearance_m"] is not None and
+            result["table_load_transfer"]["five_mm_hold_minimum_full_geometry_clearance_m"] > 0.0)
+        result["required_gate_results"] = {
+            "BILATERAL_CONTACT": "PASS" if bilateral_hold_pass else "FAIL",
+            "TABLE_LOAD_TRANSFER": "PASS" if table_load_pass else "FAIL",
+            "AIRBORNE_5MM": "PASS" if gate_by_height.get(5, False) else "FAIL",
+            "AIRBORNE_30MM": "PASS" if gate_by_height.get(30, False) else "FAIL",
+            "AIRBORNE_50MM": "PASS" if gate_by_height.get(50, False) else "FAIL",
+            "AIRBORNE_HOLD_1S": "PASS" if hold50 and hold50["duration_s"] >= 1.0 and
+                hold50["table_contact_persistence_fraction"] == 0.0 and
+                hold50["bilateral_contact_persistence_fraction"] >= 0.80 else "FAIL",
+            "PHYSICAL_RELEASE": "PASS" if result["physical_release"]["pass"] else "FAIL",
+            "SOURCE_COUPLER_LIMIT_COMPLIANCE": (
+                "DIAGNOSTIC PASS; SOURCE-FAITHFUL BASELINE FAIL"
+                if result["source_joint_limit_status"] == "PASS" else "FAIL"
+            ),
+        }
         result["status"] = "NON_ACCEPTANCE_PHYSICS_COMPLETE"
         result["evidence"] = {"result_json": str(out / "result.json"),
                               "physics_trace": str(out / "raw" / "isolated_physics_trace.jsonl"),

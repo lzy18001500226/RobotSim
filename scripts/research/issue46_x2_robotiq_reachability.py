@@ -470,8 +470,15 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
     out.mkdir(parents=True, exist_ok=True)
     (out / "raw").mkdir(exist_ok=True)
     (out / "static").mkdir(exist_ok=True)
-    build_args = SimpleNamespace(x2_root=args.x2_root, menagerie_root=args.menagerie_root,
-                                  station_base_pos=np.asarray(config["base"], dtype=float))
+    build_args = SimpleNamespace(
+        x2_root=args.x2_root, menagerie_root=args.menagerie_root,
+        station_base_pos=np.asarray(config["base"], dtype=float),
+        station_base_yaw_deg=float(config.get("station_base_yaw_deg", 0.0)),
+        table_center_xy=config.get("table_center_xy"),
+        bottle_root_pos=config.get("bottle_root_pos"),
+        coupler_limit_activation_margin_rad=float(
+            config.get("coupler_limit_activation_margin_rad", 0.0)),
+    )
     base_model, adapter = m0.build_model(build_args, out, canonical)
     base_xml = Path(adapter["model_xml"])
     variant_path, exception = candidate_xml(base_model, base_xml, out)
@@ -511,13 +518,19 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
 
     bottle_geom = m0.obj_id(model, mujoco.mjtObj.mjOBJ_GEOM, "bottle_body")
     bottle_body_center = data.geom_xpos[bottle_geom].copy()
-    if "grasp_offset_world_m" in config:
+    if "grasp_offset_tool_local_m" in config:
+        local_offset = np.asarray(config["grasp_offset_tool_local_m"], dtype=float)
+        if local_offset.shape != (3,) or not np.isfinite(local_offset).all():
+            raise ValueError("grasp_offset_tool_local_m must be a finite 3-vector")
+        grasp_offset = None
+    elif "grasp_offset_world_m" in config:
         grasp_offset = np.asarray(config["grasp_offset_world_m"], dtype=float)
         if grasp_offset.shape != (3,) or not np.isfinite(grasp_offset).all():
             raise ValueError("grasp_offset_world_m must be a finite 3-vector")
+        local_offset = None
     else:
         grasp_offset = np.array([0.0, 0.0, float(config.get("grasp_height_offset_m", 0.0))])
-    bottle_target = bottle_body_center + grasp_offset
+        local_offset = None
     r0 = np.asarray(adapter["desired_world_rotation_matrix"], dtype=float)
     yaw = math.radians(float(config["approach_yaw_deg"]))
     rz = Rotation.from_rotvec(np.array([0.0, 0.0, yaw])).as_matrix()
@@ -525,6 +538,9 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
     pitch = math.radians(float(config.get("pitch_about_jaw_axis_deg", 0.0)))
     jaw_axis_world = target_rot[:, 0].copy()
     target_rot = Rotation.from_rotvec(jaw_axis_world * pitch).as_matrix() @ target_rot
+    if local_offset is not None:
+        grasp_offset = target_rot @ local_offset
+    bottle_target = bottle_body_center + grasp_offset
     insertion_axis = target_rot[:, 2]
     pre_target = bottle_target - insertion_axis * APPROACH_DISTANCE_M
     lift_target = bottle_target + np.array([0.0, 0.0, LIFT_DISTANCE_M])
