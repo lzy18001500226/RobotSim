@@ -161,6 +161,15 @@ LOAD_BUILD_MAX_TOTAL_CONTACT_FORCE_N = 10.0
 LOAD_BUILD_MAX_TOTAL_NORMAL_FORCE_N = 6.0
 LOAD_BUILD_WRIST_DRIFT_GATE_TOLERANCE_M = 0.000001
 LOAD_BUILD_MAX_BOTTLE_RISE_M = 0.0005
+LIVE_ALLOCATION_UPDATE_STEPS = 20
+LIVE_ALLOCATION_EFFORT_HEADROOM_FRACTION = 0.95
+LIVE_ALLOCATION_NORMAL_HEADROOM_FRACTION = 0.90
+LIVE_ALLOCATION_CONTACT_HEADROOM_FRACTION = 0.90
+LIVE_ALLOCATION_TOTAL_CONTACT_HEADROOM_FRACTION = 0.90
+LIVE_ALLOCATION_FRICTION_UTILIZATION = 0.85
+LIVE_SUPPORT_TARGET_RATE_N_S = 12.0
+LIVE_TRANSFER_STEP_HEIGHTS_M = (0.0001, 0.00025, 0.0005)
+LIVE_TRANSFER_STEP_DWELL_S = 0.10
 WRIST_YAW_CORRECTION_DEG = 60.0
 PREGRASP_SITE_OFFSET_M = np.array([0.0, -0.160, 0.0])
 APPROACH_SITE_OFFSET_M = np.array([0.0, -0.120, 0.0])
@@ -824,6 +833,86 @@ def force_bearing_contact_details(model, data, contacts: list[dict]) -> list[dic
     return details
 
 
+def _mimic_velocity_factor(joint: str, driver: str, mimics: dict,
+                           visited: frozenset[str] = frozenset()) -> float:
+    if joint == driver:
+        return 1.0
+    if joint in visited or joint not in mimics:
+        return 0.0
+    relation = mimics[joint]
+    return float(relation["multiplier"]) * _mimic_velocity_factor(
+        relation["parent"], driver, mimics, visited | {joint}
+    )
+
+
+def live_contact_allocation_geometry(model, data, contacts: list[dict],
+                                     channel_joint_names: dict[str, str],
+                                     mimics: dict) -> dict:
+    """Build current contact bases and driver-reduced point Jacobians."""
+    bottle_geoms = {"bottle_body", "bottle_shoulder", "bottle_neck", "bottle_cap"}
+    channels = [channel for channel, _ in hand.CHANNELS if channel in channel_joint_names]
+    bases, positions, frictions, torque_maps, metadata = [], [], [], [], []
+    candidates = [item for item in contacts
+                  if item["side"] == "right_hand" and item["digit"] is not None
+                  and item["distance_m"] <= 0.0
+                  and item["true_normal_force_n"] > CONTACT_TRIGGER_FORCE_N]
+    if len(candidates) > 24:
+        return {"success": False, "reason": "live_contact_count_exceeds_bounded_solver",
+                "contact_count": len(candidates), "maximum_contacts": 24}
+
+    for item in candidates:
+        contact_id = int(item["mujoco_contact_index"])
+        contact = data.contact[contact_id]
+        geom1, geom2 = int(contact.geom1), int(contact.geom2)
+        name1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom1) or ""
+        name2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom2) or ""
+        bottle_is_geom1 = name1 in bottle_geoms
+        other_geom_id = geom2 if bottle_is_geom1 else geom1
+        other_body_id = int(model.geom_bodyid[other_geom_id])
+        sign = -1.0 if bottle_is_geom1 else 1.0
+        frame = np.asarray(contact.frame, dtype=float).reshape(3, 3)
+        basis_world = sign * frame.T
+        jacp = np.zeros((3, model.nv), dtype=float)
+        jacr = np.zeros((3, model.nv), dtype=float)
+        mujoco.mj_jac(model, data, jacp, jacr, np.asarray(contact.pos), other_body_id)
+        effective = np.zeros((3, len(channels)), dtype=float)
+        for channel_index, channel in enumerate(channels):
+            driver = channel_joint_names[channel]
+            for joint in (driver, *mimics.keys()):
+                factor = _mimic_velocity_factor(joint, driver, mimics)
+                if abs(factor) <= 1e-12:
+                    continue
+                joint_id = element_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint)
+                dof = int(model.jnt_dofadr[joint_id])
+                effective[:, channel_index] += jacp[:, dof] * factor
+        bases.append(basis_world)
+        positions.append(np.asarray(contact.pos, dtype=float).copy())
+        friction = np.asarray(contact.friction[:2], dtype=float)
+        frictions.append((float(friction[0]), float(friction[1])))
+        torque_maps.append(effective.T @ basis_world)
+        metadata.append({
+            "contact_index": contact_id,
+            "digit": item["digit"],
+            "hand_geom": item["other_geom"],
+            "hand_body": item["other_body"],
+            "bottle_geom": item["bottle_geom"],
+            "distance_m": float(contact.dist),
+            "normal_force_n": float(item["true_normal_force_n"]),
+            "contact_position_world_m": np.asarray(contact.pos, dtype=float).tolist(),
+            "contact_basis_world_columns": basis_world.tolist(),
+            "friction_axes": friction.tolist(),
+        })
+    return {
+        "success": bool(bases), "reason": None if bases else "no_current_right_hand_bottle_contacts",
+        "channels": channels,
+        "contact_bases_world": [item.tolist() for item in bases],
+        "contact_positions_world": [item.tolist() for item in positions],
+        "contact_friction": frictions,
+        "contact_driver_torque_maps": [item.tolist() for item in torque_maps],
+        "contacts": metadata,
+    }
+
+
 def current_joint_state(model, data, mimics: dict) -> dict:
     drivers = {}
     followers = {}
@@ -1130,13 +1219,24 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
     load_transfer_rows: list[dict] = []
     load_build_trace_rows: list[dict] = []
     effort_control_trace_rows: list[dict] = []
+    live_contact_allocation_trace: list[dict] = []
     lift_stage_trace_rows: list[dict] = []
     release_trace_rows: list[dict] = []
+    current_load_stage_name = ""
     hand_motion_by_phase: dict[str, dict] = {}
     load_build_stage3_wrist_start: np.ndarray | None = None
     load_build_stage3_bottle_start: np.ndarray | None = None
     effort_q_reference: dict[str, float] = {}
     effort_mode_active = False
+    live_allocation_state = {
+        "last_update_step": -LIVE_ALLOCATION_UPDATE_STEPS,
+        "last_target_force_n": None,
+        "support_target_n": 0.0,
+        "last_support_update_time_s": None,
+        "feedforward_by_channel": {channel: 0.0 for channel in hand_ids},
+        "allocation": None,
+        "base_effort_by_channel": {},
+    }
     contact_window_history = deque(maxlen=CONTACT_VALIDITY_WINDOW_SAMPLES)
     transition_hold_start: float | None = None
     transition_lift_start: float | None = None
@@ -1188,13 +1288,152 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             contact_controller_state[digit] = "SIMULATION_ONLY_TORQUE_IMPEDANCE"
         effort_mode_active = True
 
-    def apply_simulation_only_effort(elapsed_s: float, *, load_build_schedule: bool = False) -> dict:
+    def apply_simulation_only_effort(elapsed_s: float, *, load_build_schedule: bool = False,
+                                     live_support_force_n: float | None = None) -> dict:
         if not effort_mode_active:
             raise GateFailure("Effort command requested before effort mode activation")
         ramp_phase = min(max(elapsed_s / SIM_ONLY_FEEDFORWARD_RAMP_S, 0.0), 1.0)
         feedforward_ramp = 10.0 * ramp_phase**3 - 15.0 * ramp_phase**4 + 6.0 * ramp_phase**5
         data.qfrc_applied[:] = 0.0
         commanded = {}
+        live_allocation = None
+        live_feedforward = None
+        if load_build_schedule and live_support_force_n is not None:
+            allocation_channels = [channel for channel, _ in hand.CHANNELS if channel in hand_ids]
+            base_by_channel = {}
+            for channel in allocation_channels:
+                joint = channel_joint_names[channel]
+                dof = hand_driver_dofs[channel]
+                q = joint_qpos(model, data, joint)
+                qd = joint_qvel(model, data, joint)
+                position_impedance = HAND_KP * (effort_q_reference[channel] - q)
+                if channel == "thumb_proximal_yaw":
+                    position_impedance = 0.0
+                base_by_channel[channel] = (
+                    position_impedance - HAND_KV * qd + float(data.qfrc_bias[dof])
+                )
+            desired_support = float(np.clip(live_support_force_n, 0.0, bottle_weight_n))
+            previous_support_time = live_allocation_state["last_support_update_time_s"]
+            support_dt = DT if previous_support_time is None else max(
+                0.0, min(float(data.time) - float(previous_support_time), DT * 2.0)
+            )
+            support_delta = LIVE_SUPPORT_TARGET_RATE_N_S * support_dt
+            target_support = float(live_allocation_state["support_target_n"] + np.clip(
+                desired_support - live_allocation_state["support_target_n"],
+                -support_delta,
+                support_delta,
+            ))
+            live_allocation_state["support_target_n"] = target_support
+            live_allocation_state["last_support_update_time_s"] = float(data.time)
+            refresh = (
+                live_allocation_state["allocation"] is None
+                or steps - int(live_allocation_state["last_update_step"])
+                    >= LIVE_ALLOCATION_UPDATE_STEPS
+                or abs(target_support - float(live_allocation_state["last_target_force_n"] or 0.0))
+                    >= 0.05
+            )
+            if refresh:
+                if target_support <= 1e-6:
+                    allocation = {
+                        "success": True,
+                        "target_vertical_force_n": target_support,
+                        "predicted_wrench_on_bottle": {
+                            "force_n": [0.0, 0.0, 0.0], "torque_about_com_nm": [0.0, 0.0, 0.0]
+                        },
+                        "driver_effort_nm": [base_by_channel[channel]
+                                             for channel in allocation_channels],
+                        "driver_effort_headroom_nm": [], "per_contact": [],
+                        "total_normal_force_n": 0.0,
+                        "total_conservative_resultant_bound_n": 0.0,
+                        "maximum_friction_utilization": 0.0,
+                        "solver_message": "zero support requested while table carries the bottle",
+                    }
+                    geometry = {"success": True, "channels": allocation_channels,
+                                "contacts": [], "contact_bases_world": [],
+                                "contact_positions_world": [], "contact_friction": [],
+                                "contact_driver_torque_maps": []}
+                else:
+                    geometry = live_contact_allocation_geometry(
+                        model, data, bottle_contacts(model, data), channel_joint_names, mimics
+                    )
+                    if not geometry.get("success"):
+                        failure = {
+                            "time_s": float(data.time),
+                            "target_vertical_force_n": target_support,
+                            "contact_geometry": geometry,
+                        }
+                        result["live_contact_allocation_failure"] = failure
+                        raise GateFailure("Live contact allocation has no current usable contacts: "
+                                          + json.dumps(failure, sort_keys=True))
+                    allocation = gates.solve_live_contact_wrench_allocation(
+                        geometry["contact_bases_world"],
+                        geometry["contact_positions_world"],
+                        geometry["contact_friction"],
+                        geometry["contact_driver_torque_maps"],
+                        np.asarray(data.xipos[bottle_id], dtype=float),
+                        target_support,
+                        np.asarray([base_by_channel[channel] for channel in allocation_channels]),
+                        driver_effort_limit_nm=(SIM_ONLY_MAX_DRIVER_TORQUE_NM
+                                                * LIVE_ALLOCATION_EFFORT_HEADROOM_FRACTION),
+                        total_normal_limit_n=(LOAD_BUILD_MAX_TOTAL_NORMAL_FORCE_N
+                                              * LIVE_ALLOCATION_NORMAL_HEADROOM_FRACTION),
+                        single_contact_limit_n=(LOAD_BUILD_MAX_SINGLE_CONTACT_FORCE_N
+                                                * LIVE_ALLOCATION_CONTACT_HEADROOM_FRACTION),
+                        total_contact_limit_n=(LOAD_BUILD_MAX_TOTAL_CONTACT_FORCE_N
+                                               * LIVE_ALLOCATION_TOTAL_CONTACT_HEADROOM_FRACTION),
+                        horizontal_force_tolerance_n=(
+                            SIM_ONLY_HORIZONTAL_FORCE_TOLERANCE_FRACTION * bottle_weight_n
+                        ),
+                        torque_tolerance_nm=SIM_ONLY_WRENCH_TORQUE_TOLERANCE_NM,
+                        friction_utilization_limit=LIVE_ALLOCATION_FRICTION_UTILIZATION,
+                    )
+                    if not allocation.get("success"):
+                        failure = {
+                            "time_s": float(data.time),
+                            "target_vertical_force_n": target_support,
+                            "base_driver_effort_nm": base_by_channel,
+                            "contact_geometry": geometry,
+                            "solver": allocation,
+                        }
+                        result["live_contact_allocation_failure"] = failure
+                        raise GateFailure("Live contact wrench is infeasible under existing caps: "
+                                          + json.dumps(failure, sort_keys=True))
+                feedforward_values = allocation["driver_effort_nm"]
+                live_feedforward = {
+                    channel: float(feedforward_values[index] - base_by_channel[channel])
+                    for index, channel in enumerate(allocation_channels)
+                }
+                live_allocation_state.update({
+                    "last_update_step": steps,
+                    "last_target_force_n": target_support,
+                    "feedforward_by_channel": live_feedforward,
+                    "allocation": allocation,
+                    "base_effort_by_channel": base_by_channel,
+                    "contact_geometry": geometry,
+                })
+                trace_entry = {
+                    "time_s": float(data.time),
+                    "physics_step": steps,
+                    "target_vertical_force_n": target_support,
+                    "base_driver_effort_nm": base_by_channel,
+                    "allocation": allocation,
+                    "contact_geometry": geometry.get("contacts", []),
+                    "contact_driver_torque_maps": [np.asarray(item).tolist()
+                                                    for item in geometry.get("contact_driver_torque_maps", [])],
+                }
+                live_contact_allocation_trace.append(trace_entry)
+            else:
+                live_feedforward = live_allocation_state["feedforward_by_channel"]
+                allocation = live_allocation_state["allocation"]
+            live_allocation = {
+                "target_vertical_force_n": target_support,
+                "last_solved_target_vertical_force_n": live_allocation_state["last_target_force_n"],
+                "last_solved_time_s": float(data.time),
+                "allocation": allocation,
+                "contact_geometry": live_allocation_state.get("contact_geometry", {}).get("contacts", []),
+            }
+        else:
+            live_feedforward = None
         for channel, dof in hand_driver_dofs.items():
             joint = channel_joint_names[channel]
             q = joint_qpos(model, data, joint)
@@ -1207,17 +1446,30 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 # statically derived thumb-yaw support torque during LOAD_BUILD.
                 impedance -= position_impedance
             bias = float(data.qfrc_bias[dof])
-            feedforward_source = gates.select_effort_feedforward(
-                channel, static_effort_by_channel, load_effort_by_channel,
-                load_build_schedule,
-            )
-            feedforward = feedforward_ramp * feedforward_source
+            if live_feedforward is not None:
+                feedforward = float(live_feedforward.get(channel, 0.0))
+            else:
+                feedforward_source = gates.select_effort_feedforward(
+                    channel, static_effort_by_channel, load_effort_by_channel,
+                    load_build_schedule,
+                )
+                feedforward = feedforward_ramp * feedforward_source
             requested = feedforward + impedance + bias
-            applied = float(np.clip(
-                requested,
-                -SIM_ONLY_MAX_DRIVER_TORQUE_NM,
-                SIM_ONLY_MAX_DRIVER_TORQUE_NM,
-            ))
+            if live_feedforward is not None:
+                live_effort_limit = (SIM_ONLY_MAX_DRIVER_TORQUE_NM
+                                     * LIVE_ALLOCATION_EFFORT_HEADROOM_FRACTION)
+                if abs(requested) > live_effort_limit + 1e-8:
+                    raise GateFailure(
+                        f"Live allocation effort headroom failed for {channel}: "
+                        f"{requested:.9g} Nm > {live_effort_limit:.6f} Nm"
+                    )
+                applied = float(requested)
+            else:
+                applied = float(np.clip(
+                    requested,
+                    -SIM_ONLY_MAX_DRIVER_TORQUE_NM,
+                    SIM_ONLY_MAX_DRIVER_TORQUE_NM,
+                ))
             data.qfrc_applied[dof] = applied
             commanded[channel] = {
                 "joint": joint,
@@ -1336,10 +1588,24 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 commanded[channel]["saturated"] |= abs(
                     commanded[channel]["requested_nm"] - applied
                 ) > 1e-12
+        applied_peak = max(
+            (abs(float(data.qfrc_applied[dof])) for dof in hand_driver_dofs.values()),
+            default=0.0,
+        )
+        if applied_peak > SIM_ONLY_MAX_DRIVER_TORQUE_NM + 1e-9:
+            raise GateFailure(
+                f"Applied simulation-only effort exceeded hard cap: {applied_peak:.9g} Nm "
+                f"> {SIM_ONLY_MAX_DRIVER_TORQUE_NM:.3f} Nm"
+            )
         return {
             "command_time_s": float(data.time),
             "elapsed_since_load_start_s": float(elapsed_s),
             "feedforward_ramp_fraction": float(feedforward_ramp),
+            "live_contact_allocation": live_allocation,
+            "live_support_demand_n": (
+                None if live_support_force_n is None else float(live_support_force_n)
+            ),
+            "live_support_target_rate_n_s": LIVE_SUPPORT_TARGET_RATE_N_S,
             "velocity_guard": {
                 "mode": "forward-dynamics predicted torque braking; qvel is never directly clamped",
                 "start_rad_s": SIM_ONLY_VELOCITY_GUARD_START_RAD_S,
@@ -1374,6 +1640,11 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             "right_digit_true_normal_forces_n": digit_forces,
             "maximum_measured_friction_utilization": friction_util,
             "friction_utilization_by_contact": friction_by_contact,
+            "live_support_demand_n": command.get("live_support_demand_n"),
+            "live_support_target_rate_n_s": command.get("live_support_target_rate_n_s"),
+            "live_contact_allocation_json": json.dumps(
+                command.get("live_contact_allocation"), sort_keys=True
+            ),
             "velocity_guard_active_channels": json.dumps(
                 command["velocity_guard"]["active_channels"]
             ),
@@ -1420,6 +1691,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         nonlocal maximum_contact_target_error_rad, maximum_hand_actuator_effort_nm
         nonlocal minimum_contact_target_error_rad, maximum_contact_commanded_error_rad
         contacts = bottle_contacts(model, data)
+        friction_utilization, _ = measured_friction_utilization(model, data, contacts)
         if phase in {"OPEN", "CLOSE", "RELEASE"}:
             phase_motion = hand_motion_by_phase.setdefault(phase, {
                 "start_time_s": float(data.time),
@@ -1573,6 +1845,69 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     "contacts": right_hand_contacts,
                 }
                 raise GateFailure(f"Load-capacity safe bound failed in {phase}: {bound_failure}")
+        if phase in {"CLOSE", "HOLD", "LIFT_ARMING", "LIVE_CONTACT_ALLOCATION_ARMING",
+                     "LOAD_BUILD", "LIFT", "POST_LIFT_HOLD"}:
+            right_hand_contacts = [c for c in contacts if c["side"] == "right_hand"]
+            total_normal = float(sum(c["true_normal_force_n"] for c in right_hand_contacts))
+            total_resultant = float(sum(c["normal_force_n"] for c in right_hand_contacts))
+            single_resultant = float(max(
+                (c["normal_force_n"] for c in right_hand_contacts), default=0.0
+            ))
+            applied_effort = float(max(
+                (abs(float(data.qfrc_applied[dof])) for dof in hand_driver_dofs.values()),
+                default=0.0,
+            ))
+            actuator_effort = float(max(
+                (abs(float(data.actuator_force[aid])) for aid in hand_ids.values()),
+                default=0.0,
+            ))
+            effort_peak = max(applied_effort, actuator_effort)
+            cap_state = result.setdefault("contact_force_cap_gate", {
+                "passed": True,
+                "samples": 0,
+                "thresholds": {
+                    "total_normal_force_n": LOAD_BUILD_MAX_TOTAL_NORMAL_FORCE_N,
+                    "single_contact_resultant_n": LOAD_BUILD_MAX_SINGLE_CONTACT_FORCE_N,
+                    "total_contact_resultant_n": LOAD_BUILD_MAX_TOTAL_CONTACT_FORCE_N,
+                    "driver_effort_nm": SIM_ONLY_MAX_DRIVER_TORQUE_NM,
+                },
+                "maxima": {},
+                "first_failure": None,
+            })
+            cap_state["samples"] += 1
+            measured_maxima = {
+                "total_normal_force_n": total_normal,
+                "single_contact_resultant_n": single_resultant,
+                "total_contact_resultant_n": total_resultant,
+                "driver_effort_nm": effort_peak,
+            }
+            for name, value in measured_maxima.items():
+                cap_state["maxima"][name] = max(
+                    float(cap_state["maxima"].get(name, 0.0)), value
+                )
+            cap_failure = None
+            if total_normal > LOAD_BUILD_MAX_TOTAL_NORMAL_FORCE_N + 1e-9:
+                cap_failure = "total_hand_normal_force_exceeded"
+            elif single_resultant > LOAD_BUILD_MAX_SINGLE_CONTACT_FORCE_N + 1e-9:
+                cap_failure = "single_contact_resultant_exceeded"
+            elif total_resultant > LOAD_BUILD_MAX_TOTAL_CONTACT_FORCE_N + 1e-9:
+                cap_failure = "total_contact_resultant_exceeded"
+            elif effort_peak > SIM_ONLY_MAX_DRIVER_TORQUE_NM + 1e-9:
+                cap_failure = "simulation_only_driver_effort_exceeded"
+            if cap_failure:
+                cap_state["passed"] = False
+                cap_state["first_failure"] = {
+                    "time_s": float(data.time),
+                    "phase": phase,
+                    "reason": cap_failure,
+                    "measurements": measured_maxima,
+                    "contacts": right_hand_contacts,
+                }
+                events.append({"event": "CONTACT_FORCE_CAP_FAILURE", **cap_state["first_failure"]})
+                raise GateFailure(
+                    f"Contact/effort hard cap failed in {phase}: "
+                    + json.dumps(cap_state["first_failure"], sort_keys=True)
+                )
         if phase in {"PREGRASP", "OPEN", "APPROACH", "CLOSE", "HOLD"}:
             diagnostic_sample_steps += 1
             table_support_misses += int(not table_support)
@@ -1715,6 +2050,8 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 "bottle_table_supported": int(table_support),
                 "table_normal_force_n": table_normal_force,
                 "total_hand_bottle_normal_force_n": hand_bottle_normal_force,
+                "hand_vertical_support_force_n": float(hand_force_world[2]),
+                "hand_force_on_bottle_world_n": hand_force_world.tolist(),
                 "bottle_weight_n": float(model.body_mass[bottle_id] * abs(model.opt.gravity[2])),
                 "table_weight_fraction": table_normal_force / max(
                     float(model.body_mass[bottle_id] * abs(model.opt.gravity[2])), 1e-12
@@ -1851,9 +2188,23 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 "right_opposing_true_normal_force_n": sum(
                     digit_normal_forces[digit] for digit in ("index", "middle", "ring", "pinky")
                 ),
+                "stage": current_load_stage_name,
+                "table_supported": int(table_support),
+                "left_hand_contact": int(left_contact),
+                "horizontal_hand_force_n": float(np.linalg.norm(hand_force_world[:2])),
+                "hand_torque_norm_nm": float(np.linalg.norm(hand_torque_world)),
+                "maximum_friction_utilization": friction_utilization,
+                "maximum_hand_qvel_rad_s": max_qvel,
+                "maximum_applied_driver_effort_nm": float(max(
+                    (abs(float(data.qfrc_applied[dof])) for dof in hand_driver_dofs.values()),
+                    default=0.0,
+                )),
+                "maximum_mimic_error_rad": state["max_mimic"],
+                "contact_window_valid": int(window_metric["valid"]),
                 "bottle_x_m": float(data.xpos[bottle_id][0]),
                 "bottle_y_m": float(data.xpos[bottle_id][1]),
                 "bottle_z_m": float(data.xpos[bottle_id][2]),
+                "bottle_quaternion_wxyz": np.asarray(data.xquat[bottle_id], dtype=float).tolist(),
                 "bottle_z_velocity_m_s": float(object_velocity[5]),
                 "bottle_linear_velocity_world_m_s": json.dumps(object_velocity[3:].tolist()),
                 "bottle_angular_velocity_world_rad_s": json.dumps(object_velocity[:3].tolist()),
@@ -2984,12 +3335,13 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 break
 
         if direct_arm_lift:
-            result["contact_force_preload"] = {
+            result["live_contact_allocation_arming"] = {
                 "status": "RUNNING",
-                "control_mode": "SIMULATION_ONLY torque impedance plus saved-state contact-topology reallocation; canonical C2 allocation retained for provenance",
+                "control_mode": "SIMULATION_ONLY torque impedance plus live measured-contact wrench allocation",
                 "duration_s": SIM_ONLY_FEEDFORWARD_RAMP_S,
                 "fixed_wrist": True,
                 "load_ready_claimed": False,
+                "purpose": "maintain only the support implied by measured table unloading while preparing the progressive wrist transfer",
             }
             preload_start = float(data.time)
             preload_bottle_z = float(data.xpos[bottle_id][2])
@@ -2997,14 +3349,14 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             preload_max_single_contact = 0.0
             preload_max_total_resultant = 0.0
 
-            def fail_contact_force_preload(reason: str, sample_data: dict) -> None:
-                result["contact_force_preload"].update({
+            def fail_live_contact_arming(reason: str, sample_data: dict) -> None:
+                result["live_contact_allocation_arming"].update({
                     "status": "FAIL",
                     "end_time_s": float(data.time),
                     "first_bound_failure": {"reason": reason, **sample_data},
                 })
                 events.append({
-                    "event": "CONTACT_FORCE_PRELOAD_FAIL",
+                    "event": "LIVE_CONTACT_ALLOCATION_ARMING_FAIL",
                     "time_s": float(data.time),
                     "reason": reason,
                     "sample": sample_data,
@@ -3014,13 +3366,22 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             for _ in range(int(math.ceil(SIM_ONLY_FEEDFORWARD_RAMP_S / DT))):
                 elapsed = float(data.time - preload_start)
                 set_body_ctrl(arm_motor_targets(approach_q))
+                before_step_contacts = bottle_contacts(model, data)
+                before_step_table_normal = sum(
+                    c["true_normal_force_n"] for c in before_step_contacts
+                    if c["side"] == "other" and c["other_body"] == "m0_table"
+                )
                 effort_command = apply_simulation_only_effort(
-                    elapsed, load_build_schedule=True
+                    elapsed,
+                    load_build_schedule=True,
+                    live_support_force_n=float(np.clip(
+                        bottle_weight_n - before_step_table_normal, 0.0, bottle_weight_n
+                    )),
                 )
                 mujoco.mj_step(model, data)
                 steps += 1
-                record_simulation_only_effort(effort_command, "CONTACT_FORCE_PRELOAD")
-                sample("CONTACT_FORCE_PRELOAD", 0.0, approach_q)
+                record_simulation_only_effort(effort_command, "LIVE_CONTACT_ALLOCATION_ARMING")
+                sample("LIVE_CONTACT_ALLOCATION_ARMING", 0.0, approach_q)
                 contacts = bottle_contacts(model, data)
                 _, _, left_contact, _ = active_contact_sets(contacts)
                 normal_forces = [
@@ -3076,32 +3437,32 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                         model, data, contacts
                     ),
                 }
-                result["contact_force_preload"]["last_sample"] = preload_sample
+                result["live_contact_allocation_arming"]["last_sample"] = preload_sample
                 if left_contact:
-                    fail_contact_force_preload(
+                    fail_live_contact_arming(
                         "Left hand/arm contacted the bottle during contact-force preload",
                         preload_sample,
                     )
                 if max_single > LOAD_BUILD_MAX_SINGLE_CONTACT_FORCE_N:
-                    fail_contact_force_preload(
+                    fail_live_contact_arming(
                         "Contact-force preload exceeded per-contact bound: "
                         f"{max_single:.9g} N > {LOAD_BUILD_MAX_SINGLE_CONTACT_FORCE_N:.3f} N",
                         preload_sample,
                     )
                 if total_resultant > LOAD_BUILD_MAX_TOTAL_CONTACT_FORCE_N:
-                    fail_contact_force_preload(
+                    fail_live_contact_arming(
                         "Contact-force preload exceeded total-resultant bound: "
                         f"{total_resultant:.9g} N > {LOAD_BUILD_MAX_TOTAL_CONTACT_FORCE_N:.3f} N",
                         preload_sample,
                     )
                 if total_normal > LOAD_BUILD_MAX_TOTAL_NORMAL_FORCE_N:
-                    fail_contact_force_preload(
+                    fail_live_contact_arming(
                         "Contact-force preload exceeded total-normal bound: "
                         f"{total_normal:.9g} N > {LOAD_BUILD_MAX_TOTAL_NORMAL_FORCE_N:.3f} N",
                         preload_sample,
                     )
                 if bottle_rise > LOAD_BUILD_MAX_BOTTLE_RISE_M or not table_supported:
-                    fail_contact_force_preload(
+                    fail_live_contact_arming(
                         "Bottle lost table support during contact-force preload: "
                         f"rise={bottle_rise:.9g} m, table_supported={table_supported}",
                         preload_sample,
@@ -3114,7 +3475,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     "Contact-force preload did not retain force-bearing thumb/opposing contact: "
                     + json.dumps(preload_window, sort_keys=True)
                 )
-            result["contact_force_preload"].update({
+            result["live_contact_allocation_arming"].update({
                 "status": "PASS",
                 "end_time_s": float(data.time),
                 "maximum_total_true_normal_force_n": preload_max_total_normal,
@@ -3125,7 +3486,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 "bottle_qpos_writes": 0,
             })
             events.append({
-                "event": "CONTACT_FORCE_PRELOAD_COMPLETE",
+                "event": "LIVE_CONTACT_ALLOCATION_ARMING_COMPLETE",
                 "time_s": float(data.time),
                 "maximum_total_true_normal_force_n": preload_max_total_normal,
                 "final_contact_window": preload_window,
@@ -3134,17 +3495,17 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
 
         if direct_arm_lift:
             result["load_build"].update({
-                "status": "NOT RUN",
-                "state": "SKIPPED_FOR_DIRECT_ARM_LIFT",
+                "status": "RUNNING",
+                "state": "PROGRESSIVE_LIVE_CONTACT_LOAD_TRANSFER",
                 "load_ready": False,
                 "reason": (
-                    "fixed-wrist LOAD_BUILD/LOAD_READY was not run; a bounded torque preload "
-                    "was applied before commanded arm lift"
+                    "the previous fixed-wrist saved-force path is replaced by measured-contact "
+                    "allocation during incremental wrist motion; LOAD_READY requires measured airborne support"
                 ),
-                "physics_steps": 0,
+                "physics_steps": steps,
             })
             events.append({
-                "event": "LOAD_BUILD_SKIPPED_DIRECT_ARM_LIFT",
+                "event": "PROGRESSIVE_LIVE_LOAD_BUILD_STARTED",
                 "time_s": float(data.time),
                 "reason": result["load_build"]["reason"],
             })
@@ -3214,10 +3575,43 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         lift_origin_z = float(
             settled_bottle_pos[2] if settled_bottle_pos is not None else initial_bottle_pos[2]
         )
+        transfer_baseline_rows = [
+            row for row in transition_trace_rows
+            if row.get("phase") == "HOLD" and row.get("window") == "last_50ms_hold"
+        ]
+        if direct_arm_lift:
+            if len(transfer_baseline_rows) < 20:
+                raise GateFailure(
+                    "Cannot establish a measured 50 ms HOLD load baseline before wrist transfer"
+                )
+            baseline_table_values = np.asarray([
+                float(row["table_normal_force_n"]) for row in transfer_baseline_rows
+            ], dtype=float)
+            baseline_hand_values = np.asarray([
+                float(row["hand_vertical_support_force_n"]) for row in transfer_baseline_rows
+            ], dtype=float)
+            transfer_baseline_table_n = float(np.mean(baseline_table_values))
+            transfer_baseline_table_sigma_n = float(np.std(baseline_table_values, ddof=1))
+            transfer_baseline_hand_n = float(np.mean(baseline_hand_values))
+            result["progressive_load_transfer"] = {
+                "status": "RUNNING",
+                "passed": False,
+                "measurement_window_s": 0.050,
+                "baseline_source": "last 50 ms of validated HOLD before wrist motion",
+                "baseline_sample_count": int(len(transfer_baseline_rows)),
+                "baseline_table_normal_force_n": transfer_baseline_table_n,
+                "baseline_table_normal_sigma_n": transfer_baseline_table_sigma_n,
+                "baseline_hand_vertical_support_force_n": transfer_baseline_hand_n,
+                "minimum_detectable_change_rule": "max(3 * baseline sigma, 1% bottle weight)",
+                "stages": [],
+                "load_ready": None,
+            }
         if not load_transfer_only:
             if lift_height_m < 0.030 - 1e-9:
                 raise GateFailure("Simulation-only pickup is bounded to the requested 30 mm lift")
             stage_targets = [
+                (0.0001, "TRANSFER_0P1MM"),
+                (0.00025, "TRANSFER_0P25MM"),
                 (0.0005, "TABLE_UNLOAD_0P5MM"),
                 (0.0010, "LIFT_1MM"),
                 (0.0050, "LIFT_5MM"),
@@ -3225,14 +3619,27 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             ]
             previous_stage_height = 0.0
             previous_arm_target = approach_q.copy()
+            live_load_ready = False
             for stage_height, stage_name in stage_targets:
+                current_load_stage_name = stage_name
                 segment_fraction = max((stage_height - previous_stage_height) / lift_height_m, 0.0)
                 stage_duration = max(
-                    0.100 if stage_name == "TABLE_UNLOAD_0P5MM" else 0.050,
+                    0.100 if stage_height <= 0.0005 else 0.050,
                     LIFT_TIMEOUT_SECONDS * segment_fraction,
                 )
                 stage_steps = max(1, int(math.ceil(stage_duration / DT)))
                 stage_arm_target = approach_q + (stage_height / lift_height_m) * (lift_q - approach_q)
+
+                def current_support_demand_n() -> float:
+                    current_contacts = bottle_contacts(model, data)
+                    current_table_normal = sum(
+                        c["true_normal_force_n"] for c in current_contacts
+                        if c["side"] == "other" and c["other_body"] == "m0_table"
+                    )
+                    return float(np.clip(
+                        bottle_weight_n - current_table_normal, 0.0, bottle_weight_n
+                    ))
+
                 for stage_step in range(1, stage_steps + 1):
                     alpha = stage_step / stage_steps
                     smooth_alpha = 10.0 * alpha**3 - 15.0 * alpha**4 + 6.0 * alpha**5
@@ -3243,11 +3650,12 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     effort_command = apply_simulation_only_effort(
                         float(data.time - load_build_start_time),
                         load_build_schedule=direct_arm_lift,
+                        live_support_force_n=current_support_demand_n(),
                     )
                     mujoco.mj_step(model, data)
                     steps += 1
-                    sample("LIFT", 0.0, arm_target)
                     record_simulation_only_effort(effort_command, "LIFT")
+                    sample("LIFT", 0.0, arm_target)
                     lift_contacts = bottle_contacts(model, data)
                     thumb, opposing, left_contact, _ = active_contact_sets(lift_contacts)
                     lift_window = contact_window_summary(list(contact_window_history))
@@ -3281,26 +3689,203 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     })
                     if left_contact:
                         raise GateFailure(f"Left hand/arm contacted the bottle during {stage_name}")
+                    if direct_arm_lift and not live_load_ready \
+                            and bottle_lift > LOAD_BUILD_MAX_BOTTLE_RISE_M + 1e-6:
+                        failure = {
+                            "time_s": float(data.time), "stage": stage_name,
+                            "bottle_rise_m": bottle_lift,
+                            "maximum_pre_load_ready_rise_m": LOAD_BUILD_MAX_BOTTLE_RISE_M,
+                            "table_supported": bottle_table_supported,
+                            "table_normal_force_n": table_normal,
+                            "hand_vertical_support_force_n": float(hand_force[2]),
+                        }
+                        result["progressive_load_transfer"]["first_failure"] = failure
+                        raise GateFailure(
+                            "Bottle rise exceeded the unchanged pre-LOAD_READY 0.5 mm gate: "
+                            + json.dumps(failure, sort_keys=True)
+                        )
                     if not lift_window["valid"] or not thumb or not opposing:
                         raise GateFailure(
                             f"Right-hand thumb/opposing contact gate failed during {stage_name}: "
                             + json.dumps(lift_window, sort_keys=True)
                         )
-                    if stage_name in {"LIFT_5MM", f"LIFT_{int(round(lift_height_m * 1000))}MM"} \
+                    if stage_name in {"LIFT_1MM", "LIFT_5MM",
+                                      f"LIFT_{int(round(lift_height_m * 1000))}MM"} \
                             and bottle_table_supported:
                         raise GateFailure(
                             f"Bottle remained table-supported at {stage_name} "
                             f"({bottle_lift:.6f} m lift)"
                         )
 
+                for _ in range(int(round(LIVE_TRANSFER_STEP_DWELL_S / DT))):
+                    set_body_ctrl(arm_motor_targets(stage_arm_target))
+                    effort_command = apply_simulation_only_effort(
+                        float(data.time - load_build_start_time),
+                        load_build_schedule=direct_arm_lift,
+                        live_support_force_n=current_support_demand_n(),
+                    )
+                    mujoco.mj_step(model, data)
+                    steps += 1
+                    record_simulation_only_effort(effort_command, "LIFT")
+                    sample("LIFT", 0.0, stage_arm_target)
+
+                stage_contacts = bottle_contacts(model, data)
+                thumb, opposing, left_contact, _ = active_contact_sets(stage_contacts)
+                lift_window = contact_window_summary(list(contact_window_history))
+                bottle_table_supported = any(
+                    c["side"] == "other" and c["other_body"] == "m0_table"
+                    and c["distance_m"] <= 0.0 and c["true_normal_force_n"] > 0.01
+                    for c in stage_contacts
+                )
+                bottle_lift = float(data.xpos[bottle_id][2] - lift_origin_z)
+                if left_contact or not lift_window["valid"] or not thumb or not opposing:
+                    raise GateFailure(
+                        f"Right-hand force-bearing contact was lost during {stage_name} dwell: "
+                        + json.dumps({
+                            "left_hand_contact": left_contact,
+                            "thumb_contact": thumb,
+                            "opposing_contact": opposing,
+                            "contact_window": lift_window,
+                        }, sort_keys=True)
+                    )
+                if direct_arm_lift and not live_load_ready \
+                        and bottle_lift > LOAD_BUILD_MAX_BOTTLE_RISE_M + 1e-6:
+                    failure = {
+                        "time_s": float(data.time), "stage": stage_name,
+                        "bottle_rise_m": bottle_lift,
+                        "maximum_pre_load_ready_rise_m": LOAD_BUILD_MAX_BOTTLE_RISE_M,
+                        "table_supported": bottle_table_supported,
+                    }
+                    result["progressive_load_transfer"]["first_failure"] = failure
+                    raise GateFailure(
+                        "Bottle rise exceeded the unchanged pre-LOAD_READY 0.5 mm gate "
+                        "during stage dwell: " + json.dumps(failure, sort_keys=True)
+                    )
+                if stage_name in {"LIFT_1MM", "LIFT_5MM",
+                                  f"LIFT_{int(round(lift_height_m * 1000))}MM"} \
+                        and bottle_table_supported:
+                    raise GateFailure(
+                        f"Bottle regained table support during {stage_name} dwell "
+                        f"({bottle_lift:.6f} m lift)"
+                    )
+
+                stage_window_start = float(data.time - LIVE_TRANSFER_STEP_DWELL_S / 2.0)
+                stage_window_rows = [
+                    row for row in load_transfer_rows
+                    if row.get("stage") == stage_name
+                    and float(row["time_s"]) >= stage_window_start
+                ]
+                transfer_stage_summary = None
+                if direct_arm_lift and stage_height <= 0.0005:
+                    transfer_stage_summary = gates.progressive_load_transfer_summary(
+                        transfer_baseline_table_n,
+                        transfer_baseline_table_sigma_n,
+                        transfer_baseline_hand_n,
+                        stage_window_rows,
+                        bottle_weight_n,
+                    )
+                    transfer_stage_summary.update({
+                        "stage": stage_name,
+                        "stage_target_height_m": stage_height,
+                        "time_s": float(data.time),
+                    })
+                    result["progressive_load_transfer"]["stages"].append(
+                        transfer_stage_summary
+                    )
+                    if not transfer_stage_summary["passed"]:
+                        result["progressive_load_transfer"].update({
+                            "status": "FAIL",
+                            "first_failure": transfer_stage_summary,
+                        })
+                        raise GateFailure(
+                            f"Measured progressive transfer failed at {stage_name}: "
+                            + json.dumps(transfer_stage_summary, sort_keys=True)
+                        )
+                    events.append({
+                        "event": "PROGRESSIVE_TRANSFER_STAGE_PASS",
+                        **transfer_stage_summary,
+                    })
+                    if ("UPWARD_HAND_SUPPORT_ESTABLISHED" not in {
+                        event.get("event") for event in events
+                    } and transfer_stage_summary["stage_mean_hand_vertical_support_force_n"] > 0.0):
+                        events.append({
+                            "event": "UPWARD_HAND_SUPPORT_ESTABLISHED",
+                            "time_s": float(data.time),
+                            "stage": stage_name,
+                            "measured_hand_support_n": transfer_stage_summary[
+                                "stage_mean_hand_vertical_support_force_n"
+                            ],
+                            "increase_over_previous_n": transfer_stage_summary[
+                                "measured_hand_support_increase_n"
+                            ],
+                        })
+                    baseline_table_values = np.asarray([
+                        float(row["table_normal_force_n"]) for row in stage_window_rows
+                    ], dtype=float)
+                    baseline_hand_values = np.asarray([
+                        float(row["hand_vertical_support_force_n"]) for row in stage_window_rows
+                    ], dtype=float)
+                    transfer_baseline_table_n = float(np.mean(baseline_table_values))
+                    transfer_baseline_table_sigma_n = float(np.std(
+                        baseline_table_values, ddof=1
+                    )) if len(baseline_table_values) > 1 else 0.0
+                    transfer_baseline_hand_n = float(np.mean(baseline_hand_values))
+                    if stage_name == "TABLE_UNLOAD_0P5MM":
+                        load_ready = gates.load_ready_summary(
+                            stage_window_rows, bottle_weight_n
+                        )
+                        result["progressive_load_transfer"]["load_ready"] = load_ready
+                        if not load_ready["passed"]:
+                            result["progressive_load_transfer"].update({
+                                "status": "FAIL",
+                                "first_failure": {
+                                    "stage": stage_name,
+                                    "time_s": float(data.time),
+                                    "load_ready": load_ready,
+                                },
+                            })
+                            raise GateFailure(
+                                "Measured LOAD_READY failed at the 0.5 mm transfer checkpoint: "
+                                + json.dumps(load_ready, sort_keys=True)
+                            )
+                        live_load_ready = True
+                        result["progressive_load_transfer"].update({
+                            "status": "PASS",
+                            "passed": True,
+                            "load_ready_time_s": float(data.time),
+                        })
+                        result["load_build"].update({
+                            "status": "PASS",
+                            "state": "LOAD_READY",
+                            "load_ready": True,
+                            "ready_time_s": float(data.time),
+                            "achieved_stable_dwell_s": LIVE_TRANSFER_STEP_DWELL_S / 2.0,
+                            "ready_snapshot": load_ready,
+                            "control_mode": "live measured-contact force allocation during progressive wrist motion",
+                        })
+                        result["direct_arm_lift_table_unload"] = {
+                            "status": "PASS",
+                            "first_stage": transfer_stage_summary,
+                            "load_ready": load_ready,
+                            "measurement": "measured table load fell as right-hand vertical support rose; airborne geometry confirmed",
+                        }
+                        events.append({
+                            "event": "LOAD_READY",
+                            "time_s": float(data.time),
+                            "stable_dwell_s": LIVE_TRANSFER_STEP_DWELL_S / 2.0,
+                            "snapshot": load_ready,
+                        })
+
                 achieved_lift = float(data.xpos[bottle_id][2] - lift_origin_z)
                 stage_tolerance = 0.0001 if stage_height < 0.005 else 0.0002
-                if achieved_lift < stage_height - stage_tolerance:
+                requires_bottle_height = stage_name in {
+                    "LIFT_1MM", "LIFT_5MM", f"LIFT_{int(round(lift_height_m * 1000))}MM"
+                }
+                if requires_bottle_height and achieved_lift < stage_height - stage_tolerance:
                     raise GateFailure(
                         f"{stage_name} gate failed: achieved {achieved_lift:.6f} m, "
                         f"required {stage_height:.6f} m"
                     )
-                stage_contacts = bottle_contacts(model, data)
                 stage_table_normal = sum(
                     c["true_normal_force_n"] for c in stage_contacts
                     if c["side"] == "other" and c["other_body"] == "m0_table"
@@ -3313,11 +3898,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     "right_wrist_rise_m": float(
                         data.xpos[wrist_id][2] - load_build_stage3_wrist_start[2]
                     ),
-                    "table_supported": any(
-                        c["side"] == "other" and c["other_body"] == "m0_table"
-                        and c["distance_m"] <= 0.0 and c["true_normal_force_n"] > 0.01
-                        for c in stage_contacts
-                    ),
+                    "table_supported": bottle_table_supported,
                     "table_normal_force_n": stage_table_normal,
                     "right_thumb_contact": thumb,
                     "right_opposing_digit_contact": opposing,
@@ -3325,7 +3906,30 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 }
                 lift_stage_trace_rows.append(stage_record)
                 events.append({"event": stage_name + "_PASS", **stage_record})
+                if stage_name == "LIFT_1MM":
+                    events.append({
+                        "event": "AIRBORNE_1MM_REACHED",
+                        "time_s": float(data.time), "lift_m": achieved_lift,
+                        "table_supported": bottle_table_supported,
+                        "stage_record": stage_record,
+                    })
+                elif stage_name == "LIFT_5MM":
+                    events.append({
+                        "event": "AIRBORNE_5MM_REACHED",
+                        "time_s": float(data.time), "lift_m": achieved_lift,
+                        "table_supported": bottle_table_supported,
+                        "stage_record": stage_record,
+                    })
+                elif stage_name == f"LIFT_{int(round(lift_height_m * 1000))}MM":
+                    events.append({
+                        "event": "SHORT_LIFT_REACHED",
+                        "time_s": float(data.time), "lift_m": achieved_lift,
+                        "table_supported": bottle_table_supported,
+                        "stage_record": stage_record,
+                    })
                 image_label = {
+                    "TRANSFER_0P1MM": "transfer_0p1mm",
+                    "TRANSFER_0P25MM": "transfer_0p25mm",
                     "TABLE_UNLOAD_0P5MM": "table_unload_0p5mm",
                     "LIFT_1MM": "lift_1mm",
                     "LIFT_5MM": "lift_5mm",
@@ -3337,7 +3941,9 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 save_contact_views(renderer, model, data, camera, site_id, bottle_id,
                                    output, image_label)
                 if stage_name == "TABLE_UNLOAD_0P5MM":
-                    if direct_arm_lift:
+                    if direct_arm_lift and result.get("direct_arm_lift_table_unload", {}).get(
+                        "status"
+                    ) != "PASS":
                         result["direct_arm_lift_table_unload"] = {
                             "status": "IN PROGRESS",
                             "first_stage": stage_record,
@@ -3392,17 +3998,19 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 effort_command = apply_simulation_only_effort(
                     float(data.time - load_build_start_time),
                     load_build_schedule=direct_arm_lift,
+                    live_support_force_n=(current_support_demand_n()
+                                          if direct_arm_lift else None),
                 )
                 mujoco.mj_step(model, data)
                 steps += 1
-                sample("POST_LIFT_HOLD", 0.0, lift_q)
                 record_simulation_only_effort(effort_command, "POST_LIFT_HOLD")
+                sample("POST_LIFT_HOLD", 0.0, lift_q)
                 post_contacts = bottle_contacts(model, data)
                 thumb, opposing, left_contact, _ = active_contact_sets(post_contacts)
                 post_window = contact_window_summary(list(contact_window_history))
                 post_table_supported = any(
                     c["side"] == "other" and c["other_body"] == "m0_table"
-                    and c["distance_m"] <= 0.0 and c["normal_force_n"] > 0.01
+                    and c["distance_m"] <= 0.0 and c["true_normal_force_n"] > 0.01
                     for c in post_contacts
                 )
                 current_height = float(data.xpos[bottle_id][2] - lift_origin_z)
@@ -3802,6 +4410,13 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             "maximum_contact_commanded_error_rad": maximum_contact_commanded_error_rad,
             "maximum_hand_actuator_effort_nm": maximum_hand_actuator_effort_nm,
             "close_command_at_stop": last_close_command_u,
+        }
+        (output / "live_contact_allocation_trace.json").write_text(
+            json.dumps(live_contact_allocation_trace, indent=2), encoding="utf-8"
+        )
+        result["live_contact_allocation_trace"] = {
+            "path": "live_contact_allocation_trace.json",
+            "sample_count": len(live_contact_allocation_trace),
         }
         writer.release()
         renderer.close()

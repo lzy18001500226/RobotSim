@@ -83,10 +83,13 @@ def highest_physical_gate(result: dict) -> str:
     }
     ordered = (
         ("BOTTLE_SETTLED", "SETTLE"),
-        ("OPEN_COMPLETE", "HAND_ACTUATION"),
+        ("CLOSE_COMPLETE", "HAND_ACTUATION"),
         ("HOLD_VALIDATED", "FINGER_BOTTLE_CONTACT"),
-        ("LOAD_READY", "LOAD_READY"),
-        ("SHORT_LIFT_REACHED", "ISOLATED_PHYSICAL_LIFT_30MM"),
+        ("UPWARD_HAND_SUPPORT_ESTABLISHED", "UPWARD_HAND_SUPPORT"),
+        ("LOAD_READY", "TABLE_LOAD_TRANSFER / LOAD_READY"),
+        ("AIRBORNE_1MM_REACHED", "AIRBORNE_1MM"),
+        ("AIRBORNE_5MM_REACHED", "AIRBORNE_5MM"),
+        ("SHORT_LIFT_REACHED", "PHYSICAL_LIFT_30MM"),
         ("POST_LIFT_HOLD_COMPLETE", "HOLD_1S"),
         ("RELEASE_COMPLETE", "PHYSICAL_RELEASE"),
     )
@@ -202,6 +205,7 @@ def main() -> int:
         "ROBOTSIM_EVIDENCE_ROOT": str(EVIDENCE),
         "ROBOTSIM_UNITREE_ROS_DIR": str(runner.UNITREE_ROS),
         "ROBOTSIM_UNITREE_MUJOCO_DIR": str(runner.UNITREE_MUJOCO),
+        "ROBOTSIM_HUMANOID_VLA_DIR": str(runner.UPSTREAM),
     }
     command = " ".join(
         shlex.quote(f"{name}={value}") for name, value in command_env.items()
@@ -218,14 +222,8 @@ def main() -> int:
         "RobotSim_branch": None,
         "RobotSim_dirty": None,
         "output_directory": str(output),
-        "gate_status": {
-            "HAND_ACTUATION": "NOT RUN",
-            "FINGER_BOTTLE_CONTACT": "NOT RUN",
-            "ISOLATED_PHYSICAL_LIFT_30MM": "NOT RUN",
-            "HOLD_1S": "NOT RUN",
-            "PHYSICAL_RELEASE": "NOT RUN",
-            "FULL_WORKCELL_PICKUP": "NOT RUN",
-        },
+        "gate_status": {name: "NOT RUN" for name in GATE_NAMES},
+        "pr_ci": {"status": "NOT RUN", "head_sha": None, "checks": []},
         "upstream": {
             "unitree_ros_sha": runner.UNITREE_ROS_SHA,
             "unitree_mujoco_sha": runner.UNITREE_MUJOCO_SHA,
@@ -440,11 +438,19 @@ def main() -> int:
         result["gate_status"] = {
             name: entry["status"] for name, entry in result["gate_evaluation"].items()
         }
-        isolated_gates_passed = all(
+        physical_gates_passed = all(
             result["gate_status"][name] == "PASS" for name in GATE_NAMES[:-1]
         )
-        result["passed"] = bool(result.get("passed")) and isolated_gates_passed
-        result["status"] = "PASS" if result["passed"] else "FAIL"
+        result["physical_gates_passed"] = bool(result.get("passed")) and physical_gates_passed
+        result["passed"] = (
+            result["physical_gates_passed"]
+            and result["gate_status"].get("PR_CI") == "PASS"
+        )
+        result["status"] = (
+            "PASS" if result["passed"]
+            else "PHYSICAL PASS; PR CI PENDING" if result["physical_gates_passed"]
+            else "FAIL"
+        )
         result["highest_physical_gate"] = highest_physical_gate(result)
         result["first_failed_gate"] = first_failed_gate(result)
         result["reproduction_command"] = command
@@ -475,7 +481,7 @@ def main() -> int:
             "error": result.get("error"),
             "output": output.as_posix(),
         }, indent=2))
-        return 0 if result.get("passed") else 2
+        return 0 if result.get("physical_gates_passed") else 2
     except Exception as exc:
         result["status"] = "FAIL"
         result["passed"] = False
@@ -485,6 +491,8 @@ def main() -> int:
         result["gate_status"] = {
             name: entry["status"] for name, entry in result["gate_evaluation"].items()
         }
+        result["physical_gates_passed"] = False
+        result["passed"] = False
         result["highest_physical_gate"] = highest_physical_gate(result)
         result["first_failed_gate"] = (
             first_failed_gate(result) if result.get("preflight_status") == "PASS"
