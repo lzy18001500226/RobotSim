@@ -207,7 +207,10 @@ def source_joint_maps(source_root: ET.Element) -> tuple[dict[str, ET.Element], d
     return joints, relations
 
 
-def add_bottle(spec: mujoco.MjSpec) -> None:
+def add_bottle(
+    spec: mujoco.MjSpec,
+    body_position: tuple[float, float, float] = CANONICAL_X2_BOTTLE_START_BODY_POS,
+) -> None:
     if not math.isclose(
         CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[1]
         - CANONICAL_X2_BOTTLE_GEOMETRIC_Z_BOUNDS_M[0],
@@ -219,7 +222,7 @@ def add_bottle(spec: mujoco.MjSpec) -> None:
         abs_tol=1e-12,
     ):
         raise RuntimeError("canonical X2 bottle geometry, height, and mass definitions disagree")
-    bottle = spec.worldbody.add_body(name=BOTTLE_BODY, pos=list(CANONICAL_X2_BOTTLE_START_BODY_POS))
+    bottle = spec.worldbody.add_body(name=BOTTLE_BODY, pos=list(body_position))
     bottle.add_freejoint(name="bottle_free")
     geom_types = {
         "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER,
@@ -239,7 +242,14 @@ def add_bottle(spec: mujoco.MjSpec) -> None:
         )
 
 
-def build_model(mode: str, out_dir: Path) -> tuple[mujoco.MjModel, dict[str, object]]:
+def build_model(
+    mode: str,
+    out_dir: Path,
+    palm_position: tuple[float, float, float] | np.ndarray = PALM_POSITION,
+    palm_quaternion_wxyz: tuple[float, float, float, float] | np.ndarray = PALM_QUATERNION_WXYZ,
+    bottle_body_position: tuple[float, float, float] = CANONICAL_X2_BOTTLE_START_BODY_POS,
+    palm_slide_z: bool = False,
+) -> tuple[mujoco.MjModel, dict[str, object]]:
     generated_urdf, hand_info = write_hand_only_urdf(out_dir)
     source_root = ET.parse(URDF).getroot()
     source_joints, relations = source_joint_maps(source_root)
@@ -267,8 +277,26 @@ def build_model(mode: str, out_dir: Path) -> tuple[mujoco.MjModel, dict[str, obj
     if len(spec.worldbody.bodies) != 1 or spec.worldbody.bodies[0].name != "R_palm":
         raise RuntimeError("filtered URDF did not compile to R_palm as its sole root body")
     palm = spec.worldbody.bodies[0]
-    palm.pos = PALM_POSITION.tolist()
-    palm.quat = PALM_QUATERNION_WXYZ.tolist()
+    palm_position = np.asarray(palm_position, dtype=float)
+    palm_quaternion_wxyz = np.asarray(palm_quaternion_wxyz, dtype=float)
+    if palm_position.shape != (3,) or not np.isfinite(palm_position).all():
+        raise ValueError("palm_position must be a finite three-vector")
+    if (
+        palm_quaternion_wxyz.shape != (4,)
+        or not np.isfinite(palm_quaternion_wxyz).all()
+        or not math.isclose(float(np.linalg.norm(palm_quaternion_wxyz)), 1.0, abs_tol=1e-9)
+    ):
+        raise ValueError("palm_quaternion_wxyz must be a finite unit WXYZ quaternion")
+    palm.pos = palm_position.tolist()
+    palm.quat = palm_quaternion_wxyz.tolist()
+    if palm_slide_z:
+        palm.add_joint(
+            name="fixture_palm_z",
+            type=mujoco.mjtJoint.mjJNT_SLIDE,
+            axis=[0.0, 0.0, 1.0],
+            limited=True,
+            range=[0.0, 0.05],
+        )
 
     spec.worldbody.add_light(
         name="fixture_key_light",
@@ -286,7 +314,19 @@ def build_model(mode: str, out_dir: Path) -> tuple[mujoco.MjModel, dict[str, obj
         group=1,
     )
     add_g1_canonical_table(spec)
-    add_bottle(spec)
+    add_bottle(spec, bottle_body_position)
+
+    if palm_slide_z:
+        palm_actuator = spec.add_actuator(
+            name="fixture_palm_z_position",
+            trntype=mujoco.mjtTrn.mjTRN_JOINT,
+            target="fixture_palm_z",
+            ctrllimited=True,
+            ctrlrange=[0.0, 0.05],
+            forcelimited=True,
+            forcerange=[-300.0, 300.0],
+        )
+        palm_actuator.set_to_position(kp=400.0, kv=40.0)
 
     for follower, relation in relations.items():
         if mode == "simulation-only":
@@ -385,6 +425,20 @@ def build_model(mode: str, out_dir: Path) -> tuple[mujoco.MjModel, dict[str, obj
             actuator_by_joint[joint_name] = actuator_id
     details: dict[str, object] = {
         "mode": mode,
+        "palm_position": palm_position.tolist(),
+        "palm_quaternion_wxyz": palm_quaternion_wxyz.tolist(),
+        "bottle_body_position": list(bottle_body_position),
+        "palm_slide_z_enabled": palm_slide_z,
+        "palm_slide_z_qpos_address": (
+            int(model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "fixture_palm_z")])
+            if palm_slide_z
+            else None
+        ),
+        "palm_slide_z_actuator_id": (
+            mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "fixture_palm_z_position")
+            if palm_slide_z
+            else None
+        ),
         "hand_info": hand_info,
         "self_chain_exclusion_count": exclusion_count,
         "source_joints": source_joints,
