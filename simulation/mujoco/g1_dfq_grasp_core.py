@@ -168,6 +168,7 @@ LIVE_ALLOCATION_CONTACT_HEADROOM_FRACTION = 0.90
 LIVE_ALLOCATION_TOTAL_CONTACT_HEADROOM_FRACTION = 0.90
 LIVE_ALLOCATION_FRICTION_UTILIZATION = 0.85
 LIVE_SUPPORT_TARGET_RATE_N_S = 12.0
+LIVE_ALLOCATION_HANDOFF_STEPS = 1
 LIVE_TRANSFER_STEP_HEIGHTS_M = (0.0001, 0.00025, 0.0005)
 LIVE_TRANSFER_STEP_DWELL_S = 0.10
 WRIST_YAW_CORRECTION_DEG = 60.0
@@ -3352,10 +3353,10 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             result["live_contact_allocation_arming"] = {
                 "status": "RUNNING",
                 "control_mode": "SIMULATION_ONLY torque impedance plus live measured-contact wrench allocation",
-                "duration_s": SIM_ONLY_FEEDFORWARD_RAMP_S,
+                "duration_s": LIVE_ALLOCATION_HANDOFF_STEPS * DT,
                 "fixed_wrist": True,
                 "load_ready_claimed": False,
-                "purpose": "maintain only the support implied by measured table unloading while preparing the progressive wrist transfer",
+                "purpose": "single-step controller handoff; progressive wrist transfer starts immediately afterward",
             }
             preload_start = float(data.time)
             preload_bottle_z = float(data.xpos[bottle_id][2])
@@ -3377,7 +3378,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 })
                 raise GateFailure(reason)
 
-            for _ in range(int(math.ceil(SIM_ONLY_FEEDFORWARD_RAMP_S / DT))):
+            for _ in range(LIVE_ALLOCATION_HANDOFF_STEPS):
                 elapsed = float(data.time - preload_start)
                 set_body_ctrl(arm_motor_targets(approach_q))
                 before_step_contacts = bottle_contacts(model, data)
