@@ -668,8 +668,173 @@ class TaskQueueTests(unittest.TestCase):
         approved = make_issue(labels=("agent:ready", "human:retry-approved"))
         released = store.claim(approved, queue.workspace_plan(approved, self.root / "worktrees"), writer_slots=2)
         self.assertIsNotNone(released)
-        self.assertEqual(released["attempts"], 1)
+        self.assertEqual(released["attempts"], 3)
+        self.assertEqual(released["retry_authorization_consumed"], 1)
         self.assertEqual(released["run_id"], first["run_id"])
+
+    def test_retry_approval_is_single_use_across_failure_and_store_restart(self) -> None:
+        path = self.root / "single-use.sqlite3"
+        store = queue.RunStore(path)
+        task = make_issue()
+        first = self.claim(store, task)
+        store.fail(task.number, "same failure")
+        self.claim(store, task)
+        blocked = store.fail(task.number, "same failure")
+        self.assertEqual(blocked["status"], "blocked")
+
+        approved = make_issue(labels=("agent:retry", "human:retry-approved"))
+        authorized = store.claim(
+            approved, queue.workspace_plan(approved, self.root / "worktrees"), writer_slots=2,
+        )
+        self.assertEqual(authorized["attempts"], 3)
+        self.assertEqual(authorized["retry_authorization_consumed"], 1)
+        self.assertEqual(authorized["run_id"], first["run_id"])
+        failed = store.fail(task.number, "authorized attempt failed")
+        self.assertEqual(failed["status"], "blocked")
+        store.close()
+
+        reopened = queue.RunStore(path)
+        self.addCleanup(reopened.close)
+        self.assertIsNone(reopened.claim(
+            approved, queue.workspace_plan(approved, self.root / "worktrees"), writer_slots=2,
+        ))
+        self.assertTrue(reopened.observe_retry_approval(task.number, approval_present=False))
+        reapproved = reopened.claim(
+            approved, queue.workspace_plan(approved, self.root / "worktrees"), writer_slots=2,
+        )
+        self.assertEqual(reapproved["attempts"], 4)
+        self.assertEqual(reapproved["retry_authorization_consumed"], 1)
+        reopened.update(task.number, status="retry")
+        self.assertIsNone(reopened.claim(
+            make_issue(labels=("agent:retry",)),
+            queue.workspace_plan(task, self.root / "worktrees"), writer_slots=2,
+        ))
+        exhausted = reopened.get(task.number)
+        self.assertEqual(exhausted["status"], "blocked")
+        self.assertEqual(exhausted["attempts"], 4)
+
+    def test_watcher_durably_rearms_only_after_observing_absent_approval(self) -> None:
+        path = self.root / "watch-rearm.sqlite3"
+        store = queue.RunStore(path)
+        task = make_issue()
+        self.claim(store, task)
+        store.fail(task.number, "same failure")
+        self.claim(store, task)
+        store.fail(task.number, "same failure")
+        approved = make_issue(labels=("agent:ready", "human:retry-approved"))
+        self.assertIsNotNone(store.claim(
+            approved, queue.workspace_plan(task, self.root / "worktrees"), writer_slots=2,
+        ))
+        store.fail(task.number, "authorized attempt failed")
+        store.close()
+
+        reopened = queue.RunStore(path)
+        self.addCleanup(reopened.close)
+
+        class Github:
+            def issue(_self, number: int) -> queue.Issue:
+                return make_issue(number, labels=("agent:blocked",))
+
+            def ready_issues(_self) -> list[queue.Issue]:
+                return []
+
+        pilot = queue.TaskQueuePilot(
+            self.root, self.root / "worktrees", self.root, reopened, Github(), object(),
+            notifier=lambda _root, _event, _workspace: 0,
+        )
+        cycles = pilot.watch(
+            poll_interval=1, stop_event=threading.Event(), issue_numbers=(task.number,),
+            stop_at_review_checkpoint=True,
+        )
+        self.assertEqual(cycles[-1]["retry_authorizations_rearmed"], [task.number])
+        self.assertEqual(reopened.get(task.number)["retry_authorization_consumed"], 0)
+        self.assertEqual(
+            json.loads(reopened.events(task.number)[-1]["details_json"])["reason"],
+            "approval_label_absence_observed",
+        )
+
+    def test_saved_session_base_mismatch_is_rejected_before_claim_or_label_mutation(self) -> None:
+        source_path = self.root / "legacy-inconsistent.sqlite3"
+        source = queue.RunStore(source_path)
+        task_number = 62062
+        task = make_issue(
+            task_number,
+            labels=("agent:retry", "human:retry-approved"),
+        )
+        first = source.claim(
+            task, queue.workspace_plan(task, self.root / "source-worktrees"), writer_slots=2,
+        )
+        source.set_codex_session(task_number, "saved-session-fixture")
+        source.fail(task_number, "legacy setup failure")
+        source.claim(task, queue.workspace_plan(task, self.root / "source-worktrees"), writer_slots=2)
+        source.set_codex_session(task_number, "saved-session-fixture")
+        blocked = source.fail(task_number, "legacy setup failure")
+        self.assertEqual(blocked["status"], "blocked")
+        original_attempt_id = str(blocked["attempt_id"])
+        source.close()
+
+        copied_path = self.root / "copied-inconsistent.sqlite3"
+        with sqlite3.connect(source_path) as source_db, sqlite3.connect(copied_path) as copied_db:
+            source_db.backup(copied_db)
+
+        store = queue.RunStore(copied_path)
+        self.addCleanup(store.close)
+        mutations: list[tuple[int, str | None, tuple[str, ...], bool]] = []
+
+        class Github:
+            def set_status(_self, number: int, *, add: str | None, remove: object) -> None:
+                details = json.loads(store.events(number)[-1]["details_json"])
+                mutations.append((number, add, tuple(remove), details.get("reason_code") == "saved_session_base_sha_missing"))
+
+        pilot = queue.TaskQueuePilot(
+            self.root, self.root / "worktrees", self.root, store, Github(), object(),
+            notifier=lambda _root, _event, _workspace: 0,
+        )
+        with patch.object(queue, "create_worktree", side_effect=AssertionError("must reject before worktree setup")):
+            self.assertEqual(pilot.dispatch_batch([task]), [])
+
+        persisted = store.get(task_number)
+        self.assertEqual(persisted["status"], "blocked")
+        self.assertEqual(persisted["attempts"], 2)
+        self.assertEqual(persisted["attempt_id"], original_attempt_id)
+        self.assertEqual(persisted["retry_authorization_consumed"], 0)
+        rejected = [event for event in store.events(task_number) if event["event_type"] == "dispatch_preflight_rejected"]
+        self.assertEqual(len(rejected), 1)
+        self.assertEqual(json.loads(rejected[0]["details_json"]), {
+            "reason_code": "saved_session_base_sha_missing", "stage": "resume_binding",
+        })
+        self.assertEqual(mutations, [(task_number, queue.BLOCKED_LABEL,
+                                      (queue.RUNNING_LABEL, queue.READY_LABEL, queue.RETRY_LABEL,
+                                       queue.HUMAN_RETRY_APPROVED), True)])
+        self.assertEqual(first["run_id"], persisted["run_id"])
+
+    def test_setup_failure_persists_safe_reason_without_exception_text(self) -> None:
+        store = self.store()
+        task = make_issue()
+
+        class Github:
+            def set_status(self, _number: int, *, add: str | None, remove: object) -> None:
+                return None
+
+        pilot = queue.TaskQueuePilot(
+            self.root, self.root / "worktrees", self.root, store, Github(), object(),
+            notifier=lambda _root, _event, _workspace: 0,
+        )
+        with patch.object(
+            queue, "create_worktree",
+            side_effect=RuntimeError("existing issue workspace has local changes at /private/user/path"),
+        ):
+            self.assertEqual(pilot.dispatch_batch([task]), [])
+        failure = next(
+            event for event in reversed(store.events(task.number))
+            if event["event_type"] == "attempt_failed"
+        )
+        details = json.loads(failure["details_json"])
+        self.assertEqual(details["stage"], "worktree_create")
+        self.assertEqual(details["reason_code"], "worktree_has_local_changes")
+        self.assertEqual(details["exception_type"], "RuntimeError")
+        self.assertNotIn("/private/user/path", failure["details_json"])
+        self.assertNotIn("workspace-or-issue-update-failed", failure["details_json"])
 
     def test_ci_feedback_retry_resumes_the_same_codex_owner(self) -> None:
         store = self.store()
@@ -800,6 +965,28 @@ class TaskQueueTests(unittest.TestCase):
         self.assertIn("closeout_event_json", columns)
         self.assertIn("notification_state", columns)
         self.assertIn("notification_attempts", columns)
+        self.assertIn("retry_authorization_consumed", columns)
+
+    def test_legacy_blocked_run_quarantines_unknown_retry_authorization(self) -> None:
+        path = self.root / "legacy-blocked.sqlite3"
+        legacy = queue.RunStore(path)
+        task = make_issue()
+        self.claim(legacy, task)
+        legacy.update(task.number, status="blocked")
+        legacy.close()
+        with sqlite3.connect(path) as database:
+            database.execute("ALTER TABLE task_runs DROP COLUMN retry_authorization_consumed")
+
+        migrated = queue.RunStore(path)
+        self.addCleanup(migrated.close)
+        row = migrated.get(task.number)
+        self.assertEqual(row["retry_authorization_consumed"], 1)
+        self.assertIn(
+            "retry_authorization_quarantined",
+            [event["event_type"] for event in migrated.events(task.number)],
+        )
+        self.assertFalse(migrated.observe_retry_approval(task.number, approval_present=True))
+        self.assertTrue(migrated.observe_retry_approval(task.number, approval_present=False))
 
     def test_dead_primary_recovers_to_retry_after_restart(self) -> None:
         path = self.root / "interrupted.sqlite3"

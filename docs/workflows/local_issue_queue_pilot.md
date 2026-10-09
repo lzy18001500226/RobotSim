@@ -56,7 +56,9 @@ recovered. A retry resumes the persisted deterministic worktree even if the conf
 changes, preserving uncommitted task changes;
 result files use each attempt ID so an interrupted run cannot collide with its retry. A hard
 `agent:blocked` state cannot be retried until a maintainer removes the block and explicitly adds
-`human:retry-approved`.
+`human:retry-approved`. The queue consumes that approval in the same SQLite transaction as the
+attempt claim, then removes the label before setup begins. A failed manually released attempt blocks
+again; the same approval cannot launch a second attempt after a watcher cycle or process restart.
 
 The pilot allows at most two local writable Codex slots; `--slots 1` reduces the default bound. The queue
 sorts ready Issues by number, checks dependencies and running labels, and atomically claims local
@@ -105,7 +107,27 @@ AgentMail delivery does not erase the persisted GitHub closeout. The command rep
 notification failure with a nonzero exit instead of silently treating it as delivered.
 Review comments and failed check names are routed to the next primary attempt. A repeated identical
 review/CI root cause also blocks. Inspect the branch and Issue before removing `agent:blocked`,
-marking it ready again, and adding `human:retry-approved`. The pilot consumes that label at dispatch.
+marking it ready again, and adding `human:retry-approved`. After a consumed authorization fails,
+leave the approval label absent until the watcher records `retry_authorization_rearmed`; then a newly
+applied approval can authorize one new attempt. If the watcher never observes the label absent, it
+fails closed and the old approval cannot be reused. Attempts remain cumulative in the queue database.
+
+Before claiming a retry or changing GitHub labels, the queue checks that any saved Codex session has
+a valid pinned base SHA, a matching `task_base_pinned` event, and a matching session event after the
+base pin. A mismatch is persisted as a sanitized `dispatch_preflight_rejected` event and blocks the
+run without creating another attempt. Setup failures record a bounded stage, reason code, and
+exception type; exception text, private paths, and credentials are not written to the event.
+
+### Saved-session retirement proposal
+
+If a legacy saved session has no verifiable pinned base, do not fill `base_sha` from the current
+checkout or resume that session. A maintainer must separately approve retirement of the old session
+and a fresh run. Before that operation, the coordinator should preserve the queue database, task
+worktree, branch, and logs; verify that no executor is active and that the branch/worktree contain no
+unpublished changes; record the old run, worker, session, and base-recovery failure; then start a new
+run identity with a new worker/session and pin the reviewed `origin/main` SHA at that time. The new
+run must receive its own explicit retry authorization. This workflow does not perform session
+retirement automatically, and `human:retry-approved` alone does not authorize it.
 
 After CI and both GitHub and read-only review approve the PR, the queue creates a local and Issue
 comment review packet containing the branch, head SHA, check results, and required human gates. A

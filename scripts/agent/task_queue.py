@@ -333,6 +333,7 @@ class RunStore:
                 branch TEXT NOT NULL,
                 workspace TEXT NOT NULL,
                 base_sha TEXT NOT NULL DEFAULT '',
+                retry_authorization_consumed INTEGER NOT NULL DEFAULT 0,
                 pr_number INTEGER,
                 head_sha TEXT NOT NULL DEFAULT '',
                 review_feedback_hash TEXT NOT NULL DEFAULT '',
@@ -384,6 +385,24 @@ class RunStore:
             self._db.execute(
                 "ALTER TABLE task_runs ADD COLUMN base_sha TEXT NOT NULL DEFAULT ''"
             )
+        migrated_retry_authorization = "retry_authorization_consumed" not in columns
+        if migrated_retry_authorization:
+            self._db.execute(
+                "ALTER TABLE task_runs ADD COLUMN retry_authorization_consumed INTEGER NOT NULL DEFAULT 0"
+            )
+            self._db.execute(
+                "UPDATE task_runs SET retry_authorization_consumed=1 WHERE status='blocked'"
+            )
+            required_event_columns = {"run_id", "attempt_id", "worker_id"}
+            if required_event_columns <= columns:
+                for (issue_number,) in self._db.execute(
+                    "SELECT issue_number FROM task_runs WHERE status='blocked'"
+                ).fetchall():
+                    legacy_blocked = self._row(int(issue_number))
+                    assert legacy_blocked is not None
+                    self._append_event(legacy_blocked, "retry_authorization_quarantined", {
+                        "reason": "legacy_authorization_state_unknown",
+                    })
         self._db.commit()
         if str(self.path) != ":memory:" and self.path.exists():
             os.chmod(self.path, 0o600)
@@ -424,6 +443,120 @@ class RunStore:
                 (issue_number,),
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def resume_binding_error(self, issue_number: int) -> str | None:
+        """Validate stored base metadata and any saved session's base binding."""
+        with self._guard:
+            row = self._row(issue_number)
+            if row is None:
+                return None
+            base_sha = str(row.get("base_sha") or "")
+            if base_sha and not re.fullmatch(r"[0-9a-f]{40,64}", base_sha):
+                return "stored_task_base_sha_invalid"
+            if not row.get("codex_session_id"):
+                return None
+            if not base_sha:
+                return "saved_session_base_sha_missing"
+            events = self._db.execute(
+                "SELECT event_id,event_type,details_json FROM task_events "
+                "WHERE issue_number=? AND run_id=? ORDER BY event_id",
+                (issue_number, row["run_id"]),
+            ).fetchall()
+            base_events: list[tuple[int, str]] = []
+            session_events: list[tuple[int, str]] = []
+            for event in events:
+                try:
+                    details = json.loads(str(event["details_json"]))
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(details, dict):
+                    continue
+                if event["event_type"] == "task_base_pinned":
+                    base_events.append((int(event["event_id"]), str(details.get("base_sha") or "")))
+                elif event["event_type"] == "codex_session_started":
+                    session_events.append((int(event["event_id"]), str(details.get("session_id") or "")))
+            if not base_events:
+                return "saved_session_base_pin_event_missing"
+            if base_events[-1][1] != base_sha:
+                return "saved_session_base_pin_mismatch"
+            if not session_events:
+                return "saved_session_event_missing"
+            if session_events[-1][1] != str(row["codex_session_id"]):
+                return "saved_session_identity_mismatch"
+            if base_events[-1][0] > session_events[-1][0]:
+                return "saved_session_predates_base_pin"
+            return None
+
+    def reject_dispatch_preflight(self, issue_number: int, reason_code: str) -> dict[str, object]:
+        if not re.fullmatch(r"[a-z][a-z0-9_]{1,79}", reason_code):
+            raise ValueError("invalid dispatch preflight reason code")
+        with self._guard:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._row(issue_number)
+                if row is None:
+                    raise KeyError(issue_number)
+                if row["status"] not in CLAIM_BLOCKING_STATES:
+                    self._db.execute(
+                        "UPDATE task_runs SET status='blocked',executor_pid=NULL,"
+                        "executor_start_token='',updated_at=? WHERE issue_number=?",
+                        (_now(), issue_number),
+                    )
+                    row = self._row(issue_number)
+                    assert row is not None
+                prior = self._db.execute(
+                    "SELECT details_json FROM task_events WHERE issue_number=? AND run_id=? "
+                    "AND attempt_id=? AND event_type='dispatch_preflight_rejected' "
+                    "ORDER BY event_id DESC LIMIT 1",
+                    (issue_number, row["run_id"], row["attempt_id"]),
+                ).fetchone()
+                prior_details: object = {}
+                if prior is not None:
+                    try:
+                        prior_details = json.loads(str(prior["details_json"]))
+                    except (TypeError, ValueError):
+                        prior_details = {}
+                if not isinstance(prior_details, dict):
+                    prior_details = {}
+                if prior is None or prior_details.get("reason_code") != reason_code:
+                    self._append_event(row, "dispatch_preflight_rejected", {
+                        "stage": "resume_binding", "reason_code": reason_code,
+                    })
+                self._db.commit()
+                result = self._row(issue_number)
+                assert result is not None
+                return result
+            except Exception:
+                self._db.rollback()
+                raise
+
+    def observe_retry_approval(self, issue_number: int, *, approval_present: bool) -> bool:
+        """Re-arm a consumed token only after absence was durably observed while blocked."""
+        with self._guard:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._row(issue_number)
+                if (
+                    row is None or row["status"] != "blocked" or approval_present
+                    or not int(row.get("retry_authorization_consumed") or 0)
+                ):
+                    self._db.rollback()
+                    return False
+                self._db.execute(
+                    "UPDATE task_runs SET retry_authorization_consumed=0,updated_at=? "
+                    "WHERE issue_number=?",
+                    (_now(), issue_number),
+                )
+                row = self._row(issue_number)
+                assert row is not None
+                self._append_event(row, "retry_authorization_rearmed", {
+                    "reason": "approval_label_absence_observed",
+                })
+                self._db.commit()
+                return True
+            except Exception:
+                self._db.rollback()
+                raise
 
     def _append_event(
         self,
@@ -515,8 +648,25 @@ class RunStore:
                     HUMAN_RETRY_APPROVED not in issue.labels
                     or BLOCKED_LABEL in issue.labels
                     or not ({READY_LABEL, RETRY_LABEL} & issue.labels)
+                    or int(prior.get("retry_authorization_consumed") or 0)
                 ):
                     self._db.rollback()
+                    return None
+                if (
+                    prior is not None and prior["status"] == "retry"
+                    and int(prior.get("retry_authorization_consumed") or 0)
+                ):
+                    self._db.execute(
+                        "UPDATE task_runs SET status='blocked',executor_pid=NULL,"
+                        "executor_start_token='',updated_at=? WHERE issue_number=?",
+                        (_now(), issue.number),
+                    )
+                    exhausted = self._row(issue.number)
+                    assert exhausted is not None
+                    self._append_event(exhausted, "retry_authorization_exhausted", {
+                        "reason": "single_use_approval_already_consumed",
+                    })
+                    self._db.commit()
                     return None
                 if prior is not None and prior["status"] in CLAIM_BLOCKING_STATES:
                     self._db.rollback()
@@ -528,7 +678,7 @@ class RunStore:
                     self._db.rollback()
                     return None
                 manually_released = prior is not None and prior["status"] == "blocked"
-                attempts = (1 if manually_released else int(prior["attempts"]) + 1) if prior else 1
+                attempts = int(prior["attempts"]) + 1 if prior else 1
                 run_id = str(prior["run_id"]) if prior else str(uuid.uuid4())
                 attempt_id = str(uuid.uuid4())
                 worker_id = str(prior["worker_id"]) if prior else f"Codex-{run_id[:8]}"
@@ -549,6 +699,8 @@ class RunStore:
                         head_sha='', review_feedback_hash='', gates_json='[]', packet_json='{}',
                         closeout_event_json='', notified=0, notification_state='not_started',
                         notification_attempts=0,
+                        retry_authorization_consumed=CASE WHEN task_runs.status='blocked' THEN 1
+                            ELSE task_runs.retry_authorization_consumed END,
                         last_failure_hash=CASE WHEN task_runs.status='blocked' THEN '' ELSE task_runs.last_failure_hash END,
                         same_failure_count=CASE WHEN task_runs.status='blocked' THEN 0 ELSE task_runs.same_failure_count END,
                         updated_at=excluded.updated_at""",
@@ -558,6 +710,10 @@ class RunStore:
                 claimed = self._row(issue.number)
                 assert claimed is not None
                 self._append_event(claimed, "attempt_claimed", {"attempt": attempts})
+                if manually_released:
+                    self._append_event(claimed, "retry_authorization_consumed", {
+                        "authorization": HUMAN_RETRY_APPROVED, "attempt": attempts,
+                    })
                 self._db.commit()
                 result = self._row(issue.number)
                 assert result is not None
@@ -566,7 +722,13 @@ class RunStore:
                 self._db.rollback()
                 raise
 
-    def fail(self, issue_number: int, root_cause: str) -> dict[str, object]:
+    def fail(
+        self,
+        issue_number: int,
+        root_cause: str,
+        *,
+        event_details: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
         fingerprint = hashlib.sha256(" ".join(root_cause.casefold().split()).encode()).hexdigest()
         with self._guard:
             self._db.execute("BEGIN IMMEDIATE")
@@ -575,17 +737,21 @@ class RunStore:
                 if row is None:
                     raise KeyError(issue_number)
                 repeated = int(row["same_failure_count"]) + 1 if row["last_failure_hash"] == fingerprint else 1
-                status = "blocked" if repeated >= 2 or int(row["attempts"]) >= MAX_ATTEMPTS else "retry"
+                status = "blocked" if (
+                    int(row.get("retry_authorization_consumed") or 0)
+                    or repeated >= 2 or int(row["attempts"]) >= MAX_ATTEMPTS
+                ) else "retry"
                 self._db.execute(
                     "UPDATE task_runs SET status=?,last_failure_hash=?,same_failure_count=?,executor_pid=NULL,executor_start_token='',updated_at=? WHERE issue_number=?",
                     (status, fingerprint, repeated, _now(), issue_number),
                 )
                 failed = self._row(issue_number)
                 assert failed is not None
-                self._append_event(
-                    failed, "attempt_failed",
-                    {"failure_fingerprint": fingerprint, "same_failure_count": repeated},
-                )
+                details: dict[str, object] = {
+                    "failure_fingerprint": fingerprint, "same_failure_count": repeated,
+                }
+                details.update(dict(event_details or {}))
+                self._append_event(failed, "attempt_failed", details)
                 self._db.commit()
                 result = self._row(issue_number)
                 assert result is not None
@@ -630,6 +796,41 @@ class RunStore:
 
 def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _sanitized_setup_failure(stage: str, exc: Exception) -> tuple[str, dict[str, str]]:
+    safe_stage = stage if re.fullmatch(r"[a-z][a-z0-9_]{1,39}", stage) else "setup"
+    safe_exception = type(exc).__name__
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", safe_exception):
+        safe_exception = "Exception"
+    try:
+        message = str(exc)[:2048]
+    except Exception:
+        message = ""
+    known_reasons = (
+        ("cannot resume a Codex session without its pinned task base", "saved_session_base_sha_missing"),
+        ("stored task base SHA is invalid", "stored_task_base_sha_invalid"),
+        ("legacy task checkout cannot be tied to a clean coordinator base", "legacy_checkout_base_unverifiable"),
+        ("cannot pin a task base after workspace edits have begun", "workspace_not_clean_for_base_pin"),
+        ("existing issue workspace does not match its deterministic branch", "worktree_branch_mismatch"),
+        ("existing issue workspace has local changes", "worktree_has_local_changes"),
+        ("issue branch is already checked out in another workspace", "issue_branch_already_checked_out"),
+    )
+    reason_code = next(
+        (code for fragment, code in known_reasons if fragment in message),
+        {
+            "retry_approval_label": "retry_approval_label_update_failed",
+            "worktree_create": "worktree_setup_failed",
+            "base_pin": "task_base_pin_failed",
+            "guidance_load": "task_guidance_load_failed",
+            "running_label": "running_label_update_failed",
+        }.get(safe_stage, f"{safe_stage}_failed"),
+    )
+    failure_key = f"{safe_stage}:{reason_code}:{safe_exception}"
+    return failure_key, {
+        "stage": safe_stage, "reason_code": reason_code,
+        "exception_type": safe_exception,
+    }
 
 
 def _process_start_token(pid: int) -> str:
@@ -1860,14 +2061,43 @@ class TaskQueuePilot:
             )
             if not decision.eligible:
                 continue
+            binding_error = self.store.resume_binding_error(issue.number)
+            if binding_error:
+                rejected = self.store.reject_dispatch_preflight(issue.number, binding_error)
+                try:
+                    self.github.set_status(
+                        issue.number, add=BLOCKED_LABEL,
+                        remove=(RUNNING_LABEL, READY_LABEL, RETRY_LABEL, HUMAN_RETRY_APPROVED),
+                    )
+                except Exception as exc:
+                    _key, details = _sanitized_setup_failure("preflight_label", exc)
+                    self.store.record_event(
+                        issue.number, "dispatch_preflight_label_failed", details,
+                    )
+                active_numbers.add(issue.number)
+                if rejected["status"] in CLAIM_BLOCKING_STATES:
+                    active_count = self.store.active_count()
+                continue
+            prior = self.store.get(issue.number)
+            manually_released = bool(prior and prior["status"] == "blocked")
             plan = workspace_plan(issue, self.worktree_root)
             row = self.store.claim(issue, plan, writer_slots=self.writer_slots)
             if row is None:
+                latest = self.store.get(issue.number)
+                if latest and latest["status"] == "blocked":
+                    last_event = self.store.events(issue.number)[-1:]
+                    if last_event and last_event[0]["event_type"] == "retry_authorization_exhausted":
+                        self._set_outcome_label(issue.number, "blocked")
                 active_count = self.store.active_count()
                 continue
             active_count += 1
             active_numbers.add(issue.number)
+            stage = "retry_approval_label"
             try:
+                if manually_released:
+                    self.github.set_status(
+                        issue.number, add=None, remove=(HUMAN_RETRY_APPROVED,),
+                    )
                 plan = WorkspacePlan(
                     issue.number, str(row["branch"]), str(row["workspace"]), plan.base_ref
                 )
@@ -1876,16 +2106,20 @@ class TaskQueuePilot:
                     or bool(row.get("codex_session_id"))
                     or len(self.store.events(issue.number)) > 1
                 )
+                stage = "worktree_create"
                 workspace = create_worktree(
                     self.repository_root, plan, allow_dirty=resumed_attempt
                 )
+                stage = "base_pin"
                 _pin_task_base(self.store, issue.number, workspace, row)
                 row = self.store.get(issue.number)
                 assert row is not None
                 feedback = str(row.get("review_feedback") or "")
+                stage = "guidance_load"
+                guidance = read_default_guidance(self.repository_root)
                 prompt = render_task(
                     issue, self.repository_root, review_feedback=feedback,
-                    guidance=read_default_guidance(self.repository_root),
+                    guidance=guidance,
                 )
                 packet = TaskPacket(
                     issue.number, str(row["run_id"]), str(row["attempt_id"]),
@@ -1895,6 +2129,7 @@ class TaskQueuePilot:
                     str(row.get("codex_session_id") or ""),
                     ISSUE_WORKSPACE_WRITE_ROOTS.get(issue.number),
                 )
+                stage = "running_label"
                 self.github.set_status(
                     issue.number,
                     add=RUNNING_LABEL,
@@ -1904,14 +2139,20 @@ class TaskQueuePilot:
                     ),
                 )
                 selected.append((issue, packet))
-            except Exception:
-                failed = self.store.fail(issue.number, "workspace-or-issue-update-failed")
+            except Exception as exc:
+                failure_key, details = _sanitized_setup_failure(stage, exc)
+                failed = self.store.fail(
+                    issue.number, failure_key, event_details=details,
+                )
                 self._set_outcome_label(issue.number, str(failed["status"]))
                 if failed["status"] == "blocked":
                     self._emit_closeout(
                         issue, failed, status="blocked",
-                        summary="The same workspace/Issue setup failure occurred twice.",
-                        blockers=("Issue workspace or label setup failed repeatedly.",),
+                        summary=(
+                            f"Queue setup stopped at {details['stage']} "
+                            f"({details['reason_code']}); no worker was started."
+                        ),
+                        blockers=("Review the sanitized setup failure event before authorizing another attempt.",),
                     )
 
         outcomes: list[dict[str, object]] = []
@@ -2002,6 +2243,24 @@ class TaskQueuePilot:
                 for row in self.store.all()
             )
 
+        def observe_retry_authorizations() -> list[int]:
+            observed: list[int] = []
+            for row in self.store.all(("blocked",)):
+                number = int(row["issue_number"])
+                if selected_numbers is not None and number not in selected_numbers:
+                    continue
+                if not int(row.get("retry_authorization_consumed") or 0):
+                    continue
+                try:
+                    issue = self.github.issue(number)
+                except Exception:
+                    continue
+                if self.store.observe_retry_approval(
+                    number, approval_present=HUMAN_RETRY_APPROVED in issue.labels,
+                ):
+                    observed.append(number)
+            return observed
+
         cycles: list[dict[str, object]] = []
         while not stop_event.is_set():
             current: dict[str, object] = {}
@@ -2013,6 +2272,7 @@ class TaskQueuePilot:
             current["reconciled"] = self.reconcile(selected_numbers)
             for result in current["reconciled"]:
                 result.pop("review_packet_path", None)
+            current["retry_authorizations_rearmed"] = observe_retry_authorizations()
             if at_checkpoint():
                 current["dispatched"] = []
                 current["notification_failures"] = sorted(self.notification_failures)
@@ -2031,9 +2291,11 @@ class TaskQueuePilot:
     def _set_outcome_label(self, issue_number: int, status: str) -> None:
         label = {"retry": RETRY_LABEL, "blocked": BLOCKED_LABEL}.get(status)
         if label:
+            remove = [RUNNING_LABEL, READY_LABEL, RETRY_LABEL, BLOCKED_LABEL]
+            if status == "blocked":
+                remove.append(HUMAN_RETRY_APPROVED)
             self.github.set_status(
-                issue_number, add=label,
-                remove=(RUNNING_LABEL, READY_LABEL, RETRY_LABEL, BLOCKED_LABEL),
+                issue_number, add=label, remove=tuple(remove),
             )
 
     def reconcile(self, issue_numbers: Iterable[int] | None = None) -> list[dict[str, object]]:
