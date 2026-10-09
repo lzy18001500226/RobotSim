@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -11,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 
 BASE_WORKER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -24,7 +25,10 @@ def codex_permission_profile_overrides(*, read_only: bool) -> tuple[str, ...]:
     workspace_access = "read" if read_only else "write"
     filesystem = (
         '{"/" = "read", "/home" = "' + workspace_access
-        + '", "/root" = "deny", "/var/tmp" = "deny", '
+        + '", ' + ('"/home/.git" = "write", ' if not read_only else '')
+        + '"/root" = "read", "/root/auth.json" = "deny", '
+        '"/root/.env" = "deny", '
+        '"/var/tmp" = "deny", '
         '"/tmp" = "write", "/run/task-input" = "read"}'
     )
     return (
@@ -70,6 +74,7 @@ class CodexRuntime:
     mounts: tuple[str, ...]
     path_entries: tuple[str, ...]
     node_prefix: tuple[str, ...] = ()
+    discovery_path_entries: tuple[str, ...] = ()
 
     def map_command(self, command: Sequence[str]) -> list[str]:
         if not command or Path(command[0]).resolve() != self.host_executable:
@@ -112,6 +117,115 @@ def build_worker_environment(
     if include_model_proxy:
         environment.update(_model_proxy_environment(source))
     return environment
+
+
+def build_codex_discovery_environment(
+    *,
+    path_entries: Sequence[str] = (),
+    ambient: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Let Codex report its selected model route without inheriting coordinator secrets."""
+    source = os.environ if ambient is None else ambient
+    home = Path(source.get("HOME") or Path.home()).expanduser().resolve()
+    codex_home = Path(source.get("CODEX_HOME") or (home / ".codex")).expanduser().resolve()
+    environment = {
+        "PATH": ":".join((*path_entries, BASE_WORKER_PATH)),
+        "HOME": str(home),
+        "CODEX_HOME": str(codex_home),
+        "NO_COLOR": "1",
+    }
+    for name in ("LANG", "LC_ALL", "TERM"):
+        value = source.get(name)
+        if value and "\x00" not in value and "\n" not in value:
+            environment[name] = value
+    environment.update(_model_proxy_environment(source))
+    return environment
+
+
+@dataclass(frozen=True)
+class CodexModelConfig:
+    model: str
+    provider: str
+    base_url: str
+    wire_api: str
+
+    def config_overrides(self) -> tuple[str, ...]:
+        prefix = f"model_providers.{self.provider}"
+        return (
+            f"model_provider={json.dumps(self.provider)}",
+            f"{prefix}.name={json.dumps(self.provider)}",
+            f"{prefix}.base_url={json.dumps(self.base_url)}",
+            f"{prefix}.wire_api={json.dumps(self.wire_api)}",
+            f"{prefix}.requires_openai_auth=true",
+        )
+
+
+def discover_codex_model_config(
+    executable: Path,
+    *,
+    path_entries: Sequence[str] = (),
+    ambient: Mapping[str, str] | None = None,
+) -> CodexModelConfig:
+    """Read only the effective provider route from Codex's redacted doctor report."""
+    environment = build_codex_discovery_environment(
+        path_entries=path_entries, ambient=ambient,
+    )
+    result = subprocess.run(
+        [str(executable), "doctor", "--json"],
+        text=True, capture_output=True, check=False, timeout=45, env=environment,
+    )
+    if result.returncode:
+        raise RuntimeError("could not inspect the configured Codex model route")
+    try:
+        report = json.loads(result.stdout)
+        checks = report["checks"]
+        config_details = checks["config.load"]["details"]
+        route_details = checks["network.provider_reachability"]["details"]
+        model = config_details["model"]
+        provider = config_details["model provider"]
+        inference_url = route_details["OpenAI API inference URL"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Codex did not report a usable OpenAI-compatible model route") from exc
+
+    if (
+        not isinstance(model, str)
+        or not re.fullmatch(r"[A-Za-z0-9._:/+-]{1,100}", model)
+        or not isinstance(provider, str)
+        or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", provider)
+        or not isinstance(inference_url, str)
+    ):
+        raise RuntimeError("configured Codex model route is not safe to expose to the worker")
+
+    endpoint_match = re.match(r"^(https://\S+)", inference_url)
+    if endpoint_match is None:
+        raise RuntimeError("configured Codex model route is not safe to expose to the worker")
+
+    try:
+        parsed = urlsplit(endpoint_match.group(1))
+        _ = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("configured Codex model route is not a valid URL") from exc
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise RuntimeError("configured Codex model route is not safe to expose to the worker")
+
+    path = parsed.path.rstrip("/")
+    if path.endswith("/chat/completions"):
+        wire_api = "chat"
+        base_path = path[: -len("/chat/completions")]
+    elif path.endswith("/responses"):
+        wire_api = "responses"
+        base_path = path[: -len("/responses")]
+    else:
+        raise RuntimeError("configured Codex model route uses an unsupported API path")
+    base_url = urlunsplit((parsed.scheme, parsed.netloc, base_path.rstrip("/"), "", ""))
+    return CodexModelConfig(model, provider, base_url, wire_api)
 
 
 def prepare_worker_codex_home(
@@ -167,7 +281,7 @@ def prepare_codex_workspace(workspace: Path) -> None:
     """Create Codex metadata mountpoints inside the disposable task worktree."""
     if workspace.is_symlink() or not workspace.is_dir():
         raise RuntimeError("Codex workspace is not a real directory")
-    for name in (".agents", ".codex"):
+    for name in (".agents", ".codex", ".aws"):
         path = workspace / name
         if path.is_symlink():
             raise RuntimeError("Codex workspace metadata path is a symlink")
@@ -200,15 +314,35 @@ def _under_masked_root(path: Path) -> bool:
     return any(normalized == root or normalized.startswith(root + "/") for root in HIDDEN_ROOTS)
 
 
+def _under_wsl_mount(path: Path) -> bool:
+    normalized = path.as_posix()
+    return normalized == "/mnt" or normalized.startswith("/mnt/")
+
+
 def _new_runtime_target(prefix: str) -> str:
     return f"/run/robotsim-{prefix}-{uuid.uuid4().hex}"
 
 
 def resolve_codex_runtime(executable: str | None = None) -> CodexRuntime:
     """Resolve a Codex launcher into a minimal read-only mount outside host HOME."""
-    selected = executable or shutil.which("codex")
+    selected = executable
+    if selected is None:
+        preferred = Path.home() / ".local" / "bin" / "codex"
+        if preferred.is_file() and not _under_wsl_mount(preferred.resolve()):
+            selected = str(preferred)
+        else:
+            native_path_entries = []
+            for entry in os.environ.get("PATH", "").split(os.pathsep):
+                if not entry:
+                    continue
+                path = Path(entry).expanduser()
+                if path.is_absolute() and not _under_wsl_mount(path.resolve()):
+                    native_path_entries.append(str(path))
+            selected = shutil.which("codex", path=os.pathsep.join(native_path_entries))
+            if selected and _under_wsl_mount(Path(selected).resolve()):
+                selected = None
     if not selected:
-        raise RuntimeError("Codex CLI is not installed")
+        raise RuntimeError("native Linux Codex CLI is not installed")
     selected_path = Path(selected).expanduser()
     if selected_path.is_symlink():
         selected_path = selected_path.resolve(strict=True)
@@ -220,6 +354,7 @@ def resolve_codex_runtime(executable: str | None = None) -> CodexRuntime:
     path_entries: list[str] = []
     sandbox_executable = str(host_executable)
     node_prefix: tuple[str, ...] = ()
+    discovery_path_entries: list[str] = []
     runtime_root: Path | None = None
     relative_executable: Path | None = None
     if _under_masked_root(host_executable):
@@ -253,7 +388,8 @@ def resolve_codex_runtime(executable: str | None = None) -> CodexRuntime:
         except OSError:
             script = False
     if script:
-        node = shutil.which("node")
+        preferred_node = Path.home() / ".local" / "bin" / "node"
+        node = str(preferred_node) if preferred_node.is_file() else shutil.which("node")
         if not node:
             candidates = sorted(Path.home().glob(".nvm/versions/node/*/bin/node"))
             if len(candidates) == 1:
@@ -263,6 +399,7 @@ def resolve_codex_runtime(executable: str | None = None) -> CodexRuntime:
         node_path = Path(node).expanduser().resolve()
         if not node_path.is_file():
             raise RuntimeError("Node.js runtime is unavailable")
+        discovery_path_entries.append(str(node_path.parent))
         if _under_masked_root(node_path):
             node_root = node_path.parent
             node_target = _new_runtime_target("node")
@@ -276,6 +413,7 @@ def resolve_codex_runtime(executable: str | None = None) -> CodexRuntime:
             node_prefix = (mapped_node,)
     return CodexRuntime(
         host_executable, sandbox_executable, tuple(mounts), tuple(path_entries), node_prefix,
+        tuple(discovery_path_entries),
     )
 
 
@@ -309,6 +447,16 @@ def build_isolated_command(
     resolved_workspace, resolved_profile, resolved_input, resolved_output = (
         path.resolve() for path in paths
     )
+    metadata_mounts: tuple[str, ...] = ()
+    if read_only or workspace_write_roots is not None:
+        prepare_codex_workspace(resolved_workspace)
+        metadata_mounts = tuple(
+            argument
+            for name in (".agents", ".codex")
+            for argument in (
+                "--bind", str(resolved_workspace / name), f"/home/{name}",
+            )
+        )
     resolved_write_roots: list[tuple[Path, str]] = []
     if workspace_write_roots is not None:
         for path in workspace_write_roots:
@@ -345,6 +493,7 @@ def build_isolated_command(
             for source, target in resolved_write_roots
             for argument in ("--bind", str(source), target)
         ),
+        *metadata_mounts,
         "--tmpfs", "/tmp", "--dir", "/tmp/worker-home", "--dir", "/tmp/cache",
         "--tmpfs", "/mnt", "--tmpfs", "/media",
         "--proc", "/proc", "--dev", "/dev", "--clearenv",

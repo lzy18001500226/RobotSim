@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.agent import worker_security
 
@@ -19,12 +21,19 @@ class WorkerSecurityTests(unittest.TestCase):
         reviewer = worker_security.codex_permission_profile_overrides(read_only=True)
 
         self.assertEqual(writer[0], "default_permissions=robotsim_worker")
-        self.assertIn('"/root" = "deny"', writer[1])
+        self.assertIn('"/root" = "read"', writer[1])
+        self.assertIn('"/root/auth.json" = "deny"', writer[1])
+        self.assertIn('"/root/.env" = "deny"', writer[1])
         self.assertIn('"/var/tmp" = "deny"', writer[1])
         self.assertIn('"/home" = "write"', writer[1])
+        self.assertIn('"/home/.git" = "write"', writer[1])
         self.assertIn("permissions.robotsim_worker.network.enabled=false", writer[2])
         self.assertIn('"/home" = "read"', reviewer[1])
-        self.assertIn('"/root" = "deny"', reviewer[1])
+        self.assertNotIn('"/home/.git" = "write"', reviewer[1])
+        self.assertIn('"/root" = "read"', reviewer[1])
+        self.assertIn('"/root/auth.json" = "deny"', reviewer[1])
+        self.assertIn('"/root/.env" = "deny"', reviewer[1])
+        self.assertNotIn('"/root" = "write"', writer[1])
 
     def test_worker_environment_is_allowlisted(self) -> None:
         ambient = {
@@ -90,6 +99,69 @@ class WorkerSecurityTests(unittest.TestCase):
                 include_model_proxy=True,
             )
 
+    def test_codex_route_discovery_uses_redacted_report_and_allowlisted_environment(self) -> None:
+        report = {
+            "checks": {
+                "config.load": {"details": {"model": "gpt-5.5", "model provider": "OpenAI"}},
+                "network.provider_reachability": {
+                    "details": {
+                        "OpenAI API inference URL": (
+                            "https://models.example.invalid/v1/responses reachable (HTTP 404)"
+                        ),
+                    },
+                },
+            },
+        }
+        ambient = {
+            "HOME": "/home/test-user",
+            "CODEX_HOME": "/home/test-user/.codex",
+            "HTTPS_PROXY": "http://127.0.0.1:7897",
+            "GH_TOKEN": "synthetic-github-secret",
+            "OPENAI_API_KEY": "synthetic-api-secret",
+        }
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(report), stderr="")
+
+        with mock.patch.object(worker_security.subprocess, "run", return_value=completed) as run:
+            config = worker_security.discover_codex_model_config(
+                Path("/usr/local/bin/codex"), path_entries=("/home/test-user/.local/bin",),
+                ambient=ambient,
+            )
+
+        self.assertEqual(
+            config,
+            worker_security.CodexModelConfig(
+                "gpt-5.5", "OpenAI", "https://models.example.invalid/v1", "responses",
+            ),
+        )
+        call = run.call_args
+        self.assertEqual(call.args[0], ["/usr/local/bin/codex", "doctor", "--json"])
+        kwargs = call.kwargs
+        self.assertNotIn("GH_TOKEN", kwargs["env"])
+        self.assertNotIn("OPENAI_API_KEY", kwargs["env"])
+        self.assertEqual(kwargs["env"]["HTTPS_PROXY"], "http://127.0.0.1:7897")
+
+    def test_codex_route_discovery_rejects_unsafe_or_unsupported_routes(self) -> None:
+        cases = (
+            "http://models.example.invalid/v1/responses",
+            "https://user:secret@models.example.invalid/v1/responses",
+            "https://models.example.invalid/v1/responses?token=synthetic",
+            "https://models.example.invalid/v1/unsupported",
+        )
+        for route in cases:
+            with self.subTest(route=route):
+                report = {
+                    "checks": {
+                        "config.load": {"details": {"model": "gpt-5.5", "model provider": "OpenAI"}},
+                        "network.provider_reachability": {
+                            "details": {"OpenAI API inference URL": route},
+                        },
+                    },
+                }
+                completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(report), stderr="")
+                with mock.patch.object(worker_security.subprocess, "run", return_value=completed):
+                    with self.assertRaises(RuntimeError):
+                        worker_security.discover_codex_model_config(Path("/usr/local/bin/codex"))
+
     def test_codex_workspace_metadata_mountpoints_are_safe_and_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"
@@ -102,7 +174,37 @@ class WorkerSecurityTests(unittest.TestCase):
             worker_security.prepare_codex_workspace(workspace)
 
             self.assertTrue((workspace / ".agents").is_dir())
+            self.assertTrue((workspace / ".aws").is_dir())
             self.assertEqual(config.read_text(encoding="utf-8"), "project_setting = true\n")
+
+    def test_runtime_prefers_native_per_user_codex_over_windows_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            native_bin = home / ".local" / "bin"
+            native_bin.mkdir(parents=True)
+            native_codex = native_bin / "codex"
+            native_codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            native_codex.chmod(0o755)
+
+            with mock.patch.object(worker_security.Path, "home", return_value=home):
+                with mock.patch.dict(os.environ, {"PATH": "/mnt/d/node-global:/usr/bin:/bin"}):
+                    with mock.patch.object(worker_security, "HIDDEN_ROOTS", ()):
+                        runtime = worker_security.resolve_codex_runtime()
+
+        self.assertEqual(runtime.host_executable, native_codex.resolve())
+        self.assertEqual(runtime.discovery_path_entries, ())
+
+    def test_runtime_rejects_windows_only_codex_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory) / "home"
+            home.mkdir()
+            with mock.patch.object(worker_security.Path, "home", return_value=home):
+                with mock.patch.dict(os.environ, {"PATH": "/mnt/d/node-global:/usr/bin:/bin"}):
+                    with mock.patch.object(
+                        worker_security.shutil, "which", return_value="/mnt/d/node-global/codex",
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, "native Linux Codex CLI"):
+                            worker_security.resolve_codex_runtime()
 
     def test_codex_workspace_metadata_mountpoints_reject_non_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -238,6 +340,52 @@ class WorkerSecurityTests(unittest.TestCase):
             self.assertEqual(result.stdout.strip(), "scoped")
             self.assertEqual((allowed / "new.txt").read_text(encoding="utf-8"), "allowed")
             self.assertFalse((forbidden / "source.cpp").exists())
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"), "bubblewrap unavailable")
+    def test_scoped_bubblewrap_allows_only_codex_metadata_and_declared_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = root / "workspace"
+            allowed = workspace / "allowed"
+            forbidden = workspace / "source"
+            codex_home = root / "worker-codex"
+            input_directory = root / "input"
+            output_directory = root / "output"
+            for path in (allowed, forbidden, codex_home, input_directory, output_directory):
+                path.mkdir(parents=True)
+            worker_security.prepare_codex_workspace(workspace)
+            probe = "\n".join((
+                "import pathlib",
+                "pathlib.Path('/home/allowed/result.txt').write_text('allowed')",
+                "pathlib.Path('/home/.agents/runtime.tmp').write_text('metadata')",
+                "pathlib.Path('/home/.codex/runtime.tmp').write_text('metadata')",
+                "try:",
+                "    pathlib.Path('/home/source/blocked.txt').write_text('blocked')",
+                "except OSError:",
+                "    print('scoped-metadata')",
+                "else:",
+                "    raise SystemExit('non-metadata workspace path was writable')",
+            ))
+            command, environment = worker_security.build_isolated_command(
+                [sys.executable, "-c", probe],
+                workspace=workspace,
+                codex_home=codex_home,
+                input_directory=input_directory,
+                output_directory=output_directory,
+                workspace_write_roots=(allowed,),
+                runtime=worker_security.resolve_codex_runtime(sys.executable),
+            )
+            result = subprocess.run(
+                command, cwd="/", env=environment, text=True, capture_output=True,
+                check=False, timeout=20,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "scoped-metadata")
+            self.assertTrue((workspace / ".agents/runtime.tmp").is_file())
+            self.assertTrue((workspace / ".codex/runtime.tmp").is_file())
+            self.assertTrue((allowed / "result.txt").is_file())
+            self.assertFalse((forbidden / "blocked.txt").exists())
 
 
 if __name__ == "__main__":

@@ -42,6 +42,38 @@ class TaskQueueTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
+    def test_codex_commands_preserve_only_the_discovered_model_route(self) -> None:
+        model_config = queue.worker_security.CodexModelConfig(
+            "gpt-5.5", "OpenAI", "https://models.example.invalid/v1", "responses",
+        )
+        command = queue.codex_command(
+            self.root, workspace_write_roots=(), model_config=model_config,
+        )
+        resume = queue.codex_resume_command(
+            "session-49", self.root / "result.json", workspace=self.root,
+            workspace_write_roots=(), model_config=model_config,
+        )
+        self.assertNotIn("--cd", resume)
+        self.assertNotIn("--add-dir", resume)
+        self.assertLess(resume.index("--strict-config"), resume.index("session-49"))
+        self.assertEqual(resume[-2:], ["session-49", "-"])
+
+        for candidate in (command, resume):
+            self.assertEqual(candidate[candidate.index("--model") + 1], "gpt-5.5")
+            overrides = [
+                candidate[index + 1]
+                for index, value in enumerate(candidate[:-1])
+                if value == "--config"
+            ]
+            self.assertIn('model_provider="OpenAI"', overrides)
+            self.assertIn('model_providers.OpenAI.base_url="https://models.example.invalid/v1"', overrides)
+            self.assertIn('model_providers.OpenAI.wire_api="responses"', overrides)
+            self.assertIn("model_providers.OpenAI.requires_openai_auth=true", overrides)
+            self.assertIn("permissions.robotsim_worker.network.enabled=false", overrides)
+
+        baseline = queue.codex_command(self.root, workspace_write_roots=())
+        self.assertNotIn("--model", baseline)
+
     def store(self, name: str = "state.sqlite3") -> queue.RunStore:
         store = queue.RunStore(self.root / name)
         self.addCleanup(store.close)
@@ -339,7 +371,11 @@ class TaskQueueTests(unittest.TestCase):
             value for value in command
             if value.startswith("permissions.robotsim_worker.filesystem=")
         )
-        self.assertIn('"/root" = "deny"', filesystem_override)
+        self.assertIn('"/root" = "read"', filesystem_override)
+        self.assertIn('"/root/auth.json" = "deny"', filesystem_override)
+        self.assertIn('"/root/.env" = "deny"', filesystem_override)
+        self.assertIn('"/home/.git" = "write"', filesystem_override)
+        self.assertNotIn('"/root" = "write"', filesystem_override)
         self.assertIn("permissions.robotsim_worker.network.enabled=false", command)
         self.assertIn("shell_environment_policy.inherit=none", command)
         add_dirs = [command[index + 1] for index, value in enumerate(command[:-1]) if value == "--add-dir"]
@@ -357,6 +393,9 @@ class TaskQueueTests(unittest.TestCase):
         resume = queue.codex_resume_command("session-49", self.root / "result.json", workspace=workspace)
         self.assertNotIn("--sandbox", resume)
         self.assertIn("--strict-config", resume)
+        self.assertNotIn("--cd", resume)
+        self.assertNotIn("--add-dir", resume)
+        self.assertLess(resume.index("--strict-config"), resume.index("session-49"))
         baseline_head = subprocess.check_output(
             ["git", "-C", str(repository), "rev-parse", "main"], text=True,
         ).strip()
@@ -648,7 +687,10 @@ class TaskQueueTests(unittest.TestCase):
         command = queue.codex_resume_command(
             resumed["codex_session_id"], self.root / "result.json"
         )
-        self.assertEqual(command[1:4], ["exec", "resume", "resume-session"])
+        self.assertEqual(command[1:3], ["exec", "resume"])
+        self.assertLess(command.index("--strict-config"), command.index("resume-session"))
+        self.assertNotIn("--add-dir", command)
+        self.assertEqual(command[-2:], ["resume-session", "-"])
         self.assertNotIn("--sandbox", command)
         self.assertIn("default_permissions=robotsim_worker", command)
         self.assertIn("permissions.robotsim_worker.network.enabled=false", command)

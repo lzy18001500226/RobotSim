@@ -1113,6 +1113,7 @@ def codex_command(
     executable: str | None = None,
     worker_path: str = worker_security.BASE_WORKER_PATH,
     workspace_write_roots: Sequence[str] | None = None,
+    model_config: worker_security.CodexModelConfig | None = None,
 ) -> list[str]:
     executable = executable or shutil.which("codex") or "codex"
     command = [
@@ -1123,6 +1124,10 @@ def codex_command(
         "--config", f"shell_environment_policy.set.PATH={json.dumps(worker_path)}",
         "--config", "history.persistence=none",
     ]
+    if model_config is not None:
+        command.extend(("--model", model_config.model))
+        for override in model_config.config_overrides():
+            command.extend(("--config", override))
     for override in worker_security.codex_permission_profile_overrides(read_only=read_only):
         command.extend(("--config", override))
     if not read_only:
@@ -1145,32 +1150,29 @@ def codex_resume_command(
     executable: str | None = None,
     worker_path: str = worker_security.BASE_WORKER_PATH,
     workspace_write_roots: Sequence[str] | None = None,
+    model_config: worker_security.CodexModelConfig | None = None,
 ) -> list[str]:
     executable = executable or shutil.which("codex") or "codex"
     schema_name = "task_review.schema.json" if read_only else "task_result.schema.json"
     command = [
-        executable, "exec", "resume", session_id,
-        "--ignore-user-config", "--strict-config", "--cd", "/home",
+        executable, "exec", "resume",
+        "--ignore-user-config", "--strict-config",
         "--config", "approval_policy=on-request",
         "--config", "shell_environment_policy.inherit=none",
         "--config", f"shell_environment_policy.set.PATH={json.dumps(worker_path)}",
         "--config", "history.persistence=none",
     ]
+    if model_config is not None:
+        command.extend(("--model", model_config.model))
+        for override in model_config.config_overrides():
+            command.extend(("--config", override))
     for override in worker_security.codex_permission_profile_overrides(read_only=read_only):
         command.extend(("--config", override))
-    if not read_only:
-        if workspace_write_roots is None and workspace is not None:
-            roots = tuple(
-                directory.relative_to(workspace.resolve()).as_posix()
-                for directory in codex_worktree_write_dirs(workspace)
-            )
-        else:
-            roots = tuple(workspace_write_roots or ())
-        for root in roots:
-            command.extend(("--add-dir", f"/home/{root}"))
+    # `exec resume` has no --cd or --add-dir options; the recorded session cwd,
+    # permission profile, and outer bubblewrap mounts preserve the task boundary.
     command.extend((
         "--json", "--output-schema", f"/run/task-input/{schema_name}",
-        "--output-last-message", "/var/tmp/result.json", "-",
+        "--output-last-message", "/var/tmp/result.json", session_id, "-",
     ))
     return command
 
@@ -1235,6 +1237,9 @@ class LocalCodexExecutor:
         temporary, input_directory, output_directory = self._io_directories(result_path, schema)
         try:
             runtime = worker_security.resolve_codex_runtime()
+            model_config = worker_security.discover_codex_model_config(
+                runtime.host_executable, path_entries=runtime.discovery_path_entries,
+            )
             environment = worker_security.build_worker_environment(path_entries=runtime.path_entries)
             if worker_security.worker_profile_owns_session(codex_home, packet.codex_session_id):
                 command = codex_resume_command(
@@ -1243,6 +1248,7 @@ class LocalCodexExecutor:
                     executable=str(runtime.host_executable),
                     worker_path=environment["PATH"],
                     workspace_write_roots=packet.workspace_write_roots,
+                    model_config=model_config,
                 )
             else:
                 command = codex_command(
@@ -1250,6 +1256,7 @@ class LocalCodexExecutor:
                     executable=str(runtime.host_executable),
                     worker_path=environment["PATH"],
                     workspace_write_roots=packet.workspace_write_roots,
+                    model_config=model_config,
                 )[:-1]
                 command.extend((
                     "--output-schema", f"/run/task-input/{schema.name}",
@@ -1336,12 +1343,16 @@ class LocalCodexExecutor:
         temporary, input_directory, output_directory = self._io_directories(report_path, schema)
         try:
             runtime = worker_security.resolve_codex_runtime()
+            model_config = worker_security.discover_codex_model_config(
+                runtime.host_executable, path_entries=runtime.discovery_path_entries,
+            )
             environment = worker_security.build_worker_environment(path_entries=runtime.path_entries)
             command = codex_command(
                 workspace,
                 read_only=True,
                 executable=str(runtime.host_executable),
                 worker_path=environment["PATH"],
+                model_config=model_config,
             )[:-1]
             command.extend((
                 "--output-schema", f"/run/task-input/{schema.name}",
