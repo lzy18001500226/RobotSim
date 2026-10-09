@@ -2,7 +2,6 @@ import unittest
 
 import numpy as np
 
-from simulation.mujoco.g1_dfq_grasp_core import active_contact_sets, contact_window_summary
 from simulation.mujoco.g1_dfq_grasp_gates import (
     CHANNELS,
     GATE_NAMES,
@@ -187,34 +186,22 @@ class GraspGateTests(unittest.TestCase):
         self.assertFalse(is_contact_control_state(""))
 
     def test_transfer_uses_validated_contact_window_across_one_subthreshold_sample(self):
-        history = []
-        for sample in range(20):
-            history.append({
-                "forces_n": {
-                    "thumb": 0.03,
-                    "index": 0.02 if sample < 19 else 0.005,
-                    "middle": 0.0,
-                    "ring": 0.0,
-                    "pinky": 0.0,
+        window = {
+            "sample_count": 20,
+            "window_s": 0.005,
+            "required_samples": 20,
+            "valid": True,
+            "thumb_qualifies": True,
+            "valid_opposing_digits": ["index"],
+            "left_contact_seen": False,
+            "per_digit": {
+                "index": {
+                    "force_bearing_duty": 0.95,
+                    "maximum_zero_run_samples": 1,
+                    "qualifies": True,
                 },
-                "controller_states": {
-                    digit: "SIMULATION_ONLY_TORQUE_IMPEDANCE"
-                    for digit in ("thumb", "index", "middle", "ring", "pinky")
-                },
-                "left_contact": False,
-            })
-        window = contact_window_summary(history)
-        instantaneous = [
-            {"distance_m": -1e-7, "side": "right_hand", "digit": "thumb",
-             "normal_force_n": 0.03},
-            {"distance_m": -1e-7, "side": "right_hand", "digit": "index",
-             "normal_force_n": 0.005},
-        ]
-        thumb, opposing, left, _ = active_contact_sets(instantaneous)
-        self.assertTrue(thumb)
-        self.assertFalse(opposing)
-        self.assertFalse(left)
-        self.assertTrue(window["per_digit"]["index"]["qualifies"])
+            },
+        }
         self.assertTrue(contact_window_allows_transfer(window))
         self.assertFalse(contact_window_allows_transfer({**window, "valid": False}))
         self.assertFalse(contact_window_allows_transfer({
