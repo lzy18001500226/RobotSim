@@ -419,19 +419,51 @@ def contact_window_allows_transfer(contact_window: dict, left_contact: bool = Fa
     )
 
 
+def _live_contact_key(contact: dict, force_threshold_n: float) -> tuple | None:
+    if (
+        contact.get("side") == "right_hand"
+        and contact.get("digit") is not None
+        and float(contact.get("distance_m", float("inf"))) <= 0.0
+        and float(contact.get("true_normal_force_n", 0.0)) > force_threshold_n
+    ):
+        return (
+            str(contact["digit"]), str(contact["other_geom"]),
+            str(contact["bottle_geom"]),
+        )
+    return None
+
+
 def live_contact_signature(contacts: list[dict], force_threshold_n: float) -> tuple:
     """Identify force-bearing right-hand contact pairs for allocation refreshes."""
     threshold = float(force_threshold_n)
     if not math.isfinite(threshold) or threshold < 0.0:
         raise ValueError("contact force threshold must be finite and nonnegative")
-    return tuple(sorted({
-        (str(item["digit"]), str(item["other_geom"]), str(item["bottle_geom"]))
-        for item in contacts
-        if item.get("side") == "right_hand"
-        and item.get("digit") is not None
-        and float(item.get("distance_m", float("inf"))) <= 0.0
-        and float(item.get("true_normal_force_n", 0.0)) > threshold
-    }))
+    return tuple(sorted({key for item in contacts
+                         if (key := _live_contact_key(item, threshold)) is not None}))
+
+
+def live_contact_cache_snapshot(
+    cache: dict, now_s: float, max_age_s: float, force_threshold_n: float
+) -> dict:
+    """Return recently measured force-bearing contacts within a bounded age."""
+    now = float(now_s)
+    max_age = float(max_age_s)
+    threshold = float(force_threshold_n)
+    if not math.isfinite(now) or not math.isfinite(max_age) or max_age < 0.0:
+        raise ValueError("contact cache time and age must be finite; age must be nonnegative")
+    if not math.isfinite(threshold) or threshold < 0.0:
+        raise ValueError("contact force threshold must be finite and nonnegative")
+    snapshot = {}
+    for value in cache.values():
+        if not isinstance(value, dict) or not isinstance(value.get("contact"), dict):
+            continue
+        seen = float(value.get("seen_time_s", float("nan")))
+        contact = value["contact"]
+        key = _live_contact_key(contact, threshold)
+        age = now - seen
+        if key is not None and math.isfinite(age) and -1e-12 <= age <= max_age:
+            snapshot[key] = contact
+    return snapshot
 
 
 def progressive_support_demand_n(table_normal_force_n: float, bottle_weight_n: float) -> float:

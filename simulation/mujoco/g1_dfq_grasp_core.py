@@ -862,20 +862,30 @@ def live_contact_allocation_geometry(model, data, contacts: list[dict],
                 "contact_count": len(candidates), "maximum_contacts": 24}
 
     for item in candidates:
-        contact_id = int(item["mujoco_contact_index"])
-        contact = data.contact[contact_id]
-        geom1, geom2 = int(contact.geom1), int(contact.geom2)
+        contact_id = item.get("mujoco_contact_index")
+        if "contact_geom1_id" in item and "contact_geom2_id" in item:
+            geom1 = int(item["contact_geom1_id"])
+            geom2 = int(item["contact_geom2_id"])
+            frame = np.asarray(item["contact_frame_world"], dtype=float).reshape(3, 3)
+            contact_position = np.asarray(item["contact_position_world_m"], dtype=float)
+            friction = np.asarray(item["contact_friction_axes"], dtype=float)
+        else:
+            contact_id = int(contact_id)
+            contact = data.contact[contact_id]
+            geom1, geom2 = int(contact.geom1), int(contact.geom2)
+            frame = np.asarray(contact.frame, dtype=float).reshape(3, 3)
+            contact_position = np.asarray(contact.pos, dtype=float)
+            friction = np.asarray(contact.friction[:2], dtype=float)
         name1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom1) or ""
         name2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom2) or ""
         bottle_is_geom1 = name1 in bottle_geoms
         other_geom_id = geom2 if bottle_is_geom1 else geom1
         other_body_id = int(model.geom_bodyid[other_geom_id])
         sign = -1.0 if bottle_is_geom1 else 1.0
-        frame = np.asarray(contact.frame, dtype=float).reshape(3, 3)
         basis_world = sign * frame.T
         jacp = np.zeros((3, model.nv), dtype=float)
         jacr = np.zeros((3, model.nv), dtype=float)
-        mujoco.mj_jac(model, data, jacp, jacr, np.asarray(contact.pos), other_body_id)
+        mujoco.mj_jac(model, data, jacp, jacr, contact_position, other_body_id)
         effective = np.zeros((3, len(channels)), dtype=float)
         for channel_index, channel in enumerate(channels):
             driver = channel_joint_names[channel]
@@ -887,12 +897,12 @@ def live_contact_allocation_geometry(model, data, contacts: list[dict],
                 dof = int(model.jnt_dofadr[joint_id])
                 effective[:, channel_index] += jacp[:, dof] * factor
         bases.append(basis_world)
-        positions.append(np.asarray(contact.pos, dtype=float).copy())
-        friction = np.asarray(contact.friction[:2], dtype=float)
+        positions.append(contact_position.copy())
         frictions.append((float(friction[0]), float(friction[1])))
         torque_maps.append(effective.T @ basis_world)
         metadata.append({
-            "contact_index": contact_id,
+            "source_contact_index": contact_id,
+            "source_contact_time_s": item.get("contact_observed_time_s"),
             "digit": item["digit"],
             "hand_geom": item["other_geom"],
             "hand_body": item["other_body"],
@@ -1238,6 +1248,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         "allocation": None,
         "base_effort_by_channel": {},
         "contact_signature": None,
+        "recent_contact_cache": {},
     }
     contact_window_history = deque(maxlen=CONTACT_VALIDITY_WINDOW_SAMPLES)
     transition_hold_start: float | None = None
@@ -1316,9 +1327,46 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         live_feedforward = None
         if load_build_schedule and live_support_force_n is not None:
             current_contacts = bottle_contacts(model, data)
-            contact_signature = gates.live_contact_signature(
+            measured_contact_signature = gates.live_contact_signature(
                 current_contacts, CONTACT_TRIGGER_FORCE_N
             )
+            recent_contact_cache = live_allocation_state["recent_contact_cache"]
+            for item in current_contacts:
+                key = gates.live_contact_signature([item], CONTACT_TRIGGER_FORCE_N)
+                if key:
+                    contact_id = int(item["mujoco_contact_index"])
+                    contact = data.contact[contact_id]
+                    contact_snapshot = dict(item)
+                    contact_snapshot.update({
+                        "contact_geom1_id": int(contact.geom1),
+                        "contact_geom2_id": int(contact.geom2),
+                        "contact_frame_world": np.asarray(
+                            contact.frame, dtype=float
+                        ).reshape(3, 3).tolist(),
+                        "contact_position_world_m": np.asarray(
+                            contact.pos, dtype=float
+                        ).tolist(),
+                        "contact_friction_axes": np.asarray(
+                            contact.friction[:2], dtype=float
+                        ).tolist(),
+                        "contact_observed_time_s": float(data.time),
+                    })
+                    recent_contact_cache[key[0]] = {
+                        "seen_time_s": float(data.time), "contact": contact_snapshot,
+                    }
+            allocation_contacts_by_key = gates.live_contact_cache_snapshot(
+                recent_contact_cache,
+                float(data.time),
+                CONTACT_VALIDITY_WINDOW_SAMPLES * DT,
+                CONTACT_TRIGGER_FORCE_N,
+            )
+            allocation_contacts = [allocation_contacts_by_key[key]
+                                   for key in sorted(allocation_contacts_by_key)]
+            contact_signature = tuple(sorted(allocation_contacts_by_key))
+            live_allocation_state["recent_contact_cache"] = {
+                key: value for key, value in recent_contact_cache.items()
+                if key in allocation_contacts_by_key
+            }
             allocation_channels = [channel for channel, _ in hand.CHANNELS if channel in hand_ids]
             base_by_channel = {}
             for channel in allocation_channels:
@@ -1391,7 +1439,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                                 "contact_driver_torque_maps": []}
                 else:
                     geometry = live_contact_allocation_geometry(
-                        model, data, current_contacts, channel_joint_names, mimics
+                        model, data, allocation_contacts, channel_joint_names, mimics
                     )
                     if not geometry.get("success"):
                         failure = {
@@ -1458,6 +1506,11 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     "contact_driver_torque_maps": [np.asarray(item).tolist()
                                                     for item in geometry.get("contact_driver_torque_maps", [])],
                     "contact_signature": contact_signature,
+                    "measured_contact_signature": measured_contact_signature,
+                    "contact_cache_age_s": {
+                        "/".join(key): float(data.time - recent_contact_cache[key]["seen_time_s"])
+                        for key in sorted(allocation_contacts_by_key)
+                    },
                     "refresh_reasons": refresh_reasons,
                 }
                 live_contact_allocation_trace.append(trace_entry)

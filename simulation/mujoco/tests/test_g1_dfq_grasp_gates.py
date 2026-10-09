@@ -9,6 +9,7 @@ from simulation.mujoco.g1_dfq_grasp_gates import (
     evaluate_gates,
     effort_handoff_references,
     is_contact_control_state,
+    live_contact_cache_snapshot,
     live_contact_signature,
     load_ready_summary,
     minimum_safe_brake_scale,
@@ -210,6 +211,24 @@ class GraspGateTests(unittest.TestCase):
             ("thumb", "thumb_geom", "bottle_body"),
         ))
         self.assertNotEqual(first, second)
+
+    def test_live_contact_cache_retains_recent_contact_then_expires_it(self):
+        index = {
+            "side": "right_hand", "digit": "index", "other_geom": "index_geom",
+            "bottle_geom": "bottle_body", "distance_m": -1e-6,
+            "true_normal_force_n": 0.02,
+        }
+        left = {**index, "side": "left_hand", "digit": "index"}
+        index_key = live_contact_signature([index], 0.01)[0]
+        left_key = ("left", "left_geom", "bottle_body")
+        cache = {
+            index_key: {"seen_time_s": 1.0, "contact": index},
+            left_key: {"seen_time_s": 1.0, "contact": left},
+        }
+        recent = live_contact_cache_snapshot(cache, 1.0049, 0.005, 0.01)
+        self.assertEqual(live_contact_signature(list(recent.values()), 0.01), (index_key,))
+        expired = live_contact_cache_snapshot(cache, 1.0051, 0.005, 0.01)
+        self.assertEqual(expired, {})
 
     def test_load_ready_requires_airborne_force_and_contact_gates(self):
         row = {
