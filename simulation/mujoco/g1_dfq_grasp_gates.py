@@ -32,6 +32,8 @@ GATE_NAMES = (
     "PR_CI",
 )
 
+MIN_TRANSFER_SUPPORT_FRACTION = 0.01
+
 _RESULTANT_DIRECTIONS = np.asarray([
     np.asarray(vector, dtype=float) / np.linalg.norm(vector)
     for vector in product(range(-2, 3), repeat=3)
@@ -415,6 +417,17 @@ def contact_window_allows_transfer(contact_window: dict, left_contact: bool = Fa
         and bool(contact_window.get("thumb_qualifies", False))
         and bool(contact_window.get("valid_opposing_digits", []))
     )
+
+
+def progressive_support_demand_n(table_normal_force_n: float, bottle_weight_n: float) -> float:
+    """Request a small load share even while noisy table support reads full weight."""
+    table_force = float(table_normal_force_n)
+    weight = float(bottle_weight_n)
+    if not math.isfinite(table_force) or not math.isfinite(weight) or weight <= 0.0:
+        raise ValueError("table force must be finite and bottle weight must be positive")
+    measured_deficit = float(np.clip(weight - max(table_force, 0.0), 0.0, weight))
+    minimum_seed = MIN_TRANSFER_SUPPORT_FRACTION * weight
+    return max(minimum_seed, measured_deficit)
 
 
 def _event_map(result: dict) -> dict[str, dict]:

@@ -3608,6 +3608,10 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             transfer_baseline_table_n = float(np.mean(baseline_table_values))
             transfer_baseline_table_sigma_n = float(np.std(baseline_table_values, ddof=1))
             transfer_baseline_hand_n = float(np.mean(baseline_hand_values))
+            initial_support_target_n = gates.progressive_support_demand_n(
+                transfer_baseline_table_n, bottle_weight_n
+            )
+            live_allocation_state["support_target_n"] = initial_support_target_n
             result["progressive_load_transfer"] = {
                 "status": "RUNNING",
                 "passed": False,
@@ -3618,6 +3622,11 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 "baseline_table_normal_sigma_n": transfer_baseline_table_sigma_n,
                 "baseline_hand_vertical_support_force_n": transfer_baseline_hand_n,
                 "minimum_detectable_change_rule": "max(3 * baseline sigma, 1% bottle weight)",
+                "initial_support_target_n": initial_support_target_n,
+                "initial_support_target_rule": (
+                    "max(measured table load deficit, 1% bottle weight); live contact allocation "
+                    "is recomputed from current contacts and Jacobians"
+                ),
                 "stages": [],
                 "load_ready": None,
             }
@@ -3651,9 +3660,9 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                         c["true_normal_force_n"] for c in current_contacts
                         if c["side"] == "other" and c["other_body"] == "m0_table"
                     )
-                    return float(np.clip(
-                        bottle_weight_n - current_table_normal, 0.0, bottle_weight_n
-                    ))
+                    return gates.progressive_support_demand_n(
+                        current_table_normal, bottle_weight_n
+                    )
 
                 for stage_step in range(1, stage_steps + 1):
                     alpha = stage_step / stage_steps

@@ -1947,7 +1947,8 @@ def _run_stock_hand_visual_audit(args: argparse.Namespace) -> dict:
             },
             "bottle": {
                 "source": "Issue #46 X2 visual demo",
-                "source_path_components": ["scripts", "research", "issue46_x2_grasp.py"],
+                "source_artifact": "issue46_x2_grasp.py",
+                "source_is_runtime_dependency": False,
                 "source_harness_commit": "b62d63174950cef9e1dd8a24da22348c5077b096",
                 "source_script_sha256": "1271f0c357d702a850d72849988fa2e6d2196d1de853c6b58dd7a193974750f1",
                 "geometry": "cylindrical body, ellipsoid shoulder, cylindrical neck, and cylindrical cap",

@@ -12,6 +12,7 @@ from simulation.mujoco.g1_dfq_grasp_gates import (
     load_ready_summary,
     minimum_safe_brake_scale,
     progressive_load_transfer_summary,
+    progressive_support_demand_n,
     select_effort_feedforward,
     solve_live_contact_wrench_allocation,
 )
@@ -165,6 +166,23 @@ class GraspGateTests(unittest.TestCase):
         result = progressive_load_transfer_summary(5.59, 0.01, 0.0, rows, 5.59)
         self.assertFalse(result["passed"])
         self.assertFalse(result["left_hand_clear"])
+
+    def test_progressive_support_demand_seeds_one_percent_and_tracks_table_unload(self):
+        bottle_weight_n = 5.5917
+        self.assertAlmostEqual(
+            progressive_support_demand_n(5.70, bottle_weight_n),
+            bottle_weight_n * 0.01,
+        )
+        self.assertAlmostEqual(
+            progressive_support_demand_n(5.20, bottle_weight_n),
+            bottle_weight_n - 5.20,
+        )
+        self.assertAlmostEqual(
+            progressive_support_demand_n(0.0, bottle_weight_n),
+            bottle_weight_n,
+        )
+        with self.assertRaises(ValueError):
+            progressive_support_demand_n(float("nan"), bottle_weight_n)
 
     def test_load_ready_requires_airborne_force_and_contact_gates(self):
         row = {
