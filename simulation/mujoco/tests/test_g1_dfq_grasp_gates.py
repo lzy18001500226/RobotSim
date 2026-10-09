@@ -9,6 +9,7 @@ from simulation.mujoco.g1_dfq_grasp_gates import (
     evaluate_gates,
     effort_handoff_references,
     is_contact_control_state,
+    live_contact_signature,
     load_ready_summary,
     minimum_safe_brake_scale,
     progressive_load_transfer_summary,
@@ -183,6 +184,32 @@ class GraspGateTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             progressive_support_demand_n(float("nan"), bottle_weight_n)
+
+    def test_live_contact_signature_changes_when_opposing_contact_changes(self):
+        thumb = {
+            "side": "right_hand", "digit": "thumb", "other_geom": "thumb_geom",
+            "bottle_geom": "bottle_body", "distance_m": -1e-6,
+            "true_normal_force_n": 0.03,
+        }
+        index = {
+            "side": "right_hand", "digit": "index", "other_geom": "index_geom",
+            "bottle_geom": "bottle_body", "distance_m": -1e-6,
+            "true_normal_force_n": 0.02,
+        }
+        pinky = {
+            "side": "right_hand", "digit": "pinky", "other_geom": "pinky_geom",
+            "bottle_geom": "bottle_body", "distance_m": -1e-6,
+            "true_normal_force_n": 0.0,
+        }
+        left = {**index, "side": "left_hand", "digit": "index"}
+        first = live_contact_signature([thumb], 0.01)
+        second = live_contact_signature([index, thumb, pinky, left], 0.01)
+        self.assertEqual(first, (("thumb", "thumb_geom", "bottle_body"),))
+        self.assertEqual(second, (
+            ("index", "index_geom", "bottle_body"),
+            ("thumb", "thumb_geom", "bottle_body"),
+        ))
+        self.assertNotEqual(first, second)
 
     def test_load_ready_requires_airborne_force_and_contact_gates(self):
         row = {

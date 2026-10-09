@@ -419,6 +419,21 @@ def contact_window_allows_transfer(contact_window: dict, left_contact: bool = Fa
     )
 
 
+def live_contact_signature(contacts: list[dict], force_threshold_n: float) -> tuple:
+    """Identify force-bearing right-hand contact pairs for allocation refreshes."""
+    threshold = float(force_threshold_n)
+    if not math.isfinite(threshold) or threshold < 0.0:
+        raise ValueError("contact force threshold must be finite and nonnegative")
+    return tuple(sorted({
+        (str(item["digit"]), str(item["other_geom"]), str(item["bottle_geom"]))
+        for item in contacts
+        if item.get("side") == "right_hand"
+        and item.get("digit") is not None
+        and float(item.get("distance_m", float("inf"))) <= 0.0
+        and float(item.get("true_normal_force_n", 0.0)) > threshold
+    }))
+
+
 def progressive_support_demand_n(table_normal_force_n: float, bottle_weight_n: float) -> float:
     """Request a small load share even while noisy table support reads full weight."""
     table_force = float(table_normal_force_n)

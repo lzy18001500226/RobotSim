@@ -1237,6 +1237,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         "feedforward_by_channel": {channel: 0.0 for channel in hand_ids},
         "allocation": None,
         "base_effort_by_channel": {},
+        "contact_signature": None,
     }
     contact_window_history = deque(maxlen=CONTACT_VALIDITY_WINDOW_SAMPLES)
     transition_hold_start: float | None = None
@@ -1314,6 +1315,10 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         live_allocation = None
         live_feedforward = None
         if load_build_schedule and live_support_force_n is not None:
+            current_contacts = bottle_contacts(model, data)
+            contact_signature = gates.live_contact_signature(
+                current_contacts, CONTACT_TRIGGER_FORCE_N
+            )
             allocation_channels = [channel for channel, _ in hand.CHANNELS if channel in hand_ids]
             base_by_channel = {}
             for channel in allocation_channels:
@@ -1340,14 +1345,31 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             ))
             live_allocation_state["support_target_n"] = target_support
             live_allocation_state["last_support_update_time_s"] = float(data.time)
+            topology_changed = (
+                contact_signature != live_allocation_state["contact_signature"]
+            )
+            periodic_refresh = (
+                steps - int(live_allocation_state["last_update_step"])
+                >= LIVE_ALLOCATION_UPDATE_STEPS
+            )
+            target_changed = (
+                abs(target_support - float(live_allocation_state["last_target_force_n"] or 0.0))
+                >= 0.05
+            )
             refresh = (
                 live_allocation_state["allocation"] is None
-                or steps - int(live_allocation_state["last_update_step"])
-                    >= LIVE_ALLOCATION_UPDATE_STEPS
-                or abs(target_support - float(live_allocation_state["last_target_force_n"] or 0.0))
-                    >= 0.05
+                or topology_changed or periodic_refresh or target_changed
             )
             if refresh:
+                refresh_reasons = []
+                if live_allocation_state["allocation"] is None:
+                    refresh_reasons.append("initial")
+                if topology_changed:
+                    refresh_reasons.append("contact_topology_changed")
+                if periodic_refresh:
+                    refresh_reasons.append("periodic")
+                if target_changed:
+                    refresh_reasons.append("support_target_changed")
                 if target_support <= 1e-6:
                     allocation = {
                         "success": True,
@@ -1369,7 +1391,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                                 "contact_driver_torque_maps": []}
                 else:
                     geometry = live_contact_allocation_geometry(
-                        model, data, bottle_contacts(model, data), channel_joint_names, mimics
+                        model, data, current_contacts, channel_joint_names, mimics
                     )
                     if not geometry.get("success"):
                         failure = {
@@ -1435,8 +1457,11 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     "contact_geometry": geometry.get("contacts", []),
                     "contact_driver_torque_maps": [np.asarray(item).tolist()
                                                     for item in geometry.get("contact_driver_torque_maps", [])],
+                    "contact_signature": contact_signature,
+                    "refresh_reasons": refresh_reasons,
                 }
                 live_contact_allocation_trace.append(trace_entry)
+                live_allocation_state["contact_signature"] = contact_signature
             else:
                 live_feedforward = live_allocation_state["feedforward_by_channel"]
                 allocation = live_allocation_state["allocation"]
