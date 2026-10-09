@@ -10,6 +10,12 @@ The initial collision-free gate failed in both tested station configurations. A 
 
 Source-limited pregrasp IK also failed in both candidates. The target was [0.18, 0, 0.8775] m. Candidate 1 residuals were 0.023042 m and 0.735764 rad; candidate 2 residuals were 0.019563 m and 0.533801 rad. The mount-frame consistency check passed, so these residuals remain an arm reach/orientation blocker rather than a wrist-local/world-frame mix-up.
 
+## Active Contact Verification
+
+The head/torso result was rechecked against the saved compiled MJCF and raw `mjData`, not inferred from a signed-distance-only query. Compiled geom 62 is the `torso_link` collision mesh (`contype=1`, `conaffinity=1`); geom 123 is the `head_pitch_link` collision cylinder (`size=0.08 0.04 0`, `pos=0 0 0.01`, `contype=1`, `conaffinity=1`). At the best sampled source-valid head pose, `mj_forward` produced this pair in the active `data.contact` list at -0.006167697 m. The source model has no exclusion for the pair. This confirms the reported penetration is an active collision under the pinned source masks.
+
+The recorded normal contact force at that pre-step `mj_forward` was approximately 2.04 kN. This is the solver's static contact-force estimate for the overlapping initial configuration, not a force measured during a physical trajectory. No `mj_step` was run from this state. The mounted dynamic OPEN/CLOSE gate therefore remains NOT RUN; running it from this collision-loaded initialization would not be a valid clean gripper regression.
+
 ## Gate Results
 
 | Gate | Result | Evidence |
