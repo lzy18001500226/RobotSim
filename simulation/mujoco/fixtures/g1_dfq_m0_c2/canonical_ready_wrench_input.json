@@ -1,0 +1,1976 @@
+{
+  "analysis": "static READY/load-capacity reconstruction from the first exactly synchronized LOAD_BUILD sample after READY_TO_LIFT",
+  "run_id": "dfq-capacity-1791351782-14679",
+  "robotsim_sha": null,
+  "mujoco_version": "3.3.6",
+  "physics_steps": 0,
+  "mj_step_calls": 0,
+  "mj_forward_calls": 1,
+  "canonical_ready_time_s": 32.30825000006325,
+  "canonical_sample_time_s": 32.313,
+  "sample_offset_after_ready_s": 0.00474999993674885,
+  "sample_phase": "LOAD_BUILD",
+  "model_path": "/mnt/c/Users/HP/Desktop/Robot/reviews/issue43-g1-dfq-grasp-wrench-capacity-20261007/stage2_stage3_run3/compiled/dfq_short_grasp_mj336.xml",
+  "model_sha256": "ebdf74fc4ac1fb9bf0e9c5d7be62654f03fd5ca51c2968085b08356ae96c2d67",
+  "urdf_path": "/tmp/robotsim-issue43-m0/checkouts/unitree_ros_dex3/robots/g1_description/inspire_hand/DFQ_right_hand.urdf",
+  "urdf_sha256": "b985adba45a2d765c2df53c9c798d5aee1b9e521f942f0b921404b904092dc13",
+  "model_state_source": {
+    "joint_trace": "/mnt/c/Users/HP/Desktop/Robot/reviews/issue43-g1-dfq-grasp-wrench-capacity-20261007/stage2_stage3_run3/hand_command_joint_mimic_trace.csv",
+    "contact_trace": "/mnt/c/Users/HP/Desktop/Robot/reviews/issue43-g1-dfq-grasp-wrench-capacity-20261007/stage2_stage3_run3/load_build_trace.csv",
+    "bottle_pose_trace": "/mnt/c/Users/HP/Desktop/Robot/reviews/issue43-g1-dfq-grasp-wrench-capacity-20261007/stage2_stage3_run3/bottle_pose_trace.csv",
+    "contact_set_source": "force_bearing_contact_details_json at the synchronized timestamp",
+    "bottle_pose_time_s": 32.313,
+    "robot_qpos_fields_applied": [
+      "L_index_proximal_joint",
+      "L_middle_proximal_joint",
+      "L_pinky_proximal_joint",
+      "L_ring_proximal_joint",
+      "L_thumb_proximal_pitch_joint",
+      "L_thumb_proximal_yaw_joint",
+      "R_index_intermediate_joint",
+      "R_index_proximal_joint",
+      "R_middle_intermediate_joint",
+      "R_middle_proximal_joint",
+      "R_pinky_intermediate_joint",
+      "R_pinky_proximal_joint",
+      "R_ring_intermediate_joint",
+      "R_ring_proximal_joint",
+      "R_thumb_distal_joint",
+      "R_thumb_intermediate_joint",
+      "R_thumb_proximal_pitch_joint",
+      "R_thumb_proximal_yaw_joint",
+      "right_elbow_joint",
+      "right_shoulder_pitch_joint",
+      "right_shoulder_roll_joint",
+      "right_shoulder_yaw_joint",
+      "right_wrist_pitch_joint",
+      "right_wrist_roll_joint",
+      "right_wrist_yaw_joint"
+    ],
+    "bottle_free_joint_qpos_scratch_only": [
+      0.300000172,
+      -0.093817013,
+      0.917105684,
+      0.999019216,
+      -1.455e-06,
+      -2.002e-06,
+      -0.044278737
+    ],
+    "qvel_set_to_zero_in_scratch_MjData": true,
+    "state_writes": "scratch MjData only; no runtime or repository state writes"
+  },
+  "bottle_mass_kg": 0.57,
+  "bottle_weight_n": 5.5916999999999994,
+  "bottle_com_world_m": [
+    0.30000026728638957,
+    -0.09381708892046467,
+    0.8924916489125823
+  ],
+  "bottle_root_position_world_m": [
+    0.300000172,
+    -0.093817013,
+    0.917105684
+  ],
+  "bottle_root_quaternion_wxyz": [
+    0.9990192157533947,
+    -1.4549999996408371e-06,
+    -2.0019999995058114e-06,
+    -0.04427873698906991
+  ],
+  "contact_convention": {
+    "frame_rows": "MuJoCo contact frame rows expressed in world coordinates; row 0 is geom1-to-geom2 normal",
+    "local_force_on_bottle": "-frame_rows_world.T @ [fn, ft1, ft2]",
+    "torsional_friction": "not modeled in the static LP",
+    "configured_mu_for_analysis": 1.4
+  },
+  "contacts": [
+    {
+      "digit": "thumb",
+      "body": "R_thumb_distal",
+      "geom": "dfq_collision_R_thumb_distal_0",
+      "point_world_m": [
+        0.26717658026014834,
+        -0.1059492491106345,
+        0.9422551140912925
+      ],
+      "frame_rows_world": [
+        [
+          -0.9365668637508813,
+          -0.35048895715745604,
+          -2.518962998020385e-05
+        ],
+        [
+          -0.3504889570306879,
+          0.9365668640896275,
+          -9.42664905353618e-06
+        ],
+        [
+          2.68957091544008e-05,
+          0.0,
+          -0.9999999996383105
+        ]
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_pitch": [
+          0.21404685918143987,
+          -0.019365513209627618,
+          0.0026622297567076305
+        ],
+        "thumb_proximal_yaw": [
+          0.0008354473479479374,
+          -0.00037364943947605644,
+          -0.06897421449001334
+        ]
+      },
+      "measured_normal_force_n": 0.02840859050487112,
+      "measured_true_normal_force_n": 0.02826310726131946,
+      "measured_tangential_force_n": 0.002871372913538901,
+      "signed_distance_m": -1.1284937127983873e-05
+    },
+    {
+      "digit": "index",
+      "body": "R_index_intermediate",
+      "geom": "dfq_collision_R_index_intermediate_0",
+      "point_world_m": [
+        0.3344299372801457,
+        -0.08757186849536569,
+        0.9508758600232206
+      ],
+      "frame_rows_world": [
+        [
+          0.9833842450189663,
+          0.18153629564675391,
+          3.366324575474301e-06
+        ],
+        [
+          -0.18153629564569027,
+          0.983384245024728,
+          -6.214357169824997e-07
+        ],
+        [
+          -3.423203689204571e-06,
+          0.0,
+          0.9999999999941409
+        ]
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          -0.0968408858639587,
+          -0.015439179257783264,
+          -0.002372169016024295
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "measured_normal_force_n": 0.017036114082319784,
+      "measured_true_normal_force_n": 0.011723866082347255,
+      "measured_tangential_force_n": 0.012360426655621645,
+      "signed_distance_m": -1.66075131355512e-05
+    },
+    {
+      "digit": "middle",
+      "body": "R_middle_intermediate",
+      "geom": "dfq_collision_R_middle_intermediate_0",
+      "point_world_m": [
+        0.33438140435180913,
+        -0.08727976169419402,
+        0.9296943836945857
+      ],
+      "frame_rows_world": [
+        [
+          0.9822726481376614,
+          0.1874578478248733,
+          3.0810841278694867e-06
+        ],
+        [
+          -0.1874578478239511,
+          0.9822726481424933,
+          -5.879970298165167e-07
+        ],
+        [
+          -3.1366893231689868e-06,
+          -1.0587911840678754e-22,
+          0.9999999999950806
+        ]
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          -0.09674571611487401,
+          -0.016111047656135302,
+          -0.00016829009143975093
+        ],
+        "index_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "measured_normal_force_n": 0.05148025127355529,
+      "measured_true_normal_force_n": 0.0406690646290291,
+      "measured_tangential_force_n": 0.03156332449835164,
+      "signed_distance_m": -5.483905173723888e-06
+    },
+    {
+      "digit": "ring",
+      "body": "R_ring_intermediate",
+      "geom": "dfq_collision_R_ring_intermediate_0",
+      "point_world_m": [
+        0.33441324260774596,
+        -0.08749784143643688,
+        0.9077468096579793
+      ],
+      "frame_rows_world": [
+        [
+          0.9834079993737987,
+          0.18140757085696707,
+          1.8431355800435687e-06
+        ],
+        [
+          -0.18140757085664846,
+          0.983407999375526,
+          -3.400000290297333e-07
+        ],
+        [
+          -1.874232852706078e-06,
+          -5.293955920339377e-23,
+          0.9999999999982436
+        ]
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          -0.09721309306686084,
+          -0.015413230724791172,
+          0.003150440312808327
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "measured_normal_force_n": 0.03704193911748125,
+      "measured_true_normal_force_n": 0.029105947270216787,
+      "measured_tangential_force_n": 0.022911767436986346,
+      "signed_distance_m": -2.3103408991086894e-05
+    },
+    {
+      "digit": "pinky",
+      "body": "R_pinky_intermediate",
+      "geom": "dfq_collision_R_pinky_intermediate_0",
+      "point_world_m": [
+        0.33487176010654884,
+        -0.09143268272363494,
+        0.8850211280972347
+      ],
+      "frame_rows_world": [
+        [
+          0.9977781215342788,
+          0.06662447114861378,
+          -5.629697598666184e-06
+        ],
+        [
+          -0.0666244711475533,
+          0.9977781215501609,
+          3.7591085346212366e-07
+        ],
+        [
+          5.642233956703535e-06,
+          0.0,
+          0.9999999999840826
+        ]
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          -0.09231069022697289,
+          -0.012517348054359667,
+          0.0059658730955233705
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "measured_normal_force_n": 0.044817613126989675,
+      "measured_true_normal_force_n": 0.038859959862509355,
+      "measured_tangential_force_n": 0.022327605466880656,
+      "signed_distance_m": -9.373445995894372e-05
+    }
+  ],
+  "uncertainty_scenarios": [
+    {
+      "name": "alternating_a_normal_down_1deg",
+      "point_pattern": "alternating_a",
+      "normal_rotation_toward_world_z_deg": -1.0,
+      "contacts": [
+        {
+          "digit": "thumb",
+          "body": "R_thumb_distal",
+          "geom": "dfq_collision_R_thumb_distal_0",
+          "point_world_m": [
+            0.26717658026014834,
+            -0.1059492491106345,
+            0.9427551140912924
+          ],
+          "frame_rows_world": [
+            [
+              -0.9365668637508813,
+              -0.35048895715745604,
+              -2.518962998020385e-05
+            ],
+            [
+              -0.3504889570306879,
+              0.9365668640896275,
+              -9.42664905353618e-06
+            ],
+            [
+              2.68957091544008e-05,
+              0.0,
+              -0.9999999996383105
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.21403354225443125,
+              -0.019395399727275518,
+              0.0026622297567076305
+            ],
+            "thumb_proximal_yaw": [
+              0.00040693815306427905,
+              -0.00011600776785425371,
+              -0.06897421449001334
+            ]
+          },
+          "measured_normal_force_n": 0.02840859050487112,
+          "measured_true_normal_force_n": 0.02826310726131946,
+          "measured_tangential_force_n": 0.002871372913538901,
+          "signed_distance_m": -1.1284937127983873e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_intermediate",
+          "geom": "dfq_collision_R_index_intermediate_0",
+          "point_world_m": [
+            0.3344299372801457,
+            -0.08757186849536569,
+            0.9503758600232206
+          ],
+          "frame_rows_world": [
+            [
+              0.9833842450189663,
+              0.18153629564675391,
+              3.366324575474301e-06
+            ],
+            [
+              -0.18153629564569027,
+              0.983384245024728,
+              -6.214357169824997e-07
+            ],
+            [
+              -3.423203689204571e-06,
+              0.0,
+              0.9999999999941409
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.0968100813036736,
+              -0.015458747353222946,
+              -0.002372169016024295
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.017036114082319784,
+          "measured_true_normal_force_n": 0.011723866082347255,
+          "measured_tangential_force_n": 0.012360426655621645,
+          "signed_distance_m": -1.66075131355512e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "middle",
+          "body": "R_middle_intermediate",
+          "geom": "dfq_collision_R_middle_intermediate_0",
+          "point_world_m": [
+            0.33438140435180913,
+            -0.08727976169419402,
+            0.9301943836945856
+          ],
+          "frame_rows_world": [
+            [
+              0.9822726481376614,
+              0.1874578478248733,
+              3.0810841278694867e-06
+            ],
+            [
+              -0.1874578478239511,
+              0.9822726481424933,
+              -5.879970298165167e-07
+            ],
+            [
+              -3.1366893231689868e-06,
+              -1.0587911840678754e-22,
+              0.9999999999950806
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              -0.09674661728724218,
+              -0.016109458221628736,
+              -0.00016829009143975093
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.05148025127355529,
+          "measured_true_normal_force_n": 0.0406690646290291,
+          "measured_tangential_force_n": 0.03156332449835164,
+          "signed_distance_m": -5.483905173723888e-06,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "ring",
+          "body": "R_ring_intermediate",
+          "geom": "dfq_collision_R_ring_intermediate_0",
+          "point_world_m": [
+            0.33441324260774596,
+            -0.08749784143643688,
+            0.9072468096579793
+          ],
+          "frame_rows_world": [
+            [
+              0.9834079993737987,
+              0.18140757085696707,
+              1.8431355800435687e-06
+            ],
+            [
+              -0.18140757085664846,
+              0.983407999375526,
+              -3.400000290297333e-07
+            ],
+            [
+              -1.874232852706078e-06,
+              -5.293955920339377e-23,
+              0.9999999999982436
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              -0.09725706787088821,
+              -0.015387837211141342,
+              0.003150440312808327
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.03704193911748125,
+          "measured_true_normal_force_n": 0.029105947270216787,
+          "measured_tangential_force_n": 0.022911767436986346,
+          "signed_distance_m": -2.3103408991086894e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "pinky",
+          "body": "R_pinky_intermediate",
+          "geom": "dfq_collision_R_pinky_intermediate_0",
+          "point_world_m": [
+            0.33487176010654884,
+            -0.09143268272363494,
+            0.8855211280972346
+          ],
+          "frame_rows_world": [
+            [
+              0.9977781215342788,
+              0.06662447114861378,
+              -5.629697598666184e-06
+            ],
+            [
+              -0.0666244711475533,
+              0.9977781215501609,
+              3.7591085346212366e-07
+            ],
+            [
+              5.642233956703535e-06,
+              0.0,
+              0.9999999999840826
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              -0.09222203281296351,
+              -0.012569611116266088,
+              0.0059658730955233705
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.044817613126989675,
+          "measured_true_normal_force_n": 0.038859959862509355,
+          "measured_tangential_force_n": 0.022327605466880656,
+          "signed_distance_m": -9.373445995894372e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        }
+      ]
+    },
+    {
+      "name": "alternating_a_normal_up_1deg",
+      "point_pattern": "alternating_a",
+      "normal_rotation_toward_world_z_deg": 1.0,
+      "contacts": [
+        {
+          "digit": "thumb",
+          "body": "R_thumb_distal",
+          "geom": "dfq_collision_R_thumb_distal_0",
+          "point_world_m": [
+            0.26717658026014834,
+            -0.1059492491106345,
+            0.9427551140912924
+          ],
+          "frame_rows_world": [
+            [
+              -0.9365668637508813,
+              -0.35048895715745604,
+              -2.518962998020385e-05
+            ],
+            [
+              -0.3504889570306879,
+              0.9365668640896275,
+              -9.42664905353618e-06
+            ],
+            [
+              2.68957091544008e-05,
+              0.0,
+              -0.9999999996383105
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.21403354225443125,
+              -0.019395399727275518,
+              0.0026622297567076305
+            ],
+            "thumb_proximal_yaw": [
+              0.00040693815306427905,
+              -0.00011600776785425371,
+              -0.06897421449001334
+            ]
+          },
+          "measured_normal_force_n": 0.02840859050487112,
+          "measured_true_normal_force_n": 0.02826310726131946,
+          "measured_tangential_force_n": 0.002871372913538901,
+          "signed_distance_m": -1.1284937127983873e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_intermediate",
+          "geom": "dfq_collision_R_index_intermediate_0",
+          "point_world_m": [
+            0.3344299372801457,
+            -0.08757186849536569,
+            0.9503758600232206
+          ],
+          "frame_rows_world": [
+            [
+              0.9833842450189663,
+              0.18153629564675391,
+              3.366324575474301e-06
+            ],
+            [
+              -0.18153629564569027,
+              0.983384245024728,
+              -6.214357169824997e-07
+            ],
+            [
+              -3.423203689204571e-06,
+              0.0,
+              0.9999999999941409
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.0968100813036736,
+              -0.015458747353222946,
+              -0.002372169016024295
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.017036114082319784,
+          "measured_true_normal_force_n": 0.011723866082347255,
+          "measured_tangential_force_n": 0.012360426655621645,
+          "signed_distance_m": -1.66075131355512e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "middle",
+          "body": "R_middle_intermediate",
+          "geom": "dfq_collision_R_middle_intermediate_0",
+          "point_world_m": [
+            0.33438140435180913,
+            -0.08727976169419402,
+            0.9301943836945856
+          ],
+          "frame_rows_world": [
+            [
+              0.9822726481376614,
+              0.1874578478248733,
+              3.0810841278694867e-06
+            ],
+            [
+              -0.1874578478239511,
+              0.9822726481424933,
+              -5.879970298165167e-07
+            ],
+            [
+              -3.1366893231689868e-06,
+              -1.0587911840678754e-22,
+              0.9999999999950806
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              -0.09674661728724218,
+              -0.016109458221628736,
+              -0.00016829009143975093
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.05148025127355529,
+          "measured_true_normal_force_n": 0.0406690646290291,
+          "measured_tangential_force_n": 0.03156332449835164,
+          "signed_distance_m": -5.483905173723888e-06,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "ring",
+          "body": "R_ring_intermediate",
+          "geom": "dfq_collision_R_ring_intermediate_0",
+          "point_world_m": [
+            0.33441324260774596,
+            -0.08749784143643688,
+            0.9072468096579793
+          ],
+          "frame_rows_world": [
+            [
+              0.9834079993737987,
+              0.18140757085696707,
+              1.8431355800435687e-06
+            ],
+            [
+              -0.18140757085664846,
+              0.983407999375526,
+              -3.400000290297333e-07
+            ],
+            [
+              -1.874232852706078e-06,
+              -5.293955920339377e-23,
+              0.9999999999982436
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              -0.09725706787088821,
+              -0.015387837211141342,
+              0.003150440312808327
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.03704193911748125,
+          "measured_true_normal_force_n": 0.029105947270216787,
+          "measured_tangential_force_n": 0.022911767436986346,
+          "signed_distance_m": -2.3103408991086894e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "pinky",
+          "body": "R_pinky_intermediate",
+          "geom": "dfq_collision_R_pinky_intermediate_0",
+          "point_world_m": [
+            0.33487176010654884,
+            -0.09143268272363494,
+            0.8855211280972346
+          ],
+          "frame_rows_world": [
+            [
+              0.9977781215342788,
+              0.06662447114861378,
+              -5.629697598666184e-06
+            ],
+            [
+              -0.0666244711475533,
+              0.9977781215501609,
+              3.7591085346212366e-07
+            ],
+            [
+              5.642233956703535e-06,
+              0.0,
+              0.9999999999840826
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              -0.09222203281296351,
+              -0.012569611116266088,
+              0.0059658730955233705
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.044817613126989675,
+          "measured_true_normal_force_n": 0.038859959862509355,
+          "measured_tangential_force_n": 0.022327605466880656,
+          "signed_distance_m": -9.373445995894372e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        }
+      ]
+    },
+    {
+      "name": "alternating_b_normal_down_1deg",
+      "point_pattern": "alternating_b",
+      "normal_rotation_toward_world_z_deg": -1.0,
+      "contacts": [
+        {
+          "digit": "thumb",
+          "body": "R_thumb_distal",
+          "geom": "dfq_collision_R_thumb_distal_0",
+          "point_world_m": [
+            0.26717658026014834,
+            -0.1059492491106345,
+            0.9417551140912925
+          ],
+          "frame_rows_world": [
+            [
+              -0.9365668637508813,
+              -0.35048895715745604,
+              -2.518962998020385e-05
+            ],
+            [
+              -0.3504889570306879,
+              0.9365668640896275,
+              -9.42664905353618e-06
+            ],
+            [
+              2.68957091544008e-05,
+              0.0,
+              -0.9999999996383105
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.2140601761084485,
+              -0.01933562669197985,
+              0.0026622297567076305
+            ],
+            "thumb_proximal_yaw": [
+              0.0012639565428316235,
+              -0.0006312911110978592,
+              -0.06897421449001334
+            ]
+          },
+          "measured_normal_force_n": 0.02840859050487112,
+          "measured_true_normal_force_n": 0.02826310726131946,
+          "measured_tangential_force_n": 0.002871372913538901,
+          "signed_distance_m": -1.1284937127983873e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_intermediate",
+          "geom": "dfq_collision_R_index_intermediate_0",
+          "point_world_m": [
+            0.3344299372801457,
+            -0.08757186849536569,
+            0.9513758600232205
+          ],
+          "frame_rows_world": [
+            [
+              0.9833842450189663,
+              0.18153629564675391,
+              3.366324575474301e-06
+            ],
+            [
+              -0.18153629564569027,
+              0.983384245024728,
+              -6.214357169824997e-07
+            ],
+            [
+              -3.423203689204571e-06,
+              0.0,
+              0.9999999999941409
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.09687169042424376,
+              -0.015419611162343583,
+              -0.002372169016024295
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.017036114082319784,
+          "measured_true_normal_force_n": 0.011723866082347255,
+          "measured_tangential_force_n": 0.012360426655621645,
+          "signed_distance_m": -1.66075131355512e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "middle",
+          "body": "R_middle_intermediate",
+          "geom": "dfq_collision_R_middle_intermediate_0",
+          "point_world_m": [
+            0.33438140435180913,
+            -0.08727976169419402,
+            0.9291943836945857
+          ],
+          "frame_rows_world": [
+            [
+              0.9822726481376614,
+              0.1874578478248733,
+              3.0810841278694867e-06
+            ],
+            [
+              -0.1874578478239511,
+              0.9822726481424933,
+              -5.879970298165167e-07
+            ],
+            [
+              -3.1366893231689868e-06,
+              -1.0587911840678754e-22,
+              0.9999999999950806
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              -0.09674481494250586,
+              -0.01611263709064198,
+              -0.00016829009143975093
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.05148025127355529,
+          "measured_true_normal_force_n": 0.0406690646290291,
+          "measured_tangential_force_n": 0.03156332449835164,
+          "signed_distance_m": -5.483905173723888e-06,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "ring",
+          "body": "R_ring_intermediate",
+          "geom": "dfq_collision_R_ring_intermediate_0",
+          "point_world_m": [
+            0.33441324260774596,
+            -0.08749784143643688,
+            0.9082468096579792
+          ],
+          "frame_rows_world": [
+            [
+              0.9834079993737987,
+              0.18140757085696707,
+              1.8431355800435687e-06
+            ],
+            [
+              -0.18140757085664846,
+              0.983407999375526,
+              -3.400000290297333e-07
+            ],
+            [
+              -1.874232852706078e-06,
+              -5.293955920339377e-23,
+              0.9999999999982436
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              -0.09716911826283346,
+              -0.015438624238441001,
+              0.003150440312808327
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.03704193911748125,
+          "measured_true_normal_force_n": 0.029105947270216787,
+          "measured_tangential_force_n": 0.022911767436986346,
+          "signed_distance_m": -2.3103408991086894e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "pinky",
+          "body": "R_pinky_intermediate",
+          "geom": "dfq_collision_R_pinky_intermediate_0",
+          "point_world_m": [
+            0.33487176010654884,
+            -0.09143268272363494,
+            0.8845211280972347
+          ],
+          "frame_rows_world": [
+            [
+              0.9977781215342788,
+              0.06662447114861378,
+              -5.629697598666184e-06
+            ],
+            [
+              -0.0666244711475533,
+              0.9977781215501609,
+              3.7591085346212366e-07
+            ],
+            [
+              5.642233956703535e-06,
+              0.0,
+              0.9999999999840826
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              -0.09239934764098229,
+              -0.01246508499245319,
+              0.0059658730955233705
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.044817613126989675,
+          "measured_true_normal_force_n": 0.038859959862509355,
+          "measured_tangential_force_n": 0.022327605466880656,
+          "signed_distance_m": -9.373445995894372e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        }
+      ]
+    },
+    {
+      "name": "alternating_b_normal_up_1deg",
+      "point_pattern": "alternating_b",
+      "normal_rotation_toward_world_z_deg": 1.0,
+      "contacts": [
+        {
+          "digit": "thumb",
+          "body": "R_thumb_distal",
+          "geom": "dfq_collision_R_thumb_distal_0",
+          "point_world_m": [
+            0.26717658026014834,
+            -0.1059492491106345,
+            0.9417551140912925
+          ],
+          "frame_rows_world": [
+            [
+              -0.9365668637508813,
+              -0.35048895715745604,
+              -2.518962998020385e-05
+            ],
+            [
+              -0.3504889570306879,
+              0.9365668640896275,
+              -9.42664905353618e-06
+            ],
+            [
+              2.68957091544008e-05,
+              0.0,
+              -0.9999999996383105
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.2140601761084485,
+              -0.01933562669197985,
+              0.0026622297567076305
+            ],
+            "thumb_proximal_yaw": [
+              0.0012639565428316235,
+              -0.0006312911110978592,
+              -0.06897421449001334
+            ]
+          },
+          "measured_normal_force_n": 0.02840859050487112,
+          "measured_true_normal_force_n": 0.02826310726131946,
+          "measured_tangential_force_n": 0.002871372913538901,
+          "signed_distance_m": -1.1284937127983873e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_intermediate",
+          "geom": "dfq_collision_R_index_intermediate_0",
+          "point_world_m": [
+            0.3344299372801457,
+            -0.08757186849536569,
+            0.9513758600232205
+          ],
+          "frame_rows_world": [
+            [
+              0.9833842450189663,
+              0.18153629564675391,
+              3.366324575474301e-06
+            ],
+            [
+              -0.18153629564569027,
+              0.983384245024728,
+              -6.214357169824997e-07
+            ],
+            [
+              -3.423203689204571e-06,
+              0.0,
+              0.9999999999941409
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.09687169042424376,
+              -0.015419611162343583,
+              -0.002372169016024295
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.017036114082319784,
+          "measured_true_normal_force_n": 0.011723866082347255,
+          "measured_tangential_force_n": 0.012360426655621645,
+          "signed_distance_m": -1.66075131355512e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "middle",
+          "body": "R_middle_intermediate",
+          "geom": "dfq_collision_R_middle_intermediate_0",
+          "point_world_m": [
+            0.33438140435180913,
+            -0.08727976169419402,
+            0.9291943836945857
+          ],
+          "frame_rows_world": [
+            [
+              0.9822726481376614,
+              0.1874578478248733,
+              3.0810841278694867e-06
+            ],
+            [
+              -0.1874578478239511,
+              0.9822726481424933,
+              -5.879970298165167e-07
+            ],
+            [
+              -3.1366893231689868e-06,
+              -1.0587911840678754e-22,
+              0.9999999999950806
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              -0.09674481494250586,
+              -0.01611263709064198,
+              -0.00016829009143975093
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.05148025127355529,
+          "measured_true_normal_force_n": 0.0406690646290291,
+          "measured_tangential_force_n": 0.03156332449835164,
+          "signed_distance_m": -5.483905173723888e-06,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "ring",
+          "body": "R_ring_intermediate",
+          "geom": "dfq_collision_R_ring_intermediate_0",
+          "point_world_m": [
+            0.33441324260774596,
+            -0.08749784143643688,
+            0.9082468096579792
+          ],
+          "frame_rows_world": [
+            [
+              0.9834079993737987,
+              0.18140757085696707,
+              1.8431355800435687e-06
+            ],
+            [
+              -0.18140757085664846,
+              0.983407999375526,
+              -3.400000290297333e-07
+            ],
+            [
+              -1.874232852706078e-06,
+              -5.293955920339377e-23,
+              0.9999999999982436
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              -0.09716911826283346,
+              -0.015438624238441001,
+              0.003150440312808327
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.03704193911748125,
+          "measured_true_normal_force_n": 0.029105947270216787,
+          "measured_tangential_force_n": 0.022911767436986346,
+          "signed_distance_m": -2.3103408991086894e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "pinky",
+          "body": "R_pinky_intermediate",
+          "geom": "dfq_collision_R_pinky_intermediate_0",
+          "point_world_m": [
+            0.33487176010654884,
+            -0.09143268272363494,
+            0.8845211280972347
+          ],
+          "frame_rows_world": [
+            [
+              0.9977781215342788,
+              0.06662447114861378,
+              -5.629697598666184e-06
+            ],
+            [
+              -0.0666244711475533,
+              0.9977781215501609,
+              3.7591085346212366e-07
+            ],
+            [
+              5.642233956703535e-06,
+              0.0,
+              0.9999999999840826
+            ]
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              -0.09239934764098229,
+              -0.01246508499245319,
+              0.0059658730955233705
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "measured_normal_force_n": 0.044817613126989675,
+          "measured_true_normal_force_n": 0.038859959862509355,
+          "measured_tangential_force_n": 0.022327605466880656,
+          "signed_distance_m": -9.373445995894372e-05,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        }
+      ]
+    }
+  ],
+  "projected_bias_minus_passive_nm": {
+    "pinky_proximal": 0.00011545026879776683,
+    "ring_proximal": 7.99927907520722e-05,
+    "middle_proximal": -6.285984014363978e-06,
+    "index_proximal": -6.264915478562108e-05,
+    "thumb_proximal_pitch": 0.00010161351326775064,
+    "thumb_proximal_yaw": -0.0066746983484853376
+  },
+  "source_limits": {
+    "pinky_proximal": {
+      "joint": "R_pinky_proximal_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": 0.0,
+      "upper_rad": 1.7,
+      "mimic_chain": [
+        {
+          "joint": "R_pinky_proximal_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": 8.62316231324406e-05,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_pinky_intermediate_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": 2.9218645665326235e-05,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "ring_proximal": {
+      "joint": "R_ring_proximal_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": 0.0,
+      "upper_rad": 1.7,
+      "mimic_chain": [
+        {
+          "joint": "R_ring_proximal_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": 5.672543992658917e-05,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_ring_intermediate_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": 2.3267350825483023e-05,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "middle_proximal": {
+      "joint": "R_middle_proximal_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": 0.0,
+      "upper_rad": 1.7,
+      "mimic_chain": [
+        {
+          "joint": "R_middle_proximal_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": -4.610241477120538e-06,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_middle_intermediate_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": -1.6757425372434402e-06,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "index_proximal": {
+      "joint": "R_index_proximal_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": 0.0,
+      "upper_rad": 1.7,
+      "mimic_chain": [
+        {
+          "joint": "R_index_proximal_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": -4.4768297175986444e-05,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_index_intermediate_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": -1.7880857609634633e-05,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "thumb_proximal_pitch": {
+      "joint": "R_thumb_proximal_pitch_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": -0.1,
+      "upper_rad": 0.6,
+      "mimic_chain": [
+        {
+          "joint": "R_thumb_proximal_pitch_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": 6.954730036720649e-05,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_thumb_intermediate_joint",
+          "mimic_multiplier": 1.6,
+          "qfrc_bias_nm": 1.3546598990130468e-05,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_thumb_distal_joint",
+          "mimic_multiplier": 2.4,
+          "qfrc_bias_nm": 4.329856048473081e-06,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "thumb_proximal_yaw": {
+      "joint": "R_thumb_proximal_yaw_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": -0.1,
+      "upper_rad": 1.3,
+      "mimic_chain": [
+        {
+          "joint": "R_thumb_proximal_yaw_joint",
+          "mimic_multiplier": 1.0,
+          "qfrc_bias_nm": -0.0066746983484853376,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    }
+  },
+  "joint_state_qpos_rad": {
+    "L_pinky_proximal_joint": 1.5e-08,
+    "L_ring_proximal_joint": 7e-09,
+    "L_middle_proximal_joint": 1e-09,
+    "L_index_proximal_joint": -0.0,
+    "L_thumb_proximal_pitch_joint": 7.06e-07,
+    "L_thumb_proximal_yaw_joint": 6.6e-08,
+    "R_pinky_proximal_joint": 0.336491426,
+    "R_ring_proximal_joint": 0.337227749,
+    "R_middle_proximal_joint": 0.336017314,
+    "R_index_proximal_joint": 0.332182182,
+    "R_thumb_proximal_pitch_joint": 0.13358418,
+    "R_thumb_proximal_yaw_joint": 1.300000026,
+    "R_thumb_intermediate_joint": 0.213727929,
+    "R_thumb_distal_joint": 0.320609908,
+    "R_index_intermediate_joint": 0.332175933,
+    "R_middle_intermediate_joint": 0.33599342,
+    "R_ring_intermediate_joint": 0.337231009,
+    "R_pinky_intermediate_joint": 0.336480907,
+    "right_shoulder_pitch_joint": -0.337381992,
+    "right_shoulder_roll_joint": -0.573765901,
+    "right_shoulder_yaw_joint": -0.120268746,
+    "right_elbow_joint": 0.590498726,
+    "right_wrist_roll_joint": 0.512199607,
+    "right_wrist_pitch_joint": -0.125402589,
+    "right_wrist_yaw_joint": 1.339590886
+  }
+}
