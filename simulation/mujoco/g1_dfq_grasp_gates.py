@@ -406,6 +406,17 @@ def is_contact_control_state(state: str) -> bool:
     return state in {"CONTACT_PRELOAD", "SIMULATION_ONLY_TORQUE_IMPEDANCE"}
 
 
+def contact_window_allows_transfer(contact_window: dict, left_contact: bool = False) -> bool:
+    """Use the validated persistence window as the transfer contact gate."""
+    return (
+        not left_contact
+        and not bool(contact_window.get("left_contact_seen", True))
+        and bool(contact_window.get("valid", False))
+        and bool(contact_window.get("thumb_qualifies", False))
+        and bool(contact_window.get("valid_opposing_digits", []))
+    )
+
+
 def _event_map(result: dict) -> dict[str, dict]:
     return {
         str(event.get("event")): event

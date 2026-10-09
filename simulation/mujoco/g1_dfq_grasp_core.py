@@ -3719,7 +3719,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                             "Bottle rise exceeded the unchanged pre-LOAD_READY 0.5 mm gate: "
                             + json.dumps(failure, sort_keys=True)
                         )
-                    if not lift_window["valid"] or not thumb or not opposing:
+                    if not gates.contact_window_allows_transfer(lift_window, left_contact):
                         raise GateFailure(
                             f"Right-hand thumb/opposing contact gate failed during {stage_name}: "
                             + json.dumps(lift_window, sort_keys=True)
@@ -3753,7 +3753,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     for c in stage_contacts
                 )
                 bottle_lift = float(data.xpos[bottle_id][2] - lift_origin_z)
-                if left_contact or not lift_window["valid"] or not thumb or not opposing:
+                if not gates.contact_window_allows_transfer(lift_window, left_contact):
                     raise GateFailure(
                         f"Right-hand force-bearing contact was lost during {stage_name} dwell: "
                         + json.dumps({
