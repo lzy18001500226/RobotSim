@@ -270,7 +270,10 @@ def pad_gap(model: mujoco.MjModel, data: mujoco.MjData) -> float:
     return float(np.linalg.norm(np.mean(data.geom_xpos[left], axis=0) - np.mean(data.geom_xpos[right], axis=0)))
 
 
-def run_cycle(model: mujoco.MjModel, data: mujoco.MjData, ident: dict[str, Any], out: Path) -> dict[str, Any]:
+def run_cycle(model: mujoco.MjModel, data: mujoco.MjData, ident: dict[str, Any], out: Path,
+              open_command: float = 0.0) -> dict[str, Any]:
+    if not 0.0 <= open_command <= 255.0:
+        raise ValueError("OPEN actuator command must remain inside the Menagerie ctrlrange [0, 255]")
     refs, targets = set_controller_targets(model, data)
     grip_id = m0.obj_id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, GRIP_ACTUATOR)
     driver_jid = m0.obj_id(model, mujoco.mjtObj.mjOBJ_JOINT, DRIVER_JOINT)
@@ -305,11 +308,11 @@ def run_cycle(model: mujoco.MjModel, data: mujoco.MjData, ident: dict[str, Any],
     camera.lookat[:] = [0.05, 0.0, 0.95]
     camera.distance, camera.azimuth, camera.elevation = 2.5, 135, -12
     phases = [
-        ("INITIAL_HOLD", 0.20, 0.0, 0.0),
-        ("OPEN", 0.25, 0.0, 0.0),
-        ("CLOSE", 0.60, 0.0, 255.0),
-        ("REOPEN", 0.60, 255.0, 0.0),
-        ("HOLD", 0.25, 0.0, 0.0),
+        ("INITIAL_HOLD", 0.20, open_command, open_command),
+        ("OPEN", 0.25, open_command, open_command),
+        ("CLOSE", 0.60, open_command, 255.0),
+        ("REOPEN", 0.60, 255.0, open_command),
+        ("HOLD", 0.25, open_command, open_command),
     ]
     phase_rows = []
     all_rows = []
@@ -390,6 +393,20 @@ def run_cycle(model: mujoco.MjModel, data: mujoco.MjData, ident: dict[str, Any],
                         "robot_self_contact_count": len(contacts["robot_self_contacts"]),
                         "robot_bottle_contact_count": len(contacts["robot_bottle_contacts"]),
                         "non_gripper_joint_state": non_gripper_state,
+                        "robotiq_joint_state": {
+                            name(model, mujoco.mjtObj.mjOBJ_JOINT, jid): {
+                                "qpos_rad": float(data.qpos[model.jnt_qposadr[jid]]),
+                                "qvel_rad_s": float(data.qvel[model.jnt_dofadr[jid]]),
+                                "qacc_rad_s2": float(data.qacc[model.jnt_dofadr[jid]]),
+                                "qfrc_bias_nm": float(data.qfrc_bias[model.jnt_dofadr[jid]]),
+                                "qfrc_actuator_nm": float(data.qfrc_actuator[model.jnt_dofadr[jid]]),
+                                "qfrc_constraint_nm": float(data.qfrc_constraint[model.jnt_dofadr[jid]]),
+                                "range_rad": model.jnt_range[jid].astype(float).tolist(),
+                            }
+                            for jid in range(model.njnt)
+                            if int(model.jnt_type[jid]) == int(mujoco.mjtJoint.mjJNT_HINGE)
+                            and (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or "").startswith("rq_")
+                        },
                         "all_actuator_force": {name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, aid): float(data.actuator_force[aid])
                                                 for aid in range(model.nu)},
                         "qpos_writes_after_rollout_start": 0,
@@ -433,6 +450,7 @@ def run_cycle(model: mujoco.MjModel, data: mujoco.MjData, ident: dict[str, Any],
         "time_s": float(data.time),
         "driver_joint": DRIVER_JOINT,
         "follower_joint": FOLLOWER_JOINT,
+        "open_command": open_command,
         "driver_initial": joint_start.get(DRIVER_JOINT),
         "driver_final": joint_state(model, data, DRIVER_JOINT),
         "follower_initial": joint_start.get(FOLLOWER_JOINT),
@@ -471,6 +489,8 @@ def main() -> int:
     parser.add_argument("--canonical-helper", type=Path, default=m0.CANONICAL_DEFAULT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--station-base-pos", type=float, nargs=3, default=DEFAULT_STATION)
+    parser.add_argument("--open-command", type=float, default=0.0,
+                        help="Menagerie actuator command used for OPEN/HOLD; default preserves original endpoint test")
     args = parser.parse_args()
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -551,7 +571,7 @@ def main() -> int:
         ranges, velocities = m0.all_limited_joint_checks(variant_model, variant_data, velocity_limits)
         if ranges or velocities:
             raise RuntimeError(f"Initial source limit gate failed: positions={ranges[:1]}, velocities={velocities[:1]}")
-        result["mounted_open_close"] = run_cycle(variant_model, variant_data, ident, out)
+        result["mounted_open_close"] = run_cycle(variant_model, variant_data, ident, out, args.open_command)
         if result["mounted_open_close"]["status"] != "PASS":
             raise RuntimeError("Mounted gripper dynamic OPEN/CLOSE cycle failed; inspect its recorded traces")
         result["highest_gate"] = "MOUNTED DYNAMIC OPEN/CLOSE"

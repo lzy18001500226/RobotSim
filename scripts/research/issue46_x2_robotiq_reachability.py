@@ -19,6 +19,7 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 import mujoco
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.stats import qmc
 from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -31,18 +32,23 @@ DEFAULT_OUT = Path(
     "robotiq-x2-reachability-20261009"
 )
 STATION_CANDIDATES = (
-    {"name": "candidate_1_right_side_approach", "base": [-0.08, 0.0, 0.68],
+    {"name": "right_side_established_clear_station", "base": [-0.08, 0.0, 0.68],
      "approach_yaw_deg": 90.0,
-     "rationale": "Use the measured right-hand negative-Y workspace; insert along +Y with the same bottle-centered pad midpoint."},
-    {"name": "candidate_2_lateral_station_shift", "base": [-0.08, 0.08, 0.68],
-     "approach_yaw_deg": 90.0,
-     "rationale": "If candidate 1 is unreachable, shift the base 80 mm toward the measured lateral reach deficit while keeping X back from the previously contacted table-leg zone."},
+     "rationale": "Retain the previously measured outboard station that avoided table-leg overlap; approach the body from the robot's right-side workspace."},
+    {"name": "natural_front_approach_clear_of_leg", "base": [0.0, 0.16, 0.68],
+     "approach_yaw_deg": 0.0,
+     "rationale": "Keep the torso facing the table and shift the base 80 mm laterally from the prior station to clear the measured right-coupler/table-leg overlap."},
+    {"name": "right_side_lower_body_contact", "base": [-0.08, 0.0, 0.68],
+     "approach_yaw_deg": 90.0, "grasp_height_offset_m": -0.025,
+     "rationale": "Keep the measured clear right-side station and move the grasp point 25 mm lower within the canonical cylindrical body to test contact-height sensitivity."},
 )
 MAX_POSE_ERROR_M = 0.003
 MAX_ORIENTATION_ERROR_RAD = 0.02
 APPROACH_DISTANCE_M = 0.12
 LIFT_DISTANCE_M = 0.03
 COLLISION_CLEARANCE_M = 0.002
+COLLISION_RESIDUAL_WEIGHT = 3.0
+DISTANCE_MAX_M = 1.0
 
 
 def sha256(path: Path) -> str:
@@ -96,6 +102,141 @@ def collision_cost(contacts: list[dict[str, Any]]) -> float:
                      for c in contacts if not c["allowed_planted_floor_contact"]))
 
 
+def environment_pair_catalog(model: mujoco.MjModel, robot_bodies: set[str]) -> list[dict[str, Any]]:
+    """Return collision-compatible robot/table and robot/bottle geom pairs."""
+    robot_geoms = [g for g in range(model.ngeom)
+                   if name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) in robot_bodies
+                   and (int(model.geom_contype[g]) != 0 or int(model.geom_conaffinity[g]) != 0)]
+    environment_geoms = [g for g in range(model.ngeom)
+                         if name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])).startswith("m0_table")
+                         or name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) == "m0_bottle"]
+    pairs = []
+    for rg in robot_geoms:
+        for eg in environment_geoms:
+            if not ((int(model.geom_contype[rg]) & int(model.geom_conaffinity[eg])) or
+                    (int(model.geom_contype[eg]) & int(model.geom_conaffinity[rg]))):
+                continue
+            env_body = name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[eg]))
+            pairs.append({
+                "category": "robot_bottle" if env_body == "m0_bottle" else "robot_table",
+                "robot_geom_id": rg,
+                "robot_geom": name(model, mujoco.mjtObj.mjOBJ_GEOM, rg),
+                "robot_body": name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[rg])),
+                "environment_geom_id": eg,
+                "environment_geom": name(model, mujoco.mjtObj.mjOBJ_GEOM, eg),
+                "environment_body": env_body,
+            })
+    return pairs
+
+
+def robust_geom_distance(model: mujoco.MjModel, data: mujoco.MjData,
+                         geom1: int, geom2: int) -> tuple[float, dict[str, Any]]:
+    """Query signed distance, detecting the native-CCD zero/witness inconsistency."""
+    segment = np.zeros(6, dtype=np.float64)
+    native = float(mujoco.mj_geomDistance(model, data, geom1, geom2, DISTANCE_MAX_M, segment))
+    witness_length = float(np.linalg.norm(segment[3:] - segment[:3]))
+    diagnostic: dict[str, Any] = {"native_signed_distance_m": native,
+                                  "native_witness_length_m": witness_length,
+                                  "distance_method": "mujoco_mj_geomDistance"}
+    pair_contacts = [float(data.contact[i].dist) for i in range(data.ncon)
+                     if {int(data.contact[i].geom1), int(data.contact[i].geom2)} == {geom1, geom2}]
+    if native != 0.0:
+        return native, diagnostic
+    if pair_contacts:
+        distance = min(pair_contacts)
+        diagnostic.update({"distance_method": "active_contact_distance_after_native_zero",
+                           "active_contact_distances_m": pair_contacts,
+                           "fallback_signed_distance_m": distance})
+        return distance, diagnostic
+    if witness_length <= 1e-9:
+        diagnostic["distance_method"] = "native_zero_without_witness_or_active_contact"
+        return 0.0, diagnostic
+
+    # MuJoCo can return zero with a non-degenerate native-CCD witness for a
+    # separated convex mesh pair. The legacy path is useful evidence, but can
+    # also return a false negative. Cross-check that case against the actual
+    # compiled collision pipeline at a temporary 2 mm query clearance.
+    disable_bit = int(mujoco.mjtDisableBit.mjDSBL_NATIVECCD)
+    old_flags = int(model.opt.disableflags)
+    try:
+        model.opt.disableflags = old_flags | disable_bit
+        fallback_segment = np.zeros(6, dtype=np.float64)
+        fallback = float(mujoco.mj_geomDistance(model, data, geom1, geom2,
+                                                DISTANCE_MAX_M, fallback_segment))
+    finally:
+        model.opt.disableflags = old_flags
+    diagnostic.update({"distance_method": "legacy_ccd_zero_anomaly_crosscheck",
+                       "fallback_signed_distance_m": fallback,
+                       "fallback_witness_length_m": float(np.linalg.norm(
+                           fallback_segment[3:] - fallback_segment[:3]))})
+    old_margin1 = float(model.geom_margin[geom1])
+    old_margin2 = float(model.geom_margin[geom2])
+    query_pairs: list[dict[str, Any]] = []
+    try:
+        model.geom_margin[geom1] = old_margin1 + 0.5 * COLLISION_CLEARANCE_M
+        model.geom_margin[geom2] = old_margin2 + 0.5 * COLLISION_CLEARANCE_M
+        mujoco.mj_forward(model, data)
+        query_pairs = [
+            {"distance_m": float(data.contact[i].dist),
+             "geom1": int(data.contact[i].geom1), "geom2": int(data.contact[i].geom2)}
+            for i in range(data.ncon)
+            if {int(data.contact[i].geom1), int(data.contact[i].geom2)} == {geom1, geom2}
+        ]
+    finally:
+        model.geom_margin[geom1] = old_margin1
+        model.geom_margin[geom2] = old_margin2
+        mujoco.mj_forward(model, data)
+    diagnostic["collision_pipeline_query_clearance_m"] = COLLISION_CLEARANCE_M
+    diagnostic["collision_pipeline_query_contacts"] = query_pairs
+    if query_pairs:
+        diagnostic["distance_method"] = "collision_pipeline_contact_within_query_clearance"
+        diagnostic["clearance_lower_bound_m"] = 0.0
+        return 0.0, diagnostic
+    if fallback > 0.0:
+        diagnostic["distance_method"] = "legacy_ccd_positive_with_collision_pipeline_clearance_check"
+        diagnostic["clearance_lower_bound_m"] = COLLISION_CLEARANCE_M
+        return fallback, diagnostic
+    diagnostic["distance_method"] = "collision_pipeline_clearance_lower_bound_after_distance_disagreement"
+    diagnostic["clearance_lower_bound_m"] = COLLISION_CLEARANCE_M
+    diagnostic["distance_is_lower_bound"] = True
+    return COLLISION_CLEARANCE_M, diagnostic
+
+
+def environment_distance_snapshot(model: mujoco.MjModel, data: mujoco.MjData,
+                                  pair_catalog: list[dict[str, Any]],
+                                  keep_all: bool = False) -> dict[str, Any]:
+    rows = []
+    for pair in pair_catalog:
+        distance, diagnostic = robust_geom_distance(
+            model, data, pair["robot_geom_id"], pair["environment_geom_id"])
+        rows.append({**pair, "signed_distance_m": distance, **diagnostic})
+    rows.sort(key=lambda row: row["signed_distance_m"])
+    by_category = {}
+    for category in ("robot_bottle", "robot_table"):
+        selected = [row for row in rows if row["category"] == category]
+        by_category[category] = {
+            "minimum_signed_distance_m": selected[0]["signed_distance_m"] if selected else None,
+            "near_pairs": [row for row in selected if row["signed_distance_m"] < 0.05][:12],
+        }
+    violating = [row for row in rows if row["signed_distance_m"] < COLLISION_CLEARANCE_M]
+    return {"minimum_signed_distance_m": rows[0]["signed_distance_m"] if rows else None,
+            "minimum_pair": rows[0] if rows else None,
+            "by_category": by_category,
+            "pairs_below_clearance": violating,
+            "all_pairs": rows if keep_all else None}
+
+
+def distance_residuals(snapshot: dict[str, Any], pair_count: int) -> np.ndarray:
+    rows = snapshot.get("all_pairs")
+    if rows is None:
+        raise RuntimeError("Optimizer distance snapshot must retain all pair rows")
+    residual = np.asarray([max(0.0, COLLISION_CLEARANCE_M - row["signed_distance_m"])
+                           for row in rows], dtype=np.float64)
+    if residual.size != pair_count:
+        raise RuntimeError("Collision pair count changed during optimization")
+    return residual / COLLISION_CLEARANCE_M * COLLISION_RESIDUAL_WEIGHT
+
+
 def pose_errors(model: mujoco.MjModel, data: mujoco.MjData, site: int,
                 target_pos: np.ndarray, target_rot: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     pos_err = data.site_xpos[site].copy() - target_pos
@@ -142,7 +283,7 @@ def orientation_seed(model: mujoco.MjModel, data: mujoco.MjData, qids: list[int]
 def solve_pose(model: mujoco.MjModel, data: mujoco.MjData, qids: list[int],
                lower: np.ndarray, upper: np.ndarray, seed: np.ndarray,
                target_pos: np.ndarray, target_rot: np.ndarray, robot_bodies: set[str],
-               label: str) -> dict[str, Any]:
+               pair_catalog: list[dict[str, Any]], label: str) -> dict[str, Any]:
     site = m0.obj_id(model, mujoco.mjtObj.mjOBJ_SITE, "rq_m0_tcp")
     trace = []
 
@@ -150,14 +291,23 @@ def solve_pose(model: mujoco.MjModel, data: mujoco.MjData, qids: list[int],
         set_arm(model, data, q, qids)
         pos_err, rot_err = pose_errors(model, data, site, target_pos, target_rot)
         pairs = relevant_contacts(model, data, robot_bodies)
-        coll_cost = collision_cost(pairs)
+        distances = environment_distance_snapshot(model, data, pair_catalog, keep_all=True)
+        collision_rows = distances["all_pairs"]
+        distance_residual = distance_residuals(distances, len(pair_catalog))
+        coll_cost = float(sum(max(0.0, COLLISION_CLEARANCE_M - row["signed_distance_m"])
+                              for row in collision_rows))
         trace.append({"evaluation": len(trace), "q_rad": q.tolist(),
                       "position_error_world_m": pos_err.tolist(),
                       "position_error_norm_m": float(np.linalg.norm(pos_err)),
                       "orientation_error_world_rad": rot_err.tolist(),
                       "orientation_error_norm_rad": float(np.linalg.norm(rot_err)),
-                      "collision_cost_m": coll_cost, "active_relevant_contacts": pairs})
-        return np.concatenate((pos_err / 0.005, rot_err / 0.02, [coll_cost / 0.002 * 5.0]))
+                      "collision_cost_m": coll_cost,
+                      "minimum_robot_bottle_distance_m": distances["by_category"]["robot_bottle"]["minimum_signed_distance_m"],
+                      "minimum_robot_table_distance_m": distances["by_category"]["robot_table"]["minimum_signed_distance_m"],
+                      "minimum_pair": distances["minimum_pair"],
+                      "pairs_below_clearance": distances["pairs_below_clearance"],
+                      "active_relevant_contacts": pairs})
+        return np.concatenate((pos_err / 0.005, rot_err / 0.02, distance_residual))
 
     opt = least_squares(residual, np.clip(seed, lower + 1e-8, upper - 1e-8),
                          bounds=(lower, upper), max_nfev=400, x_scale="jac",
@@ -165,17 +315,23 @@ def solve_pose(model: mujoco.MjModel, data: mujoco.MjData, qids: list[int],
     set_arm(model, data, opt.x, qids)
     pos_err, rot_err = pose_errors(model, data, site, target_pos, target_rot)
     pairs = relevant_contacts(model, data, robot_bodies)
+    distances = environment_distance_snapshot(model, data, pair_catalog, keep_all=True)
     errors, velocity_errors = m0.all_limited_joint_checks(model, data, {})
+    exact_collision_free = all(row["signed_distance_m"] > 0.0 for row in distances["all_pairs"])
     return {"label": label, "success": bool(opt.success), "message": str(opt.message),
             "nfev": int(opt.nfev), "joint_pose_rad": opt.x.tolist(),
             "target_position_world_m": target_pos.tolist(), "target_rotation_world": target_rot.tolist(),
             "position_error_world_m": pos_err.tolist(), "position_error_norm_m": float(np.linalg.norm(pos_err)),
             "orientation_error_world_rad": rot_err.tolist(), "orientation_error_norm_rad": float(np.linalg.norm(rot_err)),
-            "active_relevant_contacts": pairs, "collision_cost_m": collision_cost(pairs),
+            "active_relevant_contacts": pairs, "collision_cost_m": float(sum(
+                max(0.0, COLLISION_CLEARANCE_M - row["signed_distance_m"])
+                for row in distances["all_pairs"])),
+            "exact_environment_distances": distances,
+            "exact_environment_collision_free": exact_collision_free,
             "joint_limit_violations": errors, "velocity_limit_violations": velocity_errors,
             "pose_gate_pass": bool(np.linalg.norm(pos_err) <= MAX_POSE_ERROR_M and
                                     np.linalg.norm(rot_err) <= MAX_ORIENTATION_ERROR_RAD),
-            "collision_gate_pass": not any(
+            "collision_gate_pass": exact_collision_free and not any(
                 not c["allowed_planted_floor_contact"] and
                 (c["distance_m"] < 0 or (c["kind"] == "bottle" and c["distance_m"] <= 0))
                 for c in pairs),
@@ -184,7 +340,8 @@ def solve_pose(model: mujoco.MjModel, data: mujoco.MjData, qids: list[int],
 
 def solve_position_seed(model: mujoco.MjModel, data: mujoco.MjData, qids: list[int],
                        lower: np.ndarray, upper: np.ndarray, seed: np.ndarray,
-                       target_pos: np.ndarray, robot_bodies: set[str]) -> dict[str, Any]:
+                       target_pos: np.ndarray, robot_bodies: set[str],
+                       pair_catalog: list[dict[str, Any]]) -> dict[str, Any]:
     """Find a source-limited FK seed for the fixed target position only."""
     site = m0.obj_id(model, mujoco.mjtObj.mjOBJ_SITE, "rq_m0_tcp")
     trace = []
@@ -193,9 +350,14 @@ def solve_position_seed(model: mujoco.MjModel, data: mujoco.MjData, qids: list[i
         set_arm(model, data, q, qids)
         pos_err = data.site_xpos[site].copy() - target_pos
         pairs = relevant_contacts(model, data, robot_bodies)
+        distances = environment_distance_snapshot(model, data, pair_catalog, keep_all=True)
         trace.append({"evaluation": len(trace), "q_rad": q.tolist(),
                       "position_error_world_m": pos_err.tolist(),
                       "position_error_norm_m": float(np.linalg.norm(pos_err)),
+                      "minimum_robot_bottle_distance_m": distances["by_category"]["robot_bottle"]["minimum_signed_distance_m"],
+                      "minimum_robot_table_distance_m": distances["by_category"]["robot_table"]["minimum_signed_distance_m"],
+                      "minimum_pair": distances["minimum_pair"],
+                      "pairs_below_clearance": distances["pairs_below_clearance"],
                       "active_relevant_contacts": pairs})
         return pos_err / 0.005
 
@@ -204,10 +366,15 @@ def solve_position_seed(model: mujoco.MjModel, data: mujoco.MjData, qids: list[i
                          xtol=1e-11, ftol=1e-11, gtol=1e-11)
     set_arm(model, data, opt.x, qids)
     err = data.site_xpos[site].copy() - target_pos
+    distances = environment_distance_snapshot(model, data, pair_catalog, keep_all=True)
     return {"success": bool(opt.success), "message": str(opt.message),
             "nfev": int(opt.nfev), "joint_pose_rad": opt.x.tolist(),
             "position_error_world_m": err.tolist(),
             "position_error_norm_m": float(np.linalg.norm(err)),
+            "exact_environment_distances": distances,
+            "collision_objective_used": False,
+            "exact_environment_collision_free": all(row["signed_distance_m"] > 0.0
+                                                      for row in distances["all_pairs"]),
             "active_relevant_contacts": relevant_contacts(model, data, robot_bodies),
             "trace": trace}
 
@@ -237,50 +404,32 @@ def state_metrics(model: mujoco.MjModel, data: mujoco.MjData, target_pos: np.nda
 
 def exact_environment_distances(model: mujoco.MjModel, data: mujoco.MjData,
                                 robot_bodies: set[str], limit: int = 24) -> dict[str, Any]:
-    robot_geoms = [g for g in range(model.ngeom)
-                   if name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) in robot_bodies
-                   and (int(model.geom_contype[g]) != 0 or int(model.geom_conaffinity[g]) != 0)]
-    env_geoms = [g for g in range(model.ngeom)
-                 if name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])).startswith("m0_table")
-                 or name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) == "m0_bottle"]
-    distances = []
-    segment = np.zeros(6, dtype=np.float64)
-    for rg in robot_geoms:
-        rb = name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[rg]))
-        for eg in env_geoms:
-            eb = name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[eg]))
-            if eb == "m0_bottle":
-                category = "robot_bottle"
-            else:
-                category = "robot_table"
-            distance = float(mujoco.mj_geomDistance(model, data, rg, eg, 1.0, segment))
-            distances.append({"category": category, "robot_geom_id": rg,
-                              "robot_geom": name(model, mujoco.mjtObj.mjOBJ_GEOM, rg),
-                              "robot_body": rb, "environment_geom_id": eg,
-                              "environment_geom": name(model, mujoco.mjtObj.mjOBJ_GEOM, eg),
-                              "environment_body": eb, "signed_distance_m": distance,
-                              "nearest_segment_world_m": segment.astype(float).tolist()})
-    distances.sort(key=lambda row: row["signed_distance_m"])
+    pair_catalog = environment_pair_catalog(model, robot_bodies)
+    snapshot = environment_distance_snapshot(model, data, pair_catalog, keep_all=True)
+    distances = snapshot["all_pairs"]
     summary = {}
     for category in ("robot_bottle", "robot_table"):
         items = [x for x in distances if x["category"] == category]
         summary[category] = {"minimum_signed_distance_m": items[0]["signed_distance_m"] if items else None,
-                             "nearest_pairs": items[:limit]}
+                             "nearest_pairs": items[:limit],
+                             "pairs_below_clearance": [x for x in items
+                                                       if x["signed_distance_m"] < COLLISION_CLEARANCE_M]}
     pads = [m0.obj_id(model, mujoco.mjtObj.mjOBJ_GEOM, n) for n in
             ("rq_left_pad1", "rq_left_pad2", "rq_right_pad1", "rq_right_pad2")]
-    bottle_geoms = [g for g in env_geoms if name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) == "m0_bottle"]
+    bottle_geoms = [g for g in range(model.ngeom)
+                    if name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g])) == "m0_bottle"]
     pad_distances = []
     for pg in pads:
         for bg in bottle_geoms:
-            distance = float(mujoco.mj_geomDistance(model, data, pg, bg, 1.0, segment))
+            distance, diagnostic = robust_geom_distance(model, data, pg, bg)
             pad_distances.append({"pad_geom_id": pg, "pad_geom": name(model, mujoco.mjtObj.mjOBJ_GEOM, pg),
                                   "bottle_geom_id": bg, "bottle_geom": name(model, mujoco.mjtObj.mjOBJ_GEOM, bg),
-                                  "signed_distance_m": distance,
-                                  "nearest_segment_world_m": segment.astype(float).tolist()})
+                                  "signed_distance_m": distance, **diagnostic})
     pad_distances.sort(key=lambda row: row["signed_distance_m"])
     summary["pad_to_bottle"] = {"minimum_signed_distance_m": pad_distances[0]["signed_distance_m"] if pad_distances else None,
                                 "all_pairs": pad_distances}
-    return summary
+    return {**summary, "all_pairs": distances,
+            "pairs_below_clearance": snapshot["pairs_below_clearance"]}
 
 
 def candidate_xml(base_model: mujoco.MjModel, base_xml: Path, output_dir: Path) -> tuple[Path, dict[str, Any]]:
@@ -291,19 +440,28 @@ def candidate_xml(base_model: mujoco.MjModel, base_xml: Path, output_dir: Path) 
 
 def interp_collision_check(model: mujoco.MjModel, data: mujoco.MjData, qids: list[int],
                            qa: np.ndarray, qb: np.ndarray, robot_bodies: set[str],
-                           segment: str, samples: int = 21) -> dict[str, Any]:
+                           pair_catalog: list[dict[str, Any]], segment: str,
+                           samples: int = 21) -> dict[str, Any]:
     points = []
     for alpha in np.linspace(0.0, 1.0, samples):
         q = qa + alpha * (qb - qa)
         set_arm(model, data, q, qids)
         pairs = relevant_contacts(model, data, robot_bodies)
+        distances = environment_distance_snapshot(model, data, pair_catalog, keep_all=True)
         disallowed = [p for p in pairs if not p["allowed_planted_floor_contact"] and
                       (p["distance_m"] < 0.0 or (p["kind"] == "bottle" and p["distance_m"] <= 0.0))]
         points.append({"fraction": float(alpha), "q_rad": q.tolist(),
                        "active_relevant_contacts": pairs,
-                       "penetrating_unintended_contacts": disallowed})
+                       "minimum_robot_bottle_distance_m": distances["by_category"]["robot_bottle"]["minimum_signed_distance_m"],
+                       "minimum_robot_table_distance_m": distances["by_category"]["robot_table"]["minimum_signed_distance_m"],
+                       "minimum_pair": distances["minimum_pair"],
+                       "pairs_below_clearance": distances["pairs_below_clearance"],
+                       "penetrating_unintended_contacts": disallowed,
+                       "distance_clear": all(row["signed_distance_m"] > 0.0
+                                             for row in distances["all_pairs"])})
     return {"segment": segment, "samples": points,
-            "pass": not any(p["penetrating_unintended_contacts"] for p in points)}
+            "pass": not any(p["penetrating_unintended_contacts"] or not p["distance_clear"]
+                            for p in points)}
 
 
 def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str, Any], canonical,
@@ -325,17 +483,23 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
     qids, jids, lower, upper = m0.arm_metadata(model, ident)
     q0 = data.qpos[qids].copy()
     robot_bodies = smoke.robot_body_names(model)
+    pair_catalog = environment_pair_catalog(model, robot_bodies)
     initial_contacts = smoke.describe_contacts(model, data, robot_bodies)
+    initial_distances = environment_distance_snapshot(model, data, pair_catalog, keep_all=True)
     initial_source_ranges, _ = m0.all_limited_joint_checks(model, data,
         {k: v["velocity"] for k, v in ident["urdf_joint_limits"].items()
          if math.isfinite(v["velocity"]) and v["velocity"] > 0})
     initial_robot_table = [c for c in initial_contacts["all_contacts"]
                            if (c["body1"] in robot_bodies and c["body2"].startswith("m0_table")) or
                            (c["body2"] in robot_bodies and c["body1"].startswith("m0_table"))]
-    if initial_contacts["robot_self_contacts"] or initial_contacts["robot_bottle_contacts"] or initial_robot_table:
-        return {"index": index, "configuration": config, "status": "FAIL_INITIAL_CLEARANCE",
+    initial_environment_overlap = [row for row in initial_distances["all_pairs"]
+                                   if row["signed_distance_m"] <= 0.0]
+    if (initial_contacts["robot_self_contacts"] or initial_contacts["robot_bottle_contacts"] or
+            initial_robot_table or initial_environment_overlap):
+        return {"candidate_index": index, "configuration": config, "status": "FAIL_INITIAL_CLEARANCE",
                 "model_path": str(variant_path), "model_sha256": sha256(variant_path),
                 "initial_contacts": initial_contacts, "initial_robot_table_contacts": initial_robot_table,
+                "initial_environment_overlaps": initial_environment_overlap,
                 "initial_joint_limit_violations": initial_source_ranges,
                 "exclusion": exception}
 
@@ -359,18 +523,33 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
     # neutral-seed solve, then derive a position-only FK seed for a second,
     # collision-aware full-pose solve at the exact same target.
     pre_neutral = solve_pose(model, data, qids, lower, upper, q0.copy(),
-                             pre_target, target_rot, robot_bodies,
+                             pre_target, target_rot, robot_bodies, pair_catalog,
                              "OPEN_PREGRASP_FROM_CLEAR_NEUTRAL")
     position_seed = solve_position_seed(model, data, qids, lower, upper, q0.copy(),
-                                        pre_target, robot_bodies)
+                                        pre_target, robot_bodies, pair_catalog)
     pre_position = solve_pose(model, data, qids, lower, upper,
                               np.asarray(position_seed["joint_pose_rad"]),
-                              pre_target, target_rot, robot_bodies,
+                              pre_target, target_rot, robot_bodies, pair_catalog,
                               "OPEN_PREGRASP_FROM_POSITION_SEED")
     pre_orientation = solve_pose(model, data, qids, lower, upper,
                                  np.asarray(orient["q_rad"]),
-                                 pre_target, target_rot, robot_bodies,
+                                 pre_target, target_rot, robot_bodies, pair_catalog,
                                  "OPEN_PREGRASP_FROM_ORIENTATION_SEED")
+    source_seed_solutions = {}
+    for fraction in (0.25, 0.75):
+        seed = lower + fraction * (upper - lower)
+        source_seed_solutions[f"source_range_{int(fraction * 100)}pct"] = solve_pose(
+            model, data, qids, lower, upper, seed, pre_target, target_rot,
+            robot_bodies, pair_catalog,
+            f"OPEN_PREGRASP_FROM_SOURCE_RANGE_{int(fraction * 100)}PCT_SEED")
+    sobol_points = qmc.Sobol(d=len(lower), scramble=False).random_base2(m=4)[1:9]
+    for seed_index, sample in enumerate(sobol_points):
+        seed = lower + sample * (upper - lower)
+        seed = np.clip(seed, lower + 1e-8, upper - 1e-8)
+        source_seed_solutions[f"sobol_source_valid_{seed_index:02d}"] = solve_pose(
+            model, data, qids, lower, upper, seed, pre_target, target_rot,
+            robot_bodies, pair_catalog,
+            f"OPEN_PREGRASP_FROM_SOBOL_SOURCE_VALID_SEED_{seed_index:02d}")
 
     def pre_score(solution: dict[str, Any]) -> tuple[int, int, float]:
         return (not solution["pose_gate_pass"], not solution["collision_gate_pass"],
@@ -378,27 +557,30 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
                 solution["orientation_error_norm_rad"] / MAX_ORIENTATION_ERROR_RAD +
                 solution["collision_cost_m"] / COLLISION_CLEARANCE_M)
 
-    pre = min((pre_neutral, pre_position, pre_orientation), key=pre_score)
+    pre = min((pre_neutral, pre_position, pre_orientation, *source_seed_solutions.values()),
+              key=pre_score)
     grasp = None
     lift = None
     corridor = []
     pad_alignment = None
     if pre["pose_gate_pass"] and pre["collision_gate_pass"]:
         grasp = solve_pose(model, data, qids, lower, upper, np.asarray(pre["joint_pose_rad"]),
-                           bottle_target, target_rot, robot_bodies, "OPEN_GRASP_CENTER")
+                           bottle_target, target_rot, robot_bodies, pair_catalog,
+                           "OPEN_GRASP_CENTER")
     if grasp and grasp["pose_gate_pass"] and grasp["collision_gate_pass"]:
         pad_alignment = state_metrics(model, data, bottle_target, target_rot, robot_bodies)
         pad_alignment["exact_compiled_geom_distances"] = exact_environment_distances(model, data, robot_bodies)
         lift = solve_pose(model, data, qids, lower, upper, np.asarray(grasp["joint_pose_rad"]),
-                          lift_target, target_rot, robot_bodies, "OPEN_LIFT_30MM")
+                          lift_target, target_rot, robot_bodies, pair_catalog,
+                          "OPEN_LIFT_30MM")
     if grasp and grasp["pose_gate_pass"] and grasp["collision_gate_pass"] and lift and lift["pose_gate_pass"] and lift["collision_gate_pass"]:
         corridor = [
             interp_collision_check(model, data, qids, q0, np.asarray(pre["joint_pose_rad"]), robot_bodies,
-                                   "HOME_TO_PREGRASP_OPEN"),
+                                   pair_catalog, "HOME_TO_PREGRASP_OPEN"),
             interp_collision_check(model, data, qids, np.asarray(pre["joint_pose_rad"]), np.asarray(grasp["joint_pose_rad"]),
-                                   robot_bodies, "PREGRASP_TO_GRASP_OPEN"),
+                                   robot_bodies, pair_catalog, "PREGRASP_TO_GRASP_OPEN"),
             interp_collision_check(model, data, qids, np.asarray(grasp["joint_pose_rad"]), np.asarray(lift["joint_pose_rad"]),
-                                   robot_bodies, "GRASP_TO_LIFT_30MM_OPEN"),
+                                   robot_bodies, pair_catalog, "GRASP_TO_LIFT_30MM_OPEN"),
         ]
         for segment in corridor:
             segment["minimum_environment_clearance_samples"] = []
@@ -416,6 +598,7 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
                  "position_only_fk_seed": position_seed,
                  "pregrasp_from_position_seed": pre_position,
                  "pregrasp_from_orientation_seed": pre_orientation,
+                 "pregrasp_from_source_valid_multistart": source_seed_solutions,
                  "grasp": grasp, "lift_30mm": lift}
     path_pass = bool(corridor) and all(item["pass"] for item in corridor)
     gripper_range = model.jnt_range[m0.obj_id(model, mujoco.mjtObj.mjOBJ_JOINT, "rq_right_driver_joint")].tolist()
@@ -449,7 +632,8 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
                                    "right_arm_joint_ranges_rad": {n: model.jnt_range[j].astype(float).tolist()
                                                                    for n, j in zip(m0.ARM, jids)},
                                    "source_joint_limit_violations": initial_source_ranges,
-                                   "initial_contacts": initial_contacts},
+                                   "initial_contacts": initial_contacts,
+                                   "initial_environment_distances": initial_distances},
         "grasp_frame_definition": {
             "tcp": "compiled Robotiq pad-center midpoint site rq_m0_tcp",
             "target_point_source": "compiled canonical bottle_body collision geom center",
@@ -505,12 +689,17 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     repo = Path(__file__).resolve().parents[2]
     result: dict[str, Any] = {
-        "experiment": "Bounded source-limited X2 + Robotiq static approach reachability; no bottle dynamics",
+        "experiment": "Bounded source-limited X2 + Robotiq static reachability with signed-distance-aware IK; no bottle dynamics",
         "status": "BLOCKED", "runner": {"path": str(Path(__file__).resolve()), "sha256": sha256(Path(__file__).resolve()),
                                             "robot_sim_head": subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
                                             "command": sys.argv},
         "identity": {}, "candidates": [],
-        "budget": {"maximum_distinct_configurations": 2, "configurations": STATION_CANDIDATES},
+        "solver": {"collision_objective": "per-pair signed distance residual evaluated at every least_squares iteration",
+                   "clearance_residual_margin_m": COLLISION_CLEARANCE_M,
+                   "native_zero_witness_fallback": "cross-check only when native mj_geomDistance returns zero with a nondegenerate witness segment",
+                   "final_clearance_gate": "every collision-compatible robot/table and robot/bottle pair has signed distance > 0 and no disallowed active contacts",
+                   "additional_seed_set": "neutral, position-only, orientation-only, and 25/75 percent source-range joint seeds"},
+        "budget": {"maximum_distinct_configurations": len(STATION_CANDIDATES), "configurations": STATION_CANDIDATES},
         "physics_run": False,
     }
     try:
