@@ -1,9 +1,12 @@
+from pathlib import Path
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import g1_dfq_grasp_core as core
 
 
