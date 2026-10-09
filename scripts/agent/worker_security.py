@@ -11,6 +11,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
+from urllib.parse import urlsplit
 
 
 BASE_WORKER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -33,6 +34,35 @@ def codex_permission_profile_overrides(*, read_only: bool) -> tuple[str, ...]:
     )
 
 
+def _model_proxy_environment(source: Mapping[str, str]) -> dict[str, str]:
+    proxy_environment: dict[str, str] = {}
+    for scheme in ("http", "https"):
+        names = (f"{scheme.upper()}_PROXY", f"{scheme}_proxy")
+        values = {source[name] for name in names if source.get(name)}
+        if not values:
+            continue
+        if len(values) != 1:
+            raise RuntimeError("conflicting worker model proxy settings")
+        value = values.pop()
+        try:
+            parsed = urlsplit(value)
+            _ = parsed.port
+        except ValueError as exc:
+            raise RuntimeError("worker model proxy URL is invalid") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or "@" in parsed.netloc
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or any(ord(character) < 0x20 for character in value)
+        ):
+            raise RuntimeError("worker model proxy must be credential-free HTTP(S)")
+        proxy_environment.update({name: value for name in names})
+    return proxy_environment
+
+
 @dataclass(frozen=True)
 class CodexRuntime:
     host_executable: Path
@@ -51,6 +81,7 @@ def build_worker_environment(
     *,
     path_entries: Sequence[str] = (),
     ambient: Mapping[str, str] | None = None,
+    include_model_proxy: bool = False,
 ) -> dict[str, str]:
     """Build an allowlisted environment; coordinator secrets never enter it."""
     source = os.environ if ambient is None else ambient
@@ -78,6 +109,8 @@ def build_worker_environment(
         value = source.get(name)
         if value and "\x00" not in value and "\n" not in value:
             environment[name] = value
+    if include_model_proxy:
+        environment.update(_model_proxy_environment(source))
     return environment
 
 
@@ -128,6 +161,21 @@ def worker_profile_owns_session(codex_home: Path, session_id: str) -> bool:
         return marker.read_text(encoding="utf-8").strip() == session_id
     except (OSError, UnicodeDecodeError):
         return False
+
+
+def prepare_codex_workspace(workspace: Path) -> None:
+    """Create Codex metadata mountpoints inside the disposable task worktree."""
+    if workspace.is_symlink() or not workspace.is_dir():
+        raise RuntimeError("Codex workspace is not a real directory")
+    for name in (".agents", ".codex"):
+        path = workspace / name
+        if path.is_symlink():
+            raise RuntimeError("Codex workspace metadata path is a symlink")
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_dir():
+                raise RuntimeError("Codex workspace metadata path is not a directory")
 
 
 def record_worker_session(codex_home: Path, session_id: str) -> None:
@@ -242,6 +290,7 @@ def build_isolated_command(
     workspace_write_roots: Sequence[Path] | None = None,
     runtime: CodexRuntime | None = None,
     bubblewrap: str | None = None,
+    include_model_proxy: bool = False,
 ) -> tuple[list[str], dict[str, str]]:
     """Build a WSL/Linux namespace with only the task, Codex profile, and I/O mounts."""
     if not sys.platform.startswith("linux"):
@@ -275,7 +324,10 @@ def build_isolated_command(
             resolved_write_roots.append((resolved_path, f"/home/{relative}"))
 
     safe_path_entries = (*runtime.path_entries,)
-    environment = build_worker_environment(path_entries=safe_path_entries)
+    environment = build_worker_environment(
+        path_entries=safe_path_entries,
+        include_model_proxy=include_model_proxy,
+    )
     command_line = [
         executable,
         "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",

@@ -1227,6 +1227,7 @@ class LocalCodexExecutor:
         schema = Path(__file__).with_name("task_result.schema.json")
         result_path = Path(packet.result_path)
         workspace = Path(packet.workspace.path)
+        worker_security.prepare_codex_workspace(workspace)
         state_directory = result_path.parent.parent
         codex_home = worker_security.prepare_worker_codex_home(
             state_directory, packet.issue_number, profile="writer",
@@ -1265,6 +1266,7 @@ class LocalCodexExecutor:
                     if packet.workspace_write_roots is not None else None
                 ),
                 runtime=runtime,
+                include_model_proxy=True,
             )
             process = subprocess.Popen(
                 isolated_command,
@@ -1325,6 +1327,7 @@ class LocalCodexExecutor:
 
     def review(self, issue: Issue, workspace: Path, branch: str, report_path: Path) -> ReviewResult | None:
         schema = Path(__file__).with_name("task_review.schema.json")
+        worker_security.prepare_codex_workspace(workspace)
         report_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         state_directory = report_path.parent.parent
         codex_home = worker_security.prepare_worker_codex_home(
@@ -1352,6 +1355,7 @@ class LocalCodexExecutor:
                 output_directory=output_directory,
                 read_only=True,
                 runtime=runtime,
+                include_model_proxy=True,
             )
             result = subprocess.run(
                 isolated_command,

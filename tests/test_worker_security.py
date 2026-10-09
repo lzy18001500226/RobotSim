@@ -57,6 +57,62 @@ class WorkerSecurityTests(unittest.TestCase):
             self.assertNotIn(name, environment)
         self.assertNotIn("/sensitive/bin", environment["PATH"])
 
+    def test_only_credential_free_model_proxies_can_enter_codex_environment(self) -> None:
+        ambient = {
+            "HTTPS_PROXY": "http://proxy.example.invalid:3128",
+            "https_proxy": "http://proxy.example.invalid:3128",
+            "HTTP_PROXY": "http://proxy.example.invalid:3128",
+            "http_proxy": "http://proxy.example.invalid:3128",
+            "NO_PROXY": "example.invalid",
+            "GH_TOKEN": "synthetic-gh-secret",
+        }
+
+        environment = worker_security.build_worker_environment(
+            ambient=ambient, include_model_proxy=True,
+        )
+
+        for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            self.assertEqual(environment[name], "http://proxy.example.invalid:3128")
+        self.assertNotIn("NO_PROXY", environment)
+        self.assertNotIn("GH_TOKEN", environment)
+
+        with self.assertRaisesRegex(RuntimeError, "credential-free"):
+            worker_security.build_worker_environment(
+                ambient={"HTTPS_PROXY": "http://user:secret@proxy.example.invalid:3128"},
+                include_model_proxy=True,
+            )
+        with self.assertRaisesRegex(RuntimeError, "conflicting"):
+            worker_security.build_worker_environment(
+                ambient={
+                    "HTTPS_PROXY": "http://proxy-a.example.invalid:3128",
+                    "https_proxy": "http://proxy-b.example.invalid:3128",
+                },
+                include_model_proxy=True,
+            )
+
+    def test_codex_workspace_metadata_mountpoints_are_safe_and_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            workspace.mkdir()
+            project_config = workspace / ".codex"
+            project_config.mkdir()
+            config = project_config / "config.toml"
+            config.write_text("project_setting = true\n", encoding="utf-8")
+
+            worker_security.prepare_codex_workspace(workspace)
+
+            self.assertTrue((workspace / ".agents").is_dir())
+            self.assertEqual(config.read_text(encoding="utf-8"), "project_setting = true\n")
+
+    def test_codex_workspace_metadata_mountpoints_reject_non_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            workspace.mkdir()
+            (workspace / ".agents").write_text("not a directory", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "not a directory"):
+                worker_security.prepare_codex_workspace(workspace)
+
     def test_codex_profile_copies_only_auth_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
