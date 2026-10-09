@@ -26,3 +26,7 @@ cd /home/lzy18001500226/robotsim-issue46-x2-robotiq-m0-20261009 && MUJOCO_GL=egl
 ```
 
 The script records the exact source pins, model and mesh hashes, runner hash, base pose, mount transform, model settings, initial contacts, head-pose scan, IK residuals, and failure stage in each output `result.json`. Do not interpret a static model screenshot or successful compilation as a grasp result.
+
+## 2026-10-09 Station-Recovery Follow-up
+
+The later mounted dynamic smoke and bounded two-configuration reachability checks are documented in [`issue46_x2_robotiq_m0_station_recovery_20261009.md`](issue46_x2_robotiq_m0_station_recovery_20261009.md). They stop before bottle dynamics because the mounted OPEN/CLOSE cycle has Robotiq coupler hard-limit excursions and neither collision-aware pregrasp passes. Reproduction commands and durable evidence are in the station-recovery report and its linked packet; this historical baseline is unchanged.

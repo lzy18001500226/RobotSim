@@ -1,5 +1,7 @@
 # Issue #46: X2 + Robotiq 2F-85 M0
 
+> Historical initial preflight report. The authorized 2026-10-09 follow-up supersedes its statement that dynamics were not run: a mounted OPEN/CLOSE smoke was executed under one exact-pair `SIMULATION_ONLY` exclusion. See [station recovery results](issue46_x2_robotiq_m0_station_recovery_20261009.md) and [reproduction commands](issue46_x2_robotiq_m0_station_recovery_20261009_reproduce.md). This historical report and its evidence remain unchanged below.
+
 Experiment outcome: FAIL at static preflight; physical manipulation was BLOCKED before physics. This is an isolated `SIMULATION_ONLY` experiment. It is not an original OmniPicker result or a hardware-validated X2 tool configuration.
 
 ## Outcome

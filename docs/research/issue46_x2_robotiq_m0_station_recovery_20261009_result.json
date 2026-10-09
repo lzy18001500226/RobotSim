@@ -1,0 +1,101 @@
+{
+  "experiment": "Issue #46 X2 + Robotiq SIMULATION_ONLY M0 station recovery",
+  "overall_status": "BLOCKED_BEFORE_BOTTLE_DYNAMICS",
+  "runtime_head": "3ed4c3aeace7907d4c7a3d2c938f3727dbe3b1c2",
+  "source_identity": {
+    "x2_repository": "AgibotTech/agibot_x2_urdf",
+    "x2_commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+    "x2_mjcf": "X2_URDF-v1.4.0/X2-Ultra.xml",
+    "x2_mjcf_sha256": "20119fc61f43812daf2e72182a5c9e3b255f274e2e8da4c91c429f203093b292",
+    "menagerie_commit": "0059d4335f8156206f63a35662313385f7ad6d74",
+    "robotiq_model": "robotiq_2f85/2f85.xml",
+    "robotiq_model_sha256": "d48aca5f9151798ffd38111ce4e8b2081f3ec2d4f525161b33643451580010de",
+    "python": "3.10.12",
+    "mujoco_python": "3.3.6",
+    "mujoco_native": "3.3.6",
+    "mujoco_native_sha256": "b9173509d0c282a9b24b7f5825a40177a9967df0cd6395a9dc39522196e44495",
+    "MUJOCO_GL": "egl"
+  },
+  "gates": {
+    "source_mounted_head_torso_comparison": {
+      "status": "PASS",
+      "pair": ["head_pitch_link", "torso_link"],
+      "source_distance_m": -0.007112461424559683,
+      "mounted_distance_m": -0.007112461424559683,
+      "world_transform_max_abs_delta": 0.0,
+      "source_explicit_exclusion": false
+    },
+    "isolated_contact_exception": {
+      "status": "PASS_SIMULATION_ONLY",
+      "excluded_pair": ["head_pitch_link", "torso_link"],
+      "exactly_one_added": true,
+      "other_model_changes": false,
+      "initial_contacts_after_exclusion": 0,
+      "model_sha256_candidate_1": "815a89f421871f396760391d11a50d165b189965e8204606dbb76b0eb66bc1b3",
+      "model_sha256_candidate_2": "878dd844a27359335d0360de902a014ff763a2ae048dd72464fbb73abd1def72"
+    },
+    "mounted_dynamic_open_close": {
+      "status": "PARTIAL_FUNCTIONAL_PASS_LIMIT_AUDIT_FAIL",
+      "steps": 1900,
+      "duration_s": 1.9,
+      "pad_gap_open_m": 0.0931626821722812,
+      "pad_gap_closed_m": 0.014690997223188616,
+      "pad_gap_reopened_m": 0.08624583481931936,
+      "peak_gripper_actuator_force": 0.6767881828931763,
+      "gripper_force_limit_abs": 5.0,
+      "robot_self_contact_samples": 0,
+      "robot_bottle_contact_samples": 0,
+      "bottle_qpos_writes_after_start": 0,
+      "velocity_limit_violations": 0,
+      "hard_limit_violations": {
+        "rq_right_coupler_joint": {
+          "range_rad": [-1.57, 0.0],
+          "first_step": 1,
+          "maximum_qpos_rad": 0.000150054300814523
+        },
+        "rq_left_coupler_joint": {
+          "range_rad": [-1.57, 0.0],
+          "first_step": 1,
+          "maximum_qpos_rad": 0.0001499570229869463
+        }
+      }
+    },
+    "source_limited_pregrasp_approach": {
+      "status": "FAIL",
+      "candidate_count": 2,
+      "candidate_1": {
+        "base_m": [-0.08, 0.0, 0.68],
+        "target_position_m": [0.3, -0.12, 0.8775],
+        "best_full_pose_position_error_m": 0.0190363707338593,
+        "best_full_pose_orientation_error_rad": 1.0229332965429088,
+        "position_only_fk_error_m": 4.1267388945129436e-14,
+        "largest_position_seed_table_penetration_m": -0.0655568222973264
+      },
+      "candidate_2": {
+        "base_m": [-0.08, 0.08, 0.68],
+        "target_position_m": [0.3, -0.12, 0.8775],
+        "best_clear_full_pose_position_error_m": 0.23463211377345697,
+        "best_clear_full_pose_orientation_error_rad": 0.4417710545687854,
+        "position_only_fk_error_m": 2.0206364052201326e-16,
+        "largest_position_seed_table_penetration_m": -0.07639301281208222
+      },
+      "bottle_physics_run": false
+    },
+    "bilateral_bottle_contact": "NOT_RUN",
+    "load_transfer_and_30mm_lift": "NOT_RUN",
+    "transfer_and_physical_release": "NOT_RUN"
+  },
+  "evidence": {
+    "mounted_smoke_dir_windows": "C:\\Users\\HP\\Desktop\\Robot\\reviews\\issue-46-x2-single-hand\\robotiq-x2-head-contact-smoke-20261009\\attempt_04",
+    "reachability_run_01_windows": "C:\\Users\\HP\\Desktop\\Robot\\reviews\\issue-46-x2-single-hand\\robotiq-x2-reachability-20261009\\run_01",
+    "reachability_run_02_windows": "C:\\Users\\HP\\Desktop\\Robot\\reviews\\issue-46-x2-single-hand\\robotiq-x2-reachability-20261009\\run_02",
+    "reachability_run_03_windows": "C:\\Users\\HP\\Desktop\\Robot\\reviews\\issue-46-x2-single-hand\\robotiq-x2-reachability-20261009\\run_03",
+    "final_packet_windows": "C:\\Users\\HP\\Desktop\\Robot\\reviews\\issue-46-x2-single-hand\\robotiq-x2-m0-20261009-final"
+  },
+  "runner_sha256": {
+    "mounted_smoke": "92d6b5d4f610fcb8574f0527309d8326df6bc1c4b88de45e9fc2b3b1c2b8e4c1",
+    "reachability_run_01_initial_seed": "0602504411b3d4c8cf6cf963d679ba9e3565a33d19f5bb390b26391d20076fdf",
+    "reachability_run_02_neutral_seed": "fd5cc76868a4d1dc989c05493bb8c301c82ee31f4a2b738a4f7fc03334b36e94",
+    "reachability_run_03_position_fk_seed": "f2f5ec36f6efbde998f076407e8d2174723f39f24c5b789d7e0aa765307cb933"
+  }
+}
