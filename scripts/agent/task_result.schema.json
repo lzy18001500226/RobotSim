@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "root_cause", "summary", "validation"],
+  "properties": {
+    "outcome": {"type": "string", "enum": ["completed", "blocked"]},
+    "root_cause": {"type": ["string", "null"], "maxLength": 240},
+    "summary": {"type": "string", "maxLength": 1000},
+    "validation": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {"type": "string", "maxLength": 300}
+    }
+  }
+}

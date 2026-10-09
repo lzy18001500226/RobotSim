@@ -57,6 +57,7 @@ When notifications are enabled, configure:
 1. Create an AgentMail API key in the AgentMail account that owns the inbox.
 2. Store the AgentMail key and, if needed, GitHub token with Issue/PR comment read/write access in the operating system's secret manager. Expose them as `AGENTMAIL_API_KEY` and optionally `GH_TOKEN` (or `GITHUB_TOKEN`) to Codex, or use an already-authenticated GitHub CLI. The notifier captures `gh auth token` without printing it. Do not put a credential in a shell command, plaintext shell startup file, repository file, or chat.
 3. Set `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and set `ROBOTSIM_NOTIFY_TO` to the maintainer's normal QQ mailbox through the user's local environment/secret manager.
+   Run `python3 scripts/agent/notify_task.py config-preflight` to check that the three AgentMail setting names are present. The command reports missing names only and never prints values.
 4. Set `ROBOTSIM_LOCAL_STOP_HOOK=1` in the local Codex environment. Restart local Codex so it receives the configured environment. Trust the actual RobotSim checkout, run `/hooks`, and verify that `Stop` and `PreToolUse` are active.
 
 ### Codex Cloud setup
@@ -109,7 +110,7 @@ The notifier re-runs the gate immediately before writing GitHub. On a failed gat
 
 Use a concise summary. `evidence` must contain durable public HTTPS references; local paths, private/local hosts, and credential-bearing query/fragment URLs are rejected. Recognized credentials and local filesystem paths in text fields are redacted before persistence. The notifier sends only the structured event, never surrounding final-answer text or a transcript. Local-only Windows/WSL paths are not durable evidence; if useful, describe the diagnostic without the path.
 
-GitHub is the canonical record. If `pr_number` is present, the notifier verifies that PR in the canonical RobotSim repository, requires the PR description to close the originating Issue, and posts the event to that PR's conversation. Otherwise it posts to the Issue number parsed from `task_id`. The closing reference lets someone starting from the Issue discover the PR and then recover the closeout. Comments contain stable hidden markers:
+GitHub is the canonical record. If `pr_number` is present, the notifier verifies that PR in the canonical RobotSim repository and checks its current branch and head SHA. A `completed` event also requires the PR description to close the originating Issue and is posted to the PR conversation. A non-completed event requires a visible reference to the originating Issue and is posted on that Issue, avoiding a closing reference that could close work which is still blocked or deferred. Without `pr_number`, the event is posted to the Issue number parsed from `task_id`. Comments contain stable hidden markers:
 
 ```html
 <!-- robotsim-task-closeout:v1:sha256:<event-hash>:<payload-digest> -->

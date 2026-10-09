@@ -333,6 +333,32 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertIn("ROBOTSIM_NOTIFY_TO", result.message)
         urlopen.assert_not_called()
 
+    def test_config_preflight_reports_only_missing_setting_names(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch.dict("os.environ", {"AGENTMAIL_INBOX_ID": "synthetic-inbox"}, clear=True),
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = notify_task.main(["config-preflight"])
+        report = json.loads(stdout.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(report, {
+            "ready": False,
+            "missing_settings": ["AGENTMAIL_API_KEY", "ROBOTSIM_NOTIFY_TO"],
+        })
+        self.assertNotIn("synthetic-inbox", stdout.getvalue())
+
+    def test_config_preflight_success_never_exposes_setting_values(self) -> None:
+        settings = {
+            "AGENTMAIL_API_KEY": "synthetic-inert-value",
+            "AGENTMAIL_INBOX_ID": "synthetic-inbox",
+            "ROBOTSIM_NOTIFY_TO": "synthetic-recipient",
+        }
+        self.assertEqual(
+            notify_task.config_preflight(settings),
+            {"ready": True, "missing_settings": []},
+        )
+
     def test_repeated_task_event_is_deduplicated_locally(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = self._settings(directory)
@@ -606,6 +632,34 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertEqual(counts["github_post"], 0)
         self.assertEqual(counts["mail_post"], 0)
 
+    def test_noncompleted_pr_closeout_is_recorded_on_issue_without_autoclose(self) -> None:
+        transport, requests, counts = self._mock_closeout_transport(pr_body="Refs #44")
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify_task, "_open_request", side_effect=transport):
+                result = notify_task.persist_task_closeout(
+                    self._closeout_event(status="blocked"),
+                    environ=self._settings(directory),
+                )
+        self.assertEqual(result.state, "persisted")
+        self.assertEqual(counts["github_post"], 1)
+        self.assertTrue(any("/pulls/42" in request.full_url for request in requests))
+        post = next(request for request in requests if request.get_method() == "POST")
+        self.assertTrue(post.full_url.endswith("/issues/44/comments"))
+        self.assertEqual(notify_task._closeout_target(self._closeout_event(status="blocked")), (44, "Issue"))
+
+    def test_noncompleted_pr_closeout_requires_origin_issue_reference(self) -> None:
+        transport, _, counts = self._mock_closeout_transport(pr_body="Unrelated PR description")
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify_task, "_open_request", side_effect=transport):
+                result = notify_task.persist_task_closeout(
+                    self._closeout_event(status="blocked"),
+                    environ=self._settings(directory),
+                )
+        self.assertEqual(result.state, "failed")
+        self.assertIn("must reference the originating Issue", result.message)
+        self.assertEqual(counts["github_post"], 0)
+        self.assertEqual(counts["mail_post"], 0)
+
     def test_pr_closing_reference_validation_accepts_only_real_canonical_references(self) -> None:
         task_id = "issue-44-unified-task-closeout"
         accepted_bodies = (
@@ -626,6 +680,23 @@ class NotifyTaskTests(unittest.TestCase):
         for body in rejected_bodies:
             with self.subTest(body=body):
                 self.assertFalse(notify_task._pr_closes_task_issue({"body": body}, task_id))
+
+        reference_bodies = (
+            "Refs #44",
+            "Related to lzy18001500226/RobotSim#44",
+        )
+        non_reference_bodies = (
+            "Refs someoneelse/OtherRepo#44",
+            "```text\nRefs #44\n```",
+            "Example: `Refs #44`",
+            "Refs #45",
+        )
+        for body in reference_bodies:
+            with self.subTest(reference_body=body):
+                self.assertTrue(notify_task._pr_references_task_issue({"body": body}, task_id))
+        for body in non_reference_bodies:
+            with self.subTest(non_reference_body=body):
+                self.assertFalse(notify_task._pr_references_task_issue({"body": body}, task_id))
 
     def test_pr_wrong_repository_or_fenced_example_cannot_persist_closeout(self) -> None:
         for body in ("Closes someoneelse/OtherRepo#44", "```md\nCloses #44\n```"):
@@ -1017,7 +1088,10 @@ class NotifyTaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             settings = self._settings(directory)
             settings.pop("GITHUB_TOKEN")
-            with patch.object(notify_task, "_open_request") as urlopen:
+            with (
+                patch.object(notify_task.shutil, "which", return_value=None),
+                patch.object(notify_task, "_open_request") as urlopen,
+            ):
                 result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
         self.assertEqual(result.state, "blocked")
         self.assertIn("GitHub closeout persistence unavailable", result.message)
