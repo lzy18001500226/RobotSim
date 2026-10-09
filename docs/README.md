@@ -7,6 +7,7 @@ This map identifies the documents that own RobotSim guidance.
 | [`00_PROJECT_PLAN.md`](00_PROJECT_PLAN.md) | Project goals, development phases, design principles, and non-goals | You need high-level scope or milestone context. It is not a task queue. |
 | [`adr/`](adr/) | Status-bearing architecture and environment decision records; proposals are not accepted by default | A task touches an established design boundary or proposes changing one. |
 | [`engineering/README.md`](engineering/README.md) | Repository layout, artifact discipline, runtime and validation contract | Adding runtime code, selecting a language, or deciding what evidence a change needs. |
+| [`research/`](research/) | Durable reports for bounded, isolated simulation and model investigations | Reviewing experiment outcomes and their evidence paths. |
 | [`engineering/simulation_state_contract.md`](engineering/simulation_state_contract.md) | Topology-independent simulation state, command, lifecycle, and telemetry semantics | Defining or implementing a simulation state boundary without selecting its transport. |
 | [`setup/`](setup/) | Host, WSL, Docker, and development-container setup | Setting up or diagnosing the development environment. |
 | [`setup/codex.md`](setup/codex.md) | Local/Cloud Codex boundaries, hooks, notifications, and closeout | Choosing where Codex work runs or finishing a task. |
