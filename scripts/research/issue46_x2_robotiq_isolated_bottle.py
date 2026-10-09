@@ -54,7 +54,8 @@ def bottle_body_center(canonical) -> np.ndarray:
 def build_fixture(source_xml: Path, menagerie_root: Path, canonical, out: Path,
                   pad_midpoint_offset_world_m: np.ndarray,
                   carriage_bias_compensation: bool,
-                  carriage_stiffness_scale: float) -> tuple[mujoco.MjModel, dict[str, Any]]:
+                  carriage_stiffness_scale: float,
+                  coupler_limit_activation_margin_rad: float) -> tuple[mujoco.MjModel, dict[str, Any]]:
     root = ET.parse(source_xml).getroot()
     root.find("compiler").set("meshdir", str((menagerie_root / "robotiq_2f85" / "assets").resolve()))
     option = root.find("option")
@@ -81,6 +82,12 @@ def build_fixture(source_xml: Path, menagerie_root: Path, canonical, out: Path,
     ctrlrange = "-0.02 0.10" if carriage_bias_compensation else "0 0.05"
     lift_kp = 1200.0 * carriage_stiffness_scale
     lift_kv = 70.0 * carriage_stiffness_scale ** 0.5
+    if coupler_limit_activation_margin_rad > 0.0:
+        joint_nodes = {node.get("name"): node for node in root.findall(".//joint")}
+        for name in ("left_coupler_joint", "right_coupler_joint"):
+            if name not in joint_nodes:
+                raise RuntimeError(f"Pinned gripper model has no {name}")
+            joint_nodes[name].set("margin", f"{coupler_limit_activation_margin_rad:.12g}")
     ET.SubElement(actuator, "position", {
         "name": LIFT_ACTUATOR, "joint": LIFT_JOINT,
         "kp": f"{lift_kp:.12g}", "kv": f"{lift_kv:.12g}",
@@ -132,6 +139,15 @@ def build_fixture(source_xml: Path, menagerie_root: Path, canonical, out: Path,
         "lift_actuator_effort_cap_simulation_derived_n": 25.0,
         "lift_actuator_control_range_simulation_derived_m": model.actuator_ctrlrange[
             m0.obj_id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, LIFT_ACTUATOR)].astype(float).tolist(),
+        "constraint_model_classification": (
+            "SIMULATION_ONLY coupler-limit activation margin"
+            if coupler_limit_activation_margin_rad > 0.0 else "source coupler-limit settings"
+        ),
+        "coupler_limit_activation_margin_simulation_derived_rad": coupler_limit_activation_margin_rad,
+        "coupler_joint_ranges_rad": {
+            name: model.jnt_range[m0.obj_id(model, mujoco.mjtObj.mjOBJ_JOINT, name)].astype(float).tolist()
+            for name in ("left_coupler_joint", "right_coupler_joint")
+        },
     }
 
 
@@ -444,15 +460,27 @@ def main() -> int:
                         help="diagnostic fixture-only position-servo feedforward derived from carriage qfrc_bias")
     parser.add_argument("--carriage-servo-stiffness-scale", type=float, default=1.0,
                         help="simulation-derived fixture carriage servo stiffness scale; damping scales by sqrt(scale)")
+    parser.add_argument("--coupler-limit-activation-margin-rad", type=float, default=0.0,
+                        help="SIMULATION_ONLY solver activation margin on the two Robotiq coupler limits; hard ranges stay unchanged")
     parser.add_argument("--airborne-clearance-target-m", type=float, default=0.001,
                         help="fixture carriage target for the >=1 mm bottle-airborne gate; bounded to 1-2 mm")
+    parser.add_argument("--five-mm-carriage-target-m", type=float, default=0.005,
+                        help="SIMULATION_ONLY fixture command for the 5 mm gate; bounded to 5-8 mm while the bottle gate stays 5 mm")
+    parser.add_argument("--large-lift-move-duration-s", type=float, default=0.30,
+                        help="SIMULATION_ONLY duration for 30/50 mm carriage moves; bounded to 0.3-1.0 s")
+    parser.add_argument("--thirty-mm-carriage-target-m", type=float, default=0.030,
+                        help="SIMULATION_ONLY fixture command for the 30 mm bottle gate; bounded to 30-31 mm")
+    parser.add_argument("--fifty-mm-carriage-target-m", type=float, default=0.050,
+                        help="SIMULATION_ONLY fixture command for the 50 mm bottle gate; bounded to 50-51 mm")
     parser.add_argument("--skip-physics", action="store_true")
     args = parser.parse_args()
     out = args.output_dir.resolve()
     (out / "raw").mkdir(parents=True, exist_ok=True)
     result: dict[str, Any] = {
         "experiment": "SIMULATION_ONLY Robotiq 2F-85 isolated canonical bottle grasp",
-        "acceptance_classification": "NON-ACCEPTANCE while the strict source-limit gate is failed",
+        "acceptance_classification": (
+            "SIMULATION_ONLY diagnostic; interpret physics and source-limit gates separately"
+        ),
         "status": "BLOCKED",
         "runner": {"path": str(Path(__file__).resolve()), "sha256": sha256(Path(__file__).resolve()),
                    "robot_sim_head": __import__("subprocess").check_output(
@@ -462,8 +490,18 @@ def main() -> int:
     try:
         if args.carriage_servo_stiffness_scale <= 0:
             raise ValueError("carriage servo stiffness scale must be positive")
+        if not 0.0 <= args.coupler_limit_activation_margin_rad <= 0.001:
+            raise ValueError("coupler limit activation margin must be between 0 and 0.001 rad")
         if not 0.001 <= args.airborne_clearance_target_m <= 0.002:
             raise ValueError("airborne clearance target must be between 0.001 and 0.002 m")
+        if not 0.005 <= args.five_mm_carriage_target_m <= 0.008:
+            raise ValueError("5 mm carriage target must be between 0.005 and 0.008 m")
+        if not 0.30 <= args.large_lift_move_duration_s <= 1.0:
+            raise ValueError("30/50 mm move duration must be between 0.30 and 1.0 s")
+        if not 0.030 <= args.thirty_mm_carriage_target_m <= 0.031:
+            raise ValueError("30 mm carriage target must be between 0.030 and 0.031 m")
+        if not 0.050 <= args.fifty_mm_carriage_target_m <= 0.051:
+            raise ValueError("50 mm carriage target must be between 0.050 and 0.051 m")
         native_library = Path(mujoco.__file__).resolve().parent / "libmujoco.so.3.3.6"
         result["runtime_identity"] = {
             "python": sys.version,
@@ -481,7 +519,8 @@ def main() -> int:
         model, identity = build_fixture(source, args.menagerie_root, canonical, out,
                                         np.asarray(args.pad_midpoint_offset_world_m, dtype=float),
                                         args.carriage_bias_compensation,
-                                        args.carriage_servo_stiffness_scale)
+                                        args.carriage_servo_stiffness_scale,
+                                        args.coupler_limit_activation_margin_rad)
         result["fixture_identity"] = identity
         data = mujoco.MjData(model)
         mujoco.mj_resetData(model, data)
@@ -532,6 +571,13 @@ def main() -> int:
             "stiffness_scale": args.carriage_servo_stiffness_scale,
             "damping_scale_for_constant_damping_ratio": args.carriage_servo_stiffness_scale ** 0.5,
             "airborne_clearance_command_target_m": args.airborne_clearance_target_m,
+            "five_mm_carriage_command_target_m": args.five_mm_carriage_target_m,
+            "five_mm_command_target_simulation_derived": args.five_mm_carriage_target_m != 0.005,
+            "large_lift_move_duration_s_simulation_derived": args.large_lift_move_duration_s,
+            "thirty_mm_carriage_command_target_m": args.thirty_mm_carriage_target_m,
+            "thirty_mm_command_target_simulation_derived": args.thirty_mm_carriage_target_m != 0.030,
+            "fifty_mm_carriage_command_target_m": args.fifty_mm_carriage_target_m,
+            "fifty_mm_command_target_simulation_derived": args.fifty_mm_carriage_target_m != 0.050,
             "actuator_effort_cap_n": float(model.actuator_forcerange[lift_actuator_id, 1]),
             "source_joint_limits_changed": False,
             "bottle_force_or_state_applied": False,
@@ -582,10 +628,13 @@ def main() -> int:
             if bilateral_hold_pass:
                 previous = 0.0
                 milestone_specs = ((0.001, args.airborne_clearance_target_m),
-                                   (0.005, 0.005), (0.030, 0.030), (0.050, 0.050))
+                                   (0.005, args.five_mm_carriage_target_m),
+                                   (0.030, args.thirty_mm_carriage_target_m),
+                                   (0.050, args.fifty_mm_carriage_target_m))
                 for required_height, target_height in milestone_specs:
                     label_mm = int(round(required_height * 1000))
-                    move = phase_steps(model, data, f"LIFT_{label_mm}MM", 0.30, 255, 255, previous, target_height,
+                    move_duration_s = args.large_lift_move_duration_s if required_height >= 0.030 else 0.30
+                    move = phase_steps(model, data, f"LIFT_{label_mm}MM", move_duration_s, 255, 255, previous, target_height,
                                        writer, renderer, camera, trace_rows, contact_rows_all, phases, baseline_com_z,
                                        lift_bias_compensation_n, lift_kp)
                     phases.append(move)

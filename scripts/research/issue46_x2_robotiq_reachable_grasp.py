@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate three geometry-derived X2 + Robotiq grasp frames without dynamics."""
+"""Evaluate the isolated-lift-calibrated X2 + Robotiq grasp frame without dynamics."""
 
 from __future__ import annotations
 
@@ -23,34 +23,34 @@ DEFAULT_OUT = Path(
     "/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/"
     "robotiq-reachable-contact-20261009/grasp-frames"
 )
-# The tabletop ends at world y=0.10 m. With the base at y=0.18 m, the right
-# shoulder is near y=0.037 m, reducing the measured lateral reach deficit while
-# keeping the planted torso outside the tabletop footprint.
+# This station is the previously measured clear outboard placement. The TCP
+# offset is taken from the successful isolated Robotiq lift, relative to the
+# canonical bottle body center; it is not a newly optimized grasp point.
 STATION = [-0.08, 0.18, 0.68]
 CANDIDATES = (
     {
-        "name": "outboard_station_plus_x_upper_body",
+        "name": "isolated_lift_calibrated_plus_x_approach",
         "base": STATION,
         "approach_yaw_deg": 0.0,
-        "pitch_about_jaw_axis_deg": -30.0,
-        "grasp_height_offset_m": 0.035,
-        "rationale": "Approach from robot-front +X at an upper cylindrical-body band; the shoulder is laterally aligned by standing just beyond the table +Y edge.",
+        "pitch_about_jaw_axis_deg": 0.0,
+        "grasp_offset_world_m": [-0.007, 0.0, 0.015],
+        "rationale": "Reuse the pad-midpoint offset and neutral gripper orientation from the successful isolated 50 mm lift; keep the prior outboard station that cleared the table legs.",
     },
     {
-        "name": "outboard_station_minus_y_body_center",
+        "name": "isolated_lift_calibrated_plus_y_approach",
         "base": STATION,
         "approach_yaw_deg": 270.0,
-        "pitch_about_jaw_axis_deg": -30.0,
-        "grasp_height_offset_m": 0.0,
-        "rationale": "Opposite bottle azimuth from the previous +Y approach, entering from +Y toward -Y at the established cylindrical-body center.",
+        "pitch_about_jaw_axis_deg": 0.0,
+        "grasp_offset_world_m": [-0.007, 0.0, 0.015],
+        "rationale": "Use the same bottle-relative contact point on the cylindrical body, but approach from the established outboard +Y side; the cylinder is rotationally symmetric and this materially changes the arm corridor.",
     },
     {
-        "name": "outboard_station_plus_x_lower_body",
-        "base": STATION,
+        "name": "isolated_lift_calibrated_forward_station",
+        "base": [0.0, 0.16, 0.68],
         "approach_yaw_deg": 0.0,
-        "pitch_about_jaw_axis_deg": -30.0,
-        "grasp_height_offset_m": -0.035,
-        "rationale": "Robot-front +X approach at a lower cylindrical-body band, 42.5 mm above the supported bottle base, testing a different pad-height/contact geometry.",
+        "pitch_about_jaw_axis_deg": 0.0,
+        "grasp_offset_world_m": [-0.007, 0.0, 0.015],
+        "rationale": "Move the fixed base 80 mm toward the target and 20 mm inward from the established station to reduce the measured arm-extension deficit while retaining the +X corridor and measured contact frame.",
     },
 )
 
@@ -74,9 +74,14 @@ def main() -> int:
     parser.add_argument("--menagerie-root", type=Path, default=m0.MENAGERIE_DEFAULT)
     parser.add_argument("--canonical-helper", type=Path, default=m0.CANONICAL_DEFAULT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--candidate-name", action="append",
+                        help="Run only the named bounded candidate; may be repeated")
     args = parser.parse_args()
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    candidates = [c for c in CANDIDATES if not args.candidate_name or c["name"] in args.candidate_name]
+    if args.candidate_name and len(candidates) != len(set(args.candidate_name)):
+        raise ValueError("Unknown or duplicate --candidate-name")
     script = Path(__file__).resolve()
     repo = script.parents[2]
     result: dict[str, Any] = {
@@ -89,7 +94,8 @@ def main() -> int:
             "robot_sim_head": subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip(),
             "command": sys.argv,
         },
-        "candidate_budget": {"maximum": 3, "candidates": CANDIDATES},
+        "candidate_budget": {"maximum": len(CANDIDATES), "selected_names": [c["name"] for c in candidates],
+                             "candidates": CANDIDATES},
         "physics_run": False,
         "contact_exclusion": {
             "name": "issue46_simonly_head_pitch_torso",
@@ -104,7 +110,8 @@ def main() -> int:
         ident = m0.identity(args, args.canonical_helper)
         canonical = m0.load_module(args.canonical_helper)
         result["identity"] = ident
-        for index, config in enumerate(CANDIDATES, start=1):
+        for config in candidates:
+            index = CANDIDATES.index(config) + 1
             candidate = reach.evaluate_candidate(
                 index=index,
                 config=config,

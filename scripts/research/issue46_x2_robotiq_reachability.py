@@ -482,6 +482,12 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
     mujoco.mj_forward(model, data)
     qids, jids, lower, upper = m0.arm_metadata(model, ident)
     q0 = data.qpos[qids].copy()
+    initial_pose = {
+        "head_yaw_joint_rad": float(data.qpos[m0.qpos_id(model, "head_yaw_joint")]),
+        "head_pitch_joint_rad": float(data.qpos[m0.qpos_id(model, "head_pitch_joint")]),
+        "left_elbow_joint_rad": float(data.qpos[m0.qpos_id(model, "left_elbow_joint")]),
+        "right_arm_joint_positions_rad": dict(zip(m0.ARM, q0.astype(float).tolist())),
+    }
     robot_bodies = smoke.robot_body_names(model)
     pair_catalog = environment_pair_catalog(model, robot_bodies)
     initial_contacts = smoke.describe_contacts(model, data, robot_bodies)
@@ -504,8 +510,14 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
                 "exclusion": exception}
 
     bottle_geom = m0.obj_id(model, mujoco.mjtObj.mjOBJ_GEOM, "bottle_body")
-    bottle_target = data.geom_xpos[bottle_geom].copy()
-    bottle_target[2] += float(config.get("grasp_height_offset_m", 0.0))
+    bottle_body_center = data.geom_xpos[bottle_geom].copy()
+    if "grasp_offset_world_m" in config:
+        grasp_offset = np.asarray(config["grasp_offset_world_m"], dtype=float)
+        if grasp_offset.shape != (3,) or not np.isfinite(grasp_offset).all():
+            raise ValueError("grasp_offset_world_m must be a finite 3-vector")
+    else:
+        grasp_offset = np.array([0.0, 0.0, float(config.get("grasp_height_offset_m", 0.0))])
+    bottle_target = bottle_body_center + grasp_offset
     r0 = np.asarray(adapter["desired_world_rotation_matrix"], dtype=float)
     yaw = math.radians(float(config["approach_yaw_deg"]))
     rz = Rotation.from_rotvec(np.array([0.0, 0.0, yaw])).as_matrix()
@@ -625,10 +637,7 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
         "model": {"base_xml": str(base_xml), "base_xml_sha256": sha256(base_xml),
                   "experimental_xml": str(variant_path), "experimental_xml_sha256": sha256(variant_path),
                   "exclusion": exception, "timestep_s": float(model.opt.timestep)},
-        "initial_configuration": {"head_yaw_rad": float(data.qpos[m0.qpos_id(model, "head_yaw_joint")]),
-                                   "head_pitch_rad": float(data.qpos[m0.qpos_id(model, "head_pitch_joint")]),
-                                   "left_elbow_rad": float(data.qpos[m0.qpos_id(model, "left_elbow_joint")]),
-                                   "right_elbow_rad": float(data.qpos[m0.qpos_id(model, "right_elbow_joint")]),
+        "initial_configuration": {**initial_pose,
                                    "right_arm_joint_ranges_rad": {n: model.jnt_range[j].astype(float).tolist()
                                                                    for n, j in zip(m0.ARM, jids)},
                                    "source_joint_limit_violations": initial_source_ranges,
@@ -636,7 +645,9 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
                                    "initial_environment_distances": initial_distances},
         "grasp_frame_definition": {
             "tcp": "compiled Robotiq pad-center midpoint site rq_m0_tcp",
-            "target_point_source": "compiled canonical bottle_body collision geom center",
+            "target_point_source": "compiled canonical bottle_body collision geom center plus isolated-lift-calibrated offset",
+            "bottle_body_collision_geom_center_world_m": bottle_body_center.astype(float).tolist(),
+            "tcp_target_offset_world_m": grasp_offset.astype(float).tolist(),
             "bottle_target_position_world_m": bottle_target.astype(float).tolist(),
             "bottle_body_collision_geom_size_m": model.geom_size[bottle_geom].astype(float).tolist(),
             "bottle_diameter_m": bottle_diameter,

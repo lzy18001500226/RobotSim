@@ -1,44 +1,58 @@
-# Reproduce Issue #46 Isolated Load-Transfer Run
+# Reproduce Issue #46 Isolated Robotiq Lift and X2 Static Gate
 
-## Runtime
+The preserved run was performed from research branch `research/issue46-x2-robotiq-m0-20261009` at checkout HEAD `2a607c7e8bcd01fb93e18a12f1f3209fa7dcfa2c`, using Python 3.10.12, MuJoCo 3.3.6, and `MUJOCO_GL=egl`. Menagerie, X2 source, canonical-helper, model, and native-library identities are listed in the [experiment report](issue46_x2_robotiq_load_transfer_20261009.md).
 
-Use the pinned local Python 3.10.12 environment containing MuJoCo 3.3.6 and set `MUJOCO_GL=egl`:
+The original executed argument arrays are retained in the relevant `result.json` files. The commands below reproduce the final isolated diagnostic and the three bounded static X2 candidates. Set `MUJOCO_GL=egl`, use the local Python/Menagerie/canonical-helper paths shown below, and choose new output directories so the preserved records are not overwritten.
 
-- Python: `/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python`
-- Menagerie checkout: `/home/lzy18001500226/.cache/robotsim/research/issue46-x2-robotiq-m0-20261009/sources/mujoco_menagerie`
-- Canonical helper: `/mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/omnipicker-static/20261007-ready/canonical_manipulation_assets.py`
-- Script: `scripts/research/issue46_x2_robotiq_isolated_bottle.py`
-
-The corrected final run used script SHA-256 `25b5eee232d5a74ef333e9d2fdeefee345b5b71fcffe367e0a439d33d52a887b`, Menagerie model SHA-256 `d48aca5f9151798ffd38111ce4e8b2081f3ec2d4f525161b33643451580010de`, and canonical helper SHA-256 `41165d99be43a55fc3e3d9c76175f35a9e98539c4421f380bfe44b95c59652ae`.
-
-## Command
-
-Run from the RobotSim checkout. This reproduces the bounded final candidate into a new directory; do not replace `grasp_com_z15_clearance13_verified/`, which contains the corrected, preserved run.
+## Isolated 50 mm Diagnostic
 
 ```bash
 MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python \
   scripts/research/issue46_x2_robotiq_isolated_bottle.py \
   --menagerie-root /home/lzy18001500226/.cache/robotsim/research/issue46-x2-robotiq-m0-20261009/sources/mujoco_menagerie \
   --canonical-helper /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/omnipicker-static/20261007-ready/canonical_manipulation_assets.py \
-  --pad-midpoint-offset-world-m -0.012 0 0.015 \
+  --pad-midpoint-offset-world-m -0.007 0 0.015 \
   --carriage-bias-compensation \
   --carriage-servo-stiffness-scale 25 \
-  --airborne-clearance-target-m 0.0013 \
+  --coupler-limit-activation-margin-rad 0.001 \
+  --airborne-clearance-target-m 0.002 \
+  --five-mm-carriage-target-m 0.008 \
+  --large-lift-move-duration-s 1.0 \
+  --thirty-mm-carriage-target-m 0.0305 \
+  --fifty-mm-carriage-target-m 0.051 \
   --output-dir /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/robotiq-load-transfer-20261009/reproduction
 ```
 
-This is the **SIMULATION_ONLY diagnostic candidate**, not a source-faithful success. The carriage servo uses the measured startup bias as target feedforward; stiffness is 25x the original fixture-servo value and damping is scaled by its square root; the 25 N force limit remains. The pad midpoint is offset `(-12, 0, +15) mm` from the canonical bottle body center. Bottle and gripper physical properties and source joint limits are unchanged.
+This is a **SIMULATION_ONLY diagnostic**. Its carriage servo, coupler activation margin, grasp offset, and overshoot commands are not source hardware parameters. It demonstrated 50.189 mm contact-driven bottle COM rise, bilateral contact, and no table support during the 1 s 50 mm hold. It does not demonstrate the full X2 arm or source-faithful acceptance. The preserved result is in `lift50_target_51mm/`.
 
-## Read the Result
+## Integrated X2 Static Candidates
 
-The process status `NON_ACCEPTANCE_PHYSICS_COMPLETE` means the bounded simulation completed; it does not mean the grasp passed. Read `result.json` and require all of the following before calling any lift a pass:
+Run from the RobotSim checkout with the same Python and `MUJOCO_GL`:
 
-- `source_joint_limit_status == "PASS"`;
-- the requested bottle COM rise is reached at the end of the hold;
-- `table_contact_persistence_fraction == 0` for the whole hold;
-- non-gripping bottle contact persistence is zero;
-- bilateral pad contact persists and is present at the hold endpoint.
+```bash
+MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python \
+  scripts/research/issue46_x2_robotiq_reachable_grasp.py \
+  --output-dir /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/robotiq-load-transfer-20261009/x2_integration_calibrated_v1
 
-The preserved run stops at the first failed 1 mm airborne hold. It does not attempt 5/30/50 mm milestones or release. The full per-step records are `raw/isolated_physics_trace.jsonl` and `raw/isolated_contact_trace.jsonl`; `isolated_grasp_lift_release.mp4` is the runner's legacy filename and shows only the phases actually reached.
+MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python \
+  scripts/research/issue46_x2_robotiq_reachable_grasp.py \
+  --candidate-name isolated_lift_calibrated_plus_y_approach \
+  --output-dir /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/robotiq-load-transfer-20261009/x2_integration_calibrated_plus_y_v1
 
-The separate `coupler_source_limit_ablation.json` is a one-step in-memory causal diagnostic: the comparison model neutralizes only the spring stiffness and is not a production or acceptance model.
+MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python \
+  scripts/research/issue46_x2_robotiq_reachable_grasp.py \
+  --candidate-name isolated_lift_calibrated_forward_station \
+  --output-dir /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/robotiq-load-transfer-20261009/x2_integration_forward_station_v1
+```
+
+These experiments are static only. The runner returns `BLOCKED_STATIC_REACHABILITY` and records `physics_run: false` for all three. Read each `result.json` and `*/raw/candidate_trace.json` for the exact solver iterations, qpos, signed distances, model identities, and command. Do not interpret these three candidates as a global reachability verdict.
+
+## Preserved Evidence
+
+External evidence directory:
+
+```text
+C:\Users\HP\Desktop\Robot\reviews\issue-46-x2-single-hand\robotiq-load-transfer-20261009\
+```
+
+Important subdirectories are `lift50_target_51mm/`, `x2_integration_calibrated_v1/`, `x2_integration_calibrated_plus_y_v1/`, and `x2_integration_forward_station_v1/`. Do not edit the raw result JSON, JSONL traces, rendered images, videos, or generated model XML. `SHA256SUMS.txt` covers the preserved evidence packet.
