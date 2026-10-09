@@ -1,0 +1,72 @@
+{
+  "schema_version": "robotsim.issue46.x2_robotiq_reachable_contact.v1",
+  "task": "Issue #46 X2 + Robotiq reachable grasp and first bottle contact",
+  "branch": "research/issue46-x2-robotiq-m0-20261009",
+  "experiment_base_sha": "aaa2570acb7381207532f97f9ba3bbcc7d8bd831",
+  "status": "BLOCKED",
+  "summary": "The single mounted-coupler initialization correction passed the functional open-close-reopen motion check but failed strict source joint limits. None of the three bounded grasp-frame candidates produced a source-limited, collision-free pregrasp. Bottle contact and lifting were not run. This bounded result does not establish global infeasibility.",
+  "gates": {
+    "A_source_vs_mounted_head_torso_pair": "PASS_SAME_PREEXISTING_PAIR",
+    "B_exact_head_pitch_torso_exclusion": "PASS_SIMULATION_ONLY_SINGLE_PAIR",
+    "C_mounted_open_close_reopen_function": "PASS",
+    "D_strict_gripper_source_limits": "FAIL",
+    "E_source_limited_collision_free_pregrasp": "FAIL_NOT_DEMONSTRATED",
+    "F_dynamic_approach": "NOT_RUN",
+    "G_bilateral_bottle_contact_hold_and_1_5_30mm_lift": "NOT_RUN",
+    "H_transfer_and_release": "NOT_RUN"
+  },
+  "mounted_cycle": {
+    "steps": 1900,
+    "functional_motion_pass": true,
+    "strict_source_limit_pass": false,
+    "coupler_names": [
+      "rq_right_coupler_joint",
+      "rq_left_coupler_joint"
+    ],
+    "source_range_rad": [-1.57, 0.0],
+    "initial_qpos_rad": -0.001,
+    "maximum_upper_limit_overshoot_rad": [
+      0.00043916517008326544,
+      0.0004387399167573441
+    ],
+    "maximum_actuator_force_n": 0.676788183,
+    "post_start_qpos_writes": 0,
+    "bottle_or_robot_contacts": 0
+  },
+  "static_candidates": [
+    {
+      "name": "outboard_station_plus_x_upper_body",
+      "status": "STATIC_FAIL",
+      "position_error_m": 0.311132836,
+      "orientation_error_rad": 0.6030153,
+      "minimum_table_distance_m": -0.032924814,
+      "minimum_bottle_distance_m": 0.119078014
+    },
+    {
+      "name": "outboard_station_minus_y_body_center",
+      "status": "STATIC_FAIL",
+      "position_error_m": 0.05231870750693974,
+      "orientation_error_rad": 0.17967411903272815,
+      "minimum_table_distance_m": 0.0574704605079321,
+      "minimum_bottle_distance_m": 0.03035639353671802
+    },
+    {
+      "name": "outboard_station_plus_x_lower_body",
+      "status": "STATIC_FAIL",
+      "position_error_m": 0.183291184,
+      "orientation_error_rad": 0.704491344,
+      "minimum_table_distance_m": 0.0,
+      "minimum_bottle_distance_m": 0.0815847
+    }
+  ],
+  "physics_scope": {
+    "bottle_contact_run": false,
+    "hold_run": false,
+    "lift_run": false,
+    "transfer_or_release_run": false,
+    "forbidden_object_state_writes": 0,
+    "bottle_attachment_or_mocap": false,
+    "left_hand_assistance": false
+  },
+  "evidence_directory": "C:/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/robotiq-reachable-contact-20261009/"
+}

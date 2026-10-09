@@ -341,10 +341,14 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
 
     bottle_geom = m0.obj_id(model, mujoco.mjtObj.mjOBJ_GEOM, "bottle_body")
     bottle_target = data.geom_xpos[bottle_geom].copy()
+    bottle_target[2] += float(config.get("grasp_height_offset_m", 0.0))
     r0 = np.asarray(adapter["desired_world_rotation_matrix"], dtype=float)
     yaw = math.radians(float(config["approach_yaw_deg"]))
     rz = Rotation.from_rotvec(np.array([0.0, 0.0, yaw])).as_matrix()
     target_rot = rz @ r0
+    pitch = math.radians(float(config.get("pitch_about_jaw_axis_deg", 0.0)))
+    jaw_axis_world = target_rot[:, 0].copy()
+    target_rot = Rotation.from_rotvec(jaw_axis_world * pitch).as_matrix() @ target_rot
     insertion_axis = target_rot[:, 2]
     pre_target = bottle_target - insertion_axis * APPROACH_DISTANCE_M
     lift_target = bottle_target + np.array([0.0, 0.0, LIFT_DISTANCE_M])
@@ -363,6 +367,10 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
                               np.asarray(position_seed["joint_pose_rad"]),
                               pre_target, target_rot, robot_bodies,
                               "OPEN_PREGRASP_FROM_POSITION_SEED")
+    pre_orientation = solve_pose(model, data, qids, lower, upper,
+                                 np.asarray(orient["q_rad"]),
+                                 pre_target, target_rot, robot_bodies,
+                                 "OPEN_PREGRASP_FROM_ORIENTATION_SEED")
 
     def pre_score(solution: dict[str, Any]) -> tuple[int, int, float]:
         return (not solution["pose_gate_pass"], not solution["collision_gate_pass"],
@@ -370,7 +378,7 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
                 solution["orientation_error_norm_rad"] / MAX_ORIENTATION_ERROR_RAD +
                 solution["collision_cost_m"] / COLLISION_CLEARANCE_M)
 
-    pre = min((pre_neutral, pre_position), key=pre_score)
+    pre = min((pre_neutral, pre_position, pre_orientation), key=pre_score)
     grasp = None
     lift = None
     corridor = []
@@ -407,6 +415,7 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
     summaries = {"pregrasp": pre, "pregrasp_from_clear_neutral": pre_neutral,
                  "position_only_fk_seed": position_seed,
                  "pregrasp_from_position_seed": pre_position,
+                 "pregrasp_from_orientation_seed": pre_orientation,
                  "grasp": grasp, "lift_30mm": lift}
     path_pass = bool(corridor) and all(item["pass"] for item in corridor)
     gripper_range = model.jnt_range[m0.obj_id(model, mujoco.mjtObj.mjOBJ_JOINT, "rq_right_driver_joint")].tolist()
@@ -457,6 +466,9 @@ def evaluate_candidate(index: int, config: dict[str, Any], args, ident: dict[str
             "measured_dynamic_closed_gap_reference_m": 0.014690997223188616,
             "open_gap_contains_bottle_diameter": bool(open_gap > bottle_diameter),
             "source_driver_range_rad": gripper_range,
+            "pitch_about_jaw_axis_deg": float(config.get("pitch_about_jaw_axis_deg", 0.0)),
+            "pitch_world_axis": jaw_axis_world.astype(float).tolist(),
+            "pregrasp_vertical_offset_from_pitch_m": float(pre_target[2] - bottle_target[2]),
         },
         "orientation_only_reachable_fk_seed": orient,
         "position_only_fk_seed": position_seed,
