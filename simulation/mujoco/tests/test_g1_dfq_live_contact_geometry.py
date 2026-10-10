@@ -112,5 +112,154 @@ class LiveContactGeometryTests(unittest.TestCase):
         self.assertEqual(geometry["contacts"][0]["source_contact_time_s"], 4.0)
 
 
+class MuJoCoContactForceConventionTests(unittest.TestCase):
+    @staticmethod
+    def make_contact_fixture(bottle_first=True):
+        bottle_body = """
+            <body name="bottle_body">
+              <freejoint name="bottle_free"/>
+              <geom name="bottle_body" type="sphere" size="0.05" mass="0.57"
+                    condim="3"/>
+            </body>
+        """
+        ring_body = """
+            <body name="R_ring_proximal" pos="0.09 0 0">
+              <joint name="ring_joint" type="slide" axis="1 0 0" damping="0"/>
+              <geom name="ring_geom" type="sphere" size="0.05" mass="0.1"
+                    condim="3"/>
+            </body>
+        """
+        first, second = (bottle_body, ring_body) if bottle_first else (ring_body, bottle_body)
+        xml = f"""
+        <mujoco model="contact_force_convention_test">
+          <option timestep="0.00025" gravity="0 0 0" cone="elliptic"/>
+          <worldbody>
+            {first}
+            {second}
+          </worldbody>
+        </mujoco>
+        """
+        model = core.mujoco.MjModel.from_xml_string(xml)
+        data = core.mujoco.MjData(model)
+        ring_joint_id = core.mujoco.mj_name2id(
+            model, core.mujoco.mjtObj.mjOBJ_JOINT, "ring_joint"
+        )
+        ring_dof = int(model.jnt_dofadr[ring_joint_id])
+        data.qvel[ring_dof] = -1.0
+        core.mujoco.mj_forward(model, data)
+        return model, data, ring_joint_id, ring_dof
+
+    def test_bottle_contact_force_sign_matches_free_body_acceleration(self):
+        bottle_geom_orders = set()
+        for bottle_first in (True, False):
+            with self.subTest(bottle_first=bottle_first):
+                model, data, _, _ = self.make_contact_fixture(bottle_first)
+                self.assertGreater(data.ncon, 0)
+
+                observed = core.bottle_contacts(model, data)
+                self.assertEqual(len(observed), 1)
+                self.assertEqual(observed[0]["side"], "right_hand")
+                self.assertEqual(observed[0]["digit"], "ring")
+
+                contact_id = int(observed[0]["mujoco_contact_index"])
+                contact = data.contact[contact_id]
+                bottle_geom_id = core.mujoco.mj_name2id(
+                    model, core.mujoco.mjtObj.mjOBJ_GEOM, "bottle_body"
+                )
+                bottle_geom_orders.add(int(contact.geom1) == bottle_geom_id)
+                wrench_contact = np.zeros(6)
+                core.mujoco.mj_contactForce(model, data, contact_id, wrench_contact)
+                geom1_is_bottle = int(contact.geom1) == bottle_geom_id
+                geom2_force_world = contact.frame.reshape(3, 3).T @ wrench_contact[:3]
+                expected_bottle_force = (
+                    -geom2_force_world if geom1_is_bottle else geom2_force_world
+                )
+                np.testing.assert_allclose(
+                    observed[0]["force_on_bottle_world_n"], expected_bottle_force,
+                    rtol=0.0, atol=1e-10,
+                )
+                self.assertGreater(float(np.linalg.norm(expected_bottle_force)), 0.0)
+
+                bottle_id = core.mujoco.mj_name2id(
+                    model, core.mujoco.mjtObj.mjOBJ_BODY, "bottle_body"
+                )
+                bottle_joint_id = core.mujoco.mj_name2id(
+                    model, core.mujoco.mjtObj.mjOBJ_JOINT, "bottle_free"
+                )
+                bottle_dof = int(model.jnt_dofadr[bottle_joint_id])
+                bottle_mass = float(model.body_mass[bottle_id])
+                np.testing.assert_allclose(
+                    bottle_mass * data.qacc[bottle_dof:bottle_dof + 3],
+                    expected_bottle_force, rtol=2e-7, atol=2e-7,
+                )
+        self.assertEqual(bottle_geom_orders, {True, False})
+
+    def test_live_torque_map_matches_finite_difference_and_virtual_work(self):
+        model, data, ring_joint_id, ring_dof = self.make_contact_fixture()
+        body_id = core.mujoco.mj_name2id(
+            model, core.mujoco.mjtObj.mjOBJ_BODY, "R_ring_proximal"
+        )
+        qpos_adr = int(model.jnt_qposadr[ring_joint_id])
+
+        # Check the active slide DOF and its world-axis direction independently.
+        base_qpos = float(data.qpos[qpos_adr])
+        epsilon = 1e-6
+        origin_positions = []
+        for offset in (-epsilon, epsilon):
+            data.qpos[qpos_adr] = base_qpos + offset
+            core.mujoco.mj_forward(model, data)
+            origin_positions.append(np.asarray(data.xpos[body_id], dtype=float).copy())
+        data.qpos[qpos_adr] = base_qpos
+        core.mujoco.mj_forward(model, data)
+        finite_difference_origin_velocity = (
+            origin_positions[1] - origin_positions[0]
+        ) / (2.0 * epsilon)
+        np.testing.assert_allclose(
+            finite_difference_origin_velocity, [1.0, 0.0, 0.0],
+            rtol=0.0, atol=1e-8,
+        )
+
+        data.qvel[ring_dof] = -1.0
+        core.mujoco.mj_forward(model, data)
+        contacts = core.bottle_contacts(model, data)
+        geometry = core.live_contact_allocation_geometry(
+            model, data, contacts, {"ring_proximal": "ring_joint"}, {}
+        )
+        self.assertTrue(geometry["success"])
+        self.assertEqual(geometry["channels"], ["ring_proximal"])
+        self.assertEqual(len(geometry["contact_driver_torque_maps"]), 1)
+
+        contact = data.contact[0]
+        bottle_geom_id = core.mujoco.mj_name2id(
+            model, core.mujoco.mjtObj.mjOBJ_GEOM, "bottle_body"
+        )
+        basis = (-1.0 if int(contact.geom1) == bottle_geom_id else 1.0) \
+            * contact.frame.reshape(3, 3).T
+        jacp = np.zeros((3, model.nv))
+        jacr = np.zeros((3, model.nv))
+        core.mujoco.mj_jac(
+            model, data, jacp, jacr, np.asarray(contact.pos, dtype=float), body_id
+        )
+        contact_velocity_per_unit_qdot = jacp[:, ring_dof]
+        torque_map = np.asarray(geometry["contact_driver_torque_maps"][0])
+        expected_map = contact_velocity_per_unit_qdot.reshape(1, 3) @ basis
+        np.testing.assert_allclose(torque_map, expected_map, rtol=0.0, atol=1e-12)
+
+        force_on_bottle_local = np.asarray([0.4, 0.1, -0.2])
+        force_on_bottle_world = basis @ force_on_bottle_local
+        qdot = 0.37
+        generalized_effort = float(torque_map[0] @ force_on_bottle_local)
+        self.assertAlmostEqual(
+            generalized_effort,
+            float(np.dot(force_on_bottle_world, contact_velocity_per_unit_qdot)),
+            places=12,
+        )
+        self.assertAlmostEqual(
+            generalized_effort * qdot,
+            float(np.dot(force_on_bottle_world, contact_velocity_per_unit_qdot * qdot)),
+            places=12,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
