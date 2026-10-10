@@ -29,6 +29,7 @@ LIMIT_TOLERANCE_RAD = 1e-5
 MAX_CONTACT_PENETRATION_M = 0.002
 NATURAL_FREQUENCY_RAD_S = 8.0
 TORQUE_LIMIT_GRAVITY_MULTIPLIER = 2.0
+SIM_ONLY_MIMIC_EQ_SOLREF_SCALE = 2.0
 MOTION_JOINTS = {
     "R_thumb_roll_joint": 0.65,
     "R_thumb_abad_joint": -0.30,
@@ -103,6 +104,19 @@ def load_source_context() -> tuple[mujoco.MjModel, dict[str, object], dict[str, 
     root = ET.parse(task.URDF).getroot()
     joints = {str(node.get("name")): node for node in root.findall("joint") if node.get("name")}
     return model, details, joints
+
+
+def apply_sim_only_mimic_constraint_correction(model: mujoco.MjModel) -> dict[str, object]:
+    if model.neq != 12:
+        raise RuntimeError(f"expected 12 source mimic equalities, found {model.neq}")
+    original = model.eq_solref.copy()
+    model.eq_solref[:] = original * SIM_ONLY_MIMIC_EQ_SOLREF_SCALE
+    return {
+        "classification": "SIMULATION_ONLY constraint regularization; not hardware-equivalent",
+        "scale": SIM_ONLY_MIMIC_EQ_SOLREF_SCALE,
+        "original_solref_direct": original.tolist(),
+        "applied_solref_direct": model.eq_solref.tolist(),
+    }
 
 
 def joint_id(model: mujoco.MjModel, name: str) -> int:
@@ -456,6 +470,7 @@ def analyze_baseline_trace(
 
 def run_motion(output: Path, baseline_trace: Path | None) -> dict[str, object]:
     model, details, joints = load_source_context()
+    mimic_constraint_correction = apply_sim_only_mimic_constraint_correction(model)
     data = details["data"]
     active_names = [str(name) for name in details["active_hand_joint_names"]]
     all_hand_names = active_names + sorted(
@@ -679,6 +694,7 @@ def run_motion(output: Path, baseline_trace: Path | None) -> dict[str, object]:
         "actuation": "SIMULATION_ONLY torque-limited independent driver motors; official source joint-equality mimic constraints retained; no follower actuators",
         "actuator_joint_count": len(hand_actuator),
         "follower_actuator_count": 0,
+        "mimic_constraint_correction": mimic_constraint_correction,
         "natural_frequency_rad_s": NATURAL_FREQUENCY_RAD_S,
         "damping_ratio": 1.0,
         "torque_limit_nm": torque_limit,

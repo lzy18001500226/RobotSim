@@ -1,6 +1,6 @@
 # Issue #46 Dual OmniHand Transmission Tracking
 
-**Result: BLOCKED at the no-bottle dynamic OPEN gate.** The sole reduced SIMULATION_ONLY transmission prototype exceeded the unchanged `0.003 rad` mimic threshold during the fourth physics step. CLOSE, bottle contact, load transfer, and lift were not run.
+**Final result: BLOCKED at the no-bottle dynamic OPEN gate.** The baseline reduced SIMULATION_ONLY transmission exceeded the unchanged `0.003 rad` mimic threshold at step 4. A bounded ablation identified gravity-dependent driver/equality dynamics as the demonstrated mechanism; one targeted equality-stiffness correction delayed but did not clear the same gate (step 7). No CLOSE, bottle contact, load transfer, or lift was accepted.
 
 ## Scope and Provenance
 
@@ -65,7 +65,75 @@ At the same failing step, the active right middle DIP residual was `0.000541 rad
 | Bottle contact / support / lift | NOT RUN | Phase 3 did not pass. |
 | Stable settled tracking | NOT RUN | Failure occurred after 8 ms, before any hold window could settle. |
 
-No further transmission model, solver setting, gain, or contact experiment was tested. The next step is to stop and review the equality-compliance/actuation representation; another model requires a separate bounded authorization. The source-faithful transmission is **NOT ESTABLISHED** and no physical support claim is made.
+## Isolated Constraint Diagnosis and One Correction
+
+The follow-up used the pinned official URDF at `575cc6b988f976c23550e0db85aa1e5475d3652d` (SHA-256 `344c188605f307474456749525259ad8ca2e7b356d9ef3c50ad887f228045259`), RobotSim starting HEAD `6ee6b5b6efc2109328763c9e90a9567ac0fbfa62`, Python `3.10.12`, MuJoCo `3.3.6`, and a `0.002 s` timestep. Vendor checkout was clean. The compiled model had 12 `mjEQ_JOINT` mimic constraints, 20 driver motors, and no follower motors or follower qpos writes.
+
+The active compiled constraints were `solref=[-10000, -200]` in MuJoCo direct format. Global settings were unchanged: implicit-fast integrator, Newton solver, pyramidal contact cone, automatic Jacobian, 100 solver iterations, tolerance `1e-8`, 50 line-search iterations, line-search tolerance `0.01`, no no-slip iterations, and `impratio=1.0`. Initial position and velocity residuals were exactly zero for every mimic relation.
+
+### Baseline and ablations
+
+The diagnostic runs each lasted five steps (10 ms), used the same driver controller gains and torque limit, and changed only the named ablation:
+
+| Configuration | Step-4 maximum mimic residual | Result against 0.003 rad | Interpretation |
+|---|---:|---|---|
+| Baseline | 0.0030919709 rad | FAIL | First gate crossing, after step 4 at 8 ms |
+| Gravity disabled | 0.0002449384 rad | Diagnostic only | Removing gravity suppresses the residual by about 12.6x |
+| Hand self-contact disabled | 0.0030917513 rad | FAIL | Effect is negligible; all hand-to-hand contacts were filtered, while hand/environment contact remained enabled |
+| Driver actuation disabled | 0.0016810839 rad | Diagnostic only | Residual stays under the gate for 10 ms, but this is an uncontrolled, non-acceptance condition |
+
+For baseline `L_thumb_mcp -> L_thumb_pip`, the driver/follower position and velocity residuals both began at zero. At the first solver evaluation, source-coordinate accelerations were `+53.1195 rad/s^2` and `-98.7283 rad/s^2`; the equality row carried `0.0033731` constraint-force units. The driver actuator applied `0.0253162 Nm` against a `0.0763513 Nm` cap, so it was not saturated; corresponding driver and follower `qfrc_bias` entries were `0.0192417` and `0.0039636` in native generalized-force units.
+
+At the solver evaluation immediately before the failing fourth integration, the same equality had position residual `-0.00216662 rad`, velocity residual `-0.466358 rad/s`, and constraint force `0.00354575`; `qacc` was `-35.9201 rad/s^2` for the driver and `-11.1255 rad/s^2` for the follower. The driver applied `0.0250756 Nm`, still not saturated. After that integration, the source mimic residual reached `0.0030919709 rad`. This is gravity-dependent loading and motion through the finite-compliance equality while the driver is actuated, rather than an initial pose or mapping error.
+
+Three right-hand adjacent-finger contacts were present, with maximum penetration about `0.969 mm`: index/middle, middle/ring, and ring/pinky. At the solver evaluation immediately before baseline step 4 their local normal-force components were approximately `0.204 N`, `0.377 N`, and `0.216 N`, respectively. Disabling all hand-hand contacts changed the failing residual by only `2.20e-7 rad` and left the failure at step 4. The `0.969 mm` overlap is therefore not a material cause of this early left-thumb failure. Gravity-off and no-driver runs are diagnostic ablations only, not successful control configurations.
+
+Raw five-step data is at `mimic-constraint-isolation-02/constraint_isolation.json`; SHA-256 `4b42b620c63d6d01bebe63992fe84bb98595291cb9da395dc932575921ae77a3`. Reproduction command:
+
+```bash
+cd /home/lzy18001500226/robotsim-x2-omnihand-experimental-20261007
+AGIBOT_X2_VENDOR_ROOT=/home/lzy18001500226/.cache/robotsim/research/issue46-x2-robotiq-m0-20261009/sources/agibot_x2_urdf \
+/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python \
+scripts/research/issue46_mimic_constraint_isolation.py \
+--output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-x2-dual-omnihand-20261010/mimic-constraint-isolation-02
+```
+
+### One correction and final dynamic result
+
+The only correction was a `2.0x` SIMULATION_ONLY multiplier on the 12 compiled mimic equality direct stiffness/damping values: `[-10000, -200]` to `[-20000, -400]`. It did not change source URDF ratios/ranges, driver gains, motor limits, gravity, contacts, integrator, or global solver settings. The no-bottle OPEN→CLOSE→OPEN run then failed at step 7 (14 ms) in `OPEN_HOLD`, with `L_thumb_pip_joint` residual `0.0030263435 rad`. Maximum target error at the stopping point was `0.00818673 rad`, velocity `0.850933 rad/s`; joint-limit violation remained zero and maximum self-contact penetration remained below the unchanged 2 mm abort bound. CLOSE was never entered. The correction delayed the gate crossing by three steps, but did not pass it. No second correction or parameter variant was attempted.
+
+Corrected-run trace SHA-256: `5e554ddb23b581ad0c0fe2fb90f1917ede87c5718b812f5eaefee288d573a9b9`. The generated MP4 contains only the initial diagnostic frame; it is not OPEN/CLOSE motion evidence. No contact, grasp, lift, or source-faithful acceptance is claimed.
+
+Corrected-run reproduction command:
+
+```bash
+cd /home/lzy18001500226/robotsim-x2-omnihand-experimental-20261007
+AGIBOT_X2_VENDOR_ROOT=/home/lzy18001500226/.cache/robotsim/research/issue46-x2-robotiq-m0-20261009/sources/agibot_x2_urdf \
+/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python \
+scripts/research/issue46_dual_omnihand_transmission_probe.py \
+--output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-x2-dual-omnihand-20261010/transmission-motion-08
+```
+
+### Conclusion and next engineering change
+
+**Root cause: demonstrated for this SIMULATION_ONLY implementation.** Gravity load plus active driver motion excites the finite-compliance source mimic equalities; the measured hand self-contact is not causal for the first failure. The single equality correction was insufficient. The smallest meaningful next engineering change is to evaluate an exact reduced-coordinate transmission representation for the source mimic DOFs, keeping the 12 URDF ratios as invariants, rather than continuing to tune gains or equality solver constants. This requires a separately authorized iteration. Source-faithful dynamic transmission and OPEN/CLOSE acceptance remain **NOT ESTABLISHED**; bottle work remains **NOT RUN**.
+
+Focused validation after the change: `python -m py_compile` passed; the unit command below passed 13 tests; `git diff --check` passed. The dynamic gate is a **FAIL**, not a successful simulation validation.
+
+```bash
+AGIBOT_X2_VENDOR_ROOT=/home/lzy18001500226/.cache/robotsim/research/issue46-x2-robotiq-m0-20261009/sources/agibot_x2_urdf \
+/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python -m py_compile \
+scripts/research/issue46_dual_omnihand_transmission_probe.py \
+scripts/research/issue46_mimic_constraint_isolation.py \
+tests/test_issue46_dual_omnihand_transmission.py \
+tests/test_issue46_mimic_constraint_isolation.py
+
+AGIBOT_X2_VENDOR_ROOT=/home/lzy18001500226/.cache/robotsim/research/issue46-x2-robotiq-m0-20261009/sources/agibot_x2_urdf \
+/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python -m unittest \
+tests.test_issue46_dual_omnihand_platform \
+tests.test_issue46_dual_omnihand_transmission \
+tests.test_issue46_mimic_constraint_isolation -v
+```
 
 ## Reproduction and Artifacts
 
