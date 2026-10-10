@@ -48,3 +48,21 @@ The goal is to provide a reusable simulation and system-integration framework fo
 RobotSim is currently in early platform bring-up.
 
 The current focus is validating the development environment and the MuJoCo, Unity, and ROS 2 integration architecture before implementing higher-level robot tasks.
+
+## Issue #43 M0 Bottle Pick-and-Place
+
+On WSL2 Ubuntu 22.04, install `git`, `uv`, and an EGL-capable Mesa runtime, then run this exact command from a fresh checkout:
+
+```bash
+./scripts/run_m0_pick_place.sh
+```
+
+The first run needs public network access for fetching the pinned Humanoid VLA and Unitree MuJoCo checkouts and installing the pinned Python packages. The launcher creates a Python 3.10 environment under `/tmp/robotsim-issue43-m0/venv`, verifies existing environments are Python 3.10.x, and refuses dirty or wrong-commit upstream checkouts. `ROBOTSIM_M0_MESH_DIR`, if set, must resolve inside the verified pinned Unitree `unitree_robots/g1/meshes` tree; external mesh paths are rejected.
+
+Each invocation gets a unique run ID and output directory beneath `/tmp/robotsim-issue43-m0/output/`. It creates `m0_result.json` as `PREFLIGHT` with `passed: false` before checks begin, and leaves a per-invocation failure result on preflight or runtime errors. A completed run writes `m0_result.json`, `m0_physics_trace.jsonl`, `m0_pick_place.mp4`, `m0_final.png`, and `run.log`; generated scene files are kept under that run's `model/` directory. Set `ROBOTSIM_M0_RUN_DIR` to select the checkout/cache/venv root, `ROBOTSIM_M0_OUTPUT_DIR` to select the output root, `ROBOTSIM_M0_CANDIDATE_DIR` or `ROBOTSIM_M0_UNITREE_DIR` to select existing pinned checkouts, and `ROBOTSIM_M0_SEED` to select the seed.
+
+The generated model restores the paired stock left and right rubber hands directly from the pinned Unitree G1 model, without scale or wrist-transform overrides. The earlier scene mixed a stock left hand with a Dex3-style right-hand overlay; a later correction wrongly paired Dex3 on both sides. The stock meshes have no finger joints, hand actuators, or hand collision geometry, so they cannot satisfy the physical grasp requirement. The launcher therefore renders a morphology/scene review and records `BLOCKED`; it does not run or claim a grasp or lift.
+
+The review scene preserves the pinned G1 camera, lighting, skybox, and dark checker floor, and uses the existing G1 table footprint. Its free-jointed bottle copies the exact four-geom definition from the Issue #46 X2 visual demo (`issue46_x2_grasp.py`, source SHA-256 `1271f0c357d702a850d72849988fa2e6d2196d1de853c6b58dd7a193974750f1`): a 70 mm cylindrical body, ellipsoid shoulder, cylindrical neck and cap, 244.5 mm overall height, and 0.57 kg total mass. It retains the original per-geom mass split, blue body/shoulder/neck, dark cap, friction `[1.4, 0.02, 0.001]`, and `condim=4`. It rests directly on the tabletop with no pedestal, weld, or runtime qpos write. The separate Issue #46 physical-grasp proxy was a single cylinder and is not this visual asset.
+
+Each run writes `m0_result.json`, `m0_physics_trace.jsonl`, `g1_stock_hand_scene_review.mp4`, `g1_stock_hand_overview.png`, `run.log`, and overview, paired-hand, bottle, and right-hand near-bottle reference images under `screenshots/`. The reference view records right-arm IK status and measured hand-to-bottle distance; it is not a completed pre-grasp unless the result says the approach pose was planned. The bottle remains under free physics, and no lift is attempted because the stock hands lack articulation and collision geometry. Physics runs on CPU with offscreen EGL rendering and Mesa; no GPU, display, ROS 2, Unity, network transport, or physical hardware is required after setup.
