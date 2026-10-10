@@ -48,7 +48,7 @@ Primary result is the corrected `2 ms` run in `mjstep-thumb-04`. Diagnostic sett
 
 | Gate / measurement | Result |
 |---|---|
-| Initial OPEN hold | **FAIL**. MCP settled at `-0.091918 rad` against `+0.08 rad`; this is outside its source range. |
+| Initial OPEN hold | **FAIL**. MCP settled at `-0.011918 rad` against `+0.08 rad` (error `-0.091918 rad`); this is outside its source range. |
 | First source-range crossing | At step `1`, `t=0.002 s`: MCP/PIP/DIP coordinates crossed below their source lower limits. The initial source-neutral state is at the lower limit. |
 | First fixture-lock residual above `0.003 rad` | Abduction at step `9`, `t=0.018 s`, `-0.003104 rad`. |
 | First source mimic residual above `0.003 rad` | PIP at step `15`, `t=0.030 s`, `+0.003071726 rad`; the corresponding MuJoCo EFC residual is also `+0.003071726 rad`. |
