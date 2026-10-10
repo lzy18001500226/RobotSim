@@ -73,7 +73,11 @@ roots for shared refs or objects. No approval-bypass option is used. A clean leg
 is migrated at the same path and branch, with ignored files copied; a dirty checkout or ambiguous
 migration state fails closed for inspection. Checkout setup carries only allowlisted local author
 and signing settings and rejects remote URLs with inline credentials; authentication must come from
-the normal credential helper or SSH agent. A separate Codex review uses `read-only`, holds no writer
+the normal credential helper or SSH agent. Before executor handoff and coordinator publication, the
+packet's Issue, run, attempt, worker, workspace, branch, saved session, and write roots are checked
+against the durable queue row. A Codex session cannot be rebound to another Issue/run, including one
+that appears only in prior queue events. A mismatch blocks the run and records a reason code without
+starting a worker or publishing a branch. A separate Codex review uses `read-only`, holds no writer
 slot, and runs only when the local checkout is clean and exactly matches the PR head. A retry keeps
 the same `run_id`, `worker_id`, issue branch, and Codex session while creating a new
 `attempt_id`; Codex resumes that session with the new CI/review feedback. The queue records a
@@ -150,7 +154,9 @@ The SQLite leases, runner lock, and two-slot bound apply to one local state dire
 they are not a cross-host lock service. Do not run multiple independent queue coordinators against
 the same Issues. GitHub's `agent:running` label is an additional visible stop, not an atomic
 distributed lease. The queue's stable worker ID identifies one Issue run only and is not a permanent
-Local01/02/03/04 identity.
+Local01/02/03/04 identity. A shared Codex App `projectId` also does not identify a particular local
+thread or worker. The packet/session guard protects queue-launched execution; it cannot prevent a
+person from pasting a task into the wrong manually selected Codex chat.
 
 This pilot requires a local WSL2/Linux host with the documented Python, Git, `gh`, and Codex CLI
 environment. CI validates queue behavior but does not establish a successful remote GitHub

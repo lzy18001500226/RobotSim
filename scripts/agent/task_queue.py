@@ -444,6 +444,72 @@ class RunStore:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def packet_binding_error(
+        self, packet: TaskPacket, *, check_session: bool = True,
+    ) -> str | None:
+        """Reject stale or cross-run packets before handing work to Codex or publishing it."""
+        with self._guard:
+            row = self._row(packet.issue_number)
+            if row is None:
+                return "queue_run_missing"
+            if row["status"] != "running":
+                return "queue_run_not_running"
+            if packet.workspace.issue_number != packet.issue_number:
+                return "packet_workspace_issue_mismatch"
+            if packet.run_id != row["run_id"]:
+                return "packet_run_id_mismatch"
+            if packet.attempt_id != row["attempt_id"]:
+                return "packet_attempt_id_mismatch"
+            if packet.worker_id != row["worker_id"]:
+                return "packet_worker_id_mismatch"
+            if packet.workspace.branch != row["branch"]:
+                return "packet_branch_mismatch"
+            try:
+                packet_workspace = Path(packet.workspace.path).resolve(strict=False)
+                stored_workspace = Path(str(row["workspace"])).resolve(strict=False)
+            except (OSError, RuntimeError):
+                return "packet_workspace_path_mismatch"
+            if packet_workspace != stored_workspace:
+                return "packet_workspace_path_mismatch"
+            if packet.workspace_write_roots != ISSUE_WORKSPACE_WRITE_ROOTS.get(packet.issue_number):
+                return "packet_write_roots_mismatch"
+            if (
+                check_session
+                and packet.codex_session_id != str(row.get("codex_session_id") or "")
+            ):
+                return "packet_session_id_mismatch"
+            return None
+
+    def reject_packet_binding(self, issue_number: int, reason_code: str) -> dict[str, object]:
+        if not re.fullmatch(r"[a-z][a-z0-9_]{1,79}", reason_code):
+            raise ValueError("invalid packet binding reason code")
+        with self._guard:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._row(issue_number)
+                if row is None:
+                    raise KeyError(issue_number)
+                if row["status"] != "running":
+                    self._db.rollback()
+                    raise RuntimeError("task packet can only be rejected for a running task")
+                self._db.execute(
+                    "UPDATE task_runs SET status='blocked',executor_pid=NULL,"
+                    "executor_start_token='',updated_at=? WHERE issue_number=?",
+                    (_now(), issue_number),
+                )
+                rejected = self._row(issue_number)
+                assert rejected is not None
+                self._append_event(rejected, "task_packet_binding_rejected", {
+                    "stage": "executor_handoff", "reason_code": reason_code,
+                })
+                self._db.commit()
+                result = self._row(issue_number)
+                assert result is not None
+                return result
+            except Exception:
+                self._db.rollback()
+                raise
+
     def resume_binding_error(self, issue_number: int) -> str | None:
         """Validate stored base metadata and any saved session's base binding."""
         with self._guard:
@@ -592,14 +658,47 @@ class RunStore:
             raise ValueError("invalid Codex session id")
         with self._guard:
             self._db.execute("BEGIN IMMEDIATE")
+            row = self._row(issue_number)
+            if row is None:
+                self._db.rollback()
+                raise KeyError(issue_number)
+            current_session = str(row.get("codex_session_id") or "")
+            if current_session and current_session != session_id:
+                self._db.rollback()
+                raise RuntimeError("Codex session is already bound to this task run")
+            other_run = self._db.execute(
+                "SELECT 1 FROM task_runs WHERE codex_session_id=? AND NOT "
+                "(issue_number=? AND run_id=?) LIMIT 1",
+                (session_id, issue_number, row["run_id"]),
+            ).fetchone()
+            if other_run is not None:
+                self._db.rollback()
+                raise RuntimeError("Codex session is already bound to another task run")
+            for event in self._db.execute(
+                "SELECT issue_number,run_id,details_json FROM task_events "
+                "WHERE event_type='codex_session_started'"
+            ).fetchall():
+                try:
+                    details = json.loads(str(event["details_json"]))
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(details, dict) or not details.get("session_id"):
+                    continue
+                event_run = (int(event["issue_number"]), str(event["run_id"]))
+                current_run = (issue_number, str(row["run_id"]))
+                event_session = str(details["session_id"])
+                if (
+                    (event_session == session_id and event_run != current_run)
+                    or (event_run == current_run and event_session != session_id)
+                ):
+                    self._db.rollback()
+                    raise RuntimeError("Codex session identity conflicts with a durable task binding")
             self._db.execute(
                 "UPDATE task_runs SET codex_session_id=?,updated_at=? WHERE issue_number=?",
                 (session_id, _now(), issue_number),
             )
             row = self._row(issue_number)
-            if row is None:
-                self._db.rollback()
-                raise KeyError(issue_number)
+            assert row is not None
             self._append_event(row, "codex_session_started", {"session_id": session_id})
             self._db.commit()
             return row
@@ -2129,6 +2228,19 @@ class TaskQueuePilot:
                     str(row.get("codex_session_id") or ""),
                     ISSUE_WORKSPACE_WRITE_ROOTS.get(issue.number),
                 )
+                stage = "packet_identity"
+                binding_error = self.store.packet_binding_error(packet)
+                if binding_error:
+                    rejected = self.store.reject_packet_binding(issue.number, binding_error)
+                    try:
+                        self._set_outcome_label(issue.number, str(rejected["status"]))
+                    except Exception as label_exc:
+                        _key, details = _sanitized_setup_failure("packet_identity_label", label_exc)
+                        self.store.record_event(
+                            issue.number, "packet_identity_label_failed", details,
+                        )
+                    active_count = self.store.active_count()
+                    continue
                 stage = "running_label"
                 self.github.set_status(
                     issue.number,
@@ -2178,18 +2290,33 @@ class TaskQueuePilot:
                     outcome = ExecutionResult(outcome, "completed" if outcome == 0 else "blocked", None, "")
                 exit_code = outcome.exit_code
                 if exit_code == 0 and outcome.outcome == "completed":
-                    try:
-                        local_sha = _publish_validated_task_branch(
-                            self.repository_root, Path(packet.workspace.path), issue.number,
-                            base_sha=str(self.store.get(issue.number)["base_sha"]),
-                        )
-                        remote_sha = self.github.branch_sha(self.repository_root, packet.workspace.branch)
-                    except Exception:
+                    binding_error = self.store.packet_binding_error(packet, check_session=False)
+                    if binding_error:
                         local_sha = None
                         remote_sha = None
+                        publication_cause = "coordinator-task-packet-identity-mismatch"
+                        publication_details = {
+                            "stage": "coordinator_publish", "reason_code": binding_error,
+                        }
+                    else:
+                        try:
+                            local_sha = _publish_validated_task_branch(
+                                self.repository_root, Path(packet.workspace.path), issue.number,
+                                base_sha=str(self.store.get(issue.number)["base_sha"]),
+                            )
+                            remote_sha = self.github.branch_sha(
+                                self.repository_root, packet.workspace.branch,
+                            )
+                        except Exception:
+                            local_sha = None
+                            remote_sha = None
+                        publication_cause = "coordinator-task-branch-publication-failed"
+                        publication_details = None
                     if local_sha is None or remote_sha != local_sha:
-                        cause = "coordinator-task-branch-publication-failed"
-                        row = self.store.fail(issue.number, cause)
+                        row = self.store.fail(
+                            issue.number, publication_cause,
+                            event_details=publication_details,
+                        )
                         self._set_outcome_label(issue.number, str(row["status"]))
                         if row["status"] == "blocked":
                             self._emit_closeout(

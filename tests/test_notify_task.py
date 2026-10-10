@@ -647,18 +647,51 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertTrue(post.full_url.endswith("/issues/44/comments"))
         self.assertEqual(notify_task._closeout_target(self._closeout_event(status="blocked")), (44, "Issue"))
 
-    def test_noncompleted_pr_closeout_requires_origin_issue_reference(self) -> None:
-        transport, _, counts = self._mock_closeout_transport(pr_body="Unrelated PR description")
+    def test_subtask_closeout_with_pr_metadata_does_not_require_pr_body_reference(self) -> None:
+        transport, requests, counts = self._mock_closeout_transport(
+            pr_body="Unrelated PR description",
+        )
+        for index, status in enumerate(("blocked", "completed")):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                with patch.object(notify_task, "_open_request", side_effect=transport):
+                    result = notify_task.persist_task_closeout(
+                        self._closeout_event(
+                            task_kind="experiment", status=status,
+                            task_id="issue-44-contact-experiment",
+                            attempt_id=f"00000000-0000-4000-8000-00000000001{index}",
+                        ),
+                        environ=self._settings(directory),
+                    )
+                self.assertEqual(result.state, "persisted")
+                self.assertEqual(
+                    notify_task._closeout_target(self._closeout_event(
+                        task_kind="experiment", status=status,
+                        task_id="issue-44-contact-experiment",
+                        attempt_id=f"00000000-0000-4000-8000-00000000001{index}",
+                    )),
+                    (44, "Issue"),
+                )
+                self.assertEqual(counts["github_post"], index + 1)
+                self.assertEqual(counts["mail_post"], 0)
+                self.assertTrue(any("/pulls/42" in request.full_url for request in requests))
+                post = [request for request in requests if request.get_method() == "POST"][-1]
+                self.assertTrue(post.full_url.endswith("/issues/44/comments"))
+
+    def test_completed_review_closeout_does_not_need_issue_closing_keyword(self) -> None:
+        transport, requests, counts = self._mock_closeout_transport(
+            pr_body="Review notes only; no Issue closing keyword.",
+        )
+        event = self._closeout_event(task_kind="review")
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 result = notify_task.persist_task_closeout(
-                    self._closeout_event(status="blocked"),
-                    environ=self._settings(directory),
+                    event, environ=self._settings(directory),
                 )
-        self.assertEqual(result.state, "failed")
-        self.assertIn("must reference the originating Issue", result.message)
-        self.assertEqual(counts["github_post"], 0)
-        self.assertEqual(counts["mail_post"], 0)
+        self.assertEqual(result.state, "persisted")
+        self.assertEqual(notify_task._closeout_target(event), (42, "PR"))
+        self.assertEqual(counts["github_post"], 1)
+        post = next(request for request in requests if request.get_method() == "POST")
+        self.assertTrue(post.full_url.endswith("/issues/42/comments"))
 
     def test_pr_closing_reference_validation_accepts_only_real_canonical_references(self) -> None:
         task_id = "issue-44-unified-task-closeout"

@@ -732,11 +732,13 @@ def _without_inline_code_spans(text: str) -> str:
 
 def _closeout_target(event: Mapping[str, object]) -> tuple[int, str]:
     pr_number = event.get("pr_number")
-    # A non-pass event belongs on the Issue so it cannot auto-close on merge.
+    # Only implementation completion can close its Issue. A review result may
+    # live on its PR; experiment/research/audit outcomes belong to the Issue.
     if (
         isinstance(pr_number, int)
         and not isinstance(pr_number, bool)
         and event.get("status") == "completed"
+        and event.get("task_kind") in {"implementation", "review"}
     ):
         return pr_number, "PR"
     task_id = str(event["task_id"])
@@ -877,17 +879,15 @@ def persist_task_closeout(
                 or head.get("ref") != event["branch"]
             ):
                 return PersistenceResult("failed", "closeout branch/head_sha do not match the current pull request head")
-            if event["status"] == "completed" and not _pr_closes_task_issue(
-                pull, str(event["task_id"]),
+            if (
+                event["status"] == "completed"
+                and event["task_kind"] == "implementation"
+                and not _pr_closes_task_issue(
+                    pull, str(event["task_id"]),
+                )
             ):
                 return PersistenceResult(
                     "failed", "pull request description must link the originating Issue with a closing keyword"
-                )
-            if event["status"] != "completed" and not _pr_references_task_issue(
-                pull, str(event["task_id"]),
-            ):
-                return PersistenceResult(
-                    "failed", "pull request description must reference the originating Issue"
                 )
         with _task_closeout_lock(str(event["event_id"]), env):
             comments = _list_repository_issue_comments(token)

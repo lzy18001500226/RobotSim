@@ -11,6 +11,7 @@ import threading
 import unittest
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -807,6 +808,84 @@ class TaskQueueTests(unittest.TestCase):
                                       (queue.RUNNING_LABEL, queue.READY_LABEL, queue.RETRY_LABEL,
                                        queue.HUMAN_RETRY_APPROVED), True)])
         self.assertEqual(first["run_id"], persisted["run_id"])
+
+    def test_codex_session_cannot_be_reused_across_task_runs(self) -> None:
+        store = self.store()
+        first_issue = make_issue(49)
+        second_issue = make_issue(50)
+        first = self.claim(store, first_issue)
+        second = self.claim(store, second_issue)
+
+        store.set_codex_session(first_issue.number, "shared-session-fixture")
+        with self.assertRaisesRegex(RuntimeError, "already bound to another task run"):
+            store.set_codex_session(second_issue.number, "shared-session-fixture")
+        with self.assertRaisesRegex(RuntimeError, "already bound to this task run"):
+            store.set_codex_session(first_issue.number, "replacement-session-fixture")
+
+        self.assertEqual(store.get(second_issue.number)["codex_session_id"], "")
+        self.assertEqual(store.get(first_issue.number)["run_id"], first["run_id"])
+        self.assertEqual(store.get(second_issue.number)["run_id"], second["run_id"])
+        store.set_codex_session(second_issue.number, "independent-session-fixture")
+        with self.assertRaisesRegex(RuntimeError, "already bound to this task run"):
+            store.set_codex_session(second_issue.number, "replacement-session-fixture")
+        self.assertEqual(
+            store.set_codex_session(first_issue.number, "shared-session-fixture")["codex_session_id"],
+            "shared-session-fixture",
+        )
+
+    def test_task_packet_binding_rejects_cross_run_and_workspace_identity(self) -> None:
+        store = self.store()
+        task = make_issue(49)
+        row = self.claim(store, task)
+        workspace = queue.workspace_plan(task, self.root / "worktrees")
+        packet = queue.TaskPacket(
+            issue_number=task.number,
+            run_id=str(row["run_id"]),
+            attempt_id=str(row["attempt_id"]),
+            worker_id=str(row["worker_id"]),
+            workspace=workspace,
+            prompt="fixture prompt",
+            result_path=str(self.root / "result.json"),
+            codex_session_id="",
+            workspace_write_roots=queue.ISSUE_WORKSPACE_WRITE_ROOTS.get(task.number),
+        )
+        self.assertIsNone(store.packet_binding_error(packet))
+
+        cases = (
+            (replace(packet, run_id="wrong-run"), "packet_run_id_mismatch"),
+            (replace(packet, attempt_id="wrong-attempt"), "packet_attempt_id_mismatch"),
+            (replace(packet, worker_id="Local01"), "packet_worker_id_mismatch"),
+            (replace(packet, workspace=replace(workspace, issue_number=50)),
+             "packet_workspace_issue_mismatch"),
+            (replace(packet, workspace=replace(workspace, branch="issue/50-task")),
+             "packet_branch_mismatch"),
+            (replace(packet, workspace=replace(workspace, path=str(self.root / "other"))),
+             "packet_workspace_path_mismatch"),
+            (replace(packet, codex_session_id="wrong-session"), "packet_session_id_mismatch"),
+            (replace(packet, workspace_write_roots=("/tmp/unrelated",)),
+             "packet_write_roots_mismatch"),
+        )
+        for candidate, reason in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(store.packet_binding_error(candidate), reason)
+
+    def test_packet_binding_rejection_is_durable_and_blocks_the_run(self) -> None:
+        path = self.root / "packet-rejection.sqlite3"
+        store = queue.RunStore(path)
+        task = make_issue(49)
+        self.claim(store, task)
+        blocked = store.reject_packet_binding(task.number, "packet_worker_id_mismatch")
+        self.assertEqual(blocked["status"], "blocked")
+        store.close()
+
+        reopened = queue.RunStore(path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.get(task.number)["status"], "blocked")
+        event = reopened.events(task.number)[-1]
+        self.assertEqual(event["event_type"], "task_packet_binding_rejected")
+        self.assertEqual(json.loads(event["details_json"]), {
+            "reason_code": "packet_worker_id_mismatch", "stage": "executor_handoff",
+        })
 
     def test_setup_failure_persists_safe_reason_without_exception_text(self) -> None:
         store = self.store()
