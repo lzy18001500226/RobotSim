@@ -33,7 +33,7 @@ The active source mimic equalities map PIP with coefficient `1.33` and DIP with 
 
 ## Initial `mj_forward` And First Ten Steps
 
-Before stepping, `mj_forward` found two palm-to-thumb-MCP contacts at distance `-0.001308099962 m`. There were no joint-limit constraint rows yet; the joints were at the inclusive source boundaries. The configured OPEN torque had the intended positive sign, but contact force dominated it:
+Before stepping, `mj_forward` found two palm-to-thumb-MCP contacts at distance `-0.001308099962 m`. There were no joint-limit constraint rows yet; the joints were at the inclusive source boundaries. The configured OPEN torque had the intended positive sign, but the contact/equality-constrained solve produced negative MCP acceleration. These are coupled generalized forces, so their scalar components should not be naively subtracted to infer acceleration:
 
 | Quantity at commanded t=0 | Gravity off | Gravity on |
 |---|---:|---:|
