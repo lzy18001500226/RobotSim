@@ -1,6 +1,10 @@
 import unittest
 
-from issue46_native_omnihand_minimal_grasp import derived_targets, smoothstep
+from issue46_native_omnihand_minimal_grasp import (
+    FIXED_PALM_PICKUP_GATE,
+    derived_targets,
+    smoothstep,
+)
 
 
 class NativeOmniHandControlMathTests(unittest.TestCase):
@@ -29,6 +33,10 @@ class NativeOmniHandControlMathTests(unittest.TestCase):
         self.assertAlmostEqual(smoothstep(0.5), 0.5)
         self.assertEqual(smoothstep(1.0), 1.0)
         self.assertEqual(smoothstep(2.0), 1.0)
+
+    def test_fixed_palm_fixture_does_not_claim_commanded_pickup(self):
+        self.assertEqual(FIXED_PALM_PICKUP_GATE["status"], "NOT RUN")
+        self.assertIn("no commanded palm or wrist", FIXED_PALM_PICKUP_GATE["reason"])
 
 
 if __name__ == "__main__":

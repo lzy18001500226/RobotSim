@@ -57,6 +57,10 @@ FINGER_KV = 2.4
 TABLE_GEOM = "m0_table_top"
 BOTTLE_BODY = "bottle"
 FINGER_FAMILIES = ("thumb", "index", "middle", "ring", "pinky")
+FIXED_PALM_PICKUP_GATE = {
+    "status": "NOT RUN",
+    "reason": "This fixed-palm fixture has no commanded palm or wrist degree of freedom; pickup requires a separate actuated-palm or mounted-arm experiment.",
+}
 
 OPEN_POSE = {
     "R_thumb_roll_joint": 0.80,
@@ -147,6 +151,12 @@ def write_hand_only_urdf(out_dir: Path) -> tuple[Path, dict[str, object]]:
         raise RuntimeError("right-hand subtree references a link missing from the pinned URDF")
 
     minimal_root = ET.Element("robot", {"name": "x2_native_omnihand_minimal_fixture"})
+    mujoco_extension = ET.SubElement(minimal_root, "mujoco")
+    ET.SubElement(
+        mujoco_extension,
+        "compiler",
+        {"discardvisual": "false", "strippath": "false"},
+    )
     for material in source_root.findall("material"):
         minimal_root.append(material)
     for link in links:
@@ -605,11 +615,12 @@ def run_experiment(mode: str, out_dir: Path) -> dict[str, object]:
     initial_bottle_qpos = data.qpos[
         int(details["bottle_qpos_address"]) : int(details["bottle_qpos_address"]) + 7
     ].copy()
-    initial_bottle_position = np.asarray(data.xpos[int(details["bottle_body_id"])], dtype=float).copy()
     bottle_mass = float(model.body_mass[int(details["bottle_body_id"])])
     robot_weight_n = bottle_mass * GRAVITY_M_S2
     phase_results: list[dict[str, object]] = []
-    gates: dict[str, dict[str, object]] = {}
+    gates: dict[str, dict[str, object]] = {
+        "COMMANDED_PALM_OR_WRIST_LIFT": dict(FIXED_PALM_PICKUP_GATE)
+    }
     stop_reason: str | None = None
     wall_start = time.monotonic()
 
@@ -897,13 +908,13 @@ def run_experiment(mode: str, out_dir: Path) -> dict[str, object]:
                 stop_reason = "multi-digit closure failed held-state tracking/stability gate"
 
         if not stop_reason:
-            contact_hold = step_phase("real_contact_and_load_transfer", 0.65, all_targets, all_targets)
+            contact_hold = step_phase("FIXED_PALM_CONTACT_DIAGNOSTIC", 0.65, all_targets, all_targets)
             phase_results.append(contact_hold)
             family_fractions = contact_hold["final_100ms_finger_contact_fraction_by_family"]
             bilateral = family_fractions["thumb"] >= 0.8 and any(
                 family_fractions[family] >= 0.8 for family in ("index", "middle", "ring", "pinky")
             )
-            set_gate("real_finger_to_bottle_contact", bilateral, contact_hold)
+            set_gate("FIXED_PALM_CONTACT_DIAGNOSTIC", bilateral, contact_hold)
             baseline_table_support = float(open_phase["mean_final_100ms_table_support_force_z_n"] or 0.0)
             final_table_support = float(contact_hold["mean_final_100ms_table_support_force_z_n"] or 0.0)
             final_hand_support_fraction = float(
@@ -914,32 +925,11 @@ def run_experiment(mode: str, out_dir: Path) -> dict[str, object]:
             load_transferred = (
                 bilateral and final_hand_support_fraction >= 0.10 and table_reduction_fraction >= 0.10
             )
-            set_gate("contact_driven_load_transfer", load_transferred, contact_hold)
+            set_gate("PHYSICAL_LOAD_TRANSFER", load_transferred, contact_hold)
             if not bilateral:
                 stop_reason = "no force-bearing thumb/opposing-finger bottle contact"
             elif not load_transferred:
                 stop_reason = "finger contact did not transfer at least 10% of bottle weight"
-
-        if not stop_reason:
-            lift_levels = (("physical_lift_5mm", 0.005, 0.0045), ("physical_lift_30mm", 0.030, 0.027), ("physical_lift_50mm", 0.050, 0.045))
-            for gate_name, _, required_delta in lift_levels:
-                lift_phase = step_phase(gate_name, 0.7 if required_delta <= 0.005 else 0.9, all_targets, all_targets)
-                phase_results.append(lift_phase)
-                measured_lift = float(lift_phase["bottle_end_position_world_m"][2] - initial_bottle_position[2])
-                families = set(lift_phase["finger_contact_families"])
-                # Contact continuity is also visible in the raw trace; require the active hand families to persist.
-                final_families = set(lift_phase["final_100ms_finger_contact_families"])
-                grip_retained = "thumb" in final_families and bool(final_families.intersection({"index", "middle", "ring", "pinky"}))
-                passed = (
-                    measured_lift >= required_delta
-                    and grip_retained
-                    and not lift_phase["final_table_contact"]
-                    and lift_phase["max_penetration_m"] <= PENETRATION_ABORT_M
-                )
-                set_gate(gate_name, passed, {**lift_phase, "measured_bottle_lift_m": measured_lift, "minimum_required_lift_m": required_delta, "grip_retained_at_end": grip_retained, "table_contact_cleared_at_end": not lift_phase["final_table_contact"], "palm_motion_m": 0.0})
-                if not passed:
-                    stop_reason = f"{gate_name} failed: measured bottle lift {measured_lift:.6f} m"
-                    break
 
         render_frame(force=True)
         save_frame(f"final_{mode}.png")
@@ -1009,6 +999,11 @@ def run_experiment(mode: str, out_dir: Path) -> dict[str, object]:
             "bottle_on_canonical_table": True,
             "maximum_penetration_abort_m": PENETRATION_ABORT_M,
             "original_joint_limits_enforced": True,
+        },
+        "experiment_classification": {
+            "FIXED_PALM_CONTACT_DIAGNOSTIC": "contact measurement with palm fixed to world",
+            "PHYSICAL_LOAD_TRANSFER": "measured hand force and table support reduction under fixed-palm contact",
+            "COMMANDED_PALM_OR_WRIST_LIFT": dict(FIXED_PALM_PICKUP_GATE),
         },
         "gates": gates,
         "phases": phase_results,
