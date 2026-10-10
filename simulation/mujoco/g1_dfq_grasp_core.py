@@ -69,6 +69,7 @@ JOINT_LIMIT_TOLERANCE_RAD = 0.0001
 MAX_CONTACT_FORCE_N = 30.0
 MIN_LIFT_M, LIFT_TARGET_M = 0.030, 0.040
 HOLD_SECONDS, LIFT_TIMEOUT_SECONDS = 1.0, 2.5
+PROGRESSIVE_TRANSFER_MEASUREMENT_WINDOW_S = 0.050
 RELEASE_TIMEOUT_SECONDS = 3.0
 RELEASE_SETTLE_DWELL_SECONDS = 0.25
 RELEASE_OPEN_TARGET_TOLERANCE_RAD = 0.03
@@ -1269,6 +1270,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         [], [], [], [], [], [], [], [], []
     )
     transition_trace_rows: list[dict] = []
+    load_baseline_trace_rows: list[dict] = []
     lift_arming_trace_rows: list[dict] = []
     contact_window_rows: list[dict] = []
     load_transfer_rows: list[dict] = []
@@ -2138,6 +2140,26 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 "left_contact": bool(left_contact),
             })
         window_metric = contact_window_summary(list(contact_window_history))
+        if phase == "HOLD":
+            bottle_velocity = np.zeros(6, dtype=float)
+            mujoco.mj_objectVelocity(
+                model, data, mujoco.mjtObj.mjOBJ_BODY, bottle_id, bottle_velocity, 0
+            )
+            load_baseline_trace_rows.append({
+                "time_s": float(data.time),
+                "table_normal_force_n": table_normal_force,
+                "hand_vertical_support_force_n": float(hand_force_world[2]),
+                "bottle_z_m": float(data.xpos[bottle_id][2]),
+                "bottle_linear_velocity_world_m_s": bottle_velocity[3:].tolist(),
+                "bottle_angular_velocity_world_rad_s": bottle_velocity[:3].tolist(),
+                "right_thumb_true_normal_force_n": digit_normal_forces["thumb"],
+                "right_opposing_true_normal_force_n": sum(
+                    digit_normal_forces[digit] for digit in OPPOSING_DIGITS
+                ),
+                "table_supported": int(table_support),
+                "left_hand_contact": int(left_contact),
+                "contact_window_valid": int(window_metric["valid"]),
+            })
         if phase in {"HOLD", "LIFT_ARMING", "LIFT", "POST_LIFT_HOLD"}:
             contact_window_rows.append({
                 "time_s": float(data.time), "phase": phase,
@@ -3773,14 +3795,28 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         lift_origin_z = float(
             settled_bottle_pos[2] if settled_bottle_pos is not None else initial_bottle_pos[2]
         )
+        baseline_window_start_s = (
+            float(transition_hold_start) + CONTACT_VALIDITY_WINDOW_S
+        )
         transfer_baseline_rows = [
-            row for row in transition_trace_rows
-            if row.get("phase") == "HOLD" and row.get("window") == "last_50ms_hold"
+            row for row in load_baseline_trace_rows
+            if row["time_s"] >= baseline_window_start_s - DT * 0.5
         ]
         if direct_arm_lift:
-            if len(transfer_baseline_rows) < 20:
+            block_samples = int(round(PROGRESSIVE_TRANSFER_MEASUREMENT_WINDOW_S / DT))
+            if len(transfer_baseline_rows) < 2 * block_samples:
                 raise GateFailure(
-                    "Cannot establish a measured 50 ms HOLD load baseline before wrist transfer"
+                    "Cannot establish two valid HOLD measurement windows before wrist transfer"
+                )
+            invalid_baseline_row = next((
+                row for row in transfer_baseline_rows
+                if not row["contact_window_valid"] or not row["table_supported"]
+                or row["left_hand_contact"]
+            ), None)
+            if invalid_baseline_row is not None:
+                raise GateFailure(
+                    "HOLD load baseline contains an invalid contact/support sample: "
+                    + json.dumps(invalid_baseline_row, sort_keys=True)
                 )
             baseline_table_values = np.asarray([
                 float(row["table_normal_force_n"]) for row in transfer_baseline_rows
@@ -3788,8 +3824,13 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             baseline_hand_values = np.asarray([
                 float(row["hand_vertical_support_force_n"]) for row in transfer_baseline_rows
             ], dtype=float)
+            baseline_table_noise = gates.nonoverlapping_block_mean_statistics(
+                baseline_table_values, block_samples
+            )
             transfer_baseline_table_n = float(np.mean(baseline_table_values))
-            transfer_baseline_table_sigma_n = float(np.std(baseline_table_values, ddof=1))
+            transfer_baseline_table_sigma_n = float(
+                baseline_table_noise["block_mean_sigma"]
+            )
             transfer_baseline_hand_n = float(np.mean(baseline_hand_values))
             initial_support_target_n = gates.progressive_support_demand_n(
                 transfer_baseline_table_n, bottle_weight_n
@@ -3798,11 +3839,19 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             result["progressive_load_transfer"] = {
                 "status": "RUNNING",
                 "passed": False,
-                "measurement_window_s": 0.050,
-                "baseline_source": "last 50 ms of validated HOLD before wrist motion",
+                "measurement_window_s": PROGRESSIVE_TRANSFER_MEASUREMENT_WINDOW_S,
+                "baseline_source": (
+                    "contiguous validated contact/table-supported samples after the "
+                    "5 ms contact-window warm-up in the 1 s HOLD; "
+                    "sigma is across non-overlapping 50 ms block means"
+                ),
                 "baseline_sample_count": int(len(transfer_baseline_rows)),
                 "baseline_table_normal_force_n": transfer_baseline_table_n,
                 "baseline_table_normal_sigma_n": transfer_baseline_table_sigma_n,
+                "baseline_table_raw_sample_sigma_n": float(
+                    np.std(baseline_table_values, ddof=1)
+                ),
+                "baseline_table_window_mean_statistics": baseline_table_noise,
                 "baseline_hand_vertical_support_force_n": transfer_baseline_hand_n,
                 "minimum_detectable_change_rule": "max(3 * baseline sigma, 1% bottle weight)",
                 "initial_support_target_n": initial_support_target_n,
@@ -3825,7 +3874,17 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 (lift_height_m, f"LIFT_{int(round(lift_height_m * 1000))}MM"),
             ]
             previous_stage_height = 0.0
-            previous_arm_target = approach_q.copy()
+            measured_lift_start_q = np.asarray(data.qpos[arm_qadr], dtype=float).copy()
+            lift_joint_delta_q = lift_q - approach_q
+            previous_arm_target = measured_lift_start_q.copy()
+            if direct_arm_lift:
+                result["progressive_load_transfer"]["arm_trajectory_reference"] = {
+                    "source": "measured right-arm qpos at the end of validated HOLD",
+                    "measured_start_qpos_rad": measured_lift_start_q.tolist(),
+                    "approach_ik_target_qpos_rad": np.asarray(approach_q, dtype=float).tolist(),
+                    "lift_ik_target_qpos_rad": np.asarray(lift_q, dtype=float).tolist(),
+                    "ik_derived_full_lift_delta_rad": lift_joint_delta_q.tolist(),
+                }
             live_load_ready = False
             for stage_height, stage_name in stage_targets:
                 current_load_stage_name = stage_name
@@ -3835,7 +3894,13 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     LIFT_TIMEOUT_SECONDS * segment_fraction,
                 )
                 stage_steps = max(1, int(math.ceil(stage_duration / DT)))
-                stage_arm_target = approach_q + (stage_height / lift_height_m) * (lift_q - approach_q)
+                stage_arm_target = gates.anchored_lift_joint_target(
+                    measured_lift_start_q,
+                    approach_q,
+                    lift_q,
+                    stage_height,
+                    lift_height_m,
+                )
 
                 def current_support_demand_n() -> float:
                     current_contacts = bottle_contacts(model, data)
@@ -4636,6 +4701,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         write_csv(output / "bottle_pose_trace.csv", bottle_rows)
         write_csv(output / "right_arm_trace.csv", arm_rows)
         write_csv(output / "hold_lift_transition_trace.csv", transition_trace_rows)
+        write_csv(output / "load_baseline_trace.csv", load_baseline_trace_rows)
         write_csv(output / "lift_arming_trace.csv", lift_arming_trace_rows)
         write_csv(output / "contact_window_trace.csv", contact_window_rows)
         write_csv(output / "load_transfer_trace.csv", load_transfer_rows)

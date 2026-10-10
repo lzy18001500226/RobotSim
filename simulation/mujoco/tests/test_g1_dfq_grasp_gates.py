@@ -5,6 +5,7 @@ import numpy as np
 from simulation.mujoco.g1_dfq_grasp_gates import (
     CHANNELS,
     GATE_NAMES,
+    anchored_lift_joint_target,
     contact_window_allows_transfer,
     evaluate_gates,
     effort_handoff_references,
@@ -13,6 +14,7 @@ from simulation.mujoco.g1_dfq_grasp_gates import (
     live_contact_signature,
     load_ready_summary,
     minimum_safe_brake_scale,
+    nonoverlapping_block_mean_statistics,
     progressive_load_transfer_summary,
     progressive_support_demand_n,
     select_effort_feedforward,
@@ -143,6 +145,50 @@ class GraspGateTests(unittest.TestCase):
         ]
         result = progressive_load_transfer_summary(5.59, 0.01, 0.0, rows, 5.59)
         self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "physical_load_transfer_not_detected")
+
+    def test_progressive_transfer_reports_unusable_baseline_separately(self):
+        rows = [
+            {"table_normal_force_n": 5.0, "hand_vertical_support_force_n": 0.6},
+            {"table_normal_force_n": 4.9, "hand_vertical_support_force_n": 0.7},
+        ]
+        result = progressive_load_transfer_summary(5.59, 0.20, 0.0, rows, 5.59)
+        self.assertFalse(result["passed"])
+        self.assertFalse(result["baseline_noise_usable"])
+        self.assertTrue(result["physical_load_transfer_detected"])
+        self.assertEqual(result["reason"], "baseline_noise_exceeds_usability_ceiling")
+
+    def test_baseline_noise_uses_variability_of_matching_window_means(self):
+        values = [1.0, 3.0, 1.0, 3.0, 2.0, 4.0, 2.0, 4.0, 0.0]
+        result = nonoverlapping_block_mean_statistics(values, block_samples=4)
+        self.assertEqual(result["block_means"], [2.0, 3.0])
+        self.assertAlmostEqual(result["block_mean_sigma"], 2.0**-0.5)
+        self.assertEqual(result["used_sample_count"], 8)
+        self.assertEqual(result["discarded_sample_count"], 1)
+
+    def test_baseline_noise_requires_two_finite_complete_blocks(self):
+        with self.assertRaises(ValueError):
+            nonoverlapping_block_mean_statistics([1.0, 2.0, 3.0], block_samples=2)
+        with self.assertRaises(ValueError):
+            nonoverlapping_block_mean_statistics([1.0, float("nan")], block_samples=1)
+
+    def test_staged_lift_target_anchors_ik_delta_at_measured_pose(self):
+        measured = np.array([0.4, -0.2, 0.1])
+        approach = np.array([0.3, -0.2, 0.1])
+        lift = np.array([0.6, 0.0, 0.4])
+        start_target = anchored_lift_joint_target(measured, approach, lift, 0.0, 0.03)
+        first_stage = anchored_lift_joint_target(measured, approach, lift, 0.0001, 0.03)
+        final_target = anchored_lift_joint_target(measured, approach, lift, 0.03, 0.03)
+        np.testing.assert_allclose(start_target, measured)
+        np.testing.assert_allclose(first_stage, measured + (0.0001 / 0.03) * (lift - approach))
+        np.testing.assert_allclose(final_target, measured + (lift - approach))
+
+    def test_staged_lift_target_rejects_invalid_height_or_joint_vectors(self):
+        start = np.zeros(2)
+        with self.assertRaises(ValueError):
+            anchored_lift_joint_target(start, start, start, 0.04, 0.03)
+        with self.assertRaises(ValueError):
+            anchored_lift_joint_target(start, np.zeros(3), start, 0.01, 0.03)
 
     def test_progressive_transfer_requires_stable_contacts_and_left_hand_clear(self):
         rows = [

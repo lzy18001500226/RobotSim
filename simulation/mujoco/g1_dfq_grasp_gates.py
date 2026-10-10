@@ -69,6 +69,50 @@ def minimum_safe_brake_scale(peak_at_scale, ceiling: float, *, iterations: int =
     return high
 
 
+def nonoverlapping_block_mean_statistics(values, block_samples: int) -> dict:
+    """Estimate measurement-window variability from complete non-overlapping blocks."""
+    samples = np.asarray(values, dtype=float).reshape(-1)
+    if block_samples <= 0:
+        raise ValueError("block_samples must be positive")
+    if samples.size == 0 or not np.all(np.isfinite(samples)):
+        raise ValueError("baseline samples must be non-empty and finite")
+    block_count = int(samples.size // block_samples)
+    if block_count < 2:
+        raise ValueError("at least two complete baseline blocks are required")
+    used_samples = block_count * block_samples
+    block_means = samples[:used_samples].reshape(block_count, block_samples).mean(axis=1)
+    return {
+        "block_samples": int(block_samples),
+        "block_count": block_count,
+        "used_sample_count": used_samples,
+        "discarded_sample_count": int(samples.size - used_samples),
+        "block_means": block_means.tolist(),
+        "block_mean_sigma": float(np.std(block_means, ddof=1)),
+    }
+
+
+def anchored_lift_joint_target(
+    measured_start_q: np.ndarray,
+    approach_q: np.ndarray,
+    lift_q: np.ndarray,
+    stage_height_m: float,
+    total_height_m: float,
+) -> np.ndarray:
+    """Apply the IK-derived lift delta from the measured arm pose at lift start."""
+    start = np.asarray(measured_start_q, dtype=float)
+    approach = np.asarray(approach_q, dtype=float)
+    lift = np.asarray(lift_q, dtype=float)
+    if start.ndim != 1 or approach.shape != start.shape or lift.shape != start.shape:
+        raise ValueError("measured start, approach, and lift joint vectors must have equal 1D shape")
+    if not np.all(np.isfinite(start)) or not np.all(np.isfinite(approach)) or not np.all(np.isfinite(lift)):
+        raise ValueError("lift joint vectors must be finite")
+    if not math.isfinite(stage_height_m) or not math.isfinite(total_height_m) or total_height_m <= 0.0:
+        raise ValueError("lift heights must be finite and total_height_m must be positive")
+    if stage_height_m < 0.0 or stage_height_m > total_height_m:
+        raise ValueError("stage_height_m must lie within the requested lift")
+    return start + (stage_height_m / total_height_m) * (lift - approach)
+
+
 def progressive_load_transfer_summary(
     baseline_table_normal_n: float,
     baseline_table_sigma_n: float,
@@ -101,17 +145,26 @@ def progressive_load_transfer_summary(
         minimum_change_fraction * bottle_weight_n,
     )
     noise_usable = minimum_detectable_change <= maximum_noise_fraction * bottle_weight_n
+    physical_transfer_detected = bool(
+        table_drop >= minimum_detectable_change
+        and hand_rise >= minimum_detectable_change
+    )
     passed = bool(
         noise_usable
         and contact_windows_valid
         and left_hand_clear
-        and table_drop >= minimum_detectable_change
-        and hand_rise >= minimum_detectable_change
+        and physical_transfer_detected
+    )
+    reason = (
+        "measured_table_unload_matches_upward_hand_support" if passed else
+        "baseline_noise_exceeds_usability_ceiling" if not noise_usable else
+        "invalid_contact_window" if not contact_windows_valid else
+        "left_hand_contact_detected" if not left_hand_clear else
+        "physical_load_transfer_not_detected"
     )
     return {
         "passed": passed,
-        "reason": "measured_table_unload_matches_upward_hand_support"
-        if passed else "load_transfer_below_noise_aware_threshold",
+        "reason": reason,
         "baseline_table_normal_force_n": float(baseline_table_normal_n),
         "baseline_table_sigma_n": float(baseline_table_sigma_n),
         "baseline_hand_vertical_support_force_n": float(baseline_hand_support_n),
@@ -121,6 +174,8 @@ def progressive_load_transfer_summary(
         "measured_hand_support_increase_n": hand_rise,
         "minimum_detectable_change_n": minimum_detectable_change,
         "maximum_allowed_baseline_noise_n": maximum_noise_fraction * bottle_weight_n,
+        "baseline_noise_usable": noise_usable,
+        "physical_load_transfer_detected": physical_transfer_detected,
         "contact_windows_valid": contact_windows_valid,
         "left_hand_clear": left_hand_clear,
         "sample_count": int(len(stage_rows)),
