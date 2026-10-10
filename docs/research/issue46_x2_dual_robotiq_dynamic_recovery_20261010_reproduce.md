@@ -2,12 +2,14 @@
 
 These commands use the exact branch checkout, pinned Python/MuJoCo runtime, controller helper snapshot, and vendor source checkouts recorded in the result JSON. Choose fresh, empty output paths; do not point them at the preserved evidence directories.
 
+Set `EVIDENCE_DIR` to the root of the accompanying local evidence packet before running these commands. The packet contains the controller helper snapshot and canonical scene helper.
+
 ```bash
 cd /home/lzy18001500226/robotsim-issue46-x2-robotiq-m0-20261009
 MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python \
   scripts/research/issue46_x2_robotiq_coupler_recovery.py \
-  --output-dir /tmp/robotsim-issue46-dual-robotiq-recovery-replay-source \
-  --controller-helper-snapshot /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-dual-robotiq-recovery-20261010/source/snapshots/issue46_x2_robotiq_m0_5954a772.py \
+  --output-dir "${TMPDIR:-/tmp}/robotsim-issue46-dual-robotiq-recovery-replay-source" \
+  --controller-helper-snapshot "${EVIDENCE_DIR}/source/snapshots/issue46_x2_robotiq_m0_5954a772.py" \
   --menagerie-xml /home/lzy18001500226/.cache/robotsim/research/issue46-x2-robotiq-m0-20261009/sources/mujoco_menagerie/robotiq_2f85/2f85.xml \
   --coupler-margin-rad 0.001
 ```
@@ -18,12 +20,12 @@ This rebuilds the dual assembly from pinned source, records the source-faithful 
 cd /home/lzy18001500226/robotsim-issue46-x2-robotiq-m0-20261009
 MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python \
   scripts/research/issue46_x2_robotiq_coupler_recovery.py \
-  --output-dir /tmp/robotsim-issue46-dual-robotiq-recovery-replay-diagnostic \
-  --controller-helper-snapshot /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-dual-robotiq-recovery-20261010/source/snapshots/issue46_x2_robotiq_m0_5954a772.py \
+  --output-dir "${TMPDIR:-/tmp}/robotsim-issue46-dual-robotiq-recovery-replay-diagnostic" \
+  --controller-helper-snapshot "${EVIDENCE_DIR}/source/snapshots/issue46_x2_robotiq_m0_5954a772.py" \
   --menagerie-xml /home/lzy18001500226/.cache/robotsim/research/issue46-x2-robotiq-m0-20261009/sources/mujoco_menagerie/robotiq_2f85/2f85.xml \
   --coupler-margin-rad 0.001 \
   --exclude-known-head-torso-source-contact \
-  --canonical-helper /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-dual-robotiq-recovery-20261010/source/canonical_manipulation_assets.py
+  --canonical-helper "${EVIDENCE_DIR}/source/canonical_manipulation_assets.py"
 ```
 
 The second command reproduces the SIMULATION_ONLY dynamic left/right/both cycles and the static 101-sample canonical workcell clearance check. The right-wrist/follower collision and wrist/bottle penetration remain expected failures. It does not run bottle physics.

@@ -65,8 +65,4 @@ The adapter also uses the official tool mount transform `[0.00196, 0.00035, -0.0
 
 ## Evidence and Reproduction
 
-Raw outputs, exact XMLs, controller snapshot, traces, screenshots, and actuator-driven MP4s are in the external packet:
-
-`C:\Users\HP\Desktop\Robot\reviews\issue-46-x2-dual-robotiq-recovery-20261010\`
-
-See `REPRODUCE.md` in that packet for commands. `SHA256SUMS.txt` inventories the copied files. The report-only previous 50 mm claim is retained separately from verified raw evidence. Issue #46 remains open; PR #58 was not modified.
+Raw outputs, exact XMLs, controller snapshot, traces, screenshots, and actuator-driven MP4s are in the separate Windows-side evidence packet supplied with this closeout. `SHA256SUMS.txt` inventories the copied files. The report-only previous 50 mm claim is retained separately from verified raw evidence. Issue #46 remains open; PR #58 was not modified.
