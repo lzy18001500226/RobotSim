@@ -216,7 +216,8 @@ def _add_fixture_lock(spec: mujoco.MjSpec, joint_name: str) -> None:
     lock.solref = list(MIMIC_SOLREF_DIRECT)
 
 
-def build_model(source_urdf: Path, out_dir: Path, full_x2: bool = False, timestep_s: float = DT) -> tuple[mujoco.MjModel, dict[str, Any]]:
+def build_model(source_urdf: Path, out_dir: Path, full_x2: bool = False, timestep_s: float = DT,
+                exclude_fixture_root_contact: bool = True) -> tuple[mujoco.MjModel, dict[str, Any]]:
     source_root = ET.parse(source_urdf).getroot()
     all_source_joints, all_relations = source_records(source_root)
     if full_x2:
@@ -247,6 +248,10 @@ def build_model(source_urdf: Path, out_dir: Path, full_x2: bool = False, timeste
         spec.worldbody.add_geom(name="fixture_floor", type=mujoco.mjtGeom.mjGEOM_PLANE,
                                 size=[0.0, 0.0, 0.05], friction=[1.0, 0.01, 0.001],
                                 condim=4, rgba=[0.24, 0.27, 0.30, 1.0])
+        if exclude_fixture_root_contact:
+            # The pinned collision proxies overlap at this fixture's reference pose.
+            spec.add_exclude(name="fixture_overlapping_palm_thumb_mcp",
+                             bodyname1="R_palm", bodyname2="R_thumb_mcp")
 
     probe = spec.compile()
     source_mappings = {name: _mapping(probe, joint) for name, joint in selected_joints.items()}
@@ -295,6 +300,8 @@ def build_model(source_urdf: Path, out_dir: Path, full_x2: bool = False, timeste
     info = {
         "full_x2": full_x2,
         "fixture_locks": list(FIXTURE_LOCKS),
+        "fixture_contact_exclusions": [["R_palm", "R_thumb_mcp"]]
+        if not full_x2 and exclude_fixture_root_contact else [],
         "dimensions": {key: int(getattr(model, key)) for key in ("nq", "nv", "nu", "neq", "nbody", "ngeom", "nmesh")},
         "subtree": subtree, "mimic_relations": mimic_specs, "source_joint_mappings": source_mappings,
         "driver_mapping": driver_map, "driver_actuator_id": driver_actuator,
@@ -544,6 +551,7 @@ def run_experiment(source_urdf: Path, out_dir: Path, full_x2: bool = False, vide
     result = {
         "status": "PASS" if all(gates.values()) else "FAIL",
         "mode": "full_x2_context" if full_x2 else "minimal_right_thumb_fixture",
+        "fixture_contact_exclusions": info["fixture_contact_exclusions"],
         "mujoco_version": mujoco.__version__, "dimensions": info["dimensions"],
         "source_pin": SOURCE_PIN, "source_urdf_sha256": SOURCE_SHA256,
         "physics": {key: info[key] for key in ("timestep_s", "integrator", "solver", "solver_iterations", "solver_tolerance", "gravity_m_s2")},
