@@ -1,0 +1,82 @@
+{
+  "issue": 46,
+  "starting_head": "1eb9f2f1671a209c5873094293f161b926f1a31b",
+  "branch": "research/issue46-dual-robotiq-recovery-20261010",
+  "status": "BLOCKED_BEFORE_ADAPTER_CONSTRUCTION",
+  "classification": "No rigid translation adapter satisfied the tested right-arm collision-clearance constraints",
+  "scope": {
+    "source_files_modified": false,
+    "production_files_modified": false,
+    "pr_58_modified": false,
+    "new_adapter_xml_built": false,
+    "new_adapter_dynamic_cycle_run": false,
+    "bottle_corridor_run": false,
+    "physical_pickup_run": false
+  },
+  "source": {
+    "agibot_commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+    "menagerie_commit": "0059d4335f8156206f63a35662313385f7ad6d74",
+    "geometry_runner_sha256": "5d166b6d503b67f6cc2d82c90dce4b0b43890ba4fc01847bb63afc622919c7e9",
+    "compiled_baseline_sha256": "f99328cd16680aced60196a8ccd87ea1b875a021890b059e6d988f237e1b25ad",
+    "trace_sha256": "ceffbcb5fbab8b208b34f02acf6229b7bfc323c410e6a9879febde1dc96934ff",
+    "runtime": {
+      "python": "3.10.12",
+      "mujoco_python": "3.3.6",
+      "mujoco_native": "3.3.6",
+      "mujoco_gl": "egl"
+    }
+  },
+  "geometry": {
+    "baseline_minimum_signed_distance_mm": -28.949390884523134,
+    "baseline_pair": ["right_wrist_roll_link", "rq_right_right_spring_link"],
+    "baseline_step": 961,
+    "source_insertion_axis_at_50mm_minimum_mm": -14.437354975257312,
+    "saved_contact_normal_at_50mm_minimum_mm": -34.83247330047386,
+    "worst_envelope_normal_profile_minimum_mm": [-33.454394988538784, -32.383776195996146],
+    "translation_solve_50mm": {
+      "solver_success": false,
+      "returned_translation_parent_mm": [-36.99680348517648, 11.775016419313554, -49.999999999981656],
+      "returned_norm_mm": 63.30414267482055,
+      "violated_radius_cap_mm": 50,
+      "worst_critical_clearance_mm": -0.9420096084855002
+    },
+    "translation_solve_75mm": {
+      "solver_success": false,
+      "message": "Inequality constraints incompatible",
+      "returned_translation_parent_mm": [-61.1333826053188, 6.552749391203952, -1.5867212142887538],
+      "returned_norm_mm": 61.50403789641858,
+      "worst_critical_distance_mm": 0.0,
+      "other_wrist_spring_distance_mm": 2.6284988489663407,
+      "required_clearance_mm": 3.0
+    },
+    "bracket_dimensions_mm": null
+  },
+  "prior_dynamic_evidence": {
+    "left_open_close": "PASS in retained prior diagnostic run; 1700 steps",
+    "original_right_mount": "FAIL at step 584; 0.085261 mm penetration; 15.369 N; 43.915 mm pad gap at stop",
+    "local_y_halfturn_candidate": "FAIL; wrist/elbow contacts; right gap stalled at 88.298 mm from 93.400 mm",
+    "source_faithful_couplers": "FAIL; unchanged",
+    "simulation_only_coupler_margin": "previously authorized 0.001 rad diagnostic treatment; unchanged"
+  },
+  "bottle": {
+    "prior_static_corridor_minimum_clearance_mm": -15.36,
+    "current_corridor_status": "NOT RUN",
+    "contact_lift_transfer_release": "NOT RUN",
+    "unverified_prior_50mm_lift_claim_repeated": false
+  },
+  "evidence": {
+    "report": "REPORT.md",
+    "reproduction": "REPRODUCE.md",
+    "checksums": "SHA256SUMS.txt",
+    "raw_geometry_directories": [
+      "insertion-axis/",
+      "contact-normal/",
+      "worst-envelope-normal/",
+      "translation-solver/",
+      "translation-solver-75mm/",
+      "runner_validation_final_runner/"
+    ],
+    "new_candidate_render_or_video": false,
+    "prior_render_images_are_labeled_as_reference": true
+  }
+}
