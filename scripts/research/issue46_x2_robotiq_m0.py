@@ -148,7 +148,63 @@ def robotiq_axes(menagerie_xml: Path) -> dict[str, Any]:
     }
 
 
-def namespace_menagerie(root: ET.Element, men: ET.Element, men_root: Path, axes: dict[str, Any]) -> ET.Element:
+def official_tool_mount(tool_urdf: Path) -> dict[str, Any]:
+    urdf = ET.parse(tool_urdf).getroot()
+    joint = next((node for node in urdf.findall("joint")
+                  if node.get("name") == "R_omnipicker_joint"), None)
+    if joint is None or joint.get("type") != "fixed":
+        raise RuntimeError("Pinned X2 tool URDF has no fixed R_omnipicker_joint")
+    parent = joint.find("parent")
+    child = joint.find("child")
+    origin = joint.find("origin")
+    if parent is None or child is None or origin is None:
+        raise RuntimeError("Pinned X2 tool mount is missing a parent, child, or origin")
+    if parent.get("link") != "right_wrist_roll_link" or child.get("link") != "R_omnipicker_base_link":
+        raise RuntimeError("Pinned X2 tool mount does not connect the right wrist to the OmniPicker base")
+    xyz = np.asarray([float(value) for value in origin.get("xyz", "0 0 0").split()])
+    rpy = np.asarray([float(value) for value in origin.get("rpy", "0 0 0").split()])
+    return {
+        "joint": joint.get("name"), "parent": parent.get("link"), "child": child.get("link"),
+        "xyz_m": xyz.tolist(), "rpy_rad": rpy.tolist(),
+        "rotation_matrix": Rotation.from_euler("xyz", rpy).as_matrix().tolist(),
+    }
+
+
+def replace_tool_variant_wrist_visual(root: ET.Element, x2_mesh_dir: Path) -> dict[str, Any]:
+    """Use the official tool-variant wrist visual while retaining its source collision mesh."""
+    wrist = root.find('.//body[@name="right_wrist_roll_link"]')
+    if wrist is None:
+        raise RuntimeError("X2 MJCF has no right_wrist_roll_link")
+    if wrist.findall("body"):
+        raise RuntimeError("Pinned source unexpectedly has a right-wrist child subtree; audit/removal is required")
+    visuals = [geom for geom in wrist.findall("geom") if geom.get("class") == "visual"]
+    collisions = [geom for geom in wrist.findall("geom") if geom.get("class") == "collision"]
+    if len(visuals) != 1 or len(collisions) != 1:
+        raise RuntimeError("Expected one visual and one collision geom on the pinned right wrist")
+    if visuals[0].get("mesh") != "right_wrist_roll_link" or collisions[0].get("mesh") != "right_wrist_roll_link":
+        raise RuntimeError("Pinned right-wrist mesh pair differs from the audited source model")
+    visual_mesh_name = "rq_x2_right_wrist_roll_extend_visual"
+    mesh_path = (x2_mesh_dir / "right_wrist_roll_extend_link.stl").resolve()
+    if not mesh_path.is_file():
+        raise RuntimeError(f"Official tool-variant wrist visual is missing: {mesh_path}")
+    asset = root.find("asset")
+    if asset is None or asset.find(f'./mesh[@name="{visual_mesh_name}"]') is not None:
+        raise RuntimeError("Cannot add a unique tool-variant wrist visual mesh asset")
+    ET.SubElement(asset, "mesh", {"name": visual_mesh_name, "file": str(mesh_path)})
+    visuals[0].set("mesh", visual_mesh_name)
+    return {
+        "visual_mesh_before": "right_wrist_roll_link.stl",
+        "visual_mesh_after": "right_wrist_roll_extend_link.stl",
+        "collision_mesh_before": "right_wrist_roll_link.stl",
+        "collision_mesh_after": "right_wrist_roll_link.stl",
+        "separate_right_hand_body_subtree_in_pinned_mjcf": False,
+        "right_hand_joint_actuator_tendon_equality_counts_in_pinned_mjcf": [0, 0, 0, 0],
+        "wrist_body_and_joint_retained": True,
+    }
+
+
+def namespace_menagerie(root: ET.Element, men: ET.Element, men_root: Path,
+                         x2_mesh_dir: Path, axes: dict[str, Any]) -> ET.Element:
     classes = {e.get("class") for e in men.iter("default") if e.get("class")}
     names = {e.get("name") for e in men.iter() if e.get("name")}
     asset_meshes = men.findall("./asset/mesh")
@@ -175,13 +231,14 @@ def namespace_menagerie(root: ET.Element, men: ET.Element, men_root: Path, axes:
     mount = copy.deepcopy(men.find("./worldbody/body"))
     if mount is None:
         raise RuntimeError("Menagerie model has no base_mount body")
-    mount.set("pos", " ".join(f"{v:.12g}" for v in TOOL_POS))
+    mount.set("pos", " ".join(f"{v:.12g}" for v in axes["adapter_translation_in_right_wrist_frame_m"]))
     adapter_quat = axes["mount_quat_wxyz"]
     mount.set("quat", " ".join(f"{v:.12g}" for v in adapter_quat))
     ET.SubElement(mount, "site", {
         "name": "rq_m0_tcp", "pos": " ".join(f"{v:.12g}" for v in axes["tcp_pad_midpoint_local_m"]),
         "size": "0.006", "rgba": "1 0.2 0.1 1", "group": "5",
     })
+    axes["right_wrist_tool_geometry"] = replace_tool_variant_wrist_visual(root, x2_mesh_dir)
     wrist = root.find('.//body[@name="right_wrist_roll_link"]')
     if wrist is None:
         raise RuntimeError("X2 MJCF has no right_wrist_roll_link")
@@ -274,16 +331,8 @@ def identity(args, helper: Path) -> dict[str, Any]:
     xroot = ET.parse(x2_urdf).getroot()
     mesh_names = sorted({Path(node.get("filename", "")).name for node in xroot.findall(".//mesh")})
     men_assets = sorted((args.menagerie_root / "robotiq_2f85/assets").glob("*.stl"))
-    mount_joint = None
-    urdf_tool = ET.parse(tool_urdf).getroot()
-    for joint in urdf_tool.findall("joint"):
-        if joint.get("name") == "R_omnipicker_joint":
-            origin = joint.find("origin")
-            mount_joint = {"name": joint.get("name"), "parent": joint.find("parent").get("link"),
-                           "child": joint.find("child").get("link"), "xyz": origin.get("xyz"), "rpy": origin.get("rpy")}
-            break
-    if mount_joint is None or mount_joint["parent"] != "right_wrist_roll_link":
-        raise RuntimeError("Could not verify official right tool mounting frame")
+    mount_joint = official_tool_mount(tool_urdf)
+    tool_wrist_mesh = args.x2_root / X2_MJCF.parent / "meshes" / "right_wrist_roll_extend_link.stl"
     urdf_joints = {}
     for joint in xroot.findall("joint"):
         limit = joint.find("limit")
@@ -302,6 +351,9 @@ def identity(args, helper: Path) -> dict[str, Any]:
         "x2_urdf": str(X2_URDF), "x2_urdf_sha256": sha256(x2_urdf),
         "x2_tool_variant_urdf": str(X2_TOOL_URDF), "x2_tool_variant_urdf_sha256": sha256(tool_urdf),
         "x2_license": "Mulan PSL v2", "x2_mesh_sha256": {n: sha256(args.x2_root / X2_MJCF.parent / "meshes" / n) for n in mesh_names},
+        "tool_variant_right_wrist_visual_mesh": {
+            "path": "meshes/right_wrist_roll_extend_link.stl", "sha256": sha256(tool_wrist_mesh),
+        },
         "official_x2_tool_mount": mount_joint,
         "robotiq_repository": "https://github.com/google-deepmind/mujoco_menagerie", "menagerie_checkout": men_repo,
         "robotiq_model": str(MENAGERIE_MJCF), "robotiq_xml_sha256": sha256(men_path),
@@ -336,6 +388,10 @@ def build_model(args, out: Path, canonical) -> tuple[mujoco.MjModel, dict[str, A
                 neutral_x2, neutral_data, head_geom, torso_geom, 0.5, np.zeros(6)))
             source_pair_distances.append({"head_geom_id": head_geom, "torso_geom_id": torso_geom,
                                           "distance_m": distance})
+    official_mount = official_tool_mount(args.x2_root / X2_TOOL_URDF)
+    tool_translation = np.asarray(official_mount["xyz_m"], dtype=float)
+    if not np.allclose(tool_translation, TOOL_POS, atol=1e-9, rtol=0.0):
+        raise RuntimeError("Legacy adapter translation no longer matches the pinned X2 tool-mount URDF")
     neutral_wrist_id = obj_id(neutral_x2, mujoco.mjtObj.mjOBJ_BODY, "right_wrist_roll_link")
     neutral_wrist_rotation = (base_yaw_rotation @
                               neutral_data.xmat[neutral_wrist_id].reshape(3, 3).copy())
@@ -362,10 +418,39 @@ def build_model(args, out: Path, canonical) -> tuple[mujoco.MjModel, dict[str, A
     option.set("gravity", f"0 0 {-GRAVITY}")
     men = ET.parse(men_path).getroot()
     axes = robotiq_axes(men_path)
-    source_forward_rotation = np.asarray(axes["mount_rotation_matrix"], dtype=float)
-    desired_world_rotation = base_yaw_rotation @ source_forward_rotation
-    mount_rotation_in_wrist = neutral_wrist_rotation.T @ desired_world_rotation
+    canonical_grasp_rotation = np.asarray(axes["mount_rotation_matrix"], dtype=float)
+    source_forward_rotation = base_yaw_rotation @ canonical_grasp_rotation
+    insertion_local = np.asarray(axes["insertion_axis_local"], dtype=float)
+    opening_local = np.asarray(axes["pad_opening_axis_local"], dtype=float)
+    vertical_local = np.cross(insertion_local, opening_local)
+    robotiq_semantic_basis = np.column_stack((vertical_local, insertion_local, opening_local))
+    tool_insertion_axis = np.array([0.0, 0.0, 1.0])
+    tool_opening_axis = np.array([0.0, 1.0, 0.0])
+    tool_vertical_axis = np.cross(tool_insertion_axis, tool_opening_axis)
+    tool_semantic_basis = np.column_stack((tool_vertical_axis, tool_insertion_axis, tool_opening_axis))
+    if (not np.allclose(robotiq_semantic_basis.T @ robotiq_semantic_basis, np.eye(3), atol=1e-8)
+            or not np.allclose(tool_semantic_basis.T @ tool_semantic_basis, np.eye(3), atol=1e-8)
+            or np.linalg.det(robotiq_semantic_basis) < 0.999999
+            or np.linalg.det(tool_semantic_basis) < 0.999999):
+        raise RuntimeError("Gripper insertion/opening axes do not form proper right-handed frames")
+    tool_rotation = np.asarray(official_mount["rotation_matrix"], dtype=float)
+    tool_to_robotiq_rotation = tool_semantic_basis @ robotiq_semantic_basis.T
+    mount_rotation_in_wrist = tool_rotation @ tool_to_robotiq_rotation
+    desired_world_rotation = neutral_wrist_rotation @ mount_rotation_in_wrist
     mount_quat_xyzw = Rotation.from_matrix(mount_rotation_in_wrist).as_quat()
+    axes["official_tool_mount"] = official_mount
+    axes["robotiq_semantic_axes_in_base_mount"] = {
+        "vertical": vertical_local.tolist(), "insertion": insertion_local.tolist(),
+        "opening": opening_local.tolist(), "basis_columns": robotiq_semantic_basis.tolist(),
+    }
+    axes["official_omnipicker_semantic_axes_in_tool_frame"] = {
+        "vertical": tool_vertical_axis.tolist(), "insertion": tool_insertion_axis.tolist(),
+        "opening": tool_opening_axis.tolist(), "basis_columns": tool_semantic_basis.tolist(),
+    }
+    axes["tool_to_robotiq_adapter_rotation_matrix"] = tool_to_robotiq_rotation.tolist()
+    axes["mount_rotation_derivation"] = (
+        "official wrist-to-OmniPicker fixed transform composed with source finger insertion/opening axes"
+    )
     axes["desired_world_rotation_matrix"] = desired_world_rotation.tolist()
     axes["source_world_forward_rotation_matrix"] = source_forward_rotation.tolist()
     axes["isolated_lift_grasp_offset_tool_local_m"] = (
@@ -376,7 +461,9 @@ def build_model(args, out: Path, canonical) -> tuple[mujoco.MjModel, dict[str, A
     axes["mount_rotation_in_right_wrist_matrix"] = mount_rotation_in_wrist.tolist()
     axes["mount_rotation_matrix"] = mount_rotation_in_wrist.tolist()
     axes["mount_quat_wxyz"] = np.array([mount_quat_xyzw[3], *mount_quat_xyzw[:3]]).tolist()
-    namespace_menagerie(root, men, args.menagerie_root / "robotiq_2f85", axes)
+    axes["adapter_translation_in_right_wrist_frame_m"] = tool_translation.tolist()
+    namespace_menagerie(root, men, args.menagerie_root / "robotiq_2f85",
+                         x2_path.parent / "meshes", axes)
     coupler_margin = float(getattr(args, "coupler_limit_activation_margin_rad", 0.0))
     if not 0.0 <= coupler_margin <= 0.001:
         raise ValueError("SIMULATION_ONLY coupler activation margin must be in [0, 0.001] rad")
@@ -402,14 +489,14 @@ def build_model(args, out: Path, canonical) -> tuple[mujoco.MjModel, dict[str, A
     table_center = getattr(args, "table_center_xy", None)
     bottle_root = getattr(args, "bottle_root_pos", None)
     add_scene(root, canonical, table_center, bottle_root)
-    xml_path = out / "x2_robotiq_2f85_simulation_only.xml"
+    xml_path = out / "x2_robotiq_2f85_replacement_simulation_only.xml"
     ET.indent(root, space="  ")
     ET.ElementTree(root).write(xml_path, encoding="utf-8", xml_declaration=True)
     model = mujoco.MjModel.from_xml_path(str(xml_path))
     expected_mount_mass = float(model.body_subtreemass[obj_id(model, mujoco.mjtObj.mjOBJ_BODY, "rq_base_mount")])
     if abs(expected_mount_mass - REFERENCE_GRIPPER_MASS_KG) > 1e-5:
         raise RuntimeError(f"Mounted Robotiq mass mismatch: {expected_mount_mass:.9f} kg")
-    axes["adapter_translation_in_right_wrist_frame_m"] = TOOL_POS.tolist()
+    axes["adapter_translation_in_right_wrist_frame_m"] = tool_translation.tolist()
     axes["adapter_quat_wxyz_in_right_wrist_frame"] = np.asarray(axes.pop("mount_quat_wxyz")).tolist()
     axes["fixed_base_station_position_world_m"] = station_base_pos.tolist()
     axes["table_center_xy_world_m"] = list(canonical.G1_CANONICAL_TABLE_CENTER_XY
@@ -422,6 +509,15 @@ def build_model(args, out: Path, canonical) -> tuple[mujoco.MjModel, dict[str, A
     axes["model_configuration"] = "SIMULATION_ONLY_DIAGNOSTIC" if coupler_margin else "SOURCE_FAITHFUL"
     axes["fixed_base_source_position_world_m"] = [0.0, 0.0, 0.68]
     axes["gripper_subtree_mass_kg"] = expected_mount_mass
+    pelvis_id = obj_id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    axes["replacement_robot_subtree_mass_kg"] = float(model.body_subtreemass[pelvis_id])
+    axes["model_variant"] = "X2_ROBOTIQ_RIGHT_HAND_REPLACEMENT_SIMULATION_ONLY"
+    axes["original_right_hand_subtree_removed"] = "NOT_PRESENT_IN_PINNED_MJCF"
+    axes["right_hand_replacement_note"] = (
+        "Pinned X2-Ultra.xml contains no separate right finger bodies/joints/actuators/constraints; "
+        "the generic right-wrist visual is replaced by the official tool-variant wrist visual, "
+        "while its official wrist collision mesh, body, joint, and inertia are retained."
+    )
     axes["model_xml"] = str(xml_path)
     axes["model_xml_sha256"] = sha256(xml_path)
     return model, axes
