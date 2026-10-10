@@ -732,11 +732,13 @@ def _without_inline_code_spans(text: str) -> str:
 
 def _closeout_target(event: Mapping[str, object]) -> tuple[int, str]:
     pr_number = event.get("pr_number")
-    # A non-pass event belongs on the Issue so it cannot auto-close on merge.
+    # Only implementation completion can close its Issue. A review result may
+    # live on its PR; experiment/research/audit outcomes belong to the Issue.
     if (
         isinstance(pr_number, int)
         and not isinstance(pr_number, bool)
         and event.get("status") == "completed"
+        and event.get("task_kind") in {"implementation", "review"}
     ):
         return pr_number, "PR"
     task_id = str(event["task_id"])
@@ -744,6 +746,30 @@ def _closeout_target(event: Mapping[str, object]) -> tuple[int, str]:
     if issue_match is None:
         raise ValueError("task_id does not identify an originating Issue")
     return int(issue_match.group(1)), "Issue"
+
+
+def _canonical_robot_sim_pr_evidence_number(value: object) -> int | None:
+    if not isinstance(value, str):
+        return None
+    path_pattern = re.compile(
+        r"^/lzy18001500226/robotsim/pull/([1-9][0-9]*)(?:/.*)?$", re.IGNORECASE,
+    )
+    parts = urllib.parse.urlsplit(value)
+    if (parts.hostname or "").casefold() != "github.com":
+        return None
+    match = path_pattern.fullmatch(parts.path)
+    return int(match.group(1)) if match else None
+
+
+def _canonical_robot_sim_pr_evidence_numbers(event: Mapping[str, object]) -> set[int]:
+    evidence = event.get("evidence")
+    if not isinstance(evidence, list):
+        return set()
+    numbers = {
+        number for item in evidence
+        if (number := _canonical_robot_sim_pr_evidence_number(item)) is not None
+    }
+    return numbers
 
 
 def _visible_pr_body(pull: Mapping[str, object]) -> str | None:
@@ -843,6 +869,11 @@ def persist_task_closeout(
         event = normalize_task_closeout(dict(event))
     except (ValueError, TypeError) as exc:
         return PersistenceResult("failed", f"invalid task closeout: {exc}")
+    evidence_pr_numbers = _canonical_robot_sim_pr_evidence_numbers(event)
+    if any(number != event.get("pr_number") for number in evidence_pr_numbers):
+        return PersistenceResult(
+            "failed", "canonical RobotSim PR evidence must match the verified pr_number",
+        )
     token = _github_token(env)
     if not token:
         return PersistenceResult(
@@ -877,17 +908,20 @@ def persist_task_closeout(
                 or head.get("ref") != event["branch"]
             ):
                 return PersistenceResult("failed", "closeout branch/head_sha do not match the current pull request head")
-            if event["status"] == "completed" and not _pr_closes_task_issue(
-                pull, str(event["task_id"]),
-            ):
-                return PersistenceResult(
-                    "failed", "pull request description must link the originating Issue with a closing keyword"
-                )
-            if event["status"] != "completed" and not _pr_references_task_issue(
-                pull, str(event["task_id"]),
-            ):
+            task_id = str(event["task_id"])
+            if not _pr_references_task_issue(pull, task_id):
                 return PersistenceResult(
                     "failed", "pull request description must reference the originating Issue"
+                )
+            closes_origin = _pr_closes_task_issue(pull, task_id)
+            authorized_close = event["status"] == "completed" and event["task_kind"] == "implementation"
+            if authorized_close and not closes_origin:
+                return PersistenceResult(
+                    "failed", "completed implementation PR must use a closing reference for the originating Issue"
+                )
+            if closes_origin and not authorized_close:
+                return PersistenceResult(
+                    "failed", "only a completed implementation may attach a PR that closes the originating Issue"
                 )
         with _task_closeout_lock(str(event["event_id"]), env):
             comments = _list_repository_issue_comments(token)
@@ -1038,16 +1072,25 @@ def process_task_closeout(
         )
     else:
         original_status = str(event["status"])
+        original_pr_number = event["pr_number"]
         event["status"] = "blocked"
         event["pr_number"] = None
+        event["evidence"] = [
+            item for item in event["evidence"]
+            if _canonical_robot_sim_pr_evidence_number(item) is None
+        ]
         event["branch"] = actual_branch if actual_branch != "unavailable" else event["branch"]
         if local_head != "unavailable":
             event["head_sha"] = local_head
         event["summary"] = f"CLOSEOUT BLOCKED after task result {original_status}: {event['summary']}"
+        unverified_pr_reference = ""
+        if original_pr_number is not None:
+            unverified_pr_reference = f"PR#{original_pr_number}"
         gate_detail = (
             f"Closeout verdict: BLOCKED; original task result={result_labels[original_status]}; "
             f"branch={actual_branch}; local_head={local_head}; remote_head={remote_head}; "
-            f"GitHub={issue_url}; blockers={'; '.join(gate_blockers)}"
+            f"GitHub=Issue#{issue_match.group(1)}; blockers={'; '.join(gate_blockers)}"
+            + (f"; unverified_PR_reference={unverified_pr_reference}" if unverified_pr_reference else "")
         )
         if len(event["validation"]) < 20:
             event["validation"].append(gate_detail)
@@ -1057,8 +1100,6 @@ def process_task_closeout(
             "CLOSEOUT BLOCKED: " + "; ".join(gate_blockers)
         ])[:10]
         evidence = list(event["evidence"])
-        if reference_url not in evidence:
-            evidence.append(reference_url)
         if issue_url not in evidence:
             evidence.append(issue_url)
         event["evidence"] = evidence[-20:]

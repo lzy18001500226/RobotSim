@@ -610,8 +610,15 @@ class NotifyTaskTests(unittest.TestCase):
                     pr_number=pr_number,
                     task_id=f"issue-44-closeout-{kind}",
                     attempt_id=f"00000000-0000-4000-8000-00000000000{index}",
+                    evidence=(
+                        ["https://github.com/lzy18001500226/RobotSim/pull/42"]
+                        if pr_number is not None
+                        else ["https://github.com/lzy18001500226/RobotSim/issues/44"]
+                    ),
                 )
-                transport, requests, counts = self._mock_closeout_transport()
+                transport, requests, counts = self._mock_closeout_transport(
+                    pr_body="Refs #44" if kind == "review" else "Closes #44",
+                )
                 with patch.object(notify_task, "_open_request", side_effect=transport):
                     result = notify_task.process_task_closeout(event, environ=settings)
                 self.assertIn("GitHub event persisted", result.message)
@@ -628,7 +635,7 @@ class NotifyTaskTests(unittest.TestCase):
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
         self.assertEqual(result.state, "blocked")
-        self.assertIn("must link the originating Issue", result.message)
+        self.assertIn("must reference the originating Issue", result.message)
         self.assertEqual(counts["github_post"], 0)
         self.assertEqual(counts["mail_post"], 0)
 
@@ -647,18 +654,122 @@ class NotifyTaskTests(unittest.TestCase):
         self.assertTrue(post.full_url.endswith("/issues/44/comments"))
         self.assertEqual(notify_task._closeout_target(self._closeout_event(status="blocked")), (44, "Issue"))
 
-    def test_noncompleted_pr_closeout_requires_origin_issue_reference(self) -> None:
-        transport, _, counts = self._mock_closeout_transport(pr_body="Unrelated PR description")
+    def test_subtask_closeout_with_associated_pr_does_not_require_closing_keyword(self) -> None:
+        transport, requests, counts = self._mock_closeout_transport(
+            pr_body="Related experimental work; Refs #44.",
+        )
+        cases = (("experiment", "blocked"), ("research", "completed"))
+        for index, (task_kind, status) in enumerate(cases):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                with patch.object(notify_task, "_open_request", side_effect=transport):
+                    result = notify_task.persist_task_closeout(
+                        self._closeout_event(
+                            task_kind=task_kind, status=status,
+                            task_id="issue-44-contact-experiment",
+                            attempt_id=f"00000000-0000-4000-8000-00000000001{index}",
+                        ),
+                        environ=self._settings(directory),
+                    )
+                self.assertEqual(result.state, "persisted")
+                self.assertEqual(
+                    notify_task._closeout_target(self._closeout_event(
+                        task_kind="experiment", status=status,
+                        task_id="issue-44-contact-experiment",
+                        attempt_id=f"00000000-0000-4000-8000-00000000001{index}",
+                    )),
+                    (44, "Issue"),
+                )
+                self.assertEqual(counts["github_post"], index + 1)
+                self.assertEqual(counts["mail_post"], 0)
+                self.assertTrue(any("/pulls/42" in request.full_url for request in requests))
+                post = [request for request in requests if request.get_method() == "POST"][-1]
+                self.assertTrue(post.full_url.endswith("/issues/44/comments"))
+
+    def test_unrelated_pr_with_matching_head_and_branch_is_not_task_evidence(self) -> None:
+        transport, _, counts = self._mock_closeout_transport(
+            pr_body="Unrelated PR description",
+        )
+        event = self._closeout_event(
+            task_kind="experiment", status="blocked",
+            task_id="issue-44-contact-experiment",
+        )
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 result = notify_task.persist_task_closeout(
-                    self._closeout_event(status="blocked"),
-                    environ=self._settings(directory),
+                    event, environ=self._settings(directory),
                 )
         self.assertEqual(result.state, "failed")
         self.assertIn("must reference the originating Issue", result.message)
         self.assertEqual(counts["github_post"], 0)
         self.assertEqual(counts["mail_post"], 0)
+
+    def test_blocked_experiment_without_pr_can_still_persist_on_issue(self) -> None:
+        transport, requests, counts = self._mock_closeout_transport()
+        event = self._closeout_event(
+            task_kind="experiment", status="blocked", pr_number=None,
+            task_id="issue-44-contact-experiment",
+            evidence=["https://github.com/lzy18001500226/RobotSim/issues/44"],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify_task, "_open_request", side_effect=transport):
+                result = notify_task.persist_task_closeout(
+                    event, environ=self._settings(directory),
+                )
+        self.assertEqual(result.state, "persisted")
+        self.assertFalse(any("/pulls/" in request.full_url for request in requests))
+        self.assertEqual(counts["github_post"], 1)
+        post = next(request for request in requests if request.get_method() == "POST")
+        self.assertTrue(post.full_url.endswith("/issues/44/comments"))
+
+    def test_completed_review_closeout_does_not_need_issue_closing_keyword(self) -> None:
+        transport, requests, counts = self._mock_closeout_transport(
+            pr_body="Review notes for #44; no Issue closing keyword.",
+        )
+        event = self._closeout_event(task_kind="review")
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(notify_task, "_open_request", side_effect=transport):
+                result = notify_task.persist_task_closeout(
+                    event, environ=self._settings(directory),
+                )
+        self.assertEqual(result.state, "persisted")
+        self.assertEqual(notify_task._closeout_target(event), (42, "PR"))
+        self.assertEqual(counts["github_post"], 1)
+        post = next(request for request in requests if request.get_method() == "POST")
+        self.assertTrue(post.full_url.endswith("/issues/42/comments"))
+
+    def test_only_completed_implementation_may_attach_closing_pr(self) -> None:
+        for task_kind, status in (("research", "completed"), ("implementation", "blocked")):
+            with self.subTest(task_kind=task_kind, status=status), tempfile.TemporaryDirectory() as directory:
+                transport, _, counts = self._mock_closeout_transport(pr_body="Closes #44")
+                event = self._closeout_event(task_kind=task_kind, status=status)
+                with patch.object(notify_task, "_open_request", side_effect=transport):
+                    result = notify_task.persist_task_closeout(
+                        event, environ=self._settings(directory),
+                    )
+            self.assertEqual(result.state, "failed")
+            self.assertIn("only a completed implementation", result.message)
+            self.assertEqual(counts["github_post"], 0)
+
+    def test_pr_evidence_url_must_match_the_verified_pr_number(self) -> None:
+        cases = (
+            (42, "https://github.com/lzy18001500226/RobotSim/pull/43"),
+            (None, "https://github.com/lzy18001500226/RobotSim/pull/42"),
+        )
+        for index, (pr_number, evidence) in enumerate(cases):
+            with self.subTest(pr_number=pr_number), tempfile.TemporaryDirectory() as directory:
+                event = self._closeout_event(
+                    task_kind="experiment", status="blocked", pr_number=pr_number,
+                    evidence=[evidence],
+                    attempt_id=f"00000000-0000-4000-8000-00000000001{index}",
+                )
+                transport, _, counts = self._mock_closeout_transport(pr_body="Refs #44")
+                with patch.object(notify_task, "_open_request", side_effect=transport):
+                    result = notify_task.persist_task_closeout(
+                        event, environ=self._settings(directory),
+                    )
+            self.assertEqual(result.state, "failed")
+            self.assertIn("must match the verified pr_number", result.message)
+            self.assertEqual(counts["github_get"], 0)
 
     def test_pr_closing_reference_validation_accepts_only_real_canonical_references(self) -> None:
         task_id = "issue-44-unified-task-closeout"
@@ -741,6 +852,7 @@ class NotifyTaskTests(unittest.TestCase):
                 status="blocked",
                 completed_at="2026-10-04T12:00:00Z",
                 blockers=["Waiting for a simulator artifact."],
+                evidence=["https://github.com/lzy18001500226/RobotSim/issues/44"],
             )
             completed = self._closeout_event(
                 pr_number=None,
@@ -748,6 +860,7 @@ class NotifyTaskTests(unittest.TestCase):
                 status="completed",
                 completed_at="2026-10-04T13:00:00Z",
                 blockers=[],
+                evidence=["https://github.com/lzy18001500226/RobotSim/issues/44"],
             )
             self.assertNotEqual(
                 notify_task.normalize_task_closeout(blocked)["event_id"],
@@ -781,7 +894,9 @@ class NotifyTaskTests(unittest.TestCase):
             settings = self._settings(directory)
             transport, _, counts = self._mock_closeout_transport()
             event = self._closeout_event(
-                pr_number=None, attempt_id="00000000-0000-4000-8000-000000000004"
+                pr_number=None,
+                attempt_id="00000000-0000-4000-8000-000000000004",
+                evidence=["https://github.com/lzy18001500226/RobotSim/issues/44"],
             )
             with patch.object(notify_task, "_open_request", side_effect=transport):
                 first = notify_task.process_task_closeout(event, environ=settings)
@@ -925,6 +1040,8 @@ class NotifyTaskTests(unittest.TestCase):
         stored = json.loads(payload.group(1))
         self.assertEqual(stored["status"], "blocked")
         self.assertIsNone(stored["pr_number"])
+        self.assertIn("unverified_PR_reference=PR#42", stored["validation"][-1])
+        self.assertFalse(any("/pull/" in item for item in stored["evidence"]))
         self.assertIn("b" * 40, stored["validation"][-1])
         self.assertIn("a" * 40, stored["validation"][-1])
         self.assertIn("remote branch SHA differs", stored["blockers"][-1])
@@ -1263,7 +1380,10 @@ class NotifyTaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             issue_settings = self._settings(str(Path(root) / "issue-writer"))
             pr_settings = self._settings(str(Path(root) / "pr-writer"))
-            issue_event = self._closeout_event(pr_number=None)
+            issue_event = self._closeout_event(
+                pr_number=None,
+                evidence=["https://github.com/lzy18001500226/RobotSim/issues/44"],
+            )
             pr_event = self._closeout_event()
             self.assertEqual(
                 notify_task.normalize_task_closeout(issue_event)["event_id"],
