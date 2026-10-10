@@ -447,7 +447,12 @@ class RunStore:
     def packet_binding_error(
         self, packet: TaskPacket, *, check_session: bool = True,
     ) -> str | None:
-        """Reject stale or cross-run packets before handing work to Codex or publishing it."""
+        """Reject stale or cross-run packets before handoff or publication.
+
+        At publication, the packet may predate a new Codex session. In that mode,
+        validate the session's durable issue/run/worker binding instead of simply
+        skipping session verification.
+        """
         with self._guard:
             row = self._row(packet.issue_number)
             if row is None:
@@ -473,12 +478,62 @@ class RunStore:
                 return "packet_workspace_path_mismatch"
             if packet.workspace_write_roots != ISSUE_WORKSPACE_WRITE_ROOTS.get(packet.issue_number):
                 return "packet_write_roots_mismatch"
-            if (
-                check_session
-                and packet.codex_session_id != str(row.get("codex_session_id") or "")
-            ):
-                return "packet_session_id_mismatch"
+            if check_session:
+                if packet.codex_session_id != str(row.get("codex_session_id") or ""):
+                    return "packet_session_id_mismatch"
+            else:
+                session_error = self._publication_session_binding_error(packet, row)
+                if session_error:
+                    return session_error
             return None
+
+    def _publication_session_binding_error(
+        self, packet: TaskPacket, row: Mapping[str, object],
+    ) -> str | None:
+        session_id = str(row.get("codex_session_id") or "")
+        if not session_id:
+            return "packet_session_missing_at_publication"
+        if packet.codex_session_id and packet.codex_session_id != session_id:
+            return "packet_session_id_mismatch"
+
+        run_identity = (packet.issue_number, packet.run_id, packet.worker_id)
+        session_attempts: set[str] = set()
+        events = self._db.execute(
+            "SELECT issue_number,run_id,attempt_id,worker_id,details_json FROM task_events "
+            "WHERE event_type='codex_session_started' ORDER BY event_id"
+        ).fetchall()
+        for event in events:
+            try:
+                details = json.loads(str(event["details_json"]))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(details, dict):
+                continue
+            event_session = str(details.get("session_id") or "")
+            if not event_session:
+                continue
+            event_identity = (
+                int(event["issue_number"]), str(event["run_id"]), str(event["worker_id"]),
+            )
+            if event_identity == run_identity and event_session != session_id:
+                return "packet_session_history_mismatch"
+            if event_session == session_id:
+                if event_identity != run_identity:
+                    return "packet_session_identity_mismatch"
+                session_attempts.add(str(event["attempt_id"]))
+
+        other_run = self._db.execute(
+            "SELECT 1 FROM task_runs WHERE codex_session_id=? AND NOT "
+            "(issue_number=? AND run_id=?) LIMIT 1",
+            (session_id, packet.issue_number, packet.run_id),
+        ).fetchone()
+        if other_run is not None:
+            return "packet_session_identity_mismatch"
+        if not session_attempts:
+            return "packet_session_binding_missing"
+        if not packet.codex_session_id and packet.attempt_id not in session_attempts:
+            return "packet_session_attempt_mismatch"
+        return None
 
     def reject_packet_binding(self, issue_number: int, reason_code: str) -> dict[str, object]:
         if not re.fullmatch(r"[a-z][a-z0-9_]{1,79}", reason_code):
@@ -2290,6 +2345,8 @@ class TaskQueuePilot:
                     outcome = ExecutionResult(outcome, "completed" if outcome == 0 else "blocked", None, "")
                 exit_code = outcome.exit_code
                 if exit_code == 0 and outcome.outcome == "completed":
+                    # A fresh session can be recorded after packet creation; the
+                    # publication check validates that durable assignment.
                     binding_error = self.store.packet_binding_error(packet, check_session=False)
                     if binding_error:
                         local_sha = None

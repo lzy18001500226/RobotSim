@@ -86,6 +86,21 @@ class TaskQueueTests(unittest.TestCase):
         assert row is not None
         return row
 
+    def task_packet(
+        self, task: queue.Issue, row: dict[str, object],
+    ) -> queue.TaskPacket:
+        return queue.TaskPacket(
+            issue_number=task.number,
+            run_id=str(row["run_id"]),
+            attempt_id=str(row["attempt_id"]),
+            worker_id=str(row["worker_id"]),
+            workspace=queue.workspace_plan(task, self.root / "worktrees"),
+            prompt="fixture prompt",
+            result_path=str(self.root / "result.json"),
+            codex_session_id=str(row.get("codex_session_id") or ""),
+            workspace_write_roots=queue.ISSUE_WORKSPACE_WRITE_ROOTS.get(task.number),
+        )
+
     def create_task_workspace(self, task: queue.Issue) -> tuple[Path, str]:
         repository = self.root / "queue-repository"
         if not repository.exists():
@@ -868,6 +883,103 @@ class TaskQueueTests(unittest.TestCase):
         for candidate, reason in cases:
             with self.subTest(reason=reason):
                 self.assertEqual(store.packet_binding_error(candidate), reason)
+
+    def test_publication_binding_accepts_a_session_assigned_during_execution(self) -> None:
+        store = self.store()
+        task = make_issue(49)
+        row = self.claim(store, task)
+        packet = self.task_packet(task, row)
+        self.assertIsNone(store.packet_binding_error(packet))
+
+        store.set_codex_session(task.number, "execution-created-session")
+        self.assertEqual(store.packet_binding_error(packet), "packet_session_id_mismatch")
+        self.assertIsNone(store.packet_binding_error(packet, check_session=False))
+
+    def test_publication_binding_accepts_saved_retry_session_and_rejects_stale_attempt(self) -> None:
+        store = self.store()
+        task = make_issue(49)
+        first_row = self.claim(store, task)
+        first_packet = self.task_packet(task, first_row)
+        store.set_codex_session(task.number, "saved-retry-session")
+        failed = store.fail(task.number, "temporary fixture failure")
+        self.assertEqual(failed["status"], "retry")
+
+        retry_row = self.claim(store, task)
+        self.assertEqual(retry_row["run_id"], first_row["run_id"])
+        self.assertNotEqual(retry_row["attempt_id"], first_row["attempt_id"])
+        retry_packet = self.task_packet(task, retry_row)
+        self.assertEqual(retry_packet.codex_session_id, "saved-retry-session")
+        store.set_codex_session(task.number, "saved-retry-session")
+
+        self.assertIsNone(store.packet_binding_error(retry_packet, check_session=False))
+        self.assertEqual(
+            store.packet_binding_error(first_packet, check_session=False),
+            "packet_attempt_id_mismatch",
+        )
+
+    def test_publication_binding_rejects_a_replaced_session(self) -> None:
+        store = self.store()
+        task = make_issue(49)
+        row = self.claim(store, task)
+        store.set_codex_session(task.number, "original-session")
+        packet = self.task_packet(task, store.get(task.number) or row)
+        store.update(task.number, codex_session_id="replacement-session")
+
+        self.assertEqual(
+            store.packet_binding_error(packet, check_session=False),
+            "packet_session_id_mismatch",
+        )
+
+    def test_publication_binding_rejects_a_session_event_from_another_worker(self) -> None:
+        store = self.store()
+        task = make_issue(49)
+        row = self.claim(store, task)
+        store.set_codex_session(task.number, "other-worker-session")
+        with store._guard:
+            store._db.execute(
+                "UPDATE task_events SET worker_id=? WHERE issue_number=? AND run_id=? "
+                "AND event_type='codex_session_started'",
+                ("OtherWorker", task.number, row["run_id"]),
+            )
+            store._db.commit()
+        packet = self.task_packet(task, store.get(task.number) or row)
+
+        self.assertEqual(
+            store.packet_binding_error(packet, check_session=False),
+            "packet_session_identity_mismatch",
+        )
+
+    def test_publication_binding_rejects_sessions_from_another_issue_or_run(self) -> None:
+        store = self.store()
+        first_issue = make_issue(49)
+        second_issue = make_issue(50)
+        self.claim(store, first_issue)
+        second_row = self.claim(store, second_issue)
+        store.set_codex_session(first_issue.number, "foreign-issue-session")
+        store.update(second_issue.number, codex_session_id="foreign-issue-session")
+        second_packet = self.task_packet(
+            second_issue, store.get(second_issue.number) or second_row,
+        )
+        self.assertEqual(
+            store.packet_binding_error(second_packet, check_session=False),
+            "packet_session_identity_mismatch",
+        )
+
+        same_store = self.store("changed-run.sqlite3")
+        same_issue = make_issue(51)
+        same_row = self.claim(same_store, same_issue)
+        same_store.set_codex_session(same_issue.number, "foreign-run-session")
+        with same_store._guard:
+            same_store._db.execute(
+                "UPDATE task_runs SET run_id=? WHERE issue_number=?",
+                ("replacement-run-id", same_issue.number),
+            )
+            same_store._db.commit()
+        new_run_packet = self.task_packet(same_issue, same_store.get(same_issue.number) or same_row)
+        self.assertEqual(
+            same_store.packet_binding_error(new_run_packet, check_session=False),
+            "packet_session_identity_mismatch",
+        )
 
     def test_packet_binding_rejection_is_durable_and_blocks_the_run(self) -> None:
         path = self.root / "packet-rejection.sqlite3"
