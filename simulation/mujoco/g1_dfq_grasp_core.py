@@ -58,6 +58,10 @@ LIMIT_SOLIMP = "0.999 0.9999 0.001"
 HAND_KP, HAND_KV, HAND_MAX_TORQUE, HAND_DAMPING = 1.0, 0.1, 0.20, 0.02
 OPEN_TARGET_SLEW_RAD_S = 0.075
 CLOSE_TARGET_SLEW_RAD_S = 0.060
+CONTACT_CLOSE_SEQUENCE_MODE = os.environ.get(
+    "ROBOTSIM_G1_DFQ_CLOSE_SEQUENCE", "simultaneous"
+)
+OPPOSING_DIGITS = frozenset(("index", "middle", "ring", "pinky"))
 MAX_HAND_QVEL_RAD_S = 0.5
 MIMIC_DIAGNOSTIC_TOLERANCE_RAD = 0.003
 MIMIC_MANIPULATION_LIMIT_RAD = 0.010
@@ -93,6 +97,34 @@ CONTACT_VALIDITY_MIN_IMPULSE_NS = (
 )
 SIM_ONLY_MAX_DRIVER_TORQUE_NM = 0.531
 SIM_ONLY_FEEDFORWARD_RAMP_S = 1.0
+
+
+def contact_sequence_phase(confirmed_digits: set[str]) -> str:
+    has_opposing = bool(confirmed_digits & OPPOSING_DIGITS)
+    has_thumb = "thumb" in confirmed_digits
+    if has_opposing and has_thumb:
+        return "BILATERAL_CLOSE"
+    if has_opposing:
+        return "THUMB_APPROACH"
+    return "OPPOSING_APPROACH"
+
+
+def contact_sequence_holds_target(mode: str, phase: str, digit: str,
+                                  contact_confirmed: bool) -> bool:
+    if mode != "support-before-thumb-advance" or not contact_confirmed:
+        return False
+    if phase == "OPPOSING_APPROACH":
+        return digit == "thumb"
+    if phase == "THUMB_APPROACH":
+        return digit in OPPOSING_DIGITS
+    return False
+
+
+def candidate_digit_normal_requirements(lp_solution: dict) -> tuple[float, float]:
+    normal_force = lambda digit: float(
+        lp_solution.get(digit, {}).get("normal_force_n", 0.0)
+    )
+    return normal_force("thumb"), sum(normal_force(digit) for digit in OPPOSING_DIGITS)
 LOAD_CONTACT_REALLOCATION = {
     "status": "ONE_EVIDENCE_DERIVED_CORRECTION",
     "source_run_id": "g1-dfq-physical-1791547522380405273-28009",
@@ -172,6 +204,7 @@ LIVE_ALLOCATION_HANDOFF_STEPS = 1
 LIVE_TRANSFER_STEP_HEIGHTS_M = (0.0001, 0.00025, 0.0005)
 LIVE_TRANSFER_STEP_DWELL_S = 0.10
 WRIST_YAW_CORRECTION_DEG = 60.0
+WORLD_PITCH_TEST_DEG = 15.0
 PREGRASP_SITE_OFFSET_M = np.array([0.0, -0.160, 0.0])
 APPROACH_SITE_OFFSET_M = np.array([0.0, -0.120, 0.0])
 TRACE_PERIOD_S, VIDEO_PERIOD_S = 0.01, 0.05
@@ -969,6 +1002,16 @@ def corrected_hand_rotation(model, data, site_id: int) -> np.ndarray:
     return correction @ base
 
 
+def world_pitch_test_rotation(base: np.ndarray, degrees: float = WORLD_PITCH_TEST_DEG) -> np.ndarray:
+    pitch = math.radians(degrees)
+    correction = np.array([
+        [math.cos(pitch), 0.0, math.sin(pitch)],
+        [0.0, 1.0, 0.0],
+        [-math.sin(pitch), 0.0, math.cos(pitch)],
+    ])
+    return correction @ np.asarray(base, dtype=float)
+
+
 def pregrasp_ik(model, data, site_id: int, bottle_position: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict]:
     mujoco.mj_resetData(model, data)
     mujoco.mj_forward(model, data)
@@ -991,6 +1034,7 @@ def pregrasp_ik(model, data, site_id: int, bottle_position: np.ndarray) -> tuple
         "robot_bottle_contacts": robot_contacts,
         "site_offset_m": PREGRASP_SITE_OFFSET_M.tolist(),
         "wrist_yaw_correction_deg": WRIST_YAW_CORRECTION_DEG,
+        "world_pitch_test_deg": WORLD_PITCH_TEST_DEG,
     }
 
 
@@ -1113,12 +1157,12 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
     }
     hand_position_gainprm = {aid: model.actuator_gainprm[aid].copy() for aid in hand_ids.values()}
     hand_position_biasprm = {aid: model.actuator_biasprm[aid].copy() for aid in hand_ids.values()}
-    hand_effort_allocation = load_capacity_targets["effort_balanced_10pct_margin_allocation"]
+    hand_effort_allocation = load_capacity_targets["candidate_static_wrench_allocation"]
     static_effort_by_channel = {
-        channel: float(hand_effort_allocation["driver_efforts"][channel]["estimated_required_effort_nm"])
+        channel: float(hand_effort_allocation["driver_efforts_nm"][channel])
         for channel in hand_ids
     }
-    load_effort_by_channel = LOAD_CONTACT_REALLOCATION["driver_feedforward_nm"]
+    load_effort_by_channel = static_effort_by_channel.copy()
     channel_joint_names = {
         channel: hand.channel_joint("R", suffix) for channel, suffix in hand.CHANNELS
     }
@@ -2325,6 +2369,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         if phase in {"CLOSE", "HOLD", "LIFT_ARMING"}:
             aware_row = {
                 "time_s": f"{data.time:.8f}", "phase": phase,
+                "close_sequence_phase": close_sequence_phase_name,
                 "normalized_close_command": f"{command_u:.8f}" if command_u is not None else "",
                 "contact_trigger_force_n": f"{CONTACT_TRIGGER_FORCE_N:.6f}",
                 "contact_confirm_samples": CONTACT_CONFIRM_SAMPLES,
@@ -2626,6 +2671,15 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             channel: (close_targets[channel] - open_targets[channel]) / close_duration
             for channel in hand_ids
         }
+        close_sequence_mode = CONTACT_CLOSE_SEQUENCE_MODE
+        if close_sequence_mode not in {"simultaneous", "support-before-thumb-advance"}:
+            raise GateFailure(f"Unsupported close sequence mode: {close_sequence_mode}")
+        close_sequence_phase_name = (
+            "SIMULTANEOUS" if close_sequence_mode == "simultaneous"
+            else "OPPOSING_APPROACH"
+        )
+        close_sequence_events: list[dict] = []
+        close_sequence_start = float(data.time)
         for channel, aid in hand_ids.items():
             data.ctrl[aid] = channel_close_targets[channel]
         result["contact_aware_close"] = {
@@ -2638,6 +2692,9 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 "force_threshold_basis": "existing active_contact_sets threshold",
             },
             "contact_loss_confirmation_samples": CONTACT_LOSS_CONFIRM_SAMPLES,
+            "sequence_mode": close_sequence_mode,
+            "sequence_phase": close_sequence_phase_name,
+            "sequence_transition_events": close_sequence_events,
             "preload_rule": {
                 "rule": "project candidate target by joint closure sign so 0 <= direction * (target - q_actual) <= cap each physics step",
                 "cap_rad": CONTACT_PRELOAD_MAX_RAD,
@@ -2649,6 +2706,11 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 "contact_force_bound_n": MAX_CONTACT_FORCE_N,
             },
             "mode": "per-digit FREE_CLOSE -> CONTACT_PRELOAD; each post-step command is reprojected against current qpos; after 20 absent samples CONTACT_LOST -> REACQUIRE at the original per-channel close rate",
+            "sequence_rule": (
+                "simultaneous close"
+                if close_sequence_mode == "simultaneous"
+                else "hold confirmed thumb contact at a dynamically projected bounded target until an opposing digit is confirmed; then hold confirmed opposing contacts until thumb contact is confirmed; resume the unchanged close profile once both sides are confirmed"
+            ),
             "channel_digits": channel_digits,
             "closure_directions": closure_directions,
             "channel_transitions": contact_hold_transition_times,
@@ -2656,6 +2718,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
         events.append({"event": "CLOSE_START", "time_s": float(data.time),
                        "duration_s": close_duration,
                        "target_slew_ceiling_rad_s": CLOSE_TARGET_SLEW_RAD_S,
+                       "sequence_mode": close_sequence_mode,
                        "contact_aware": True,
                        "contact_trigger_force_n": CONTACT_TRIGGER_FORCE_N,
                        "contact_confirm_samples": CONTACT_CONFIRM_SAMPLES})
@@ -2681,7 +2744,7 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             return target, realized_error
 
         def update_contact_close_targets(u: float) -> None:
-            nonlocal maximum_contact_commanded_error_rad
+            nonlocal maximum_contact_commanded_error_rad, close_sequence_phase_name
             prior_contacts = bottle_contacts(model, data)
             active_digits = {
                 digit: any(
@@ -2779,9 +2842,49 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                         events.append(reacquire_event)
                         result["contact_aware_close"].setdefault("transition_events", []).append(reacquire_event)
 
+            if close_sequence_mode == "support-before-thumb-advance":
+                confirmed_digits = {
+                    digit for digit, state in contact_controller_state.items()
+                    if state == "CONTACT_PRELOAD"
+                }
+                next_phase = contact_sequence_phase(confirmed_digits)
+                if next_phase != close_sequence_phase_name:
+                    sequence_event = {
+                        "event": "CONTACT_SEQUENCE_PHASE",
+                        "time_s": float(data.time),
+                        "from_phase": close_sequence_phase_name,
+                        "to_phase": next_phase,
+                        "confirmed_digits": sorted(confirmed_digits),
+                    }
+                    close_sequence_phase_name = next_phase
+                    close_sequence_events.append(sequence_event)
+                    events.append(sequence_event)
+
             for channel, aid in hand_ids.items():
                 digit = channel_digits[channel]
-                if contact_controller_state[digit] != "CONTACT_PRELOAD":
+                controller_state = contact_controller_state[digit]
+                sequence_hold = contact_sequence_holds_target(
+                    close_sequence_mode,
+                    close_sequence_phase_name,
+                    digit,
+                    controller_state == "CONTACT_PRELOAD",
+                )
+                if controller_state == "CONTACT_PRELOAD" and sequence_hold:
+                    q_actual = joint_qpos(model, data, channel_joint_names[channel])
+                    direction = closure_directions[channel]
+                    remaining_to_endpoint = direction * (close_targets[channel] - q_actual)
+                    bounded_error = min(
+                        current_preload_cap_rad, max(0.0, remaining_to_endpoint)
+                    )
+                    candidate = q_actual + direction * bounded_error
+                    target, commanded_error = project_contact_target(channel, q_actual, candidate)
+                    channel_close_targets[channel] = target
+                    contact_hold_targets[channel] = target
+                    contact_commanded_errors[channel] = commanded_error
+                    maximum_contact_commanded_error_rad = max(
+                        maximum_contact_commanded_error_rad, commanded_error
+                    )
+                elif controller_state != "CONTACT_PRELOAD":
                     next_target = channel_close_targets[channel] + channel_close_rates[channel] * DT
                     if channel_close_rates[channel] >= 0.0:
                         channel_close_targets[channel] = min(close_targets[channel], next_target)
@@ -2802,8 +2905,12 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                     )
                 data.ctrl[aid] = channel_close_targets[channel]
 
-        for step in range(1, close_steps + 1):
-            u = 1.0 - step / close_steps
+        maximum_close_steps = close_steps * (
+            2 if close_sequence_mode == "support-before-thumb-advance" else 1
+        )
+        close_complete = False
+        for step in range(1, maximum_close_steps + 1):
+            u = max(0.0, 1.0 - step / close_steps)
             last_close_command_u = u
             set_body_ctrl(arm_motor_targets(approach_q))
             last_applied_targets.update({channel: float(data.ctrl[aid])
@@ -2812,8 +2919,28 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             steps += 1
             update_contact_close_targets(u)
             sample("CLOSE", u, approach_q)
+            close_complete = all(
+                closure_directions[channel]
+                * (close_targets[channel] - channel_close_targets[channel]) <= 1e-8
+                for channel in hand_ids
+            )
+            if close_complete:
+                break
+        if not close_complete:
+            raise GateFailure(
+                "Contact-sequenced CLOSE exhausted its bounded duration before all "
+                f"targets were reached; phase={close_sequence_phase_name}, "
+                f"duration={maximum_close_steps * DT:.3f}s"
+            )
+        result["contact_aware_close"].update({
+            "close_sequence_final_phase": close_sequence_phase_name,
+            "actual_close_duration_s": float(data.time - close_sequence_start),
+            "bounded_maximum_close_duration_s": float(maximum_close_steps * DT),
+        })
         events.append({"event": "CLOSE_COMPLETE", "time_s": float(data.time),
                        "normalized_command": 0.0,
+                       "sequence_mode": close_sequence_mode,
+                       "sequence_final_phase": close_sequence_phase_name,
                        "contact_preload_channels": sorted(contact_hold_targets),
                        "contact_hold_targets_rad": contact_hold_targets.copy()})
         cv2.imwrite(str(output / "grasp_hold.png"),
@@ -3108,11 +3235,11 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
                 f"{previous_arming_conditions}, last continuous dwell={dwell_elapsed:.6f} s"
             )
 
-        stage2_wrench = load_capacity_targets["effort_balanced_10pct_margin_allocation"]
-        if not stage2_wrench.get("feasible_at_mu_1_4"):
-            raise GateFailure("Canonical effort-balanced support allocation is infeasible; LOAD_BUILD is prohibited")
+        stage2_wrench = load_capacity_targets["candidate_static_wrench_allocation"]
+        if stage2_wrench.get("feasible") is not True or stage2_wrench.get("equilibrium_dimension") != 6:
+            raise GateFailure("Candidate-specific full 6D support allocation is infeasible; LOAD_BUILD is prohibited")
         bottle_weight_n = float(model.body_mass[bottle_id] * abs(model.opt.gravity[2]))
-        lp_weight_n = float(stage2_wrench["achieved_wrench_about_com"]["force_n"][2])
+        lp_weight_n = float(stage2_wrench["target_wrench_world"][2])
         if abs(bottle_weight_n - lp_weight_n) > 0.005:
             raise GateFailure(
                 f"Stage 1 wrench target weight {lp_weight_n:.9g} N does not match runtime "
@@ -3123,13 +3250,14 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             group = lp_solution.setdefault(item["digit"], {"normal_force_n": 0.0})
             group["normal_force_n"] += float(item["normal_force_n"])
         required_total_normal_n = float(stage2_wrench["total_normal_force_n"])
-        required_thumb_normal_n = float(lp_solution["thumb"]["normal_force_n"])
-        required_opposing_normal_n = sum(
-            float(lp_solution[digit]["normal_force_n"])
-            for digit in ("index", "middle", "ring", "pinky")
+        required_thumb_normal_n, required_opposing_normal_n = (
+            candidate_digit_normal_requirements(lp_solution)
         )
         load_build_targets = {
-            "source_static_lp": "candidate_c2_robust_wrench.json effort_balanced_10pct_margin_allocation",
+            "source_static_lp": (
+                f"{load_capacity_targets.get('candidate_id', 'candidate')} candidate-specific "
+                "full 6D condim=4 wrench allocation; not a dynamic support measurement"
+            ),
             "friction_model": load_capacity_targets["friction_model"],
             "measured_force_gate": "physical contact wrench and table normal must balance bottle weight; target torque alone is insufficient",
             "safety_factor": LOAD_BUILD_SAFETY_FACTOR,
@@ -3139,38 +3267,15 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             "target_thumb_true_normal_force_n": required_thumb_normal_n,
             "minimum_opposing_true_normal_force_n": required_opposing_normal_n,
             "bottle_weight_n": bottle_weight_n,
-            "control_mode": "simulation-only generalized-force impedance with saved-state contact-topology reallocation during load transfer",
+            "control_mode": "simulation-only generalized-force impedance with a candidate-static start estimate and live contact-topology reallocation during load transfer",
             "source_lp_feedforward_driver_torques_nm": static_effort_by_channel,
-            "feedforward_driver_torques_nm": load_effort_by_channel.copy(),
+            "static_candidate_feedforward_fallback_nm": load_effort_by_channel.copy(),
             "contact_topology_reallocation": {
-                **LOAD_CONTACT_REALLOCATION,
-                "driver_efforts_nm": load_effort_by_channel.copy(),
-                "source_static_c2_driver_efforts_nm": static_effort_by_channel.copy(),
-            },
-            "index_feedforward_correction": {
-                "status": "NOT APPLIED",
-                "historical_value_nm": 0.085,
-                "source_lp_value_nm": static_effort_by_channel["index_proximal"],
-                "reason": "the prior correction exceeded the unchanged 6 N total normal-force bound",
-            },
-            "bounded_correction": {
-                "status": "REJECTED_NOT_APPLIED",
-                "classification": "historical contact/solver active-set hypothesis",
-                "changed_channel": "index_proximal",
-                "source_lp_feedforward_nm": static_effort_by_channel["index_proximal"],
-                "historical_test_feedforward_nm": 0.085,
-                "scope": "historical LOAD_BUILD-only proposal; not used in this run",
-                "reason": "the prior trial exceeded the unchanged 6 N total normal-force bound",
-            },
-            "trace_derived_command_realization_correction": {
-                "classification": "single LOAD_BUILD control-allocation realization correction",
-                "reference_run_id": "dfq-long-c2-dynamic-1791446357-38919",
-                "changed_channel": "thumb_proximal_yaw",
-                "static_lp_feedforward_nm": static_effort_by_channel["thumb_proximal_yaw"],
-                "observed_prior_position_impedance_nm": 0.16837492809141844,
-                "observed_prior_applied_generalized_effort_nm": -0.0121994727704315,
-                "method": "cancel only the Kp position-error term opposing static LP feedforward during LOAD_BUILD; retain the existing Kv damping, feedforward ramp, MuJoCo bias compensation, and 0.531 Nm cap",
-                "basis": "the prior static allocation required -0.1741287755 Nm thumb-yaw torque, but measured +0.1683749281 Nm position impedance reduced the actual applied generalized effort to -0.0121994728 Nm",
+                "source_static_candidate_id": load_capacity_targets.get("candidate_id"),
+                "allocation_refresh": "re-solve from measured force-bearing contacts and their current geometry",
+                "recent_contact_cache_role": "bounded-age control-estimation support only; it is not counted as measured load-bearing support",
+                "load_ready_gate_source": "current-step measured contact forces, bottle/table reaction, force balance, slip, and motion",
+                "fallback_driver_efforts_nm": load_effort_by_channel.copy(),
             },
             "feedforward_ramp_seconds": SIM_ONLY_FEEDFORWARD_RAMP_S,
             "impedance_kp_nm_per_rad": HAND_KP,
@@ -3178,8 +3283,8 @@ def run_rollout(model, data, meta, output: Path, result: dict, settle_clear_q: n
             "bias_compensation": "MuJoCo qfrc_bias on each active driver DoF",
             "max_driver_effort_nm": SIM_ONLY_MAX_DRIVER_TORQUE_NM,
             "effort_cap_basis": (
-                "0.531 Nm is 10.20% above the 0.4818446744 Nm worst effort-balanced "
-                "bounded-uncertainty allocation and 53.1% of each 1.0 Nm URDF effort limit"
+                "maintainer-frozen SIMULATION_ONLY_M0 cap of 0.531 Nm; candidate C5 static "
+                f"allocation peak is {stage2_wrench['maximum_absolute_driver_effort_nm']:.9g} Nm"
             ),
             "position_hand_actuators_disabled_at_load_build": True,
             "direct_arm_lift_after_contact": direct_arm_lift,
@@ -4608,7 +4713,7 @@ def write_legacy_report(output: Path, result: dict, command: str) -> None:
         f"- Settle: {settle.get('status', 'not reached')}; elapsed {settle.get('elapsed_s', 'n/a')} s; stable dwell {settle.get('stable_dwell_s', 'n/a')} s.",
         f"- Settle criterion: continuous table support, linear speed <= {SETTLE_MAX_LINEAR_SPEED_M_S:.3f} m/s, angular speed <= {SETTLE_MAX_ANGULAR_SPEED_RAD_S:.3f} rad/s for {SETTLE_DWELL_SECONDS:.2f} s (timeout {SETTLE_MAX_SECONDS:.2f} s).",
         f"- Maximum settle linear/angular speeds: {settle.get('maximum_linear_speed_m_s', 'n/a')} m/s / {settle.get('maximum_angular_speed_rad_s', 'n/a')} rad/s.",
-        f"- Wrist yaw correction: {WRIST_YAW_CORRECTION_DEG:.1f} degrees; frozen pregrasp/approach targets retained; PREGRASP dwell after settling {PREGRASP_SECONDS:.2f} s, approach duration {APPROACH_SECONDS:.2f} s.",
+        f"- Wrist yaw correction: {WRIST_YAW_CORRECTION_DEG:.1f} degrees; frozen pregrasp/approach offsets retained; PREGRASP dwell after settling {PREGRASP_SECONDS:.2f} s, approach duration {APPROACH_SECONDS:.2f} s.",
         f"- CLOSE target slew: {CLOSE_TARGET_SLEW_RAD_S:.3f} rad/s; OPEN target slew: {OPEN_TARGET_SLEW_RAD_S:.3f} rad/s.",
         f"- Contact trigger: right-hand digit/bottle distance <= 0 m and single-contact normal force > {CONTACT_TRIGGER_FORCE_N:.3f} N for {CONTACT_CONFIRM_SAMPLES} consecutive physics samples ({CONTACT_CONFIRM_SAMPLES * DT:.4f} s). Contact loss requires {CONTACT_LOSS_CONFIRM_SAMPLES} absent samples.",
         f"- Preload rule: after each physics step, project the next target by joint closure sign so the directional target error is in [0, {CONTACT_PRELOAD_MAX_RAD:.3f}] rad; the projection itself uses no gate tolerance.",

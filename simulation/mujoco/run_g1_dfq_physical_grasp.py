@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import argparse
 import hashlib
+import math
 import os
 import platform
 import shlex
@@ -26,14 +28,16 @@ EVIDENCE = Path(os.environ.get(
 ))
 IMPLEMENTATION = Path(__file__).resolve().parent
 C2_RUN = FIXTURE
-CANDIDATE_PATH = C2_RUN / "candidate_c2.json"
-WRENCH_PATH = C2_RUN / "candidate_c2_robust_wrench.json"
-BASE_PATH = FIXTURE / "canonical_ready_wrench_input.json"
+CANDIDATE_PATH = Path(os.environ.get("ROBOTSIM_G1_DFQ_CANDIDATE_JSON", C2_RUN / "candidate_c2.json"))
+WRENCH_PATH = Path(os.environ.get("ROBOTSIM_G1_DFQ_WRENCH_JSON", C2_RUN / "candidate_c2_robust_wrench.json"))
+WRENCH_INPUT_PATH = Path(os.environ.get("ROBOTSIM_G1_DFQ_WRENCH_INPUT_JSON", C2_RUN / "candidate_c2_wrench_input.json"))
+BASE_PATH = Path(os.environ.get("ROBOTSIM_G1_DFQ_BASE_JSON", FIXTURE / "canonical_ready_wrench_input.json"))
 sys.path.insert(0, str(IMPLEMENTATION))
 
 import g1_dfq_grasp_core as runner  # noqa: E402
 import g1_inspire_hand as hand  # noqa: E402
 from g1_dfq_grasp_gates import GATE_NAMES, evaluate_gates  # noqa: E402
+from g1_dfq_static_wrench import candidate_rollout_allocation  # noqa: E402
 
 runner.REPO = PROJECT_ROOT
 runner.SCENE = FIXTURE / "g1_inspire_dfq_accepted_scene.xml"
@@ -74,6 +78,47 @@ def apply_mimics(model, data, mimics: dict) -> None:
 
 def write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def validate_candidate_wrench(candidate: dict, wrench: dict, candidate_path: Path) -> dict:
+    """Require fresh candidate-specific evidence and reject stale C2 artifacts."""
+    if wrench.get("schema") != "robotsim.g1_dfq.candidate_wrench_evidence.v1":
+        raise RuntimeError("wrench artifact is not the candidate-specific evidence schema")
+    if wrench.get("candidate_id") != candidate.get("candidate"):
+        raise RuntimeError("wrench artifact candidate identity does not match candidate JSON")
+    if wrench.get("candidate_static_run_id") != candidate.get("run_id"):
+        raise RuntimeError("wrench artifact is not tied to this candidate static run")
+    if wrench.get("candidate_sha256") != runner.sha256(candidate_path):
+        raise RuntimeError("wrench artifact candidate hash does not match candidate JSON")
+    source = candidate.get("source", {})
+    if wrench.get("normalized_compiled_model_sha256") != source.get("compiled_model_sha256"):
+        raise RuntimeError("candidate and wrench evidence use different compiled models")
+    if candidate.get("static_gates", {}).get("passed") is not True:
+        raise RuntimeError("candidate static geometry gates did not pass")
+    if int(wrench.get("physics_steps", -1)) != 0 or int(wrench.get("mj_step_calls", -1)) != 0:
+        raise RuntimeError("candidate static wrench artifact must be zero-step evidence")
+    if not math.isclose(float(wrench.get("bottle_mass_kg", math.nan)), 0.57,
+                        rel_tol=0.0, abs_tol=1e-9):
+        raise RuntimeError("candidate static wrench artifact uses the wrong bottle mass")
+    if not math.isclose(float(wrench.get("configured_mu", math.nan)), 1.4,
+                        rel_tol=0.0, abs_tol=1e-9):
+        raise RuntimeError("candidate static wrench artifact uses the wrong friction")
+    allocation = wrench.get("candidate_static_wrench_allocation", {})
+    if allocation.get("schema") != "robotsim.g1_dfq.candidate_static_wrench_allocation.v1":
+        raise RuntimeError("candidate static allocation schema is missing")
+    if allocation.get("feasible") is not True or allocation.get("equilibrium_dimension") != 6:
+        raise RuntimeError("candidate does not have feasible full 6D static equilibrium")
+    if allocation.get("robust_contact_perturbations_pass") is not True:
+        raise RuntimeError("candidate does not pass the bounded contact-point perturbations")
+    if float(allocation.get("maximum_absolute_driver_effort_nm", math.inf)) > runner.SIM_ONLY_MAX_DRIVER_TORQUE_NM + 1e-9:
+        raise RuntimeError("candidate static effort exceeds the unchanged simulation-only cap")
+    per_digit = allocation.get("per_digit_normal_force_n", {})
+    if float(per_digit.get("thumb", 0.0)) <= 0.0 or not any(
+        float(per_digit.get(digit, 0.0)) > 0.0
+        for digit in ("index", "middle", "ring", "pinky")
+    ):
+        raise RuntimeError("candidate allocation lacks thumb-plus-opposing-digit support")
+    return allocation
 
 
 def highest_physical_gate(result: dict) -> str:
@@ -160,8 +205,8 @@ def write_report(path: Path, result: dict, command: str) -> None:
         f"- Candidate: {result.get('candidate', 'C2')} (starting hypothesis; static wrench feasibility is not dynamic proof)",
         f"- RobotSim SHA: {result.get('RobotSim_sha')}",
         f"- Compiled model SHA-256: {result.get('compiled_model_sha256')}",
-        f"- Geometry gate: {result.get('selected_candidate_configuration', {}).get('static_wrench_classification', 'see candidate_c2.json / wrench JSON')}",
-        "- Candidate joint configuration and target contact points are stored in `m0_result.json` and the static C2 JSON.",
+        f"- Geometry gate: {result.get('selected_candidate_configuration', {}).get('static_wrench_classification', 'see candidate / wrench JSON')}",
+        "- Candidate joint configuration and target contact points are stored in `m0_result.json` and the selected candidate JSON.",
         "- The fresh static wrench allocation uses the candidate's measured MuJoCo surface normals and contact Jacobians; table support is excluded.", "",
         "## Dynamic Gates", "",
         f"- Bottle settle: {settle.get('status', 'not reached')}; elapsed={settle.get('elapsed_s', 'n/a')} s; dwell={settle.get('stable_dwell_s', 'n/a')} s; max linear/angular speed={settle.get('maximum_linear_speed_m_s', 'n/a')} m/s / {settle.get('maximum_angular_speed_rad_s', 'n/a')} rad/s.",
@@ -193,7 +238,10 @@ def write_report(path: Path, result: dict, command: str) -> None:
     (path / "REPRODUCE.md").write_text("# Reproduction\n\n```powershell\n" + command + "\n```\n", encoding="utf-8")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan-only", action="store_true", help="validate static inputs and stop before mj_step")
+    args = parser.parse_args(argv)
     run_id = f"g1-dfq-physical-{time.time_ns()}-{os.getpid()}"
     EVIDENCE.mkdir(parents=True, exist_ok=True)
     output = EVIDENCE / "runs" / run_id
@@ -206,16 +254,24 @@ def main() -> int:
         "ROBOTSIM_UNITREE_ROS_DIR": str(runner.UNITREE_ROS),
         "ROBOTSIM_UNITREE_MUJOCO_DIR": str(runner.UNITREE_MUJOCO),
         "ROBOTSIM_HUMANOID_VLA_DIR": str(runner.UPSTREAM),
+        "ROBOTSIM_G1_DFQ_CANDIDATE_JSON": str(CANDIDATE_PATH),
+        "ROBOTSIM_G1_DFQ_WRENCH_JSON": str(WRENCH_PATH),
+        "ROBOTSIM_G1_DFQ_WRENCH_INPUT_JSON": str(WRENCH_INPUT_PATH),
+        "ROBOTSIM_G1_DFQ_BASE_JSON": str(BASE_PATH),
+        "ROBOTSIM_G1_DFQ_CLOSE_SEQUENCE": runner.CONTACT_CLOSE_SEQUENCE_MODE,
     }
     command = " ".join(
         shlex.quote(f"{name}={value}") for name, value in command_env.items()
     ) + " ./scripts/run_g1_dfq_physical_grasp.sh"
+    if args.plan_only:
+        command += " --plan-only"
     result = {
         "run_id": run_id,
-        "candidate": "C2",
+        "candidate": CANDIDATE_PATH.stem,
+        "contact_close_sequence_mode": runner.CONTACT_CLOSE_SEQUENCE_MODE,
         "status": "PREFLIGHT",
         "passed": False,
-        "highest_physical_gate": "C2 STATIC GEOMETRY / WRENCH ONLY",
+        "highest_physical_gate": "STATIC GEOMETRY / WRENCH ONLY",
         "physics_steps": 0,
         "reproduction_command": command,
         "RobotSim_sha": None,
@@ -242,6 +298,7 @@ def main() -> int:
             "classification": "SIMULATION_ONLY_M0; no real DFQ hardware equivalence claim",
             "source_velocity_limit_rad_s": 0.5,
             "close_target_slew_rad_s": runner.CLOSE_TARGET_SLEW_RAD_S,
+            "contact_close_sequence_mode": runner.CONTACT_CLOSE_SEQUENCE_MODE,
             "simulation_only_driver_effort_cap_nm": runner.SIM_ONLY_MAX_DRIVER_TORQUE_NM,
             "mimic_diagnostic_tolerance_rad": runner.MIMIC_DIAGNOSTIC_TOLERANCE_RAD,
             "mimic_manipulation_limit_rad": runner.MIMIC_MANIPULATION_LIMIT_RAD,
@@ -253,7 +310,7 @@ def main() -> int:
             "load_build_mode": "fixed-wrist LOAD_BUILD skipped; bounded contact-force preload precedes commanded arm lift",
             "contact_force_preload": "SIMULATION_ONLY torque impedance plus evidence-derived measured-contact topology feedforward; not a LOAD_READY claim",
             "load_contact_reallocation": runner.LOAD_CONTACT_REALLOCATION,
-            "close_target_source": "C2 whole-hand source-limited static optimizer; same 0.060 rad/s close slew",
+            "close_target_source": f"{CANDIDATE_PATH.stem} source-valid candidate configuration; same 0.060 rad/s close slew",
         },
         "stage1_wrench_audit": {},
         "lift_arming": {},
@@ -296,22 +353,21 @@ def main() -> int:
 
         candidate = json.loads(CANDIDATE_PATH.read_text(encoding="utf-8"))
         wrench = json.loads(WRENCH_PATH.read_text(encoding="utf-8"))
+        candidate_name = str(candidate.get("candidate", CANDIDATE_PATH.stem))
+        result["candidate"] = candidate_name
         result["candidate_static_run_id"] = candidate["run_id"]
         result["candidate_wrench_input_sha256"] = runner.sha256(
-            C2_RUN / "candidate_c2_wrench_input.json"
+            WRENCH_INPUT_PATH
         )
         result["candidate_wrench_result_sha256"] = runner.sha256(WRENCH_PATH)
         if candidate["static_gates"]["passed"] is not True:
-            raise RuntimeError("C2 static geometry gate did not pass")
-        if wrench.get("classification") != "A — NOMINAL GEOMETRY ACCEPTABLE":
-            raise RuntimeError(f"C2 fresh wrench gate did not pass: {wrench.get('classification')}")
-        if wrench.get("contact_force_group_gates", {}).get("effort_balanced_allocation", {}).get("thumb_plus_opposing_gate") != 1.0:
-            raise RuntimeError("C2 wrench allocation lacks thumb plus opposing-digit support")
+            raise RuntimeError(f"{candidate_name} static geometry gate did not pass")
+        static_allocation = validate_candidate_wrench(candidate, wrench, CANDIDATE_PATH)
 
         hand.URDF = runner.URDF
         _, urdf_limits, mimics, _ = hand.parse_urdf()
         ranges = hand.derive_channel_ranges(urdf_limits, mimics)
-        compiled_path = output / "compiled/dfq_c2_pickup_mj336.xml"
+        compiled_path = output / f"compiled/dfq_{CANDIDATE_PATH.stem}_pickup_mj336.xml"
         runtime_robot_xml = prepare_runtime_robot_xml(output)
         result["runtime_robot_xml"] = str(runtime_robot_xml)
         result["runtime_robot_xml_sha256"] = runner.sha256(runtime_robot_xml)
@@ -322,7 +378,7 @@ def main() -> int:
         expected_model_hash = candidate["source"]["compiled_model_sha256"]
         if normalized_hash != expected_model_hash:
             raise RuntimeError(
-                "normalized C2 model hash changed: "
+                "normalized compiled model hash changed: "
                 f"{normalized_hash} != {expected_model_hash}"
             )
         result["compiled_model_sha256"] = model_hash
@@ -373,7 +429,7 @@ def main() -> int:
         mujoco.mj_forward(model, data)
         arm_contacts = [c for c in runner.bottle_contacts(model, data) if c["side"] != "other"]
         if arm_contacts:
-            raise RuntimeError(f"open C2 pregrasp has robot/bottle contact: {arm_contacts}")
+            raise RuntimeError(f"open candidate pregrasp has robot/bottle contact: {arm_contacts}")
 
         meta = build
         meta["close_target_rad_by_channel"] = driver_targets
@@ -383,7 +439,7 @@ def main() -> int:
             "joint_configuration": candidate["joint_configuration"],
             "target_contact_geometry": candidate["joint_contact_geometry"],
             "static_wrench_classification": wrench["classification"],
-            "wrench_allocation": wrench["effort_balanced_10pct_margin_allocation"],
+            "wrench_allocation": static_allocation,
             "pregrasp_arm_q_rad": pregrasp_q.tolist(),
             "approach_arm_q_rad": approach_q.tolist(),
             "lift_arm_q_rad": lift_q.tolist(),
@@ -397,7 +453,7 @@ def main() -> int:
             "bottle_mass_kg": wrench["bottle_mass_kg"],
             "bottle_weight_n": wrench["bottle_weight_n"],
             "configured_mu": wrench["configured_mu"],
-            "allocation": wrench["effort_balanced_10pct_margin_allocation"],
+            "candidate_static_wrench_allocation": static_allocation,
             "robustness_summary": wrench["robustness_summary"],
         }
         result["status"] = "RUNNING"
@@ -406,8 +462,15 @@ def main() -> int:
         result["active_rollout_qpos_write_scan"] = runner.ast_rollout_write_check()
         write_json(output / "preflight_plan.json", {
             "run_id": run_id,
-            "candidate": "C2",
+            "candidate": candidate_name,
+            "candidate_path": CANDIDATE_PATH.as_posix(),
+            "candidate_sha256": runner.sha256(CANDIDATE_PATH),
+            "wrench_input_path": WRENCH_INPUT_PATH.as_posix(),
+            "wrench_input_sha256": runner.sha256(WRENCH_INPUT_PATH),
+            "wrench_result_path": WRENCH_PATH.as_posix(),
+            "wrench_result_sha256": runner.sha256(WRENCH_PATH),
             "physics_steps": 0,
+            "mj_step_calls": 0,
             "compiled_model_sha256": model_hash,
             "settle_clear_arm_target_rad": pregrasp_q.tolist(),
             "pregrasp_arm_target_rad": pregrasp_q.tolist(),
@@ -419,6 +482,43 @@ def main() -> int:
             "open_pregrasp_robot_bottle_contacts": arm_contacts,
             "reproduction_command": command,
         })
+
+        if args.plan_only:
+            result.update({
+                "status": "STATIC PREFLIGHT PASS (PLAN ONLY)",
+                "passed": False,
+                "physical_gates_passed": False,
+                "physics_steps": 0,
+                "mj_step_calls": 0,
+                "highest_physical_gate": "STATIC WRENCH FEASIBLE; DYNAMICS NOT RUN",
+                "stage1_wrench_audit": {
+                    "path": WRENCH_PATH.as_posix(),
+                    "sha256": runner.sha256(WRENCH_PATH),
+                    "source_run_id": wrench["run_id"],
+                    "physics_steps": wrench["physics_steps"],
+                    "classification": wrench["classification"],
+                    "bottle_mass_kg": wrench.get("bottle_mass_kg"),
+                    "bottle_weight_n": wrench.get("bottle_weight_n"),
+                    "candidate_static_wrench_allocation": static_allocation,
+                },
+            })
+            result["executed_runner_sha256"] = runner.sha256(Path(__file__).resolve())
+            result["external_runner_sha256"] = runner.sha256(Path(runner.__file__).resolve())
+            write_json(output / "m0_result.json", result)
+            write_report(output, result, command)
+            (output / "run.log").write_text(
+                f"run_id={run_id}\nstatus={result['status']}\nphysics_steps=0\nmj_step_calls=0\n"
+                f"reproduction_command={command}\n", encoding="utf-8"
+            )
+            print(json.dumps({
+                "run_id": run_id,
+                "status": result["status"],
+                "candidate": candidate_name,
+                "physics_steps": 0,
+                "mj_step_calls": 0,
+                "output": output.as_posix(),
+            }, indent=2))
+            return 0
 
         outcome = runner.run_rollout(
             model, data, meta, output, result,

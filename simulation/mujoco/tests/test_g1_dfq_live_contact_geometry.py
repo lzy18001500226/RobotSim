@@ -17,6 +17,60 @@ import g1_dfq_grasp_core as core
 
 
 class LiveContactGeometryTests(unittest.TestCase):
+    def test_contact_sequence_waits_for_stable_opposition_before_releasing_thumb(self):
+        self.assertEqual(core.contact_sequence_phase({"thumb"}), "OPPOSING_APPROACH")
+        self.assertTrue(core.contact_sequence_holds_target(
+            "support-before-thumb-advance", "OPPOSING_APPROACH", "thumb", True
+        ))
+        self.assertFalse(core.contact_sequence_holds_target(
+            "support-before-thumb-advance", "OPPOSING_APPROACH", "thumb", False
+        ))
+
+    def test_contact_sequence_holds_opposition_until_thumb_is_confirmed(self):
+        self.assertEqual(core.contact_sequence_phase({"index", "ring"}), "THUMB_APPROACH")
+        self.assertTrue(core.contact_sequence_holds_target(
+            "support-before-thumb-advance", "THUMB_APPROACH", "index", True
+        ))
+        self.assertFalse(core.contact_sequence_holds_target(
+            "support-before-thumb-advance", "THUMB_APPROACH", "thumb", False
+        ))
+        self.assertEqual(
+            core.contact_sequence_phase({"thumb", "index"}), "BILATERAL_CLOSE"
+        )
+        self.assertFalse(core.contact_sequence_holds_target(
+            "support-before-thumb-advance", "BILATERAL_CLOSE", "thumb", True
+        ))
+
+    def test_simultaneous_close_profile_does_not_apply_sequence_holds(self):
+        self.assertFalse(core.contact_sequence_holds_target(
+            "simultaneous", "OPPOSING_APPROACH", "thumb", True
+        ))
+
+    def test_candidate_force_requirements_allow_digits_without_allocated_contacts(self):
+        thumb, opposing = core.candidate_digit_normal_requirements({
+            "thumb": {"normal_force_n": 2.1},
+            "index": {"normal_force_n": 2.3},
+            "ring": {"normal_force_n": 0.01},
+        })
+        self.assertAlmostEqual(thumb, 2.1)
+        self.assertAlmostEqual(opposing, 2.31)
+
+    def test_world_pitch_reduces_measured_thumb_index_height_offset(self):
+        base = np.array([
+            [np.cos(np.deg2rad(60.0)), -np.sin(np.deg2rad(60.0)), 0.0],
+            [np.sin(np.deg2rad(60.0)), np.cos(np.deg2rad(60.0)), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        candidate = core.world_pitch_test_rotation(base)
+        measured_contact_delta = np.array([0.0678, -0.0126, 0.0237])
+        transformed_delta = candidate @ base.T @ measured_contact_delta
+        expected_z = (
+            -np.sin(np.deg2rad(15.0)) * measured_contact_delta[0]
+            + np.cos(np.deg2rad(15.0)) * measured_contact_delta[2]
+        )
+        self.assertAlmostEqual(transformed_delta[2], expected_z, places=12)
+        self.assertLess(abs(expected_z), abs(measured_contact_delta[2]))
+
     def test_cached_snapshot_does_not_read_stale_mujoco_contact_index(self):
         model = SimpleNamespace(nv=1, geom_bodyid=np.asarray([0, 2]))
         item = {
