@@ -3,11 +3,12 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(Bash|apply_patch)$",
+        "matcher": "^(Bash|exec_command|Write|Edit|apply_patch)$",
         "hooks": [
           {
             "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent/pre_tool_guard.py\"",
+            "commandWindows": "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/python3 -B /home/lzy18001500226/projects/RobotSim/scripts/agent/pre_tool_guard.py",
             "timeout": 5,
             "statusMessage": "Checking for destructive Git operations and credential leakage"
           }
@@ -19,9 +20,54 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent/notify_task.py\" stop",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent/agentmail_stop_hook.py\"",
+            "commandWindows": "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/python3 -B /home/lzy18001500226/projects/RobotSim/scripts/agent/agentmail_stop_hook.py",
             "timeout": 12,
-            "statusMessage": "Sending best-effort Codex turn notification"
+            "statusMessage": "Recording task outcome and queuing enabled notifications"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/research/codex_hook_capability_probe.py\"",
+            "commandWindows": "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/env ROBOTSIM_HOOK_PROBE_DIR=/tmp/robotsim-codex-hook-probe /usr/bin/python3 -B /home/lzy18001500226/projects/RobotSim/scripts/research/codex_hook_capability_probe.py",
+            "timeout": 3,
+            "statusMessage": "Recording redacted Codex lifecycle probe"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/research/codex_hook_capability_probe.py\"",
+            "commandWindows": "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/env ROBOTSIM_HOOK_PROBE_DIR=/tmp/robotsim-codex-hook-probe /usr/bin/python3 -B /home/lzy18001500226/projects/RobotSim/scripts/research/codex_hook_capability_probe.py",
+            "timeout": 3,
+            "statusMessage": "Recording redacted UserPromptSubmit lifecycle probe"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent/task_lifecycle.py\"",
+            "commandWindows": "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/python3 -B /home/lzy18001500226/projects/RobotSim/scripts/agent/task_lifecycle.py",
+            "timeout": 3,
+            "statusMessage": "Recording redacted local turn lifecycle"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/agent/task_lifecycle.py\"",
+            "commandWindows": "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/python3 -B /home/lzy18001500226/projects/RobotSim/scripts/agent/task_lifecycle.py",
+            "timeout": 3,
+            "statusMessage": "Recording interrupted local turn"
           }
         ]
       }

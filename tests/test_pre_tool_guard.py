@@ -57,6 +57,26 @@ class PreToolGuardTests(unittest.TestCase):
         result = run_guard(event("apply_patch", {"command": patch}))
         self.assertEqual(result["decision"], "block")
 
+    def test_legacy_exec_command_and_write_tools_remain_guarded(self) -> None:
+        exec_result = run_guard(event("exec_command", {"cmd": "git reset --hard HEAD"}))
+        write_result = run_guard(event("Write", {"file_path": "/repo/.env"}))
+        edit_result = run_guard(event("Edit", {"path": "/repo/credentials.json"}))
+        self.assertEqual(exec_result["decision"], "block")
+        self.assertEqual(write_result["decision"], "block")
+        self.assertEqual(edit_result["decision"], "block")
+
+    def test_write_content_remains_checked_for_credential_literals(self) -> None:
+        fake_token = "gh" + "p_" + "A" * 32
+        result = run_guard(event("Write", {"file_path": "/repo/config.txt", "content": fake_token}))
+        self.assertEqual(result["decision"], "block")
+
+    def test_nested_edit_fields_and_nested_paths_are_checked(self) -> None:
+        fake_token = "gh" + "p_" + "B" * 32
+        edit = run_guard(event("Edit", {"input": {"file_path": "src/config.txt", "old_string": "x", "new_string": fake_token}}))
+        secret_path = run_guard(event("Write", {"arguments": {"file_path": "/repo/.env.production", "content": "placeholder"}}))
+        self.assertEqual(edit["decision"], "block")
+        self.assertEqual(secret_path["decision"], "block")
+
     def test_safe_repository_commands_are_not_blocked(self) -> None:
         for command in ("git status --short", "git push origin task-branch", "git clean -n"):
             with self.subTest(command=command):
@@ -67,12 +87,13 @@ class PreToolGuardTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         config = json.loads((root / ".codex" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertEqual(set(config.get("hooks", {})), {"PreToolUse", "Stop"})
+        self.assertEqual(set(config.get("hooks", {})), {"PreToolUse", "Stop", "UserPromptSubmit", "Interrupt"})
         stop_handler = config["hooks"]["Stop"][0]["hooks"][0]
         self.assertEqual(stop_handler.get("type"), "command")
-        self.assertIn("scripts/agent/notify_task.py", stop_handler.get("command", ""))
+        self.assertIn("scripts/agent/agentmail_stop_hook.py", stop_handler.get("command", ""))
+        self.assertIn("wsl.exe -d Ubuntu-22.04 --exec /usr/bin/python3 -B", stop_handler.get("commandWindows", ""))
         self.assertGreater(stop_handler.get("timeout", 0), 0)
-        tool_names = {"Bash", "apply_patch"}
+        tool_names = {"Bash", "exec_command", "Write", "Edit", "apply_patch"}
         guard_path = "scripts/agent/pre_tool_guard.py"
         covered = set()
 
@@ -89,9 +110,34 @@ class PreToolGuardTests(unittest.TestCase):
                     continue
                 self.assertGreater(handler.get("timeout", 0), 0)
                 self.assertTrue((root / guard_path).is_file())
+                self.assertTrue(
+                    handler.get("commandWindows", "").startswith(
+                        "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/python3 -B "
+                    )
+                )
                 covered.update(name for name in tool_names if matcher.search(name))
 
         self.assertEqual(covered, tool_names)
+
+        stop_probes = [
+            handler
+            for group in config["hooks"]["Stop"]
+            for handler in group["hooks"]
+            if "scripts/research/codex_hook_capability_probe.py" in handler.get("command", "")
+        ]
+        self.assertEqual(len(stop_probes), 1)
+        self.assertIn(
+            "wsl.exe -d Ubuntu-22.04 --exec /usr/bin/env ROBOTSIM_HOOK_PROBE_DIR=",
+            stop_probes[0].get("commandWindows", ""),
+        )
+        prompt_probe = config["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+        self.assertIn("wsl.exe -d Ubuntu-22.04 --exec /usr/bin/env", prompt_probe.get("commandWindows", ""))
+        lifecycle_handlers = config["hooks"]["UserPromptSubmit"][0]["hooks"][1:]
+        self.assertEqual(len(lifecycle_handlers), 1)
+        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handlers[0].get("command", ""))
+        self.assertIn("scripts/agent/task_lifecycle.py", lifecycle_handlers[0].get("commandWindows", ""))
+        interrupt_handler = config["hooks"]["Interrupt"][0]["hooks"][0]
+        self.assertIn("scripts/agent/task_lifecycle.py", interrupt_handler.get("commandWindows", ""))
 
 
 if __name__ == "__main__":

@@ -15,8 +15,8 @@ DESTRUCTIVE_PATTERNS = (
     re.compile(r"(?:^|[\s;&|])git(?:\s+-C\s+\S+)?\s+clean\b[^;&|\n]*(?:--force\b|(?:^|\s)-[a-z]*f[a-z]*(?:\s|$))", re.I),
 )
 SECRET_VARIABLE = re.compile(
-    r"\$(?:\{)?(?:AGENTMAIL_API_KEY|GH_TOKEN|GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY)(?:\})?"
-    r"|\$env:(?:AGENTMAIL_API_KEY|GH_TOKEN|GITHUB_TOKEN)",
+    r"\$(?:\{)?(?:AGENTMAIL_API_KEY|ROBOTSIM_SMTP_PASSWORD|GH_TOKEN|GITHUB_TOKEN|AWS_SECRET_ACCESS_KEY)(?:\})?"
+    r"|\$env:(?:AGENTMAIL_API_KEY|ROBOTSIM_SMTP_PASSWORD|GH_TOKEN|GITHUB_TOKEN)",
     re.I,
 )
 WRITE_SINK = re.compile(r"(?:>|\btee\b|\bset-content\b|\bout-file\b)", re.I)
@@ -40,6 +40,30 @@ def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _input_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _input_strings(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _input_strings(item)]
+    return []
+
+
+def _input_paths(value: Any, key: str = "") -> list[str]:
+    paths: list[str] = []
+    if isinstance(value, dict):
+        for name, item in value.items():
+            if isinstance(item, str) and name.casefold() in {"file_path", "path", "filename", "file"}:
+                paths.append(item)
+            else:
+                paths.extend(_input_paths(item, name))
+    elif isinstance(value, list):
+        for item in value:
+            paths.extend(_input_paths(item, key))
+    return paths
+
+
 def _is_sensitive_path(value: str) -> bool:
     basename = value.replace("\\", "/").rstrip("/").split("/")[-1]
     if basename.lower() in SAFE_ENV_EXAMPLES:
@@ -50,8 +74,8 @@ def _is_sensitive_path(value: str) -> bool:
 def _reason(payload: dict[str, Any]) -> str | None:
     tool_name = str(payload.get("tool_name", ""))
     tool_input = _tool_input(payload)
-    if tool_name == "Bash":
-        command = str(tool_input.get("command", "")).replace("\\\n", " ")
+    if tool_name in {"Bash", "exec_command"}:
+        command = str(tool_input.get("command", tool_input.get("cmd", ""))).replace("\\\n", " ")
         if any(pattern.search(command) for pattern in DESTRUCTIVE_PATTERNS):
             return "blocked a destructive Git command; inspect the target and use the normal review flow"
         if TOKEN_LITERAL.search(command):
@@ -62,12 +86,15 @@ def _reason(payload: dict[str, Any]) -> str | None:
         if staged and any(_is_sensitive_path(item.strip("\"'")) for item in re.findall(r"[^\s]+", staged.group(1))):
             return "blocked staging an obvious credential file; review it locally and keep credentials out of Git"
 
-    if tool_name == "apply_patch":
-        patch = str(tool_input.get("command", ""))
+    if tool_name in {"Write", "Edit", "apply_patch"}:
+        if any(_is_sensitive_path(path) for path in _input_paths(tool_input)):
+            return "blocked writing an obvious credential file into the project"
+        strings = _input_strings(tool_input)
+        patch = "\n".join(strings)
         added_paths = re.findall(r"(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$", patch)
         if any(_is_sensitive_path(path.strip()) for path in added_paths):
             return "blocked a patch targeting an obvious credential file"
-        if TOKEN_LITERAL.search(patch):
+        if any(TOKEN_LITERAL.search(value) for value in strings):
             return "blocked a patch containing a credential-shaped literal"
     return None
 
