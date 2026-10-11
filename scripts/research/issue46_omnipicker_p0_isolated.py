@@ -64,6 +64,9 @@ TABLE_HALF_EXTENTS = np.array([0.200, 0.200])
 TABLE_TOP_Z = 0.800
 OPEN_OPERATIONAL_MARGIN_RAD = 0.020
 CLOSED_OPERATIONAL_MARGIN_RAD = accepted.ENDPOINT_MARGIN
+CONTACT_TRACKING_DEFLECTION_RAD = 0.020
+MIN_MEASURABLE_PAD_FORCE_N = 0.05
+MAX_HOLD_JAW_TRACKING_ERROR_RAD = 0.020
 
 
 def operational_aperture_reference(aperture: float, velocity: float,
@@ -563,7 +566,9 @@ def right_controller(model: mujoco.MjModel) -> dict[str, Any]:
                               "operational_open_target_rad": operational_aperture_reference(1.0, 0.0, 0.0)["driver_q"],
                               "operational_closed_target_rad": operational_aperture_reference(0.0, 0.0, 0.0)["driver_q"],
                               "motion_duration_s": accepted.MOTION_DURATION, "source_mapping": "follower=-driver",
-                              "frequency_rad_s": accepted.FREQUENCY, "damping_ratio": accepted.DAMPING_RATIO,
+                              "gain_design": "load-derived stiffness at a 20 mrad SIMULATION_ONLY tracking deflection; critical damping from compiled joint inertia",
+                              "tracking_deflection_design_rad": CONTACT_TRACKING_DEFLECTION_RAD,
+                              "damping_ratio": 1.0,
                               "friction_assumption": accepted.CONTACT_FRICTION_ASSUMPTION, "per_side": {}}
     side = "right"
     driver, follower, narrow, wide = accepted.DRIVER_FOLLOWER[side]
@@ -590,12 +595,17 @@ def right_controller(model: mujoco.MjModel) -> dict[str, Any]:
                   5.773502691896258 / accepted.MOTION_DURATION**2)
     joints = {}
     for name, row in sampled.items():
-        kp = row["inertia"] * accepted.FREQUENCY**2
-        kd = 2.0 * accepted.DAMPING_RATIO * accepted.FREQUENCY * row["inertia"]
+        load_torque = normal_design * row["lever"]
+        kp = load_torque / CONTACT_TRACKING_DEFLECTION_RAD
+        natural_frequency = math.sqrt(kp / row["inertia"])
+        kd = 2.0 * math.sqrt(row["inertia"] * kp)
         free_demand = row["bias"] + row["inertia"] * peak_accel
         contact_demand = normal_design * row["lever"] + row["bias"] + row["inertia"] * peak_accel
         cap = max(2.0 * free_demand, 1.15 * contact_demand)
-        joints[name] = {"kp_nm_rad": kp, "kd_nm_s_rad": kd, "effort_cap_nm": cap,
+        joints[name] = {"kp_nm_rad": kp, "kd_nm_s_rad": kd,
+                        "natural_frequency_rad_s": natural_frequency,
+                        "design_tracking_deflection_rad": CONTACT_TRACKING_DEFLECTION_RAD,
+                        "design_load_torque_nm": load_torque, "effort_cap_nm": cap,
                         "compiled_inertia_kg_m2": row["inertia"], "sampled_bias_nm": row["bias"],
                         "lever_arm_m": row["lever"]}
     result["per_side"][side] = {"driver": driver, "follower": follower,
@@ -870,7 +880,7 @@ def moving_fixture_regression(subtree_urdf: Path, pose: dict[str, Any], canonica
 
 
 def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, Any],
-                 geometry: dict[str, Any], output: Path) -> dict[str, Any]:
+                 geometry: dict[str, Any], output: Path, contact_only: bool = False) -> dict[str, Any]:
     if geometry.get("status") != "PASS":
         return {"status": "NOT_RUN", "reason": "B2 static geometry did not pass."}
     data = mujoco.MjData(model)
@@ -908,6 +918,8 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
         ("HOLD_50MM", 1.0, {"approach": (0.0, 0.0), "lift": (0.050, 0.050),
                              "aperture": (geometry["closure"]["bilateral_contact_target_aperture"], geometry["closure"]["bilateral_contact_target_aperture"])}),
     ]
+    if contact_only:
+        stages = stages[:4]
     t_global = 0.0
     step = 0
     contacts_start_hold: list[dict[str, Any]] | None = None
@@ -938,6 +950,12 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
         hand_support_min = math.inf
         stage_pen_max = 0.0
         stage_lift_max = -math.inf
+        stage_pad_forces = {pad: [] for pad in PAD_BODIES}
+        stage_tracking_errors = {name: [] for name in accepted.DRIVER_FOLLOWER["right"][:2]}
+        stage_tracking_velocities = {name: [] for name in accepted.DRIVER_FOLLOWER["right"][:2]}
+        stage_saturated_steps = {name: 0 for name in accepted.DRIVER_FOLLOWER["right"][:2]}
+        stage_torques = {name: {key: [] for key in ("requested", "applied", "generalized", "bias")}
+                         for name in accepted.DRIVER_FOLLOWER["right"][:2]}
         for local_step in range(local_steps):
             local_t = local_step * accepted.TIMESTEP
             values = {}
@@ -975,11 +993,34 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
                                               "force_cap_N": gains["force_cap_N"]}
                 max_slide_tracking_error[joint_name] = max(max_slide_tracking_error[joint_name], abs(qref-q))
                 max_joint_effort[joint_name] = max(max_joint_effort.get(joint_name, 0.0), abs(applied))
+            mujoco.mj_forward(model, data)
+            actuator_names = {
+                accepted.DRIVER_FOLLOWER["right"][0]: "diag_right_driver_servo",
+                accepted.DRIVER_FOLLOWER["right"][1]: "diag_right_follower_servo",
+            }
+            for name, control in hand_controls.items():
+                aid = accepted.actuator_id(model, actuator_names[name])
+                dof = accepted.dof_addr(model, name)
+                control["actuation"] = {
+                    "actuator_id": int(aid),
+                    "gear": model.actuator_gear[aid].tolist(),
+                    "actuator_force": float(data.actuator_force[aid]),
+                    "generalized_actuator_torque_nm": float(data.qfrc_actuator[dof]),
+                    "qfrc_bias_nm": float(data.qfrc_bias[dof]),
+                    "qacc_before_step_rad_s2": float(data.qacc[dof]),
+                }
+                stage_torques[name]["requested"].append(float(control["requested_torque_nm"]))
+                stage_torques[name]["applied"].append(float(control["applied_torque_nm"]))
+                stage_torques[name]["generalized"].append(float(data.qfrc_actuator[dof]))
+                stage_torques[name]["bias"].append(float(data.qfrc_bias[dof]))
             mujoco.mj_step(model, data)
             t_global += accepted.TIMESTEP
             step += 1
             stage_rows += 1
             hand_contacts = contact_forces(model, data)
+            for pad in PAD_BODIES:
+                stage_pad_forces[pad].append(sum(c["normal_force_N"] for c in hand_contacts
+                                                 if c["other_body"] == pad))
             contact_keys = {c["other_body"] for c in hand_contacts}
             for c in hand_contacts:
                 max_penetration = max(max_penetration, c["penetration_m"])
@@ -1022,6 +1063,10 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
             for name, ctrl in hand_controls.items():
                 max_joint_effort[name] = max(max_joint_effort.get(name, 0.0), abs(ctrl["applied_torque_nm"]))
                 max_hand_speed = max(max_hand_speed, abs(float(data.qvel[accepted.dof_addr(model, name)])))
+                post_step_error = float(ctrl["target_q_rad"] - data.qpos[accepted.qpos_addr(model, name)])
+                stage_tracking_errors[name].append(post_step_error)
+                stage_tracking_velocities[name].append(float(data.qvel[accepted.dof_addr(model, name)]))
+                stage_saturated_steps[name] += int(bool(ctrl["saturated"]))
             finite = bool(np.isfinite(np.concatenate((data.qpos, data.qvel, data.qacc))).all())
             nonfinite = nonfinite or not finite
             limits = accepted.valid_joint_state(model, data, source_joints={
@@ -1037,6 +1082,11 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
                                                     "qvel_rad_s": float(data.qvel[accepted.dof_addr(model,n)]),
                                                     "qacc_rad_s2": float(data.qacc[accepted.dof_addr(model,n)])}
                                                 for n in (driver,follower)},
+                          "post_step_jaw_tracking": {n: {"target_q_rad": float(hand_controls[n]["target_q_rad"]),
+                                                         "qpos_rad": float(data.qpos[accepted.qpos_addr(model,n)]),
+                                                         "position_error_rad": float(hand_controls[n]["target_q_rad"] - data.qpos[accepted.qpos_addr(model,n)]),
+                                                         "qvel_rad_s": float(data.qvel[accepted.dof_addr(model,n)])}
+                                                     for n in (driver,follower)},
                           "mimic_residual_rad": mimic, "bottle": pose,
                           "bottle_bottom_table_separation_m": bottom_separation,
                           "bottle_relative_position_in_tool_m": rel.tolist(),
@@ -1065,16 +1115,59 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
                 break
         stage_summary[stage] = {"start_time_s": stage_start, "end_time_s": t_global,
                                 "steps": stage_rows, "bilateral_pad_contact_fraction": bilateral_ticks/max(stage_rows, 1),
+                                "pad_force_metrics": {
+                                    pad: {"steps_with_contact": sum(force > 0.0 for force in forces),
+                                          "contact_fraction": sum(force > 0.0 for force in forces) / max(len(forces), 1),
+                                          "mean_normal_force_over_stage_N": float(np.mean(forces)) if forces else 0.0,
+                                          "mean_normal_force_when_contact_N": float(np.mean([f for f in forces if f > 0.0])) if any(f > 0.0 for f in forces) else 0.0,
+                                          "peak_normal_force_N": max(forces, default=0.0)}
+                                    for pad, forces in stage_pad_forces.items()},
+                                "jaw_tracking_metrics": {
+                                    name: {"max_abs_post_step_position_error_rad": max((abs(e) for e in errors), default=0.0),
+                                           "mean_abs_post_step_position_error_rad": float(np.mean(np.abs(errors))) if errors else 0.0,
+                                           "end_post_step_position_error_rad": errors[-1] if errors else None,
+                                           "max_abs_post_step_velocity_rad_s": max((abs(v) for v in stage_tracking_velocities[name]), default=0.0),
+                                           "saturation_fraction": stage_saturated_steps[name] / max(stage_rows, 1)}
+                                    for name, errors in stage_tracking_errors.items()},
+                                "actuation_metrics": {
+                                    name: {"peak_requested_torque_nm": max((abs(x) for x in stage_torques[name]["requested"]), default=0.0),
+                                           "peak_applied_torque_nm": max((abs(x) for x in stage_torques[name]["applied"]), default=0.0),
+                                           "peak_generalized_actuator_torque_nm": max((abs(x) for x in stage_torques[name]["generalized"]), default=0.0),
+                                           "peak_abs_qfrc_bias_nm": max((abs(x) for x in stage_torques[name]["bias"]), default=0.0),
+                                           "effort_cap_nm": float(hand_controls[name]["effort_cap_nm"]) if hand_controls else None,
+                                           "saturation_fraction": stage_saturated_steps[name] / max(stage_rows, 1),
+                                           "gear": model.actuator_gear[accepted.actuator_id(model, actuator_names[name])].tolist()}
+                                    for name in stage_tracking_errors},
                                 "peak_table_normal_force_N": table_force_peak,
                                 "minimum_hand_vertical_support_force_N": None if math.isinf(hand_support_min) else hand_support_min,
                                 "maximum_penetration_m": stage_pen_max,
                                 "maximum_bottle_height_above_initial_m": stage_lift_max}
+        if stage == "HOLD":
+            hold_pads = stage_summary[stage]["pad_force_metrics"]
+            hold_tracking = stage_summary[stage]["jaw_tracking_metrics"]
+            bilateral_ok = stage_summary[stage]["bilateral_pad_contact_fraction"] >= 0.80
+            pad_force_ok = all(hold_pads[pad]["mean_normal_force_when_contact_N"] >= MIN_MEASURABLE_PAD_FORCE_N
+                               for pad in PAD_BODIES)
+            jaw_tracking_ok = all(hold_tracking[name]["max_abs_post_step_position_error_rad"] <= MAX_HOLD_JAW_TRACKING_ERROR_RAD
+                                  for name in hold_tracking)
+            if not bilateral_ok or not pad_force_ok:
+                failure = "NO_BILATERAL_CONTACT"
+            elif not jaw_tracking_ok:
+                failure = "UNSTABLE_JAW_TRACKING"
+            if contact_only or failure:
+                break
         if failure:
             break
-    Image.fromarray(render(renderer, model, data, "overview")).save(output / "C_maximum_lift.png")
-    Image.fromarray(render(renderer, model, data, "close")).save(output / "C_maximum_lift_closeup.png")
-    write_jsonl(output / "C_CONTACT_LIFT_TRACE.jsonl", trace)
-    imageio.mimsave(output / "C_isolated_contact_lift.mp4", frames, fps=20, macro_block_size=1)
+    if contact_only:
+        Image.fromarray(render(renderer, model, data, "overview")).save(output / "C_contact_hold_final.png")
+        Image.fromarray(render(renderer, model, data, "close")).save(output / "C_contact_hold_closeup.png")
+        trace_name, video_name = "C_CONTACT_HOLD_TRACE.jsonl", "C_bilateral_contact_hold.mp4"
+    else:
+        Image.fromarray(render(renderer, model, data, "overview")).save(output / "C_maximum_lift.png")
+        Image.fromarray(render(renderer, model, data, "close")).save(output / "C_maximum_lift_closeup.png")
+        trace_name, video_name = "C_CONTACT_LIFT_TRACE.jsonl", "C_isolated_contact_lift.mp4"
+    write_jsonl(output / trace_name, trace)
+    imageio.mimsave(output / video_name, frames, fps=20, macro_block_size=1)
     final = bottle_pose(model, data)
     final_support = contact_forces(model, data)
     final_hand_support = sum(c["force_on_bottle_world_N"][2] for c in final_support if c["other_body"] in PAD_BODIES)
@@ -1082,18 +1175,25 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
     bilateral_fraction = min((row["bilateral_pad_contact_fraction"] for name, row in stage_summary.items()
                               if name in {"HOLD", "LIFT_1MM", "LIFT_5MM", "LIFT_50MM", "HOLD_50MM"}), default=0.0)
     lift = float(final["height_above_table_m"])
-    hold_ok = (stage_summary.get("HOLD", {}).get("bilateral_pad_contact_fraction", 0.0) >= 0.80
-               and stage_summary.get("HOLD", {}).get("maximum_bottle_height_above_initial_m", -1.0) > -0.003)
+    hold_summary = stage_summary.get("HOLD", {})
+    hold_ok = (hold_summary.get("bilateral_pad_contact_fraction", 0.0) >= 0.80
+               and all(hold_summary.get("pad_force_metrics", {}).get(pad, {}).get("mean_normal_force_when_contact_N", 0.0)
+                       >= MIN_MEASURABLE_PAD_FORCE_N for pad in PAD_BODIES)
+               and all(hold_summary.get("jaw_tracking_metrics", {}).get(name, {}).get("max_abs_post_step_position_error_rad", math.inf)
+                       <= MAX_HOLD_JAW_TRACKING_ERROR_RAD for name in accepted.DRIVER_FOLLOWER["right"][:2])
+               and hold_summary.get("maximum_bottle_height_above_initial_m", -1.0) > -0.003)
     lift_ok = lift >= 0.050 - 0.001
     support_ok = final_hand_support >= MIN_HAND_SUPPORT_N and final_table_support <= 0.05
     stability_ok = max_relative_slip <= MAX_HOLD_RELATIVE_SLIP_M and np.linalg.norm(final["linear_velocity_world_m_s"]) <= MAX_HOLD_LINEAR_SPEED_M_S
     upright_ok = final["upright_error_deg"] <= MAX_UPRIGHT_ERROR_DEG
-    successful = (failure is None and not source_limit_violations and not nonfinite and
-                  max_penetration <= MAX_ALLOWED_CONTACT_PENETRATION_M and hold_ok and lift_ok and
-                  support_ok and stability_ok and upright_ok and bilateral_fraction >= 0.80 and
-                  not unexpected_contacts and max_mimic_error <= accepted.MIMIC_TRACKING_DIAGNOSTIC_RAD and
+    safety_ok = (failure is None and not source_limit_violations and not nonfinite and
+                 max_penetration <= MAX_ALLOWED_CONTACT_PENETRATION_M and not unexpected_contacts and
+                 max_mimic_error <= accepted.MIMIC_TRACKING_DIAGNOSTIC_RAD and hold_ok)
+    successful = (safety_ok if contact_only else
+                  safety_ok and lift_ok and support_ok and stability_ok and upright_ok and bilateral_fraction >= 0.80 and
                   all(stage in stage_summary for stage in ("HOLD", "LIFT_1MM", "LIFT_5MM", "LIFT_50MM", "HOLD_50MM")))
-    result = {"status": "PASS" if successful else "FAIL", "stage": "C_ISOLATED_CONTACT_LIFT_50MM",
+    result = {"status": "PASS" if successful else "FAIL", "lift_attempted": not contact_only,
+              "stage": "C_ISOLATED_BILATERAL_CONTACT_HOLD" if contact_only else "C_ISOLATED_CONTACT_LIFT_50MM",
               "classification": "SIMULATION_ONLY isolated source-geometry hand fixture; not full-X2 or hardware acceptance",
               "source_model_changes": [], "source_collision_exclusions_added": [], "bottle_qpos_writes_during_rollout": 0,
               "bottle_welds_or_equalities": [], "mocap_carry": False, "hidden_bottle_support": False,
@@ -1110,16 +1210,19 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
               "mimic_diagnostic_bound_rad": accepted.MIMIC_TRACKING_DIAGNOSTIC_RAD,
               "source_limit_violations": source_limit_violations, "nonfinite_state": nonfinite,
               "unexpected_contact_bodies": sorted(unexpected_contacts),
-              "final_gate_checks": {"hold": hold_ok, "lift_50mm": lift_ok, "hand_support_replaces_table": support_ok,
+              "final_gate_checks": {"hold": hold_ok, "lift_50mm": None if contact_only else lift_ok,
+                                    "hand_support_replaces_table": None if contact_only else support_ok,
                                     "slip_and_hold_velocity": stability_ok, "upright": upright_ok},
-              "failure_classification": failure or (None if successful else _classify_failure(result_values={
+              "failure_classification": failure or ("CONTACT_HOLD_PASS" if contact_only and successful else None if successful else _classify_failure(result_values={
                   "bilateral_fraction": bilateral_fraction, "support": final_hand_support,
                   "table": final_table_support, "lift": lift, "slip": max_relative_slip,
                   "penetration": max_penetration, "mimic": max_mimic_error,
                   "unexpected_contacts": sorted(unexpected_contacts)})),
-              "trace": "C_CONTACT_LIFT_TRACE.jsonl", "video": "C_isolated_contact_lift.mp4",
+              "trace": trace_name, "video": video_name,
               "evidence_images": ["C_pregrasp.png", "C_first_contact.png", "C_closed_grasp.png", "C_hold.png",
-                                  "C_maximum_lift.png", "C_maximum_lift_closeup.png", "C_front_view.png", "C_side_view.png"]}
+                                  *(["C_contact_hold_final.png", "C_contact_hold_closeup.png"] if contact_only else
+                                    ["C_maximum_lift.png", "C_maximum_lift_closeup.png"]),
+                                  "C_front_view.png", "C_side_view.png"]}
     write_json(output / "C_RESULT.json", result)
     renderer.close()
     return result
@@ -1173,7 +1276,9 @@ def write_report(output: Path, static: dict[str, Any], no_contact: dict[str, Any
              f"- B2 source-geometry static corridor: **{static['status']}**; open approach minimum non-pad/bottle clearance {static['approach']['minimum_nonpad_bottle_clearance_m']*1000:.2f} mm; conservative gripper/table clearance lower bound {static['approach']['minimum_gripper_table_clearance_lower_bound_m']*1000:.2f} mm.",
              f"- Bilateral geometric jaw target: aperture {static['closure']['bilateral_contact_target_aperture']}; non-gripping clearance through target {static['closure']['minimum_nonpad_distance_m']*1000:.2f} mm.",
              f"- Moving-fixture no-contact regression: **{no_contact['status'] if no_contact else 'NOT RUN'}**; the same 3.0 s approach and 1.0 s endpoint hold ran before contact testing.",
-             f"- Isolated physical 50 mm lift: **{dynamic['status'] if dynamic else 'NOT RUN'}**.",
+             (f"- Fixed-wrist bilateral contact/HOLD: **{dynamic['status']}**; 50 mm lift: **NOT RUN**."
+              if dynamic and dynamic.get("lift_attempted") is False else
+              f"- Isolated physical 50 mm lift: **{dynamic['status'] if dynamic else 'NOT RUN'}**."),
              "- Full X2 right-arm integration: **NOT RUN** unless the isolated lift gate passes and a separate phase is executed.", "",
              "## OPEN endpoint diagnosis", "",
              f"- Source driver range remains `{static['source_pose_derivation']['source_right_claw_joint_range_rad']}` rad; source follower range remains `{static['source_pose_derivation']['source_right_follower_joint_range_rad']}` rad.",
@@ -1184,17 +1289,38 @@ def write_report(output: Path, static: dict[str, Any], no_contact: dict[str, Any
              f"- Source: `{accepted.X2_PIN}` / `{accepted.X2_URDF_REL.as_posix()}`; original source collision meshes and joint ranges retained.",
              "- Fixture: SIMULATION_ONLY, two physically actuated prismatic axes; source wrist-roll link and complete right OmniPicker descendant subtree retained.",
              "- Jaw controls: SIMULATION_ONLY paired-jaw emulation with source follower mapping; no bottle attachment or bottle qpos writes.",
+             (f"- Controller correction: `{dynamic['controller'].get('gain_design', 'NOT RECORDED')}`; per-jaw load design `{dynamic['controller']['per_side']['right']['design_normal_force_per_jaw_n']:.3f} N`, effort caps unchanged at driver `{dynamic['controller']['per_side']['right']['joints']['right_claw_joint']['effort_cap_nm']:.4f} N·m` and follower `{dynamic['controller']['per_side']['right']['joints']['R_hand_wide1_joint']['effort_cap_nm']:.4f} N·m`."
+              if dynamic else "- Controller correction: NOT RUN."),
+             (f"- HOLD bilateral contact fraction `{dynamic['stage_metrics'].get('HOLD', {}).get('bilateral_pad_contact_fraction', 0.0):.3f}`; pad force/tracking detail is in `C_RESULT.json` and the per-step trace."
+              if dynamic and "HOLD" in dynamic.get("stage_metrics", {}) else "- Contact/HOLD: NOT RUN."),
              f"- Bottle: 70 mm diameter × 244.5 mm high; 0.570 kg; friction {accepted.CYLINDER_FRICTION}; freejoint over the canonical G1 table.",
              "- Full per-step trace and machine-readable result files are stored beside this report.", "",
              "## Reproduction", "", "```bash", command, "```", "",
              "## Runtime", "", f"- MuJoCo: {runtime['mujoco_native']}; Python {runtime['python'].split()[0]}; timestep {runtime['timestep_s']} s.",
              f"- Runner SHA256: `{runtime['runner_sha256']}`.", f"- Generated subtree URDF SHA256: `{runtime['generated_subtree_urdf_sha256']}`.", ""]
+    if dynamic:
+        lines.extend(["## CLOSE/HOLD controller and contact measurements", ""])
+        for stage in ("CLOSE", "HOLD"):
+            metrics = dynamic.get("stage_metrics", {}).get(stage)
+            if not metrics:
+                continue
+            lines.append(f"- `{stage}`: bilateral pad contact `{metrics['bilateral_pad_contact_fraction']:.3f}`; table support peak `{metrics['peak_table_normal_force_N']:.3f} N`.")
+            for name in accepted.DRIVER_FOLLOWER["right"][:2]:
+                tracking = metrics["jaw_tracking_metrics"][name]
+                torque = metrics["actuation_metrics"][name]
+                lines.append(f"  - `{name}`: end post-step target error `{tracking['end_post_step_position_error_rad']*1000:.3f} mrad`; peak applied/requested/generalized torque `{torque['peak_applied_torque_nm']:.6f}/{torque['peak_requested_torque_nm']:.6f}/{torque['peak_generalized_actuator_torque_nm']:.6f} N·m`; cap `{torque['effort_cap_nm']:.6f} N·m`; saturation `{torque['saturation_fraction']:.3f}.")
+            for pad in PAD_BODIES:
+                force = metrics["pad_force_metrics"][pad]
+                lines.append(f"  - `{pad}`: contact fraction `{force['contact_fraction']:.3f}`; mean/peak normal force `{force['mean_normal_force_over_stage_N']:.4f}/{force['peak_normal_force_N']:.4f} N`.")
+        lines.append("")
     (output / "REPORT.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--contact-only", action="store_true",
+                        help="stop after the fixed-wrist 1 s bilateral contact hold; do not command lift")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -1220,14 +1346,16 @@ def main() -> int:
                                             for name in accepted.DRIVER_FOLLOWER["right"][:2]}})
     static = geometry_gate(model, pose, output, canonical)
     no_contact = moving_fixture_regression(subtree_path, pose, canonical, static, output) if static["status"] == "PASS" else None
-    dynamic = (physical_run(spec, model, fixture, static, output)
+    dynamic = (physical_run(spec, model, fixture, static, output, contact_only=args.contact_only)
                if static["status"] == "PASS" and no_contact and no_contact["status"] == "PASS" else None)
+    mode_option = " --contact-only" if args.contact_only else ""
     command = ("PYTHONPATH=/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib/python3.10/site-packages:/tmp/robotsim-issue46-omnipicker-p0-pin:/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/lib/python3.10/site-packages "
                "LD_LIBRARY_PATH=/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib:/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib64 MUJOCO_GL=egl "
-               f"python3 {Path(__file__).resolve()} --output {output}")
+               f"python3 {Path(__file__).resolve()} --output {output}{mode_option}")
     write_json(output / "P0_ISOLATED_RESULT.json", {"B2_STATIC_GEOMETRY_GATE": static["status"],
                "MOVING_FIXTURE_NO_CONTACT_REGRESSION": no_contact["status"] if no_contact else "NOT_RUN",
-               "ISOLATED_CONTACT_LIFT_50MM": (dynamic["status"] if dynamic else "NOT_RUN"),
+               "ISOLATED_CONTACT_HOLD": (dynamic["status"] if dynamic and dynamic.get("lift_attempted") is False else "NOT_RUN"),
+               "ISOLATED_CONTACT_LIFT_50MM": (dynamic["status"] if dynamic and dynamic.get("lift_attempted") else "NOT_RUN"),
                "FULL_X2_CONTACT_LIFT_50MM": "NOT_RUN", "FULL_X2_RELEASE_SETTLE": "NOT_RUN",
                "static_result": "B2_STATIC_GEOMETRY_GATE.json",
                "no_contact_result": "A_MOVING_FIXTURE_NO_CONTACT_RESULT.json" if no_contact else None,
@@ -1239,7 +1367,8 @@ def main() -> int:
     write_report(output, static, no_contact, dynamic, runtime, command)
     print(json.dumps({"output": str(output), "B2": static["status"],
                       "moving_fixture_no_contact": no_contact["status"] if no_contact else "NOT_RUN",
-                      "C": dynamic["status"] if dynamic else "NOT_RUN",
+                      "contact_hold": dynamic["status"] if dynamic and dynamic.get("lift_attempted") is False else "NOT_RUN",
+                      "lift": dynamic["status"] if dynamic and dynamic.get("lift_attempted") else "NOT_RUN",
                       "full_X2": "NOT_RUN"}, indent=2))
     return 0 if static["status"] == "PASS" and dynamic and dynamic["status"] == "PASS" else 2
 

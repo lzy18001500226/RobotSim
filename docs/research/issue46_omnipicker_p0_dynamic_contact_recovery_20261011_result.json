@@ -1,0 +1,150 @@
+{
+  "schema": "robotsim.issue46.omnipicker-p0-dynamic-contact-recovery.v1",
+  "status": "FAIL",
+  "failure_classification": "LOAD_TRANSFER_INSUFFICIENT_PAD_NORMAL_PRELOAD",
+  "branch": "research/issue46-omnipicker-p0-automation-20261011",
+  "starting_head": "2960df261a1685e7dd57b1837171c540424334bd",
+  "source": {
+    "repository": "https://github.com/AgibotTech/agibot_x2_urdf",
+    "commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+    "urdf": "X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+    "urdf_sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d",
+    "native_mujoco_sha256": "b9173509d0c282a9b24b7f5825a40177a9967df0cd6395a9dc39522196e44495"
+  },
+  "runtime": {
+    "python": "3.10.12",
+    "mujoco": "3.3.6",
+    "timestep_s": 0.002,
+    "runner_sha256": "cbfd9225c472fab7e5b87072c38abf85175c9b817040bb7ff45df7dcdaecdd01",
+    "generated_subtree_urdf_sha256": "20d5221580c003e8d05e3f35985a75a61c25f8f81483b82f7b41a878c9c82786"
+  },
+  "controller_corrections_used": 1,
+  "correction": {
+    "classification": "SIMULATION_DERIVED",
+    "design_normal_force_per_jaw_N": 3.9940714285714285,
+    "tracking_deflection_rad": 0.02,
+    "driver_kp_Nm_per_rad": 9.77827514861508,
+    "follower_kp_Nm_per_rad": 9.77827456693343,
+    "driver_kd_Nm_s_per_rad": 0.05697490060029817,
+    "follower_kd_Nm_s_per_rad": 0.08166060679836225,
+    "driver_effort_cap_Nm": 0.22498669725572554,
+    "follower_effort_cap_Nm": 0.225077722040215,
+    "effort_caps_changed": false,
+    "source_ranges_changed": false
+  },
+  "comparison": {
+    "previous_run02": {
+      "close_endpoint_error_mrad": {
+        "driver": 19.182017698717968,
+        "follower": -7.379033161267978
+      },
+      "hold_end_error_mrad": {
+        "driver": 18.855980449175136,
+        "follower": -6.183313109451305
+      },
+      "hold_max_abs_error_mrad": {
+        "driver": 19.47560622825689,
+        "follower": 7.379033161267978
+      },
+      "close_peak_requested_applied_torque_Nm": {
+        "driver": 0.0002634505980042291,
+        "follower": 0.0004456361321537339
+      },
+      "hold_bilateral_fraction": 0.002,
+      "hold_peak_torque_Nm": {
+        "driver_requested_applied": 0.00020172364544643423,
+        "follower_requested_applied": 0.00022643818522147076
+      },
+      "effort_caps_Nm": {
+        "driver": 0.22498669725572554,
+        "follower": 0.225077722040215
+      }
+    },
+    "corrected_run03_contact_only": {
+      "close_endpoint_error_mrad": {
+        "driver": 5.998238081635077,
+        "follower": -3.6993476662757208
+      },
+      "hold_endpoint_error_mrad": {
+        "driver": 3.546621911553416,
+        "follower": -3.5920636736296863
+      },
+      "hold_bilateral_fraction": 1.0,
+      "hold_mean_pad_normal_N": {
+        "narrow": 0.43346536285085685,
+        "wide": 0.3912119076726745
+      },
+      "hold_peak_pad_normal_N": {
+        "narrow": 0.6250740442334461,
+        "wide": 0.4736268543197244
+      },
+      "hold_max_abs_tracking_error_mrad": {
+        "driver": 6.10348771426622,
+        "follower": 4.216559323354518
+      },
+      "hold_peak_requested_applied_torque_Nm": {
+        "driver": 0.06164249611499099,
+        "follower": 0.04547661285457356
+      },
+      "close_peak_requested_applied_torque_Nm": {
+        "driver": 0.07072830916394397,
+        "follower": 0.040242075084967174
+      },
+      "effort_caps_Nm": {
+        "driver": 0.22498669725572554,
+        "follower": 0.225077722040215
+      },
+      "hold_table_support_mean_N": 5.591666490511428,
+      "hold_hand_vertical_support_mean_N": 0.0000828619439352088
+    },
+    "corrected_run04_lift_attempt": {
+      "lift_stages_attempted_mm": [1, 5, 50],
+      "maximum_bottle_lift_m": 0.0,
+      "lift_50mm_bilateral_fraction": 0.902,
+      "lift_50mm_pad_mean_normal_N": {
+        "narrow": 0.3456779849087265,
+        "wide": 0.33940655213461196
+      },
+      "lift_50mm_table_support_mean_N": 4.898430163306431,
+      "lift_50mm_hand_vertical_support_mean_N": 0.6928924100577061,
+      "lift_50mm_hand_vertical_support_peak_N": 1.411771617408549,
+      "hold_50mm_table_support_mean_N": 5.576529308097818,
+      "maximum_relative_slip_m": 0.05002337266141243,
+      "max_contact_penetration_m": 0.0006964193762779821,
+      "maximum_mimic_residual_rad": 0.0057588
+    }
+  },
+  "gates": {
+    "static_geometry": "PASS",
+    "moving_fixture_no_contact": "PASS",
+    "fixed_wrist_bilateral_contact_hold": "PASS",
+    "load_transfer_1mm": "FAIL",
+    "physical_bottle_lift": "FAIL_0MM",
+    "full_x2_integration": "NOT_RUN"
+  },
+  "selected_static_target_pad_overlap_m": {
+    "narrow": 0.0017275745364314944,
+    "wide": 0.0005083245025204525,
+    "note": "Static geometry distances; distinct from dynamic contact penetration."
+  },
+  "physical_integrity": {
+    "source_joint_limits_changed": false,
+    "source_limit_violations": 0,
+    "bottle_qpos_writes": 0,
+    "bottle_weld_or_equality": false,
+    "mocap_carry": false,
+    "artificial_bottle_force": false,
+    "hidden_support": false,
+    "new_collision_exclusions": 0,
+    "nonfinite_state": false,
+    "unexpected_contacts": []
+  },
+  "evidence": {
+    "run02": "C:\\Users\\HP\\Desktop\\Robot\\reviews\\issue-46-x2-single-hand\\omnipicker-p0-open-endpoint-20261011-run02",
+    "run03": "C:\\Users\\HP\\Desktop\\Robot\\reviews\\issue-46-x2-single-hand\\omnipicker-p0-open-endpoint-20261011-run03",
+    "run04": "C:\\Users\\HP\\Desktop\\Robot\\reviews\\issue-46-x2-single-hand\\omnipicker-p0-open-endpoint-20261011-run04",
+    "run03_contact_hold_mp4_sha256": "2477e9bd410101b6b8e83959bdd98edf3e5da16b4b4f87604e76bfb90143fc31",
+    "run04_lift_mp4_sha256": "1e1b765729b21a0062611fc9d11715a95004f8f8031a00b964f08066fef6f3a1",
+    "videos_decoded": true
+  }
+}
