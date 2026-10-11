@@ -7,7 +7,7 @@
 
 The source-derived proxy passed the static entry/approach checks and maintained bilateral contact through the one-second hold. During controlled preload, the free 0.570 kg cylinder reached the existing 5 mm relative-slip stop before developing load-bearing contact. The run stopped at `PRELOAD_EXCESSIVE_SLIP`; no lift was attempted, and measured lift remained 0 mm.
 
-The proxy therefore did not establish that the original STL fingertip collision shape was the primary cause of grasp failure. It modestly reduced the measured mean lateral resultant relative to the saved original-model run, but contact force directions remained poorly opposed and the available normal force remained insufficient. The next useful diagnosis is grasp/contact orientation and force alignment, not another collision-proxy or parameter search.
+The proxy therefore did not establish that the original STL fingertip collision shape was the primary cause of grasp failure. Contact force directions remained poorly opposed and available normal force remained insufficient. The next useful diagnosis is grasp/contact orientation and force alignment, not another collision-proxy or parameter search.
 
 ## Comparison
 
@@ -17,12 +17,12 @@ The proxy therefore did not establish that the original STL fingertip collision 
 | Static corridor | Existing validated reference | PASS; no initial robot contact; 4.498 mm minimum non-pad bottle clearance; 75.489 mm gripper/table clearance |
 | One-second bilateral hold | PASS in saved baseline | 100% bilateral contact fraction |
 | Mean pad normal force | Narrow 0.433 N; wide 0.391 N | Narrow 0.986 N; wide 0.987 N during preload |
-| Mean normal-direction angle | 124.023 deg | 134.022 deg (124.538-139.510 deg) |
-| Mean lateral resultant on bottle | 1.133 N | 0.588 N; peak 1.165 N |
+| Contact-force direction angle | 124.023 deg in saved fixed-object geometry diagnostic | 134.022 deg mean in dynamic preload (124.538-139.510 deg) |
+| Lateral resultant on bottle | 1.133 N in saved fixed-object geometry diagnostic | 0.588 N mean, 1.165 N peak in dynamic preload |
 | Maximum relative slip | 5.003 mm | 5.003 mm; existing stop reached |
 | Lift | 0 mm | 0 mm; lift stages not attempted |
 
-For B, mean hand vertical support was -0.003 N while mean table support remained 5.594 N. The mean ideal friction-capacity upper bound from measured normal forces was 2.761 N, below the 5.033 N minimum support gate. Final narrow/wide normal forces reached 1.434/1.349 N, still below the 2.496 N per-pad target. The measured world force-direction angle averaged 146.133 deg, with a wide 99.099-178.348 deg range. The geometry change did not produce reliable opposing load-bearing forces.
+For A, the force-angle and 1.133 N lateral-resultant values are from the saved fixed-object geometry diagnostic, while its separate free-cylinder rollout recorded 5.003 mm slip and 0 mm lift. They are not phase-matched to B's dynamic preload statistics and should not be interpreted as a direct quantitative before/after force reduction. For B, mean hand vertical support was -0.003 N while mean table support remained 5.594 N. The mean ideal friction-capacity upper bound from measured normal forces was 2.761 N, below the 5.033 N minimum support gate. Final narrow/wide normal forces reached 1.434/1.349 N, still below the 2.496 N per-pad target. The measured world force-direction angle averaged 146.133 deg, with a wide 99.099-178.348 deg range. The proxy did not produce reliable opposing load-bearing forces.
 
 Maximum jaw tracking error was 0.01423 rad, below the existing 0.020 rad diagnostic guard. Peak applied driver/follower torques were 0.1410/0.1393 Nm against unchanged approximately 0.225 Nm caps; there was no effort saturation. Maximum pad penetration was 1.023 mm against the unchanged 2 mm gate. There were no source-limit violations, NaNs, bottle qpos writes, bottle welds/equalities, mocap carry, artificial bottle force, hidden support, new collision exclusions, mass/inertia changes, or joint-range changes.
 
