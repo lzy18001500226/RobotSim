@@ -382,8 +382,9 @@ def main() -> int:
     parser.add_argument("--finger-tilt-deg", type=float, choices=(-90.0, 0.0, 90.0), default=0.0,
                         help="tilt the finger long axis from bottle axis toward the local tangent")
     parser.add_argument("--grasp-height-offset-mm", type=float, default=0.0,
-                        help="scene-initialized vertical shift of the isolated fixture, in mm")
-    parser.add_argument("--target-bottle-geom", choices=("bottle_body", "bottle_cap"),
+                        help="selected target geom local-z section offset for grasp sizing and fixture alignment, in mm")
+    parser.add_argument("--target-bottle-geom",
+                        choices=("bottle_body", "bottle_shoulder", "bottle_neck", "bottle_cap"),
                         default="bottle_body",
                         help="canonical bottle collision geom to center between the pads")
     args = parser.parse_args()
@@ -438,6 +439,7 @@ def main() -> int:
     source_links = {link.get("name", ""): link for link in source_root.findall("link")}
     simple_urdf = x2_root / "X2_URDF-v1.4.0/X2-Ultra_simple_collision.urdf"
     simple_root = ET.parse(simple_urdf).getroot()
+    simple_links = {link.get("name", "") for link in simple_root.findall("link")}
     simple_wrist = simple_root.find("link[@name='right_wrist_roll_link']")
     simple_mesh_names = {}
     for role in ("visual", "collision"):
@@ -456,9 +458,12 @@ def main() -> int:
     controller_model, _ = base.build_model("open_hold", {})
     controller = base.derive_jaw_controller(controller_model)
 
-    candidate_id = (10000 if args.target_bottle_geom == "bottle_cap" else 1000) + int(
-        args.azimuth_deg * 10.0
-    ) + int(args.finger_tilt_deg)
+    candidate_id = {
+        "bottle_body": 1000,
+        "bottle_neck": 2000,
+        "bottle_shoulder": 3000,
+        "bottle_cap": 10000,
+    }[args.target_bottle_geom] + int(args.azimuth_deg * 10.0) + int(args.finger_tilt_deg)
     candidate = geometry_module.candidate_model(
         base, Path(filtered_info["derived_urdf_path"]), candidate_id, controller,
         azimuth_deg=args.azimuth_deg, finger_tilt_deg=args.finger_tilt_deg,
@@ -467,11 +472,44 @@ def main() -> int:
                         if geom_name(candidate["model"], gid) == "bottle_body")
     target_geom_id = next(gid for gid in geometry_module.bottle_geom_ids(candidate["model"])
                           if geom_name(candidate["model"], gid) == args.target_bottle_geom)
-    if int(candidate["model"].geom_type[target_geom_id]) != int(mujoco.mjtGeom.mjGEOM_CYLINDER):
-        raise ValueError(f"Target geom must be a vertical cylinder: {args.target_bottle_geom}")
-    target_radius_m = float(candidate["model"].geom_size[target_geom_id, 0])
-    target_diameter_m = 2.0 * target_radius_m
-    target_center_world = np.asarray(candidate["data"].geom_xpos[target_geom_id], dtype=float).copy()
+    target_type = int(candidate["model"].geom_type[target_geom_id])
+    target_geom_center_world = np.asarray(
+        candidate["data"].geom_xpos[target_geom_id], dtype=float
+    ).copy()
+    target_rotation = np.asarray(
+        candidate["data"].geom_xmat[target_geom_id], dtype=float
+    ).reshape(3, 3)
+    target_offset_m = args.grasp_height_offset_mm / 1000.0
+    if abs(float(target_rotation[2, 2])) < 0.999:
+        raise ValueError("Selected bottle target geom must remain upright")
+    target_center_world = target_geom_center_world + target_rotation[:, 2] * target_offset_m
+    target_size = np.asarray(candidate["model"].geom_size[target_geom_id], dtype=float)
+    jaw_normal_world = np.array([
+        math.cos(math.radians(args.azimuth_deg)),
+        math.sin(math.radians(args.azimuth_deg)),
+        0.0,
+    ])
+    if target_type == int(mujoco.mjtGeom.mjGEOM_CYLINDER):
+        target_radius_m = float(target_size[0])
+        target_diameter_m = 2.0 * target_radius_m
+        target_section = "constant-radius cylinder cross-section"
+    elif target_type == int(mujoco.mjtGeom.mjGEOM_ELLIPSOID):
+        half_height = float(target_size[2])
+        if abs(target_offset_m) >= half_height:
+            raise ValueError("Shoulder cross-section offset must be inside the ellipsoid")
+        section_scale = math.sqrt(max(0.0, 1.0 - (target_offset_m / half_height) ** 2))
+        local_normal = target_rotation.T @ jaw_normal_world
+        radius_x = float(target_size[0]) * section_scale
+        radius_y = float(target_size[1]) * section_scale
+        target_radius_m = math.sqrt(
+            (radius_x * local_normal[0]) ** 2 + (radius_y * local_normal[1]) ** 2
+        )
+        target_diameter_m = 2.0 * target_radius_m
+        target_section = "ellipse cross-section at the requested local-z offset"
+    else:
+        raise ValueError(
+            f"Target geom must be a cylinder or ellipsoid: {args.target_bottle_geom}"
+        )
     body_center_world = np.asarray(candidate["data"].geom_xpos[body_geom_id], dtype=float).copy()
     gap_samples_open_to_closed = list(reversed(candidate["gap_samples"]))
     contact_aperture = None
@@ -495,9 +533,7 @@ def main() -> int:
     candidate["local_geometry"]["grasp_target_geom"] = args.target_bottle_geom
     candidate["local_geometry"]["grasp_target_radius_m"] = target_radius_m
     candidate["local_geometry"]["grasp_target_center_world_m"] = target_center_world.tolist()
-    candidate["root_position"] = np.asarray(candidate["root_position"], dtype=float) + np.array(
-        [0.0, 0.0, args.grasp_height_offset_mm / 1000.0]
-    )
+    candidate["local_geometry"]["grasp_target_section"] = target_section
     model = candidate["model"]
     data = candidate["data"]
     geometry_module.candidate_state(base, candidate, 1.0)
@@ -652,6 +688,8 @@ def main() -> int:
             "body_position_world_m": [float(v) for v in canonical.CANONICAL_X2_BOTTLE_START_BODY_POS],
             "collision_geoms": [geom_name(model, gid) for gid in bottle_geoms],
             "grasp_target_geom": target_geom_name,
+            "grasp_target_section": target_section,
+            "grasp_target_local_z_offset_m": target_offset_m,
             "grasp_target_diameter_m": target_diameter_m,
             "grasp_target_center_world_m": target_center_world.tolist(),
         },
@@ -660,7 +698,14 @@ def main() -> int:
         "official_simple_collision_wrist_reference": {
             "urdf": str(simple_urdf.relative_to(x2_root)),
             "sha256": sha256(simple_urdf),
+            "link_count": len(simple_links),
+            "contains_omnipicker_base": "R_omnipicker_base_link" in simple_links,
             "wrist_visual_and_collision_meshes": simple_mesh_names,
+            "simple_collision_matches_native_collision_sha256": bool(
+                simple_mesh_names["collision"]
+                and simple_mesh_names["collision"]["sha256"]
+                == mesh_inventory[WRIST_ROLL]["collision"]["sha256"]
+            ),
             "interpretation": "comparison only; this audit keeps the OmniPicker URDF collision mesh unchanged",
         },
         "compiled_mesh_inventory": compiled_meshes,
@@ -685,6 +730,8 @@ def main() -> int:
             "isolated_root_rotation_world": np.asarray(candidate["root_rotation"], dtype=float).tolist(),
             "bottle_position_world_m": [float(v) for v in canonical.CANONICAL_X2_BOTTLE_START_BODY_POS],
             "grasp_target_geom": target_geom_name,
+            "grasp_target_section": target_section,
+            "grasp_target_local_z_offset_m": target_offset_m,
             "grasp_target_diameter_m": target_diameter_m,
             "grasp_target_center_world_m": target_center_world.tolist(),
             "grasp_aperture_ratio": endpoint_aperture,
@@ -753,7 +800,7 @@ def main() -> int:
 
     runtime["render_group_mapping"] = set_render_groups(model)
     set_render_colors(model)
-    lookat = target_center_world + np.array([0.0, 0.0, args.grasp_height_offset_mm / 1000.0])
+    lookat = target_center_world.copy()
     camera_front = geometry_module.camera_for(lookat.tolist(), 0.42, 90.0, -8.0)
     camera_side = geometry_module.camera_for(lookat.tolist(), 0.42, 180.0, -8.0)
     geometry_module.candidate_state(base, candidate, endpoint_aperture)
@@ -788,7 +835,7 @@ def main() -> int:
         f"- 官方 X2：[`AgibotTech/agibot_x2_urdf`](https://github.com/AgibotTech/agibot_x2_urdf)，pin `{vendor_head}`；URDF `{X2_URDF_REL}`，SHA-256 `{sha256(source_urdf)}`，Mulan PSL v2。",
         f"- canonical helper SHA-256：`{sha256(canonical_helper)}`；canonical 瓶身：直径 `{bottle_body_diameter_m * 1000:.1f} mm`、高 `244.5 mm`、质量 `0.570 kg`。",
         f"- MuJoCo Python `{mujoco.__version__}`；原始 URDF 子树从 `{ROOT_LINK}` 固定在世界坐标，保留腕、OmniPicker 链、源几何、轴、joint range 和 mimic。",
-        f"- 目标瓶体 geom `{target_geom_name}`，编译半径 `{target_radius_m * 1000:.3f} mm`；夹持高度由该 geom 中心推导，再加场景初始化偏移 `{args.grasp_height_offset_mm:.1f} mm`。方位角 `{args.azimuth_deg:.0f}°`、手指长轴倾角 `{args.finger_tilt_deg:.0f}°`；闭合开度由实际指垫间距跨越目标直径的位置插值得出。",
+        f"- 目标瓶体 geom `{target_geom_name}`，接触高度相对 geom 中心偏移 `{target_offset_m * 1000:.1f} mm`；按 `{target_section}` 推导有效宽度 `{target_diameter_m * 1000:.3f} mm`。方位角 `{args.azimuth_deg:.0f}°`、手指长轴倾角 `{args.finger_tilt_deg:.0f}°`；闭合开度由实际指垫间距跨越该宽度的位置插值得出。",
         "- `mj_geomDistance` 对已编译碰撞 geom 求带符号距离；可视 geom 与碰撞 geom 通过 MuJoCo geom group 区分。渲染颜色和接触 witness 标记只作用于渲染态，不改物理模型。",
         "",
         "## 已确认运动学",
@@ -816,7 +863,7 @@ def main() -> int:
         "## 碰撞网格解释",
         "",
         "- 右腕的源 URDF 将 `right_wrist_roll_extend_link.stl` 仅用于 visual，而 collision 指向 `right_wrist_roll_link.stl`。本审计未以视觉网格替代碰撞网格。",
-        f"- OmniPicker wrist visual `{mesh_inventory[WRIST_ROLL]['visual']['filename']}` (SHA `{mesh_inventory[WRIST_ROLL]['visual']['sha256']}`)；collision `{mesh_inventory[WRIST_ROLL]['collision']['filename']}` (SHA `{mesh_inventory[WRIST_ROLL]['collision']['sha256']}`)。官方 `X2-Ultra_simple_collision.urdf` 的 wrist visual 与 collision 都用 `{simple_mesh_names['collision']['filename'] if simple_mesh_names['collision'] else 'missing'}`；它是比较参考，不是本次替换方案。",
+        f"- OmniPicker wrist visual `{mesh_inventory[WRIST_ROLL]['visual']['filename']}` (SHA `{mesh_inventory[WRIST_ROLL]['visual']['sha256']}`)；collision `{mesh_inventory[WRIST_ROLL]['collision']['filename']}` (SHA `{mesh_inventory[WRIST_ROLL]['collision']['sha256']}`)。官方 `X2-Ultra_simple_collision.urdf` 含 `{len(simple_links)}` links，是否包含 OmniPicker mount：`{'yes' if 'R_omnipicker_base_link' in simple_links else 'no'}`；其 wrist visual/collision 均引用 `{simple_mesh_names['collision']['filename'] if simple_mesh_names['collision'] else 'missing'}`，collision 与 OmniPicker 源碰撞 mesh 哈希相同：`{runtime['official_simple_collision_wrist_reference']['simple_collision_matches_native_collision_sha256']}`。该模型不含夹爪 mount，且不能提供更小腕部碰撞替代。",
         "- 原始 STL 三角数/边界、编译 mesh 和编译凸包唯一顶点/多边形数见 `source_and_compiled_mesh_inventory.json`。MuJoCo `mj_geomDistance` 和 `mjVIS_CONVEXHULL` 对照编译 collision geom；视觉网格单独保留。原始编译 geom groups 在清单中记录，渲染分组重映射只影响显示，不改变 contype/conaffinity 或碰撞计算。",
         "- 参考流程：MoveIt Task Constructor 用相对抓取帧、预抓取配置和分阶段 approach/close/planning-scene allowance；Isaac Grasp Editor 用 gripper DOF、open/closed target 与 physics colliders 建 grasp frame；MuJoCo mesh collision 文档说明碰撞使用凸包而渲染 mesh 可保持非凸。规划时允许手指—物体接触不等于在本物理模型中关闭指垫碰撞。",
         "  - MoveIt: https://moveit.picknik.ai/main/doc/tutorials/pick_and_place_with_moveit_task_constructor/pick_and_place_with_moveit_task_constructor.html",
