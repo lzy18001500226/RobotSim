@@ -379,6 +379,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--azimuth-deg", type=float, choices=(0.0, 90.0), default=0.0,
                         help="one of two bounded geometry-derived orthogonal grasp directions")
+    parser.add_argument("--finger-tilt-deg", type=float, choices=(-90.0, 0.0, 90.0), default=0.0,
+                        help="tilt the finger long axis from bottle axis toward the local tangent")
+    parser.add_argument("--grasp-height-offset-mm", type=float, default=0.0,
+                        help="scene-initialized vertical shift of the isolated fixture, in mm")
+    parser.add_argument("--target-bottle-geom", choices=("bottle_body", "bottle_cap"),
+                        default="bottle_body",
+                        help="canonical bottle collision geom to center between the pads")
     args = parser.parse_args()
     x2_root = args.x2_root.resolve()
     canonical_helper = args.canonical_helper.resolve()
@@ -449,10 +456,47 @@ def main() -> int:
     controller_model, _ = base.build_model("open_hold", {})
     controller = base.derive_jaw_controller(controller_model)
 
-    candidate_id = 1 if args.azimuth_deg == 0.0 else 2
+    candidate_id = (10000 if args.target_bottle_geom == "bottle_cap" else 1000) + int(
+        args.azimuth_deg * 10.0
+    ) + int(args.finger_tilt_deg)
     candidate = geometry_module.candidate_model(
         base, Path(filtered_info["derived_urdf_path"]), candidate_id, controller,
-        azimuth_deg=args.azimuth_deg, finger_tilt_deg=0.0,
+        azimuth_deg=args.azimuth_deg, finger_tilt_deg=args.finger_tilt_deg,
+    )
+    body_geom_id = next(gid for gid in geometry_module.bottle_geom_ids(candidate["model"])
+                        if geom_name(candidate["model"], gid) == "bottle_body")
+    target_geom_id = next(gid for gid in geometry_module.bottle_geom_ids(candidate["model"])
+                          if geom_name(candidate["model"], gid) == args.target_bottle_geom)
+    if int(candidate["model"].geom_type[target_geom_id]) != int(mujoco.mjtGeom.mjGEOM_CYLINDER):
+        raise ValueError(f"Target geom must be a vertical cylinder: {args.target_bottle_geom}")
+    target_radius_m = float(candidate["model"].geom_size[target_geom_id, 0])
+    target_diameter_m = 2.0 * target_radius_m
+    target_center_world = np.asarray(candidate["data"].geom_xpos[target_geom_id], dtype=float).copy()
+    body_center_world = np.asarray(candidate["data"].geom_xpos[body_geom_id], dtype=float).copy()
+    gap_samples_open_to_closed = list(reversed(candidate["gap_samples"]))
+    contact_aperture = None
+    for first, second in zip(gap_samples_open_to_closed, gap_samples_open_to_closed[1:]):
+        first_gap = float(first["jaw_surface_gap_m"])
+        second_gap = float(second["jaw_surface_gap_m"])
+        if first_gap >= target_diameter_m >= second_gap:
+            fraction = (first_gap - target_diameter_m) / max(first_gap - second_gap, 1e-12)
+            contact_aperture = float(first["aperture_ratio"] + fraction * (
+                second["aperture_ratio"] - first["aperture_ratio"]
+            ))
+            break
+    if contact_aperture is None:
+        raise RuntimeError(
+            f"Source jaw range does not span target diameter {target_diameter_m:.6f} m"
+        )
+    candidate["root_position"] = np.asarray(candidate["root_position"], dtype=float) + (
+        target_center_world - body_center_world
+    )
+    candidate["contact_aperture"] = contact_aperture
+    candidate["local_geometry"]["grasp_target_geom"] = args.target_bottle_geom
+    candidate["local_geometry"]["grasp_target_radius_m"] = target_radius_m
+    candidate["local_geometry"]["grasp_target_center_world_m"] = target_center_world.tolist()
+    candidate["root_position"] = np.asarray(candidate["root_position"], dtype=float) + np.array(
+        [0.0, 0.0, args.grasp_height_offset_mm / 1000.0]
     )
     model = candidate["model"]
     data = candidate["data"]
@@ -482,11 +526,13 @@ def main() -> int:
     all_robot = geometry_module.robot_geom_ids(model)
     bottle_geoms = geometry_module.bottle_geom_ids(model)
     pad_body_names = {NARROW, WIDE}
+    target_geom_name = args.target_bottle_geom
     endpoint_rows = all_pair_distances(model, data, all_robot, bottle_geoms)
     pad_body = {NARROW, WIDE}
     pad_rows = [row for row in endpoint_rows
-                if row["robot_body"] in pad_body and row["bottle_geom"] == "bottle_body"]
-    nonpad_rows = [row for row in endpoint_rows if row["robot_body"] not in pad_body]
+                if row["robot_body"] in pad_body and row["bottle_geom"] == target_geom_name]
+    nonpad_rows = [row for row in endpoint_rows
+                   if not (row["robot_body"] in pad_body and row["bottle_geom"] == target_geom_name)]
     wrist_rows = [row for row in nonpad_rows if row["robot_body"] == WRIST_ROLL]
     wrist_min = min(wrist_rows, key=lambda row: row["signed_distance_m"]) if wrist_rows else None
     nonpad_min = min(nonpad_rows, key=lambda row: row["signed_distance_m"]) if nonpad_rows else None
@@ -502,11 +548,12 @@ def main() -> int:
         geometry_module.candidate_state(base, candidate, float(aperture))
         rows = all_pair_distances(model, data, all_robot, bottle_geoms)
         pad_side_min = {
-            side: min((row for row in rows if row["robot_body"] == side and row["bottle_geom"] == "bottle_body"),
+            side: min((row for row in rows if row["robot_body"] == side and row["bottle_geom"] == target_geom_name),
                       key=lambda row: row["signed_distance_m"], default=None)
             for side in (NARROW, WIDE)
         }
-        nonpad = [row for row in rows if row["robot_body"] not in pad_body_names]
+        nonpad = [row for row in rows
+                  if not (row["robot_body"] in pad_body_names and row["bottle_geom"] == target_geom_name)]
         closure_rows.append({
             "aperture_ratio": float(aperture),
             "driver_target_rad": float(base.aperture_targets(float(aperture))["right_claw_joint_target_rad"]),
@@ -525,8 +572,9 @@ def main() -> int:
     geometry_module.candidate_state(base, candidate, endpoint_aperture)
     endpoint_rows = all_pair_distances(model, data, all_robot, bottle_geoms)
     pad_rows = [row for row in endpoint_rows
-                if row["robot_body"] in pad_body and row["bottle_geom"] == "bottle_body"]
-    nonpad_rows = [row for row in endpoint_rows if row["robot_body"] not in pad_body]
+                if row["robot_body"] in pad_body and row["bottle_geom"] == target_geom_name]
+    nonpad_rows = [row for row in endpoint_rows
+                   if not (row["robot_body"] in pad_body and row["bottle_geom"] == target_geom_name)]
     wrist_rows = [row for row in nonpad_rows if row["robot_body"] == WRIST_ROLL]
     wrist_min = min(wrist_rows, key=lambda row: row["signed_distance_m"]) if wrist_rows else None
     nonpad_min = min(nonpad_rows, key=lambda row: row["signed_distance_m"]) if nonpad_rows else None
@@ -555,7 +603,7 @@ def main() -> int:
         for side, row in pad_min_by_side.items()
     }
     endpoint_grasp_frame = {
-        "definition": "diagnostic frame origin is the midpoint between the compiled narrow/wide pad-to-bottle closest-point witnesses; local x is narrow-to-wide contact axis, local z is bottle world +z; not a vendor-defined TCP",
+        "definition": f"diagnostic frame origin is the midpoint between compiled narrow/wide pad-to-{target_geom_name} closest-point witnesses; local x is narrow-to-wide contact axis; not a vendor-defined TCP",
         "world_position_m": (
             0.5 * (
                 np.asarray(pad_min_by_side[NARROW]["witness_robot_world_m"])
@@ -587,8 +635,10 @@ def main() -> int:
     open_clear = float(open_endpoint_state["minimum_robot_bottle_distance_m"]) > 0.0
     closure_nonpad_clear = all(row["minimum_nonpad_distance_m"] is None or row["minimum_nonpad_distance_m"] >= -1.0e-7
                                for row in closure_rows)
-    endpoint_gap_m = float(candidate["local_geometry"]["jaw_gap_at_contact_m"])
-    bottle_diameter_m = float(candidate["local_geometry"]["bottle_body_radius_m"] * 2.0)
+    endpoint_gap_m = float(geometry_module.geom_pair_distance(
+        model, data, candidate["narrow_id"], candidate["wide_id"]
+    )[0])
+    bottle_body_diameter_m = float(model.geom_size[body_geom_id, 0] * 2.0)
     source_mimic_ok = abs(mimic_residual) <= 1.0e-10
     endpoint_pass = bool(finger_contacts and nonpad_clear and open_clear
                          and closure_nonpad_clear and not endpoint_limit_violations
@@ -596,11 +646,14 @@ def main() -> int:
 
     runtime.update({
         "canonical_bottle": {
-            "diameter_m": bottle_diameter_m,
+            "diameter_m": bottle_body_diameter_m,
             "height_m": 0.2445,
             "mass_kg": 0.57,
             "body_position_world_m": [float(v) for v in canonical.CANONICAL_X2_BOTTLE_START_BODY_POS],
             "collision_geoms": [geom_name(model, gid) for gid in bottle_geoms],
+            "grasp_target_geom": target_geom_name,
+            "grasp_target_diameter_m": target_diameter_m,
+            "grasp_target_center_world_m": target_center_world.tolist(),
         },
         "filtered_source_subtree": filtered_info,
         "source_mesh_inventory": mesh_inventory,
@@ -624,16 +677,20 @@ def main() -> int:
     geometry = {
         "candidate": {
             "id": candidate_id,
-            "orientation_definition": "geometry-derived grasp orientation: source jaw closing axis aligned with selected horizontal bottle azimuth; finger long axis aligned with bottle axis; orthogonal 0/90 degree hypotheses only; no random seeds or full-arm IK",
+            "orientation_definition": "geometry-derived orientation: jaw closing axis aligned with selected horizontal bottle azimuth; finger long axis tilted from bottle axis toward the local horizontal tangent; no random seeds or full-arm IK",
             "azimuth_deg": args.azimuth_deg,
-            "finger_tilt_deg": 0.0,
+            "finger_tilt_deg": args.finger_tilt_deg,
+            "grasp_height_offset_mm": args.grasp_height_offset_mm,
             "isolated_root_position_world_m": np.asarray(candidate["root_position"], dtype=float).tolist(),
             "isolated_root_rotation_world": np.asarray(candidate["root_rotation"], dtype=float).tolist(),
             "bottle_position_world_m": [float(v) for v in canonical.CANONICAL_X2_BOTTLE_START_BODY_POS],
+            "grasp_target_geom": target_geom_name,
+            "grasp_target_diameter_m": target_diameter_m,
+            "grasp_target_center_world_m": target_center_world.tolist(),
             "grasp_aperture_ratio": endpoint_aperture,
             "jaw_surface_gap_at_grasp_m": endpoint_gap_m,
             "jaw_surface_gap_at_open_m": float(max(candidate["gap_samples"], key=lambda row: row["aperture_ratio"])["jaw_surface_gap_m"]),
-            "bottle_body_diameter_m": bottle_diameter_m,
+            "bottle_body_diameter_m": bottle_body_diameter_m,
             "fingertip_frames_world": fingertip_frames,
             "diagnostic_grasp_frame": endpoint_grasp_frame,
             "endpoint_joint_targets_rad": exact_targets,
@@ -653,7 +710,7 @@ def main() -> int:
             "source_axes_joint_ranges_mimic_preserved": "PASS",
             "compiled_collision_geometry_inventoried": "PASS",
             "canonical_70mm_bottle": "PASS",
-            "both_intended_fingertips_reach_cylinder_at_one_source_valid_aperture": "PASS" if finger_contacts else "FAIL",
+            "both_intended_fingertips_reach_target_geom_at_one_source_valid_aperture": "PASS" if finger_contacts else "FAIL",
             "open_pose_clear_of_bottle": "PASS" if open_clear else "FAIL",
             "nonpad_geometry_clear_at_endpoint": "PASS" if nonpad_clear else "FAIL",
             "nonpad_geometry_clear_through_open_to_contact_closure": "PASS" if closure_nonpad_clear else "FAIL",
@@ -688,13 +745,15 @@ def main() -> int:
         f"X2 source HEAD: {vendor_head}\n"
         f"Exact command: MUJOCO_GL=egl {sys.executable} {script} "
         f"--x2-root {x2_root} --canonical-helper {canonical_helper} --output {output} "
-        f"--azimuth-deg {args.azimuth_deg}\n",
+        f"--azimuth-deg {args.azimuth_deg} --finger-tilt-deg {args.finger_tilt_deg} "
+        f"--grasp-height-offset-mm {args.grasp_height_offset_mm} "
+        f"--target-bottle-geom {target_geom_name}\n",
         encoding="utf-8",
     )
 
     runtime["render_group_mapping"] = set_render_groups(model)
     set_render_colors(model)
-    lookat = np.array([0.30, 0.0, 0.90], dtype=float)
+    lookat = target_center_world + np.array([0.0, 0.0, args.grasp_height_offset_mm / 1000.0])
     camera_front = geometry_module.camera_for(lookat.tolist(), 0.42, 90.0, -8.0)
     camera_side = geometry_module.camera_for(lookat.tolist(), 0.42, 180.0, -8.0)
     geometry_module.candidate_state(base, candidate, endpoint_aperture)
@@ -727,9 +786,9 @@ def main() -> int:
         "",
         f"- RobotSim HEAD：`{robot_head}`；分支：`{runtime['robotsim_branch']}`。",
         f"- 官方 X2：[`AgibotTech/agibot_x2_urdf`](https://github.com/AgibotTech/agibot_x2_urdf)，pin `{vendor_head}`；URDF `{X2_URDF_REL}`，SHA-256 `{sha256(source_urdf)}`，Mulan PSL v2。",
-        f"- canonical helper SHA-256：`{sha256(canonical_helper)}`；canonical 瓶：直径 `{bottle_diameter_m * 1000:.1f} mm`、高 `244.5 mm`、质量 `0.570 kg`。",
+        f"- canonical helper SHA-256：`{sha256(canonical_helper)}`；canonical 瓶身：直径 `{bottle_body_diameter_m * 1000:.1f} mm`、高 `244.5 mm`、质量 `0.570 kg`。",
         f"- MuJoCo Python `{mujoco.__version__}`；原始 URDF 子树从 `{ROOT_LINK}` 固定在世界坐标，保留腕、OmniPicker 链、源几何、轴、joint range 和 mimic。",
-        f"- 本轮仅测试两个正交、几何推导方向中的本次候选 `{args.azimuth_deg:.0f}°`；瓶身轴与指垫长轴对齐。闭合开度由实际指垫表面间距跨越 70 mm 瓶径的位置确定，不做随机种子或全臂 IK 搜索。",
+        f"- 目标瓶体 geom `{target_geom_name}`，编译半径 `{target_radius_m * 1000:.3f} mm`；夹持高度由该 geom 中心推导，再加场景初始化偏移 `{args.grasp_height_offset_mm:.1f} mm`。方位角 `{args.azimuth_deg:.0f}°`、手指长轴倾角 `{args.finger_tilt_deg:.0f}°`；闭合开度由实际指垫间距跨越目标直径的位置插值得出。",
         "- `mj_geomDistance` 对已编译碰撞 geom 求带符号距离；可视 geom 与碰撞 geom 通过 MuJoCo geom group 区分。渲染颜色和接触 witness 标记只作用于渲染态，不改物理模型。",
         "",
         "## 已确认运动学",
@@ -737,13 +796,13 @@ def main() -> int:
         f"- driver `{DRIVER}` 源范围 `[-1.000, 0.000] rad`，axis `[0,0,-1]`；follower `{FOLLOWER}` 源范围 `[0.000,1.000] rad`，axis `[0,0,-1]`。",
         "- 官方 mimic：`q_follower = -q_driver`（multiplier `-1`, offset `0`）。本次接触开度 driver/follower = `",
         f"  `{qdriver:.9f}` / `{qfollower:.9f} rad`，残差 `{mimic_residual:.3e} rad`；两者均在源限位内。",
-        f"- 几何闭合目标在 aperture ratio `{endpoint_aperture:.6f}`；两指垫表面间距 `{endpoint_gap_m * 1000:.3f} mm`，瓶身直径 `{bottle_diameter_m * 1000:.3f} mm`。",
+        f"- 几何闭合目标在 aperture ratio `{endpoint_aperture:.6f}`；两指垫表面间距 `{endpoint_gap_m * 1000:.3f} mm`，目标 `{target_geom_name}` 直径 `{target_diameter_m * 1000:.3f} mm`；瓶身直径仍为 `{bottle_body_diameter_m * 1000:.3f} mm`。",
         f"- OPEN jaw gap `{float(max(candidate['gap_samples'], key=lambda row: row['aperture_ratio'])['jaw_surface_gap_m']) * 1000:.3f} mm`；闭合目标两侧实际最近距见结果 JSON。源 URDF 未定义 `TCP`/`ee_link`/`grasp_frame` 命名 link；本报告用两个 compiled fingertip closest-point witness 中点定义诊断抓取帧，不把 wrist/body origin 当 TCP。",
         "",
         "## 端点与阻挡",
         "",
         f"- 两侧指垫距离：窄侧 `{endpoint_pad_values[NARROW] * 1000 if endpoint_pad_values[NARROW] is not None else float('nan'):.3f} mm`；宽侧 `{endpoint_pad_values[WIDE] * 1000 if endpoint_pad_values[WIDE] is not None else float('nan'):.3f} mm`。接触判据为绝对距离不超过 `{CONTACT_TOL_M * 1000:.3f} mm`。",
-        f"- 端点最小非指垫距离：`{float(nonpad['signed_distance_m']) * 1000:.3f} mm`，pair `{nonpad['robot_body']}/{nonpad['robot_geom']} ↔ {nonpad['bottle_body']}/{nonpad['bottle_geom']}`。",
+        f"- 端点最小非目标接触距离（含指垫对瓶子其它 geom）：`{float(nonpad['signed_distance_m']) * 1000:.3f} mm`，pair `{nonpad['robot_body']}/{nonpad['robot_geom']} ↔ {nonpad['bottle_body']}/{nonpad['bottle_geom']}`。",
     ]
     if wrist is not None:
         lines.append(
