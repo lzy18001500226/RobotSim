@@ -70,7 +70,7 @@ PHASES = (
     ("OPEN_SETTLE", 0.50),
     ("CLOSE", 0.70),
     ("BILATERAL_HOLD_ON_TABLE", 1.00),
-    ("LIFT_50MM", 0.60),
+    ("LIFT_50MM", 2.00),
     ("SUSPENDED_HOLD", 1.00),
 )
 TOTAL_STEPS = round(sum(duration for _, duration in PHASES) / DT)
