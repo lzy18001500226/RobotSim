@@ -233,6 +233,23 @@ def contact_rows(model: mujoco.MjModel, data: mujoco.MjData) -> list[dict[str, A
     return result
 
 
+def signed_vertical_force_summary(contacts: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Sum signed bottle-side world-Z contact forces without hiding cancellation."""
+    summaries: dict[str, dict[str, float]] = {}
+    for support_class in ("table", "hand_pad"):
+        forces = [
+            float(row["force_on_bottle_world_N"][2])
+            for row in contacts
+            if row["support_class"] == support_class
+        ]
+        summaries[support_class] = {
+            "net_N": math.fsum(forces),
+            "upward_sum_N": math.fsum(force for force in forces if force > 0.0),
+            "downward_sum_N": math.fsum(force for force in forces if force < 0.0),
+        }
+    return summaries
+
+
 def phase_reference(phase: str, phase_t: float, duration: float) -> tuple[float, float]:
     if phase in ("OPEN_SETTLE",):
         return OPEN_TARGET, 0.0
@@ -336,12 +353,17 @@ def run(output: Path, script_path: Path) -> dict[str, Any]:
             bilateral_samples = 0
             phase_table_sum = 0.0
             phase_hand_sum = 0.0
+            phase_table_upward_sum = 0.0
+            phase_table_downward_sum = 0.0
+            phase_hand_upward_sum = 0.0
+            phase_hand_downward_sum = 0.0
             phase_bottle_z_min = math.inf
             phase_bottle_z_max = -math.inf
             phase_joint_speed_max = 0.0
             phase_penetration_max = 0.0
             for step_in_phase in range(nsteps):
                 local_t = step_in_phase * DT
+                contact_force_evaluation_time = float(data.time)
                 pad_target, _ = phase_reference(phase, local_t, duration)
                 lift_target, lift_target_velocity = lift_reference(phase, local_t, duration)
                 data.ctrl[actuator_id(model, "left_pad_bounded_servo")] = pad_target
@@ -358,17 +380,14 @@ def run(output: Path, script_path: Path) -> dict[str, Any]:
                 phase_bottle_z_min = min(phase_bottle_z_min, float(bottle["position_world_m"][2]))
                 phase_bottle_z_max = max(phase_bottle_z_max, float(bottle["position_world_m"][2]))
                 contacts = contact_rows(model, data)
+                vertical_forces = signed_vertical_force_summary(contacts)
                 pad_normals = {LEFT_PAD_BODY: 0.0, RIGHT_PAD_BODY: 0.0}
-                table_vertical = 0.0
-                hand_vertical = 0.0
+                table_vertical = vertical_forces["table"]["net_N"]
+                hand_vertical = vertical_forces["hand_pad"]["net_N"]
                 for row in contacts:
-                    force = np.asarray(row["force_on_bottle_world_N"])
-                    if row["support_class"] == "table":
-                        table_vertical += max(0.0, float(force[2]))
-                    elif row["support_class"] == "hand_pad":
-                        hand_vertical += max(0.0, float(force[2]))
+                    if row["support_class"] == "hand_pad":
                         pad_normals[row["other_body"]] += row["normal_force_N"]
-                    else:
+                    elif row["support_class"] != "table":
                         unexpected_contacts.add(f"{row['other_body']}|{row['other_geom']}")
                     max_penetration = max(max_penetration, row["penetration_m"])
                     phase_penetration_max = max(phase_penetration_max, row["penetration_m"])
@@ -383,6 +402,10 @@ def run(output: Path, script_path: Path) -> dict[str, Any]:
                 hand_support_peak = max(hand_support_peak, hand_vertical)
                 phase_table_sum += table_vertical
                 phase_hand_sum += hand_vertical
+                phase_table_upward_sum += vertical_forces["table"]["upward_sum_N"]
+                phase_table_downward_sum += vertical_forces["table"]["downward_sum_N"]
+                phase_hand_upward_sum += vertical_forces["hand_pad"]["upward_sum_N"]
+                phase_hand_downward_sum += vertical_forces["hand_pad"]["downward_sum_N"]
 
                 actuator_info: dict[str, Any] = {}
                 for key, joint, actuator, ref, cap in (
@@ -426,6 +449,7 @@ def run(output: Path, script_path: Path) -> dict[str, Any]:
                 all_finite = all_finite and finite
                 record = {
                     "step": total_step, "time_s": float(data.time), "phase": phase,
+                    "contact_force_evaluation_time_s": contact_force_evaluation_time,
                     "phase_time_s": local_t,
                     "command": {"pad_target_q_m": pad_target, "lift_target_q_m": lift_target,
                                 "lift_target_velocity_m_s": lift_target_velocity},
@@ -441,7 +465,10 @@ def run(output: Path, script_path: Path) -> dict[str, Any]:
                                  "q_m": qpos(model, data, LIFT_JOINT),
                                  "qvel_m_s": qvel(model, data, LIFT_JOINT)},
                     "contact_forces_on_bottle": contacts,
-                    "measured_support_force_world_z_N": {"table": table_vertical, "hand_pads": hand_vertical},
+                    "measured_contact_force_world_z_N": {
+                        "table": vertical_forces["table"],
+                        "hand_pads": vertical_forces["hand_pad"],
+                    },
                     "pad_normal_force_N": pad_normals,
                     "bilateral_contact": bilateral,
                     "finite_state": finite,
@@ -456,8 +483,12 @@ def run(output: Path, script_path: Path) -> dict[str, Any]:
                 "start_time_s": phase_start, "end_time_s": float(data.time), "steps": nsteps,
                 "contact_fraction": contact_samples / nsteps,
                 "bilateral_contact_fraction": bilateral_samples / nsteps,
-                "mean_table_support_z_N": phase_table_sum / nsteps,
-                "mean_hand_support_z_N": phase_hand_sum / nsteps,
+                "mean_table_net_force_world_z_N": phase_table_sum / nsteps,
+                "mean_hand_net_force_world_z_N": phase_hand_sum / nsteps,
+                "mean_table_upward_force_world_z_N": phase_table_upward_sum / nsteps,
+                "mean_table_downward_force_world_z_N": phase_table_downward_sum / nsteps,
+                "mean_hand_upward_force_world_z_N": phase_hand_upward_sum / nsteps,
+                "mean_hand_downward_force_world_z_N": phase_hand_downward_sum / nsteps,
                 "bottle_center_z_min_m": phase_bottle_z_min,
                 "bottle_center_z_max_m": phase_bottle_z_max,
                 "maximum_joint_speed": phase_joint_speed_max,
@@ -473,7 +504,7 @@ def run(output: Path, script_path: Path) -> dict[str, Any]:
     lift_ok = max_lift_m >= LIFT_TARGET_M - 0.005
     suspended_ok = (hold["end_time_s"] - hold["start_time_s"] >= 1.0 - 1e-9
                     and hold["bilateral_contact_fraction"] >= 0.95
-                    and hold["mean_table_support_z_N"] <= 0.05
+                    and hold["mean_table_net_force_world_z_N"] <= 0.05
                     and final_bottom_separation >= 0.045)
     passed = (lift_ok and suspended_ok and all_finite and not limit_violations
               and not unexpected_contacts and phase_summaries["BILATERAL_HOLD_ON_TABLE"]["bilateral_contact_fraction"] >= 0.95)
@@ -522,12 +553,14 @@ def run(output: Path, script_path: Path) -> dict[str, Any]:
                     "final_bottle_bottom_separation_from_table_m": final_bottom_separation,
                     "suspended_hold_duration_s": hold["end_time_s"] - hold["start_time_s"],
                     "suspended_hold_bilateral_contact_fraction": hold["bilateral_contact_fraction"],
-                    "suspended_hold_mean_hand_vertical_support_N": hold["mean_hand_support_z_N"],
-                    "suspended_hold_mean_table_vertical_support_N": hold["mean_table_support_z_N"],
+                    "suspended_hold_mean_hand_net_force_world_z_N": hold["mean_hand_net_force_world_z_N"],
+                    "suspended_hold_mean_table_net_force_world_z_N": hold["mean_table_net_force_world_z_N"],
+                    "suspended_hold_mean_hand_upward_force_world_z_N": hold["mean_hand_upward_force_world_z_N"],
+                    "suspended_hold_mean_hand_downward_force_world_z_N": hold["mean_hand_downward_force_world_z_N"],
                     "suspended_hold_table_contact_samples": suspended_table_contact_samples,
                     "required_static_weight_N": CYLINDER_MASS * GRAVITY,
-                    "maximum_hand_vertical_support_N": hand_support_peak,
-                    "maximum_table_vertical_support_N": table_support_peak,
+                    "maximum_hand_net_force_world_z_N": hand_support_peak,
+                    "maximum_table_net_force_world_z_N": table_support_peak,
                     "maximum_relative_slip_bottle_to_carriage_m": max_relative_slip,
                     "maximum_bottle_contact_penetration_m": max_penetration,
                     "maximum_bottle_pad_penetration_m": max_penetration_bottle_pad,
