@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -26,8 +27,10 @@ from typing import Mapping
 
 try:
     from .closeout_gate import check_closeout
+    from . import task_notifications
 except ImportError:  # pragma: no cover - direct script execution
     from closeout_gate import check_closeout
+    import task_notifications
 
 try:
     import fcntl
@@ -151,6 +154,7 @@ class Outcome:
     subject: str = ""
     body: str = ""
     exit_code: int = 0
+    publication_state: str = ""
 
 
 @dataclass(frozen=True)
@@ -893,16 +897,175 @@ def persist_research_event(
     return persist_task_closeout(event, environ=environ)
 
 
-def _task_closeout_mail(event: Mapping[str, object], *, environ: Mapping[str, str] | None) -> Outcome:
+def _task_closeout_mail(
+    event: Mapping[str, object],
+    *,
+    publication_state: str = "unverified",
+    publication_detail: str = "",
+    environ: Mapping[str, str] | None,
+) -> Outcome:
     event_id = str(event["event_id"])
     issue_match = TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"]))
     if issue_match is None:
         return Outcome("failed", "task_id does not identify an originating Issue")
     issue_number = issue_match.group(1)
     subject = f"[RobotSim] {event['status']}: Issue #{issue_number} {event['task_kind']} closeout"
-    body = _event_json(event, pretty=True) + "\n"
+    body = (
+        _event_json(event, pretty=True)
+        + "\nTask execution outcome: "
+        + str(event["status"]).upper()
+        + "\nEngineering acceptance: UNVERIFIED unless explicitly stated in validation evidence"
+        + "\nGitHub publication: "
+        + publication_state.upper()
+        + ("\nPublication detail: " + _one_line(publication_detail, 300) if publication_detail else "")
+        + "\n"
+    )
     digest = _delivery_digest("task-closeout", event_id)
     return _deliver(subject, body, digest, dry_run=False, environ=environ)
+
+
+def _deliver_queued_agentmail(
+    event_id: str,
+    *,
+    environ: Mapping[str, str] | None,
+) -> Outcome | None:
+    item = task_notifications.claim_agentmail(environ, event_id=event_id)
+    if item is None:
+        return None
+    outcome = _task_closeout_mail(
+        item["event"],  # type: ignore[arg-type]
+        publication_state=str(item["publication_state"]),
+        publication_detail=str(item["publication_detail"]),
+        environ=environ,
+    )
+    if outcome.state == "sent":
+        task_notifications.finish_agentmail(event_id, "sent", environ=environ)
+    elif outcome.state == "duplicate":
+        task_notifications.finish_agentmail(
+            event_id,
+            "uncertain",
+            "AgentMail idempotency state is already claimed; delivery requires status review",
+            environ=environ,
+        )
+    elif outcome.state == "skipped":
+        task_notifications.finish_agentmail(event_id, "unavailable", "AgentMail configuration unavailable", environ=environ)
+    else:
+        task_notifications.finish_agentmail(
+            event_id,
+            "failed",
+            f"AgentMail request failed ({outcome.message})",
+            environ=environ,
+        )
+    return outcome
+
+
+def _is_untrusted_pr_association_error(message: str) -> bool:
+    return message in {
+        "pull request is not in the canonical RobotSim repository",
+        "closeout branch/head_sha do not match the current pull request head",
+        "pull request description must link the originating Issue with a closing keyword",
+    }
+
+
+def _spawn_notification_worker() -> bool:
+    command = [sys.executable, str(Path(__file__).resolve()), "notification-worker", "--quiet"]
+    try:
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
+    return True
+
+
+def _run_notification_worker(*, environ: Mapping[str, str] | None = None, quiet: bool = False) -> int:
+    sent = failed = published = publication_failed = 0
+    retry_window = max(
+        sum(task_notifications.EMAIL_RETRY_SECONDS),
+        sum(task_notifications.PUBLICATION_RETRY_SECONDS),
+    )
+    deadline = time.monotonic() + retry_window + 5
+    while True:
+        publication = task_notifications.claim_publication(environ)
+        if publication is not None:
+            event_id = str(publication["event_id"])
+            outcome = process_task_closeout(
+                publication["event"],  # type: ignore[arg-type]
+                environ=environ,
+                notifications_enabled=True,
+                defer_delivery=True,
+            )
+            publication_state = outcome.publication_state or (
+                "failed" if outcome.state in {"blocked", "failed"} else "verified"
+            )
+            task_notifications.finish_publication(
+                event_id,
+                publication_state,
+                outcome.message,
+                environ=environ,
+            )
+            if publication_state == "verified":
+                published += 1
+            elif publication_state in {"blocked", "failed"}:
+                publication_failed += 1
+            continue
+
+        item = task_notifications.claim_agentmail(environ)
+        if item is None:
+            delays = [
+                delay for delay in (
+                    task_notifications.next_agentmail_delay(environ),
+                    task_notifications.next_publication_delay(environ),
+                ) if delay is not None
+            ]
+            if not delays:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(min(delays), remaining))
+            continue
+        event_id = str(item["event_id"])
+        outcome = _task_closeout_mail(
+            item["event"],  # type: ignore[arg-type]
+            publication_state=str(item["publication_state"]),
+            publication_detail=str(item["publication_detail"]),
+            environ=environ,
+        )
+        if outcome.state == "sent":
+            task_notifications.finish_agentmail(event_id, "sent", environ=environ)
+            sent += 1
+        elif outcome.state == "duplicate":
+            task_notifications.finish_agentmail(
+                event_id,
+                "uncertain",
+                "AgentMail idempotency state is already claimed; delivery requires status review",
+                environ=environ,
+            )
+            failed += 1
+        elif outcome.state == "skipped":
+            task_notifications.finish_agentmail(event_id, "unavailable", "AgentMail configuration unavailable", environ=environ)
+            failed += 1
+        else:
+            task_notifications.finish_agentmail(
+                event_id,
+                "failed",
+                f"AgentMail request failed ({outcome.message})",
+                environ=environ,
+            )
+            failed += 1
+    if not quiet:
+        print(
+            "notification worker: "
+            f"published={published} publication_blocked_or_failed={publication_failed} "
+            f"email_sent={sent} email_pending_or_failed={failed}"
+        )
+    return 0
 
 
 def _research_mail(event: Mapping[str, object], *, environ: Mapping[str, str] | None) -> Outcome:
@@ -945,6 +1108,10 @@ def process_task_closeout(
     dry_run: bool = False,
     environ: Mapping[str, str] | None = None,
     cwd: str | os.PathLike[str] | None = None,
+    notifications_enabled: bool | None = None,
+    defer_delivery: bool = False,
+    session_id: str | None = None,
+    turn_id: str | None = None,
 ) -> Outcome:
     try:
         if isinstance(payload, dict) and payload.get("schema_version") == RESEARCH_SCHEMA_VERSION:
@@ -953,6 +1120,23 @@ def process_task_closeout(
             event = normalize_task_closeout(payload)
     except (ValueError, TypeError) as exc:
         return Outcome("blocked", f"CLOSEOUT BLOCKED: invalid task closeout: {exc}", exit_code=2)
+
+    env = os.environ if environ is None else environ
+    if notifications_enabled is None:
+        notifications_enabled = all(env.get(name, "").strip() for name in REQUIRED_SETTINGS)
+    outbox_error = ""
+    if not dry_run:
+        try:
+            task_notifications.record_terminal_outcome(
+                event,
+                publication_state="pending",
+                notifications_enabled=notifications_enabled,
+                session_id=session_id,
+                turn_id=turn_id,
+                environ=environ,
+            )
+        except (OSError, sqlite3.Error, task_notifications.EventConflict, ValueError) as exc:
+            outbox_error = f"local notification state unavailable ({type(exc).__name__})"
 
     documented_unrelated = [
         item for item in event["validation"]
@@ -1040,36 +1224,117 @@ def process_task_closeout(
                 body,
                 exit_code=2,
             )
+        publication_detail = "; ".join(gate_blockers)
         persisted = persist_task_closeout(event, environ=environ)
+        publication_detail += "; " + persisted.message
+        if not outbox_error:
+            try:
+                task_notifications.set_publication_state(
+                    str(event["event_id"]),
+                    "failed" if persisted.state == "failed" else "blocked",
+                    publication_detail,
+                    environ=environ,
+                )
+            except (OSError, sqlite3.Error):
+                outbox_error = "local publication state could not be updated"
+        mail = None if defer_delivery or outbox_error else _deliver_queued_agentmail(
+            str(event["event_id"]), environ=environ
+        )
         if persisted.state == "failed":
             return Outcome(
                 "blocked",
-                f"CLOSEOUT BLOCKED: {'; '.join(gate_blockers)}; GitHub update failed ({persisted.message})",
+                f"CLOSEOUT BLOCKED: {'; '.join(gate_blockers)}; GitHub update failed ({persisted.message})"
+                + (f"; {outbox_error}" if outbox_error else "")
+                + (f"; AgentMail {mail.state}: {mail.message}" if mail else ""),
                 subject,
                 body,
                 exit_code=2,
+                publication_state="failed",
             )
         return Outcome(
             "blocked",
-            f"CLOSEOUT BLOCKED: {'; '.join(gate_blockers)}; blocked record persisted to Issue #{issue_match.group(1)}",
+            f"CLOSEOUT BLOCKED: {'; '.join(gate_blockers)}; blocked record persisted to Issue #{issue_match.group(1)}"
+            + (f"; {outbox_error}" if outbox_error else "")
+            + (f"; AgentMail {mail.state}: {mail.message}" if mail else ""),
             subject,
             body,
             exit_code=2,
+            publication_state="blocked",
         )
     if dry_run:
         return Outcome("dry_run", "no GitHub comment or AgentMail request was made", subject, body)
     persisted = persist_task_closeout(event, environ=environ)
     if persisted.state == "failed":
-        return Outcome("blocked", f"CLOSEOUT BLOCKED: GitHub update failed ({persisted.message})", subject, body, exit_code=2)
-    mailed = _task_closeout_mail(event, environ=environ)
+        if not outbox_error:
+            try:
+                task_notifications.set_publication_state(
+                    str(event["event_id"]), "failed", persisted.message, environ=environ
+                )
+            except (OSError, sqlite3.Error):
+                outbox_error = "local publication state could not be updated"
+        association_rejected = _is_untrusted_pr_association_error(persisted.message)
+        if association_rejected and not outbox_error:
+            try:
+                task_notifications.finish_agentmail(
+                    str(event["event_id"]),
+                    "unavailable",
+                    "PR association validation failed; notification suppressed",
+                    environ=environ,
+                )
+            except (OSError, sqlite3.Error):
+                outbox_error = "local notification state could not be updated"
+        mail = None if defer_delivery or outbox_error or association_rejected else _deliver_queued_agentmail(
+            str(event["event_id"]), environ=environ
+        )
+        return Outcome(
+            "blocked",
+            f"CLOSEOUT BLOCKED: GitHub update failed ({persisted.message})"
+            + (f"; {outbox_error}" if outbox_error else "")
+            + (f"; AgentMail {mail.state}: {mail.message}" if mail else ""),
+            subject,
+            body,
+            exit_code=2,
+            publication_state="failed",
+        )
+    if not outbox_error:
+        try:
+            task_notifications.set_publication_state(
+                str(event["event_id"]), "verified", persisted.message, environ=environ
+            )
+        except (OSError, sqlite3.Error):
+            outbox_error = "local publication state could not be updated"
+    mailed = None if defer_delivery or outbox_error else _deliver_queued_agentmail(
+        str(event["event_id"]), environ=environ
+    )
     prefix = f"GitHub {persisted.message};"
+    if outbox_error:
+        return Outcome("failed", f"{prefix} {outbox_error}", subject, body)
+    if mailed is None:
+        state = task_notifications.delivery_state(str(event["event_id"]), "agentmail", environ)
+        if state == "disabled":
+            return Outcome("skipped", f"{prefix} AgentMail disabled", subject, body)
+        if state == "unavailable":
+            return Outcome("skipped", f"{prefix} AgentMail configuration unavailable", subject, body)
+        if state == "sent":
+            return Outcome("duplicate", f"{prefix} AgentMail was already sent", subject, body)
+        if state == "uncertain":
+            return Outcome("failed", f"{prefix} AgentMail delivery is uncertain and requires review", subject, body)
+        if state == "failed":
+            return Outcome("failed", f"{prefix} AgentMail bounded retries are exhausted", subject, body)
+        return Outcome("queued", f"{prefix} AgentMail delivery queued", subject, body)
     if mailed.state == "failed":
-        return Outcome("failed", f"{prefix} AgentMail delivery failed ({mailed.message})", subject, body)
+        return Outcome("failed", f"{prefix} AgentMail delivery queued for bounded retry ({mailed.message})", subject, body)
     if mailed.state == "skipped":
-        return Outcome("skipped", f"{prefix} AgentMail skipped ({mailed.message})", subject, body)
+        return Outcome("skipped", f"{prefix} AgentMail unavailable ({mailed.message})", subject, body)
     if mailed.state == "duplicate":
-        return Outcome("duplicate", f"{prefix} AgentMail already sent", subject, body)
-    return Outcome("sent", f"{prefix} AgentMail notified", subject, body)
+        return Outcome("duplicate", f"{prefix} AgentMail delivery state requires review", subject, body)
+    return Outcome(
+        "sent",
+        f"{prefix} AgentMail notified",
+        subject,
+        body,
+        publication_state="verified",
+    )
 
 
 def process_research_completion(
@@ -1296,6 +1561,14 @@ def _issue_from_context(branch: str, summary: str) -> str:
     return match.group(1) if match else ""
 
 
+def _bounded_event_id(value: object) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 256:
+        return None
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+        return None
+    return value
+
+
 def process_stop_payload(
     payload: object,
     *,
@@ -1304,11 +1577,14 @@ def process_stop_payload(
 ) -> Outcome:
     if not isinstance(payload, dict) or payload.get("hook_event_name") != "Stop":
         return Outcome("skipped", "not a Codex Stop event")
+    env = os.environ if environ is None else environ
+    if not dry_run:
+        try:
+            task_notifications.record_turn_event(payload, environ=environ)
+        except (OSError, sqlite3.Error):
+            pass
     if payload.get("stop_hook_active") is True:
         return Outcome("skipped", "Stop hook recursion guard is active")
-    env = os.environ if environ is None else environ
-    if not dry_run and env.get("ROBOTSIM_LOCAL_STOP_HOOK", "").strip() != "1":
-        return Outcome("skipped", "local Stop notifications are not enabled")
 
     has_closeout_event, closeout_payload, envelope_problem = extract_task_closeout_envelope(
         payload.get("last_assistant_message")
@@ -1316,12 +1592,43 @@ def process_stop_payload(
     if has_closeout_event:
         if envelope_problem:
             return Outcome("blocked", f"CLOSEOUT BLOCKED: invalid task closeout: {envelope_problem}", exit_code=2)
-        return process_task_closeout(
-            closeout_payload,
-            dry_run=dry_run,
-            environ=environ,
-            cwd=payload.get("cwd") if isinstance(payload.get("cwd"), str) else None,
-        )
+        if not dry_run and env.get("ROBOTSIM_LOCAL_STOP_HOOK", "").strip() != "1":
+            try:
+                if isinstance(closeout_payload, dict) and closeout_payload.get("schema_version") == RESEARCH_SCHEMA_VERSION:
+                    event = normalize_research_event(closeout_payload)
+                else:
+                    event = normalize_task_closeout(closeout_payload)
+                task_notifications.record_terminal_outcome(
+                    event,
+                    publication_state="not_attempted",
+                    publication_detail="local Stop opt-in is disabled; GitHub publication and delivery were not started",
+                    notifications_enabled=False,
+                    session_id=_bounded_event_id(payload.get("session_id")),
+                    turn_id=_bounded_event_id(payload.get("turn_id")),
+                    environ=environ,
+                )
+            except (OSError, sqlite3.Error, ValueError, TypeError, task_notifications.EventConflict) as exc:
+                return Outcome("skipped", f"local Stop notifications are disabled; terminal state not saved ({type(exc).__name__})")
+            return Outcome("skipped", "terminal task outcome saved locally; notifications and GitHub publication remain disabled")
+        if dry_run:
+            return process_task_closeout(closeout_payload, dry_run=True, environ=environ)
+        try:
+            if isinstance(closeout_payload, dict) and closeout_payload.get("schema_version") == RESEARCH_SCHEMA_VERSION:
+                event = normalize_research_event(closeout_payload)
+            else:
+                event = normalize_task_closeout(closeout_payload)
+            task_notifications.record_terminal_outcome(
+                event,
+                publication_state="pending",
+                publication_detail="queued for background GitHub publication and notification delivery",
+                notifications_enabled=True,
+                session_id=_bounded_event_id(payload.get("session_id")),
+                turn_id=_bounded_event_id(payload.get("turn_id")),
+                environ=environ,
+            )
+        except (OSError, sqlite3.Error, ValueError, TypeError, task_notifications.EventConflict) as exc:
+            return Outcome("blocked", f"terminal outcome could not be queued ({type(exc).__name__})", exit_code=2)
+        return Outcome("queued", "terminal outcome recorded for background publication and notification delivery")
 
     return Outcome(
         "skipped",
@@ -1333,7 +1640,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "event",
-        choices=("ready_for_review", "task-closeout", "research-completion", "stop"),
+        choices=("ready_for_review", "task-closeout", "research-completion", "stop", "notification-worker"),
         help="attention notification, structured task closeout JSON, or 'stop' for a local Codex Stop payload",
     )
     parser.add_argument("--task-id", help="stable task/turn identifier used for duplicate protection")
@@ -1343,6 +1650,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--branch", help="branch name; otherwise detected from the current checkout")
     parser.add_argument("--issue", help="issue number, when available")
     parser.add_argument("--dry-run", action="store_true", help="format the message without sending mail")
+    parser.add_argument("--quiet", action="store_true", help="suppress notification-worker status output")
     return parser
 
 
@@ -1357,6 +1665,8 @@ def _print_outcome(outcome: Outcome) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.event == "notification-worker":
+        return _run_notification_worker(quiet=args.quiet)
     if args.event == "stop":
         try:
             payload = json.load(sys.stdin)
@@ -1387,6 +1697,9 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     if args.event == "stop" and not args.dry_run:
+        if outcome.state == "queued":
+            if not _spawn_notification_worker():
+                print("notify_task: terminal outcome is durable; background worker could not start", file=sys.stderr)
         # Codex Stop hooks accept empty stdout or a Stop result object. Keep
         # routine outcomes silent; only diagnostics use stderr.
         if outcome.state in {"failed", "blocked"}:
