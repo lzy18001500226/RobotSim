@@ -62,6 +62,29 @@ MAX_HOLD_LINEAR_SPEED_M_S = 0.025
 MAX_UPRIGHT_ERROR_DEG = 5.0
 TABLE_HALF_EXTENTS = np.array([0.200, 0.200])
 TABLE_TOP_Z = 0.800
+OPEN_OPERATIONAL_MARGIN_RAD = 0.020
+CLOSED_OPERATIONAL_MARGIN_RAD = accepted.ENDPOINT_MARGIN
+
+
+def operational_aperture_reference(aperture: float, velocity: float,
+                                   acceleration: float) -> dict[str, float]:
+    if not 0.0 <= aperture <= 1.0:
+        raise ValueError(f"aperture must be in [0, 1], got {aperture}")
+    span = 1.0 - OPEN_OPERATIONAL_MARGIN_RAD - CLOSED_OPERATIONAL_MARGIN_RAD
+    driver = -(CLOSED_OPERATIONAL_MARGIN_RAD + span * aperture)
+    driver_v = -span * velocity
+    driver_a = -span * acceleration
+    return {"driver_q": driver, "follower_q": -driver,
+            "driver_v": driver_v, "follower_v": -driver_v,
+            "driver_a": driver_a, "follower_a": -driver_a}
+
+
+def set_operational_aperture_qpos(model: mujoco.MjModel, data: mujoco.MjData,
+                                  side: str, aperture: float) -> None:
+    driver, follower = accepted.DRIVER_FOLLOWER[side][:2]
+    reference = operational_aperture_reference(aperture, 0.0, 0.0)
+    data.qpos[accepted.qpos_addr(model, driver)] = reference["driver_q"]
+    data.qpos[accepted.qpos_addr(model, follower)] = reference["follower_q"]
 
 
 def sha256(path: Path) -> str:
@@ -176,6 +199,18 @@ def source_pose() -> dict[str, Any]:
     data = mujoco.MjData(model)
     mujoco.mj_resetData(model, data)
     accepted.set_aperture_qpos(model, data, "right", 1.0)
+    mujoco.mj_forward(model, data)
+    previous_open = accepted.pair_contact_at(
+        model, data, accepted.collision_geom_for_body(model, PAD_BODIES[0]),
+        accepted.collision_geom_for_body(model, PAD_BODIES[1]))
+    driver, follower = accepted.DRIVER_FOLLOWER["right"][:2]
+    data.qpos[accepted.qpos_addr(model, driver)] = -1.0
+    data.qpos[accepted.qpos_addr(model, follower)] = 1.0
+    mujoco.mj_forward(model, data)
+    hardstop_open = accepted.pair_contact_at(
+        model, data, accepted.collision_geom_for_body(model, PAD_BODIES[0]),
+        accepted.collision_geom_for_body(model, PAD_BODIES[1]))
+    set_operational_aperture_qpos(model, data, "right", 1.0)
     accepted.set_aperture_qpos(model, data, "left", 1.0)
     mujoco.mj_forward(model, data)
     narrow = accepted.collision_geom_for_body(model, PAD_BODIES[0])
@@ -195,7 +230,12 @@ def source_pose() -> dict[str, Any]:
     target_wrist_position = target_jaw_mid - target_wrist_rotation @ jaw_mid_local
     approach_axis_local = target_wrist_rotation.T @ np.array([0.0, 1.0, 0.0])
     lift_axis_local = target_wrist_rotation.T @ np.array([0.0, 0.0, 1.0])
-    return {"source_model_compiled": True, "source_right_open_gap_m": witnesses["distance_m"],
+    return {"source_model_compiled": True, "previous_operational_open_gap_m": previous_open["distance_m"],
+            "hardstop_open_gap_m": hardstop_open["distance_m"],
+            "operational_right_open_gap_m": witnesses["distance_m"],
+            "operational_open_driver_target_rad": operational_aperture_reference(1.0, 0.0, 0.0)["driver_q"],
+            "operational_open_follower_target_rad": operational_aperture_reference(1.0, 0.0, 0.0)["follower_q"],
+            "operational_open_margin_rad": OPEN_OPERATIONAL_MARGIN_RAD,
             "source_jaw_mid_world_m": jaw_mid.tolist(), "source_jaw_axis_world": jaw_axis.tolist(),
             "source_tool_plus_z_world": tool_rotation[:, 2].tolist(),
             "jaw_midpoint_local_to_wrist_m": jaw_mid_local.tolist(),
@@ -208,12 +248,13 @@ def source_pose() -> dict[str, Any]:
             "approach_direction_gripper_to_object_world": APPROACH_WORLD.tolist(),
             "insertion_depth_m": INSERTION_DEPTH, "approach_standoff_m": APPROACH_STANDOFF,
             "approach_axis_local": approach_axis_local.tolist(), "lift_axis_local": lift_axis_local.tolist(),
-            "source_joint_configuration": "official compiled URDF qpos0, both claw drivers at accepted OPEN endpoint",
+            "source_joint_configuration": "pinned URDF geometry; diagnostic fixture pose derived at right operational OPEN target; source joint ranges unchanged",
             "source_right_claw_joint_range_rad": [float(x) for x in model.jnt_range[accepted.joint_id(model, accepted.DRIVER_FOLLOWER["right"][0])]],
             "source_right_follower_joint_range_rad": [float(x) for x in model.jnt_range[accepted.joint_id(model, accepted.DRIVER_FOLLOWER["right"][1])]]}
 
 
-def add_fixture_axes(spec: mujoco.MjSpec, pose: dict[str, Any], canonical: Any) -> dict[str, Any]:
+def add_fixture_axes(spec: mujoco.MjSpec, pose: dict[str, Any], canonical: Any,
+                     include_bottle: bool = True) -> dict[str, Any]:
     spec.compiler.fusestatic = False
     spec.option.timestep = accepted.TIMESTEP
     spec.option.gravity = [0.0, 0.0, -accepted.GRAVITY]
@@ -231,12 +272,13 @@ def add_fixture_axes(spec: mujoco.MjSpec, pose: dict[str, Any], canonical: Any) 
                             pos=[0.0, 0.0, 0.0], size=[0.0, 0.0, 0.05],
                             friction=[0.9, 0.01, 0.001], condim=4,
                             rgba=[0.58, 0.61, 0.63, 1.0])
-    bottle = spec.worldbody.add_body(name="p0_canonical_test_cylinder", pos=CYLINDER_CENTER.tolist())
-    bottle.add_freejoint(name="p0_canonical_test_cylinder_free")
-    bottle.add_geom(name="p0_canonical_test_cylinder_geom", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-                    size=[accepted.CYLINDER_RADIUS, accepted.CYLINDER_HALF_HEIGHT, 0.0],
-                    mass=accepted.CYLINDER_MASS, friction=accepted.CYLINDER_FRICTION,
-                    condim=4, rgba=[0.12, 0.52, 0.82, 1.0])
+    if include_bottle:
+        bottle = spec.worldbody.add_body(name="p0_canonical_test_cylinder", pos=CYLINDER_CENTER.tolist())
+        bottle.add_freejoint(name="p0_canonical_test_cylinder_free")
+        bottle.add_geom(name="p0_canonical_test_cylinder_geom", type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                        size=[accepted.CYLINDER_RADIUS, accepted.CYLINDER_HALF_HEIGHT, 0.0],
+                        mass=accepted.CYLINDER_MASS, friction=accepted.CYLINDER_FRICTION,
+                        condim=4, rgba=[0.12, 0.52, 0.82, 1.0])
     spec.add_actuator(name="p0_fixture_approach_motor", target=approach.name,
                       trntype=mujoco.mjtTrn.mjTRN_JOINT, dyntype=mujoco.mjtDyn.mjDYN_NONE,
                       gaintype=mujoco.mjtGain.mjGAIN_FIXED, biastype=mujoco.mjtBias.mjBIAS_NONE,
@@ -264,9 +306,10 @@ def add_fixture_axes(spec: mujoco.MjSpec, pose: dict[str, Any], canonical: Any) 
             "new_contact_exclusions": [], "equality_attachments": [], "mocap_bodies": []}
 
 
-def build_model(subtree_urdf: Path, pose: dict[str, Any], canonical: Any) -> tuple[mujoco.MjSpec, mujoco.MjModel, dict[str, Any]]:
+def build_model(subtree_urdf: Path, pose: dict[str, Any], canonical: Any,
+                include_bottle: bool = True) -> tuple[mujoco.MjSpec, mujoco.MjModel, dict[str, Any]]:
     spec = mujoco.MjSpec.from_file(str(subtree_urdf))
-    build = add_fixture_axes(spec, pose, canonical)
+    build = add_fixture_axes(spec, pose, canonical, include_bottle=include_bottle)
     model = spec.compile()
     for role, joint in zip(("driver", "follower"), accepted.DRIVER_FOLLOWER["right"][:2]):
         aid = accepted.actuator_id(model, f"diag_right_{role}_servo")
@@ -279,7 +322,7 @@ def set_fixture_state(model: mujoco.MjModel, data: mujoco.MjData, approach: floa
                       aperture: float) -> None:
     data.qpos[accepted.qpos_addr(model, "p0_fixture_approach_slide")] = approach
     data.qpos[accepted.qpos_addr(model, "p0_fixture_lift_slide")] = lift
-    accepted.set_aperture_qpos(model, data, "right", aperture)
+    set_operational_aperture_qpos(model, data, "right", aperture)
 
 
 def source_hand_body_ids(model: mujoco.MjModel) -> set[int]:
@@ -376,6 +419,7 @@ def compiled_mesh_table_clearance(model: mujoco.MjModel, data: mujoco.MjData,
 def geometry_gate(model: mujoco.MjModel, pose: dict[str, Any], output: Path, canonical: Any) -> dict[str, Any]:
     data = mujoco.MjData(model)
     mujoco.mj_resetData(model, data)
+    set_operational_aperture_qpos(model, data, "right", 1.0)
     set_fixture_state(model, data, APPROACH_START, 0.0, 1.0)
     mujoco.mj_forward(model, data)
     cylinder_gid = accepted.geom_id(model, "p0_canonical_test_cylinder_geom")
@@ -392,6 +436,7 @@ def geometry_gate(model: mujoco.MjModel, pose: dict[str, Any], output: Path, can
     baseline_bottom = float(data.xpos[cylinder_body_id][2] - accepted.CYLINDER_HALF_HEIGHT)
     path_rows = []
     for i, value in enumerate(np.linspace(APPROACH_START, APPROACH_END, 25)):
+        set_operational_aperture_qpos(model, data, "right", 1.0)
         set_fixture_state(model, data, float(value), 0.0, 1.0)
         mujoco.mj_forward(model, data)
         distances, min_all, min_nonpad = all_geom_distances(model, data, cylinder_gid, pad_ids)
@@ -408,6 +453,7 @@ def geometry_gate(model: mujoco.MjModel, pose: dict[str, Any], output: Path, can
     chosen_pad_penetrations = None
     bilateral_contact_rows = None
     for aperture in np.linspace(1.0, 0.30, 1401):
+        set_operational_aperture_qpos(model, data, "right", float(aperture))
         set_fixture_state(model, data, APPROACH_END, 0.0, float(aperture))
         mujoco.mj_forward(model, data)
         distances, min_all, min_nonpad = all_geom_distances(model, data, cylinder_gid, pad_ids)
@@ -426,6 +472,7 @@ def geometry_gate(model: mujoco.MjModel, pose: dict[str, Any], output: Path, can
             chosen_pad_penetrations = pad_distances
             bilateral_contact_rows = contacts
     write_jsonl(output / "B2_CLEARANCE_TRACE.jsonl", path_rows + closure_rows)
+    set_operational_aperture_qpos(model, data, "right", 1.0)
     set_fixture_state(model, data, APPROACH_END, 0.0, 1.0)
     mujoco.mj_forward(model, data)
     open_rows, open_min, open_nonpad = all_geom_distances(model, data, cylinder_gid, pad_ids)
@@ -452,12 +499,14 @@ def geometry_gate(model: mujoco.MjModel, pose: dict[str, Any], output: Path, can
               and bilateral_target is not None and actual_bilateral_contact
               and table_footprint_ok and cylinder_on_table)
     renderer = mujoco.Renderer(model, height=480, width=640)
+    set_operational_aperture_qpos(model, data, "right", 1.0)
     set_fixture_state(model, data, APPROACH_START, 0.0, 1.0)
     mujoco.mj_forward(model, data)
     Image.fromarray(render(renderer, model, data, "overview")).save(output / "B2_open_overview.png")
     Image.fromarray(render(renderer, model, data, "front")).save(output / "B2_open_front.png")
     Image.fromarray(render(renderer, model, data, "side")).save(output / "B2_open_side.png")
     if bilateral_target is not None:
+        set_operational_aperture_qpos(model, data, "right", bilateral_target)
         set_fixture_state(model, data, APPROACH_END, 0.0, bilateral_target)
         mujoco.mj_forward(model, data)
         Image.fromarray(render(renderer, model, data, "close")).save(output / "B2_bilateral_target_closeup.png")
@@ -466,6 +515,10 @@ def geometry_gate(model: mujoco.MjModel, pose: dict[str, Any], output: Path, can
               "physics_steps": 0, "contact_exclusions_added": [], "equality_attachments": [],
               "object_state_writes_during_rollout": 0,
               "candidate_count": 1, "source_faithful_geometry": True,
+              "operational_open_target": {"driver_q_rad": operational_aperture_reference(1.0, 0.0, 0.0)["driver_q"],
+                                          "follower_q_rad": operational_aperture_reference(1.0, 0.0, 0.0)["follower_q"],
+                                          "lower_hard_limit_margin_rad": OPEN_OPERATIONAL_MARGIN_RAD,
+                                          "official_source_ranges_unchanged": True},
               "fixture_classification": "SIMULATION_ONLY support fixture; official source wrist-roll and all right OmniPicker descendant geometry retained",
               "source_pose_derivation": pose,
               "bottle": {"center_world_m": CYLINDER_CENTER.tolist(), "diameter_m": 2*accepted.CYLINDER_RADIUS,
@@ -503,7 +556,12 @@ def geometry_gate(model: mujoco.MjModel, pose: dict[str, Any], output: Path, can
 def right_controller(model: mujoco.MjModel) -> dict[str, Any]:
     data = mujoco.MjData(model)
     result: dict[str, Any] = {"label": "SIMULATION_ONLY paired-jaw actuator emulation",
-                              "not_hardware_calibrated": True, "endpoint_margin_rad": accepted.ENDPOINT_MARGIN,
+                              "not_hardware_calibrated": True,
+                              "source_joint_ranges_unchanged": True,
+                              "operational_open_margin_rad": OPEN_OPERATIONAL_MARGIN_RAD,
+                              "operational_closed_margin_rad": CLOSED_OPERATIONAL_MARGIN_RAD,
+                              "operational_open_target_rad": operational_aperture_reference(1.0, 0.0, 0.0)["driver_q"],
+                              "operational_closed_target_rad": operational_aperture_reference(0.0, 0.0, 0.0)["driver_q"],
                               "motion_duration_s": accepted.MOTION_DURATION, "source_mapping": "follower=-driver",
                               "frequency_rad_s": accepted.FREQUENCY, "damping_ratio": accepted.DAMPING_RATIO,
                               "friction_assumption": accepted.CONTACT_FRICTION_ASSUMPTION, "per_side": {}}
@@ -513,7 +571,7 @@ def right_controller(model: mujoco.MjModel) -> dict[str, Any]:
                follower: {"inertia": 0.0, "bias": 0.0, "lever": 0.0}}
     for aperture in np.linspace(0.0, 1.0, 9):
         data.qpos[:] = model.qpos0
-        accepted.set_aperture_qpos(model, data, side, float(aperture))
+        set_operational_aperture_qpos(model, data, side, float(aperture))
         mujoco.mj_forward(model, data)
         M = accepted.full_mass_matrix(model, data)
         bodies = (accepted.body_id(model, narrow), accepted.body_id(model, wide))
@@ -528,8 +586,8 @@ def right_controller(model: mujoco.MjModel) -> dict[str, Any]:
             sampled[name]["lever"] = max(sampled[name]["lever"], abs(float(np.dot(jacp[:, dof], normal))))
     normal_design = (2.0 * accepted.CYLINDER_MASS * accepted.GRAVITY /
                      (2.0 * accepted.CONTACT_FRICTION_ASSUMPTION))
-    peak_accel = ((1.0 - 2.0 * accepted.ENDPOINT_MARGIN) * 5.773502691896258 /
-                  accepted.MOTION_DURATION**2)
+    peak_accel = ((1.0 - OPEN_OPERATIONAL_MARGIN_RAD - CLOSED_OPERATIONAL_MARGIN_RAD) *
+                  5.773502691896258 / accepted.MOTION_DURATION**2)
     joints = {}
     for name, row in sampled.items():
         kp = row["inertia"] * accepted.FREQUENCY**2
@@ -633,6 +691,184 @@ def render(renderer: mujoco.Renderer, model: mujoco.MjModel, data: mujoco.MjData
     return renderer.render().copy()
 
 
+def moving_fixture_regression(subtree_urdf: Path, pose: dict[str, Any], canonical: Any,
+                              geometry: dict[str, Any], output: Path) -> dict[str, Any]:
+    if geometry.get("status") != "PASS":
+        return {"status": "NOT_RUN", "reason": "B2 static geometry did not pass."}
+    spec, model, build = build_model(subtree_urdf, pose, canonical, include_bottle=False)
+    spec.to_file(str(output / "A_no_contact_fixture_model.xml"))
+    data = mujoco.MjData(model)
+    mujoco.mj_resetData(model, data)
+    set_fixture_state(model, data, APPROACH_START, 0.0, 1.0)
+    mujoco.mj_forward(model, data)
+    controller = right_controller(model)
+    slides = slide_gains(model, data)
+    renderer = mujoco.Renderer(model, height=480, width=640)
+    first = render(renderer, model, data)
+    Image.fromarray(first).save(output / "A_no_contact_open.png")
+    frames = [first]
+    trace: list[dict[str, Any]] = []
+    source_joints = _source_joint_elements(SOURCE_URDF)
+    hand_body_names = {accepted.body_name(model, i) for i in source_hand_body_ids(model)}
+    max_tracking = {name: 0.0 for name in accepted.DRIVER_FOLLOWER["right"][:2]}
+    max_speed = {name: 0.0 for name in accepted.DRIVER_FOLLOWER["right"][:2]}
+    max_residual = 0.0
+    min_limit_margin = math.inf
+    limit_violations: list[dict[str, Any]] = []
+    unexpected_contacts: set[str] = set()
+    nonfinite = False
+    stage_summary: dict[str, Any] = {}
+    total_steps = 0
+    stages = [
+        ("SETTLE_OPEN", 0.5, (APPROACH_START, APPROACH_START)),
+        ("APPROACH", APPROACH_DURATION_S, (APPROACH_START, APPROACH_END)),
+        ("APPROACH_HOLD", 1.0, (APPROACH_END, APPROACH_END)),
+    ]
+    approach_dof = accepted.dof_addr(model, "p0_fixture_approach_slide")
+    lift_dof = accepted.dof_addr(model, "p0_fixture_lift_slide")
+    joint_dofs = {name: accepted.dof_addr(model, name) for name in accepted.DRIVER_FOLLOWER["right"][:2]}
+    source_limit_elements = {
+        name: element for name, element in source_joints.items()
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) >= 0
+        and element.find("limit") is not None
+        and element.find("limit").get("lower") is not None
+    }
+    for stage, duration, approach_endpoints in stages:
+        start_time = float(data.time)
+        steps = round(duration / accepted.TIMESTEP)
+        stage_executed_steps = 0
+        stage_violations = 0
+        stage_contacts = 0
+        stage_max_speed = 0.0
+        for local_step in range(steps):
+            local_t = local_step * accepted.TIMESTEP
+            approach_q, approach_v, approach_a = accepted.minimum_jerk(
+                local_t, duration, *approach_endpoints)
+            ref = operational_aperture_reference(1.0, 0.0, 0.0)
+            mujoco.mj_forward(model, data)
+            hand_controls = accepted.controller_step(model, data, controller, {"right": ref})
+            slide_controls = {}
+            for joint_name, actuator_name, qref, vref, aref in (
+                ("p0_fixture_approach_slide", "p0_fixture_approach_motor", approach_q, approach_v, approach_a),
+                ("p0_fixture_lift_slide", "p0_fixture_lift_motor", 0.0, 0.0, 0.0),
+            ):
+                qadr, dof = accepted.qpos_addr(model, joint_name), accepted.dof_addr(model, joint_name)
+                q, v = float(data.qpos[qadr]), float(data.qvel[dof])
+                gains = slides[joint_name]
+                pd = gains["kp_N_m"] * (qref - q) + gains["kd_N_s_m"] * (vref - v)
+                bias = float(data.qfrc_bias[dof])
+                feedforward = float(accepted.full_mass_matrix(model, data)[dof, dof]) * aref
+                requested = bias + pd + feedforward
+                applied = float(np.clip(requested, -gains["force_cap_N"], gains["force_cap_N"]))
+                data.ctrl[accepted.actuator_id(model, actuator_name)] = applied
+                slide_controls[joint_name] = {
+                    "q_m": q, "qvel_m_s": v, "target_q_m": qref, "target_qvel_m_s": vref,
+                    "position_error_m": qref-q, "velocity_error_m_s": vref-v, "qacc_reference_m_s2": aref,
+                    "pd_force_N": pd, "bias_feedforward_N": bias,
+                    "reference_acceleration_force_N": feedforward, "requested_force_N": requested,
+                    "applied_force_N": applied, "force_cap_N": gains["force_cap_N"]}
+            mujoco.mj_forward(model, data)
+            mass = accepted.full_mass_matrix(model, data)
+            pre = {
+                "joint_state": {name: {"qpos_rad": float(data.qpos[accepted.qpos_addr(model, name)]),
+                                        "qvel_rad_s": float(data.qvel[dof]), "qacc_rad_s2": float(data.qacc[dof])}
+                                for name, dof in joint_dofs.items()},
+                "fixture_state": {name: {"q_m": float(data.qpos[accepted.qpos_addr(model, name)]),
+                                          "qvel_m_s": float(data.qvel[dof]), "qacc_m_s2": float(data.qacc[dof])}
+                                  for name, dof in (("p0_fixture_approach_slide", approach_dof),
+                                                    ("p0_fixture_lift_slide", lift_dof))},
+                "generalized_forces_Nm": {name: {
+                    "qfrc_bias": float(data.qfrc_bias[dof]),
+                    "qfrc_actuator": float(data.qfrc_actuator[dof]),
+                    "qfrc_passive": float(data.qfrc_passive[dof]),
+                    "qfrc_constraint": float(data.qfrc_constraint[dof])}
+                    for name, dof in joint_dofs.items()},
+                "mass_matrix_coupling": {name: {
+                    "M_jj_kg_m2": float(mass[dof, dof]),
+                    "M_j_approach_kg_m": float(mass[dof, approach_dof]),
+                    "M_j_lift_kg_m": float(mass[dof, lift_dof]),
+                    "M_j_other_hand_dof": float(mass[dof, next(other for other in joint_dofs.values() if other != dof)])}
+                    for name, dof in joint_dofs.items()},
+                "controller": hand_controls,
+                "fixture_controller": slide_controls,
+            }
+            mujoco.mj_step(model, data)
+            total_steps += 1
+            stage_executed_steps += 1
+            contacts = accepted.active_contact_rows(model, data)
+            robot_contacts = [row for row in contacts
+                              if row["body1"] in hand_body_names or row["body2"] in hand_body_names]
+            if robot_contacts:
+                stage_contacts += len(robot_contacts)
+                unexpected_contacts.update("|".join(sorted((row["body1"], row["body2"])))
+                                           for row in robot_contacts)
+            limits = accepted.valid_joint_state(model, data, source_joints)
+            if limits:
+                stage_violations += len(limits)
+                limit_violations.extend({"step": total_steps, **row} for row in limits)
+            margins = {}
+            for name, element in source_limit_elements.items():
+                jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+                q = float(data.qpos[int(model.jnt_qposadr[jid])])
+                limit = element.find("limit")
+                lower, upper = float(limit.get("lower")), float(limit.get("upper"))
+                margins[name] = min(q-lower, upper-q)
+                min_limit_margin = min(min_limit_margin, margins[name])
+            post_joint_state = {name: {"qpos_rad": float(data.qpos[accepted.qpos_addr(model, name)]),
+                                       "qvel_rad_s": float(data.qvel[dof]), "qacc_rad_s2": float(data.qacc[dof])}
+                                for name, dof in joint_dofs.items()}
+            for name, state in post_joint_state.items():
+                control = hand_controls[name]
+                max_tracking[name] = max(max_tracking[name], abs(state["qpos_rad"]-control["target_q_rad"]))
+                max_speed[name] = max(max_speed[name], abs(state["qvel_rad_s"]))
+                stage_max_speed = max(stage_max_speed, abs(state["qvel_rad_s"]))
+            residual = abs(post_joint_state[accepted.DRIVER_FOLLOWER["right"][0]]["qpos_rad"] +
+                           post_joint_state[accepted.DRIVER_FOLLOWER["right"][1]]["qpos_rad"])
+            max_residual = max(max_residual, residual)
+            finite = bool(np.isfinite(np.concatenate((data.qpos, data.qvel, data.qacc))).all())
+            nonfinite = nonfinite or not finite
+            trace.append({"step": total_steps, "time_s": float(data.time), "stage": stage,
+                          "command": {"approach_q_m": approach_q, "approach_qvel_m_s": approach_v,
+                                      "approach_qacc_m_s2": approach_a, "aperture": 1.0},
+                          "pre_step": pre, "post_step_joint_state": post_joint_state,
+                          "source_joint_limit_margins_rad": margins, "source_limit_violations": limits,
+                          "robot_contacts": robot_contacts, "mimic_residual_rad": residual,
+                          "finite_state": finite, "bottle_qpos_write_count": 0})
+            if total_steps % 20 == 0:
+                frames.append(render(renderer, model, data, "overview"))
+            if limits or not finite or robot_contacts:
+                break
+        stage_summary[stage] = {"start_time_s": start_time, "end_time_s": float(data.time),
+                                "steps": stage_executed_steps,
+                                "limit_violations": stage_violations, "robot_contact_count": stage_contacts,
+                                "max_hand_speed_rad_s": stage_max_speed}
+        if limit_violations or nonfinite or unexpected_contacts:
+            break
+    Image.fromarray(render(renderer, model, data, "overview")).save(output / "A_no_contact_approach_end.png")
+    write_jsonl(output / "A_MOVING_FIXTURE_NO_CONTACT_TRACE.jsonl", trace)
+    imageio.mimsave(output / "A_MOVING_FIXTURE_NO_CONTACT.mp4", frames, fps=20, macro_block_size=1)
+    passed = (len(trace) == total_steps and total_steps == round((0.5 + APPROACH_DURATION_S + 1.0) / accepted.TIMESTEP)
+              and not limit_violations and not nonfinite and not unexpected_contacts
+              and max_residual <= accepted.MIMIC_TRACKING_DIAGNOSTIC_RAD)
+    result = {"status": "PASS" if passed else "FAIL", "stage": "MOVING_FIXTURE_NO_CONTACT_REGRESSION",
+              "model_classification": "SIMULATION_ONLY source-geometry hand fixture; bottle omitted for no-contact control",
+              "operational_open_margin_rad": OPEN_OPERATIONAL_MARGIN_RAD,
+              "source_limits_unchanged": True, "timestep_s": accepted.TIMESTEP,
+              "integrator": int(model.opt.integrator), "solver": int(model.opt.solver),
+              "solver_iterations": int(model.opt.iterations), "gravity_m_s2": model.opt.gravity.tolist(),
+              "total_steps": total_steps, "expected_steps": round((0.5 + APPROACH_DURATION_S + 1.0) / accepted.TIMESTEP),
+              "stage_metrics": stage_summary, "minimum_source_limit_margin_rad": min_limit_margin,
+              "maximum_tracking_error_rad": max_tracking, "maximum_joint_speed_rad_s": max_speed,
+              "maximum_mimic_residual_rad": max_residual, "source_limit_violations": limit_violations,
+              "nonfinite_state": nonfinite, "unexpected_robot_contacts": sorted(unexpected_contacts),
+              "bottle_contact": False, "bottle_qpos_writes": 0, "welds_or_equalities": [],
+              "contact_exclusions_added": [], "trace": "A_MOVING_FIXTURE_NO_CONTACT_TRACE.jsonl",
+              "video": "A_MOVING_FIXTURE_NO_CONTACT.mp4"}
+    write_json(output / "A_MOVING_FIXTURE_NO_CONTACT_RESULT.json", result)
+    renderer.close()
+    return result
+
+
 def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, Any],
                  geometry: dict[str, Any], output: Path) -> dict[str, Any]:
     if geometry.get("status") != "PASS":
@@ -714,7 +950,7 @@ def physical_run(spec: mujoco.MjSpec, model: mujoco.MjModel, build: dict[str, An
                     pos, vel, acc = start, 0.0, 0.0
                 values[key] = (pos, vel, acc)
             mujoco.mj_forward(model, data)
-            ref = accepted.aperture_reference(*values["aperture"])
+            ref = operational_aperture_reference(*values["aperture"])
             hand_controls = accepted.controller_step(model, data, controller, {"right": ref})
             slide_controls = {}
             for joint_name, actuator_name, key in (
@@ -928,16 +1164,22 @@ def model_runtime_identity(model: mujoco.MjModel, script_path: Path, generated_u
             "runner_sha256": sha256(script_path)}
 
 
-def write_report(output: Path, static: dict[str, Any], dynamic: dict[str, Any] | None,
-                 runtime: dict[str, Any], command: str) -> None:
-    status = dynamic["status"] if dynamic else static["status"]
+def write_report(output: Path, static: dict[str, Any], no_contact: dict[str, Any] | None,
+                 dynamic: dict[str, Any] | None, runtime: dict[str, Any], command: str) -> None:
+    status = dynamic["status"] if dynamic else (no_contact["status"] if no_contact else static["status"])
     lines = ["# Issue #46 — OmniPicker Isolated Physical Fixture", "",
              f"Final bounded stage result: **{status}**", "",
              "## Gates", "",
              f"- B2 source-geometry static corridor: **{static['status']}**; open approach minimum non-pad/bottle clearance {static['approach']['minimum_nonpad_bottle_clearance_m']*1000:.2f} mm; conservative gripper/table clearance lower bound {static['approach']['minimum_gripper_table_clearance_lower_bound_m']*1000:.2f} mm.",
              f"- Bilateral geometric jaw target: aperture {static['closure']['bilateral_contact_target_aperture']}; non-gripping clearance through target {static['closure']['minimum_nonpad_distance_m']*1000:.2f} mm.",
+             f"- Moving-fixture no-contact regression: **{no_contact['status'] if no_contact else 'NOT RUN'}**; the same 3.0 s approach and 1.0 s endpoint hold ran before contact testing.",
              f"- Isolated physical 50 mm lift: **{dynamic['status'] if dynamic else 'NOT RUN'}**.",
              "- Full X2 right-arm integration: **NOT RUN** unless the isolated lift gate passes and a separate phase is executed.", "",
+             "## OPEN endpoint diagnosis", "",
+             f"- Source driver range remains `{static['source_pose_derivation']['source_right_claw_joint_range_rad']}` rad; source follower range remains `{static['source_pose_derivation']['source_right_follower_joint_range_rad']}` rad.",
+             f"- Simulation-only operational OPEN driver target is `{static['operational_open_target']['driver_q_rad']:.6f}` rad with `{OPEN_OPERATIONAL_MARGIN_RAD:.3f}` rad from the lower source stop; operational follower target is `{static['operational_open_target']['follower_q_rad']:.6f}` rad.",
+             f"- Compiled operational OPEN jaw gap is `{static['source_pose_derivation']['operational_right_open_gap_m']*1000:.3f}` mm; previous `-0.999 rad` operational gap was `{static['source_pose_derivation']['previous_operational_open_gap_m']*1000:.3f}` mm and the exact `-1.0 rad` hard-stop geometry gap is `{static['source_pose_derivation']['hardstop_open_gap_m']*1000:.3f}` mm.",
+             "- Run12 showed restoring-sign position/velocity feedback, unsaturated actuator output, near-zero bias compensation, and an outward jaw excursion during fixture acceleration. Its diagonal joint controller does not compensate the fixture-to-jaw mass-matrix cross terms; the 0.001 rad operational margin was below the measured 1.023 mrad target excursion. No source range, actuator gain, friction, mounting, or collision exclusion was changed.", "",
              "## Model and controls", "",
              f"- Source: `{accepted.X2_PIN}` / `{accepted.X2_URDF_REL.as_posix()}`; original source collision meshes and joint ranges retained.",
              "- Fixture: SIMULATION_ONLY, two physically actuated prismatic axes; source wrist-roll link and complete right OmniPicker descendant subtree retained.",
@@ -977,21 +1219,26 @@ def main() -> int:
                "source_joint_ranges_rad": {name: model.jnt_range[accepted.joint_id(model, name)].tolist()
                                             for name in accepted.DRIVER_FOLLOWER["right"][:2]}})
     static = geometry_gate(model, pose, output, canonical)
-    dynamic = physical_run(spec, model, fixture, static, output) if static["status"] == "PASS" else None
+    no_contact = moving_fixture_regression(subtree_path, pose, canonical, static, output) if static["status"] == "PASS" else None
+    dynamic = (physical_run(spec, model, fixture, static, output)
+               if static["status"] == "PASS" and no_contact and no_contact["status"] == "PASS" else None)
     command = ("PYTHONPATH=/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib/python3.10/site-packages:/tmp/robotsim-issue46-omnipicker-p0-pin:/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/lib/python3.10/site-packages "
                "LD_LIBRARY_PATH=/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib:/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib64 MUJOCO_GL=egl "
                f"python3 {Path(__file__).resolve()} --output {output}")
     write_json(output / "P0_ISOLATED_RESULT.json", {"B2_STATIC_GEOMETRY_GATE": static["status"],
+               "MOVING_FIXTURE_NO_CONTACT_REGRESSION": no_contact["status"] if no_contact else "NOT_RUN",
                "ISOLATED_CONTACT_LIFT_50MM": (dynamic["status"] if dynamic else "NOT_RUN"),
                "FULL_X2_CONTACT_LIFT_50MM": "NOT_RUN", "FULL_X2_RELEASE_SETTLE": "NOT_RUN",
                "static_result": "B2_STATIC_GEOMETRY_GATE.json",
+               "no_contact_result": "A_MOVING_FIXTURE_NO_CONTACT_RESULT.json" if no_contact else None,
                "dynamic_result": "C_RESULT.json" if dynamic else None,
                "source": {"repository": accepted.X2_REPO, "commit": accepted.X2_PIN,
                           "urdf": accepted.X2_URDF_REL.as_posix(), "sha256": sha256(SOURCE_URDF)},
                "classification": "SIMULATION_ONLY isolated fixture; no hardware claim",
                "reproduction_command": command})
-    write_report(output, static, dynamic, runtime, command)
+    write_report(output, static, no_contact, dynamic, runtime, command)
     print(json.dumps({"output": str(output), "B2": static["status"],
+                      "moving_fixture_no_contact": no_contact["status"] if no_contact else "NOT_RUN",
                       "C": dynamic["status"] if dynamic else "NOT_RUN",
                       "full_X2": "NOT_RUN"}, indent=2))
     return 0 if static["status"] == "PASS" and dynamic and dynamic["status"] == "PASS" else 2

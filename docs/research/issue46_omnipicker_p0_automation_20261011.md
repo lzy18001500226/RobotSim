@@ -66,3 +66,27 @@ The exact machine-specific commands and runtime path bindings are retained in th
 ## Next step
 
 Stop this run. Before any new contact test, review the right-claw operational OPEN target and the fixture approach transient as a distinct controller/initialization correction. Keep the official `[-1,0] rad` source limit unchanged and preserve this failed result. Full-X2 integration remains gated on a successful isolated physical lift.
+
+## P0 OPEN-endpoint follow-up (2026-10-11)
+
+Starting from `c7909608885110b332f419057b197fbe7347bc27`, the isolated runner now maps the OPEN command to the simulation-only interior target `right_claw_joint=-0.980 rad` and follower `+0.980 rad`. The official source ranges remain `[-1,0]` and `[0,1]`; the operational CLOSED margin remains 0.001 rad. The target leaves 0.020 rad from the OPEN hard stop. This is the only controller/operational-target correction made in this follow-up.
+
+The recompiled geometry still passes: operational OPEN gap is 101.848 mm, minimum non-pad bottle clearance is 4.498 mm, and the conservative table-clearance lower bound is 75.489 mm. The static compiled closure identifies a two-pad target at aperture 0.3335. No source geometry, mounting, friction, bottle mass, collision exclusions, or joint ranges changed.
+
+The moving-fixture no-bottle regression passed all 2,250 steps (0.5 s OPEN settle, the 3.0 s approach, and 1.0 s hold): zero source-limit violations, unexpected robot contacts, or nonfinite state. Minimum source-limit margin was 0.001996 rad; maximum hand speed was 0.0384 rad/s; maximum mimic residual was 0.002861 rad. The full trace and video are under `omnipicker-p0-open-endpoint-20261011-run02` in the external evidence folder.
+
+The subsequent free-cylinder physical attempt failed at **BILATERAL CONTACT**. The fixture slide was within 0.004 mm of its target at the end of approach, so carriage positioning did not explain the miss. At the CLOSE endpoint, the driver target was -0.327497 rad but actual driver qpos was -0.346679 rad (19.182 mrad more open); the follower target was +0.327497 rad but actual qpos was +0.334875 rad (7.379 mrad more open). The pads made brief, low-force grazing contacts: peak normal forces were 0.0833 N (narrow) and 0.1276 N (wide), with bilateral contact present on only 1 of 500 HOLD samples. Maximum hand vertical support during HOLD was 0.045 N while the table continued to carry up to 5.819 N. This points to insufficient dynamic jaw target tracking/contact authority in the current simulation-only servo profile; it does not implicate friction, bottle mass, static corridor clearance, or fixture position.
+
+The 1 mm, 5 mm, and 50 mm carriage motions were recorded after the failed hold as diagnostic attempts. The bottle did not lift: maximum bottle rise above its initial state was 0 m, hand support did not replace table support, and final bottom height was 0.799341 m versus the 0.800 m tabletop. Peak penetration was 0.696 mm, with no source-limit violation, NaN, weld/equality attachment, mocap carry, artificial bottle force, hidden support, or bottle qpos write. The maximum mimic residual was 0.016112 rad, within the existing 0.020 rad simulation diagnostic bound.
+
+**Follow-up status: FAIL — no sustained bilateral physical contact.** Furthest successful dynamic stage was the collision-free OPEN-to-APPROACH motion. The open-endpoint failure is resolved for the tested trajectory, but the pickup is not demonstrated. The next evidence-backed dependency is sufficient stable actuator-driven jaw tracking/contact force; no second correction was applied. PR #58 remains unchanged and Draft, and the 11 historical simulation-only exclusions remain documented.
+
+External evidence: `C:\Users\HP\Desktop\Robot\reviews\issue-46-x2-single-hand\omnipicker-p0-open-endpoint-20261011-run02\`.
+
+The tested runner SHA256 was `9f5ca47e923f3cb679eb3e477d09d7e24fe1069b860c9dbaa86560537030bc20`. Exact reproduction command:
+
+```bash
+cd /home/lzy18001500226/robotsim-issue46-omnipicker-p0-20261011 && PYTHONPATH=/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib/python3.10/site-packages:/tmp/robotsim-issue46-omnipicker-p0-pin:/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/lib/python3.10/site-packages LD_LIBRARY_PATH=/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib:/tmp/robotsim-issue46-omnipicker-p0-pin/cmeel.prefix/lib64 MUJOCO_GL=egl python3 scripts/research/issue46_omnipicker_p0_isolated.py --output /mnt/c/Users/HP/Desktop/Robot/reviews/issue-46-x2-single-hand/omnipicker-p0-open-endpoint-20261011-run02
+```
+
+The external run directory contains the exact runtime and generated-model identities, static geometry JSON/trace, the full no-contact and contact/lift JSONL traces, screenshots, both MP4s, the console `run.log`, the generated run report, and this follow-up report.
