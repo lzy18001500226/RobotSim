@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "registry_version": "0.1.0-review",
+  "approval_policy": {
+    "states": ["DISCOVERED", "VALIDATED_PENDING_HUMAN_REVIEW", "APPROVED", "REJECTED", "DEPRECATED"],
+    "approval_source": "explicit human decision only",
+    "initial_approved_count": 0
+  },
+  "source_profiles": {
+    "unitree_mujoco_1eb6642": {
+      "repository": "https://github.com/unitreerobotics/unitree_mujoco",
+      "commit": "1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d",
+      "license": "BSD-3-Clause (repository license; confirm asset-specific notices before redistribution)",
+      "license_path": "LICENSE",
+      "hash_roots": ["unitree_robots/g1"],
+      "hash_files": ["LICENSE"],
+      "capture": "pinned Git checkout"
+    },
+    "unitree_ros_5994d4f": {
+      "repository": "https://github.com/unitreerobotics/unitree_ros",
+      "commit": "5994d4faef0a9cadd3287f8de0199a67eeb2a259",
+      "license": "BSD-3-Clause (repository license; confirm mesh notices before redistribution)",
+      "license_path": "LICENSE",
+      "hash_roots": ["robots/g1_description"],
+      "hash_files": [],
+      "capture": "exact-commit source-file snapshot; checker requires explicit --source-revision when no Git metadata is present"
+    },
+    "agibot_x2_urdf_575cc6b": {
+      "repository": "https://github.com/AgibotTech/agibot_x2_urdf",
+      "commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+      "license": "Mulan PSL v2 (repository license; preserve notices and confirm asset-specific terms)",
+      "license_path": "LICENSE",
+      "hash_roots": ["X2_URDF-v1.4.0"],
+      "hash_files": ["LICENSE"],
+      "capture": "pinned Git checkout"
+    }
+  },
+  "assets": [
+    {
+      "asset_id": "g1_unitree_mujoco_stock_23dof",
+      "platform": "Unitree G1",
+      "body_variant": "Unitree MuJoCo source model named g1_23dof.xml",
+      "assembly_kind": "stock paired rigid rubber hands",
+      "source_profile": "unitree_mujoco_1eb6642",
+      "model_path": "unitree_robots/g1/g1_23dof.xml",
+      "hands": {"left": "stock rubber hand", "right": "stock rubber hand", "hand_joints": 0},
+      "mounts": {"left": "left_wrist_roll_rubber_hand pos=0.1 0.00188791 -0.01", "right": "right_wrist_roll_rubber_hand pos=0.1 -0.00188791 -0.01"},
+      "expected_structure": {"nq": 36, "nv": 35, "nu": 29, "njnt": 30, "nbody": 31, "ngeom": 62, "nmesh": 29, "nsite": 2, "neq": 0},
+      "required_joint_tokens": ["left_wrist", "right_wrist"],
+      "forbidden_joint_tokens": ["thumb", "finger", "claw_joint"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "compiled stock-hand morphology only; filename says 23dof while compiled model has 29 actuators and 29 moving joints plus floating-root coordinates",
+      "evidence": []
+    },
+    {
+      "asset_id": "g1_unitree_mujoco_stock_29dof",
+      "platform": "Unitree G1",
+      "body_variant": "Unitree MuJoCo source model named g1_29dof.xml",
+      "assembly_kind": "stock paired rigid rubber hands",
+      "source_profile": "unitree_mujoco_1eb6642",
+      "model_path": "unitree_robots/g1/g1_29dof.xml",
+      "hands": {"left": "stock rubber hand", "right": "stock rubber hand", "hand_joints": 0},
+      "mounts": {"left": "left_wrist_yaw_link pos=0.0415 0.003 0 quat=1 0 0 0", "right": "right_wrist_yaw_link pos=0.0415 -0.003 0 quat=1 0 0 0"},
+      "expected_structure": {"nq": 36, "nv": 35, "nu": 29, "njnt": 30, "nbody": 31, "ngeom": 73, "nmesh": 36, "nsite": 2, "neq": 0},
+      "required_joint_tokens": ["left_wrist", "right_wrist"],
+      "forbidden_joint_tokens": ["thumb", "finger", "claw_joint"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "compiled stock-hand morphology only; do not infer model name is a literal compiled actuator count",
+      "evidence": []
+    },
+    {
+      "asset_id": "g1_rev1_stock_urdf_5994d4f",
+      "platform": "Unitree G1",
+      "body_variant": "G1 29-DoF Rev 1.0",
+      "assembly_kind": "official stock paired rigid rubber hands",
+      "source_profile": "unitree_ros_5994d4f",
+      "model_path": "robots/g1_description/g1_29dof_rev_1_0.urdf",
+      "hands": {"left": "left_rubber_hand.STL", "right": "right_rubber_hand.STL", "hand_joints": 0},
+      "mounts": {"left": "left_wrist_yaw_link -> left_rubber_hand xyz=0.0415 0.003 0 rpy=0 0 0", "right": "right_wrist_yaw_link -> right_rubber_hand xyz=0.0415 -0.003 0 rpy=0 0 0"},
+      "expected_structure": {"nq": 29, "nv": 29, "nu": 0, "njnt": 29, "nbody": 30, "ngeom": 71, "nmesh": 35, "nsite": 0, "neq": 0},
+      "required_joint_tokens": ["left_wrist_yaw_joint", "right_wrist_yaw_joint"],
+      "forbidden_joint_tokens": ["thumb", "finger", "claw_joint"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "stock appearance/rigid mount only; source hand links have no collision elements, finger joints, or actuators",
+      "evidence": ["historical reference: issue43-g1-canonical-x2-bottle-20261005/overview.png; accepted head 386f7bedbf8951b71350d6b1766c705b99f4629e; registry review state remains pending"]
+    },
+    {
+      "asset_id": "g1_rev1_inspire_dfq_bilateral_5994d4f",
+      "platform": "Unitree G1",
+      "body_variant": "G1 29-DoF Rev 1.0",
+      "assembly_kind": "official complete bilateral Inspire DFQ hands",
+      "source_profile": "unitree_ros_5994d4f",
+      "model_path": "robots/g1_description/g1_29dof_rev_1_0_with_inspire_hand_DFQ.urdf",
+      "hands": {"left": "Inspire DFQ", "right": "Inspire DFQ", "revolute_joints_each": 12, "mimic_relations_each": 6, "source_transmissions": 0, "source_actuators": 0},
+      "mounts": {"left": "left_wrist_yaw_link -> L_hand_base_link xyz=0.0415 0 0 rpy=0 0 pi/2", "right": "right_wrist_yaw_link -> R_hand_base_link xyz=0.0415 0 0 rpy=pi 0 -pi/2"},
+      "expected_structure": {"nq": 53, "nv": 53, "nu": 0, "njnt": 53, "nbody": 54, "ngeom": 121, "nmesh": 59, "nsite": 0, "neq": 0},
+      "required_joint_tokens": ["L_thumb", "R_thumb", "L_index", "R_index", "L_middle", "R_middle", "L_ring", "R_ring", "L_pinky", "R_pinky"],
+      "forbidden_joint_tokens": ["dex3", "dex1"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "official geometry/joints/collision meshes/mounts compile; URDF has no actuator semantics; compile is not dynamic validation",
+      "evidence": []
+    },
+    {
+      "asset_id": "g1_rev1_inspire_ftp_bilateral_5994d4f",
+      "platform": "Unitree G1",
+      "body_variant": "G1 29-DoF Rev 1.0",
+      "assembly_kind": "official complete bilateral Inspire FTP hands; mechanically distinct from DFQ",
+      "source_profile": "unitree_ros_5994d4f",
+      "model_path": "robots/g1_description/g1_29dof_rev_1_0_with_inspire_hand_FTP.urdf",
+      "hands": {"left": "Inspire FTP", "right": "Inspire FTP", "revolute_joints_each": 12, "mimic_relations_each": 6, "source_transmissions": 0, "source_actuators": 0},
+      "mounts": {"left": "left_wrist_yaw_link -> left_base_link xyz=0.0415 0 0 rpy=pi -pi/2 0", "right": "right_wrist_yaw_link -> right_base_link xyz=0.0415 0 0 rpy=0 pi/2 0"},
+      "expected_structure": {"nq": 53, "nv": 53, "nu": 0, "njnt": 53, "nbody": 54, "ngeom": 189, "nmesh": 93, "nsite": 0, "neq": 0},
+      "required_joint_tokens": ["thumb", "index", "middle", "ring", "little"],
+      "forbidden_joint_tokens": ["dex3", "dex1"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "separate FTP assembly; never treat as DFQ substitute; URDF has no actuator semantics",
+      "evidence": []
+    },
+    {
+      "asset_id": "g1_rev1_dex1_1_bilateral_5994d4f",
+      "platform": "Unitree G1",
+      "body_variant": "G1 29-DoF Rev 1.0, mode 15 Dex1.1",
+      "assembly_kind": "official bilateral two-finger parallel grippers; not a five-finger hand",
+      "source_profile": "unitree_ros_5994d4f",
+      "model_path": "robots/g1_description/g1_29dof_mode_15_with_dex1_1.urdf",
+      "hands": {"left": "Dex1.1", "right": "Dex1.1", "finger_dofs_each": 2, "mimic_relations_each": 0, "source_transmissions": 0, "source_actuators": 0},
+      "mounts": {"left": "left_wrist_yaw_link -> left_dex1_base_link xyz=0.0415 0 0 rpy=0 0 0", "right": "right_wrist_yaw_link -> right_dex1_base_link xyz=0.0415 0 0 rpy=0 0 0"},
+      "expected_structure": {"nq": 33, "nv": 33, "nu": 0, "njnt": 33, "nbody": 34, "ngeom": 79, "nmesh": 37, "nsite": 0, "neq": 0},
+      "required_joint_tokens": ["dex1", "left", "right"],
+      "forbidden_joint_tokens": ["R_thumb", "L_thumb", "R_pinky", "L_pinky"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "official geometry compile only; source finger range -0.02 to 0.0245 m; no command semantics inferred",
+      "evidence": []
+    },
+    {
+      "asset_id": "g1_rev1_dex3_historical_5994d4f",
+      "platform": "Unitree G1",
+      "body_variant": "G1 29-DoF Rev 1.0",
+      "assembly_kind": "historical bilateral three-finger Dex3 model; not an approved G1 baseline",
+      "source_profile": "unitree_ros_5994d4f",
+      "model_path": "robots/g1_description/g1_29dof_with_hand_rev_1_0.xml",
+      "hands": {"left": "Dex3", "right": "Dex3", "digits_each": 3},
+      "mounts": {"source": "encoded in pinned MJCF; not reinterpreted here"},
+      "expected_structure": {"nq": 50, "nv": 49, "nu": 43, "njnt": 44, "nbody": 45, "ngeom": 102, "nmesh": 49, "nsite": 2, "neq": 0},
+      "required_joint_tokens": ["thumb", "index", "middle"],
+      "forbidden_joint_tokens": ["ring", "pinky", "little"],
+      "review_state": "REJECTED",
+      "review_scope": "historical three-prong morphology was explicitly rejected; do not render or reopen it in this review",
+      "evidence": ["historical maintainer rejection: G1+Dex3 presentation is not an acceptable morphology reference"]
+    },
+    {
+      "asset_id": "x2_ultra_base_mjcf_v1_4",
+      "platform": "AgiBot X2 Ultra",
+      "body_variant": "official X2 Ultra v1.4.0 bare robot MJCF",
+      "assembly_kind": "base robot model without end-effector selection",
+      "source_profile": "agibot_x2_urdf_575cc6b",
+      "model_path": "X2_URDF-v1.4.0/X2-Ultra.xml",
+      "hands": {"left": "not included", "right": "not included"},
+      "mounts": {},
+      "expected_structure": {"nq": 38, "nv": 37, "nu": 31, "njnt": 32, "nbody": 33, "ngeom": 99, "nmesh": 40, "nsite": 1, "neq": 0},
+      "required_joint_tokens": ["left_wrist", "right_wrist"],
+      "forbidden_joint_tokens": ["omnipicker", "thumb", "claw_joint"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "base-only inventory; not interchangeable with hand-mounted URDF variants",
+      "evidence": []
+    },
+    {
+      "asset_id": "x2_ultra_omnihand_v1_4",
+      "platform": "AgiBot X2 Ultra",
+      "body_variant": "X2 Ultra v1.4.0",
+      "assembly_kind": "official bilateral articulated five-finger OmniHand URDF",
+      "source_profile": "agibot_x2_urdf_575cc6b",
+      "model_path": "X2_URDF-v1.4.0/X2-Ultra_omnihand.urdf",
+      "hands": {"left": "OmniHand", "right": "OmniHand", "revolute_joints_total": 63, "mimic_relations": 12, "source_transmissions": 0, "source_actuators": 0},
+      "mounts": {"left": "left_wrist_roll_link -> L_palm xyz=0 -0.001 -0.049 rpy=0 3.14 1.58", "right": "right_wrist_roll_link -> R_palm xyz=0 0.001 -0.049 rpy=0 3.14 -1.58"},
+      "expected_structure": {"nq": 63, "nv": 63, "nu": 0, "njnt": 63, "nbody": 64, "ngeom": 144, "nmesh": 51, "nsite": 0, "neq": 0},
+      "required_joint_tokens": ["thumb", "index", "middle", "ring", "pinky"],
+      "forbidden_joint_tokens": ["omnipicker", "claw_joint"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "official geometry/mimic structure compiles; URDF has no actuators; not OmniPicker",
+      "evidence": []
+    },
+    {
+      "asset_id": "x2_ultra_omnipicker_v1_4",
+      "platform": "AgiBot X2 Ultra",
+      "body_variant": "X2 Ultra v1.4.0",
+      "assembly_kind": "official bilateral OmniPicker gripper URDF; distinct from OmniHand",
+      "source_profile": "agibot_x2_urdf_575cc6b",
+      "model_path": "X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+      "hands": {"left": "OmniPicker", "right": "OmniPicker", "actuated_claw_joints": 2, "mimic_relations": 2, "source_transmissions": 0, "source_actuators": 0},
+      "mounts": {"left": "left_wrist_roll_link -> L_omnipicker_base_link xyz=0.00259 0.00035 -0.062 rpy=3.14 0 3.14", "right": "right_wrist_roll_link -> R_omnipicker_base_link xyz=0.00196 0.00035 -0.062 rpy=3.14 0 0"},
+      "expected_structure": {"nq": 35, "nv": 35, "nu": 0, "njnt": 35, "nbody": 36, "ngeom": 106, "nmesh": 50, "nsite": 0, "neq": 0},
+      "required_joint_tokens": ["left_claw_joint", "right_claw_joint"],
+      "forbidden_joint_tokens": ["R_thumb_", "R_index_", "R_middle_", "R_ring_", "R_pinky_", "L_thumb_", "L_index_", "L_middle_", "L_ring_", "L_pinky_"],
+      "review_state": "VALIDATED_PENDING_HUMAN_REVIEW",
+      "review_scope": "official source compile only; claw/mimic structure; no inferred OmniHand or hardware-control equivalence",
+      "evidence": []
+    }
+  ],
+  "not_registered_candidates": [
+    {
+      "candidate": "G1 + experimental Robotiq adaptation",
+      "state": "research-only, not reproducible from a pinned exact assembly in this audit",
+      "reason": "No exact root model, upstream commit, derived mesh/mount hash bundle, and project-owned acceptance profile established here. Do not treat Local03 X2 Robotiq work as a G1 baseline."
+    },
+    {
+      "candidate": "standalone Inspire hand assets mounted onto G1",
+      "state": "not registered as a G1 assembly",
+      "reason": "Registry uses complete G1-mounted official DFQ/FTP models from pinned unitree_ros; standalone hand packages are not mechanically interchangeable."
+    }
+  ]
+}

@@ -9,3 +9,6 @@ The topology-independent interfaces and state/command semantics live under
 [`ros2_ws/src/`](../../ros2_ws/src/).
 
 Upstream Unitree repositories belong in `third_party/`, not here.
+Exact stock and hand-equipped assembly identities are recorded in the
+[robot asset registry](../../assets/robots/README.md). The registry does not
+store vendor meshes or automatically approve an assembly.
