@@ -327,6 +327,31 @@ def render_overlay(model: mujoco.MjModel, data: mujoco.MjData,
     for index, row in enumerate(contact_marks):
         color = marker_colors[min(index, len(marker_colors) - 1)]
         point = 0.5 * (np.asarray(row["witness_robot_world_m"]) + np.asarray(row["witness_bottle_world_m"]))
+        if row.get("marker_kind") == "source_triangle_inside_bottle":
+            active_camera = scene.camera[0]
+            camera_position = np.asarray(active_camera.pos, dtype=float)
+            toward_camera = camera_position - point
+            toward_camera /= max(float(np.linalg.norm(toward_camera)), 1e-15)
+            camera_right = np.cross(np.asarray(active_camera.forward), np.asarray(active_camera.up))
+            camera_right /= max(float(np.linalg.norm(camera_right)), 1e-15)
+            side_sign = 1.0 if index % 2 == 0 else -1.0
+            marker_end = point + 0.045 * toward_camera + side_sign * 0.045 * camera_right
+            leader = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(
+                leader, mujoco.mjtGeom.mjGEOM_CAPSULE,
+                np.array([0.0035, 0.0035, 0.0035]), point,
+                np.eye(3, dtype=np.float64).reshape(-1), np.asarray(color, dtype=np.float32),
+            )
+            mujoco.mjv_connector(leader, mujoco.mjtGeom.mjGEOM_CAPSULE, 0.0035, point, marker_end)
+            scene.ngeom += 1
+            marker = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(
+                marker, mujoco.mjtGeom.mjGEOM_SPHERE,
+                np.array([0.005, 0.005, 0.005]), marker_end,
+                np.eye(3, dtype=np.float64).reshape(-1), np.asarray(color, dtype=np.float32),
+            )
+            scene.ngeom += 1
+            continue
         geom = scene.geoms[scene.ngeom]
         mujoco.mjv_initGeom(
             geom, mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -1047,7 +1072,11 @@ def root_cause_audit(output: Path, source_urdf: Path,
                               "witness_bottle_world_m": wrist_hull_rows[0]["witness_bottle_world_m"]})
     for source_overlap in source_inside_points:
         point = source_overlap["point_world_m"]
-        contact_marks.append({"witness_robot_world_m": point, "witness_bottle_world_m": point})
+        contact_marks.append({
+            "witness_robot_world_m": point,
+            "witness_bottle_world_m": point,
+            "marker_kind": "source_triangle_inside_bottle",
+        })
     lookat = neck_center.tolist()
     cameras = {
         "front": geometry_module.camera_for(lookat, 0.42, 90.0, -8.0),
@@ -1064,7 +1093,7 @@ def root_cause_audit(output: Path, source_urdf: Path,
             source_png, hull_png, comparison, view.upper(), [
                 f"Same saved endpoint and bottle pose; MuJoCo hull minimum = {wrist_hull_rows[0]['signed_distance_m'] * 1000.0:.3f} mm.",
                 f"Source triangle samples inside bottle collision volumes = {sum(row['surface_samples_inside_count'] for row in source_surface_by_bottle)}.",
-                "Markers: yellow/pink=jaw witnesses, orange=hull witness, magenta=source triangle sample inside bottle.",
+                "Markers: yellow/pink=jaw witnesses; orange=hull witness; magenta leader starts at a source STL sample inside bottle collision volume.",
                 "Offline static geometry only; no physical contact simulation or altered collision model.",
             ],
         )
