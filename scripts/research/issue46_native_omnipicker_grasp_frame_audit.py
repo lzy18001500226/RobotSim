@@ -323,7 +323,7 @@ def render_overlay(model: mujoco.MjModel, data: mujoco.MjData,
     renderer.update_scene(data, camera=camera, scene_option=option)
     scene = renderer.scene
     marker_colors = ([1.0, 0.92, 0.08, 1.0], [0.96, 0.10, 0.72, 1.0],
-                     [1.0, 0.42, 0.05, 1.0], [1.0, 0.12, 0.12, 1.0])
+                     [1.0, 0.42, 0.05, 1.0], [0.78, 0.08, 1.0, 1.0])
     for index, row in enumerate(contact_marks):
         color = marker_colors[min(index, len(marker_colors) - 1)]
         point = 0.5 * (np.asarray(row["witness_robot_world_m"]) + np.asarray(row["witness_bottle_world_m"]))
@@ -343,6 +343,7 @@ def render_overlay(model: mujoco.MjModel, data: mujoco.MjData,
             ("Narrow / wide fingertip collision geom", (31, 242, 87, 230)),
             ("Narrow / wide pad witnesses", (255, 228, 20, 255)),
             ("Wrist / bottle blocker witness", (255, 107, 13, 255)),
+            ("Source triangle sample inside bottle", (199, 20, 255, 255)),
         ]
     else:
         legend = [
@@ -351,6 +352,7 @@ def render_overlay(model: mujoco.MjModel, data: mujoco.MjData,
             ("Narrow / wide fingertip collision geom", (31, 242, 87, 230)),
             ("Narrow / wide pad witnesses", (255, 228, 20, 255)),
             ("Wrist / bottle blocker witness", (255, 107, 13, 255)),
+            ("Source triangle sample inside bottle", (199, 20, 255, 255)),
             ("Canonical bottle", (13, 148, 230, 255)),
         ]
     x, y = 24, 24
@@ -1048,7 +1050,7 @@ def root_cause_audit(output: Path, source_urdf: Path,
             source_png, hull_png, comparison, view.upper(), [
                 f"Same saved endpoint and bottle pose; MuJoCo hull minimum = {wrist_hull_rows[0]['signed_distance_m'] * 1000.0:.3f} mm.",
                 f"Source triangle samples inside bottle collision volumes = {sum(row['surface_samples_inside_count'] for row in source_surface_by_bottle)}.",
-                "Markers: yellow/pink=jaw witnesses, orange=hull witness, red=source triangle sample inside bottle.",
+                "Markers: yellow/pink=jaw witnesses, orange=hull witness, magenta=source triangle sample inside bottle.",
                 "Offline static geometry only; no physical contact simulation or altered collision model.",
             ],
         )
@@ -1158,7 +1160,7 @@ def root_cause_audit(output: Path, source_urdf: Path,
         "",
         "## 决策与下一步",
         "",
-        "本候选的阻挡是两项局部问题叠加：39.217 mm yaw/pitch raw overlap 在完整源模型中受默认相邻父子过滤，不是该模型内的活动自碰撞；固定根夹具改变了父子过滤上下文，因此会生成 contact。另一方面，保存的 wrist-roll/bottle 姿态不仅是凸包假象：源 STL 三角面样本已经进入瓶肩、颈和盖的碰撞体，编译 hull 在该姿态给出更深的负距离。与此同时，现有整块 jaw 最近点加 PCA 帧没有对准功能指腹面，造成明显肩部穿透并且没有双侧 neck 接触。结论仅为这个 endpoint 构造失败；现有证据不能判定其他源几何姿态全局不可行，也不能证明原碰撞资产与实机外壳不一致。",
+        "本候选的阻挡是两项局部问题叠加：39.217 mm yaw/pitch raw overlap 在完整源模型中受默认父子过滤，不是该模型内的活动自碰撞；裁剪后 yaw 成为 world 的直接 child，而 MuJoCo 对 world-parent pair 不应用这项过滤，因此固定根夹具生成 contact。另一方面，保存的 wrist-roll/bottle 姿态不仅是凸包假象：源 STL 三角面样本已经进入瓶肩、颈和盖的碰撞体，编译 hull 在该姿态给出更深的负距离。与此同时，现有整块 jaw 最近点加 PCA 帧没有对准功能指腹面，造成明显肩部穿透并且没有双侧 neck 接触。结论仅为这个 endpoint 构造失败；现有证据不能判定其他源几何姿态全局不可行，也不能证明原碰撞资产与实机外壳不一致。",
         "唯一建议的下一项实验：在孤立夹爪中依据 source STL 上实际相向的 distal narrow/wide 内侧指垫面建立一个功能接触帧，以瓶轴定义纵向方向；仅对这一个派生帧做一次 source-limit 与零步 wrist/bottle、pad/bottle 几何预检，通过后才映射到全臂 IK。不要沿用整块 jaw 最近点/PCA 帧，也不要扩展为候选姿态搜索。",
         "参考：[AgiBot X2 pinned source](https://github.com/AgibotTech/agibot_x2_urdf/tree/575cc6b988f976c23550e0db85aa1e5475d3652d)；[MuJoCo 3.3.6 computation and contact frames](https://mujoco.readthedocs.io/en/3.3.6/computation/index.html)；[MuJoCo 3.3.6 XML reference, mesh collision semantics](https://mujoco.readthedocs.io/en/3.3.6/XMLreference.html)。",
         "",
