@@ -121,6 +121,17 @@ class NotifyTaskTests(unittest.TestCase):
         event.update(changes)
         return event
 
+    def _internal_closeout_event(self, **changes: object) -> dict[str, object]:
+        event = self._closeout_event(
+            task_id="codex-hook-notification-readiness-2026-10-12",
+            branch=None,
+            head_sha=None,
+            pr_number=None,
+            evidence=[],
+        )
+        event.update(changes)
+        return event
+
     def _published_event(self, event: dict[str, object] | None = None) -> dict[str, object]:
         stored = notify_task.normalize_task_closeout(event or self._closeout_event())
         issue_number = str(stored["task_id"]).split("-", 2)[1]
@@ -1138,6 +1149,90 @@ class NotifyTaskTests(unittest.TestCase):
                 self._closeout_event(summary=f"Diagnostic saved to {path}")
             )
             self.assertNotIn(path, sanitized["summary"])
+
+    def test_internal_task_identity_is_local_only(self) -> None:
+        event = notify_task.normalize_task_closeout(self._internal_closeout_event())
+        self.assertEqual(event["task_id"], "codex-hook-notification-readiness-2026-10-12")
+        self.assertIsNone(event["pr_number"])
+        with self.assertRaisesRegex(ValueError, "cannot name a GitHub PR destination"):
+            notify_task.normalize_task_closeout(
+                self._internal_closeout_event(pr_number=66, branch="codex/test", head_sha="a" * 40)
+            )
+
+    def test_internal_stop_closeout_persists_once_without_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            event = self._internal_closeout_event(
+                attempt_id="00000000-0000-4000-8000-000000000123",
+                status="blocked",
+                task_kind="audit",
+                summary="Internal hook validation requires post-turn verification.",
+                recommended_next_action="Read the Stop and queue records.",
+            )
+            normalized = notify_task.normalize_task_closeout(event)
+            message = (
+                notify_task.TASK_CLOSEOUT_ENVELOPE_MARKER
+                + "\n"
+                + json.dumps(event)
+                + "\n-->"
+            )
+            payload = {
+                "hook_event_name": "Stop",
+                "session_id": "synthetic-session",
+                "turn_id": "synthetic-turn",
+                "stop_hook_active": False,
+                "last_assistant_message": message,
+            }
+            with patch.object(notify_task, "_open_request", side_effect=AssertionError("no external request allowed")):
+                first = notify_task.process_stop_payload(payload, environ=settings)
+                second = notify_task.process_stop_payload(payload, environ=settings)
+
+            self.assertEqual(first.state, "skipped")
+            self.assertIn("saved locally", first.message)
+            self.assertEqual(second.state, "skipped")
+            with notify_task.task_notifications._connect(settings) as connection:
+                outcomes = connection.execute(
+                    "SELECT task_id,attempt_id,execution_outcome,publication_state,session_id,turn_id "
+                    "FROM outcomes WHERE event_id=?",
+                    (normalized["event_id"],),
+                ).fetchall()
+                deliveries = connection.execute(
+                    "SELECT channel,state FROM deliveries WHERE event_id=? ORDER BY channel",
+                    (normalized["event_id"],),
+                ).fetchall()
+                publication = connection.execute(
+                    "SELECT state FROM publication_jobs WHERE event_id=?",
+                    (normalized["event_id"],),
+                ).fetchone()
+
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0]["task_id"], event["task_id"])
+        self.assertEqual(outcomes[0]["attempt_id"], event["attempt_id"])
+        self.assertEqual(outcomes[0]["execution_outcome"], "BLOCKED")
+        self.assertEqual(outcomes[0]["publication_state"], "not_attempted")
+        self.assertEqual(outcomes[0]["session_id"], "synthetic-session")
+        self.assertEqual(outcomes[0]["turn_id"], "synthetic-turn")
+        self.assertEqual(
+            [(row["channel"], row["state"]) for row in deliveries],
+            [("agentmail", "disabled"), ("telephone", "unavailable")],
+        )
+        self.assertEqual(publication["state"], "disabled")
+
+    def test_internal_task_identity_cannot_enter_github_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(directory)
+            event = self._internal_closeout_event()
+            with (
+                patch.object(notify_task, "_github_token", side_effect=AssertionError("token must not be read")),
+                patch.object(notify_task, "check_closeout", side_effect=AssertionError("gate must not run")),
+            ):
+                persisted = notify_task.persist_task_closeout(event, environ=settings)
+                published = notify_task.process_task_closeout(event, environ=settings)
+
+        self.assertEqual(persisted.state, "failed")
+        self.assertIn("real originating Issue", persisted.message)
+        self.assertEqual(published.state, "blocked")
+        self.assertIn("real originating Issue", published.message)
 
     def test_closeout_rejects_local_or_credential_bearing_evidence(self) -> None:
         invalid_evidence = (

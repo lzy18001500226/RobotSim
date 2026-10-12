@@ -72,6 +72,7 @@ TASK_CLOSEOUT_FIELDS = {
     "completed_at",
 }
 TASK_CLOSEOUT_TASK_ID = re.compile(r"^issue-([1-9][0-9]{0,8})-[a-z0-9][a-z0-9._-]{0,100}$")
+TASK_CLOSEOUT_INTERNAL_TASK_ID = re.compile(r"^(?:codex|local)-[a-z0-9][a-z0-9._-]{0,100}$")
 TASK_CLOSEOUT_ATTEMPT_ID = re.compile(
     r"^(?:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|legacy-[0-9a-f]{32})$"
 )
@@ -325,8 +326,12 @@ def normalize_task_closeout(payload: object) -> dict[str, object]:
     if repository != ROBOTSIM_REPOSITORY:
         raise ValueError("repository must be the canonical RobotSim repository")
     task_id = payload.get("task_id")
-    if not isinstance(task_id, str) or TASK_CLOSEOUT_TASK_ID.fullmatch(task_id) is None:
-        raise ValueError("task_id must identify its issue as issue-<number>-<stable-slug>")
+    issue_task = isinstance(task_id, str) and TASK_CLOSEOUT_TASK_ID.fullmatch(task_id) is not None
+    internal_task = isinstance(task_id, str) and TASK_CLOSEOUT_INTERNAL_TASK_ID.fullmatch(task_id) is not None
+    if not issue_task and not internal_task:
+        raise ValueError(
+            "task_id must be issue-<number>-<stable-slug> or a local-only codex-/local- identity"
+        )
     if _RESEARCH_TOKEN_LITERAL.search(task_id):
         raise ValueError("task_id must not contain credential-shaped text")
     attempt_id = payload.get("attempt_id")
@@ -362,6 +367,8 @@ def normalize_task_closeout(payload: object) -> dict[str, object]:
         or not 1 <= pr_number_value <= 999_999_999
     ):
         raise ValueError("pr_number must be a positive GitHub pull request number or null")
+    if internal_task and pr_number_value is not None:
+        raise ValueError("local-only task IDs cannot name a GitHub PR destination")
     if pr_number_value is not None and (branch is None or head_sha is None):
         raise ValueError("PR closeouts must include the branch and head_sha")
     validation_value = payload.get("validation")
@@ -813,6 +820,8 @@ def persist_task_closeout(
         event = normalize_task_closeout(dict(event))
     except (ValueError, TypeError) as exc:
         return PersistenceResult("failed", f"invalid task closeout: {exc}")
+    if TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"])) is None:
+        return PersistenceResult("failed", "GitHub publication requires a real originating Issue destination")
     token = _github_token(env)
     if not token:
         return PersistenceResult(
@@ -1120,6 +1129,13 @@ def process_task_closeout(
             event = normalize_task_closeout(payload)
     except (ValueError, TypeError) as exc:
         return Outcome("blocked", f"CLOSEOUT BLOCKED: invalid task closeout: {exc}", exit_code=2)
+
+    if TASK_CLOSEOUT_TASK_ID.fullmatch(str(event["task_id"])) is None:
+        return Outcome(
+            "blocked",
+            "GitHub publication requires a task ID with a real originating Issue destination",
+            exit_code=2,
+        )
 
     env = os.environ if environ is None else environ
     if notifications_enabled is None:
@@ -1592,16 +1608,27 @@ def process_stop_payload(
     if has_closeout_event:
         if envelope_problem:
             return Outcome("blocked", f"CLOSEOUT BLOCKED: invalid task closeout: {envelope_problem}", exit_code=2)
-        if not dry_run and env.get("ROBOTSIM_LOCAL_STOP_HOOK", "").strip() != "1":
+        internal_task = (
+            isinstance(closeout_payload, dict)
+            and isinstance(closeout_payload.get("task_id"), str)
+            and TASK_CLOSEOUT_INTERNAL_TASK_ID.fullmatch(closeout_payload["task_id"]) is not None
+        )
+        local_only = internal_task or env.get("ROBOTSIM_LOCAL_STOP_HOOK", "").strip() != "1"
+        if not dry_run and local_only:
             try:
                 if isinstance(closeout_payload, dict) and closeout_payload.get("schema_version") == RESEARCH_SCHEMA_VERSION:
                     event = normalize_research_event(closeout_payload)
                 else:
                     event = normalize_task_closeout(closeout_payload)
+                detail = (
+                    "internal task identity has no GitHub Issue destination; publication and delivery were not started"
+                    if internal_task
+                    else "local Stop opt-in is disabled; GitHub publication and delivery were not started"
+                )
                 task_notifications.record_terminal_outcome(
                     event,
                     publication_state="not_attempted",
-                    publication_detail="local Stop opt-in is disabled; GitHub publication and delivery were not started",
+                    publication_detail=detail,
                     notifications_enabled=False,
                     session_id=_bounded_event_id(payload.get("session_id")),
                     turn_id=_bounded_event_id(payload.get("turn_id")),
