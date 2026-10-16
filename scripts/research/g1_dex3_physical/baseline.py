@@ -17,6 +17,9 @@ REVIEW=Path('/home/lzy18001500226/projects/RobotSim/reviews/issue43-g1-dex3-visu
 OUT=Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-43/dex3-physical-20261016')
 ARM=['right_'+s+'_joint' for s in ['shoulder_pitch','shoulder_roll','shoulder_yaw','elbow','wrist_roll','wrist_pitch','wrist_yaw']]
 HAND=['right_hand_'+s+'_joint' for s in ['thumb_0','thumb_1','thumb_2','index_0','index_1','middle_0','middle_1']]
+HAND_KP_DEFAULT=1.5
+HAND_KD_DEFAULT=.1
+HAND_KP_DIAGNOSTIC_MAX=3.0
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def name(m,obj,i):return mj.mj_id2name(m,obj,int(i)) or f'unnamed_{i}'
@@ -26,7 +29,9 @@ def gid(m,n):return mj.mj_name2id(m,mj.mjtObj.mjOBJ_GEOM,n)
 def indices(m,names):
     js=np.array([jid(m,n) for n in names]);return m.jnt_qposadr[js],m.jnt_dofadr[js]
 
-def build(out):
+def build(out,hand_kp=HAND_KP_DEFAULT):
+    if not 0. < hand_kp <= HAND_KP_DIAGNOSTIC_MAX:
+        raise ValueError(f'hand Kp must be in (0, {HAND_KP_DIAGNOSTIC_MAX}]')
     assert subprocess.check_output(['git','-C',str(UPSTREAM),'rev-parse','HEAD'],text=True).strip()==SOURCE_REV
     assert not subprocess.check_output(['git','-C',str(UPSTREAM),'status','--porcelain'],text=True).strip()
     assert sha(SOURCE)=='77c98e7d34e428c6cdbd1e0d665e989cbc43bf17abb8a7c048494b4bc51ead88'
@@ -42,7 +47,7 @@ def build(out):
     for i,g in enumerate(root.findall('.//geom')):
         if 'name' not in g.attrib:g.set('name',f'official_geom_{i}')
     for motor in root.findall('./actuator/motor'):
-        hand='hand' in motor.get('joint');kp,kd=(1.5,.1) if hand else (120.,5.)
+        hand='hand' in motor.get('joint');kp,kd=(hand_kp,HAND_KD_DEFAULT) if hand else (120.,5.)
         joint=root.find(".//joint[@name='%s']"%motor.get('joint'))
         motor.tag='general';motor.set('gaintype','fixed');motor.set('biastype','affine')
         motor.set('gainprm',str(kp));motor.set('biasprm',f'0 {-kp} {-kd}')
