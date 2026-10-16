@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts.agent import path_governance as paths
+
+
+class PathGovernanceTests(unittest.TestCase):
+    def test_detects_windows_wsl_and_native_linux(self) -> None:
+        self.assertEqual("windows", paths.detect_environment(platform_name="nt", environ={}))
+        self.assertEqual("wsl", paths.detect_environment(platform_name="linux", environ={"WSL_DISTRO_NAME": "Ubuntu-22.04"}))
+        self.assertEqual("wsl", paths.detect_environment(platform_name="linux", environ={}, os_release="5.15.90-microsoft-standard-WSL2"))
+        self.assertEqual("linux", paths.detect_environment(platform_name="linux", environ={}, os_release="6.8.0-generic"))
+
+    def test_canonicalizes_posix_and_windows_unc_paths(self) -> None:
+        expected = paths.CANONICAL_REPO_ROOT + "/reviews/issue-43/run one/result.json"
+        unc = r"\\wsl.localhost\Ubuntu-22.04" + expected.replace("/", "\\")
+        self.assertEqual(expected, paths.normalize_output_path(expected, environment="wsl"))
+        self.assertEqual(expected, paths.normalize_output_path(unc, environment="windows"))
+        descriptor = paths.describe_output_path(expected, environment="wsl")
+        self.assertEqual(expected, descriptor["WSL_PATH"])
+        self.assertEqual(r"\\wsl.localhost\Ubuntu-22.04" + expected.replace("/", "\\"), descriptor["WINDOWS_UNC"])
+        self.assertIn("Start-Process -FilePath 'explorer.exe'", descriptor["OPEN_COMMAND"])
+        self.assertIn("run one", descriptor["OPEN_COMMAND"])
+
+    def test_rejects_linux_paths_in_native_windows(self) -> None:
+        for candidate in ("/home/user/project/reviews/run", "/mnt/c/Users/user/reviews/run"):
+            with self.subTest(candidate=candidate), self.assertRaises(paths.PathGovernanceError):
+                paths.normalize_output_path(candidate, environment="windows")
+
+    def test_rejects_drive_paths_and_mistyped_windows_homes(self) -> None:
+        candidates = (
+            r"C:\home\lzy18001500226\projects\RobotSim\reviews\run",
+            r"C:\mnt\c\Users\HP\RobotSim\reviews\run",
+            r"C:\Users\HP\Desktop\Robot\reviews\run",
+            r"C:relative\reviews\run",
+        )
+        for candidate in candidates:
+            with self.subTest(candidate=candidate), self.assertRaises(paths.PathGovernanceError):
+                paths.normalize_output_path(candidate, environment="windows")
+
+    def test_rejects_windows_paths_in_wsl_and_mnt_c_outputs(self) -> None:
+        for candidate in (r"C:\home\user\reviews\run", "/mnt/c/Users/HP/RobotSim/reviews/run"):
+            with self.subTest(candidate=candidate), self.assertRaises(paths.PathGovernanceError):
+                paths.normalize_output_path(candidate, environment="wsl")
+
+    def test_rejects_traversal_and_outputs_outside_reviews_without_authorization(self) -> None:
+        with self.assertRaises(paths.PathGovernanceError):
+            paths.normalize_output_path(paths.CANONICAL_REPO_ROOT + "/reviews/../tmp/run", environment="wsl")
+        with tempfile.TemporaryDirectory() as directory:
+            outside = Path(directory) / "capture"
+            with self.assertRaises(paths.PathGovernanceError):
+                paths.validate_output_path(outside, environment="wsl")
+
+    def test_explicitly_authorized_external_root_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            external = Path(directory) / "approved"
+            external.mkdir()
+            target = external / "capture.json"
+            location = paths.validate_output_path(
+                target, authorized_roots=[external], environment="wsl"
+            )
+            self.assertEqual(str(target), location.wsl_path)
+
+    def test_refuses_symlink_escape_before_creating_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory)
+            reviews = root / "reviews"
+            reviews.mkdir()
+            escape = reviews / "escape"
+            escape.symlink_to(Path(outside), target_is_directory=True)
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                target = reviews / "escape" / "should-not-exist"
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.create_output_directory(target, environment="wsl")
+                self.assertFalse((Path(outside) / "should-not-exist").exists())
+
+    def test_unique_output_directory_and_exclusive_artifact_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reviews = root / "reviews"
+            experiment = reviews / "issue-43"
+            experiment.mkdir(parents=True)
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                first = paths.create_unique_output_directory(
+                    experiment,
+                    prefix="baseline",
+                    environment="wsl",
+                    now=datetime(2026, 10, 16, tzinfo=timezone.utc),
+                )
+                second = paths.create_unique_output_directory(
+                    experiment,
+                    prefix="baseline",
+                    environment="wsl",
+                    now=datetime(2026, 10, 16, tzinfo=timezone.utc),
+                )
+                self.assertNotEqual(first.wsl_path, second.wsl_path)
+                file_path = Path(first.wsl_path) / "result.json"
+                record = paths.write_new_text(file_path, "{}\n", environment="wsl")
+                self.assertTrue(file_path.is_file())
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.write_new_text(file_path, "replacement\n", environment="wsl")
+                self.assertEqual("{}\n", file_path.read_text(encoding="utf-8"))
+                self.assertEqual([record.as_dict()], paths.verify_artifacts([record.as_dict()], environment="wsl"))
+
+    def test_missing_or_forged_artifact_mapping_fails_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reviews = root / "reviews"
+            run = reviews / "issue-43" / "run"
+            run.mkdir(parents=True)
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                target = run / "missing.json"
+                descriptor = paths.describe_output_path(target, environment="wsl")
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.verify_artifacts([descriptor], environment="wsl")
+                target.write_text("{}\n", encoding="utf-8")
+                forged = dict(paths.describe_output_path(target, environment="wsl"))
+                forged["OPEN_COMMAND"] += "; Remove-Item *"
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.verify_artifacts([forged], environment="wsl")
+
+    def test_run_manifest_lists_and_verifies_every_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / "reviews" / "issue-43" / "run"
+            run.mkdir(parents=True)
+            (run / "result.json").write_text("{}\n", encoding="utf-8")
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                manifest = paths.write_artifact_manifest(run, environment="wsl")
+                records = manifest["artifacts"]
+                self.assertEqual(2, len(records))
+                self.assertTrue(any(item["WSL_PATH"].endswith("result.json") for item in records))
+                self.assertTrue(any(item["WSL_PATH"].endswith("artifact_paths.json") for item in records))
+                parsed = json.loads((run / "artifact_paths.json").read_text(encoding="utf-8"))
+                self.assertEqual(records, parsed["artifacts"])
+
+    def test_windows_command_escapes_single_quotes(self) -> None:
+        target = paths.CANONICAL_REPO_ROOT + "/reviews/issue-43/run's/result.json"
+        descriptor = paths.describe_output_path(target, environment="wsl")
+        self.assertIn("run''s", descriptor["OPEN_COMMAND"])
+
+
+if __name__ == "__main__":
+    unittest.main()
