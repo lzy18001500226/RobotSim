@@ -18,16 +18,21 @@ import numpy as np
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from agent import path_governance  # noqa: E402
+
 sys.path.insert(0, str(SCRIPT_DIR))
 import issue46_native_omnihand_minimal_grasp as fixture  # noqa: E402
 
 
-EVIDENCE_ROOT = Path(
+EVIDENCE_PARENT = Path(
     os.environ.get(
         "ISSUE46_GEOMETRY_EVIDENCE_DIR",
-        "/tmp/issue46-native-omnihand-geometry-first",
+        "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-omnihand-grasp-20261016",
     )
 )
+EVIDENCE_ROOT = EVIDENCE_PARENT
 DT = fixture.DT
 PENETRATION_LIMIT_M = fixture.PENETRATION_ABORT_M
 CONTACT_ALPHA_STEP = 0.005
@@ -375,7 +380,7 @@ def run_dynamic_candidate(
     static_result: dict[str, object],
     output_dir: Path,
 ) -> dict[str, object]:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    path_governance.create_output_directory(output_dir)
     model, details = fixture.build_model(
         "simulation-only",
         output_dir,
@@ -408,7 +413,9 @@ def run_dynamic_candidate(
     camera.elevation = -12.0
     trace_path = output_dir / "dynamic_trace.jsonl"
     video_path = output_dir / "dynamic_contact.mp4"
-    trace = trace_path.open("w", encoding="utf-8")
+    path_governance.validate_output_path(trace_path, require_new=True)
+    path_governance.validate_output_path(video_path, require_new=True)
+    trace = trace_path.open("x", encoding="utf-8")
     video = imageio.get_writer(video_path, fps=25, codec="libx264", quality=8)
     frames_per_step = max(1, round(1.0 / (25.0 * DT)))
     frame_count = 0
@@ -734,12 +741,14 @@ def run_dynamic_candidate(
         "evidence_directory": str(output_dir),
         "hardware_semantics": "not verified; simulation-only direct follower actuators and diagnostic palm slide",
     }
-    (output_dir / "dynamic_result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    path_governance.write_new_text(
+        output_dir / "dynamic_result.json", json.dumps(result, indent=2) + "\n"
+    )
     return result
 
 
 def analyze_candidate(candidate: dict[str, object], output_dir: Path) -> dict[str, object]:
-    output_dir.mkdir(parents=True, exist_ok=True)
+    path_governance.create_output_directory(output_dir)
     model, details = fixture.build_model(
         "simulation-only",
         output_dir,
@@ -783,11 +792,18 @@ def analyze_candidate(candidate: dict[str, object], output_dir: Path) -> dict[st
         "mujoco_version": mujoco.__version__,
         "evidence_directory": str(output_dir),
     }
-    (output_dir / "geometry_result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    path_governance.write_new_text(
+        output_dir / "geometry_result.json", json.dumps(result, indent=2) + "\n"
+    )
     return result
 
 
-def analyze_existing_trial(candidate_name: str, trace_path: Path) -> dict[str, object]:
+def analyze_existing_trial(
+    candidate_name: str, trace_path: Path, output_dir: Path
+) -> dict[str, object]:
+    trace_location = path_governance.validate_output_path(
+        trace_path, require_exists=True, expected_kind="file"
+    )
     candidate = next((item for item in CANDIDATES if item["name"] == candidate_name), None)
     if candidate is None:
         raise ValueError(f"unknown candidate: {candidate_name}")
@@ -841,6 +857,7 @@ def analyze_existing_trial(candidate_name: str, trace_path: Path) -> dict[str, o
     result = {
         "candidate": candidate_name,
         "trace": str(trace_path),
+        "trace_input_paths": trace_location.as_dict(),
         "trace_sha256": sha256(trace_path),
         "endpoint_time_s": endpoint["time_s"],
         "analysis_physics_steps": 0,
@@ -865,8 +882,10 @@ def analyze_existing_trial(candidate_name: str, trace_path: Path) -> dict[str, o
         "runtime_contact_details": endpoint["contacts"],
         "evidence_directory": str(trace_path.parent),
     }
-    output_path = trace_path.parent / "tracking_diagnosis.json"
-    output_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    result["evidence_directory"] = str(output_dir)
+    result["evidence_directory_paths"] = path_governance.describe_output_path(output_dir)
+    output_path = output_dir / "tracking_diagnosis.json"
+    path_governance.write_new_text(output_path, json.dumps(result, indent=2) + "\n")
     return result
 
 
@@ -877,11 +896,22 @@ def main() -> int:
     parser.add_argument("--analyze-existing-trial", type=Path)
     args = parser.parse_args()
     fixture.verify_vendor_pin()
-    if args.analyze_existing_trial:
-        result = analyze_existing_trial(args.candidate, args.analyze_existing_trial)
-        print(json.dumps(result, indent=2))
+    trace_input = (
+        Path(path_governance.normalize_output_path(args.analyze_existing_trial))
+        if args.analyze_existing_trial
+        else None
+    )
+    global EVIDENCE_ROOT
+    EVIDENCE_ROOT = Path(
+        path_governance.create_unique_output_directory(
+            EVIDENCE_PARENT, prefix="analyze" if trace_input else "geometry-first"
+        ).wsl_path
+    )
+    if trace_input:
+        result = analyze_existing_trial(args.candidate, trace_input, EVIDENCE_ROOT)
+        manifest = path_governance.write_artifact_manifest(EVIDENCE_ROOT)
+        print(json.dumps({**result, "artifact_manifest": manifest["manifest"]}, indent=2))
         return 0
-    EVIDENCE_ROOT.mkdir(parents=True, exist_ok=True)
     results: dict[str, object] = {
         "status": "BLOCKED",
         "experiment": "Issue #46 native OmniHand geometry-first contact",
@@ -898,6 +928,7 @@ def main() -> int:
         "hand_collision_geometry_modified": False,
         "source_faithful_mimic_tuning_repeated": False,
         "evidence_directory": str(EVIDENCE_ROOT),
+        "evidence_directory_paths": path_governance.describe_output_path(EVIDENCE_ROOT),
     }
     selected = [candidate for candidate in CANDIDATES if args.candidate == "auto" or candidate["name"] == args.candidate]
     if not selected:
@@ -939,14 +970,17 @@ def main() -> int:
                 break
         if results["status"] == "BLOCKED":
             results["failure_reason"] = "no tested dynamic candidate established persistent thumb plus index contact"
-    (EVIDENCE_ROOT / "geometry_first_result.json").write_text(
-        json.dumps(results, indent=2) + "\n", encoding="utf-8"
+    path_governance.write_new_text(
+        EVIDENCE_ROOT / "geometry_first_result.json", json.dumps(results, indent=2) + "\n"
     )
+    manifest = path_governance.write_artifact_manifest(EVIDENCE_ROOT)
     print(
         json.dumps(
             {
                 "status": results["status"],
                 "evidence_directory": results["evidence_directory"],
+                "evidence_directory_paths": results["evidence_directory_paths"],
+                "artifact_manifest": manifest["manifest"],
                 "geometry_candidates": [
                     {
                         "candidate": item["candidate"],

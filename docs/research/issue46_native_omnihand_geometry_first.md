@@ -33,9 +33,9 @@ From the experimental worktree, rerun one bounded candidate with:
 
 ```bash
 AGIBOT_X2_VENDOR_ROOT=/tmp/robotsim-issue46-native-omnihand-575cc6b988f976c23550e0db85aa1e5475d3652 \
-ISSUE46_GEOMETRY_EVIDENCE_DIR=/tmp/issue46-geometry-first-rerun \
+ISSUE46_GEOMETRY_EVIDENCE_DIR=/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-omnihand-grasp-20261016 \
 python \
 scripts/research/issue46_native_omnihand_geometry_first.py --candidate offset_50x65mm
 ```
 
-The rerun writes a fresh bounded fixture and does not change source geometry. No further pose search or lift is justified by this result; the next step requires maintainer review of the contact/controller model.
+The rerun allocates a fresh `geometry-first-*` output directory under the configured evidence parent and does not change source geometry. No further pose search or lift is justified by this result; the next step requires maintainer review of the contact/controller model.
