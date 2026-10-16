@@ -18,11 +18,16 @@ class PathGovernanceTests(unittest.TestCase):
         self.assertEqual("linux", paths.detect_environment(platform_name="linux", environ={}, os_release="6.8.0-generic"))
 
     def test_canonicalizes_posix_and_windows_unc_paths(self) -> None:
-        expected = paths.CANONICAL_REPO_ROOT + "/reviews/issue-43/run one/result.json"
-        unc = r"\\wsl.localhost\Ubuntu-22.04" + expected.replace("/", "\\")
-        self.assertEqual(expected, paths.normalize_output_path(expected, environment="wsl"))
-        self.assertEqual(expected, paths.normalize_output_path(unc, environment="windows"))
-        descriptor = paths.describe_output_path(expected, environment="wsl")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "reviews").mkdir()
+            expected = str(root / "reviews" / "issue-43" / "run one" / "result.json")
+            expected = expected.replace("\\", "/")
+            unc = r"\\wsl.localhost\Ubuntu-22.04" + expected.replace("/", "\\")
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                self.assertEqual(expected, paths.normalize_output_path(expected, environment="wsl"))
+                self.assertEqual(expected, paths.normalize_output_path(unc, environment="windows"))
+                descriptor = paths.describe_output_path(expected, environment="wsl")
         self.assertEqual(expected, descriptor["WSL_PATH"])
         self.assertEqual(r"\\wsl.localhost\Ubuntu-22.04" + expected.replace("/", "\\"), descriptor["WINDOWS_UNC"])
         self.assertIn("Start-Process -FilePath 'explorer.exe'", descriptor["OPEN_COMMAND"])
@@ -201,8 +206,13 @@ class PathGovernanceTests(unittest.TestCase):
                     paths.write_artifact_manifest(run, environment="wsl")
 
     def test_windows_command_escapes_single_quotes(self) -> None:
-        target = paths.CANONICAL_REPO_ROOT + "/reviews/issue-43/run's/result.json"
-        descriptor = paths.describe_output_path(target, environment="wsl")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "reviews").mkdir()
+            target = str(root / "reviews" / "issue-43" / "run's" / "result.json")
+            target = target.replace("\\", "/")
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                descriptor = paths.describe_output_path(target, environment="wsl")
         self.assertIn("run''s", descriptor["OPEN_COMMAND"])
 
 
