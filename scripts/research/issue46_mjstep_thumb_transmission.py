@@ -35,7 +35,7 @@ HOLD_KD = 2.4
 OPEN_Q_SOURCE = 0.08
 CLOSE_Q_SOURCE = 0.40
 STAGES = (
-    ("OPEN_HOLD_INITIAL", 0.6, "hold_open"),
+    ("OPEN_HOLD_INITIAL", 0.8, "hold_open"),
     ("CLOSE", 1.0, "close"),
     ("CLOSE_HOLD", 0.8, "hold_close"),
     ("RETURN_OPEN", 1.0, "open"),
