@@ -201,11 +201,12 @@ def validate_output_path(
     reviews_root = str(PurePosixPath(CANONICAL_REPO_ROOT) / "reviews")
     approved_root = reviews_root if _is_below(wsl_path, reviews_root) else ""
 
-    for authorized in authorized_roots:
-        authorized_path = _to_wsl_path(authorized, runtime)
-        if _is_below(wsl_path, authorized_path):
-            approved_root = authorized_path
-            break
+    if not approved_root:
+        for authorized in authorized_roots:
+            authorized_path = _to_wsl_path(authorized, runtime)
+            if _is_below(wsl_path, authorized_path):
+                approved_root = authorized_path
+                break
     if not approved_root:
         raise PathGovernanceError("output path is outside the approved RobotSim reviews root")
 
