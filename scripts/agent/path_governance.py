@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -21,6 +22,7 @@ _WINDOWS_UNC = re.compile(
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 _SAFE_RUN_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _WINDOWS_INVALID = set('<>:"|?*')
+_RESERVATION_MARKER = ".robotsim-output-reservation.json"
 
 
 class PathGovernanceError(ValueError):
@@ -193,6 +195,8 @@ def validate_output_path(
     runtime = environment or detect_environment(platform_name=platform_name, environ=environ)
     if runtime not in {"windows", "wsl", "linux"}:
         raise PathGovernanceError("environment must be windows, wsl, or linux")
+    if runtime == "linux":
+        raise PathGovernanceError("native Linux has no verified Ubuntu-22.04 WSL UNC mapping")
     wsl_path = _to_wsl_path(path, runtime)
     reviews_root = str(PurePosixPath(CANONICAL_REPO_ROOT) / "reviews")
     approved_root = reviews_root if _is_below(wsl_path, reviews_root) else ""
@@ -267,6 +271,14 @@ def create_output_directory(
     try:
         location.native_path.parent.mkdir(parents=True, exist_ok=True)
         location.native_path.mkdir(parents=True, exist_ok=False)
+        marker = location.native_path / _RESERVATION_MARKER
+        with marker.open("x", encoding="utf-8", newline="") as stream:
+            json.dump(
+                {"schema_version": "robotsim.output-reservation.v1", "path": location.wsl_path},
+                stream,
+                sort_keys=True,
+            )
+            stream.write("\n")
     except FileExistsError as exc:
         raise PathGovernanceError("output already exists; refusing to overwrite previous evidence") from exc
     return validate_output_path(
@@ -276,6 +288,22 @@ def create_output_directory(
         expected_kind="directory",
         environment=environment,
     )
+
+
+def _require_reserved_directory(location: ArtifactLocation) -> None:
+    marker = location.native_path / _RESERVATION_MARKER
+    try:
+        marker_mode = marker.lstat().st_mode
+    except OSError as exc:
+        raise PathGovernanceError("output directory was not reserved by the path helper") from exc
+    if not stat.S_ISREG(marker_mode):
+        raise PathGovernanceError("output reservation marker is invalid")
+    try:
+        reservation = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PathGovernanceError("output reservation marker is unreadable") from exc
+    if reservation != {"schema_version": "robotsim.output-reservation.v1", "path": location.wsl_path}:
+        raise PathGovernanceError("output reservation marker is invalid")
 
 
 def create_unique_output_directory(
@@ -318,8 +346,9 @@ def write_new_text(
     authorized_roots: Iterable[str | os.PathLike[str]] = (),
     environment: str | None = None,
 ) -> ArtifactLocation:
+    authorized = tuple(authorized_roots)
     location = validate_output_path(
-        path, authorized_roots=authorized_roots, require_new=True, environment=environment
+        path, authorized_roots=authorized, require_new=True, environment=environment
     )
     if not location.native_path.parent.is_dir():
         raise PathGovernanceError("reserve the output run directory before writing artifacts")
@@ -330,7 +359,7 @@ def write_new_text(
         raise PathGovernanceError("output already exists; refusing to overwrite previous evidence") from exc
     return validate_output_path(
         location.wsl_path,
-        authorized_roots=authorized_roots,
+        authorized_roots=authorized,
         require_exists=True,
         expected_kind="file",
         environment=environment,
@@ -344,8 +373,9 @@ def write_new_bytes(
     authorized_roots: Iterable[str | os.PathLike[str]] = (),
     environment: str | None = None,
 ) -> ArtifactLocation:
+    authorized = tuple(authorized_roots)
     location = validate_output_path(
-        path, authorized_roots=authorized_roots, require_new=True, environment=environment
+        path, authorized_roots=authorized, require_new=True, environment=environment
     )
     if not location.native_path.parent.is_dir():
         raise PathGovernanceError("reserve the output run directory before writing artifacts")
@@ -356,7 +386,90 @@ def write_new_bytes(
         raise PathGovernanceError("output already exists; refusing to overwrite previous evidence") from exc
     return validate_output_path(
         location.wsl_path,
-        authorized_roots=authorized_roots,
+        authorized_roots=authorized,
+        require_exists=True,
+        expected_kind="file",
+        environment=environment,
+    )
+
+
+def write_reserved_text(
+    output_directory: str | os.PathLike[str],
+    path: str | os.PathLike[str],
+    text: str,
+    *,
+    overwrite_existing: bool = False,
+    encoding: str = "utf-8",
+    authorized_roots: Iterable[str | os.PathLike[str]] = (),
+    environment: str | None = None,
+) -> ArtifactLocation:
+    """Write within a fresh helper-reserved run directory, optionally replacing its own progress file."""
+    authorized = tuple(authorized_roots)
+    root = validate_output_path(
+        output_directory,
+        authorized_roots=authorized,
+        require_exists=True,
+        expected_kind="directory",
+        environment=environment,
+    )
+    _require_reserved_directory(root)
+
+    target = validate_output_path(
+        path,
+        authorized_roots=authorized,
+        environment=environment,
+    )
+    resolved_root = root.native_path.resolve(strict=True)
+    resolved_target = target.native_path.resolve(strict=False)
+    if not _is_physically_below(resolved_target, resolved_root):
+        raise PathGovernanceError("output file is outside its reserved run directory")
+    if not target.native_path.parent.is_dir():
+        raise PathGovernanceError("output file parent directory is unavailable")
+    if target.native_path.exists() or target.native_path.is_symlink():
+        try:
+            target_mode = target.native_path.lstat().st_mode
+        except OSError as exc:
+            raise PathGovernanceError("existing output cannot be inspected") from exc
+        if not stat.S_ISREG(target_mode):
+            raise PathGovernanceError("existing output is not a regular file")
+        if not overwrite_existing:
+            raise PathGovernanceError("output already exists; refusing to overwrite previous evidence")
+
+    if not overwrite_existing or not target.native_path.exists():
+        return write_new_text(
+            target.wsl_path,
+            text,
+            encoding=encoding,
+            authorized_roots=authorized,
+            environment=environment,
+        )
+
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.native_path.name}.", suffix=".tmp", dir=target.native_path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding=encoding, newline="") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        validate_output_path(
+            temporary_path,
+            authorized_roots=authorized,
+            require_exists=True,
+            expected_kind="file",
+            environment=environment,
+        )
+        os.replace(temporary_path, target.native_path)
+    except BaseException:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return validate_output_path(
+        target.wsl_path,
+        authorized_roots=authorized,
         require_exists=True,
         expected_kind="file",
         environment=environment,
@@ -368,10 +481,11 @@ def verify_artifacts(
     *,
     authorized_roots: Iterable[str | os.PathLike[str]] = (),
     environment: str | None = None,
+    _manifest_stack: frozenset[str] = frozenset(),
 ) -> list[dict[str, str]]:
     """Verify a closeout's path triples resolve to existing regular files."""
-    if not isinstance(artifacts, list) or len(artifacts) > 100:
-        raise PathGovernanceError("local_artifacts must be a list of at most 100 path triples")
+    if not isinstance(artifacts, list) or len(artifacts) > 10_000:
+        raise PathGovernanceError("local_artifacts must be a list of at most 10000 path triples")
     authorized = tuple(authorized_roots)
     verified: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -399,6 +513,49 @@ def verify_artifacts(
         if not stat.S_ISREG(mode):
             raise PathGovernanceError("advertised output is not a regular file")
         verified.append(location.as_dict())
+        if PurePosixPath(location.wsl_path).name == "artifact_paths.json":
+            if location.wsl_path in _manifest_stack or len(_manifest_stack) >= 32:
+                raise PathGovernanceError("artifact manifest cycle or excessive nesting")
+            try:
+                manifest = json.loads(location.native_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise PathGovernanceError("artifact manifest is not readable JSON") from exc
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("schema_version") != "robotsim.local-artifacts.v1"
+                or not isinstance(manifest.get("artifacts"), list)
+            ):
+                raise PathGovernanceError("artifact manifest has an unsupported schema")
+            members = manifest["artifacts"]
+            if sum(member == location.as_dict() for member in members) != 1:
+                raise PathGovernanceError("artifact manifest must identify itself exactly once")
+            verify_artifacts(
+                [member for member in members if member != location.as_dict()],
+                authorized_roots=authorized,
+                environment=environment,
+                _manifest_stack=_manifest_stack | {location.wsl_path},
+            )
+            listed_paths = {member.get("WSL_PATH") for member in members if isinstance(member, dict)}
+            observed_paths: set[str] = set()
+            for candidate in location.native_path.parent.rglob("*"):
+                if candidate.name == _RESERVATION_MARKER:
+                    continue
+                if candidate.is_symlink() or (hasattr(candidate, "is_junction") and candidate.is_junction()):
+                    raise PathGovernanceError("artifact manifest directory contains a symlink or junction")
+                if candidate.is_file():
+                    observed_paths.add(
+                        validate_output_path(
+                            candidate,
+                            authorized_roots=authorized,
+                            require_exists=True,
+                            expected_kind="file",
+                            environment=environment,
+                        ).wsl_path
+                    )
+                elif not candidate.is_dir():
+                    raise PathGovernanceError("artifact manifest directory contains a non-regular entry")
+            if listed_paths != observed_paths:
+                raise PathGovernanceError("artifact manifest does not match the current run files")
     return verified
 
 
@@ -417,11 +574,14 @@ def write_artifact_manifest(
         expected_kind="directory",
         environment=environment,
     )
+    _require_reserved_directory(root)
     manifest_path = root.native_path / "artifact_paths.json"
     if manifest_path.exists():
         raise PathGovernanceError("artifact manifest already exists; refusing to overwrite evidence")
     artifact_paths: list[dict[str, str]] = []
     for candidate in sorted(root.native_path.rglob("*")):
+        if candidate.name == _RESERVATION_MARKER:
+            continue
         if candidate.is_symlink() or (hasattr(candidate, "is_junction") and candidate.is_junction()):
             raise PathGovernanceError("run output contains a symlink or junction")
         if candidate.is_file():
