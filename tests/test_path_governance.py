@@ -88,6 +88,21 @@ class PathGovernanceTests(unittest.TestCase):
                     paths.create_output_directory(target, environment="wsl")
                 self.assertFalse((Path(outside) / "should-not-exist").exists())
 
+    def test_broad_authorization_does_not_expand_the_reviews_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reviews = root / "reviews"
+            outside = root / "outside"
+            reviews.mkdir()
+            outside.mkdir()
+            (reviews / "escape").symlink_to(outside, target_is_directory=True)
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                target = reviews / "escape" / "not-approved-by-reviews.json"
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.validate_output_path(
+                        target, authorized_roots=[root], environment="wsl"
+                    )
+
     def test_unique_output_directory_and_exclusive_artifact_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
