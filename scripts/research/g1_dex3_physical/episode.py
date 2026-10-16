@@ -1,10 +1,19 @@
 from baseline import *
 from plan import render, dist
-import argparse,sys,shutil
+import argparse,shlex,sys,shutil
 
 # Official URDF range/effort/velocity, not the unrelated DFQ limits.
 URDF=UPSTREAM/'robots/g1_description/g1_29dof_with_hand_rev_1_0.urdf'
 SOURCE_LIMITS={j.get('name'):{k:float(v) for k,v in j.find('limit').attrib.items()} for j in ET.parse(URDF).getroot().findall('joint') if j.find('limit') is not None}
+
+def verified_plan_dir(plan_dir):
+    plan_root=Path(path_governance.normalize_output_path(plan_dir))
+    path_governance.validate_output_path(plan_root,require_exists=True,expected_kind='directory')
+    manifest_path=plan_root/'artifact_paths.json'
+    path_governance.verify_artifacts([path_governance.describe_output_path(manifest_path)])
+    plan_path=plan_root/'hand_geometry_plan.json'
+    path_governance.validate_output_path(plan_path,require_exists=True,expected_kind='file')
+    return plan_root,plan_path
 
 def ik(m,d,pos,R,seed):
     qa,va=indices(m,ARM);w=bid(m,'right_wrist_yaw_link');js=[jid(m,n) for n in ARM]
@@ -36,8 +45,10 @@ def bottle_contact(m,d):
     return {'thumb':thumb,'opposing':opposing,'left':left,'table_z':table,'hand_z':float(sum(v[2] for v in forces.values())),
       'per_link_forces':{k:v.tolist() for k,v in forces.items()},'contacts':details,'min_distance':min_dist}
 
-def prepare(m, attempt=1):
-    d=init(m);config=json.loads((OUT/'hand_geometry_plan.json').read_text());closed=np.array([config['q'][n] for n in HAND])
+def prepare(m, attempt=1, plan_dir=None):
+    if plan_dir is None:raise ValueError('an explicit path-governed --plan-dir is required')
+    plan_root,plan_path=verified_plan_dir(plan_dir)
+    d=init(m);config=json.loads(plan_path.read_text());closed=np.array([config['q'][n] for n in HAND])
     opened=closed.copy();opened[2]=-.03;opened[3:]=.03
     hqa,_=indices(m,HAND);aqa,_=indices(m,ARM)
     d.qpos[hqa]=opened
@@ -54,12 +65,20 @@ def prepare(m, attempt=1):
     d.qpos[aqa]=pre;mj.mj_forward(m,d)
     return d,{'open':opened,'closed':closed,'pre':pre,'grasp':grasp,'unload':unload,'lift':lift,'transfer':transfer,'place':place}, {'pre':pa,'grasp':ga,'lift':la,'transfer':ta,'place':pla}
 
-def run(run_id,attempt=1):
+def run(run_id,attempt=1,plan_dir=None):
     assert mj.__version__=='3.3.6'
-    out=OUT/run_id;out.mkdir(exist_ok=False)
-    shutil.copy2(__file__,out/'executed_episode.py');shutil.copy2(Path(__file__).with_name('baseline.py'),out/'executed_baseline.py')
-    m=build(out/'model.xml');d,poses,plans=prepare(m,attempt)
-    (out/'plan.json').write_text(json.dumps({'poses':{k:v.tolist() for k,v in poses.items()},'ik':plans},indent=2))
+    if plan_dir is None:raise ValueError('an explicit path-governed --plan-dir is required')
+    plan_root,plan_path=verified_plan_dir(plan_dir)
+    out=Path(path_governance.create_unique_output_directory(OUT,prefix=run_id).wsl_path)
+    episode_copy=out/'executed_episode.py';baseline_copy=out/'executed_baseline.py'
+    path_governance.validate_output_path(episode_copy,require_new=True)
+    path_governance.validate_output_path(baseline_copy,require_new=True)
+    shutil.copy2(__file__,episode_copy);shutil.copy2(Path(__file__).with_name('baseline.py'),baseline_copy)
+    m=build(out/'model.xml');d,poses,plans=prepare(m,attempt,plan_root)
+    plan_record={'poses':{k:v.tolist() for k,v in poses.items()},'ik':plans,
+       'evidence_directory_paths':path_governance.describe_output_path(out),
+       'artifact_manifest':path_governance.describe_output_path(out/'artifact_paths.json')}
+    path_governance.write_new_text(out/'plan.json',json.dumps(plan_record,indent=2)+'\n')
     js=m.actuator_trnid[:,0];qa=m.jnt_qposadr[js];va=m.jnt_dofadr[js];w=bid(m,'right_wrist_yaw_link');b=bid(m,'green_box')
     target=d.qpos[qa].copy();hqa,hva=indices(m,HAND);aqa,ava=indices(m,ARM)
     hi=np.array([list(qa).index(q) for q in hqa]);ai=np.array([list(qa).index(q) for q in aqa]);hand=np.array(['hand' in name(m,mj.mjtObj.mjOBJ_JOINT,j) for j in js]);kp=m.actuator_gainprm[:,0]
@@ -70,15 +89,22 @@ def run(run_id,attempt=1):
        'runner_sha256':sha(__file__),'RobotSim_SHA':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
        'dirty':subprocess.check_output(['git','status','--porcelain'],text=True).strip(),
        'no_object_qpos_writes_after_initialization':True,'object_equality_count':m.neq,'mocap_count':m.nmocap,'seed':42,'attempt':attempt,
-       'initial_contacts':initial_contacts,'thresholds':{'velocity':'URDF per-joint','penetration_m':.003,'hold_opposing_fraction':.8,'lift_m':.05,'load_support_N':.8*.57*9.81},'stages':[]}
-    (out/'result.json').write_text(json.dumps(result,indent=2))
-    log=(out/'run.log').open('w');trace=(out/'trace.jsonl').open('w');
+       'initial_contacts':initial_contacts,'thresholds':{'velocity':'URDF per-joint','penetration_m':.003,'hold_opposing_fraction':.8,'lift_m':.05,'load_support_N':.8*.57*9.81},'stages':[],
+       'evidence_directory':str(out),'evidence_directory_paths':path_governance.describe_output_path(out),
+       'artifact_manifest':path_governance.describe_output_path(out/'artifact_paths.json')}
+    result_path=out/'result.json'
+    path_governance.write_reserved_text(out,result_path,json.dumps(result,indent=2)+'\n')
+    log_path=out/'run.log';trace_path=out/'trace.jsonl';video_path=out/'episode.mp4'
+    for output_path in (log_path,trace_path,video_path):
+        path_governance.validate_output_path(output_path,require_new=True)
+    log=log_path.open('x');trace=trace_path.open('x');
     def emit(s):print(s,flush=True);log.write(s+'\n');log.flush()
-    command=f'MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue43-g1-physical-grasp-20261009/venv/bin/python scripts/research/g1_dex3_physical/episode.py --run-id {run_id} --attempt {attempt}'
+    command=f'MUJOCO_GL=egl /home/lzy18001500226/.cache/robotsim/issue43-g1-physical-grasp-20261009/venv/bin/python scripts/research/g1_dex3_physical/episode.py --run-id {shlex.quote(run_id)} --attempt {attempt} --plan-dir {shlex.quote(str(plan_root))}'
     result['reproduction_command']=command;emit(command)
     if initial_bad:raise RuntimeError('invalid initial contacts '+str(initial_bad))
     import cv2
-    video=cv2.VideoWriter(str(out/'episode.mp4'),cv2.VideoWriter_fourcc(*'mp4v'),30,(960,720))
+    video=cv2.VideoWriter(str(video_path),cv2.VideoWriter_fourcc(*'mp4v'),30,(960,720))
+    if not video.isOpened():raise RuntimeError(f'failed to open video output: {video_path}')
     renderer=mj.Renderer(m,height=720,width=960);cam=mj.MjvCamera();cam.lookat[:]=[.35,-.26,.92];cam.distance=1.25;cam.azimuth=125;cam.elevation=-22
     opt=mj.MjvOption();opt.geomgroup[:]=1
     peakv=0.;peakpen=0.;peakforce=0.;holdstats=[];ready=[];b0=None;prevpos=d.xpos[b].copy();maxjump=0.;lastvideo=-1.;fail=None
@@ -90,7 +116,7 @@ def run(run_id,attempt=1):
     poses['closed']=closed
     result['executed_hand_targets']={key:dict(zip(HAND,poses[key].tolist())) for key in ['open','closed']}
     result['load_transfer_wrist_command_m']=.0005 if attempt==1 else .005
-    (out/'result.json').write_text(json.dumps(result,indent=2))
+    path_governance.write_reserved_text(out,result_path,json.dumps(result,indent=2)+'\n',overwrite_existing=True)
     try:
         stageidx=0
         while stageidx<len(phases):
@@ -141,15 +167,18 @@ def run(run_id,attempt=1):
             if phase=='SETTLE_FINAL':
                 if cs['thumb'] or cs['opposing'] or cs['table_z']<4.:raise RuntimeError('release/table support gate')
                 result['passed']=True
-            (out/'result.json').write_text(json.dumps(result,indent=2));stageidx+=1
+            path_governance.write_reserved_text(out,result_path,json.dumps(result,indent=2)+'\n',overwrite_existing=True);stageidx+=1
         result['status']='PASS' if result['passed'] else 'FAIL'
     except Exception as e:
         fail=str(e);emit('FAIL '+fail);result['status']='FAIL';result['first_failure']=fail
         render(m,d,out/'failure.png',np.array([.4,-.3,.93]),.65,115,-25)
     finally:
         result.update({'peak_joint_speed_rad_s':peakv,'max_penetration_m':peakpen,'peak_link_contact_force_N':peakforce,'max_physics_step_bottle_jump_m':maxjump,'physics_steps':round(d.time/m.opt.timestep),'final_bottle_pos':d.xpos[b].tolist()})
-        (out/'result.json').write_text(json.dumps(result,indent=2));trace.close();log.close();video.release();renderer.close()
+        trace.close();log.close();video.release();renderer.close()
+        path_governance.write_reserved_text(out,result_path,json.dumps(result,indent=2)+'\n',overwrite_existing=True)
+    manifest=path_governance.write_artifact_manifest(out)
+    result['artifact_manifest']=manifest['manifest']
     print(json.dumps(result,indent=2))
     return result
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('--run-id',required=True);p.add_argument('--attempt',type=int,default=1);a=p.parse_args();sys.exit(0 if run(a.run_id,a.attempt)['passed'] else 2)
+    p=argparse.ArgumentParser();p.add_argument('--run-id',required=True);p.add_argument('--attempt',type=int,default=1);p.add_argument('--plan-dir',required=True);a=p.parse_args();sys.exit(0 if run(a.run_id,a.attempt,a.plan_dir)['passed'] else 2)

@@ -1,10 +1,14 @@
 """Isolated research: official G1/Dex3 torque-controlled physical baseline."""
 from pathlib import Path
-import hashlib, json, subprocess, xml.etree.ElementTree as ET
+import hashlib, json, subprocess, sys, xml.etree.ElementTree as ET
 import mujoco as mj
 import numpy as np
 from scipy.spatial.transform import Rotation
 from scipy.optimize import least_squares
+
+REPO_ROOT=Path(__file__).resolve().parents[3]
+sys.path.insert(0,str(REPO_ROOT/'scripts'))
+from agent import path_governance
 
 SOURCE_REV='5994d4faef0a9cadd3287f8de0199a67eeb2a259'
 UPSTREAM=Path('/home/lzy18001500226/.cache/robotsim/issue43-g1-physical-grasp-20261009/upstream/unitree_ros')
@@ -43,7 +47,7 @@ def build(out):
         motor.tag='general';motor.set('gaintype','fixed');motor.set('biastype','affine')
         motor.set('gainprm',str(kp));motor.set('biasprm',f'0 {-kp} {-kd}')
         motor.set('forcelimited','true');motor.set('forcerange',joint.get('actuatorfrcrange'))
-    out.parent.mkdir(parents=True,exist_ok=True);ET.ElementTree(root).write(out)
+    path_governance.write_new_bytes(out,ET.tostring(root,encoding='us-ascii'))
     return mj.MjModel.from_xml_path(str(out))
 
 def init(m):
@@ -81,10 +85,17 @@ def dynamics_hold(m,d,duration=1):
     return {'maxvel':maxvel,'final_contacts':contacts(m,d),'penetrations':worstcontacts[:10],'rows':rows}
 
 if __name__=='__main__':
-    m=build(OUT/'fixed_base_model.xml');d=init(m)
-    audit={'model_sha256':sha(OUT/'fixed_base_model.xml'),'source_sha':SOURCE_REV,'initial_contacts':contacts(m,d),
+    out=Path(path_governance.create_unique_output_directory(OUT,prefix='baseline').wsl_path)
+    model_path=out/'fixed_base_model.xml'
+    m=build(model_path);d=init(m)
+    audit={'model_sha256':sha(model_path),'source_sha':SOURCE_REV,'initial_contacts':contacts(m,d),
        'joints':[{'name':name(m,mj.mjtObj.mjOBJ_JOINT,j),'range':m.jnt_range[j].tolist(),'effort':m.jnt_actfrcrange[j].tolist()} for j in range(m.njnt)],
-       'wrist_position':d.xpos[bid(m,'right_wrist_yaw_link')].tolist(),'wrist_rotation':d.xmat[bid(m,'right_wrist_yaw_link')].reshape(3,3).tolist()}
-    (OUT/'initial_audit.json').write_text(json.dumps(audit,indent=2))
-    h=dynamics_hold(m,d);(OUT/'hold_audit.json').write_text(json.dumps(h,indent=2))
-    print(json.dumps({k:v for k,v in h.items() if k!='rows'},indent=2))
+       'wrist_position':d.xpos[bid(m,'right_wrist_yaw_link')].tolist(),'wrist_rotation':d.xmat[bid(m,'right_wrist_yaw_link')].reshape(3,3).tolist(),
+       'evidence_directory':str(out),'evidence_directory_paths':path_governance.describe_output_path(out),
+       'artifact_manifest':path_governance.describe_output_path(out/'artifact_paths.json')}
+    path_governance.write_new_text(out/'initial_audit.json',json.dumps(audit,indent=2)+'\n')
+    h=dynamics_hold(m,d)
+    path_governance.write_new_text(out/'hold_audit.json',json.dumps(h,indent=2)+'\n')
+    manifest=path_governance.write_artifact_manifest(out)
+    print(json.dumps({'summary':{k:v for k,v in h.items() if k!='rows'},'evidence_directory':str(out),
+       'evidence_directory_paths':path_governance.describe_output_path(out),'artifact_manifest':manifest['manifest']},indent=2))
