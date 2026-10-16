@@ -67,6 +67,14 @@ class PathGovernanceTests(unittest.TestCase):
             )
             self.assertEqual(str(target), location.wsl_path)
 
+    def test_native_linux_output_fails_without_verified_wsl_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "reviews").mkdir()
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                with self.assertRaisesRegex(paths.PathGovernanceError, "no verified Ubuntu-22.04 WSL UNC mapping"):
+                    paths.validate_output_path(root / "reviews" / "result.json", environment="linux")
+
     def test_refuses_symlink_escape_before_creating_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
             root = Path(directory)
@@ -129,9 +137,10 @@ class PathGovernanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run = root / "reviews" / "issue-43" / "run"
-            run.mkdir(parents=True)
-            (run / "result.json").write_text("{}\n", encoding="utf-8")
+            run.parent.mkdir(parents=True)
             with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                paths.create_output_directory(run, environment="wsl")
+                (run / "result.json").write_text("{}\n", encoding="utf-8")
                 manifest = paths.write_artifact_manifest(run, environment="wsl")
                 records = manifest["artifacts"]
                 self.assertEqual(2, len(records))
@@ -139,6 +148,42 @@ class PathGovernanceTests(unittest.TestCase):
                 self.assertTrue(any(item["WSL_PATH"].endswith("artifact_paths.json") for item in records))
                 parsed = json.loads((run / "artifact_paths.json").read_text(encoding="utf-8"))
                 self.assertEqual(records, parsed["artifacts"])
+                paths.verify_artifacts([manifest["manifest"]], environment="wsl")
+                (run / "unlisted.txt").write_text("unlisted\n", encoding="utf-8")
+                with self.assertRaisesRegex(paths.PathGovernanceError, "does not match"):
+                    paths.verify_artifacts([manifest["manifest"]], environment="wsl")
+                (run / "unlisted.txt").unlink()
+                (run / "result.json").unlink()
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.verify_artifacts([manifest["manifest"]], environment="wsl")
+
+    def test_reserved_run_allows_atomic_progress_update_but_not_prior_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "reviews" / "issue-43"
+            parent.mkdir(parents=True)
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                run = Path(paths.create_output_directory(parent / "run", environment="wsl").wsl_path)
+                result = run / "result.json"
+                paths.write_reserved_text(run, result, '{"status":"RUNNING"}\n', environment="wsl")
+                paths.write_reserved_text(
+                    run, result, '{"status":"FAIL"}\n', overwrite_existing=True, environment="wsl"
+                )
+                self.assertEqual('{"status":"FAIL"}\n', result.read_text(encoding="utf-8"))
+                previous = parent / "previous.json"
+                previous.write_text("preserve\n", encoding="utf-8")
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.write_reserved_text(run, previous, "overwrite\n", overwrite_existing=True, environment="wsl")
+                self.assertEqual("preserve\n", previous.read_text(encoding="utf-8"))
+
+    def test_manifest_requires_a_reserved_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / "reviews" / "issue-43" / "run"
+            run.mkdir(parents=True)
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.write_artifact_manifest(run, environment="wsl")
 
     def test_windows_command_escapes_single_quotes(self) -> None:
         target = paths.CANONICAL_REPO_ROOT + "/reviews/issue-43/run's/result.json"
