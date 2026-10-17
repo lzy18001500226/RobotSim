@@ -75,16 +75,17 @@ G1 and X2 entry points without editing the active Local01/Local02 worktrees:
   `issue46_native_omnihand_minimal_grasp.py` dependency is a fixture; its
   standalone command also allocates a unique run and manifest.
 
-The G1 `run_isolated_upstream_grasp.sh` command requires a clean non-default
-worktree and MuJoCo 3.3.6, then runs the pinned baseline, plan, and episode in
-sequence. Each entry point writes under its existing Issue-specific
+The G1 `run_isolated_robotsim_g1_dex3_mujoco336.sh` command requires a clean
+non-default worktree and MuJoCo 3.3.6, then runs the RobotSim baseline, plan,
+and episode in sequence. It is not the separate upstream MuJoCo 3.8.1 cup
+benchmark. Each entry point writes under its existing Issue-specific
 `reviews/` parent. The script prints the plan JSON, extracts its unique plan
 directory, and passes that exact directory to `episode.py`. It was syntax
 checked but not run in this path-governance task. From a clean WSL worktree of
 this follow-up branch, Local02 can run:
 
 ```bash
-bash scripts/research/g1_dex3_physical/run_isolated_upstream_grasp.sh
+bash scripts/research/g1_dex3_physical/run_isolated_robotsim_g1_dex3_mujoco336.sh
 ```
 
 The helper protects only code that calls it. Remaining historical/offline
