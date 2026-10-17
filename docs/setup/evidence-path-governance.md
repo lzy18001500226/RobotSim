@@ -24,7 +24,7 @@ Linux can normalize POSIX paths, but output creation fails closed because this
 host cannot verify the required Windows WSL UNC mapping.
 
 Do not create a native Windows `Path` from a Linux `/home/...` spelling. With a
-drive-letter working directory such as `C:\Users\HP\Desktop\Robot`, Python
+drive-letter working directory such as `C:\Users\<user>\Desktop\Robot`, Python
 resolves `Path("/home/...").absolute()` as `C:\home\...`. That path is not the
 WSL checkout. The helper rejects it, but scripts that bypass the helper remain
 unprotected. From PowerShell, run WSL experiments with an explicit distro and
