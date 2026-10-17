@@ -25,6 +25,39 @@ jobs:
       - name: Run Python unit tests
         run: python3 -m unittest discover -s tests -v
 
+      - name: Run selected research caller path tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            DIFF_BASE_SHA="$PR_BASE_SHA"
+            DIFF_HEAD_SHA="$PR_HEAD_SHA"
+          else
+            DIFF_BASE_SHA="$(git merge-base origin/main HEAD)"
+            DIFF_HEAD_SHA=HEAD
+          fi
+
+          CHANGED_FILES="$(git diff --name-only "$DIFF_BASE_SHA" "$DIFF_HEAD_SHA")"
+          if ! printf '%s\n' "$CHANGED_FILES" | grep -Eq '^(scripts/agent/path_governance\.py|scripts/research/g1_dex3_physical/(baseline|plan|episode|test_path_outputs)\.py|scripts/research/issue46_native_omnihand_(geometry_first|minimal_grasp)\.py|scripts/research/test_issue46_native_omnihand_geometry_paths\.py|simulation/mujoco/canonical_manipulation_assets\.py)$'; then
+            echo "No selected evidence-path caller changes; skipping the focused caller suite."
+            exit 0
+          fi
+
+          G1_TEST=scripts/research/g1_dex3_physical/test_path_outputs.py
+          X2_TEST=scripts/research/test_issue46_native_omnihand_geometry_paths.py
+          if [ ! -f "$G1_TEST" ] || [ ! -f "$X2_TEST" ]; then
+            echo "Both selected caller-path test modules must be present when either is included." >&2
+            exit 1
+          fi
+
+          CALLER_TEST_VENV="$RUNNER_TEMP/robotsim-caller-path-tests"
+          python3 -m venv "$CALLER_TEST_VENV"
+          "$CALLER_TEST_VENV/bin/python" -m pip install --disable-pip-version-check -r scripts/research/requirements-caller-path-tests.txt
+          "$CALLER_TEST_VENV/bin/python" -m unittest discover -s scripts/research/g1_dex3_physical -p test_path_outputs.py -v
+          "$CALLER_TEST_VENV/bin/python" -m unittest discover -s scripts/research -p test_issue46_native_omnihand_geometry_paths.py -v
+
       - name: Run mocked task PR workflow tests
         run: node --test tests/auto_task_pr.test.js
 
