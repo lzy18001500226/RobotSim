@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
-import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -35,6 +37,30 @@ class PathGovernanceTests(unittest.TestCase):
 
     def test_rejects_linux_paths_in_native_windows(self) -> None:
         for candidate in ("/home/user/project/reviews/run", "/mnt/c/Users/user/reviews/run"):
+            with self.subTest(candidate=candidate), self.assertRaises(paths.PathGovernanceError):
+                paths.normalize_output_path(candidate, environment="windows")
+
+    @unittest.skipUnless(
+        os.name == "nt" and os.getcwd().casefold().startswith("c:\\"),
+        "requires native Windows Python launched from a C: working directory",
+    )
+    def test_windows_pathlib_cwd_conversion_is_rejected_before_output_creation(self) -> None:
+        candidate = (
+            Path("/home/lzy18001500226/projects/RobotSim/reviews")
+            / f"path-gate-invalid-{uuid.uuid4().hex}"
+        ).absolute()
+        self.assertTrue(str(candidate).casefold().startswith("c:\\home\\"))
+        with self.assertRaises(paths.PathGovernanceError):
+            paths.create_output_directory(candidate, environment="windows")
+        self.assertFalse(candidate.exists())
+
+    def test_rejects_wrong_distro_and_traversing_unc_paths(self) -> None:
+        candidates = (
+            r"\\wsl.localhost\Ubuntu-20.04\home\user\projects\RobotSim\reviews\run",
+            r"\\wsl.localhost\Ubuntu-22.04\home\user\projects\RobotSim\reviews\..\outside",
+            r"\\server\share\RobotSim\reviews\run",
+        )
+        for candidate in candidates:
             with self.subTest(candidate=candidate), self.assertRaises(paths.PathGovernanceError):
                 paths.normalize_output_path(candidate, environment="windows")
 
@@ -93,6 +119,33 @@ class PathGovernanceTests(unittest.TestCase):
                     paths.create_output_directory(target, environment="wsl")
                 self.assertFalse((Path(outside) / "should-not-exist").exists())
 
+    @unittest.skipUnless(os.name == "posix", "uses a POSIX temporary path for WSL policy validation")
+    def test_rejects_junction_approved_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reviews = root / "reviews"
+            reviews.mkdir()
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                with patch.object(type(reviews), "is_junction", return_value=True, create=True):
+                    with self.assertRaisesRegex(paths.PathGovernanceError, "symlink or junction"):
+                        paths.validate_output_path(reviews / "run", environment="wsl")
+
+    def test_descriptor_reads_legacy_lowercase_names_but_serializes_canonical_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reviews = root / "reviews"
+            run = reviews / "issue-43" / "run"
+            run.mkdir(parents=True)
+            target = run / "result.json"
+            target.write_text("{}\n", encoding="utf-8")
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)):
+                descriptor = paths.describe_output_path(target, environment="wsl")
+                verified = paths.verify_artifacts([descriptor], environment="wsl")
+        self.assertEqual({"WSL_PATH", "WINDOWS_UNC", "OPEN_COMMAND"}, set(descriptor))
+        self.assertEqual(descriptor["WINDOWS_UNC"], descriptor["windows_unc"])
+        self.assertEqual(descriptor["WINDOWS_UNC"], descriptor.get("windows_unc"))
+        self.assertEqual([dict(descriptor)], verified)
+
     def test_broad_authorization_does_not_expand_the_reviews_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -135,6 +188,33 @@ class PathGovernanceTests(unittest.TestCase):
                     paths.write_new_text(file_path, "replacement\n", environment="wsl")
                 self.assertEqual("{}\n", file_path.read_text(encoding="utf-8"))
                 self.assertEqual([record.as_dict()], paths.verify_artifacts([record.as_dict()], environment="wsl"))
+
+    def test_windows_unique_directory_uses_unc_after_internal_wsl_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reviews = root / "reviews"
+            reviews.mkdir()
+            with patch.object(paths, "CANONICAL_REPO_ROOT", str(root)), patch.object(
+                paths, "_native_path", side_effect=lambda value, _environment: Path(value)
+            ):
+                parent_unc = paths._windows_unc_for_wsl_path(str(reviews))
+                run = paths.create_unique_output_directory(
+                    parent_unc,
+                    prefix="windows-run",
+                    environment="windows",
+                    now=datetime(2026, 10, 16, tzinfo=timezone.utc),
+                )
+                result_unc = paths._windows_unc_for_wsl_path(run.wsl_path + "/result.json")
+                record = paths.write_new_text(result_unc, "windows mapped write\n", environment="windows")
+                verified = paths.verify_artifacts([record.as_dict()], environment="windows")
+                mismatched = record.as_dict()
+                mismatched["WSL_PATH"] += "/other-file"
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.verify_artifacts([mismatched], environment="windows")
+            self.assertEqual(str(reviews), str(Path(run.wsl_path).parent))
+            self.assertTrue(run.native_path.is_dir())
+            self.assertEqual("windows mapped write\n", (run.native_path / "result.json").read_text())
+            self.assertEqual([record.as_dict()], verified)
 
     def test_missing_or_forged_artifact_mapping_fails_verification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

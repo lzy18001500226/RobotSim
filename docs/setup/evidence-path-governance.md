@@ -23,6 +23,23 @@ paths such as `C:\home\...`; WSL rejects drive paths and `/mnt/c` outputs. Nativ
 Linux can normalize POSIX paths, but output creation fails closed because this
 host cannot verify the required Windows WSL UNC mapping.
 
+Do not create a native Windows `Path` from a Linux `/home/...` spelling. With a
+drive-letter working directory such as `C:\Users\HP\Desktop\Robot`, Python
+resolves `Path("/home/...").absolute()` as `C:\home\...`. That path is not the
+WSL checkout. The helper rejects it, but scripts that bypass the helper remain
+unprotected. From PowerShell, run WSL experiments with an explicit distro and
+working directory instead of passing Linux paths to native Python:
+
+```powershell
+wsl.exe --distribution Ubuntu-22.04 --cd /home/lzy18001500226/projects/RobotSim --exec /usr/bin/python3 -c "from pathlib import Path; print(Path.cwd())"
+```
+
+Pass raw canonical WSL strings to the helper in WSL. Native Windows callers
+must pass the corresponding `\\wsl.localhost\Ubuntu-22.04\...` UNC path.
+`describe_output_path` keeps `WSL_PATH`, `WINDOWS_UNC`, and `OPEN_COMMAND` as
+its serialized schema; lowercase lookups remain available for older research
+callers without adding fields to manifests or closeout records.
+
 Outputs outside the canonical `reviews/` tree are rejected unless a caller
 explicitly passes an authorized root. Path resolution checks symlink and
 junction containment. Run directories are created exclusively and receive a
@@ -46,35 +63,22 @@ the reserved run, including itself. It is generated only after the run is
 finished; the manifest excludes its internal reservation marker. Do not use
 this helper to migrate, rename, or clean existing evidence.
 
-## Experiment entry points
+## Integration boundary
 
-The current X2 entry point uses `ISSUE46_GEOMETRY_EVIDENCE_DIR` as the parent
-directory, not as a reusable run directory. Its default is the existing
-`reviews/issue-46/native-omnihand-grasp-20261016/`. Each invocation allocates a
-new `geometry-first-*` or `analyze-*` child and writes an `artifact_paths.json`.
-An override outside the canonical reviews tree is rejected.
+The helper protects only code that calls it. It does not intercept `Path.mkdir`,
+`Path.write_text`, `open`, or output paths hard-coded by research scripts. PR
+#68 changes the shared helper and closeout validation; it does not patch the
+active X2/G1 research worktrees. Do not run a research entry point until its
+owner has migrated its output path to a unique helper-reserved run and writes
+through `write_new_text`/`write_new_bytes` or `write_reserved_text`, then
+generates and verifies `artifact_paths.json`.
 
-```bash
-python3 scripts/research/issue46_native_omnihand_geometry_first.py --geometry-only
-```
+The `Path("/home/...")` example below is WSL-only; do not run it with native
+Windows Python.
 
-The G1 Dex3 `baseline.py` and `plan.py` similarly allocate new `baseline-*` and
-`plan-*` directories under the existing
-`reviews/issue-43/dex3-physical-20261016/` root. `episode.py` now requires the
-exact plan directory, then allocates a fresh run directory and writes a
-verified manifest when the episode ends.
-
-```bash
-python3 scripts/research/g1_dex3_physical/baseline.py
-python3 scripts/research/g1_dex3_physical/plan.py
-python3 scripts/research/g1_dex3_physical/episode.py \
-  --run-id dex3-attempt01 --attempt 1 \
-  --plan-dir /home/lzy18001500226/projects/RobotSim/reviews/issue-43/dex3-physical-20261016/plan-<timestamp>
-```
-
-The commands above document the integration; compiling or unit-testing these
-entry points does not execute the experiments. Their existing physics and
-rendering acceptance gates still apply.
+The path API remains compatible with older code that reads
+`describe_output_path(...).get("windows_unc")`; persisted descriptor keys stay
+uppercase. This compatibility does not make direct filesystem writes safe.
 
 ## Task closeout
 

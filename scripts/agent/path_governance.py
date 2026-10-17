@@ -45,6 +45,22 @@ class ArtifactLocation:
         }
 
 
+class _ArtifactPathDescriptor(dict[str, str]):
+    """Canonical serialized keys with read compatibility for older research callers."""
+
+    _ALIASES = {
+        "wsl_path": "WSL_PATH",
+        "windows_unc": "WINDOWS_UNC",
+        "open_command": "OPEN_COMMAND",
+    }
+
+    def __getitem__(self, key: str) -> str:
+        return super().__getitem__(self._ALIASES.get(key, key))
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        return super().get(self._ALIASES.get(key, key), default)
+
+
 def detect_environment(
     *,
     platform_name: str | None = None,
@@ -167,6 +183,12 @@ def _native_path(wsl_path: str, environment: str) -> Path:
     return Path(wsl_path)
 
 
+def _path_for_environment(wsl_path: str, environment: str) -> str:
+    if environment == "windows":
+        return _windows_unc_for_wsl_path(wsl_path)
+    return wsl_path
+
+
 def _same_path(first: Path, second: Path, environment: str) -> bool:
     a, b = os.path.normpath(str(first)), os.path.normpath(str(second))
     return a.casefold() == b.casefold() if environment == "windows" else a == b
@@ -250,13 +272,14 @@ def describe_output_path(
     environ: Mapping[str, str] | None = None,
     platform_name: str | None = None,
 ) -> dict[str, str]:
-    return validate_output_path(
+    location = validate_output_path(
         path,
         authorized_roots=authorized_roots,
         environment=environment,
         environ=environ,
         platform_name=platform_name,
-    ).as_dict()
+    )
+    return _ArtifactPathDescriptor(location.as_dict())
 
 
 def create_output_directory(
@@ -266,8 +289,9 @@ def create_output_directory(
     environment: str | None = None,
 ) -> ArtifactLocation:
     authorized = tuple(authorized_roots)
+    runtime = environment or detect_environment()
     location = validate_output_path(
-        path, authorized_roots=authorized, require_new=True, environment=environment
+        path, authorized_roots=authorized, require_new=True, environment=runtime
     )
     try:
         location.native_path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,11 +307,11 @@ def create_output_directory(
     except FileExistsError as exc:
         raise PathGovernanceError("output already exists; refusing to overwrite previous evidence") from exc
     return validate_output_path(
-        location.wsl_path,
+        _path_for_environment(location.wsl_path, runtime),
         authorized_roots=authorized,
         require_exists=True,
         expected_kind="directory",
-        environment=environment,
+        environment=runtime,
     )
 
 
@@ -318,20 +342,22 @@ def create_unique_output_directory(
     if not _SAFE_RUN_PREFIX.fullmatch(prefix):
         raise PathGovernanceError("run directory prefix must be a short safe identifier")
     authorized = tuple(authorized_roots)
+    runtime = environment or detect_environment()
     base = validate_output_path(
         parent,
         authorized_roots=authorized,
         require_exists=True,
         expected_kind="directory",
-        environment=environment,
+        environment=runtime,
     )
     timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     for attempt in range(100):
         suffix = "" if attempt == 0 else f"-{attempt:02d}"
         candidate = f"{base.wsl_path}/{prefix}-{timestamp}{suffix}"
+        candidate_input = _path_for_environment(candidate, runtime)
         try:
             return create_output_directory(
-                candidate, authorized_roots=authorized, environment=environment
+                candidate_input, authorized_roots=authorized, environment=runtime
             )
         except PathGovernanceError as exc:
             if "already exists" not in str(exc):
@@ -348,8 +374,9 @@ def write_new_text(
     environment: str | None = None,
 ) -> ArtifactLocation:
     authorized = tuple(authorized_roots)
+    runtime = environment or detect_environment()
     location = validate_output_path(
-        path, authorized_roots=authorized, require_new=True, environment=environment
+        path, authorized_roots=authorized, require_new=True, environment=runtime
     )
     if not location.native_path.parent.is_dir():
         raise PathGovernanceError("reserve the output run directory before writing artifacts")
@@ -359,11 +386,11 @@ def write_new_text(
     except FileExistsError as exc:
         raise PathGovernanceError("output already exists; refusing to overwrite previous evidence") from exc
     return validate_output_path(
-        location.wsl_path,
+        _path_for_environment(location.wsl_path, runtime),
         authorized_roots=authorized,
         require_exists=True,
         expected_kind="file",
-        environment=environment,
+        environment=runtime,
     )
 
 
@@ -375,8 +402,9 @@ def write_new_bytes(
     environment: str | None = None,
 ) -> ArtifactLocation:
     authorized = tuple(authorized_roots)
+    runtime = environment or detect_environment()
     location = validate_output_path(
-        path, authorized_roots=authorized, require_new=True, environment=environment
+        path, authorized_roots=authorized, require_new=True, environment=runtime
     )
     if not location.native_path.parent.is_dir():
         raise PathGovernanceError("reserve the output run directory before writing artifacts")
@@ -386,11 +414,11 @@ def write_new_bytes(
     except FileExistsError as exc:
         raise PathGovernanceError("output already exists; refusing to overwrite previous evidence") from exc
     return validate_output_path(
-        location.wsl_path,
+        _path_for_environment(location.wsl_path, runtime),
         authorized_roots=authorized,
         require_exists=True,
         expected_kind="file",
-        environment=environment,
+        environment=runtime,
     )
 
 
@@ -406,19 +434,20 @@ def write_reserved_text(
 ) -> ArtifactLocation:
     """Write within a fresh helper-reserved run directory, optionally replacing its own progress file."""
     authorized = tuple(authorized_roots)
+    runtime = environment or detect_environment()
     root = validate_output_path(
         output_directory,
         authorized_roots=authorized,
         require_exists=True,
         expected_kind="directory",
-        environment=environment,
+        environment=runtime,
     )
     _require_reserved_directory(root)
 
     target = validate_output_path(
         path,
         authorized_roots=authorized,
-        environment=environment,
+        environment=runtime,
     )
     resolved_root = root.native_path.resolve(strict=True)
     resolved_target = target.native_path.resolve(strict=False)
@@ -438,11 +467,11 @@ def write_reserved_text(
 
     if not overwrite_existing or not target.native_path.exists():
         return write_new_text(
-            target.wsl_path,
+            _path_for_environment(target.wsl_path, runtime),
             text,
             encoding=encoding,
             authorized_roots=authorized,
-            environment=environment,
+            environment=runtime,
         )
 
     file_descriptor, temporary_name = tempfile.mkstemp(
@@ -459,7 +488,7 @@ def write_reserved_text(
             authorized_roots=authorized,
             require_exists=True,
             expected_kind="file",
-            environment=environment,
+            environment=runtime,
         )
         os.replace(temporary_path, target.native_path)
     except BaseException:
@@ -469,11 +498,11 @@ def write_reserved_text(
             pass
         raise
     return validate_output_path(
-        target.wsl_path,
+        _path_for_environment(target.wsl_path, runtime),
         authorized_roots=authorized,
         require_exists=True,
         expected_kind="file",
-        environment=environment,
+        environment=runtime,
     )
 
 
@@ -488,6 +517,7 @@ def verify_artifacts(
     if not isinstance(artifacts, list) or len(artifacts) > 10_000:
         raise PathGovernanceError("local_artifacts must be a list of at most 10000 path triples")
     authorized = tuple(authorized_roots)
+    runtime = environment or detect_environment()
     verified: list[dict[str, str]] = []
     seen: set[str] = set()
     for item in artifacts:
@@ -495,17 +525,22 @@ def verify_artifacts(
             raise PathGovernanceError("each local artifact must contain WSL_PATH, WINDOWS_UNC, and OPEN_COMMAND")
         if any(not isinstance(item[key], str) for key in ("WSL_PATH", "WINDOWS_UNC", "OPEN_COMMAND")):
             raise PathGovernanceError("artifact path fields must be strings")
+        path_value = item["WINDOWS_UNC"] if runtime == "windows" else item["WSL_PATH"]
         location = validate_output_path(
-            item["WSL_PATH"],
+            path_value,
             authorized_roots=authorized,
             require_exists=True,
             expected_kind="file",
-            environment=environment,
+            environment=runtime,
         )
         if location.wsl_path in seen:
             raise PathGovernanceError("local_artifacts contains a duplicate path")
         seen.add(location.wsl_path)
-        if item["WINDOWS_UNC"] != location.windows_unc or item["OPEN_COMMAND"] != location.open_command:
+        if (
+            item["WSL_PATH"] != location.wsl_path
+            or item["WINDOWS_UNC"] != location.windows_unc
+            or item["OPEN_COMMAND"] != location.open_command
+        ):
             raise PathGovernanceError("local artifact path mapping does not match the canonical path")
         try:
             mode = location.native_path.lstat().st_mode
@@ -533,7 +568,7 @@ def verify_artifacts(
             verify_artifacts(
                 [member for member in members if member != location.as_dict()],
                 authorized_roots=authorized,
-                environment=environment,
+                environment=runtime,
                 _manifest_stack=_manifest_stack | {location.wsl_path},
             )
             listed_paths = {member.get("WSL_PATH") for member in members if isinstance(member, dict)}
@@ -550,7 +585,7 @@ def verify_artifacts(
                             authorized_roots=authorized,
                             require_exists=True,
                             expected_kind="file",
-                            environment=environment,
+                            environment=runtime,
                         ).wsl_path
                     )
                 elif not candidate.is_dir():
@@ -568,12 +603,13 @@ def write_artifact_manifest(
 ) -> dict[str, object]:
     """Write and verify a no-overwrite manifest for every regular file in a run."""
     authorized = tuple(authorized_roots)
+    runtime = environment or detect_environment()
     root = validate_output_path(
         output_directory,
         authorized_roots=authorized,
         require_exists=True,
         expected_kind="directory",
-        environment=environment,
+        environment=runtime,
     )
     _require_reserved_directory(root)
     manifest_path = root.native_path / "artifact_paths.json"
@@ -592,7 +628,7 @@ def write_artifact_manifest(
                     authorized_roots=authorized,
                     require_exists=True,
                     expected_kind="file",
-                    environment=environment,
+                    environment=runtime,
                 ).as_dict()
             )
         elif not candidate.is_dir():
@@ -600,7 +636,7 @@ def write_artifact_manifest(
     manifest_location = validate_output_path(
         manifest_path,
         authorized_roots=authorized,
-        environment=environment,
+        environment=runtime,
     )
     artifact_paths.append(manifest_location.as_dict())
     payload = {
@@ -611,7 +647,7 @@ def write_artifact_manifest(
         manifest_path,
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         authorized_roots=authorized,
-        environment=environment,
+        environment=runtime,
     )
-    verify_artifacts(artifact_paths, authorized_roots=authorized, environment=environment)
+    verify_artifacts(artifact_paths, authorized_roots=authorized, environment=runtime)
     return {"manifest": manifest_location.as_dict(), "artifacts": artifact_paths}

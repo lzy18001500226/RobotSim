@@ -15,6 +15,7 @@ __pycache__/
 # Data / output
 data/*
 !data/.gitkeep
+/reviews/
 
 # Third-party build output
 third_party/**/build/
