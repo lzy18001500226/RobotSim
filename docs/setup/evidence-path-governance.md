@@ -63,15 +63,39 @@ the reserved run, including itself. It is generated only after the run is
 finished; the manifest excludes its internal reservation marker. Do not use
 this helper to migrate, rename, or clean existing evidence.
 
-## Integration boundary
+## Selected Caller Status
 
-The helper protects only code that calls it. It does not intercept `Path.mkdir`,
-`Path.write_text`, `open`, or output paths hard-coded by research scripts. PR
-#68 changes the shared helper and closeout validation; it does not patch the
-active X2/G1 research worktrees. Do not run a research entry point until its
-owner has migrated its output path to a unique helper-reserved run and writes
-through `write_new_text`/`write_new_bytes` or `write_reserved_text`, then
-generates and verifies `artifact_paths.json`.
+The stacked active-caller follow-up carries reviewable copies of the selected
+G1 and X2 entry points without editing the active Local01/Local02 worktrees:
+
+- G1 `baseline.py`, `plan.py`, and `episode.py` allocate unique runs with the
+  shared helper and finish with a verified `artifact_paths.json`.
+- X2 `issue46_native_omnihand_geometry_first.py` allocates a unique root, uses
+  reserved candidate directories, and writes a verified manifest. Its
+  `issue46_native_omnihand_minimal_grasp.py` dependency is a fixture; its
+  standalone command also allocates a unique run and manifest.
+
+The G1 `run_isolated_robotsim_g1_dex3_mujoco336.sh` command requires a clean
+non-default worktree and MuJoCo 3.3.6, then runs the RobotSim baseline, plan,
+and episode in sequence. It is not the separate upstream MuJoCo 3.8.1 cup
+benchmark. Each entry point writes under its existing Issue-specific
+`reviews/` parent. The script prints the plan JSON, extracts its unique plan
+directory, and passes that exact directory to `episode.py`. It was syntax
+checked but not run in this path-governance task. From a clean WSL worktree of
+this follow-up branch, Local02 can run:
+
+```bash
+bash scripts/research/g1_dex3_physical/run_isolated_robotsim_g1_dex3_mujoco336.sh
+```
+
+The helper protects only code that calls it. Remaining historical/offline
+scripts were not ported in this iteration. G1 `freeze_identity.py`,
+`summarize.py`, and `audit_saved_states.py` still use direct writes. X2
+`issue46_native_omnihand_model_fidelity_audit.py`,
+`issue46_dual_omnihand_platform.py`, and the older virtual-transmission and
+single-purpose diagnostic scripts remain outside the selected runnable path.
+Do not treat those scripts as migrated merely because their parent directory
+is under `reviews/`.
 
 The `Path("/home/...")` example below is WSL-only; do not run it with native
 Windows Python.
@@ -103,13 +127,13 @@ URLs or commit/PR references.
 }
 ```
 
-## Applying to other Local experiments
+## Applying to Other Local Experiments
 
-Local01 should use the X2 entry-point pattern above. Local02 should pass the
-specific generated G1 plan directory to `episode.py`; it should not reuse a
-fixed `hand_geometry_plan.json` path. Local03 should import the helper from the
-same checkout, allocate a unique child of its existing experiment directory,
-write outputs through `write_new_text`/`write_new_bytes`, and finish with
-`write_artifact_manifest`. If an experiment runs outside WSL, it must first
-prove a valid Windows mapping; native Linux output remains blocked until such a
-mapping is configured and tested.
+The selected G1 and X2 caller tests cover unique allocation, manifest
+verification, and fail-before-path-resolution behavior for invalid native
+Windows and WSL inputs. Other experiments must import this same helper, allocate
+a unique child of their existing experiment directory, and verify their
+manifest before claiming artifact delivery. Do not reuse a fixed run directory.
+If an experiment runs outside WSL, it must first prove a valid Windows mapping;
+native Linux output remains blocked until such a mapping is configured and
+tested.
