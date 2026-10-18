@@ -54,6 +54,23 @@ class PathGovernanceTests(unittest.TestCase):
             paths.create_output_directory(candidate, environment="windows")
         self.assertFalse(candidate.exists())
 
+    @unittest.skipUnless(
+        os.name == "nt" and os.getcwd().casefold().startswith("c:\\"),
+        "requires native Windows Python launched from a C: working directory",
+    )
+    def test_malformed_windows_roots_fail_before_output_creation(self) -> None:
+        candidates = (
+            Path(r"C:\home\lzy18001500226\projects\RobotSim\reviews")
+            / f"path-gate-invalid-{uuid.uuid4().hex}",
+            Path(r"C:\mnt\c\Users\HP\Desktop\Robot\reviews")
+            / f"path-gate-invalid-{uuid.uuid4().hex}",
+        )
+        for candidate in candidates:
+            with self.subTest(candidate=str(candidate)):
+                with self.assertRaises(paths.PathGovernanceError):
+                    paths.create_output_directory(candidate, environment="windows")
+                self.assertFalse(candidate.exists())
+
     def test_rejects_wrong_distro_and_traversing_unc_paths(self) -> None:
         candidates = (
             r"\\wsl.localhost\Ubuntu-20.04\home\user\projects\RobotSim\reviews\run",
