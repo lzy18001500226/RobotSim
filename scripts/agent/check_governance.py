@@ -30,12 +30,22 @@ FIXTURE_ROOTS = ("data/fixtures/", "tests/fixtures/")
 REQUIRED_POLICY_DOCUMENTS = {
     "docs/engineering/runtime.md",
     "docs/engineering/validation.md",
+    "docs/engineering/model_integrity.md",
 }
+REQUIRED_MODEL_INTEGRITY_SECTIONS = (
+    "## A. Official-source-first",
+    "## B. No unauthorized mechanical reconstruction",
+    "## C. Case-specific human approval",
+    "## D. Stop when source semantics are missing",
+    "## E. Immutable upstream and source-preserving adaptations",
+    "## F. No automatic model promotion",
+    "## G. Enforcement boundary",
+)
 MARKDOWN_LINK = re.compile(r"\[[^]]+\]\(([^)]+)\)")
 FROM_SCRIPTS_IMPORT_RESEARCH = re.compile(
     r"(?m)^\s*from\s+scripts\s+import\s+[^#\n]*\bresearch\b"
 )
-RESEARCH_PATH_MARKERS = ("scripts/research", "scripts.research")
+RESEARCH_PATH_MARKERS = ("scripts/research", "scripts.research", "reviews/")
 
 
 def _tracked_paths(root: Path) -> tuple[list[str], str | None]:
@@ -75,6 +85,19 @@ def _policy_reference_problems(root: Path) -> list[str]:
             problems.append(f"AGENTS.md must link to {document}")
         if not (root / document).is_file():
             problems.append(f"required policy document is missing: {document}")
+
+    model_policy = root / "docs/engineering/model_integrity.md"
+    if model_policy.is_file():
+        try:
+            model_policy_text = model_policy.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            problems.append("could not read docs/engineering/model_integrity.md")
+        else:
+            for section in REQUIRED_MODEL_INTEGRITY_SECTIONS:
+                if section not in model_policy_text:
+                    problems.append(
+                        f"docs/engineering/model_integrity.md must retain section: {section}"
+                    )
     return problems
 
 
@@ -160,7 +183,9 @@ def check_repository(root: str | os.PathLike[str]) -> list[str]:
             problems.append(f"{path}: {artifact_problem}")
         if path.startswith(RUNTIME_ROOTS) and PurePosixPath(path).suffix.casefold() in SOURCE_SUFFIXES:
             if _has_research_dependency(path, repository):
-                problems.append(f"{path}: runtime source directly references scripts/research")
+                problems.append(
+                    f"{path}: runtime source directly references research code or local review evidence"
+                )
     return problems
 
 
