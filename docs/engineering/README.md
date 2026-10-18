@@ -18,7 +18,8 @@ The architecture boundary is already established in [ADR-0004](../adr/0004_mujoc
 | `tests/` | Cross-repository infrastructure and tests that do not belong to one package. Runtime and ROS package tests live beside their package. |
 | `tools/` | Optional maintained developer utilities with a defined owner and repeatable use. Do not add it for a one-off script. |
 | `data/` | Small checked-in fixtures only when licensing and size are suitable. Keep datasets, rosbags, model weights, benchmark output, screenshots, and traces out of Git by default. |
-| `third_party/` | Upstream dependencies and version records. Record tested versions/commits in `third_party/LOCK.md`; do not patch a fetched vendor checkout in place. |
+| `reference/<GitHubOwner>/<RepositoryName>/` | Ignored upstream source checkouts for inspection and reproducible reference. Keep one checkout per owner/repository and pin its exact commit in tracked provenance. Do not put RobotSim outputs or build products here. |
+| `third_party/` | Legacy dependency paths and version records retained for existing consumers. Do not add new upstream checkout locations here; see the explicit migration boundary in [reference source policy](../setup/reference-sources.md). |
 | `docs/` | Architecture decisions, engineering rules, setup, and repeatable workflows. |
 
 This map describes intended ownership; an empty or not-yet-created directory is not a reason to add placeholder structure. The current small set of scripts may stay directly under `scripts/`; introduce category directories as a group grows rather than moving files just to match the map. A runtime executable belongs in its package or runtime component even if its first experiment was a script.
@@ -30,6 +31,7 @@ This map describes intended ownership; an empty or not-yet-created directory is 
 - Keep ROS `build/`, `install/`, and `log/`, Python caches, Unity generated caches, editor state, rosbags, datasets, weights, benchmark output, screenshots, and profiling traces out of version control. Prefer an explicit ignore rule in the owning directory or storage outside the checkout; do not add a broad ignore that can hide source or configuration.
 - Keep ROS package tests package-local. Root `tests/` is for repository-wide infrastructure checks, not a substitute for package test ownership.
 - Pin external code when adopted and record the source revision in the version source of truth. Use an adapter or overlay for local integration changes. Do not add submodules or a dependency manager without a concrete need.
+- New upstream Git checkouts belong under `reference/<GitHubOwner>/<RepositoryName>/`. Keep fetched sources immutable and clean; place build/install output elsewhere. Do not fetch recursively, run vendor installers, or promote a reference checkout into production without a separate reviewed integration change.
 
 ## Authority of rules and sources
 

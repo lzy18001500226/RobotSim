@@ -25,6 +25,9 @@ third_party/unitree_sdk2/
 third_party/unitree_mujoco/
 third_party/unitree_ros2/
 
+# External upstream source checkouts. See docs/setup/reference-sources.md.
+/reference/
+
 # OS
 .DS_Store
 Thumbs.db
