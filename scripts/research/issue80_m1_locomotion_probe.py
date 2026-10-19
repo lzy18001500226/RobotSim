@@ -36,6 +36,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
+from issue80_m1_mode_logic import classify_ld_transition
 
 
 VELOCITY_TOPIC = "/aima/mc/locomotion/velocity"
@@ -457,23 +458,12 @@ class FocusedM1Diagnostic(Node):
             rclpy.spin_once(self, timeout_sec=0.01)
 
     def _classify(self, set_result: dict[str, Any] | None) -> str:
-        if not set_result:
-            return "LD_REQUEST_NOT_SENT"
-        if set_result["response_status_value"] != 1:
-            return "REJECTED"
-        if any(event["event"] == "get_mc_action_error" for event in self.events):
-            return "READBACK_INTERFACE_ERROR"
-        last_action = next((x for x in reversed(self.mode_observations)
-                            if x.get("action_desc") is not None), None)
-        common_mode = self._mode()
-        get_mode = last_action.get("action_desc") if last_action else None
-        if last_action and last_action.get("response_header_code") != 0:
-            return "READBACK_INTERFACE_ERROR"
-        if get_mode and common_mode and get_mode != common_mode:
-            return "READBACK_INTERFACE_INCONSISTENCY"
-        if get_mode == MODE_LD and common_mode == MODE_LD:
-            return "LD_CONFIRMED"
-        return "ACCEPTED_BUT_NOT_TRANSITIONED"
+        return classify_ld_transition(
+            set_result,
+            self.mode_observations,
+            self._mode(),
+            readback_error=any(event["event"] == "get_mc_action_error" for event in self.events),
+        )
 
     def activation_pulse(self) -> dict[str, Any]:
         # Pulse authority is deliberately fixed and cannot be increased by CLI input.

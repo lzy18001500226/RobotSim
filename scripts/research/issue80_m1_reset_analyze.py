@@ -122,6 +122,7 @@ def classify(trace_path: Path, dispatch_path: Path) -> dict[str, Any]:
     fall_reason = None
     max_tilt = None
     max_gap = None
+    common_ages: list[float] = []
     if first_ready_ns is not None:
         # Start the stability hold only after pose, MC mode, and body status
         # are simultaneously valid. Immediately after Reset, odometry can
@@ -136,7 +137,6 @@ def classify(trace_path: Path, dispatch_path: Path) -> dict[str, Any]:
         max_gap = max((b - a) / 1e9 for a, b in zip(times, times[1:])) if len(times) > 1 else None
         bad_pose = any(z < ROOT_Z_MIN for z in z_values) or any(t >= MAX_TILT_DEG for t in tilts)
         bad_mode = False
-        common_ages = []
         for row in stable_rows:
             common_row = row.get("latest_common")
             if not common_row:

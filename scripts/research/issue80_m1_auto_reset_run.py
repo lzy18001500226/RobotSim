@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -20,6 +21,7 @@ X11_HELPER = Path(__file__).with_name("issue80_mujoco_x11_reset.py")
 ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 OBSERVER = Path(__file__).with_name("issue80_m1_reset_state_trace.py")
+M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 IMAGE = "robotsim:humble-raicom-runtime-20261019"
 IMAGE_DIGEST = "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31"
 TOPIC_PROBES = (
@@ -104,6 +106,28 @@ class BoundedRun:
             cmd.append("-d")
         cmd += [self.container, "bash", "-lc", shell]
         return self.run(name, cmd, timeout_s=timeout_s, check=check)
+
+    def stage_research_scripts(self) -> None:
+        """Stage exact research code snapshots without overwriting evidence."""
+        sources = (Path(__file__), X11_HELPER, ANALYZER, M1_RUNNER, OBSERVER, M1_MODE_LOGIC)
+        records: list[dict[str, str]] = []
+        for source in sources:
+            payload = source.read_bytes()
+            target = self.evidence / source.name
+            digest = hashlib.sha256(payload).hexdigest()
+            if target.exists():
+                if target.is_symlink() or not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != digest:
+                    raise RuntimeError(f"staged research script differs from current source: {target.name}")
+                disposition = "PRESTAGED_IDENTICAL"
+            else:
+                with target.open("xb") as stream:
+                    stream.write(payload)
+                disposition = "COPIED"
+            records.append({"name": source.name, "sha256": digest, "disposition": disposition})
+        manifest = self.evidence / "staged_research_scripts.json"
+        with manifest.open("x", encoding="utf-8") as stream:
+            json.dump({"schema": "robotsim.issue80.staged-research-scripts.v1", "scripts": records}, stream, indent=2)
+            stream.write("\n")
 
     def start_container(self) -> None:
         cmd = [
@@ -331,12 +355,15 @@ class BoundedRun:
     def run_m1(self) -> None:
         if self.remaining() < 35.0:
             raise RunDeadline("fewer than 35 seconds remain after AUTO_RESET_PASS; M1 was not started")
+        action_source = getattr(self.args, "set_action_source", None)
+        if action_source is None:
+            action_source = self.source
         command = [
             "docker", "exec", self.container, "bash", "-lc",
             "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py diagnose --source "
             + self.source
             + " --set-action-source "
-            + self.source
+            + action_source
             + " --output-dir /workspace/evidence --activation-pulse --ready-timeout 4 --zero-duration 0.4 --mode-observe-duration 3",
         ]
         result = self.run("m1_source_ld_diagnostic", command, timeout_s=min(40.0, self.remaining()), check=False)
@@ -373,6 +400,7 @@ class BoundedRun:
     def execute(self) -> dict[str, Any]:
         result={"schema":"robotsim.issue80.m1.auto-reset-run.v1","status":"BLOCKED","attempt_id":self.args.attempt_id,"source":self.source,"container":self.container,"runtime_image_digest":IMAGE_DIGEST,"runtime_limit_s":self.args.max_runtime_s,"reset_classification":"NOT_ATTEMPTED","m1_status":"NOT_RUN","fault":None}
         try:
+            self.stage_research_scripts()
             self.start_container()
             self.start_sim_first()
             self.capture_service_topic_inventory()
@@ -412,6 +440,11 @@ def main() -> int:
     parser.add_argument("--evidence-dir",required=True)
     parser.add_argument("--container",required=True)
     parser.add_argument("--source",required=True)
+    parser.add_argument(
+        "--set-action-source",
+        default=None,
+        help="optional caller identity for SetMcAction.source; defaults to the registered source name",
+    )
     parser.add_argument("--attempt-id",required=True)
     parser.add_argument("--max-runtime-s",type=float,default=180.0)
     args=parser.parse_args()
