@@ -19,9 +19,15 @@ For implementation placement and RobotSim runtime/validation rules, follow [`doc
 
 Keep research experiments under `scripts/research/`; production/runtime code must not depend on them. Apply the [runtime prototype lifecycle](docs/engineering/runtime.md#prototype-lifecycle) and [test/evidence retention rules](docs/engineering/validation.md#test-retention-and-generated-evidence), and record a disposition for temporary milestone code before closing that milestone.
 
+Place new external Git source checkouts under the ignored root `reference/<GitHubOwner>/<RepositoryName>/`. Keep checkouts pinned to an immutable commit and record origin, revision, and license provenance in tracked documentation or a reviewed source registry. Do not run upstream scripts, initialize submodules recursively, modify fetched source in place, or treat presence in `reference/` as approval to use it at runtime. Existing `third_party/` paths are legacy inputs; preserve them until a separately reviewed migration updates every consumer and validation path.
+
 ## Architecture boundaries
 
 The [engineering contracts](docs/engineering/README.md) and relevant records in [`docs/adr/`](docs/adr/) own architecture, runtime, and evidence details. Read affected records before changing an established boundary; do not treat a proposed ADR as accepted.
+
+## Mandatory robot model integrity
+
+Before proposing or changing robot/gripper mechanical geometry, links, joints, axes, limits, mimic/equality relations, collision geometry, linkage topology, or model provenance, follow the [mandatory model-integrity contract](docs/engineering/model_integrity.md). It applies to production and `SIMULATION_ONLY` research. Do not invent or reconstruct missing mechanics, and do not promote a research model. Each mechanical change requires explicit case-specific maintainer approval before implementation and a separate human review before merge; general authorization to fix a robot or complete a grasp is not approval to redesign its mechanism.
 
 ## Workspace and change boundaries
 

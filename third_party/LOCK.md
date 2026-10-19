@@ -5,10 +5,17 @@ Unitree source checkouts used by the first G1 baseline. The fetch script reads
 the three Unitree rows below; it checks out detached at each exact commit and
 refuses to change a checkout with local modifications or a different origin.
 
-Run `./scripts/fetch_third_party.sh` to populate `third_party/`. For clean
-validation or an alternate checkout location, pass a destination directory.
-The script fetches Git source only. It does not download or commit vendor
-binaries.
+This is the legacy lock for the existing Unitree baseline. Existing consumers
+and `scripts/fetch_third_party.sh` continue to use `third_party/` until a
+separate reviewed migration updates all paths and validations together. Do not
+add new repository checkouts here; new upstream sources use
+`reference/<GitHubOwner>/<RepositoryName>/` as described in
+[`docs/setup/reference-sources.md`](../docs/setup/reference-sources.md).
+
+Run `./scripts/fetch_third_party.sh` only to populate the legacy Unitree paths
+expected by the current G1 scripts. It fetches Git source only and does not
+download or commit vendor binaries. Its default destination is intentionally
+unchanged by the reference-source policy change.
 
 | Project | Repository | Commit | Commit date | License reference |
 |---|---|---|---|---|

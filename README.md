@@ -41,7 +41,8 @@ The goal is to provide a reusable simulation and system-integration framework fo
 - data: datasets and generated data
 - docs: architecture, setup, and workflows
 - scripts: project utilities
-- third_party: external dependencies and version records
+- reference: ignored upstream source checkouts, organized as `<GitHubOwner>/<RepositoryName>`
+- third_party: legacy dependency paths and version records retained for existing consumers
 
 ## Current status
 
