@@ -1,6 +1,6 @@
 # RobotSim engineering contract
 
-This page is the index for implementation and validation conventions. It applies to the current early bring-up stage; it does not assert that planned packages or runtime interfaces already exist. Read the focused [runtime contract](runtime.md), [simulation state contract](simulation_state_contract.md), [validation contract](validation.md), and [Goal workflow](../workflows/goal_driven_development.md) when they apply.
+This page is the index for implementation and validation conventions. It applies to the current early bring-up stage; it does not assert that planned packages or runtime interfaces already exist. Read the focused [runtime contract](runtime.md), [simulation state contract](simulation_state_contract.md), [validation contract](validation.md), [robot model-integrity contract](model_integrity.md), and [Goal workflow](../workflows/goal_driven_development.md) when they apply.
 
 The architecture boundary is already established in [ADR-0004](../adr/0004_mujoco_unity_ros2_architecture.md): MuJoCo owns robot physics and ground truth, Unity owns scene/rendering/external sensor simulation, and ROS 2 integrates simulated and real backends. These engineering rules make that boundary actionable; they do not choose a new physics topology.
 
@@ -20,6 +20,7 @@ The architecture boundary is already established in [ADR-0004](../adr/0004_mujoc
 | `data/` | Small checked-in fixtures only when licensing and size are suitable. Keep datasets, rosbags, model weights, benchmark output, screenshots, and traces out of Git by default. |
 | `reference/<GitHubOwner>/<RepositoryName>/` | Ignored upstream source checkouts for inspection and reproducible reference. Keep one checkout per owner/repository and pin its exact commit in tracked provenance. Do not put RobotSim outputs or build products here. |
 | `third_party/` | Legacy dependency paths and version records retained for existing consumers. Do not add new upstream checkout locations here; see the explicit migration boundary in [reference source policy](../setup/reference-sources.md). |
+| [`model_integrity.md`](model_integrity.md) | Mandatory source fidelity, mechanical-change approval, and model-promotion rules | Reading, converting, adapting, or modifying robot or gripper models |
 | `docs/` | Architecture decisions, engineering rules, setup, and repeatable workflows. |
 
 This map describes intended ownership; an empty or not-yet-created directory is not a reason to add placeholder structure. The current small set of scripts may stay directly under `scripts/`; introduce category directories as a group grows rather than moving files just to match the map. A runtime executable belongs in its package or runtime component even if its first experiment was a script.

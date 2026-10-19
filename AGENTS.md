@@ -25,6 +25,10 @@ Place new external Git source checkouts under the ignored root `reference/<GitHu
 
 The [engineering contracts](docs/engineering/README.md) and relevant records in [`docs/adr/`](docs/adr/) own architecture, runtime, and evidence details. Read affected records before changing an established boundary; do not treat a proposed ADR as accepted.
 
+## Mandatory robot model integrity
+
+Before proposing or changing robot/gripper mechanical geometry, links, joints, axes, limits, mimic/equality relations, collision geometry, linkage topology, or model provenance, follow the [mandatory model-integrity contract](docs/engineering/model_integrity.md). It applies to production and `SIMULATION_ONLY` research. Do not invent or reconstruct missing mechanics, and do not promote a research model. Each mechanical change requires explicit case-specific maintainer approval before implementation and a separate human review before merge; general authorization to fix a robot or complete a grasp is not approval to redesign its mechanism.
+
 ## Workspace and change boundaries
 
 - Inspect the current branch, working-tree status, and relevant diff before editing. Preserve unrelated user changes.

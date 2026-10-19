@@ -26,8 +26,10 @@ from typing import Mapping
 
 try:
     from .closeout_gate import check_closeout
+    from . import path_governance
 except ImportError:  # pragma: no cover - direct script execution
     from closeout_gate import check_closeout
+    import path_governance
 
 try:
     import fcntl
@@ -68,6 +70,7 @@ TASK_CLOSEOUT_FIELDS = {
     "recommended_next_action",
     "completed_at",
 }
+TASK_CLOSEOUT_LOCAL_ARTIFACTS_FIELD = "local_artifacts"
 TASK_CLOSEOUT_TASK_ID = re.compile(r"^issue-([1-9][0-9]{0,8})-[a-z0-9][a-z0-9._-]{0,100}$")
 TASK_CLOSEOUT_ATTEMPT_ID = re.compile(
     r"^(?:[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|legacy-[0-9a-f]{32})$"
@@ -313,8 +316,13 @@ def normalize_task_closeout(payload: object) -> dict[str, object]:
     """Validate and canonicalize a task-closeout.v1 envelope."""
     if not isinstance(payload, dict):
         raise ValueError("task closeout must be a JSON object")
-    if set(payload) != TASK_CLOSEOUT_FIELDS:
+    payload_fields = set(payload)
+    if payload_fields != TASK_CLOSEOUT_FIELDS and payload_fields != (
+        TASK_CLOSEOUT_FIELDS | {TASK_CLOSEOUT_LOCAL_ARTIFACTS_FIELD}
+    ):
         raise ValueError("task closeout has missing or unsupported fields")
+    if TASK_CLOSEOUT_LOCAL_ARTIFACTS_FIELD in payload:
+        path_governance.verify_artifacts(payload[TASK_CLOSEOUT_LOCAL_ARTIFACTS_FIELD])
     if payload.get("schema_version") != TASK_CLOSEOUT_SCHEMA_VERSION:
         raise ValueError("unsupported task-closeout schema_version")
     repository = payload.get("repository")

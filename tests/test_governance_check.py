@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from scripts.agent.check_governance import (
+    REQUIRED_MODEL_INTEGRITY_SECTIONS,
     SMALL_FIXTURE_MAX_BYTES,
     check_repository,
 )
@@ -20,11 +21,21 @@ class GovernanceCheckTests(unittest.TestCase):
         self._write(
             "AGENTS.md",
             "[Runtime](docs/engineering/runtime.md#prototype-lifecycle)\n"
-            "[Validation](docs/engineering/validation.md#test-retention-and-generated-evidence)\n",
+            "[Validation](docs/engineering/validation.md#test-retention-and-generated-evidence)\n"
+            "[Model integrity](docs/engineering/model_integrity.md)\n",
         )
         self._write("docs/engineering/runtime.md", "runtime policy\n")
         self._write("docs/engineering/validation.md", "validation policy\n")
-        self._stage("AGENTS.md", "docs/engineering/runtime.md", "docs/engineering/validation.md")
+        self._write(
+            "docs/engineering/model_integrity.md",
+            "\n".join(REQUIRED_MODEL_INTEGRITY_SECTIONS) + "\n",
+        )
+        self._stage(
+            "AGENTS.md",
+            "docs/engineering/runtime.md",
+            "docs/engineering/validation.md",
+            "docs/engineering/model_integrity.md",
+        )
 
     def _write(self, relative: str, content: str | bytes) -> Path:
         path = self.root / relative
@@ -44,6 +55,14 @@ class GovernanceCheckTests(unittest.TestCase):
         problems = check_repository(self.root)
         self.assertTrue(any("AGENTS.md must link to docs/engineering/runtime.md" in item for item in problems))
         self.assertTrue(any("AGENTS.md must link to docs/engineering/validation.md" in item for item in problems))
+        self.assertTrue(any("AGENTS.md must link to docs/engineering/model_integrity.md" in item for item in problems))
+
+    def test_mandatory_model_integrity_sections_cannot_be_removed(self) -> None:
+        self._write("docs/engineering/model_integrity.md", "## A. Official-source-first\n")
+        self._stage("docs/engineering/model_integrity.md")
+        problems = check_repository(self.root)
+        self.assertTrue(any("No unauthorized mechanical reconstruction" in item for item in problems))
+        self.assertTrue(any("Case-specific human approval" in item for item in problems))
 
     def test_direct_runtime_path_and_python_imports_are_rejected(self) -> None:
         self._write("robots/unitree_g1/runtime.cpp", 'run("python scripts/research/try.py");\n')
@@ -52,6 +71,21 @@ class GovernanceCheckTests(unittest.TestCase):
         problems = check_repository(self.root)
         self.assertTrue(any("robots/unitree_g1/runtime.cpp" in item for item in problems))
         self.assertTrue(any("simulation/mujoco/runner.py" in item for item in problems))
+
+    def test_runtime_model_path_into_local_review_evidence_is_rejected(self) -> None:
+        self._write(
+            "robots/agibot_x2/model_loader.py",
+            'MODEL = "/home/user/RobotSim/reviews/issue-46/passive_loop_candidate.xml"\n',
+        )
+        self._stage("robots/agibot_x2/model_loader.py")
+        problems = check_repository(self.root)
+        self.assertTrue(
+            any(
+                "robots/agibot_x2/model_loader.py" in item
+                and "local review evidence" in item
+                for item in problems
+            )
+        )
 
     def test_generated_outputs_are_blocked_but_small_fixtures_and_source_images_are_allowed(self) -> None:
         self._write("reviews/run/summary.json", "{}\n")
