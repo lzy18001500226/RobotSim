@@ -50,3 +50,18 @@ The repository-level license notices do not establish separate redistribution
 rights for every G1 model or mesh asset. Keep vendor files in the fetched,
 ignored checkout; do not copy or redistribute them in RobotSim without
 confirming permission for the specific assets.
+
+## Supplemental asset identity registry
+
+[`asset_registry.json`](asset_registry.json) indexes immutable source commits,
+repository license references, selected model paths, and independently
+computed SHA-256 values for X2, G1, and Dex3 sources. It also marks the
+unverified OmniPicker STEP provenance explicitly as unknown. This descriptive
+registry does not change `fetch_third_party.sh`, download vendor repositories,
+or grant additional redistribution rights.
+
+Each repository record's `canonical_reference_path` names the local checkout
+location required by the source policy; it does not assert that the checkout
+currently exists. Each asset record's `path` remains relative to its upstream
+repository. The Unitree `lock_reference` continues to identify tracked lock
+metadata, not a local checkout path.

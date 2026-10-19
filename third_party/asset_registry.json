@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-10-18",
+  "repositories": [
+    {
+      "id": "agibot_x2_urdf",
+      "status": "verified",
+      "repository_url": "https://github.com/AgibotTech/agibot_x2_urdf.git",
+      "canonical_reference_path": "reference/AgibotTech/agibot_x2_urdf",
+      "commit_sha": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+      "commit_url": "https://github.com/AgibotTech/agibot_x2_urdf/commit/575cc6b988f976c23550e0db85aa1e5475d3652d",
+      "version": "v1.4.0",
+      "license": {
+        "status": "verified",
+        "spdx": "MulanPSL-2.0",
+        "path": "LICENSE",
+        "url": "https://github.com/AgibotTech/agibot_x2_urdf/blob/575cc6b988f976c23550e0db85aa1e5475d3652d/LICENSE",
+        "scope_note": "Repository license verified; specific mesh redistribution scope has not been reviewed independently."
+      },
+      "lock_reference": null
+    },
+    {
+      "id": "unitree_ros",
+      "status": "verified",
+      "repository_url": "https://github.com/unitreerobotics/unitree_ros.git",
+      "canonical_reference_path": "reference/unitreerobotics/unitree_ros",
+      "commit_sha": "5994d4faef0a9cadd3287f8de0199a67eeb2a259",
+      "commit_url": "https://github.com/unitreerobotics/unitree_ros/commit/5994d4faef0a9cadd3287f8de0199a67eeb2a259",
+      "version": null,
+      "license": {
+        "status": "verified",
+        "spdx": "BSD-3-Clause",
+        "path": "LICENSE",
+        "url": "https://github.com/unitreerobotics/unitree_ros/blob/5994d4faef0a9cadd3287f8de0199a67eeb2a259/LICENSE",
+        "scope_note": "Repository license verified; individual model and mesh redistribution scope is not separately established here."
+      },
+      "lock_reference": null,
+      "notes": [
+        "The G1 with-hand description and the standalone Dex3-1 URDFs are separate source paths; this registry does not assert a particular hardware assembly between them."
+      ]
+    },
+    {
+      "id": "unitree_mujoco",
+      "status": "verified",
+      "repository_url": "https://github.com/unitreerobotics/unitree_mujoco.git",
+      "canonical_reference_path": "reference/unitreerobotics/unitree_mujoco",
+      "commit_sha": "1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d",
+      "commit_url": "https://github.com/unitreerobotics/unitree_mujoco/commit/1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d",
+      "version": null,
+      "license": {
+        "status": "verified",
+        "spdx": "BSD-3-Clause",
+        "path": "LICENSE",
+        "url": "https://github.com/unitreerobotics/unitree_mujoco/blob/1eb6642e3f3fdfb7fb13a9794fd6a2dd93ea0e7d/LICENSE",
+        "scope_note": "Repository license verified; retain upstream notices and review individual mesh asset scope before redistribution."
+      },
+      "lock_reference": "third_party/LOCK.md"
+    },
+    {
+      "id": "unitree_sdk2",
+      "status": "verified",
+      "repository_url": "https://github.com/unitreerobotics/unitree_sdk2.git",
+      "canonical_reference_path": "reference/unitreerobotics/unitree_sdk2",
+      "commit_sha": "63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36",
+      "commit_url": "https://github.com/unitreerobotics/unitree_sdk2/commit/63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36",
+      "version": null,
+      "license": {
+        "status": "verified",
+        "spdx": "BSD-3-Clause",
+        "path": "LICENSE",
+        "url": "https://github.com/unitreerobotics/unitree_sdk2/blob/63096d0ac0c5d2dec9d6e0c22cd5233410ca2f36/LICENSE",
+        "scope_note": "Repository license verified; nested third-party components may carry separate licenses."
+      },
+      "lock_reference": "third_party/LOCK.md"
+    },
+    {
+      "id": "unitree_ros2",
+      "status": "verified",
+      "repository_url": "https://github.com/unitreerobotics/unitree_ros2.git",
+      "canonical_reference_path": "reference/unitreerobotics/unitree_ros2",
+      "commit_sha": "668d1ec5a05d1c38d3306bdca7d59f2ba3581a88",
+      "commit_url": "https://github.com/unitreerobotics/unitree_ros2/commit/668d1ec5a05d1c38d3306bdca7d59f2ba3581a88",
+      "version": null,
+      "license": {
+        "status": "verified",
+        "spdx": "BSD-3-Clause",
+        "path": "LICENSE",
+        "url": "https://github.com/unitreerobotics/unitree_ros2/blob/668d1ec5a05d1c38d3306bdca7d59f2ba3581a88/LICENSE",
+        "scope_note": "Repository license verified; nested third-party components may carry separate licenses."
+      },
+      "lock_reference": "third_party/LOCK.md"
+    },
+    {
+      "id": "mujoco",
+      "status": "verified",
+      "repository_url": "https://github.com/google-deepmind/mujoco",
+      "canonical_reference_path": "reference/google-deepmind/mujoco",
+      "commit_sha": "eacad44a1a67afe520b263c9b15dab82f62a10aa",
+      "commit_url": "https://github.com/google-deepmind/mujoco/commit/eacad44a1a67afe520b263c9b15dab82f62a10aa",
+      "version": "3.3.6",
+      "license": {
+        "status": "verified",
+        "spdx": "Apache-2.0",
+        "path": "LICENSE",
+        "url": "https://github.com/google-deepmind/mujoco/blob/eacad44a1a67afe520b263c9b15dab82f62a10aa/LICENSE",
+        "scope_note": "Engine source license verified at the pinned commit."
+      },
+      "lock_reference": "third_party/LOCK.md"
+    }
+  ],
+  "assets": [
+    {
+      "id": "agibot_x2_ultra_v1_4_0",
+      "repository_id": "agibot_x2_urdf",
+      "status": "verified",
+      "asset_type": "urdf",
+      "path": "X2_URDF-v1.4.0/X2-Ultra.urdf",
+      "sha256": "5973626d3639968daf48c688609d032d6dc73490ef63834c172481a112e33c60"
+    },
+    {
+      "id": "agibot_x2_omnihand_v1_4_0",
+      "repository_id": "agibot_x2_urdf",
+      "status": "verified",
+      "asset_type": "urdf",
+      "path": "X2_URDF-v1.4.0/X2-Ultra_omnihand.urdf",
+      "sha256": "344c188605f307474456749525259ad8ca2e7b356d9ef3c50ad887f228045259"
+    },
+    {
+      "id": "agibot_x2_omnipicker_v1_4_0",
+      "repository_id": "agibot_x2_urdf",
+      "status": "verified",
+      "asset_type": "urdf",
+      "path": "X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+      "sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d"
+    },
+    {
+      "id": "agibot_x2_v1_4_0_meshes",
+      "repository_id": "agibot_x2_urdf",
+      "status": "verified",
+      "asset_type": "mesh_directory",
+      "path": "X2_URDF-v1.4.0/meshes/"
+    },
+    {
+      "id": "unitree_g1_with_hand_rev_1_0_mjcf",
+      "repository_id": "unitree_ros",
+      "status": "verified",
+      "asset_type": "mjcf",
+      "path": "robots/g1_description/g1_29dof_with_hand_rev_1_0.xml",
+      "sha256": "77c98e7d34e428c6cdbd1e0d665e989cbc43bf17abb8a7c048494b4bc51ead88"
+    },
+    {
+      "id": "unitree_g1_with_hand_rev_1_0_urdf",
+      "repository_id": "unitree_ros",
+      "status": "verified",
+      "asset_type": "urdf",
+      "path": "robots/g1_description/g1_29dof_with_hand_rev_1_0.urdf",
+      "sha256": "97da67732d067c3147fc5fb7b7bafc8982718f4e7f8c92ff82266a4d9c07200d"
+    },
+    {
+      "id": "unitree_g1_description_meshes",
+      "repository_id": "unitree_ros",
+      "status": "verified",
+      "asset_type": "mesh_directory",
+      "path": "robots/g1_description/meshes/"
+    },
+    {
+      "id": "unitree_dex3_1_left_hand_urdf",
+      "repository_id": "unitree_ros",
+      "status": "verified",
+      "asset_type": "urdf",
+      "path": "robots/dexterous_hand_description/dex3_1/dex3_1_l.urdf",
+      "sha256": "c55f54d6d27b16a62b78a3dbebe85a85a6a4a4b8851dceb5e42339605f9aff30"
+    },
+    {
+      "id": "unitree_dex3_1_right_hand_urdf",
+      "repository_id": "unitree_ros",
+      "status": "verified",
+      "asset_type": "urdf",
+      "path": "robots/dexterous_hand_description/dex3_1/dex3_1_r.urdf",
+      "sha256": "a388e69058ec6b84306ff05a7b2b613548c833c3f8455127ab3488324553da57"
+    },
+    {
+      "id": "unitree_dex3_1_meshes",
+      "repository_id": "unitree_ros",
+      "status": "verified",
+      "asset_type": "mesh_directory",
+      "path": "robots/dexterous_hand_description/dex3_1/meshes/"
+    },
+    {
+      "id": "unitree_mujoco_g1_29dof_mjcf",
+      "repository_id": "unitree_mujoco",
+      "status": "verified",
+      "asset_type": "mjcf",
+      "path": "unitree_robots/g1/g1_29dof.xml",
+      "sha256": "423e28bd718b19f7a65cda539b6f794ddbb268b4b9bdbd85f4bd982b30729617"
+    },
+    {
+      "id": "unitree_mujoco_g1_meshes",
+      "repository_id": "unitree_mujoco",
+      "status": "verified",
+      "asset_type": "mesh_directory",
+      "path": "unitree_robots/g1/meshes/"
+    },
+    {
+      "id": "x2_omnipicker_step_source",
+      "repository_id": null,
+      "status": "unknown",
+      "asset_type": "step",
+      "path": null,
+      "license_status": "unknown",
+      "notes": "No authoritative repository URL, immutable revision, or source path for the STEP geometry has been verified. The official X2 OmniPicker URDF source is registered separately."
+    }
+  ]
+}
