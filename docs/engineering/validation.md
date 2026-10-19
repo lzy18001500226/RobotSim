@@ -27,6 +27,8 @@ Validation is an evidence ladder, not a checklist every change must exhaust. Cho
 
 The matrix is a floor, not permission to omit a directly affected integration level. If a ROS or Unity integration cannot run in the current environment, report the missing environment and exact deferred check. Python tests do not establish behavior of a C++ production path.
 
+Robot mechanical-model changes have a separate mandatory source and human-approval gate in the [robot model-integrity contract](model_integrity.md). Passing L0-L5 checks, including a successful simulation, does not substitute for that approval or establish that an experimental mechanism matches the manufacturer model.
+
 ## Test retention and generated evidence
 
 Permanent root `tests/` and package-local tests are maintained regression coverage. Do not remove a test because it is old. One-off debug probes, diagnostic scripts, temporary visual experiments, and ad-hoc reproduction harnesses belong in research or evidence tooling, not in the permanent test suite by default.
