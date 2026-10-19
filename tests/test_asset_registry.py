@@ -4,6 +4,7 @@ import json
 import re
 import unittest
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,21 @@ class UpstreamAssetRegistryTests(unittest.TestCase):
                 self.assertTrue(license_record["spdx"])
                 self.assertTrue(license_record["path"])
                 self.assertIn(repository["commit_sha"], license_record["url"])
+
+    def test_canonical_checkout_paths_follow_owner_and_repository(self) -> None:
+        for repository in self.registry["repositories"]:
+            with self.subTest(repository=repository["id"]):
+                parsed = urlparse(repository["repository_url"])
+                owner, name = parsed.path.strip("/").removesuffix(".git").split("/", 1)
+                self.assertEqual(
+                    f"reference/{owner}/{name}",
+                    repository["canonical_reference_path"],
+                )
+
+        for asset in self.registry["assets"]:
+            if asset["status"] == "verified":
+                with self.subTest(asset=asset["id"]):
+                    self.assertFalse(asset["path"].startswith("reference/"))
 
     def test_existing_lock_dependencies_match_the_lockfile(self) -> None:
         for repository in self.registry["repositories"]:
