@@ -29,6 +29,9 @@ third_party/unitree_ros2/
 # External upstream source checkouts. See docs/setup/reference-sources.md.
 /reference/
 
+# Local RAICOM 2026 X2 runtime resources.
+/simulation/mujoco/raicom2026/
+
 # OS
 .DS_Store
 Thumbs.db
