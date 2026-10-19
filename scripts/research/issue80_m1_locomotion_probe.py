@@ -396,8 +396,11 @@ class FocusedM1Diagnostic(Node):
         request = SetMcAction.Request()
         request.header = RequestHeader()
         request.header.stamp = self.get_clock().now().to_msg()
-        # Match the pinned Nova-Valley example: it leaves the optional source field empty.
-        request.source = ""
+        # The first Issue 80 attempt matched the pinned Nova-Valley example's
+        # empty source and the installed MC explicitly rejected it. This
+        # bounded follow-up uses only the source just registered by this
+        # diagnostic; it still publishes zero until a live LD readback.
+        request.source = self.args.set_action_source
         request.command = McActionCommand()
         request.command.action_desc = MODE_LD
         submitted_at = datetime.now(timezone.utc).isoformat()
@@ -637,6 +640,7 @@ class FocusedM1Diagnostic(Node):
                 "status": "PASS" if classification == "LD_CONFIRMED" and pulse.get("status") == "EXECUTED" and not pulse.get("fault") and not self.fault else "BLOCKED",
                 "classification": classification,
                 "source": self.source,
+                "set_action_source": self.args.set_action_source,
                 "source_registration": registration,
                 "get_current_input_source": self.source_observations,
                 "get_mc_action": self.mode_observations,
@@ -697,6 +701,11 @@ def main() -> int:
         "diagnose", help="one ADD, read-only arbitration checks, zero-only LD diagnosis, optional 150 ms pulse"
     )
     diagnose.add_argument("--source", required=True)
+    diagnose.add_argument(
+        "--set-action-source",
+        default="",
+        help="SetMcAction.source value; empty matches the pinned example, while a registered source is a bounded runtime-parity diagnostic",
+    )
     diagnose.add_argument("--output-dir", required=True)
     diagnose.add_argument("--priority", type=int, default=40)
     diagnose.add_argument("--source-timeout-ms", type=int, default=1000)

@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""Bounded simulation-only Reset verification followed by the guarded Issue 80 M1 probe."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+REPO = Path("/home/lzy18001500226/projects/RobotSim")
+RUNTIME = REPO / "simulation/mujoco/raicom2026"
+X11_HELPER = Path(__file__).with_name("issue80_mujoco_x11_reset.py")
+ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
+M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
+OBSERVER = Path(__file__).with_name("issue80_m1_reset_state_trace.py")
+IMAGE = "robotsim:humble-raicom-runtime-20261019"
+IMAGE_DIGEST = "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31"
+TOPIC_PROBES = (
+    "/aima/hal/odom/state",
+    "/aima/hal/imu/torso/state",
+    "/aima/hal/joint/leg/state",
+)
+
+
+class RunDeadline(TimeoutError):
+    pass
+
+
+class BoundedRun:
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.evidence = Path(args.evidence_dir).resolve(strict=True)
+        self.container = args.container
+        self.source = args.source
+        self.started = time.monotonic()
+        self.deadline = self.started + args.max_runtime_s
+        self.step = 0
+        self.steps: list[dict[str, Any]] = []
+        self.container_created = False
+        self.reset_classification = "NOT_ATTEMPTED"
+        self.m1_result: dict[str, Any] | None = None
+        self.reset_analysis: dict[str, Any] | None = None
+        self.fault: str | None = None
+
+    def remaining(self) -> float:
+        value = self.deadline - time.monotonic()
+        if value <= 0:
+            raise RunDeadline("180-second wall-time budget expired")
+        return value
+
+    def save_command(self, name: str, command: list[str], result: subprocess.CompletedProcess[str] | None,
+                     started: float, ended: float, error: str | None = None) -> None:
+        self.step += 1
+        record = {
+            "step": self.step,
+            "name": name,
+            "command": command,
+            "started_wall_utc": datetime.fromtimestamp(time.time() - (time.monotonic() - started), timezone.utc).isoformat(),
+            "duration_s": ended - started,
+            "returncode": result.returncode if result else None,
+            "error": error,
+        }
+        stdout_path = self.evidence / f"step-{self.step:02d}-{name}.stdout.txt"
+        stderr_path = self.evidence / f"step-{self.step:02d}-{name}.stderr.txt"
+        with stdout_path.open("x", encoding="utf-8") as f:
+            f.write(result.stdout if result else "")
+        with stderr_path.open("x", encoding="utf-8") as f:
+            f.write(result.stderr if result else error or "")
+        record["stdout_path"] = str(stdout_path)
+        record["stderr_path"] = str(stderr_path)
+        self.steps.append(record)
+        with (self.evidence / "execution.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    def run(self, name: str, command: list[str], *, timeout_s: float = 8.0,
+            check: bool = True) -> subprocess.CompletedProcess[str]:
+        available = self.remaining()
+        timeout = min(timeout_s, available)
+        started = time.monotonic()
+        try:
+            result = subprocess.run(command, text=True, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            ended = time.monotonic()
+            partial = subprocess.CompletedProcess(command, 124, exc.stdout or "", exc.stderr or "")
+            self.save_command(name, command, partial, started, ended, "subprocess timeout")
+            raise RunDeadline(f"{name} timed out") from exc
+        ended = time.monotonic()
+        self.save_command(name, command, result, started, ended)
+        if check and result.returncode != 0:
+            raise RuntimeError(f"{name} returned {result.returncode}: {result.stderr[-500:]}")
+        return result
+
+    def docker_exec(self, name: str, shell: str, *, timeout_s: float = 8.0,
+                    detached: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+        cmd = ["docker", "exec"]
+        if detached:
+            cmd.append("-d")
+        cmd += [self.container, "bash", "-lc", shell]
+        return self.run(name, cmd, timeout_s=timeout_s, check=check)
+
+    def start_container(self) -> None:
+        cmd = [
+            "docker", "run", "-d", "--pull=never", "--name", self.container,
+            "--network=bridge", "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
+            "--tmpfs", "/agibot/data/var:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0770,size=64m",
+            "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user=1000:1000",
+            "--mount", f"type=bind,source={RUNTIME},target=/workspace/raicom2026",
+            "--mount", f"type=bind,source={self.evidence},target=/workspace/evidence",
+            "--mount", "type=bind,source=/tmp/.X11-unix,target=/tmp/.X11-unix,readonly",
+            "-e", "DISPLAY=:0", "-e", "HOME=/tmp", "-e", "ROS_DOMAIN_ID=20",
+            "-e", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp", IMAGE, "sleep", "infinity",
+        ]
+        self.run("docker_run", cmd, timeout_s=10.0)
+        self.container_created = True
+        inspect = self.run("container_inspect_start", ["docker", "inspect", self.container], timeout_s=5.0)
+        with (self.evidence / "container-inspect-start.json").open("x", encoding="utf-8") as f:
+            f.write(inspect.stdout)
+
+    def start_sim_first(self) -> None:
+        self.docker_exec(
+            "launch_simulator",
+            "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1",
+            timeout_s=4.0,
+            detached=True,
+        )
+        # Do not use repeated short-lived `ros2 topic echo --once` processes as
+        # startup readiness probes. On the pinned runtime they can time out
+        # during ROS graph discovery (`!rclpy.ok()`) even after the simulator
+        # has initialized and started its state-publisher threads. Wait for
+        # the simulator's own module-ready log marker here; the persistent
+        # read-only state observer below verifies actual live odom/IMU/leg
+        # traffic after MC starts.
+        self.docker_exec(
+            "wait_simulator_module_ready",
+            "timeout 25s bash -lc 'until grep -q \"MujocoSimModule Started Succeeded\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
+            timeout_s=26.0,
+        )
+        self.docker_exec(
+            "start_mc_after_sim_topics",
+            "bash /workspace/evidence/launch_mc.sh > /workspace/evidence/mc-console.log 2>&1",
+            timeout_s=4.0,
+            detached=True,
+        )
+
+    def request_sd_and_verify(self) -> str:
+        self.docker_exec(
+            "request_sd",
+            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && timeout 8s python3 /workspace/raicom2026/example/py/set_mode.py SD",
+            timeout_s=10.0,
+        )
+        deadline = min(self.deadline, time.monotonic() + 12.0)
+        last = ""
+        while time.monotonic() < deadline:
+            result = self.docker_exec(
+                "read_mode_stand",
+                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && timeout 4s python3 /workspace/raicom2026/example/py/get_mode.py",
+                timeout_s=5.0,
+                check=False,
+            )
+            last = result.stdout + result.stderr
+            if "Mode: STAND_DEFAULT" in last:
+                with (self.evidence / "get-mode-pre-reset.log").open("x", encoding="utf-8") as f:
+                    f.write(last)
+                return last
+            if time.monotonic() < deadline:
+                time.sleep(min(0.3, self.remaining()))
+        with (self.evidence / "get-mode-pre-reset.log").open("x", encoding="utf-8") as f:
+            f.write(last)
+        raise RuntimeError(f"MC did not confirm STAND_DEFAULT before Reset: {last[-500:]}")
+
+    def capture_service_topic_inventory(self) -> None:
+        self.docker_exec(
+            "service_inventory",
+            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && ros2 service list -t",
+            timeout_s=5.0,
+        )
+        self.docker_exec(
+            "topic_inventory",
+            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && ros2 topic list -t",
+            timeout_s=5.0,
+        )
+
+    def start_observer(self) -> None:
+        self.docker_exec(
+            "start_reset_state_observer",
+            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_reset_state_trace.py --output-dir /workspace/evidence --duration 8.0 > /workspace/evidence/reset-observer-console.log 2>&1",
+            timeout_s=4.0,
+            detached=True,
+        )
+        ready_path = self.evidence / "reset_watch_ready.json"
+        deadline = min(self.deadline, time.monotonic() + 3.0)
+        while time.monotonic() < deadline and not ready_path.exists():
+            time.sleep(0.05)
+        if not ready_path.exists():
+            raise RuntimeError("Reset observer did not receive all five fresh state streams in 3 seconds")
+        ready = json.loads(ready_path.read_text(encoding="utf-8"))
+        if ready.get("mode") != "STAND_DEFAULT" or len(ready.get("fresh_topics", [])) != 5:
+            raise RuntimeError(f"Reset precondition failed: {ready}")
+        with (self.evidence / "pre-reset-ready-snapshot.json").open("x", encoding="utf-8") as f:
+            json.dump(ready, f, indent=2)
+            f.write("\n")
+
+    def inspect_window(self) -> tuple[int, str, int]:
+        pid_result = self.docker_exec(
+            "sim_process_pid",
+            "pgrep -x soc_sim",
+            timeout_s=3.0,
+        )
+        container_pid = int(pid_result.stdout.strip().splitlines()[0])
+        top = self.run("docker_top_processes", ["docker", "top", self.container, "-eo", "pid,comm,args"], timeout_s=4.0)
+        host_pid = None
+        for line in top.stdout.splitlines()[1:]:
+            fields = line.strip().split(None, 2)
+            if len(fields) >= 2 and fields[1] == "soc_sim":
+                host_pid = int(fields[0])
+                break
+        pids = [container_pid] + ([host_pid] if host_pid else [])
+        discoveries = []
+        for pid in pids:
+            result = self.run(
+                f"x11_inspect_pid_{pid}",
+                [sys.executable, str(X11_HELPER), "inspect", "--expected-pid", str(pid)],
+                timeout_s=4.0,
+                check=False,
+            )
+            try:
+                payload = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                continue
+            discoveries.append(payload)
+            if payload.get("windows"):
+                windows = payload["windows"]
+                if len(windows) != 1:
+                    raise RuntimeError(f"ambiguous MuJoCo windows for PID {pid}: {windows}")
+                window = windows[0]
+                return int(pid), str(window["title"]), int(window["window_id"])
+        with (self.evidence / "window-discovery.json").open("x", encoding="utf-8") as f:
+            json.dump({"container_pid": container_pid, "host_pid": host_pid, "inspections": discoveries}, f, indent=2)
+            f.write("\n")
+        raise RuntimeError("no visible X11 window with exact aima-sim-app PID was found")
+
+    def dispatch_reset(self, pid: int, title: str, window_id: int) -> None:
+        dispatch_path = self.evidence / "reset_dispatch.json"
+        event_path = self.evidence / "reset_dispatch_event.json"
+        before = self.evidence / "mujoco_before_reset.png"
+        after = self.evidence / "mujoco_after_reset.png"
+        command = [
+            sys.executable, str(X11_HELPER), "send-reset",
+            "--expected-pid", str(pid), "--expected-title", title,
+            "--window-id", str(window_id),
+            "--before-png", str(before), "--after-png", str(after),
+            "--dispatch-event-json", str(event_path),
+        ]
+        try:
+            result = self.run("x11_backspace_dispatch", command, timeout_s=15.0, check=False)
+        except RunDeadline as exc:
+            # A captured key event is persisted by the helper before the
+            # optional post-event screenshot. If only screenshot work timed
+            # out, preserve the verified dispatch and continue to classify
+            # the simulator state instead of stopping before the state gate.
+            if not event_path.exists():
+                raise
+            event_record = json.loads(event_path.read_text(encoding="utf-8"))
+            event_record["after_image"] = {
+                "status": "NOT_CAPTURED",
+                "reason": "helper timed out after the persisted key event",
+            }
+            event_record["helper_completion"] = f"TIMED_OUT_AFTER_DISPATCH: {exc}"
+            with dispatch_path.open("x", encoding="utf-8") as f:
+                json.dump(event_record, f, indent=2)
+                f.write("\n")
+            if event_record.get("event", {}).get("status") != "KEY_DISPATCHED":
+                self.reset_classification = "RESET_NOT_DELIVERED"
+                raise RuntimeError(f"X11 helper did not dispatch BackSpace: {event_record}") from exc
+            return
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            if event_path.exists():
+                payload = json.loads(event_path.read_text(encoding="utf-8"))
+                payload["after_image"] = {
+                    "status": "NOT_CAPTURED",
+                    "reason": "X11 helper returned no complete result JSON",
+                }
+                payload["helper_completion"] = "NO_COMPLETE_RESULT_JSON"
+            else:
+                raise RuntimeError(f"X11 helper did not return JSON: {result.stdout[-500:]}") from exc
+        with dispatch_path.open("x", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+        if result.returncode != 0 or payload.get("event", {}).get("status") != "KEY_DISPATCHED":
+            self.reset_classification = "RESET_NOT_DELIVERED"
+            raise RuntimeError(f"X11 Backspace was not dispatched: {payload}")
+
+    def wait_and_classify_reset(self) -> dict[str, Any]:
+        trace = self.evidence / "reset_state_trace.jsonl"
+        deadline = min(self.deadline, time.monotonic() + 9.0)
+        while time.monotonic() < deadline and not trace.exists():
+            time.sleep(0.05)
+        if not trace.exists():
+            raise RuntimeError("reset state trace was not produced")
+        # The observer is capped at 8 s; wait for its atomic summary with the same bound.
+        summary = self.evidence / "reset_state_summary.json"
+        while time.monotonic() < deadline and not summary.exists():
+            time.sleep(0.05)
+        if not summary.exists():
+            raise RuntimeError("bounded reset observer did not finish before its 9 s deadline")
+        out = self.evidence / "reset_analysis.json"
+        result = self.run(
+            "classify_reset_state",
+            [sys.executable, str(ANALYZER), "--trace", str(trace), "--dispatch", str(self.evidence / "reset_dispatch.json"), "--output", str(out)],
+            timeout_s=4.0,
+            check=False,
+        )
+        if out.exists():
+            self.reset_analysis = json.loads(out.read_text(encoding="utf-8"))
+        else:
+            try:self.reset_analysis=json.loads(result.stdout)
+            except json.JSONDecodeError:self.reset_analysis={"classification":"ANALYSIS_FAILED","stdout":result.stdout,"stderr":result.stderr}
+        self.reset_classification = str(self.reset_analysis.get("classification","ANALYSIS_FAILED"))
+        return self.reset_analysis
+
+    def run_m1(self) -> None:
+        if self.remaining() < 35.0:
+            raise RunDeadline("fewer than 35 seconds remain after AUTO_RESET_PASS; M1 was not started")
+        command = [
+            "docker", "exec", self.container, "bash", "-lc",
+            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py diagnose --source "
+            + self.source
+            + " --set-action-source "
+            + self.source
+            + " --output-dir /workspace/evidence --activation-pulse --ready-timeout 4 --zero-duration 0.4 --mode-observe-duration 3",
+        ]
+        result = self.run("m1_source_ld_diagnostic", command, timeout_s=min(40.0, self.remaining()), check=False)
+        result_file = self.evidence / "m1_diagnostic_result.json"
+        if result_file.exists():
+            self.m1_result = json.loads(result_file.read_text(encoding="utf-8"))
+        else:
+            self.m1_result = {"status":"NO_RESULT_FILE","returncode":result.returncode,"stdout":result.stdout,"stderr":result.stderr}
+
+    def cleanup(self) -> None:
+        if not self.container_created:
+            return
+        try:
+            self.run(
+                "copy_tmpfs_audit",
+                ["docker", "exec", self.container, "bash", "-lc",
+                 "cp -n /agibot/data/var/MotionControlModule/runtime.yaml /workspace/evidence/runtime_audit_mc.yaml 2>/dev/null || true; cp -n /agibot/data/var/mc/audit.log /workspace/evidence/runtime_audit_mc-audit.log 2>/dev/null || true"],
+                timeout_s=3.0,
+                check=False,
+            )
+        except Exception:
+            pass
+        try:
+            inspect = subprocess.run(["docker", "inspect", self.container], text=True, capture_output=True, timeout=3.0)
+            if inspect.returncode == 0:
+                with (self.evidence / "container-inspect-final.json").open("x", encoding="utf-8") as f:
+                    f.write(inspect.stdout)
+        except Exception:
+            pass
+        for cmd in (["docker", "stop", "--time", "2", self.container], ["docker", "rm", self.container]):
+            try:subprocess.run(cmd,text=True,capture_output=True,timeout=4.0)
+            except Exception:pass
+
+    def execute(self) -> dict[str, Any]:
+        result={"schema":"robotsim.issue80.m1.auto-reset-run.v1","status":"BLOCKED","attempt_id":self.args.attempt_id,"source":self.source,"container":self.container,"runtime_image_digest":IMAGE_DIGEST,"runtime_limit_s":self.args.max_runtime_s,"reset_classification":"NOT_ATTEMPTED","m1_status":"NOT_RUN","fault":None}
+        try:
+            self.start_container()
+            self.start_sim_first()
+            self.capture_service_topic_inventory()
+            self.request_sd_and_verify()
+            self.start_observer()
+            pid,title,window_id=self.inspect_window()
+            self.dispatch_reset(pid,title,window_id)
+            reset=self.wait_and_classify_reset()
+            result["reset_classification"]=reset.get("classification")
+            result["reset_analysis"]=reset
+            if reset.get("classification")!="AUTO_RESET_PASS":
+                raise RuntimeError(f"Reset gate failed: {reset.get('classification')}")
+            self.run_m1()
+            result["m1_result"]=self.m1_result
+            result["m1_status"]=(self.m1_result or {}).get("status","UNKNOWN")
+            result["status"]="PASS" if result["m1_status"]=="PASS" else "BLOCKED"
+        except Exception as exc:
+            self.fault=f"{type(exc).__name__}: {exc}"
+            result["fault"]=self.fault
+            result["reset_classification"]=self.reset_classification
+            result["m1_result"]=self.m1_result
+            result["status"]="BLOCKED"
+        finally:
+            elapsed=time.monotonic()-self.started
+            result["wall_elapsed_s"]=elapsed
+            result["wall_budget_exhausted"]=elapsed>self.args.max_runtime_s
+            if self.reset_analysis:
+                result["reset_analysis"]=self.reset_analysis
+            self.cleanup()
+            output=self.evidence/"auto-reset-run-result.json"
+            with output.open("x",encoding="utf-8") as f:json.dump(result,f,indent=2);f.write("\n")
+        return result
+
+
+def main() -> int:
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--evidence-dir",required=True)
+    parser.add_argument("--container",required=True)
+    parser.add_argument("--source",required=True)
+    parser.add_argument("--attempt-id",required=True)
+    parser.add_argument("--max-runtime-s",type=float,default=180.0)
+    args=parser.parse_args()
+    run=BoundedRun(args)
+    result=run.execute()
+    print(json.dumps(result,indent=2))
+    return 0 if result["status"]=="PASS" else 2
+
+
+if __name__=="__main__":
+    raise SystemExit(main())
