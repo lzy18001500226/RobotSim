@@ -10,6 +10,7 @@ This map identifies the documents that own RobotSim guidance.
 | [`engineering/simulation_state_contract.md`](engineering/simulation_state_contract.md) | Topology-independent simulation state, command, lifecycle, and telemetry semantics | Defining or implementing a simulation state boundary without selecting its transport. |
 | [`setup/`](setup/) | Host, WSL, Docker, and development-container setup | Setting up or diagnosing the development environment. |
 | [`setup/codex.md`](setup/codex.md) | Local/Cloud Codex boundaries, hooks, notifications, and closeout | Choosing where Codex work runs or finishing a task. |
+| [`setup/evidence-path-governance.md`](setup/evidence-path-governance.md) | Canonical local experiment output paths, artifact manifests, and closeout validation | Creating or advertising local evidence. |
 | [`workflows/`](workflows/) | Repeatable procedures for baseline bring-up, navigation, and robot porting | Implementing or validating one of those workflows. |
 | [`workflows/05_G1_ROS2_ADAPTER.md`](workflows/05_G1_ROS2_ADAPTER.md) | Build and validate the topology-independent ROS 2 workspace and G1 SDK2 adapter | Working on the initial G1 ROS boundary. |
 | [`workflows/goal_driven_development.md`](workflows/goal_driven_development.md) | Codex prompt-versus-Goal conventions, continuation, evidence, and review gates | Starting multi-step or long-running Codex work. |
