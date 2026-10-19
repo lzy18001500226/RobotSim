@@ -83,6 +83,12 @@ Do not send per-tool, per-test, per-commit, or progress notifications. Messages 
 
 ## Durable task closeout
 
+For local experiment artifacts, follow the [evidence path governance](evidence-path-governance.md).
+The closeout envelope may carry one `local_artifacts` descriptor, preferably
+the run's `artifact_paths.json`. The handler verifies the descriptor and every
+listed file before persisting a terminal outcome, then strips local paths from
+the canonical event. This does not replace durable GitHub evidence references.
+
 Every task kind uses one canonical `robotsim.task-closeout.v1` event: implementation, experiment, research, review, or audit. Status is `completed`, `blocked`, `deferred`, `failed`, or `cancelled` (`completed` records PASS, `failed` records FAIL, and the other terminal non-pass states record BLOCKED). The compact payload records the canonical repository, Issue-shaped `task_id`, `attempt_id`, worker, task kind/status, summary, branch/head SHA/PR when applicable, validation, durable evidence, blockers, next action, and completion time. Unknown fields and transcripts are rejected.
 
 ### Mandatory publication gate

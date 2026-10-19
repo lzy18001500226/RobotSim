@@ -13,7 +13,7 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.agent import notify_task
+from scripts.agent import notify_task, path_governance
 
 
 class FakeResponse:
@@ -569,6 +569,76 @@ class NotifyTaskTests(unittest.TestCase):
             with self.subTest(worker=worker), self.assertRaises(ValueError):
                 notify_task.normalize_task_closeout(self._closeout_event(worker=worker))
 
+    def test_closeout_verifies_local_artifacts_but_does_not_persist_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "reviews" / "issue-44" / "run-1"
+            evidence.mkdir(parents=True)
+            artifact_path = evidence / "result.json"
+            artifact_path.write_text("{}\n", encoding="utf-8")
+            with patch.object(path_governance, "CANONICAL_REPO_ROOT", str(root)), patch.object(
+                path_governance, "detect_environment", return_value="wsl"
+            ):
+                descriptor = path_governance.describe_output_path(artifact_path, environment="wsl")
+                event = self._closeout_event(local_artifacts=[descriptor])
+                normalized = notify_task.normalize_task_closeout(event)
+        self.assertEqual(set(normalized), notify_task.TASK_CLOSEOUT_FIELDS)
+        self.assertNotIn("local_artifacts", normalized)
+        self.assertNotIn(str(artifact_path), notify_task._event_json(normalized))
+
+    def test_closeout_manifest_checks_every_listed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / "reviews" / "issue-44" / "run-1"
+            artifact_path = run / "result.json"
+            with patch.object(path_governance, "CANONICAL_REPO_ROOT", str(root)), patch.object(
+                path_governance, "detect_environment", return_value="wsl"
+            ):
+                run.parent.mkdir(parents=True)
+                path_governance.create_output_directory(run, environment="wsl")
+                artifact_path.write_text("{}\n", encoding="utf-8")
+                manifest = path_governance.write_artifact_manifest(run, environment="wsl")
+                event = self._closeout_event(local_artifacts=[manifest["manifest"]])
+                notify_task.normalize_task_closeout(event)
+                artifact_path.unlink()
+                with self.assertRaises(ValueError):
+                    notify_task.normalize_task_closeout(event)
+
+    def test_missing_local_artifact_blocks_before_queue_or_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "reviews" / "issue-44").mkdir(parents=True)
+            with patch.object(path_governance, "CANONICAL_REPO_ROOT", str(root)), patch.object(
+                path_governance, "detect_environment", return_value="wsl"
+            ):
+                run = root / "reviews" / "issue-44" / "run-1"
+                path_governance.create_output_directory(run, environment="wsl")
+                missing = root / "reviews" / "issue-44" / "missing.json"
+                event = self._closeout_event(
+                    local_artifacts=[path_governance.describe_output_path(missing, environment="wsl")]
+                )
+                with patch.object(notify_task, "check_closeout") as gate:
+                    result = notify_task.process_task_closeout(event, dry_run=True)
+        self.assertEqual(result.state, "blocked")
+        self.assertIn("invalid task closeout", result.message)
+        gate.assert_not_called()
+
+    def test_local_artifact_closeout_fails_closed_on_native_linux(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / "reviews" / "issue-44" / "run-1"
+            run.mkdir(parents=True)
+            artifact_path = run / "result.json"
+            artifact_path.write_text("{}\n", encoding="utf-8")
+            with patch.object(path_governance, "CANONICAL_REPO_ROOT", str(root)), patch.object(
+                path_governance, "detect_environment", return_value="linux"
+            ):
+                descriptor = path_governance.describe_output_path(artifact_path, environment="wsl")
+                with self.assertRaisesRegex(ValueError, "no verified Ubuntu-22.04 WSL UNC mapping"):
+                    notify_task.normalize_task_closeout(
+                        self._closeout_event(local_artifacts=[descriptor])
+                    )
+
     def test_closeout_supports_pr_issue_and_all_task_kinds(self) -> None:
         cases = (
             ("implementation", 42, "issues/42/comments"),
@@ -1017,10 +1087,13 @@ class NotifyTaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             settings = self._settings(directory)
             settings.pop("GITHUB_TOKEN")
-            with patch.object(notify_task, "_open_request") as urlopen:
+            with patch.object(notify_task, "_github_token", return_value="") as token, patch.object(
+                notify_task, "_open_request"
+            ) as urlopen:
                 result = notify_task.process_task_closeout(self._closeout_event(), environ=settings)
         self.assertEqual(result.state, "blocked")
         self.assertIn("GitHub closeout persistence unavailable", result.message)
+        token.assert_called_once_with(settings)
         urlopen.assert_not_called()
 
     def test_closeout_redacts_credentials_and_arbitrary_absolute_paths(self) -> None:
