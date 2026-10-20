@@ -58,6 +58,14 @@ WATCHDOG_LIMITATION = (
 )
 MC_ROS2_NODE_BASE_NAME = "mc_ros2_node"
 MC_RUNTIME_EXECUTABLE = "aima-mc-app-main"
+MC_VELOCITY_SUBSCRIBER_NAME = "locomotion_velocity"
+MC_VELOCITY_MESSAGE_TYPE = "aimdk_msgs/msg/McLocomotionVelocity"
+MC_VELOCITY_TOPIC = "/aima/mc/locomotion/velocity"
+DDS_QOS_OVERRIDE_ENV_KEYS = (
+    "FASTDDS_DEFAULT_PROFILES_FILE",
+    "FASTRTPS_DEFAULT_PROFILES_FILE",
+    "RMW_FASTRTPS_USE_QOS_FROM_XML",
+)
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -212,6 +220,240 @@ def _verified_mc_identity_error(identity: VerifiedMcRuntimeIdentity | None) -> s
     ):
         return "mc_runtime_provenance_digest_missing"
     return None
+
+
+def capture_dds_qos_override_environment(
+    environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Record only whether known Fast DDS XML QoS override variables are active."""
+    source = os.environ if environment is None else environment
+    profile_status = {
+        key: "set" if str(source.get(key, "")).strip() else "unset"
+        for key in DDS_QOS_OVERRIDE_ENV_KEYS[:2]
+    }
+    xml_setting = str(source.get(DDS_QOS_OVERRIDE_ENV_KEYS[2], "")).strip().lower()
+    profile_status[DDS_QOS_OVERRIDE_ENV_KEYS[2]] = (
+        "unset" if not xml_setting
+        else "false" if xml_setting in ("0", "false", "no", "off")
+        else "true" if xml_setting in ("1", "true", "yes", "on")
+        else "invalid"
+    )
+    return profile_status
+
+
+def _dds_qos_override_environment_error(
+    evidence: Mapping[str, Any] | None,
+) -> str | None:
+    if not isinstance(evidence, Mapping) or set(evidence) != set(DDS_QOS_OVERRIDE_ENV_KEYS):
+        return "dds_qos_override_environment_unverified"
+    if any(evidence.get(key) != "unset" for key in DDS_QOS_OVERRIDE_ENV_KEYS[:2]):
+        return "dds_qos_xml_profile_override_active"
+    if evidence.get(DDS_QOS_OVERRIDE_ENV_KEYS[2]) not in ("unset", "false"):
+        return "dds_qos_xml_override_active_or_unknown"
+    return None
+
+
+def load_verified_mc_velocity_subscriber_provenance(
+    mc_config_path: str | Path,
+    mc_startup_log_path: str | Path,
+    mc_identity: VerifiedMcRuntimeIdentity,
+) -> dict[str, Any]:
+    """Verify the one configured MC command subscription and its startup registration.
+
+    This proves which route and message type the pinned MC process configured.
+    It deliberately does not infer the effective DataReader history or depth.
+    """
+    import yaml
+
+    identity_fault = _verified_mc_identity_error(mc_identity)
+    if identity_fault:
+        raise ValueError(identity_fault)
+    config_path = Path(mc_config_path).resolve(strict=True)
+    config_bytes = config_path.read_bytes()
+    startup_path = Path(mc_startup_log_path).resolve(strict=True)
+    startup_bytes = startup_path.read_bytes()
+    if hashlib.sha256(config_bytes).hexdigest() != mc_identity.mc_config_sha256:
+        raise ValueError("MC subscriber config hash differs from verified live process identity")
+    if hashlib.sha256(startup_bytes).hexdigest() != mc_identity.startup_log_sha256:
+        raise ValueError("MC subscriber startup log hash differs from verified live process identity")
+    try:
+        config = yaml.safe_load(config_bytes)
+    except yaml.YAMLError as exc:
+        raise ValueError("MC subscriber config is not valid YAML") from exc
+    try:
+        aimrt = config["aimrt"]
+        plugin_list = aimrt["plugin"]["plugins"]
+        channel = aimrt["channel"]
+        backend_list = channel["backends"]
+        route_list = channel["sub_topics_options"]
+        subscriber_list = config["MotionControlModule"]["SubscriberManager"]["subscriber_cfg_list"]
+    except (TypeError, KeyError) as exc:
+        raise ValueError("MC config lacks the required plugin/channel/subscriber provenance") from exc
+    if not all(isinstance(value, list) for value in (plugin_list, backend_list, route_list, subscriber_list)):
+        raise ValueError("MC plugin, backend, route, and subscriber entries must be lists")
+
+    ros2_plugins = [
+        item for item in plugin_list
+        if isinstance(item, Mapping) and item.get("name") == "ros2_plugin"
+    ]
+    if len(ros2_plugins) != 1:
+        raise ValueError("MC config must contain exactly one ros2_plugin")
+    plugin_options = ros2_plugins[0].get("options")
+    if not isinstance(plugin_options, Mapping):
+        raise ValueError("MC ros2_plugin has no options mapping")
+    if plugin_options.get("node_name") != mc_identity.configured_node_name:
+        raise ValueError("MC ros2_plugin node name differs from verified process identity")
+    if plugin_options.get("namespace") not in (None, "") or plugin_options.get("node_namespace") not in (None, ""):
+        raise ValueError("MC ROS node namespace is explicitly configured and unsupported here")
+
+    ros2_backends = [
+        item for item in backend_list
+        if isinstance(item, Mapping) and item.get("type") == "ros2"
+    ]
+    if len(ros2_backends) != 1:
+        raise ValueError("MC config must contain exactly one ROS 2 channel backend")
+    backend_options = ros2_backends[0].get("options", {})
+    if not isinstance(backend_options, Mapping):
+        raise ValueError("MC ROS 2 backend options are malformed")
+    if any("qos" in str(key).lower() and "pub" not in str(key).lower() for key in backend_options):
+        raise ValueError("MC ROS 2 backend contains an unsupported subscriber QoS override")
+    backend_sub_routes = backend_options.get("sub_topics_options", [])
+    if backend_sub_routes is None:
+        backend_sub_routes = []
+    if not isinstance(backend_sub_routes, list):
+        raise ValueError("MC ROS 2 backend subscriber routes are malformed")
+    matching_backend_routes = [
+        item for item in backend_sub_routes
+        if isinstance(item, Mapping) and item.get("topic_name") == MC_VELOCITY_TOPIC
+    ]
+    if len(matching_backend_routes) > 1 or any("qos" in item for item in matching_backend_routes):
+        raise ValueError("MC velocity subscriber has a duplicate or explicit backend QoS override")
+
+    matching_routes = [
+        item for item in route_list
+        if isinstance(item, Mapping) and item.get("topic_name") == MC_VELOCITY_TOPIC
+    ]
+    if len(matching_routes) != 1:
+        raise ValueError("MC config must define exactly one velocity subscriber ROS 2 route")
+    route = matching_routes[0]
+    if route.get("enable_backends") != ["ros2"] or "qos" in route:
+        raise ValueError("MC velocity subscriber route is disabled, ambiguous, or has a QoS override")
+
+    matching_subscribers = [
+        item for item in subscriber_list
+        if isinstance(item, Mapping)
+        and (item.get("name") == MC_VELOCITY_SUBSCRIBER_NAME or item.get("topic") == MC_VELOCITY_TOPIC)
+    ]
+    if len(matching_subscribers) != 1:
+        raise ValueError("MC config must define exactly one velocity subscriber entry")
+    subscriber = matching_subscribers[0]
+    if (
+        subscriber.get("name") != MC_VELOCITY_SUBSCRIBER_NAME
+        or subscriber.get("topic") != MC_VELOCITY_TOPIC
+        or subscriber.get("enable") is not True
+        or "qos" in subscriber
+    ):
+        raise ValueError("MC velocity subscriber entry is disabled, mismatched, or has a QoS override")
+
+    startup_log = _ANSI_ESCAPE_RE.sub("", startup_bytes.decode("utf-8", errors="replace"))
+    created_lines = [
+        line for line in startup_log.splitlines()
+        if f"Create subscriber: {MC_VELOCITY_SUBSCRIBER_NAME} succeeded, topic: {MC_VELOCITY_TOPIC}" in line
+    ]
+    type_row = re.compile(
+        rf"^\|\s*{re.escape(MC_VELOCITY_TOPIC)}\s*\|\s*ros2:{re.escape(MC_VELOCITY_MESSAGE_TYPE)}\s*"
+        r"\|\s*MotionControlModule\s*\|\s*ros2\s*\|\s*monitor\s*\|$"
+    )
+    type_rows = [line for line in startup_log.splitlines() if type_row.search(line.strip())]
+    if len(created_lines) != 1 or len(type_rows) != 1:
+        raise ValueError("MC startup log does not uniquely confirm the velocity subscriber and message type")
+
+    return {
+        "subscriber_name": MC_VELOCITY_SUBSCRIBER_NAME,
+        "node_name": mc_identity.node_name,
+        "topic_name": MC_VELOCITY_TOPIC,
+        "message_type": MC_VELOCITY_MESSAGE_TYPE,
+        "subscriber_enabled": True,
+        "ros2_route_enabled": True,
+        "startup_subscriber_creation_confirmed": True,
+        "startup_type_registration_confirmed": True,
+        "config_namespace_option": None,
+        "qos_override_present": False,
+        "configured_history_depth": "not specified in audited subscriber configuration",
+        "actual_reader_history_depth": "UNVERIFIED",
+        "mc_config_sha256": mc_identity.mc_config_sha256,
+        "startup_log_sha256": mc_identity.startup_log_sha256,
+        "evidence_basis": "verified MC process identity, exact config route, startup subscriber log, and type registry row",
+    }
+
+
+def _verified_mc_velocity_subscriber_provenance_error(
+    provenance: Mapping[str, Any] | None,
+    mc_identity: VerifiedMcRuntimeIdentity,
+) -> str | None:
+    if not isinstance(provenance, Mapping):
+        return "mc_velocity_subscriber_configuration_provenance_missing"
+    required = {
+        "subscriber_name": MC_VELOCITY_SUBSCRIBER_NAME,
+        "node_name": mc_identity.node_name,
+        "topic_name": MC_VELOCITY_TOPIC,
+        "message_type": MC_VELOCITY_MESSAGE_TYPE,
+        "subscriber_enabled": True,
+        "ros2_route_enabled": True,
+        "startup_subscriber_creation_confirmed": True,
+        "startup_type_registration_confirmed": True,
+        "config_namespace_option": None,
+        "qos_override_present": False,
+        "configured_history_depth": "not specified in audited subscriber configuration",
+        "actual_reader_history_depth": "UNVERIFIED",
+        "mc_config_sha256": mc_identity.mc_config_sha256,
+        "startup_log_sha256": mc_identity.startup_log_sha256,
+    }
+    if any(provenance.get(key) != value for key, value in required.items()):
+        return "mc_velocity_subscriber_configuration_provenance_mismatch"
+    return None
+
+
+def _mc_velocity_endpoint_metadata_error(
+    endpoint_metadata: list[Mapping[str, Any]] | None,
+    mc_identity: VerifiedMcRuntimeIdentity,
+) -> str | None:
+    if not isinstance(endpoint_metadata, list) or len(endpoint_metadata) != 1:
+        return "mc_velocity_subscriber_endpoint_metadata_missing_or_ambiguous"
+    endpoint = endpoint_metadata[0]
+    if not isinstance(endpoint, Mapping):
+        return "mc_velocity_subscriber_endpoint_metadata_malformed"
+    if endpoint.get("node_name") != mc_identity.node_name:
+        return "mc_velocity_subscriber_endpoint_identity_mismatch"
+    if endpoint.get("queried_topic_name") != MC_VELOCITY_TOPIC:
+        return "mc_velocity_subscriber_endpoint_topic_mismatch"
+    if endpoint.get("node_namespace") != "/":
+        return "mc_velocity_subscriber_endpoint_namespace_mismatch"
+    if endpoint.get("topic_type") != MC_VELOCITY_MESSAGE_TYPE:
+        return "mc_velocity_subscriber_endpoint_message_type_mismatch"
+    return None
+
+
+def mc_subscriber_history_depth_evidence(
+    history: str,
+    depth: int,
+    *,
+    rmw_implementation: str,
+    ros_distro: str,
+) -> dict[str, Any]:
+    """Describe discovery metadata without claiming to query the remote DataReader."""
+    is_discovery_gap = history == "unknown" and depth == 0
+    return {
+        "discovery_reported": {"history": history, "depth": depth},
+        "classification": (
+            "FASTDDS_HUMBLE_DISCOVERY_HISTORY_DEPTH_GAP"
+            if is_discovery_gap and rmw_implementation == "rmw_fastrtps_cpp" and ros_distro == "humble"
+            else "GRAPH_HISTORY_DEPTH_REPORTED"
+        ),
+        "actual_mc_datareader_history_depth": "UNVERIFIED",
+        "exception_scope": "one verified MC locomotion_velocity endpoint only" if is_discovery_gap else None,
+        "command_delivery_proven": False,
+    }
 
 
 def _local_command_publisher_error(
@@ -483,6 +725,7 @@ def load_mc_input_source_timeouts(path: str | Path) -> tuple[list[dict[str, Any]
 def validate_runtime_scope(
     *,
     rmw_implementation: str | None,
+    ros_distro: str | None,
     ros_domain_id: str | None,
     docker_network_mode: str | None,
     publisher_names: list[str],
@@ -499,6 +742,9 @@ def validate_runtime_scope(
     publisher_api_qos: Mapping[str, Any] | None = None,
     subscriber_histories: list[str],
     subscriber_depths: list[int],
+    subscriber_endpoint_metadata: list[Mapping[str, Any]] | None = None,
+    mc_subscriber_provenance: Mapping[str, Any] | None = None,
+    dds_qos_override_environment: Mapping[str, Any] | None = None,
     mc_identity: VerifiedMcRuntimeIdentity | None,
 ) -> str | None:
     """Fail closed unless this is the isolated local MC/simulator graph."""
@@ -508,6 +754,8 @@ def validate_runtime_scope(
     assert mc_identity is not None
     if rmw_implementation != "rmw_fastrtps_cpp":
         return "unexpected_rmw_implementation"
+    if ros_distro != "humble":
+        return f"unexpected_ros_distro:{ros_distro!r}"
     if ros_domain_id != "20":
         return "unexpected_ros_domain_id"
     if docker_network_mode != "bridge":
@@ -525,6 +773,16 @@ def validate_runtime_scope(
     expected_node_name = mc_identity.node_name
     if subscriber_names != [expected_node_name]:
         return f"expected_only_verified_mc_subscriber:{expected_node_name!r}:{subscriber_names!r}"
+    subscriber_provenance_fault = _verified_mc_velocity_subscriber_provenance_error(
+        mc_subscriber_provenance, mc_identity,
+    )
+    if subscriber_provenance_fault:
+        return subscriber_provenance_fault
+    endpoint_metadata_fault = _mc_velocity_endpoint_metadata_error(
+        subscriber_endpoint_metadata, mc_identity,
+    )
+    if endpoint_metadata_fault:
+        return endpoint_metadata_fault
     if publisher_reliability != "reliable":
         return f"command_publisher_qos_not_reliable:{publisher_reliability!r}"
     if len(subscriber_reliabilities) != len(subscriber_names):
@@ -547,7 +805,19 @@ def validate_runtime_scope(
         return f"command_publisher_history_depth_mismatch:{publisher_history}:{publisher_depth}"
     if len(subscriber_histories) != len(subscriber_names) or len(subscriber_depths) != len(subscriber_names):
         return "subscriber_history_depth_endpoint_count_mismatch"
-    if any(history != "keep_last" or depth <= 0 for history, depth in zip(subscriber_histories, subscriber_depths)):
+    history, depth = subscriber_histories[0], subscriber_depths[0]
+    if history == "unknown" and isinstance(depth, int) and not isinstance(depth, bool) and depth == 0:
+        # In the observed Humble + Fast DDS runtime, the graph's unknown/0 pair is
+        # missing discovery metadata, not a DataReader QoS query (upstream: rmw_fastrtps
+        # issue 684 and the Humble qos.hpp conversion). Accept only this exact pair
+        # after MC identity/config/type/namespace and compatibility
+        # checks above, with no active XML QoS overrides. The reader depth stays
+        # explicitly unverified and this preflight does not prove command receipt.
+        override_fault = _dds_qos_override_environment_error(dds_qos_override_environment)
+        if override_fault:
+            return override_fault
+        return None
+    if history != "keep_last" or isinstance(depth, bool) or not isinstance(depth, int) or depth <= 0:
         return f"mc_subscriber_history_depth_unsupported:{subscriber_histories!r}:{subscriber_depths!r}"
     return None
 

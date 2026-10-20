@@ -31,8 +31,10 @@ from issue80_m1_first_motion import (
     BASELINE_DURATION_S, BASELINE_SAMPLE_PERIOD_S, BASELINE_WINDOW_COUNT,
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
-    derive_stationary_odom_baseline, load_leg_joint_limits, load_mc_input_source_timeouts,
+    capture_dds_qos_override_environment, derive_stationary_odom_baseline,
+    load_leg_joint_limits, load_mc_input_source_timeouts,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
+    load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
     run_first_motion_window, snapshot_fault,
     validate_local_sim_publishers, validate_first_motion_authorization,
     validate_runtime_scope,
@@ -549,6 +551,15 @@ class FocusedM1Diagnostic(Node):
             raise RuntimeError(f"MC runtime identity could not be verified: {exc}") from exc
         if mc_identity.mc_config_sha256 != self.mc_sim_config_sha256:
             raise RuntimeError("MC runtime identity config hash differs from the loaded MC safety config")
+        try:
+            mc_subscriber_provenance = load_verified_mc_velocity_subscriber_provenance(
+                self.args.mc_sim_config_path,
+                self.output_dir / "mc-console.log",
+                mc_identity,
+            )
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"MC velocity subscriber provenance could not be verified: {exc}") from exc
+        dds_qos_override_environment = capture_dds_qos_override_environment()
         self.mc_runtime_identity = mc_identity
         deadline = time.monotonic() + 2.0
         last_publishers: list[str] = []
@@ -556,12 +567,22 @@ class FocusedM1Diagnostic(Node):
         state_topic_publishers: dict[str, list[str]] = {}
         last_publisher_qos: dict[str, Any] | None = None
         last_subscriber_qos: list[dict[str, Any]] = []
+        last_subscriber_endpoint_metadata: list[dict[str, Any]] = []
         fault = None
         while rclpy.ok() and time.monotonic() < deadline:
             publisher_info = list(self.get_publishers_info_by_topic(VELOCITY_TOPIC))
             subscriber_info = list(self.get_subscriptions_info_by_topic(VELOCITY_TOPIC))
             last_publishers = [str(info.node_name) for info in publisher_info]
             last_subscribers = [str(info.node_name) for info in subscriber_info]
+            last_subscriber_endpoint_metadata = [
+                {
+                    "node_name": str(info.node_name),
+                    "node_namespace": str(info.node_namespace),
+                    "queried_topic_name": VELOCITY_TOPIC,
+                    "topic_type": str(info.topic_type),
+                }
+                for info in subscriber_info
+            ]
             state_topic_publishers = {
                 topic: [
                     str(info.node_name)
@@ -592,6 +613,7 @@ class FocusedM1Diagnostic(Node):
             publisher_api_qos = self._qos_profile(self.publisher.qos_profile)
             fault = validate_runtime_scope(
                 rmw_implementation=os.environ.get("RMW_IMPLEMENTATION"),
+                ros_distro=os.environ.get("ROS_DISTRO"),
                 ros_domain_id=os.environ.get("ROS_DOMAIN_ID"),
                 docker_network_mode=os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
                 publisher_names=last_publishers,
@@ -608,6 +630,9 @@ class FocusedM1Diagnostic(Node):
                 publisher_api_qos=publisher_api_qos,
                 subscriber_histories=[str(qos["history"]) for qos in last_subscriber_qos],
                 subscriber_depths=[int(qos["depth"]) for qos in last_subscriber_qos],
+                subscriber_endpoint_metadata=last_subscriber_endpoint_metadata,
+                mc_subscriber_provenance=mc_subscriber_provenance,
+                dds_qos_override_environment=dds_qos_override_environment,
                 mc_identity=mc_identity,
             )
             if fault is None:
@@ -619,6 +644,7 @@ class FocusedM1Diagnostic(Node):
                 result = {
                     "status": "PASS",
                     "rmw_implementation": os.environ.get("RMW_IMPLEMENTATION"),
+                    "ros_distro": os.environ.get("ROS_DISTRO"),
                     "ros_domain_id": os.environ.get("ROS_DOMAIN_ID"),
                     "docker_network_mode": os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
                     "velocity_publishers": last_publishers,
@@ -639,6 +665,29 @@ class FocusedM1Diagnostic(Node):
                         "This does not prove that MC received a command."
                     ),
                     "subscriber_qos": last_subscriber_qos,
+                    "subscriber_endpoint_metadata": last_subscriber_endpoint_metadata,
+                    "mc_velocity_subscriber_configuration_provenance": mc_subscriber_provenance,
+                    "dds_qos_override_environment": dds_qos_override_environment,
+                    "subscriber_history_depth_discovery": {
+                        **mc_subscriber_history_depth_evidence(
+                            str(last_subscriber_qos[0]["history"]),
+                            int(last_subscriber_qos[0]["depth"]),
+                            rmw_implementation=str(os.environ.get("RMW_IMPLEMENTATION")),
+                            ros_distro=str(os.environ.get("ROS_DISTRO")),
+                        ),
+                        "validation_exception_applied": (
+                            len(last_subscriber_qos) == 1
+                            and last_subscriber_qos[0]["history"] == "unknown"
+                            and last_subscriber_qos[0]["depth"] == 0
+                        ),
+                    },
+                    "subscriber_qos_evidence_note": (
+                        "Reliability and durability are graph-observed and compatibility-checked. The exact "
+                        "Humble/rmw_fastrtps_cpp unknown/0 history-depth discovery pair is accepted only "
+                        "after MC process, config route, startup type registration, endpoint namespace/type, "
+                        "and absence of known XML QoS overrides are verified. The actual MC DataReader "
+                        "history/depth remains UNVERIFIED; this exception does not prove command delivery."
+                    ),
                     "local_state_and_command_publishers": state_topic_publishers,
                     "command_qos": {
                         "reliability": COMMAND_QOS_RELIABILITY,

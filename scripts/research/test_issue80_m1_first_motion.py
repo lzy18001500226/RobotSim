@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import unittest
 import json
+import hashlib
 import tempfile
 import time
 from pathlib import Path
@@ -26,17 +27,20 @@ from issue80_m1_first_motion import (
     ZERO_STOP_MIN_S,
     ZERO_STOP_MIN_MESSAGES,
     VerifiedMcRuntimeIdentity,
+    capture_dds_qos_override_environment,
     classify_source_registration,
     classify_physical_motion,
     derive_stationary_odom_baseline,
     load_verified_mc_runtime_identity,
     load_leg_joint_limits,
     load_mc_input_source_timeouts,
+    load_verified_mc_velocity_subscriber_provenance,
+    mc_subscriber_history_depth_evidence,
     run_first_motion_window,
     snapshot_fault,
     validate_first_motion_authorization,
     validate_local_sim_publishers,
-    validate_runtime_scope,
+    validate_runtime_scope as _validate_runtime_scope,
 )
 from issue80_m1_mode_logic import classify_set_mc_action_response
 
@@ -57,6 +61,50 @@ TEST_MC_IDENTITY = VerifiedMcRuntimeIdentity(
     mc_config_sha256="a" * 64,
     startup_log_sha256="b" * 64,
 )
+
+
+VALID_MC_SUBSCRIBER_PROVENANCE = {
+    "subscriber_name": "locomotion_velocity",
+    "node_name": "mc_ros2_node245",
+    "topic_name": "/aima/mc/locomotion/velocity",
+    "message_type": "aimdk_msgs/msg/McLocomotionVelocity",
+    "subscriber_enabled": True,
+    "ros2_route_enabled": True,
+    "startup_subscriber_creation_confirmed": True,
+    "startup_type_registration_confirmed": True,
+    "config_namespace_option": None,
+    "qos_override_present": False,
+    "configured_history_depth": "not specified in audited subscriber configuration",
+    "actual_reader_history_depth": "UNVERIFIED",
+    "mc_config_sha256": TEST_MC_IDENTITY.mc_config_sha256,
+    "startup_log_sha256": TEST_MC_IDENTITY.startup_log_sha256,
+    "evidence_basis": "offline test fixture",
+}
+
+VALID_MC_SUBSCRIBER_ENDPOINT = {
+    "node_name": "mc_ros2_node245",
+    "node_namespace": "/",
+    "queried_topic_name": "/aima/mc/locomotion/velocity",
+    "topic_type": "aimdk_msgs/msg/McLocomotionVelocity",
+}
+
+NO_DDS_QOS_OVERRIDES = {
+    "FASTDDS_DEFAULT_PROFILES_FILE": "unset",
+    "FASTRTPS_DEFAULT_PROFILES_FILE": "unset",
+    "RMW_FASTRTPS_USE_QOS_FROM_XML": "unset",
+}
+
+
+def validate_runtime_scope(**kwargs):
+    """Add the verified base fixture; tests can override fields to exercise failures."""
+    evidence = {
+        "ros_distro": "humble",
+        "subscriber_endpoint_metadata": [dict(VALID_MC_SUBSCRIBER_ENDPOINT)],
+        "mc_subscriber_provenance": dict(VALID_MC_SUBSCRIBER_PROVENANCE),
+        "dds_qos_override_environment": dict(NO_DDS_QOS_OVERRIDES),
+    }
+    evidence.update(kwargs)
+    return _validate_runtime_scope(**evidence)
 
 
 VALID_LOCAL_PUBLISHER_EVIDENCE = {
@@ -603,6 +651,230 @@ class FirstMotionSafetyTests(unittest.TestCase):
             mc_identity=TEST_MC_IDENTITY,
             **VALID_LOCAL_PUBLISHER_EVIDENCE,
         ))
+
+    def test_verified_mc_subscriber_allows_only_exact_unknown_zero_discovery_gap(self) -> None:
+        fault = validate_runtime_scope(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_distro="humble",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="keep_last",
+            publisher_depth=10,
+            subscriber_histories=["unknown"],
+            subscriber_depths=[0],
+            mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        )
+        self.assertIsNone(fault)
+        qos_evidence = mc_subscriber_history_depth_evidence(
+            "unknown", 0, rmw_implementation="rmw_fastrtps_cpp", ros_distro="humble"
+        )
+        self.assertEqual(qos_evidence["classification"], "FASTDDS_HUMBLE_DISCOVERY_HISTORY_DEPTH_GAP")
+        self.assertEqual(qos_evidence["actual_mc_datareader_history_depth"], "UNVERIFIED")
+        self.assertFalse(qos_evidence["command_delivery_proven"])
+
+    def test_verified_mc_subscriber_known_keep_last_depth_passes(self) -> None:
+        self.assertIsNone(validate_runtime_scope(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_distro="humble",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="keep_last",
+            publisher_depth=10,
+            subscriber_histories=["keep_last"],
+            subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        ))
+
+    def test_verified_mc_subscriber_rejects_incompatible_reliability_and_durability(self) -> None:
+        base = dict(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_distro="humble",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="keep_last",
+            publisher_depth=10,
+            subscriber_histories=["unknown"],
+            subscriber_depths=[0],
+            mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        )
+        self.assertIn("publisher_qos_not_reliable", validate_runtime_scope(
+            **{**base, "publisher_reliability": "best_effort", "subscriber_reliabilities": ["reliable"]}
+        ))
+        self.assertIn("subscriber_durability", validate_runtime_scope(
+            **{**base, "subscriber_durabilities": ["transient_local"]}
+        ))
+
+    def test_verified_mc_subscriber_rejects_wrong_topic_type_or_namespace(self) -> None:
+        for field, value, expected in (
+            ("queried_topic_name", "/wrong/topic", "endpoint_topic_mismatch"),
+            ("topic_type", "std_msgs/msg/String", "message_type_mismatch"),
+            ("node_namespace", "/spoof", "namespace_mismatch"),
+        ):
+            with self.subTest(field=field):
+                endpoint = {**VALID_MC_SUBSCRIBER_ENDPOINT, field: value}
+                self.assertIn(expected, validate_runtime_scope(
+                    rmw_implementation="rmw_fastrtps_cpp",
+                    ros_distro="humble",
+                    ros_domain_id="20",
+                    docker_network_mode="bridge",
+                    publisher_names=["issue80_m1_focused_diagnostic"],
+                    subscriber_names=["mc_ros2_node245"],
+                    own_node_name="issue80_m1_focused_diagnostic",
+                    publisher_reliability="reliable",
+                    subscriber_reliabilities=["best_effort"],
+                    publisher_durability="volatile",
+                    subscriber_durabilities=["volatile"],
+                    publisher_history="keep_last",
+                    publisher_depth=10,
+                    subscriber_histories=["unknown"],
+                    subscriber_depths=[0],
+                    subscriber_endpoint_metadata=[endpoint],
+                    mc_identity=TEST_MC_IDENTITY,
+                    **VALID_LOCAL_PUBLISHER_EVIDENCE,
+                ))
+
+    def test_unknown_zero_subscriber_gap_requires_verified_config_and_no_xml_override(self) -> None:
+        base = dict(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_distro="humble",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="keep_last",
+            publisher_depth=10,
+            subscriber_histories=["unknown"],
+            subscriber_depths=[0],
+            mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        )
+        self.assertIn("configuration_provenance_missing", validate_runtime_scope(
+            **{**base, "mc_subscriber_provenance": None}
+        ))
+        self.assertIn("dds_qos_xml_profile_override_active", validate_runtime_scope(
+            **{
+                **base,
+                "dds_qos_override_environment": {
+                    **NO_DDS_QOS_OVERRIDES,
+                    "FASTDDS_DEFAULT_PROFILES_FILE": "set",
+                },
+            }
+        ))
+        self.assertIn("unexpected_rmw_implementation", validate_runtime_scope(
+            **{**base, "rmw_implementation": "rmw_cyclonedds_cpp"}
+        ))
+        self.assertIn("unexpected_ros_distro", validate_runtime_scope(
+            **{**base, "ros_distro": "jazzy"}
+        ))
+
+    def test_subscriber_history_depth_rejects_partial_unknown_and_known_unsafe_values(self) -> None:
+        base = dict(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_distro="humble",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="keep_last",
+            publisher_depth=10,
+            mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        )
+        for history, depth in (("unknown", 10), ("keep_last", 0), ("keep_last", -1), ("keep_all", 10)):
+            with self.subTest(history=history, depth=depth):
+                self.assertIn("mc_subscriber_history_depth_unsupported", validate_runtime_scope(
+                    **base,
+                    subscriber_histories=[history],
+                    subscriber_depths=[depth],
+                ))
+
+    def test_verified_mc_config_and_startup_log_prove_route_not_reader_depth(self) -> None:
+        config = """aimrt:
+  plugin:
+    plugins:
+      - name: ros2_plugin
+        options:
+          node_name: mc_ros2_node
+  channel:
+    backends:
+      - type: ros2
+        options: {}
+    sub_topics_options:
+      - topic_name: /aima/mc/locomotion/velocity
+        enable_backends: [ros2]
+MotionControlModule:
+  SubscriberManager:
+    subscriber_cfg_list:
+      - name: locomotion_velocity
+        topic: /aima/mc/locomotion/velocity
+        enable: true
+"""
+        startup = """node_name: mc_ros2_node
+| Executable Path | /runtime/aima-mc-app-main |
+| Process PID | 245 |
+Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/velocity
+| /aima/mc/locomotion/velocity | ros2:aimdk_msgs/msg/McLocomotionVelocity | MotionControlModule | ros2 | monitor |
+"""
+        config_bytes, startup_bytes = config.encode(), startup.encode()
+        identity = VerifiedMcRuntimeIdentity(
+            configured_node_name="mc_ros2_node",
+            process_pid=245,
+            process_executable="/runtime/aima-mc-app-main",
+            mc_config_sha256=hashlib.sha256(config_bytes).hexdigest(),
+            startup_log_sha256=hashlib.sha256(startup_bytes).hexdigest(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path, startup_path = root / "mc.yaml", root / "mc.log"
+            config_path.write_bytes(config_bytes)
+            startup_path.write_bytes(startup_bytes)
+            provenance = load_verified_mc_velocity_subscriber_provenance(
+                config_path, startup_path, identity
+            )
+        self.assertTrue(provenance["startup_type_registration_confirmed"])
+        self.assertEqual(provenance["actual_reader_history_depth"], "UNVERIFIED")
+        self.assertEqual(provenance["configured_history_depth"], "not specified in audited subscriber configuration")
+
+    def test_dds_override_environment_capture_is_non_disclosing_and_fail_closed(self) -> None:
+        self.assertEqual(capture_dds_qos_override_environment({}), NO_DDS_QOS_OVERRIDES)
+        self.assertEqual(
+            capture_dds_qos_override_environment({"RMW_FASTRTPS_USE_QOS_FROM_XML": "0"}),
+            {**NO_DDS_QOS_OVERRIDES, "RMW_FASTRTPS_USE_QOS_FROM_XML": "false"},
+        )
 
     def test_transport_scope_rejects_unknown_zero_without_local_publisher_evidence(self) -> None:
         self.assertIn("local_command_publisher_identity_unverified", validate_runtime_scope(
