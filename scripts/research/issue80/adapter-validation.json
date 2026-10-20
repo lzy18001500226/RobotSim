@@ -1,0 +1,35 @@
+{
+  "schema_version": "robotsim.issue80.navigation-adapter-offline-result.v1",
+  "branch": "research/issue80-offline-pointgoal-20261020",
+  "scope": "offline ROS-message contract and point-goal controller only",
+  "results": {
+    "controller_tests": {"discovered": 11, "passed": 11, "failed": 0},
+    "adapter_tests": {"discovered": 10, "passed": 9, "failed": 0, "skipped": 1},
+    "python_compile": "PASS",
+    "package_xml": "PASS",
+    "git_diff_check": "PASS",
+    "ros2_package_build": "DEFERRED_NO_ROS2_OR_COLCON",
+    "actual_generated_message_test": "SKIPPED_NO_ROS_MESSAGE_PACKAGES",
+    "ros_graph_test": "NOT_RUN",
+    "physical_navigation": "NOT_RUN"
+  },
+  "environment": {
+    "platform": "WSL Ubuntu 22.04",
+    "ros2": false,
+    "colcon": false,
+    "rclpy": false,
+    "nav_msgs": false,
+    "geometry_msgs": false,
+    "std_msgs": false,
+    "std_srvs": false,
+    "tf2_ros": false,
+    "dependencies_installed": false,
+    "live_mc_connected": false,
+    "mujoco_mc_or_gui_started": false
+  },
+  "recorded_fixture": {
+    "post_reset_upright_source_sha256": "dc5a8579719c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc",
+    "pre_reset_fallen_source_sha256": "5d6636f9769c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc"
+  },
+  "safety_boundary": "Twist output is isolated at /robotsim/navigation/cmd_vel_proposal and must not be remapped to live MC"
+}

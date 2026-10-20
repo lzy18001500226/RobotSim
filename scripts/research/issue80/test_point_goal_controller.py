@@ -3,7 +3,7 @@
 import math
 import unittest
 
-from point_goal_controller import (
+from robotsim_navigation.point_goal_controller import (
     ControllerConfig,
     Goal2D,
     NavState,
