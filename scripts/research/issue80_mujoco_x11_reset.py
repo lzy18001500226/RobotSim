@@ -463,56 +463,128 @@ class X11:
         finally:
             self.lib.XDestroyImage(image)
 
+    def _input_focus(self) -> int:
+        focus = ctypes.c_ulong()
+        revert = ctypes.c_int()
+        self.lib.XGetInputFocus(self.display, ctypes.byref(focus), ctypes.byref(revert))
+        return int(focus.value)
+
+    def _wait_for_input_focus(self, window: int, timeout_s: float) -> int:
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while True:
+            focused = self._input_focus()
+            if focused == window or time.monotonic() >= deadline:
+                return focused
+            time.sleep(0.02)
+
+    def _target_identity(self, pid: int, title: str, window: int) -> dict[str, Any] | None:
+        """Return the unique visible process/title/XID match, or fail closed."""
+        matches = [
+            item for item in self.list_windows()
+            if item["pid"] == pid
+            and item["title"] == title
+            and item["window_id"] == window
+            and item["viewable"]
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def activate_window(self, window: int, timeout_s: float = 1.0) -> dict[str, Any]:
+        """Best-effort EWMH request; focus is determined only by XGetInputFocus."""
         atom = int(self.lib.XInternAtom(self.display, b"_NET_ACTIVE_WINDOW", 0))
         if not atom:
-            raise RuntimeError("EWMH _NET_ACTIVE_WINDOW atom is unavailable")
+            focus = self._input_focus()
+            return {
+                "status": "EWMH_UNAVAILABLE",
+                "target_window_id": window,
+                "focus_before": focus,
+                "focus_after": focus,
+                "send_event_return": None,
+                "reason": "_NET_ACTIVE_WINDOW atom is unavailable",
+            }
         event = build_net_active_window_event(self.display, window, atom)
         mask = SUBSTRUCTURE_REDIRECT_MASK | SUBSTRUCTURE_NOTIFY_MASK
-        focus_before = ctypes.c_ulong()
-        revert_before = ctypes.c_int()
-        self.lib.XGetInputFocus(self.display, ctypes.byref(focus_before), ctypes.byref(revert_before))
+        focus_before = self._input_focus()
         sent = int(self.lib.XSendEvent(self.display, self.root, 0, mask, ctypes.byref(event)))
         self.lib.XFlush(self.display)
         self.lib.XSync(self.display, 0)
-        deadline = time.monotonic() + timeout_s
-        focus_after = ctypes.c_ulong()
-        revert_after = ctypes.c_int()
-        while True:
-            self.lib.XGetInputFocus(self.display, ctypes.byref(focus_after), ctypes.byref(revert_after))
-            if int(focus_after.value) == window or time.monotonic() >= deadline:
-                break
-            time.sleep(0.02)
+        focus_after = self._wait_for_input_focus(window, timeout_s)
         result = {
-            "status": "FOCUSED" if int(focus_after.value) == window else "FOCUS_NOT_CONFIRMED",
+            "status": "FOCUSED" if focus_after == window else "FOCUS_NOT_CONFIRMED",
             "target_window_id": window,
-            "focus_before": int(focus_before.value),
-            "focus_after": int(focus_after.value),
+            "focus_before": focus_before,
+            "focus_after": focus_after,
             "send_event_return": sent,
+            "send_event_return_is_focus_proof": False,
         }
-        if not sent or result["status"] != "FOCUSED":
-            raise RuntimeError(f"EWMH activation failed: {result}")
         return result
 
-    def send_backspace_once(self, window: int) -> dict[str, Any]:
+    def focus_window_direct(self, window: int, timeout_s: float = 0.5) -> dict[str, Any]:
+        """Try the narrowly scoped XRaiseWindow/XSetInputFocus path and verify it."""
+        self.lib.XRaiseWindow(self.display, window)
+        self.lib.XSync(self.display, 0)
+        self.lib.XSetInputFocus(self.display, window, REVERT_TO_PARENT, CURRENT_TIME)
+        self.lib.XSync(self.display, 0)
+        focus_after = self._wait_for_input_focus(window, timeout_s)
+        return {
+            "status": "FOCUSED" if focus_after == window else "FOCUS_NOT_CONFIRMED",
+            "target_window_id": window,
+            "focus_after": focus_after,
+            "xraise_attempted": True,
+            "xsetinputfocus_attempted": True,
+            "xsync_after_each_request": True,
+        }
+
+    def send_backspace_once(
+        self,
+        window: int,
+        expected_pid: int,
+        expected_title: str,
+        *,
+        ewmh_timeout_s: float = 1.0,
+        direct_timeout_s: float = 0.5,
+    ) -> dict[str, Any]:
+        """Send one key only after rechecking exact identity and verified X focus."""
+        identity_before = self._target_identity(expected_pid, expected_title, window)
+        if identity_before is None:
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "exact process/title/window/viewability match lost before focus",
+                "target_window_id": window,
+                "expected_pid": expected_pid,
+                "expected_title": expected_title,
+                "xtest_key_events_sent": 0,
+            }
         key_sym = int(self.lib.XStringToKeysym(b"BackSpace"))
         keycode = int(self.lib.XKeysymToKeycode(self.display, key_sym))
         if not key_sym or not keycode:
             raise RuntimeError("BackSpace keysym is not mapped on this X server")
-        focus_before = ctypes.c_ulong()
-        revert_before = ctypes.c_int()
-        self.lib.XGetInputFocus(self.display, ctypes.byref(focus_before), ctypes.byref(revert_before))
-        activation = self.activate_window(window)
-        self.lib.XRaiseWindow(self.display, window)
-        self.lib.XSetInputFocus(self.display, window, REVERT_TO_PARENT, CURRENT_TIME)
+        focus_before = self._input_focus()
+        activation = self.activate_window(window, timeout_s=ewmh_timeout_s)
+        direct_focus = {"status": "NOT_NEEDED", "target_window_id": window}
+        if activation["status"] != "FOCUSED":
+            direct_focus = self.focus_window_direct(window, timeout_s=direct_timeout_s)
+
+        # Recheck identity and focus after all activation requests, immediately
+        # before synthesizing a key. EWMH/XTest return values are not proof of
+        # focus; only the exact XID returned by XGetInputFocus is accepted.
+        identity_ready = self._target_identity(expected_pid, expected_title, window)
         self.lib.XSync(self.display, 0)
-        focus_after = ctypes.c_ulong()
-        revert_after = ctypes.c_int()
-        self.lib.XGetInputFocus(self.display, ctypes.byref(focus_after), ctypes.byref(revert_after))
-        if int(focus_after.value) != window:
-            raise RuntimeError(
-                f"target focus verification failed: wanted {window}, got {int(focus_after.value)}"
-            )
+        focus_after = self._input_focus()
+        if identity_ready is None or focus_after != window:
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "target identity or XGetInputFocus verification failed; no key sent",
+                "target_window_id": window,
+                "expected_pid": expected_pid,
+                "expected_title": expected_title,
+                "identity_before": identity_before,
+                "identity_before_dispatch": identity_ready,
+                "ewmh_activation": activation,
+                "direct_focus": direct_focus,
+                "focus_before": focus_before,
+                "focus_after": focus_after,
+                "xtest_key_events_sent": 0,
+            }
         dispatch_utc = datetime.now(timezone.utc).isoformat()
         dispatch_monotonic_ns = time.monotonic_ns()
         press_ok = int(self.xtst.XTestFakeKeyEvent(self.display, keycode, 1, CURRENT_TIME))
@@ -521,9 +593,9 @@ class X11:
         self.lib.XSync(self.display, 0)
         time.sleep(0.05)
         restored = None
-        if int(focus_before.value) not in (0, 1, window):
+        if focus_before not in (0, 1, window):
             self.lib.XSetInputFocus(
-                self.display, int(focus_before.value), REVERT_TO_PARENT, CURRENT_TIME
+                self.display, focus_before, REVERT_TO_PARENT, CURRENT_TIME
             )
             self.lib.XSync(self.display, 0)
             focus_restored = ctypes.c_ulong()
@@ -541,12 +613,18 @@ class X11:
             "key": "BackSpace",
             "keycode": keycode,
             "target_window_id": window,
+            "expected_pid": expected_pid,
+            "expected_title": expected_title,
+            "identity_before": identity_before,
+            "identity_before_dispatch": identity_ready,
             "ewmh_activation": activation,
-            "focus_before": int(focus_before.value),
-            "focus_verified_target": int(focus_after.value),
+            "direct_focus": direct_focus,
+            "focus_before": focus_before,
+            "focus_verified_target": focus_after,
             "focus_restored": restored,
             "press_return": press_ok,
             "release_return": release_ok,
+            "xtest_key_events_sent": 2,
             "dispatch_wall_utc": dispatch_utc,
             "dispatch_monotonic_ns": dispatch_monotonic_ns,
             "wall_utc": datetime.now(timezone.utc).isoformat(),
@@ -611,13 +689,21 @@ def main() -> int:
             return 2
         window = matches[0]
         before = x11.capture_png(args.window_id, args.before_png) if args.before_png else {"status": "NOT_REQUESTED"}
-        event = x11.send_backspace_once(args.window_id)
+        event = x11.send_backspace_once(
+            args.window_id,
+            expected_pid=args.expected_pid,
+            expected_title=args.expected_title,
+        )
         event_record = {
             "schema": "robotsim.issue80.reset-dispatch-event.v1",
             "window": window,
             "before_image": before,
             "event": event,
-            "classification": "KEY_DISPATCH_ONLY_STATE_CHANGE_MUST_BE_VERIFIED_BY_ROS_TRACE",
+            "classification": (
+                "KEY_DISPATCH_ONLY_STATE_CHANGE_MUST_BE_VERIFIED_BY_ROS_TRACE"
+                if event.get("status") == "KEY_DISPATCHED"
+                else "FOCUS_OR_IDENTITY_BLOCKED_NO_KEY_SENT"
+            ),
         }
         if args.dispatch_event_json:
             args.dispatch_event_json.parent.mkdir(parents=True, exist_ok=True)
@@ -626,6 +712,9 @@ def main() -> int:
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+        if event.get("status") != "KEY_DISPATCHED":
+            print(json.dumps({**event_record, "after_image": {"status": "NOT_CAPTURED_KEY_NOT_SENT"}}, indent=2))
+            return 2
         after = x11.capture_png(args.window_id, args.after_png) if args.after_png else {"status": "NOT_REQUESTED"}
         print(json.dumps({**event_record, "after_image": after}, indent=2))
         return 0
