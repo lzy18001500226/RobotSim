@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from issue80_m1_auto_reset_run import BoundedRun, M1_MODE_LOGIC
+from issue80_m1_auto_reset_run import BoundedRun, MC_LAUNCH, M1_MODE_LOGIC, SIM_LAUNCH
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
@@ -36,6 +36,18 @@ class ResearchScriptStagingTests(unittest.TestCase):
             record = next(row for row in manifest["scripts"] if row["name"] == M1_MODE_LOGIC.name)
             self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
             self.assertEqual(record["disposition"], "COPIED")
+
+    def test_stages_verified_runtime_launchers_under_names_used_by_container(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.stage_research_scripts()
+            manifest = json.loads((evidence / "staged_research_scripts.json").read_text())
+            by_name = {row["staged_name"]: row for row in manifest["scripts"]}
+            for staged_name, source in (("launch_sim.sh", SIM_LAUNCH), ("launch_mc.sh", MC_LAUNCH)):
+                staged = evidence / staged_name
+                self.assertEqual(staged.read_bytes(), source.read_bytes())
+                self.assertEqual(by_name[staged_name]["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
 
     def test_refuses_to_overwrite_a_stale_staged_module(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

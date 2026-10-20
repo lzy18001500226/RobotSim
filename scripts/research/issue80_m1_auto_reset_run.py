@@ -22,6 +22,8 @@ ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 OBSERVER = Path(__file__).with_name("issue80_m1_reset_state_trace.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
+SIM_LAUNCH = Path(__file__).with_name("issue80_launch_sim.sh")
+MC_LAUNCH = Path(__file__).with_name("issue80_launch_mc.sh")
 IMAGE = "robotsim:humble-raicom-runtime-20261019"
 IMAGE_DIGEST = "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31"
 RESET_OBSERVER_DURATION_S = 8.0
@@ -113,21 +115,35 @@ class BoundedRun:
 
     def stage_research_scripts(self) -> None:
         """Stage exact research code snapshots without overwriting evidence."""
-        sources = (Path(__file__), X11_HELPER, ANALYZER, M1_RUNNER, OBSERVER, M1_MODE_LOGIC)
+        sources = (
+            (Path(__file__), Path(__file__).name),
+            (X11_HELPER, X11_HELPER.name),
+            (ANALYZER, ANALYZER.name),
+            (M1_RUNNER, M1_RUNNER.name),
+            (OBSERVER, OBSERVER.name),
+            (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
+            (SIM_LAUNCH, "launch_sim.sh"),
+            (MC_LAUNCH, "launch_mc.sh"),
+        )
         records: list[dict[str, str]] = []
-        for source in sources:
+        for source, staged_name in sources:
             payload = source.read_bytes()
-            target = self.evidence / source.name
+            target = self.evidence / staged_name
             digest = hashlib.sha256(payload).hexdigest()
             if target.exists():
                 if target.is_symlink() or not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != digest:
-                    raise RuntimeError(f"staged research script differs from current source: {target.name}")
+                    raise RuntimeError(f"staged runtime input differs from current source: {target.name}")
                 disposition = "PRESTAGED_IDENTICAL"
             else:
                 with target.open("xb") as stream:
                     stream.write(payload)
                 disposition = "COPIED"
-            records.append({"name": source.name, "sha256": digest, "disposition": disposition})
+            records.append({
+                "name": source.name,
+                "staged_name": staged_name,
+                "sha256": digest,
+                "disposition": disposition,
+            })
         manifest = self.evidence / "staged_research_scripts.json"
         with manifest.open("x", encoding="utf-8") as stream:
             json.dump({"schema": "robotsim.issue80.staged-research-scripts.v1", "scripts": records}, stream, indent=2)
