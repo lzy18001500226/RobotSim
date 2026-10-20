@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
+import re
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -51,6 +54,162 @@ WATCHDOG_LIMITATION = (
     "threading.Timer runs in this Python process and can request zero while the process is alive; "
     "it cannot publish after this process crashes or is killed."
 )
+MC_ROS2_NODE_BASE_NAME = "mc_ros2_node"
+MC_RUNTIME_EXECUTABLE = "aima-mc-app-main"
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+@dataclass(frozen=True)
+class VerifiedMcRuntimeIdentity:
+    """MC ROS node identity tied to its configured name and live runtime PID."""
+
+    configured_node_name: str
+    process_pid: int
+    process_executable: str
+    mc_config_sha256: str
+    startup_log_sha256: str
+
+    @property
+    def node_name(self) -> str:
+        return f"{self.configured_node_name}{self.process_pid}"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "configured_node_name": self.configured_node_name,
+            "process_pid": self.process_pid,
+            "process_executable": self.process_executable,
+            "graph_node_name": self.node_name,
+            "mc_config_sha256": self.mc_config_sha256,
+            "startup_log_sha256": self.startup_log_sha256,
+            "provenance": (
+                "configured AimRT ros2_plugin base name + Process PID from this run's MC startup log, "
+                "cross-checked against the live /proc executable and config argv"
+            ),
+        }
+
+
+def load_verified_mc_runtime_identity(
+    mc_config_path: str | Path,
+    mc_startup_log_path: str | Path,
+    *,
+    proc_root: str | Path = "/proc",
+) -> VerifiedMcRuntimeIdentity:
+    """Derive the MC graph name only from the isolated runtime's own process evidence.
+
+    The pinned runtime config names its ROS 2 node ``mc_ros2_node``. In the
+    reviewed run, AimRT reported process PID 245 and the ROS graph exposed
+    ``mc_ros2_node245``. Require that exact configured-name + live-process-PID
+    relationship; never accept arbitrary prefix matches.
+    """
+    import yaml
+
+    config_path = Path(mc_config_path).resolve(strict=True)
+    config_bytes = config_path.read_bytes()
+    try:
+        config = yaml.safe_load(config_bytes)
+    except yaml.YAMLError as exc:
+        raise ValueError("MC config is not valid YAML") from exc
+    try:
+        plugins = config["aimrt"]["plugin"]["plugins"]
+    except (TypeError, KeyError) as exc:
+        raise ValueError("MC config lacks aimrt.plugin.plugins") from exc
+    ros2_plugins = [
+        plugin for plugin in plugins
+        if isinstance(plugin, Mapping) and plugin.get("name") == "ros2_plugin"
+    ] if isinstance(plugins, list) else []
+    if len(ros2_plugins) != 1:
+        raise ValueError(f"expected one configured MC ros2_plugin, found {len(ros2_plugins)}")
+    options = ros2_plugins[0].get("options")
+    configured_node_name = options.get("node_name") if isinstance(options, Mapping) else None
+    if configured_node_name != MC_ROS2_NODE_BASE_NAME:
+        raise ValueError(
+            f"unexpected MC ros2_plugin node_name: {configured_node_name!r}"
+        )
+
+    startup_log_path = Path(mc_startup_log_path)
+    startup_log_bytes = startup_log_path.read_bytes()
+    startup_log = _ANSI_ESCAPE_RE.sub(
+        "", startup_log_bytes.decode("utf-8", errors="replace")
+    )
+    runtime_node_names = set(re.findall(
+        r"^[ \t]*node_name:[ \t]*([A-Za-z0-9_-]+)[ \t]*$",
+        startup_log,
+        flags=re.MULTILINE,
+    ))
+    if configured_node_name not in runtime_node_names:
+        raise ValueError("MC startup log does not report the configured ros2_plugin node name")
+    pids = set(re.findall(
+        r"^[ \t]*\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|[ \t]*$",
+        startup_log,
+        flags=re.MULTILINE,
+    ))
+    executables = set(re.findall(
+        r"^[ \t]*\|[ \t]*Executable Path[ \t]*\|[ \t]*(.*?)\s*\|[ \t]*$",
+        startup_log,
+        flags=re.MULTILINE,
+    ))
+    if len(pids) != 1 or len(executables) != 1:
+        raise ValueError(
+            f"MC startup log must identify one process PID and executable; got {pids!r}, {executables!r}"
+        )
+    process_pid = int(next(iter(pids)))
+    if process_pid <= 1:
+        raise ValueError("MC startup log contains an invalid process PID")
+    logged_executable = next(iter(executables))
+    if Path(logged_executable).name != MC_RUNTIME_EXECUTABLE:
+        raise ValueError(f"unexpected MC executable in startup log: {logged_executable!r}")
+
+    proc_dir = Path(proc_root) / str(process_pid)
+    try:
+        process_executable = os.readlink(proc_dir / "exe")
+        argv = [os.fsdecode(item) for item in (proc_dir / "cmdline").read_bytes().split(b"\0") if item]
+    except OSError as exc:
+        raise ValueError(f"MC startup PID {process_pid} is not a readable live process") from exc
+    if Path(process_executable).name != MC_RUNTIME_EXECUTABLE:
+        raise ValueError(f"PID {process_pid} is not the installed MC executable")
+    if not argv or Path(argv[0]).name != MC_RUNTIME_EXECUTABLE:
+        raise ValueError(f"PID {process_pid} argv does not identify the installed MC executable")
+    config_args = [
+        arg.split("=", 1)[1]
+        for arg in argv
+        if arg.startswith("--cfg_file_path=")
+    ]
+    if len(config_args) != 1:
+        raise ValueError("live MC process has no unique config path argument")
+    process_config_path = Path(config_args[0]).resolve(strict=False)
+    if process_config_path != config_path:
+        raise ValueError("live MC process is not running with the verified MC config")
+
+    return VerifiedMcRuntimeIdentity(
+        configured_node_name=str(configured_node_name),
+        process_pid=process_pid,
+        process_executable=process_executable,
+        mc_config_sha256=hashlib.sha256(config_bytes).hexdigest(),
+        startup_log_sha256=hashlib.sha256(startup_log_bytes).hexdigest(),
+    )
+
+
+def _verified_mc_identity_error(identity: VerifiedMcRuntimeIdentity | None) -> str | None:
+    if not isinstance(identity, VerifiedMcRuntimeIdentity):
+        return "mc_runtime_identity_unverified"
+    if (
+        identity.configured_node_name != MC_ROS2_NODE_BASE_NAME
+        or isinstance(identity.process_pid, bool)
+        or not isinstance(identity.process_pid, int)
+        or identity.process_pid <= 1
+        or not isinstance(identity.process_executable, str)
+    ):
+        return "mc_runtime_identity_invalid"
+    if identity.node_name != f"{MC_ROS2_NODE_BASE_NAME}{identity.process_pid}":
+        return "mc_runtime_node_suffix_not_process_pid"
+    if Path(identity.process_executable).name != MC_RUNTIME_EXECUTABLE:
+        return "mc_runtime_executable_mismatch"
+    if not all(
+        re.fullmatch(r"[0-9a-f]{64}", digest)
+        for digest in (identity.mc_config_sha256, identity.startup_log_sha256)
+    ):
+        return "mc_runtime_provenance_digest_missing"
+    return None
 
 
 def forward_projected_displacement(start_pose: Mapping[str, Any], end_pose: Mapping[str, Any]) -> float:
@@ -296,9 +455,13 @@ def validate_runtime_scope(
     publisher_depth: int,
     subscriber_histories: list[str],
     subscriber_depths: list[int],
-    expected_mc_node_name: str = "mc_ros2_node",
+    mc_identity: VerifiedMcRuntimeIdentity | None,
 ) -> str | None:
     """Fail closed unless this is the isolated local MC/simulator graph."""
+    identity_fault = _verified_mc_identity_error(mc_identity)
+    if identity_fault:
+        return identity_fault
+    assert mc_identity is not None
     if rmw_implementation != "rmw_fastrtps_cpp":
         return "unexpected_rmw_implementation"
     if ros_domain_id != "20":
@@ -307,8 +470,9 @@ def validate_runtime_scope(
         return "container_network_not_isolated_bridge"
     if publisher_names != [own_node_name]:
         return f"velocity_publisher_conflict:{publisher_names!r}"
-    if subscriber_names != [expected_mc_node_name]:
-        return f"expected_only_one_local_mc_subscriber:{subscriber_names!r}"
+    expected_node_name = mc_identity.node_name
+    if subscriber_names != [expected_node_name]:
+        return f"expected_only_verified_mc_subscriber:{expected_node_name!r}:{subscriber_names!r}"
     if publisher_reliability != "reliable":
         return f"command_publisher_qos_not_reliable:{publisher_reliability!r}"
     if len(subscriber_reliabilities) != len(subscriber_names):
@@ -330,8 +494,16 @@ def validate_runtime_scope(
     return None
 
 
-def validate_local_sim_publishers(topic_publishers: Mapping[str, list[str]]) -> str | None:
-    """Require one state publisher per simulator stream and one MC leg-command publisher."""
+def validate_local_sim_publishers(
+    topic_publishers: Mapping[str, list[str]],
+    *,
+    mc_identity: VerifiedMcRuntimeIdentity | None,
+) -> str | None:
+    """Require one state publisher per simulator stream and the verified MC command publisher."""
+    identity_fault = _verified_mc_identity_error(mc_identity)
+    if identity_fault:
+        return identity_fault
+    assert mc_identity is not None
     required = (
         "/aima/hal/odom/state",
         "/aima/hal/imu/torso/state",
@@ -342,7 +514,7 @@ def validate_local_sim_publishers(topic_publishers: Mapping[str, list[str]]) -> 
         publishers = topic_publishers.get(topic)
         if not isinstance(publishers, list) or len(publishers) != 1:
             return f"unexpected_local_runtime_publishers:{topic}:{publishers!r}"
-    if topic_publishers["/aima/hal/joint/leg/command"] != ["mc_ros2_node"]:
+    if topic_publishers["/aima/hal/joint/leg/command"] != [mc_identity.node_name]:
         return (
             "unexpected_mc_leg_command_publisher:"
             f"{topic_publishers['/aima/hal/joint/leg/command']!r}"

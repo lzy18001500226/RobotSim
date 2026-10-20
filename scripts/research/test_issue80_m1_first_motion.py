@@ -25,9 +25,11 @@ from issue80_m1_first_motion import (
     VELOCITY_SOURCE_NAME,
     ZERO_STOP_MIN_S,
     ZERO_STOP_MIN_MESSAGES,
+    VerifiedMcRuntimeIdentity,
     classify_source_registration,
     classify_physical_motion,
     derive_stationary_odom_baseline,
+    load_verified_mc_runtime_identity,
     load_leg_joint_limits,
     load_mc_input_source_timeouts,
     run_first_motion_window,
@@ -46,6 +48,15 @@ LIMITS = {
         "max_velocity": 11.936,
     }
 }
+
+
+TEST_MC_IDENTITY = VerifiedMcRuntimeIdentity(
+    configured_node_name="mc_ros2_node",
+    process_pid=245,
+    process_executable="/workspace/raicom2026/mc/bin/aima-mc-app-main",
+    mc_config_sha256="a" * 64,
+    startup_log_sha256="b" * 64,
+)
 
 
 class FakeClock:
@@ -320,13 +331,89 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertEqual(result["response_status_value"], 2)
         self.assertEqual(result["message"], "security protection")
 
-    def test_transport_scope_requires_bridge_domain_and_one_mc_endpoint(self) -> None:
+    def test_installed_mc_node_suffix_is_bound_to_config_and_live_process_pid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "mc_sim.yaml"
+            config_path.write_text(json.dumps({"aimrt": {"plugin": {"plugins": [
+                {"name": "ros2_plugin", "options": {"node_name": "mc_ros2_node"}},
+            ]}}}), encoding="utf-8")
+            startup_log_path = root / "mc-console.log"
+            startup_log_path.write_text(
+                "        node_name: mc_ros2_node\n"
+                "| Executable Path | /workspace/raicom2026/mc/bin/aima-mc-app-main |\n"
+                "| Process PID     | 245                                           |\n",
+                encoding="utf-8",
+            )
+            fake_proc = root / "proc" / "245"
+            fake_proc.mkdir(parents=True)
+            fake_executable = root / "bin" / "aima-mc-app-main"
+            fake_executable.parent.mkdir()
+            fake_executable.write_bytes(b"offline process identity fixture")
+            (fake_proc / "exe").symlink_to(fake_executable)
+            (fake_proc / "cmdline").write_bytes(
+                f"./aima-mc-app-main\0--cfg_file_path={config_path}\0".encode()
+            )
+
+            identity = load_verified_mc_runtime_identity(
+                config_path, startup_log_path, proc_root=root / "proc"
+            )
+
+        self.assertEqual(identity.configured_node_name, "mc_ros2_node")
+        self.assertEqual(identity.process_pid, 245)
+        self.assertEqual(identity.node_name, "mc_ros2_node245")
+        self.assertEqual(identity.process_executable, str(fake_executable))
+        self.assertEqual(len(identity.mc_config_sha256), 64)
+        self.assertEqual(len(identity.startup_log_sha256), 64)
+
+    def test_mc_identity_loader_rejects_pid_or_config_provenance_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "mc_sim.yaml"
+            config_path.write_text(json.dumps({"aimrt": {"plugin": {"plugins": [
+                {"name": "ros2_plugin", "options": {"node_name": "mc_ros2_node"}},
+            ]}}}), encoding="utf-8")
+            startup_log_path = root / "mc-console.log"
+            startup_log_path.write_text(
+                "        node_name: mc_ros2_node\n"
+                "| Executable Path | /runtime/aima-mc-app-main |\n"
+                "| Process PID     | 245                         |\n",
+                encoding="utf-8",
+            )
+            fake_proc = root / "proc" / "245"
+            fake_proc.mkdir(parents=True)
+            fake_executable = root / "bin" / "aima-mc-app-main"
+            fake_executable.parent.mkdir()
+            fake_executable.write_bytes(b"offline process identity fixture")
+            (fake_proc / "exe").symlink_to(fake_executable)
+            (fake_proc / "cmdline").write_bytes(
+                b"./aima-mc-app-main\0--cfg_file_path=/different/mc_sim.yaml\0"
+            )
+            with self.assertRaisesRegex(ValueError, "verified MC config"):
+                load_verified_mc_runtime_identity(
+                    config_path, startup_log_path, proc_root=root / "proc"
+                )
+            (fake_proc / "cmdline").write_bytes(
+                f"./aima-mc-app-main\0--cfg_file_path={config_path}\0".encode()
+            )
+            startup_log_path.write_text(
+                "        node_name: mc_ros2_node_spoof\n"
+                "| Executable Path | /runtime/aima-mc-app-main |\n"
+                "| Process PID     | 245                         |\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "startup log does not report"):
+                load_verified_mc_runtime_identity(
+                    config_path, startup_log_path, proc_root=root / "proc"
+                )
+
+    def test_transport_scope_requires_bridge_domain_and_provenance_bound_mc_endpoint(self) -> None:
         self.assertIsNone(validate_runtime_scope(
             rmw_implementation="rmw_fastrtps_cpp",
             ros_domain_id="20",
             docker_network_mode="bridge",
             publisher_names=["issue80_m1_focused_diagnostic"],
-            subscriber_names=["mc_ros2_node"],
+            subscriber_names=["mc_ros2_node245"],
             own_node_name="issue80_m1_focused_diagnostic",
             publisher_reliability="reliable",
             subscriber_reliabilities=["best_effort"],
@@ -334,13 +421,14 @@ class FirstMotionSafetyTests(unittest.TestCase):
             subscriber_durabilities=["volatile"],
             publisher_history="keep_last", publisher_depth=10,
             subscriber_histories=["keep_last"], subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
         ))
         self.assertIn("network", validate_runtime_scope(
             rmw_implementation="rmw_fastrtps_cpp",
             ros_domain_id="20",
             docker_network_mode="host",
             publisher_names=["issue80_m1_focused_diagnostic"],
-            subscriber_names=["mc_ros2_node"],
+            subscriber_names=["mc_ros2_node245"],
             own_node_name="issue80_m1_focused_diagnostic",
             publisher_reliability="reliable",
             subscriber_reliabilities=["best_effort"],
@@ -348,13 +436,14 @@ class FirstMotionSafetyTests(unittest.TestCase):
             subscriber_durabilities=["volatile"],
             publisher_history="keep_last", publisher_depth=10,
             subscriber_histories=["keep_last"], subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
         ))
         self.assertIn("publisher", validate_runtime_scope(
             rmw_implementation="rmw_fastrtps_cpp",
             ros_domain_id="20",
             docker_network_mode="bridge",
             publisher_names=["issue80_m1_focused_diagnostic", "other"],
-            subscriber_names=["mc_ros2_node"],
+            subscriber_names=["mc_ros2_node245"],
             own_node_name="issue80_m1_focused_diagnostic",
             publisher_reliability="reliable",
             subscriber_reliabilities=["best_effort"],
@@ -362,13 +451,14 @@ class FirstMotionSafetyTests(unittest.TestCase):
             subscriber_durabilities=["volatile"],
             publisher_history="keep_last", publisher_depth=10,
             subscriber_histories=["keep_last"], subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
         ))
 
     def test_transport_scope_rejects_rmw_or_domain_mismatch(self) -> None:
         common = dict(
             docker_network_mode="bridge",
             publisher_names=["issue80_m1_focused_diagnostic"],
-            subscriber_names=["mc_ros2_node"],
+            subscriber_names=["mc_ros2_node245"],
             own_node_name="issue80_m1_focused_diagnostic",
             publisher_reliability="reliable",
             subscriber_reliabilities=["best_effort"],
@@ -378,6 +468,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             publisher_depth=10,
             subscriber_histories=["keep_last"],
             subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
         )
         self.assertIn("rmw", validate_runtime_scope(
             rmw_implementation="rmw_cyclonedds_cpp", ros_domain_id="20", **common
@@ -392,7 +483,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             ros_domain_id="20",
             docker_network_mode="bridge",
             publisher_names=["issue80_m1_focused_diagnostic"],
-            subscriber_names=["mc_ros2_node"],
+            subscriber_names=["mc_ros2_node245"],
             own_node_name="issue80_m1_focused_diagnostic",
             publisher_reliability="best_effort",
             subscriber_reliabilities=["best_effort"],
@@ -400,6 +491,60 @@ class FirstMotionSafetyTests(unittest.TestCase):
             subscriber_durabilities=["volatile"],
             publisher_history="keep_last", publisher_depth=10,
             subscriber_histories=["keep_last"], subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
+        ))
+
+    def test_transport_scope_rejects_name_lookalikes_and_unproven_or_extra_nodes(self) -> None:
+        common = dict(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="keep_last",
+            publisher_depth=10,
+            subscriber_histories=["keep_last"],
+            subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
+        )
+        for nodes in (
+            ["mc_ros2_node"],
+            ["mc_ros2_node246"],
+            ["mc_ros2_node245_extra"],
+            ["prefix_mc_ros2_node245"],
+            ["mc_ros2_node245", "external_controller"],
+        ):
+            with self.subTest(nodes=nodes):
+                self.assertIn("subscriber", validate_runtime_scope(
+                    subscriber_names=nodes,
+                    **common,
+                ))
+        self.assertEqual(validate_runtime_scope(
+            subscriber_names=["mc_ros2_node245"],
+            **{**common, "mc_identity": None},
+        ), "mc_runtime_identity_unverified")
+
+    def test_transport_scope_keeps_unknown_publisher_history_and_depth_blocked(self) -> None:
+        self.assertIn("publisher_history_depth", validate_runtime_scope(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="unknown",
+            publisher_depth=0,
+            subscriber_histories=["keep_last"],
+            subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
         ))
 
     def test_transport_scope_rejects_extra_velocity_subscriber(self) -> None:
@@ -408,7 +553,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             ros_domain_id="20",
             docker_network_mode="bridge",
             publisher_names=["issue80_m1_focused_diagnostic"],
-            subscriber_names=["mc_ros2_node", "external_controller"],
+            subscriber_names=["mc_ros2_node245", "external_controller"],
             own_node_name="issue80_m1_focused_diagnostic",
             publisher_reliability="reliable",
             subscriber_reliabilities=["best_effort", "best_effort"],
@@ -418,6 +563,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             publisher_depth=10,
             subscriber_histories=["keep_last", "keep_last"],
             subscriber_depths=[10, 10],
+            mc_identity=TEST_MC_IDENTITY,
         ))
 
     def test_local_state_and_mc_command_topics_require_single_publishers(self) -> None:
@@ -425,11 +571,20 @@ class FirstMotionSafetyTests(unittest.TestCase):
             "/aima/hal/odom/state": ["aima-sim"],
             "/aima/hal/imu/torso/state": ["aima-sim"],
             "/aima/hal/joint/leg/state": ["aima-sim"],
-            "/aima/hal/joint/leg/command": ["mc_ros2_node"],
+            "/aima/hal/joint/leg/command": ["mc_ros2_node245"],
         }
-        self.assertIsNone(validate_local_sim_publishers(topics))
+        self.assertIsNone(validate_local_sim_publishers(topics, mc_identity=TEST_MC_IDENTITY))
         topics["/aima/hal/joint/leg/state"].append("external_robot")
-        self.assertIn("unexpected_local_runtime_publishers", validate_local_sim_publishers(topics))
+        self.assertIn(
+            "unexpected_local_runtime_publishers",
+            validate_local_sim_publishers(topics, mc_identity=TEST_MC_IDENTITY),
+        )
+        topics["/aima/hal/joint/leg/state"].pop()
+        topics["/aima/hal/joint/leg/command"] = ["mc_ros2_node245_extra"]
+        self.assertIn(
+            "unexpected_mc_leg_command_publisher",
+            validate_local_sim_publishers(topics, mc_identity=TEST_MC_IDENTITY),
+        )
 
     def test_stale_telemetry_rejects_before_motion_and_zero_stops(self) -> None:
         sample = self.snapshot()

@@ -32,6 +32,7 @@ from issue80_m1_first_motion import (
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     derive_stationary_odom_baseline, load_leg_joint_limits, load_mc_input_source_timeouts,
+    VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     run_first_motion_window, snapshot_fault,
     validate_local_sim_publishers, validate_first_motion_authorization,
     validate_runtime_scope,
@@ -136,6 +137,7 @@ class FocusedM1Diagnostic(Node):
         self.events: list[dict[str, Any]] = []
         self.mode_observations: list[dict[str, Any]] = []
         self.source_observations: list[dict[str, Any]] = []
+        self.mc_runtime_identity: VerifiedMcRuntimeIdentity | None = None
         self.scope_evidence: dict[str, Any] | None = None
         self.pulse_result: dict[str, Any] | None = None
 
@@ -535,6 +537,16 @@ class FocusedM1Diagnostic(Node):
         raise TimeoutError("fresh upright STAND_DEFAULT telemetry not observed; verified Reset is required")
 
     def check_transport_scope(self) -> dict[str, Any]:
+        try:
+            mc_identity = load_verified_mc_runtime_identity(
+                self.args.mc_sim_config_path,
+                self.output_dir / "mc-console.log",
+            )
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"MC runtime identity could not be verified: {exc}") from exc
+        if mc_identity.mc_config_sha256 != self.mc_sim_config_sha256:
+            raise RuntimeError("MC runtime identity config hash differs from the loaded MC safety config")
+        self.mc_runtime_identity = mc_identity
         deadline = time.monotonic() + 2.0
         last_publishers: list[str] = []
         last_subscribers: list[str] = []
@@ -577,9 +589,13 @@ class FocusedM1Diagnostic(Node):
                 publisher_depth=int(publisher_qos.get("depth", 0)),
                 subscriber_histories=[str(qos["history"]) for qos in last_subscriber_qos],
                 subscriber_depths=[int(qos["depth"]) for qos in last_subscriber_qos],
+                mc_identity=mc_identity,
             )
             if fault is None:
-                fault = validate_local_sim_publishers(state_topic_publishers)
+                fault = validate_local_sim_publishers(
+                    state_topic_publishers,
+                    mc_identity=mc_identity,
+                )
             if fault is None:
                 result = {
                     "status": "PASS",
@@ -588,6 +604,7 @@ class FocusedM1Diagnostic(Node):
                     "docker_network_mode": os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
                     "velocity_publishers": last_publishers,
                     "velocity_subscribers": last_subscribers,
+                    "verified_mc_runtime_identity": mc_identity.as_dict(),
                     "publisher_qos": last_publisher_qos,
                     "subscriber_qos": last_subscriber_qos,
                     "local_state_and_command_publishers": state_topic_publishers,

@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,6 +43,88 @@ class RunDeadline(TimeoutError):
     pass
 
 
+M1_CHILD_RESULT_STATUSES = frozenset({"PASS", "BLOCKED"})
+CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def decode_m1_child_result(serialized: str) -> dict[str, Any]:
+    """Decode one child result object, accepting one legacy string wrapper.
+
+    The child currently writes a JSON string containing its Python mapping
+    representation because its local _json_safe helper does not normalize
+    Mapping instances. Prefer one extra JSON decode; retain a literal-only
+    compatibility path for that observed representation. Never eval code.
+    """
+    try:
+        value: Any = json.loads(serialized)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"child result is not valid JSON: {exc}") from exc
+
+    if isinstance(value, str):
+        wrapped_value = value
+        try:
+            value = json.loads(wrapped_value)
+        except json.JSONDecodeError:
+            try:
+                value = ast.literal_eval(wrapped_value)
+            except (SyntaxError, ValueError, TypeError) as exc:
+                raise ValueError("child result string wrapper is not a mapping literal") from exc
+
+    if not isinstance(value, Mapping):
+        raise ValueError(f"child result must decode to a mapping, got {type(value).__name__}")
+    result = dict(value)
+    status = result.get("status")
+    if not isinstance(status, str) or status not in M1_CHILD_RESULT_STATUSES:
+        raise ValueError(f"child result has invalid status: {status!r}")
+    return result
+
+
+def assess_container_absence(
+    *,
+    inspect_returncode: int,
+    list_returncode: int,
+    list_stdout: str,
+    container_name: str,
+    container_id: str | None,
+) -> dict[str, Any]:
+    """Require inspect failure plus a successful exact name/ID inventory miss."""
+    entries: list[tuple[str, str]] = []
+    inventory_valid = bool(container_name)
+    for line in list_stdout.splitlines():
+        if not line:
+            continue
+        fields = line.split("\t", 1)
+        if (
+            len(fields) != 2
+            or CONTAINER_ID_RE.fullmatch(fields[0]) is None
+            or not fields[1]
+        ):
+            inventory_valid = False
+            break
+        entries.append((fields[0], fields[1]))
+    if container_id is not None and CONTAINER_ID_RE.fullmatch(container_id) is None:
+        inventory_valid = False
+
+    name_present = any(name == container_name for _, name in entries)
+    id_present = bool(container_id) and any(cid == container_id for cid, _ in entries)
+    verified_absent = (
+        inspect_returncode != 0
+        and list_returncode == 0
+        and inventory_valid
+        and not name_present
+        and not id_present
+    )
+    return {
+        "container_absent": verified_absent,
+        "inspect_returncode": inspect_returncode,
+        "container_list_returncode": list_returncode,
+        "container_list_valid": inventory_valid,
+        "container_name_present": name_present,
+        "container_id_present": id_present,
+        "container_list_entry_count": len(entries),
+    }
+
+
 class BoundedRun:
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -51,6 +136,7 @@ class BoundedRun:
         self.step = 0
         self.steps: list[dict[str, Any]] = []
         self.container_created = False
+        self.container_id: str | None = None
         self.network_mode: str | None = None
         self.cleanup_evidence: dict[str, Any] = {
             "attempted": False,
@@ -178,6 +264,9 @@ class BoundedRun:
         if not isinstance(payload, list) or len(payload) != 1:
             raise RuntimeError("container inspect did not return one isolated runtime")
         container = payload[0]
+        inspected_id = container.get("Id")
+        if isinstance(inspected_id, str) and CONTAINER_ID_RE.fullmatch(inspected_id):
+            self.container_id = inspected_id
         self.network_mode = str(container.get("HostConfig", {}).get("NetworkMode", ""))
         if self.network_mode != "bridge":
             raise RuntimeError(f"first-motion test requires bridge-isolated container; got {self.network_mode!r}")
@@ -450,7 +539,16 @@ class BoundedRun:
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
-            self.m1_result = json.loads(result_file.read_text(encoding="utf-8"))
+            try:
+                self.m1_result = decode_m1_child_result(result_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                self.m1_result = {
+                    "status": "CHILD_RESULT_INVALID",
+                    "fault": f"child result could not be decoded: {type(exc).__name__}: {exc}",
+                    "child_returncode": result.returncode,
+                    "child_stdout_tail": result.stdout[-4000:],
+                    "child_stderr_tail": result.stderr[-4000:],
+                }
         else:
             self.m1_result = {"status":"NO_RESULT_FILE","returncode":result.returncode,"stdout":result.stdout,"stderr":result.stderr}
 
@@ -479,7 +577,10 @@ class BoundedRun:
         except Exception:
             self.cleanup_evidence["operations"].append({"operation": "copy_tmpfs_audit", "error": "exception"})
         try:
-            inspect = subprocess.run(["docker", "inspect", self.container], text=True, capture_output=True, timeout=3.0)
+            inspect = subprocess.run(
+                ["docker", "inspect", "--type=container", self.container_id or self.container],
+                text=True, capture_output=True, timeout=3.0,
+            )
             if inspect.returncode == 0:
                 with (self.evidence / "container-inspect-final.json").open("x", encoding="utf-8") as f:
                     f.write(inspect.stdout)
@@ -501,23 +602,38 @@ class BoundedRun:
                 })
             except Exception:
                 self.cleanup_evidence["operations"].append({"operation": operation, "error": "exception"})
+        verify: subprocess.CompletedProcess[str] | None = None
+        listed: subprocess.CompletedProcess[str] | None = None
+        verify_error = None
+        list_error = None
         try:
             verify = subprocess.run(
-                ["docker", "inspect", self.container], text=True, capture_output=True, timeout=3.0
+                ["docker", "inspect", "--type=container", self.container_id or self.container],
+                text=True, capture_output=True, timeout=3.0,
             )
-            absent = verify.returncode != 0 and "No such object" in verify.stderr
-            self.cleanup_evidence["container_absent_after_cleanup"] = absent
-            self.cleanup_evidence["operations"].append({
-                "operation": "verify_container_absent",
-                "returncode": verify.returncode,
-                "container_absent": absent,
-            })
-        except Exception:
-            self.cleanup_evidence["container_absent_after_cleanup"] = False
-            self.cleanup_evidence["operations"].append({
-                "operation": "verify_container_absent",
-                "error": "exception",
-            })
+        except Exception as exc:
+            verify_error = f"{type(exc).__name__}: {exc}"
+        try:
+            listed = subprocess.run(
+                ["docker", "ps", "-a", "--no-trunc", "--format", "{{.ID}}\t{{.Names}}"],
+                text=True, capture_output=True, timeout=3.0,
+            )
+        except Exception as exc:
+            list_error = f"{type(exc).__name__}: {exc}"
+        absence = assess_container_absence(
+            inspect_returncode=verify.returncode if verify else -1,
+            list_returncode=listed.returncode if listed else -1,
+            list_stdout=listed.stdout if listed else "",
+            container_name=self.container,
+            container_id=self.container_id,
+        )
+        self.cleanup_evidence["container_absent_after_cleanup"] = absence["container_absent"]
+        self.cleanup_evidence["operations"].append({
+            "operation": "verify_container_absent",
+            **absence,
+            "inspect_error": verify_error,
+            "container_list_error": list_error,
+        })
 
     def apply_container_teardown_gate(self, result: dict[str, Any]) -> None:
         result["container_teardown"] = self.cleanup_evidence
@@ -554,6 +670,9 @@ class BoundedRun:
             self.run_m1()
             result["m1_result"]=self.m1_result
             result["m1_status"]=(self.m1_result or {}).get("status","UNKNOWN")
+            child_fault=(self.m1_result or {}).get("fault")
+            if isinstance(child_fault,str) and child_fault:
+                result["fault"]=child_fault
             result["status"]="PASS" if result["m1_status"]=="PASS" else "BLOCKED"
         except Exception as exc:
             self.fault=f"{type(exc).__name__}: {exc}"

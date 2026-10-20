@@ -13,6 +13,7 @@ from pathlib import Path
 
 from issue80_m1_auto_reset_run import (
     BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, SIM_LAUNCH,
+    assess_container_absence, decode_m1_child_result,
 )
 
 
@@ -141,14 +142,16 @@ class ResearchScriptStagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = self.make_runner(Path(temp_dir))
             runner.container_created = True
+            runner.container_id = "a" * 64
             runner.run = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
             docker_results = [
-                subprocess.CompletedProcess(["docker", "inspect"], 0, "[]", ""),
+                subprocess.CompletedProcess(["docker", "inspect"], 0, json.dumps([{"Id": "a" * 64}]), ""),
                 subprocess.CompletedProcess(["docker", "stop"], 0, "test-container", ""),
                 subprocess.CompletedProcess(["docker", "rm"], 0, "test-container", ""),
                 subprocess.CompletedProcess(
-                    ["docker", "inspect"], 1, "", "Error: No such object: test-container"
+                    ["docker", "inspect"], 1, "", "daemon locale-specific missing-object text"
                 ),
+                subprocess.CompletedProcess(["docker", "ps"], 0, "", ""),
             ]
             with patch("issue80_m1_auto_reset_run.subprocess.run", side_effect=docker_results):
                 runner.cleanup()
@@ -158,6 +161,135 @@ class ResearchScriptStagingTests(unittest.TestCase):
                 [row["operation"] for row in runner.cleanup_evidence["operations"]][-3:],
                 ["docker_stop", "docker_rm", "verify_container_absent"],
             )
+
+    def test_cleanup_verification_requires_positive_exact_name_and_id_absence(self) -> None:
+        container_id = "a" * 64
+        absent = assess_container_absence(
+            inspect_returncode=1,
+            list_returncode=0,
+            list_stdout=f"{'b' * 64}\tother-container\n",
+            container_name="test-container",
+            container_id=container_id,
+        )
+        self.assertTrue(absent["container_absent"])
+        still_present_by_exact_name = assess_container_absence(
+            inspect_returncode=1,
+            list_returncode=0,
+            list_stdout=f"{'b' * 64}\ttest-container\n",
+            container_name="test-container",
+            container_id=container_id,
+        )
+        self.assertFalse(still_present_by_exact_name["container_absent"])
+        still_present_by_exact_id = assess_container_absence(
+            inspect_returncode=1,
+            list_returncode=0,
+            list_stdout=f"{container_id}\trenamed-container\n",
+            container_name="test-container",
+            container_id=container_id,
+        )
+        self.assertFalse(still_present_by_exact_id["container_absent"])
+        self.assertFalse(assess_container_absence(
+            inspect_returncode=1,
+            list_returncode=1,
+            list_stdout="",
+            container_name="test-container",
+            container_id=container_id,
+        )["container_absent"])
+        self.assertFalse(assess_container_absence(
+            inspect_returncode=0,
+            list_returncode=0,
+            list_stdout="",
+            container_name="test-container",
+            container_id=container_id,
+        )["container_absent"])
+        self.assertFalse(assess_container_absence(
+            inspect_returncode=1,
+            list_returncode=0,
+            list_stdout="unparseable list row\n",
+            container_name="test-container",
+            container_id=container_id,
+        )["container_absent"])
+
+    def test_child_result_decoder_accepts_mapping_and_one_string_wrapper(self) -> None:
+        child = {"status": "BLOCKED", "fault": "transport identity mismatch"}
+        encodings = (
+            json.dumps(child),
+            json.dumps(json.dumps(child)),
+            json.dumps(str(child)),
+        )
+        for serialized in encodings:
+            with self.subTest(serialized=serialized[:24]):
+                self.assertEqual(decode_m1_child_result(serialized), child)
+
+    def test_child_result_decoder_rejects_malformed_nonmapping_or_invalid_status(self) -> None:
+        invalid = (
+            "not-json",
+            json.dumps(json.dumps(["not", "a", "mapping"])),
+            json.dumps(json.dumps({"status": "FAILED_UNKNOWN"})),
+            json.dumps(json.dumps(json.dumps({"status": "BLOCKED"}))),
+        )
+        for serialized in invalid:
+            with self.subTest(serialized=serialized[:24]):
+                with self.assertRaises(ValueError):
+                    decode_m1_child_result(serialized)
+
+    def test_run_m1_preserves_blocked_cause_from_string_wrapped_child_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.args.maintainer_authorized_first_motion = True
+            runner.network_mode = "bridge"
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.remaining = lambda: 60.0
+            child_result = {
+                "status": "BLOCKED",
+                "fault": "simulation-only transport isolation failed: expected verified MC endpoint",
+                "velocity_command_trace": [],
+            }
+
+            def fake_run(name: str, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                (evidence / "m1_first_motion_result.json").write_text(
+                    json.dumps(str(child_result)), encoding="utf-8"
+                )
+                return subprocess.CompletedProcess(command, 2, "", "")
+
+            runner.run = fake_run
+            runner.run_m1()
+            self.assertEqual(runner.m1_result["status"], "BLOCKED")
+            self.assertEqual(runner.m1_result["fault"], child_result["fault"])
+            self.assertEqual(runner.m1_result["velocity_command_trace"], [])
+
+    def test_parent_result_preserves_child_blocked_cause_without_attribute_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            runner.args.maintainer_authorized_first_motion = True
+            runner.remaining = lambda: 60.0
+            runner.stage_research_scripts = lambda: None
+            runner.start_container = lambda: None
+            runner.start_sim_first = lambda: None
+            runner.capture_service_topic_inventory = lambda: None
+            runner.request_sd_and_verify = lambda: "STAND_DEFAULT"
+            runner.inspect_window = lambda: (42, "MuJoCo", 7)
+            runner.capture_reset_image = lambda *args: {"status": "NOT_CAPTURED"}
+            runner.start_observer = lambda: None
+            runner.dispatch_reset = lambda *args: None
+            reset_result = {"classification": "AUTO_RESET_PASS"}
+
+            def classify_reset(*args):
+                runner.reset_classification = "AUTO_RESET_PASS"
+                runner.reset_analysis = reset_result
+                return reset_result
+
+            runner.wait_and_classify_reset = classify_reset
+            child_result = {"status": "BLOCKED", "fault": "verified MC identity mismatch"}
+            runner.run_m1 = lambda: setattr(runner, "m1_result", child_result)
+
+            result = runner.execute()
+
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertEqual(result["m1_status"], "BLOCKED")
+        self.assertEqual(result["fault"], child_result["fault"])
+        self.assertEqual(result["m1_result"]["fault"], child_result["fault"])
 
     def test_missing_container_teardown_blocks_run_closeout(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
