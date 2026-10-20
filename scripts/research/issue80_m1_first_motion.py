@@ -661,6 +661,8 @@ class ZeroStopWindow:
         self.result: dict[str, Any] = {
             "requested_duration_s": timeout_s,
             "start_monotonic_s": None,
+            "first_publish_attempt_monotonic_s": None,
+            "end_monotonic_s": None,
             "loop_duration_s": 0.0,
             "zero_publish_calls_started": 0,
             "zero_publish_calls_returned": 0,
@@ -696,6 +698,8 @@ class ZeroStopWindow:
                 try:
                     with self.command_lock:
                         self.result["zero_publish_calls_started"] += 1
+                        if self.result["first_publish_attempt_monotonic_s"] is None:
+                            self.result["first_publish_attempt_monotonic_s"] = self.clock()
                         self.publish_zero()
                     self.result["zero_publish_calls_returned"] += 1
                     self.result["publish_call_return_times_s"].append(self.clock() - start)
@@ -705,7 +709,9 @@ class ZeroStopWindow:
                 if remaining > 0.0:
                     self.sleep(min(self.period_s, remaining))
         finally:
-            self.result["loop_duration_s"] = max(0.0, self.clock() - start)
+            end = self.clock()
+            self.result["end_monotonic_s"] = end
+            self.result["loop_duration_s"] = max(0.0, end - start)
             return_times = self.result["publish_call_return_times_s"]
             if return_times:
                 self.result["publish_call_return_span_s"] = max(0.0, return_times[-1] - return_times[0])
@@ -789,7 +795,7 @@ def run_first_motion_window(
     tracker = ActivationTracker()
     post_stop_first_pose: Mapping[str, Any] | None = None
     post_stop_last_pose: Mapping[str, Any] | None = None
-    post_pulse_observation: dict[str, Any] | None = None
+    post_stop_first_observation: dict[str, Any] | None = None
     post_stop_fault: str | None = None
 
     def record_sample(phase: str, snapshot: Mapping[str, Any], fault: str | None) -> None:
@@ -925,38 +931,54 @@ def run_first_motion_window(
         if pulse_start is not None and pulse_end is None:
             pulse_end = clock()
         stop_requested.set()
+        # Start and complete the bounded zero-command window before any
+        # telemetry callback can stall. The deadline watchdog remains armed
+        # until the stop path has been initiated by run_once().
+        stop_result = zero_stop.run_once()
+        result["zero_stop"] = stop_result
         if watchdog is not None:
             watchdog.cancel()
+        first_post_stop_sample_attempt_s = clock()
         try:
-            immediate_post_pulse = sample()
+            first_post_stop = sample()
             immediate_fault = snapshot_fault(
-                immediate_post_pulse,
+                first_post_stop,
                 joint_limits,
                 state_timeout_s=state_timeout_s,
                 min_root_z=min_root_z,
                 max_tilt_deg=max_tilt_deg,
             )
-            record_sample("post-pulse-observation", immediate_post_pulse, immediate_fault)
-            immediate_pose = immediate_post_pulse.get("pose")
-            post_pulse_observation = {
-                "pose": dict(immediate_pose) if isinstance(immediate_pose, Mapping) else None,
-                "sample_monotonic_s": immediate_post_pulse.get("sample_monotonic_s"),
+            record_sample("post-stop-first-observation", first_post_stop, immediate_fault)
+            first_post_stop_pose = first_post_stop.get("pose")
+            post_stop_first_observation = {
+                "pose": dict(first_post_stop_pose) if isinstance(first_post_stop_pose, Mapping) else None,
+                "sample_attempt_monotonic_s": first_post_stop_sample_attempt_s,
+                "sample_monotonic_s": first_post_stop.get("sample_monotonic_s"),
                 "safety_fault": immediate_fault,
+                "timing_relation": "sampled_after_zero_stop_window",
+                "zero_window_complete_before_sample": (
+                    stop_result["end_monotonic_s"] is not None
+                    and stop_result["end_monotonic_s"] <= first_post_stop_sample_attempt_s
+                ),
             }
+            if isinstance(first_post_stop_pose, Mapping):
+                post_stop_first_pose = dict(first_post_stop_pose)
+                post_stop_last_pose = dict(first_post_stop_pose)
             if immediate_fault:
                 post_stop_fault = immediate_fault
         except Exception as exc:
-            post_stop_fault = f"post_pulse_observation_exception:{type(exc).__name__}:{exc}"
-            post_pulse_observation = {"pose": None, "safety_fault": post_stop_fault}
-        stop_result = zero_stop.run_once()
-        result["zero_stop"] = stop_result
-        if post_pulse_observation is not None:
-            post_pulse_observation["zero_publish_window_started_before_or_during_sample"] = (
-                stop_result["start_monotonic_s"] is not None
-                and post_pulse_observation.get("sample_monotonic_s") is not None
-                and stop_result["start_monotonic_s"] <= post_pulse_observation["sample_monotonic_s"]
-            )
-        result["post_pulse_observation"] = post_pulse_observation
+            post_stop_fault = f"post_stop_first_observation_exception:{type(exc).__name__}:{exc}"
+            post_stop_first_observation = {
+                "pose": None,
+                "sample_attempt_monotonic_s": first_post_stop_sample_attempt_s,
+                "safety_fault": post_stop_fault,
+                "timing_relation": "sampled_after_zero_stop_window",
+                "zero_window_complete_before_sample": (
+                    stop_result["end_monotonic_s"] is not None
+                    and stop_result["end_monotonic_s"] <= first_post_stop_sample_attempt_s
+                ),
+            }
+        result["post_stop_first_observation"] = post_stop_first_observation
         post_stop_end = clock() + POST_STOP_OBSERVE_S
         post_stop_samples = 0
         while clock() < post_stop_end:
@@ -1030,17 +1052,31 @@ def run_first_motion_window(
         baseline_noise_bound_m=baseline_noise_bound_m,
     )
     post_stop_forward = None
-    pulse_end_pose = (
-        post_pulse_observation.get("pose")
-        if isinstance(post_pulse_observation, Mapping)
-        else None
+    last_in_pulse_sample = next(
+        (
+            row for row in reversed(result["samples"])
+            if row.get("phase") in ("activation", "pulse-deadline-observation")
+        ),
+        None,
     )
-    if isinstance(pulse_end_pose, Mapping) and post_stop_last_pose is not None:
+    last_in_pulse_pose = (
+        last_in_pulse_sample.get("pose")
+        if isinstance(last_in_pulse_sample, Mapping)
+        else tracker.last_activation_pose
+    )
+    if isinstance(last_in_pulse_pose, Mapping) and post_stop_last_pose is not None:
         try:
-            post_stop_forward = forward_projected_displacement(pulse_end_pose, post_stop_last_pose)
+            post_stop_forward = forward_projected_displacement(last_in_pulse_pose, post_stop_last_pose)
         except ValueError:
             post_stop_forward = None
     result["post_stop_odometry"] = {
+        "anchor": "last_in_pulse_pose",
+        "last_in_pulse_pose": dict(last_in_pulse_pose) if isinstance(last_in_pulse_pose, Mapping) else None,
+        "last_in_pulse_sample_monotonic_s": (
+            last_in_pulse_sample.get("sample_monotonic_s")
+            if isinstance(last_in_pulse_sample, Mapping)
+            else tracker.last_activation_monotonic_s
+        ),
         "first_pose": post_stop_first_pose,
         "last_pose": post_stop_last_pose,
         "forward_displacement_from_pulse_endpoint_m": post_stop_forward,

@@ -844,6 +844,75 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertGreater(result["pulse_loop_elapsed_s"], 0.0)
         self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], 49)
 
+    def test_zero_stop_window_precedes_stalled_post_stop_sampling(self) -> None:
+        sample = self.snapshot()
+        clock = FakeClock()
+        commands = []
+        timers = []
+        first_zero_watchdog_cancel_state = []
+        zero_seen = threading.Event()
+        post_stop_sample_entered = threading.Event()
+        release_stalled_sample = threading.Event()
+        injected_failure = False
+        outcome = {}
+
+        def timer_factory(timeout, callback):
+            timer = FakeTimer(timeout, callback)
+            timers.append(timer)
+            return timer
+
+        def publish(value):
+            commands.append(value)
+            if value == 0.2:
+                sample["get_source_name"] = VELOCITY_SOURCE_NAME
+                sample["common_source_name"] = VELOCITY_SOURCE_NAME
+                sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["fsm_state"] = 3
+            elif value == 0.0:
+                if not zero_seen.is_set():
+                    first_zero_watchdog_cancel_state.append(timers[0].cancelled)
+                    zero_seen.set()
+
+        def read():
+            nonlocal injected_failure
+            if zero_seen.is_set() and not injected_failure:
+                post_stop_sample_entered.set()
+                if not release_stalled_sample.wait(timeout=2.0):
+                    raise AssertionError("test did not release the stalled post-stop sample")
+                injected_failure = True
+                raise RuntimeError("injected delayed post-stop telemetry failure")
+            return sample
+
+        def run():
+            outcome["result"] = self.run_protocol(
+                read,
+                publish,
+                timer_factory=timer_factory,
+                fake_clock=clock,
+            )
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        self.assertTrue(post_stop_sample_entered.wait(timeout=2.0))
+        zero_commands_at_sample_entry = sum(value == 0.0 for value in commands)
+        self.assertGreaterEqual(zero_commands_at_sample_entry, ZERO_STOP_MIN_MESSAGES)
+        self.assertEqual(first_zero_watchdog_cancel_state, [False])
+        release_stalled_sample.set()
+        worker.join(timeout=2.0)
+        self.assertFalse(worker.is_alive(), "bounded offline protocol did not finish")
+
+        result = outcome["result"]
+        self.assertEqual(result["status"], "POST_STOP_SAFETY_FAILED")
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+        first_observation = result["post_stop_first_observation"]
+        self.assertEqual(first_observation["timing_relation"], "sampled_after_zero_stop_window")
+        self.assertTrue(first_observation["zero_window_complete_before_sample"])
+        self.assertEqual(
+            first_observation["safety_fault"],
+            "post_stop_first_observation_exception:RuntimeError:injected delayed post-stop telemetry failure",
+        )
+
     def test_exception_during_publish_forces_zero_timeout_window(self) -> None:
         sample = self.snapshot()
         calls = 0
