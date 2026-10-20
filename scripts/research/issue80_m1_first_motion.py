@@ -898,6 +898,7 @@ def snapshot_fault(
     min_root_z: float,
     max_tilt_deg: float,
     expected_source: str = VELOCITY_SOURCE_NAME,
+    required_forward_mps: float = FORWARD_COMMAND_M_S,
 ) -> str | None:
     if snapshot.get("readback_fault"):
         return f"readback_fault:{snapshot['readback_fault']}"
@@ -952,7 +953,12 @@ def snapshot_fault(
         maximum = float(bounds["max_value"])
     except (KeyError, TypeError, ValueError):
         return "malformed_live_forward_bounds"
-    if not math.isfinite(minimum) or not math.isfinite(maximum) or not minimum <= FORWARD_COMMAND_M_S <= maximum:
+    if (
+        not math.isfinite(minimum)
+        or not math.isfinite(maximum)
+        or not math.isfinite(required_forward_mps)
+        or not minimum <= required_forward_mps <= maximum
+    ):
         return "activation_speed_outside_live_mc_bounds"
 
     source_names = (

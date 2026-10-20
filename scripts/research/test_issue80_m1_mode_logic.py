@@ -94,6 +94,44 @@ class ActionResponseAndTransitionTests(unittest.TestCase):
         )
         self.assertEqual(result, "UNRELATED_GET_MODE")
 
+    def test_zero_only_pending_add_and_sd_readback_remain_waiting(self) -> None:
+        add = assess_input_source_add(0, task_id=9, state_value=0)
+        self.assertEqual(add["assessment"], "ADD_ACCEPTED_TASK_NOT_TERMINAL")
+        self.assertFalse(add["task_state_is_success"])
+        # An empty arbitration winner after zero-only output is not a source list.
+        selected_source = ""
+        self.assertEqual(selected_source, "")
+
+        action = classify_set_mc_action_response(0, 1, "success")
+        transition = classify_ld_transition(
+            {
+                "response_header_code": action["response_header_code"],
+                "response_status_value": action["response_status_value"],
+            },
+            [self.observation(MODE_SD)],
+            MODE_SD,
+        )
+        self.assertEqual(transition, "ACCEPTED_WAITING_FOR_VALID_LOCOMOTION_INPUT")
+        self.assertFalse(action["applied_mode_confirmed"])
+
+    def test_terminal_add_then_ld_with_both_readbacks_is_confirmed(self) -> None:
+        add = assess_input_source_add(0, task_id=10, state_value=1)
+        self.assertEqual(add["assessment"], "ADD_TASK_SUCCEEDED")
+        action = classify_set_mc_action_response(0, 1, "success")
+        self.assertTrue(add["task_state_is_success"])
+        self.assertTrue(action["accepted_by_service"])
+        self.assertEqual(
+            classify_ld_transition(
+                {
+                    "response_header_code": action["response_header_code"],
+                    "response_status_value": action["response_status_value"],
+                },
+                [self.observation(MODE_LD)],
+                MODE_LD,
+            ),
+            "LD_CONFIRMED",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
