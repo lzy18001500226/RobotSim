@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import unittest
 
-from issue80_m1_mode_logic import classify_ld_transition, is_valid_input_source_name
+from issue80_m1_mode_logic import (
+    assess_input_source_add,
+    classify_ld_transition,
+    is_valid_input_source_name,
+    source_arbitration_confirmed,
+)
 
 
 class ClassifyLdTransitionTests(unittest.TestCase):
@@ -65,6 +70,30 @@ class InputSourceIdentityTests(unittest.TestCase):
         for value in ("node.other", "rc", "issue80_m1_short", ""):
             with self.subTest(value=value):
                 self.assertFalse(is_valid_input_source_name(value))
+
+
+class InputSourceArbitrationTests(unittest.TestCase):
+    def test_add_rpc_header_success_with_unknown_task_state_is_not_registration_pass(self) -> None:
+        result = assess_input_source_add(0, task_id=1, state_value=0)
+        self.assertEqual(result["assessment"], "RPC_ACK_STATE_UNKNOWN")
+        self.assertEqual(result["state_name"], "UNKNOWN")
+        self.assertFalse(result["registration_confirmed"])
+
+    def test_add_state_success_confirms_only_the_server_task_state(self) -> None:
+        result = assess_input_source_add(0, task_id=1, state_value=1)
+        self.assertEqual(result["assessment"], "SERVER_STATE_SUCCESS")
+        self.assertTrue(result["registration_confirmed"])
+
+    def test_nonzero_header_or_pending_state_does_not_confirm_registration(self) -> None:
+        self.assertEqual(assess_input_source_add(7, 1, 1)["assessment"], "RPC_FAILED")
+        self.assertEqual(assess_input_source_add(0, 1, 200)["assessment"], "TASK_PENDING_OR_RUNNING")
+
+    def test_source_arbitration_requires_both_readbacks_and_fresh_common_state(self) -> None:
+        self.assertTrue(source_arbitration_confirmed("probe", "probe", "probe", 0.1))
+        self.assertFalse(source_arbitration_confirmed("", "probe", "probe", 0.1))
+        self.assertFalse(source_arbitration_confirmed("probe", "", "probe", 0.1))
+        self.assertFalse(source_arbitration_confirmed("probe", "probe", "probe", 0.5001))
+        self.assertFalse(source_arbitration_confirmed("probe", "probe", "probe", None))
 
 
 if __name__ == "__main__":

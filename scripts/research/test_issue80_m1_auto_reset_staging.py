@@ -98,6 +98,29 @@ class ResearchScriptStagingTests(unittest.TestCase):
             self.assertIn("--source node.set_mc_input_source", shell_command)
             self.assertIn("--set-action-source node.set_mc_action", shell_command)
 
+    def test_runner_uses_zero_only_50hz_arbitration_probe_without_activation_pulse(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.source = "node.set_mc_input_source"
+            runner.args.set_action_source = "node.set_mc_action"
+            runner.args.m1_zero_source_arbitration = True
+            runner.remaining = lambda: 60.0
+            captured: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                captured.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            runner.run = fake_run
+            runner.run_m1()
+            shell_command = captured[0][-1]
+            self.assertIn("--source node.set_mc_input_source", shell_command)
+            self.assertIn("--set-action-source node.set_mc_action", shell_command)
+            self.assertIn("--zero-publish-hz 50", shell_command)
+            self.assertIn("--zero-source-arbitration", shell_command)
+            self.assertNotIn("--activation-pulse", shell_command)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,7 +35,12 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
-from issue80_m1_mode_logic import classify_ld_transition, is_valid_input_source_name
+from issue80_m1_mode_logic import (
+    assess_input_source_add,
+    classify_ld_transition,
+    is_valid_input_source_name,
+    source_arbitration_confirmed,
+)
 
 
 VELOCITY_TOPIC = "/aima/mc/locomotion/velocity"
@@ -78,7 +83,7 @@ def _json_safe(value: Any) -> Any:
 
 
 class FocusedM1Diagnostic(Node):
-    """One-ADD, zero-only LD diagnosis with an optional guarded 150 ms pulse."""
+    """Bounded zero-only MC arbitration and LD readback diagnosis."""
 
     def __init__(self, args: argparse.Namespace):
         super().__init__("issue80_m1_focused_diagnostic")
@@ -90,6 +95,14 @@ class FocusedM1Diagnostic(Node):
             raise ValueError("zero-only interval must be within 0.1..1.0 s")
         if not 0.1 <= args.mode_observe_duration <= 5.0:
             raise ValueError("mode observation interval is capped at 5 seconds")
+        if args.zero_publish_hz not in (20.0, 50.0):
+            raise ValueError("zero publish rate must be the existing 20 Hz or source-grounded 50 Hz profile")
+        if args.zero_source_arbitration and args.zero_publish_hz != 50.0:
+            raise ValueError("source arbitration preflight is fixed to the reference bridge's 50 Hz rate")
+        if args.zero_source_arbitration and args.activation_pulse:
+            raise ValueError("zero-source arbitration probe never permits a nonzero activation pulse")
+        if not 1.0 <= args.source_arbitration_duration <= 3.0:
+            raise ValueError("source arbitration observation is bounded to 1..3 seconds")
         if not 0.1 <= args.state_timeout <= 0.5:
             raise ValueError("state freshness timeout may not exceed the established 0.5 s gate")
         if args.max_tilt_deg > 15.0 or args.min_root_z < 0.52:
@@ -107,9 +120,11 @@ class FocusedM1Diagnostic(Node):
         self.interrupted = False
         self.fault: str | None = None
         self.nonzero_messages = 0
+        self.zero_messages = 0
         self.source_observations: list[dict[str, Any]] = []
         self.mode_observations: list[dict[str, Any]] = []
         self.events: list[dict[str, Any]] = []
+        self.source_arbitration_result: dict[str, Any] | None = None
         self.state_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
@@ -247,6 +262,11 @@ class FocusedM1Diagnostic(Node):
         self.publisher.publish(msg)
         if forward != 0.0:
             self.nonzero_messages += 1
+        else:
+            self.zero_messages += 1
+
+    def _zero_period_s(self) -> float:
+        return 1.0 / float(self.args.zero_publish_hz)
 
     def _wait_service(self, client: Any, label: str, timeout: float = 2.0) -> None:
         deadline = time.monotonic() + timeout
@@ -276,7 +296,7 @@ class FocusedM1Diagnostic(Node):
                 else:
                     self._publish()
                 self._trace(f"RPC_HEARTBEAT:{label}")
-                next_heartbeat = now + 0.05
+                next_heartbeat = now + self._zero_period_s()
         if not future.done() or future.result() is None:
             raise TimeoutError(f"{label} service call timed out")
         return future.result()
@@ -338,6 +358,11 @@ class FocusedM1Diagnostic(Node):
         request.input_source.priority = self.args.priority
         request.input_source.timeout = self.args.source_timeout_ms
         response = self._call(self.register_client, request, "SetMcInputSource:ADD")
+        registration_state = assess_input_source_add(
+            int(response.response.header.code),
+            int(response.response.task_id),
+            int(response.response.state.value),
+        )
         result = {
             "wall_utc": datetime.now(timezone.utc).isoformat(),
             "request": _json_safe(request),
@@ -345,7 +370,8 @@ class FocusedM1Diagnostic(Node):
             "response_header_code": int(response.response.header.code),
             "response_state": int(response.response.state.value),
             "task_id": int(response.response.task_id),
-            "accepted": int(response.response.header.code) == 0,
+            "transport_acknowledged": int(response.response.header.code) == 0,
+            "registration_state_assessment": registration_state,
         }
         self.events.append({"event": "set_mc_input_source_add", **result})
         return result
@@ -389,8 +415,94 @@ class FocusedM1Diagnostic(Node):
             if now >= next_publish:
                 self._publish()
                 self._trace(f"ZERO_ONLY:{expected_mode}")
-                next_publish = now + 0.05
+                next_publish = now + self._zero_period_s()
             rclpy.spin_once(self, timeout_sec=0.01)
+
+    def zero_source_arbitration_probe(self) -> dict[str, Any]:
+        """Use only the reference bridge's 50 Hz zero heartbeat before any LD request."""
+        duration = float(self.args.source_arbitration_duration)
+        started = time.monotonic()
+        deadline = started + duration
+        next_publish = started
+        next_readback = started
+        consecutive_active = 0
+        observations: list[dict[str, Any]] = []
+        zero_before = self.zero_messages
+        status = "SOURCE_NOT_SELECTED"
+        reason = "active-source readbacks never matched the registered source"
+        while rclpy.ok() and time.monotonic() < deadline:
+            if self.interrupted:
+                self.fault = "operator_signal_stop"
+            fault = self.fault or self._safety_fault(expected_mode="STAND_DEFAULT")
+            if fault:
+                self.fault = fault
+                self._publish()
+                self._trace("SOURCE_ARBITRATION_SAFE_STOP_ZERO")
+                status, reason = "SAFETY_ABORT", fault
+                break
+
+            now = time.monotonic()
+            if now >= next_publish:
+                self._publish()
+                self._trace("SOURCE_ARBITRATION_ZERO_50HZ")
+                next_publish = now + self._zero_period_s()
+
+            if now >= next_readback:
+                readback = self.read_input_source(
+                    f"source_arbitration_{len(observations) + 1}",
+                    heartbeat_mode="STAND_DEFAULT",
+                )
+                common = self.latest.get("common")
+                common_name = common.input_source.name if common is not None else ""
+                common_age = self._state_ages().get("common")
+                current_name = str(readback["input_source"].get("name", ""))
+                verified = (
+                    readback["response_header_code"] == 0
+                    and source_arbitration_confirmed(
+                        current_name,
+                        common_name,
+                        self.source,
+                        common_age,
+                        max_age_s=self.args.state_timeout,
+                    )
+                )
+                observation = {
+                    "wall_utc": datetime.now(timezone.utc).isoformat(),
+                    "get_current_input_source": readback,
+                    "common_source": _json_safe(common.input_source) if common is not None else None,
+                    "common_state_age_s": common_age,
+                    "source_arbitration_confirmed": verified,
+                }
+                observations.append(observation)
+                if readback["response_header_code"] != 0:
+                    status, reason = "READBACK_ERROR", "GetCurrentInputSource returned a nonzero header.code"
+                    break
+                if current_name not in ("", self.source) or common_name not in ("", self.source):
+                    status, reason = "SOURCE_CONFLICT", "a different source won arbitration"
+                    break
+                consecutive_active = consecutive_active + 1 if verified else 0
+                if consecutive_active >= 2:
+                    status, reason = "SOURCE_ACTIVE_CONFIRMED", "two consecutive fresh readbacks agree"
+                    break
+                next_readback = time.monotonic() + 0.2
+
+            rclpy.spin_once(self, timeout_sec=0.005)
+
+        result = {
+            "status": status,
+            "reason": reason,
+            "source": self.source,
+            "publish_rate_hz": float(self.args.zero_publish_hz),
+            "source_timeout_ms": int(self.args.source_timeout_ms),
+            "requested_duration_s": duration,
+            "actual_duration_s": min(time.monotonic() - started, duration),
+            "zero_messages": self.zero_messages - zero_before,
+            "observations": observations,
+            "requires_two_consecutive_fresh_readbacks": True,
+            "nonzero_velocity_messages": self.nonzero_messages,
+        }
+        self.events.append({"event": "zero_source_arbitration_probe", **result})
+        return result
 
     def request_ld_once(self) -> dict[str, Any]:
         self._wait_service(self.set_mode_client, "/aimdk_5Fmsgs/srv/SetMcAction")
@@ -442,7 +554,7 @@ class FocusedM1Diagnostic(Node):
             if now >= next_zero:
                 self._publish()
                 self._trace("MODE_DIAG_ZERO_ONLY")
-                next_zero = now + 0.05
+                next_zero = now + self._zero_period_s()
             if now >= next_query:
                 try:
                     self.read_mode(
@@ -599,23 +711,78 @@ class FocusedM1Diagnostic(Node):
             after_add = self.read_input_source("after_add")
             if after_add["response_header_code"] != 0:
                 raise RuntimeError("GetCurrentInputSource after ADD returned a nonzero header.code")
-            if not registration["accepted"]:
-                raise RuntimeError("SetMcInputSource ADD response header.code != 0")
-            self.zero_phase(self.args.zero_duration, expected_mode="STAND_DEFAULT")
-            after_zero = self.read_input_source("after_zero_only", heartbeat_mode="STAND_DEFAULT")
-            if after_zero["response_header_code"] != 0:
-                raise RuntimeError("GetCurrentInputSource after zero-only returned a nonzero header.code")
-            after_zero_mode = self.read_mode("after_zero_only", heartbeat_mode="STAND_DEFAULT")
-            if after_zero_mode["response_header_code"] != 0:
-                raise RuntimeError("GetMcAction after zero-only returned a nonzero header.code")
-            set_ld = self.request_ld_once()
-            self.poll_mode_readback(self.args.mode_observe_duration)
-            after_ld_source = self.read_input_source("after_ld_readback", heartbeat_mode=self._mode())
-            if after_ld_source["response_header_code"] != 0:
-                raise RuntimeError("GetCurrentInputSource after LD readback returned a nonzero header.code")
-            classification = self._classify(set_ld)
-            if classification == "LD_CONFIRMED" and self.args.activation_pulse:
-                pulse = self.activation_pulse()
+            if not registration["transport_acknowledged"]:
+                raise RuntimeError("SetMcInputSource ADD RPC returned a nonzero response header.code")
+
+            if self.args.zero_source_arbitration:
+                self.source_arbitration_result = self.zero_source_arbitration_probe()
+                if self.source_arbitration_result["status"] != "SOURCE_ACTIVE_CONFIRMED":
+                    classification = "SOURCE_NOT_ACTIVE"
+                else:
+                    source_before_ld = self.read_input_source(
+                        "immediately_before_ld_source_arbitration",
+                        heartbeat_mode="STAND_DEFAULT",
+                    )
+                    mode_before_ld = self.read_mode(
+                        "immediately_before_ld_mode",
+                        heartbeat_mode="STAND_DEFAULT",
+                    )
+                    common = self.latest.get("common")
+                    common_age = self._state_ages().get("common")
+                    common_source = common.input_source.name if common is not None else ""
+                    source_ready = (
+                        source_before_ld["response_header_code"] == 0
+                        and source_arbitration_confirmed(
+                            str(source_before_ld["input_source"].get("name", "")),
+                            common_source,
+                            self.source,
+                            common_age,
+                            max_age_s=self.args.state_timeout,
+                        )
+                    )
+                    mode_ready = (
+                        mode_before_ld["response_header_code"] == 0
+                        and mode_before_ld["action_desc"] == "STAND_DEFAULT"
+                        and self._mode() == "STAND_DEFAULT"
+                    )
+                    self.source_arbitration_result["immediately_before_ld"] = {
+                        "source_readback": source_before_ld,
+                        "mode_readback": mode_before_ld,
+                        "common_source": _json_safe(common.input_source) if common is not None else None,
+                        "common_state_age_s": common_age,
+                        "source_verified": source_ready,
+                        "stand_mode_verified": mode_ready,
+                    }
+                    if not source_ready:
+                        classification = "SOURCE_NOT_ACTIVE_BEFORE_LD"
+                    elif not mode_ready:
+                        classification = "STAND_MODE_NOT_CONFIRMED_BEFORE_LD"
+                    else:
+                        set_ld = self.request_ld_once()
+                        self.poll_mode_readback(self.args.mode_observe_duration)
+                        after_ld_source = self.read_input_source(
+                            "after_ld_readback",
+                            heartbeat_mode=("STAND_DEFAULT", MODE_LD),
+                        )
+                        if after_ld_source["response_header_code"] != 0:
+                            raise RuntimeError("GetCurrentInputSource after LD readback returned a nonzero header.code")
+                        classification = self._classify(set_ld)
+            else:
+                self.zero_phase(self.args.zero_duration, expected_mode="STAND_DEFAULT")
+                after_zero = self.read_input_source("after_zero_only", heartbeat_mode="STAND_DEFAULT")
+                if after_zero["response_header_code"] != 0:
+                    raise RuntimeError("GetCurrentInputSource after zero-only returned a nonzero header.code")
+                after_zero_mode = self.read_mode("after_zero_only", heartbeat_mode="STAND_DEFAULT")
+                if after_zero_mode["response_header_code"] != 0:
+                    raise RuntimeError("GetMcAction after zero-only returned a nonzero header.code")
+                set_ld = self.request_ld_once()
+                self.poll_mode_readback(self.args.mode_observe_duration)
+                after_ld_source = self.read_input_source("after_ld_readback", heartbeat_mode=self._mode())
+                if after_ld_source["response_header_code"] != 0:
+                    raise RuntimeError("GetCurrentInputSource after LD readback returned a nonzero header.code")
+                classification = self._classify(set_ld)
+                if classification == "LD_CONFIRMED" and self.args.activation_pulse:
+                    pulse = self.activation_pulse()
             self._repeat_zero()
         except Exception as exc:
             self.fault = str(exc)
@@ -624,14 +791,32 @@ class FocusedM1Diagnostic(Node):
         finally:
             if self.result_path.exists():
                 raise FileExistsError("refusing to overwrite diagnostic result")
+            if self.args.zero_source_arbitration:
+                diagnostic_status = (
+                    "PASS"
+                    if classification == "LD_CONFIRMED" and not self.fault
+                    else "BLOCKED"
+                )
+            else:
+                diagnostic_status = (
+                    "PASS"
+                    if classification == "LD_CONFIRMED"
+                    and pulse.get("status") == "EXECUTED"
+                    and not pulse.get("fault")
+                    and not self.fault
+                    else "BLOCKED"
+                )
             result = {
                 "schema": "robotsim.issue80.m1.focused-diagnostic.v1",
                 "simulation_only": True,
-                "status": "PASS" if classification == "LD_CONFIRMED" and pulse.get("status") == "EXECUTED" and not pulse.get("fault") and not self.fault else "BLOCKED",
+                "status": diagnostic_status,
                 "classification": classification,
                 "source": self.source,
                 "set_action_source": self.args.set_action_source,
                 "source_registration": registration,
+                "source_arbitration_probe": self.source_arbitration_result,
+                "zero_publish_hz": float(self.args.zero_publish_hz),
+                "zero_velocity_messages_total": self.zero_messages,
                 "get_current_input_source": self.source_observations,
                 "get_mc_action": self.mode_observations,
                 "set_mc_action_ld": set_ld,
@@ -643,10 +828,10 @@ class FocusedM1Diagnostic(Node):
                 "final_pose_odom": self._pose(),
                 "fault": self.fault,
                 "limitations": [
-                    "ADD registration, source arbitration, mode transition, and physical motion are separate gates.",
-                    "An empty active source after zero-only messages is recorded but is not interpreted as registration failure.",
-                    "No nonzero velocity is published unless both mode readbacks confirm LOCOMOTION_DEFAULT.",
-                    "The only permitted motion is one forward-only 0.2 m/s pulse capped at 150 ms; no yaw command is sent.",
+                    "ADD transport acknowledgement, registration task state, current-source arbitration, mode transition, and physical motion are separate gates.",
+                    "The source-arbitration run uses only zero commands at the source-grounded 50 Hz profile and never publishes nonzero velocity.",
+                    "A source is considered active only when GetCurrentInputSource and fresh McCommonState agree.",
+                    "A zero-only LD readback result does not prove physical locomotion or M1 motion.",
                     "Simulation-only gate; no real-robot operation or M2/M3 navigation was attempted.",
                 ],
             }
@@ -688,7 +873,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     diagnose = subparsers.add_parser(
-        "diagnose", help="one ADD, read-only arbitration checks, zero-only LD diagnosis, optional 150 ms pulse"
+        "diagnose", help="one ADD, read-only source-arbitration and zero-only LD diagnosis"
     )
     diagnose.add_argument("--source", required=True)
     diagnose.add_argument(
@@ -702,6 +887,19 @@ def main() -> int:
     diagnose.add_argument("--state-timeout", type=float, default=0.5)
     diagnose.add_argument("--ready-timeout", type=float, default=10.0)
     diagnose.add_argument("--mode-observe-duration", type=float, default=5.0)
+    diagnose.add_argument(
+        "--zero-publish-hz",
+        type=float,
+        choices=(20.0, 50.0),
+        default=20.0,
+        help="zero-only message cadence: existing probe 20 Hz or source-grounded bridge rate 50 Hz",
+    )
+    diagnose.add_argument(
+        "--zero-source-arbitration",
+        action="store_true",
+        help="require fresh matching active-source readbacks before sending the single LD request; never send nonzero velocity",
+    )
+    diagnose.add_argument("--source-arbitration-duration", type=float, default=2.0)
     diagnose.add_argument("--max-tilt-deg", type=float, default=15.0)
     diagnose.add_argument("--min-root-z", type=float, default=0.52)
     diagnose.add_argument("--zero-duration", type=float, default=0.8)

@@ -408,13 +408,22 @@ class BoundedRun:
         action_source = getattr(self.args, "set_action_source", None)
         if action_source is None:
             action_source = self.source
+        if getattr(self.args, "m1_zero_source_arbitration", False):
+            probe_args = (
+                " --zero-publish-hz 50 --zero-source-arbitration"
+                " --source-arbitration-duration 2 --mode-observe-duration 2"
+                " --ready-timeout 4 --zero-duration 0.4"
+            )
+        else:
+            probe_args = " --activation-pulse --ready-timeout 4 --zero-duration 0.4 --mode-observe-duration 3"
         command = [
             "docker", "exec", self.container, "bash", "-lc",
             "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py diagnose --source "
             + self.source
             + " --set-action-source "
             + action_source
-            + " --output-dir /workspace/evidence --activation-pulse --ready-timeout 4 --zero-duration 0.4 --mode-observe-duration 3",
+            + " --output-dir /workspace/evidence"
+            + probe_args,
         ]
         result = self.run("m1_source_ld_diagnostic", command, timeout_s=min(40.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_diagnostic_result.json"
@@ -501,6 +510,11 @@ def main() -> int:
     )
     parser.add_argument("--attempt-id",required=True)
     parser.add_argument("--max-runtime-s",type=float,default=180.0)
+    parser.add_argument(
+        "--m1-zero-source-arbitration",
+        action="store_true",
+        help="run one source-grounded 50 Hz zero-only arbitration preflight after the Reset gate",
+    )
     args=parser.parse_args()
     run=BoundedRun(args)
     result=run.execute()
