@@ -28,6 +28,8 @@ PUBLISH_HZ = 50.0
 COMMAND_QOS_RELIABILITY = "reliable"
 COMMAND_QOS_DEPTH = 10
 COMMAND_QOS_DURABILITY = "volatile"
+COMMAND_PUBLISHER_TOPIC = "/aima/mc/locomotion/velocity"
+COMMAND_PUBLISHER_MESSAGE_TYPE = "McLocomotionVelocity"
 ZERO_STOP_MIN_S = 1.0
 ZERO_STOP_MIN_MESSAGES = math.ceil(SOURCE_TIMEOUT_MS * PUBLISH_HZ / 1000.0)
 POST_STOP_OBSERVE_S = 2.5
@@ -209,6 +211,45 @@ def _verified_mc_identity_error(identity: VerifiedMcRuntimeIdentity | None) -> s
         for digest in (identity.mc_config_sha256, identity.startup_log_sha256)
     ):
         return "mc_runtime_provenance_digest_missing"
+    return None
+
+
+def _local_command_publisher_error(
+    *,
+    publisher_local_identity: Mapping[str, Any] | None,
+    publisher_configured_qos: Mapping[str, Any] | None,
+    publisher_api_qos: Mapping[str, Any] | None,
+    own_node_name: str,
+) -> str | None:
+    """Verify this runner's command publisher independently of DDS graph metadata."""
+    if not isinstance(publisher_local_identity, Mapping):
+        return "local_command_publisher_identity_unverified"
+    if (
+        publisher_local_identity.get("node_name") != own_node_name
+        or publisher_local_identity.get("topic_name") != COMMAND_PUBLISHER_TOPIC
+        or publisher_local_identity.get("message_type") != COMMAND_PUBLISHER_MESSAGE_TYPE
+        or publisher_local_identity.get("is_expected_message_type") is not True
+        or publisher_local_identity.get("is_owned_publisher") is not True
+        or publisher_local_identity.get("node_topic_publisher_count") != 1
+    ):
+        return "local_command_publisher_identity_mismatch"
+
+    if not isinstance(publisher_configured_qos, Mapping) or not isinstance(publisher_api_qos, Mapping):
+        return "local_command_publisher_qos_unverified"
+    expected = {
+        "history": "keep_last",
+        "depth": COMMAND_QOS_DEPTH,
+        "reliability": COMMAND_QOS_RELIABILITY,
+        "durability": COMMAND_QOS_DURABILITY,
+    }
+    for source_name, profile in (
+        ("configured", publisher_configured_qos),
+        ("publisher_api", publisher_api_qos),
+    ):
+        if any(profile.get(key) != value for key, value in expected.items()):
+            return f"local_command_publisher_{source_name}_qos_mismatch:{dict(profile)!r}"
+    if any(publisher_configured_qos.get(key) != publisher_api_qos.get(key) for key in expected):
+        return "local_command_publisher_qos_profile_disagreement"
     return None
 
 
@@ -453,6 +494,9 @@ def validate_runtime_scope(
     subscriber_durabilities: list[str],
     publisher_history: str,
     publisher_depth: int,
+    publisher_local_identity: Mapping[str, Any] | None = None,
+    publisher_configured_qos: Mapping[str, Any] | None = None,
+    publisher_api_qos: Mapping[str, Any] | None = None,
     subscriber_histories: list[str],
     subscriber_depths: list[int],
     mc_identity: VerifiedMcRuntimeIdentity | None,
@@ -470,6 +514,14 @@ def validate_runtime_scope(
         return "container_network_not_isolated_bridge"
     if publisher_names != [own_node_name]:
         return f"velocity_publisher_conflict:{publisher_names!r}"
+    local_publisher_fault = _local_command_publisher_error(
+        publisher_local_identity=publisher_local_identity,
+        publisher_configured_qos=publisher_configured_qos,
+        publisher_api_qos=publisher_api_qos,
+        own_node_name=own_node_name,
+    )
+    if local_publisher_fault:
+        return local_publisher_fault
     expected_node_name = mc_identity.node_name
     if subscriber_names != [expected_node_name]:
         return f"expected_only_verified_mc_subscriber:{expected_node_name!r}:{subscriber_names!r}"
@@ -485,7 +537,13 @@ def validate_runtime_scope(
         return "subscriber_durability_endpoint_count_mismatch"
     if any(value != "volatile" for value in subscriber_durabilities):
         return f"mc_subscriber_durability_not_volatile:{subscriber_durabilities!r}"
-    if publisher_history != "keep_last" or publisher_depth != 10:
+    # rmw_fastrtps may omit writer history/depth from discovery and expose
+    # exactly unknown/0. Accept only that paired metadata gap after the local
+    # Publisher API profile above has independently matched the configured
+    # KEEP_LAST/10 contract. Any known or partial mismatch remains a failure.
+    if not (publisher_history == "unknown" and publisher_depth == 0) and (
+        publisher_history != "keep_last" or publisher_depth != COMMAND_QOS_DEPTH
+    ):
         return f"command_publisher_history_depth_mismatch:{publisher_history}:{publisher_depth}"
     if len(subscriber_histories) != len(subscriber_names) or len(subscriber_depths) != len(subscriber_names):
         return "subscriber_history_depth_endpoint_count_mismatch"

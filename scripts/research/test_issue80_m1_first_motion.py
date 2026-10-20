@@ -59,6 +59,30 @@ TEST_MC_IDENTITY = VerifiedMcRuntimeIdentity(
 )
 
 
+VALID_LOCAL_PUBLISHER_EVIDENCE = {
+    "publisher_local_identity": {
+        "node_name": "issue80_m1_focused_diagnostic",
+        "topic_name": "/aima/mc/locomotion/velocity",
+        "message_type": "McLocomotionVelocity",
+        "is_expected_message_type": True,
+        "is_owned_publisher": True,
+        "node_topic_publisher_count": 1,
+    },
+    "publisher_configured_qos": {
+        "history": "keep_last",
+        "depth": COMMAND_QOS_DEPTH,
+        "reliability": COMMAND_QOS_RELIABILITY,
+        "durability": COMMAND_QOS_DURABILITY,
+    },
+    "publisher_api_qos": {
+        "history": "keep_last",
+        "depth": COMMAND_QOS_DEPTH,
+        "reliability": COMMAND_QOS_RELIABILITY,
+        "durability": COMMAND_QOS_DURABILITY,
+    },
+}
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.value = 0.0
@@ -422,6 +446,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             publisher_history="keep_last", publisher_depth=10,
             subscriber_histories=["keep_last"], subscriber_depths=[10],
             mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
         ))
         self.assertIn("network", validate_runtime_scope(
             rmw_implementation="rmw_fastrtps_cpp",
@@ -437,6 +462,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             publisher_history="keep_last", publisher_depth=10,
             subscriber_histories=["keep_last"], subscriber_depths=[10],
             mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
         ))
         self.assertIn("publisher", validate_runtime_scope(
             rmw_implementation="rmw_fastrtps_cpp",
@@ -452,6 +478,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             publisher_history="keep_last", publisher_depth=10,
             subscriber_histories=["keep_last"], subscriber_depths=[10],
             mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
         ))
 
     def test_transport_scope_rejects_rmw_or_domain_mismatch(self) -> None:
@@ -469,6 +496,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             subscriber_histories=["keep_last"],
             subscriber_depths=[10],
             mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
         )
         self.assertIn("rmw", validate_runtime_scope(
             rmw_implementation="rmw_cyclonedds_cpp", ros_domain_id="20", **common
@@ -492,6 +520,33 @@ class FirstMotionSafetyTests(unittest.TestCase):
             publisher_history="keep_last", publisher_depth=10,
             subscriber_histories=["keep_last"], subscriber_depths=[10],
             mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        ))
+
+    def test_transport_scope_rejects_graph_durability_mismatches(self) -> None:
+        common = dict(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="unknown",
+            publisher_depth=0,
+            subscriber_histories=["keep_last"],
+            subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        )
+        self.assertIn("publisher_durability", validate_runtime_scope(
+            **{**common, "publisher_durability": "transient_local"}
+        ))
+        self.assertIn("subscriber_durability", validate_runtime_scope(
+            **{**common, "subscriber_durabilities": ["transient_local"]}
         ))
 
     def test_transport_scope_rejects_name_lookalikes_and_unproven_or_extra_nodes(self) -> None:
@@ -510,6 +565,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             subscriber_histories=["keep_last"],
             subscriber_depths=[10],
             mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
         )
         for nodes in (
             ["mc_ros2_node"],
@@ -528,8 +584,28 @@ class FirstMotionSafetyTests(unittest.TestCase):
             **{**common, "mc_identity": None},
         ), "mc_runtime_identity_unverified")
 
-    def test_transport_scope_keeps_unknown_publisher_history_and_depth_blocked(self) -> None:
-        self.assertIn("publisher_history_depth", validate_runtime_scope(
+    def test_transport_scope_allows_fastrtps_unknown_zero_with_verified_local_qos(self) -> None:
+        self.assertIsNone(validate_runtime_scope(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="unknown",
+            publisher_depth=0,
+            subscriber_histories=["keep_last"],
+            subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        ))
+
+    def test_transport_scope_rejects_unknown_zero_without_local_publisher_evidence(self) -> None:
+        self.assertIn("local_command_publisher_identity_unverified", validate_runtime_scope(
             rmw_implementation="rmw_fastrtps_cpp",
             ros_domain_id="20",
             docker_network_mode="bridge",
@@ -546,6 +622,119 @@ class FirstMotionSafetyTests(unittest.TestCase):
             subscriber_depths=[10],
             mc_identity=TEST_MC_IDENTITY,
         ))
+
+    def test_transport_scope_rejects_local_publisher_api_qos_mismatch(self) -> None:
+        local_evidence = {
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+            "publisher_api_qos": {
+                **VALID_LOCAL_PUBLISHER_EVIDENCE["publisher_api_qos"],
+                "depth": 5,
+            },
+        }
+        self.assertIn("local_command_publisher_publisher_api_qos_mismatch", validate_runtime_scope(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="unknown",
+            publisher_depth=0,
+            subscriber_histories=["keep_last"],
+            subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
+            **local_evidence,
+        ))
+
+        configured_mismatch = {
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+            "publisher_configured_qos": {
+                **VALID_LOCAL_PUBLISHER_EVIDENCE["publisher_configured_qos"],
+                "depth": 9,
+            },
+        }
+        self.assertIn("local_command_publisher_configured_qos_mismatch", validate_runtime_scope(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            publisher_history="unknown",
+            publisher_depth=0,
+            subscriber_histories=["keep_last"],
+            subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
+            **configured_mismatch,
+        ))
+
+    def test_transport_scope_rejects_partial_unknown_and_positive_graph_mismatch(self) -> None:
+        common = dict(
+            rmw_implementation="rmw_fastrtps_cpp",
+            ros_domain_id="20",
+            docker_network_mode="bridge",
+            publisher_names=["issue80_m1_focused_diagnostic"],
+            subscriber_names=["mc_ros2_node245"],
+            own_node_name="issue80_m1_focused_diagnostic",
+            publisher_reliability="reliable",
+            subscriber_reliabilities=["best_effort"],
+            publisher_durability="volatile",
+            subscriber_durabilities=["volatile"],
+            subscriber_histories=["keep_last"],
+            subscriber_depths=[10],
+            mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
+        )
+        for history, depth in (("unknown", 10), ("keep_last", 0), ("keep_last", 9), ("keep_all", 10)):
+            with self.subTest(history=history, depth=depth):
+                self.assertIn("publisher_history_depth", validate_runtime_scope(
+                    publisher_history=history,
+                    publisher_depth=depth,
+                    **common,
+                ))
+
+    def test_transport_scope_rejects_local_publisher_identity_mismatch(self) -> None:
+        bad_identity_fields = (
+            {"topic_name": "/other/topic"},
+            {"is_expected_message_type": False},
+            {"is_owned_publisher": False},
+            {"node_topic_publisher_count": 2},
+        )
+        for updates in bad_identity_fields:
+            with self.subTest(updates=updates):
+                local_evidence = {
+                    **VALID_LOCAL_PUBLISHER_EVIDENCE,
+                    "publisher_local_identity": {
+                        **VALID_LOCAL_PUBLISHER_EVIDENCE["publisher_local_identity"],
+                        **updates,
+                    },
+                }
+                self.assertIn("local_command_publisher_identity_mismatch", validate_runtime_scope(
+                    rmw_implementation="rmw_fastrtps_cpp",
+                    ros_domain_id="20",
+                    docker_network_mode="bridge",
+                    publisher_names=["issue80_m1_focused_diagnostic"],
+                    subscriber_names=["mc_ros2_node245"],
+                    own_node_name="issue80_m1_focused_diagnostic",
+                    publisher_reliability="reliable",
+                    subscriber_reliabilities=["best_effort"],
+                    publisher_durability="volatile",
+                    subscriber_durabilities=["volatile"],
+                    publisher_history="unknown",
+                    publisher_depth=0,
+                    subscriber_histories=["keep_last"],
+                    subscriber_depths=[10],
+                    mc_identity=TEST_MC_IDENTITY,
+                    **local_evidence,
+                ))
 
     def test_transport_scope_rejects_extra_velocity_subscriber(self) -> None:
         self.assertIn("subscriber", validate_runtime_scope(
@@ -564,6 +753,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             subscriber_histories=["keep_last", "keep_last"],
             subscriber_depths=[10, 10],
             mc_identity=TEST_MC_IDENTITY,
+            **VALID_LOCAL_PUBLISHER_EVIDENCE,
         ))
 
     def test_local_state_and_mc_command_topics_require_single_publishers(self) -> None:

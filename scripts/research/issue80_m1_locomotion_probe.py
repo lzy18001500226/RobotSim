@@ -27,7 +27,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import Imu
 
 from issue80_m1_first_motion import (
-    ACTION_SOURCE_NAME, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
+    ACTION_SOURCE_NAME, COMMAND_PUBLISHER_TOPIC, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
     BASELINE_DURATION_S, BASELINE_SAMPLE_PERIOD_S, BASELINE_WINDOW_COUNT,
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
@@ -39,7 +39,7 @@ from issue80_m1_first_motion import (
 )
 from issue80_m1_mode_logic import classify_set_mc_action_response
 
-VELOCITY_TOPIC = "/aima/mc/locomotion/velocity"
+VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
 INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
@@ -151,6 +151,9 @@ class FocusedM1Diagnostic(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        # Snapshot the requested profile before creation, then read it back
+        # through the created rclpy Publisher API during the transport gate.
+        self.publisher_configured_qos = self._qos_profile(self.command_qos)
         self.publisher = self.create_publisher(McLocomotionVelocity, VELOCITY_TOPIC, self.command_qos)
         self.source_client = self.create_client(GetCurrentInputSource, CURRENT_INPUT_SOURCE_SERVICE)
         self.register_client = self.create_client(SetMcInputSource, INPUT_SOURCE_SERVICE)
@@ -574,6 +577,19 @@ class FocusedM1Diagnostic(Node):
             last_publisher_qos = self._endpoint_qos(publisher_info[0]) if len(publisher_info) == 1 else None
             last_subscriber_qos = [self._endpoint_qos(info) for info in subscriber_info]
             publisher_qos = last_publisher_qos or {}
+            node_velocity_publishers = [
+                publisher for publisher in self.publishers
+                if str(publisher.topic_name) == VELOCITY_TOPIC
+            ]
+            local_publisher_identity = {
+                "node_name": self.get_name(),
+                "topic_name": str(self.publisher.topic_name),
+                "message_type": str(self.publisher.msg_type.__name__),
+                "is_expected_message_type": self.publisher.msg_type is McLocomotionVelocity,
+                "is_owned_publisher": any(publisher is self.publisher for publisher in self.publishers),
+                "node_topic_publisher_count": len(node_velocity_publishers),
+            }
+            publisher_api_qos = self._qos_profile(self.publisher.qos_profile)
             fault = validate_runtime_scope(
                 rmw_implementation=os.environ.get("RMW_IMPLEMENTATION"),
                 ros_domain_id=os.environ.get("ROS_DOMAIN_ID"),
@@ -587,6 +603,9 @@ class FocusedM1Diagnostic(Node):
                 subscriber_durabilities=[str(qos["durability"]) for qos in last_subscriber_qos],
                 publisher_history=str(publisher_qos.get("history", "unknown")),
                 publisher_depth=int(publisher_qos.get("depth", 0)),
+                publisher_local_identity=local_publisher_identity,
+                publisher_configured_qos=self.publisher_configured_qos,
+                publisher_api_qos=publisher_api_qos,
                 subscriber_histories=[str(qos["history"]) for qos in last_subscriber_qos],
                 subscriber_depths=[int(qos["depth"]) for qos in last_subscriber_qos],
                 mc_identity=mc_identity,
@@ -606,6 +625,19 @@ class FocusedM1Diagnostic(Node):
                     "velocity_subscribers": last_subscribers,
                     "verified_mc_runtime_identity": mc_identity.as_dict(),
                     "publisher_qos": last_publisher_qos,
+                    "publisher_local_identity": local_publisher_identity,
+                    "publisher_configured_qos": self.publisher_configured_qos,
+                    "publisher_api_qos": publisher_api_qos,
+                    "publisher_qos_profile_api": {
+                        "name": "rclpy.Publisher.qos_profile",
+                        "separate_middleware_actual_qos_query_available": False,
+                    },
+                    "publisher_qos_evidence_note": (
+                        "The Humble rclpy Publisher exposes the profile attached at create_publisher as "
+                        "qos_profile; it does not expose a separate effective-DDS QoS query here. The graph "
+                        "independently verifies reliability/durability while history/depth may be unknown/0. "
+                        "This does not prove that MC received a command."
+                    ),
                     "subscriber_qos": last_subscriber_qos,
                     "local_state_and_command_publishers": state_topic_publishers,
                     "command_qos": {
@@ -626,7 +658,10 @@ class FocusedM1Diagnostic(Node):
 
     @staticmethod
     def _endpoint_qos(info: Any) -> dict[str, Any]:
-        profile = info.qos_profile
+        return FocusedM1Diagnostic._qos_profile(info.qos_profile)
+
+    @staticmethod
+    def _qos_profile(profile: Any) -> dict[str, Any]:
         reliability = (
             "reliable" if profile.reliability == ReliabilityPolicy.RELIABLE
             else "best_effort" if profile.reliability == ReliabilityPolicy.BEST_EFFORT
