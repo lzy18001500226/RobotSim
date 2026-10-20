@@ -8,7 +8,9 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from issue80_m1_reset_analyze import classify
+import issue80_m1_reset_analyze as reset_analyzer
+
+classify = reset_analyzer.classify
 
 
 EVENT_NS = 1_000_000_000
@@ -111,6 +113,24 @@ class ResetAnalysisTests(unittest.TestCase):
         result = self.run_analysis(make_trace(stop_ns=2_000_000_000))
         self.assertEqual(result["classification"], "RESET_APPLIED_INSUFFICIENT_STABILITY_WINDOW")
         self.assertFalse(result["stable_window_complete"])
+
+    def test_window_ending_50ms_before_full_ready_hold_is_incomplete(self) -> None:
+        result = self.run_analysis(make_trace(stop_ns=EVENT_NS + 2_750_000_000))
+        self.assertEqual(result["classification"], "RESET_APPLIED_INSUFFICIENT_STABILITY_WINDOW")
+        self.assertFalse(result["stable_window_complete"])
+        self.assertFalse(result["stable_window_pass"])
+
+    def test_window_including_exact_full_ready_hold_boundary_can_pass(self) -> None:
+        result = self.run_analysis(make_trace(stop_ns=EVENT_NS + 2_800_000_000))
+        self.assertEqual(result["classification"], "AUTO_RESET_PASS")
+        self.assertTrue(result["stable_window_complete"])
+        self.assertTrue(result["stable_window_pass"])
+
+    def test_existing_reset_safety_limits_are_unchanged(self) -> None:
+        self.assertEqual(reset_analyzer.ROOT_Z_MIN, 0.52)
+        self.assertEqual(reset_analyzer.MAX_TILT_DEG, 15.0)
+        self.assertEqual(reset_analyzer.MAX_STATE_GAP_SEC, 0.5)
+        self.assertEqual(reset_analyzer.STABLE_WINDOW_SEC, 2.5)
 
 
 if __name__ == "__main__":

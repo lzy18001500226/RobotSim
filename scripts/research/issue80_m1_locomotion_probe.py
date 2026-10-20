@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import re
 import signal
 import sys
 import time
@@ -36,7 +35,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
-from issue80_m1_mode_logic import classify_ld_transition
+from issue80_m1_mode_logic import classify_ld_transition, is_valid_input_source_name
 
 
 VELOCITY_TOPIC = "/aima/mc/locomotion/velocity"
@@ -83,8 +82,10 @@ class FocusedM1Diagnostic(Node):
 
     def __init__(self, args: argparse.Namespace):
         super().__init__("issue80_m1_focused_diagnostic")
-        if not re.fullmatch(r"issue80_m1_[A-Za-z0-9_]{8,40}", args.source):
-            raise ValueError("source must be a fresh issue80_m1_<unique-suffix> name")
+        if not is_valid_input_source_name(args.source):
+            raise ValueError(
+                "source must be a fresh issue80_m1_<unique-suffix> name or the pinned SDK identity node.set_mc_input_source"
+            )
         if not 0.1 <= args.zero_duration <= 1.0:
             raise ValueError("zero-only interval must be within 0.1..1.0 s")
         if not 0.1 <= args.mode_observe_duration <= 5.0:
@@ -397,10 +398,9 @@ class FocusedM1Diagnostic(Node):
         request = SetMcAction.Request()
         request.header = RequestHeader()
         request.header.stamp = self.get_clock().now().to_msg()
-        # The first Issue 80 attempt matched the pinned Nova-Valley example's
-        # empty source and the installed MC explicitly rejected it. This
-        # bounded follow-up uses only the source just registered by this
-        # diagnostic; it still publishes zero until a live LD readback.
+        # The action caller identity is independent of the registered velocity
+        # source. This probe accepts the pinned SDK pair and continues to send
+        # zero until both GetMcAction and McCommonState confirm live LD.
         request.source = self.args.set_action_source
         request.command = McActionCommand()
         request.command.action_desc = MODE_LD

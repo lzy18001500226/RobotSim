@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from issue80_m1_mode_logic import classify_ld_transition
+from issue80_m1_mode_logic import classify_ld_transition, is_valid_input_source_name
 
 
 class ClassifyLdTransitionTests(unittest.TestCase):
@@ -52,6 +52,19 @@ class ClassifyLdTransitionTests(unittest.TestCase):
             readback_error=True,
         )
         self.assertEqual(result, "READBACK_INTERFACE_ERROR")
+
+
+class InputSourceIdentityTests(unittest.TestCase):
+    def test_accepts_exact_pinned_sdk_input_source_identity(self) -> None:
+        self.assertTrue(is_valid_input_source_name("node.set_mc_input_source"))
+
+    def test_accepts_unique_research_source(self) -> None:
+        self.assertTrue(is_valid_input_source_name("issue80_m1_5c3914c1"))
+
+    def test_rejects_unrelated_or_nonunique_source_names(self) -> None:
+        for value in ("node.other", "rc", "issue80_m1_short", ""):
+            with self.subTest(value=value):
+                self.assertFalse(is_valid_input_source_name(value))
 
 
 if __name__ == "__main__":

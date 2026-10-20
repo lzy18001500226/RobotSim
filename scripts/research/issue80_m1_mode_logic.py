@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 
 MODE_LD = "LOCOMOTION_DEFAULT"
 SUCCESS_STATUS = 1
+SDK_INPUT_SOURCE_NAME = "node.set_mc_input_source"
+
+
+def is_valid_input_source_name(value: str) -> bool:
+    """Accept a unique research source or the pinned SDK example identity."""
+    return value == SDK_INPUT_SOURCE_NAME or re.fullmatch(
+        r"issue80_m1_[A-Za-z0-9_]{8,40}", value
+    ) is not None
 
 
 def classify_ld_transition(

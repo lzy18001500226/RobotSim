@@ -23,6 +23,56 @@ REVERT_TO_PARENT = 2
 CURRENT_TIME = 0
 Z_PIXMAP = 2
 ALL_PLANES = ctypes.c_ulong(-1).value
+CLIENT_MESSAGE = 33
+SUBSTRUCTURE_NOTIFY_MASK = 1 << 19
+SUBSTRUCTURE_REDIRECT_MASK = 1 << 20
+
+
+class XClientMessageData(ctypes.Union):
+    _fields_ = [
+        ("b", ctypes.c_char * 20),
+        ("s", ctypes.c_short * 10),
+        ("l", ctypes.c_long * 5),
+    ]
+
+
+class XClientMessageEvent(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("serial", ctypes.c_ulong),
+        ("send_event", ctypes.c_int),
+        ("display", ctypes.c_void_p),
+        ("window", ctypes.c_ulong),
+        ("message_type", ctypes.c_ulong),
+        ("format", ctypes.c_int),
+        ("data", XClientMessageData),
+    ]
+
+
+class XEvent(ctypes.Union):
+    _fields_ = [
+        ("type", ctypes.c_int),
+        ("xclient", XClientMessageEvent),
+        ("pad", ctypes.c_long * 24),
+    ]
+
+
+def build_net_active_window_event(display: int, window: int, atom: int) -> XEvent:
+    """Build the EWMH request used to focus one already-verified viewer window."""
+    event = XEvent()
+    event.xclient.type = CLIENT_MESSAGE
+    event.xclient.serial = 0
+    event.xclient.send_event = 1
+    event.xclient.display = display
+    event.xclient.window = window
+    event.xclient.message_type = atom
+    event.xclient.format = 32
+    event.xclient.data.l[0] = 2  # source indication: pager/window automation
+    event.xclient.data.l[1] = CURRENT_TIME
+    event.xclient.data.l[2] = 0
+    event.xclient.data.l[3] = 0
+    event.xclient.data.l[4] = 0
+    return event
 
 
 class XWindowAttributes(ctypes.Structure):
@@ -161,6 +211,14 @@ class X11:
         self.lib.XGetClassHint.restype = ctypes.c_int
         self.lib.XFree.argtypes = [ctypes.c_void_p]
         self.lib.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.lib.XSendEvent.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_long,
+            ctypes.POINTER(XEvent),
+        ]
+        self.lib.XSendEvent.restype = ctypes.c_int
         self.lib.XSetInputFocus.argtypes = [
             ctypes.c_void_p,
             ctypes.c_ulong,
@@ -405,6 +463,37 @@ class X11:
         finally:
             self.lib.XDestroyImage(image)
 
+    def activate_window(self, window: int, timeout_s: float = 1.0) -> dict[str, Any]:
+        atom = int(self.lib.XInternAtom(self.display, b"_NET_ACTIVE_WINDOW", 0))
+        if not atom:
+            raise RuntimeError("EWMH _NET_ACTIVE_WINDOW atom is unavailable")
+        event = build_net_active_window_event(self.display, window, atom)
+        mask = SUBSTRUCTURE_REDIRECT_MASK | SUBSTRUCTURE_NOTIFY_MASK
+        focus_before = ctypes.c_ulong()
+        revert_before = ctypes.c_int()
+        self.lib.XGetInputFocus(self.display, ctypes.byref(focus_before), ctypes.byref(revert_before))
+        sent = int(self.lib.XSendEvent(self.display, self.root, 0, mask, ctypes.byref(event)))
+        self.lib.XFlush(self.display)
+        self.lib.XSync(self.display, 0)
+        deadline = time.monotonic() + timeout_s
+        focus_after = ctypes.c_ulong()
+        revert_after = ctypes.c_int()
+        while True:
+            self.lib.XGetInputFocus(self.display, ctypes.byref(focus_after), ctypes.byref(revert_after))
+            if int(focus_after.value) == window or time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        result = {
+            "status": "FOCUSED" if int(focus_after.value) == window else "FOCUS_NOT_CONFIRMED",
+            "target_window_id": window,
+            "focus_before": int(focus_before.value),
+            "focus_after": int(focus_after.value),
+            "send_event_return": sent,
+        }
+        if not sent or result["status"] != "FOCUSED":
+            raise RuntimeError(f"EWMH activation failed: {result}")
+        return result
+
     def send_backspace_once(self, window: int) -> dict[str, Any]:
         key_sym = int(self.lib.XStringToKeysym(b"BackSpace"))
         keycode = int(self.lib.XKeysymToKeycode(self.display, key_sym))
@@ -413,6 +502,7 @@ class X11:
         focus_before = ctypes.c_ulong()
         revert_before = ctypes.c_int()
         self.lib.XGetInputFocus(self.display, ctypes.byref(focus_before), ctypes.byref(revert_before))
+        activation = self.activate_window(window)
         self.lib.XRaiseWindow(self.display, window)
         self.lib.XSetInputFocus(self.display, window, REVERT_TO_PARENT, CURRENT_TIME)
         self.lib.XSync(self.display, 0)
@@ -451,6 +541,7 @@ class X11:
             "key": "BackSpace",
             "keycode": keycode,
             "target_window_id": window,
+            "ewmh_activation": activation,
             "focus_before": int(focus_before.value),
             "focus_verified_target": int(focus_after.value),
             "focus_restored": restored,
@@ -467,6 +558,11 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     inspect_parser = sub.add_parser("inspect", help="list only visible X windows for an expected PID")
     inspect_parser.add_argument("--expected-pid", type=int, required=True)
+    capture_parser = sub.add_parser("capture", help="capture one exact visible MuJoCo window")
+    capture_parser.add_argument("--expected-pid", type=int, required=True)
+    capture_parser.add_argument("--expected-title", required=True)
+    capture_parser.add_argument("--window-id", type=int, required=True)
+    capture_parser.add_argument("--output", type=Path, required=True)
     send_parser = sub.add_parser("send-reset", help="send exactly one BackSpace to a verified window")
     send_parser.add_argument("--expected-pid", type=int, required=True)
     send_parser.add_argument("--expected-title", required=True)
@@ -488,6 +584,20 @@ def main() -> int:
                 if w["pid"] == args.expected_pid and w["viewable"]
             ]
             print(json.dumps({"status": "INSPECTED", "display": os.environ.get("DISPLAY"), "expected_pid": args.expected_pid, "windows": matches}, indent=2))
+            return 0
+        if args.command == "capture":
+            matches = [
+                w for w in x11.list_windows()
+                if w["pid"] == args.expected_pid
+                and w["title"] == args.expected_title
+                and w["window_id"] == args.window_id
+                and w["viewable"]
+            ]
+            if len(matches) != 1:
+                print(json.dumps({"status": "NOT_CAPTURED", "reason": "exact process/title/window/viewability match required", "expected_pid": args.expected_pid, "expected_title": args.expected_title, "expected_window_id": args.window_id, "matches": matches}, indent=2))
+                return 2
+            image = x11.capture_png(args.window_id, args.output)
+            print(json.dumps({"status": image["status"], "window": matches[0], "image": image}, indent=2))
             return 0
         matches = [
             w for w in x11.list_windows()

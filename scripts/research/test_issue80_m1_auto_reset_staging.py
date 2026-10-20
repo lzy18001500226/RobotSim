@@ -19,7 +19,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             argparse.Namespace(
                 evidence_dir=str(evidence),
                 container="test-container",
-                source="test-source",
+                source="issue80_m1_test_12345678",
                 attempt_id="test-attempt",
                 max_runtime_s=10.0,
             )
@@ -64,7 +64,26 @@ class ResearchScriptStagingTests(unittest.TestCase):
             runner.run_m1()
             self.assertEqual(len(captured), 1)
             shell_command = captured[0][-1]
-            self.assertIn("--source test-source", shell_command)
+            self.assertIn("--source issue80_m1_test_12345678", shell_command)
+            self.assertIn("--set-action-source node.set_mc_action", shell_command)
+
+    def test_runner_can_issue_exact_pinned_sdk_identity_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.source = "node.set_mc_input_source"
+            runner.args.set_action_source = "node.set_mc_action"
+            runner.remaining = lambda: 60.0
+            captured: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                captured.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            runner.run = fake_run
+            runner.run_m1()
+            shell_command = captured[0][-1]
+            self.assertIn("--source node.set_mc_input_source", shell_command)
             self.assertIn("--set-action-source node.set_mc_action", shell_command)
 
 

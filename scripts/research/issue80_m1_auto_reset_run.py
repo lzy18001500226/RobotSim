@@ -24,6 +24,8 @@ OBSERVER = Path(__file__).with_name("issue80_m1_reset_state_trace.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 IMAGE = "robotsim:humble-raicom-runtime-20261019"
 IMAGE_DIGEST = "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31"
+RESET_OBSERVER_DURATION_S = 8.0
+RESET_OBSERVER_COMPLETION_MARGIN_S = 3.0
 TOPIC_PROBES = (
     "/aima/hal/odom/state",
     "/aima/hal/imu/torso/state",
@@ -49,6 +51,8 @@ class BoundedRun:
         self.reset_classification = "NOT_ATTEMPTED"
         self.m1_result: dict[str, Any] | None = None
         self.reset_analysis: dict[str, Any] | None = None
+        self.before_reset_image: dict[str, Any] | None = None
+        self.reset_dispatch_payload: dict[str, Any] | None = None
         self.fault: str | None = None
 
     def remaining(self) -> float:
@@ -215,7 +219,9 @@ class BoundedRun:
     def start_observer(self) -> None:
         self.docker_exec(
             "start_reset_state_observer",
-            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_reset_state_trace.py --output-dir /workspace/evidence --duration 8.0 > /workspace/evidence/reset-observer-console.log 2>&1",
+            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_reset_state_trace.py --output-dir /workspace/evidence --duration "
+            + f"{RESET_OBSERVER_DURATION_S:.1f}"
+            + " > /workspace/evidence/reset-observer-console.log 2>&1",
             timeout_s=4.0,
             detached=True,
         )
@@ -231,6 +237,31 @@ class BoundedRun:
         with (self.evidence / "pre-reset-ready-snapshot.json").open("x", encoding="utf-8") as f:
             json.dump(ready, f, indent=2)
             f.write("\n")
+
+    def capture_reset_image(self, pid: int, title: str, window_id: int, phase: str) -> dict[str, Any]:
+        """Capture images outside the live reset-observation interval when possible."""
+        output = self.evidence / f"mujoco_{phase}_reset.png"
+        command = [
+            sys.executable, str(X11_HELPER), "capture",
+            "--expected-pid", str(pid), "--expected-title", title,
+            "--window-id", str(window_id), "--output", str(output),
+        ]
+        result = self.run(f"x11_capture_{phase}_reset", command, timeout_s=8.0, check=False)
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {
+                "status": "NOT_CAPTURED",
+                "reason": f"capture helper returned no JSON (exit={result.returncode})",
+            }
+        image = payload.get("image", {})
+        if result.returncode != 0 or image.get("status") != "CAPTURED":
+            return {
+                "status": "NOT_CAPTURED",
+                "reason": payload.get("reason") or payload.get("error") or result.stderr[-300:],
+                "helper_result": payload,
+            }
+        return image
 
     def inspect_window(self) -> tuple[int, str, int]:
         pid_result = self.docker_exec(
@@ -272,35 +303,24 @@ class BoundedRun:
         raise RuntimeError("no visible X11 window with exact aima-sim-app PID was found")
 
     def dispatch_reset(self, pid: int, title: str, window_id: int) -> None:
-        dispatch_path = self.evidence / "reset_dispatch.json"
         event_path = self.evidence / "reset_dispatch_event.json"
-        before = self.evidence / "mujoco_before_reset.png"
-        after = self.evidence / "mujoco_after_reset.png"
         command = [
             sys.executable, str(X11_HELPER), "send-reset",
             "--expected-pid", str(pid), "--expected-title", title,
             "--window-id", str(window_id),
-            "--before-png", str(before), "--after-png", str(after),
             "--dispatch-event-json", str(event_path),
         ]
         try:
-            result = self.run("x11_backspace_dispatch", command, timeout_s=15.0, check=False)
+            result = self.run("x11_backspace_dispatch", command, timeout_s=5.0, check=False)
         except RunDeadline as exc:
-            # A captured key event is persisted by the helper before the
-            # optional post-event screenshot. If only screenshot work timed
-            # out, preserve the verified dispatch and continue to classify
-            # the simulator state instead of stopping before the state gate.
+            # A dispatched key event is persisted before this timeout check.
+            # Continue only when that exact event record exists; screenshots
+            # are intentionally outside this key-delivery operation.
             if not event_path.exists():
                 raise
             event_record = json.loads(event_path.read_text(encoding="utf-8"))
-            event_record["after_image"] = {
-                "status": "NOT_CAPTURED",
-                "reason": "helper timed out after the persisted key event",
-            }
             event_record["helper_completion"] = f"TIMED_OUT_AFTER_DISPATCH: {exc}"
-            with dispatch_path.open("x", encoding="utf-8") as f:
-                json.dump(event_record, f, indent=2)
-                f.write("\n")
+            self.reset_dispatch_payload = event_record
             if event_record.get("event", {}).get("status") != "KEY_DISPATCHED":
                 self.reset_classification = "RESET_NOT_DELIVERED"
                 raise RuntimeError(f"X11 helper did not dispatch BackSpace: {event_record}") from exc
@@ -310,23 +330,35 @@ class BoundedRun:
         except json.JSONDecodeError as exc:
             if event_path.exists():
                 payload = json.loads(event_path.read_text(encoding="utf-8"))
-                payload["after_image"] = {
-                    "status": "NOT_CAPTURED",
-                    "reason": "X11 helper returned no complete result JSON",
-                }
                 payload["helper_completion"] = "NO_COMPLETE_RESULT_JSON"
             else:
                 raise RuntimeError(f"X11 helper did not return JSON: {result.stdout[-500:]}") from exc
-        with dispatch_path.open("x", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-            f.write("\n")
+        self.reset_dispatch_payload = payload
         if result.returncode != 0 or payload.get("event", {}).get("status") != "KEY_DISPATCHED":
             self.reset_classification = "RESET_NOT_DELIVERED"
             raise RuntimeError(f"X11 Backspace was not dispatched: {payload}")
 
-    def wait_and_classify_reset(self) -> dict[str, Any]:
+    def finalize_reset_dispatch(self, pid: int, title: str, window_id: int) -> None:
+        """Attach image evidence only after the continuous telemetry window ends."""
+        event_path = self.evidence / "reset_dispatch_event.json"
+        payload = self.reset_dispatch_payload
+        if payload is None and event_path.exists():
+            payload = json.loads(event_path.read_text(encoding="utf-8"))
+        if payload is None:
+            raise RuntimeError("cannot finalize Reset evidence without a persisted key-event record")
+        payload["before_image"] = self.before_reset_image or {"status": "NOT_CAPTURED"}
+        payload["after_image"] = self.capture_reset_image(pid, title, window_id, "after")
+        with (self.evidence / "reset_dispatch.json").open("x", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            f.write("\n")
+        self.reset_dispatch_payload = payload
+
+    def wait_and_classify_reset(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
         trace = self.evidence / "reset_state_trace.jsonl"
-        deadline = min(self.deadline, time.monotonic() + 9.0)
+        deadline = min(
+            self.deadline,
+            time.monotonic() + RESET_OBSERVER_DURATION_S + RESET_OBSERVER_COMPLETION_MARGIN_S,
+        )
         while time.monotonic() < deadline and not trace.exists():
             time.sleep(0.05)
         if not trace.exists():
@@ -336,7 +368,9 @@ class BoundedRun:
         while time.monotonic() < deadline and not summary.exists():
             time.sleep(0.05)
         if not summary.exists():
-            raise RuntimeError("bounded reset observer did not finish before its 9 s deadline")
+            raise RuntimeError("bounded reset observer did not finish before its duration plus completion margin")
+        # The state trace, not screenshot completion, owns the stability gate.
+        self.finalize_reset_dispatch(pid, title, window_id)
         out = self.evidence / "reset_analysis.json"
         result = self.run(
             "classify_reset_state",
@@ -405,10 +439,14 @@ class BoundedRun:
             self.start_sim_first()
             self.capture_service_topic_inventory()
             self.request_sd_and_verify()
-            self.start_observer()
             pid,title,window_id=self.inspect_window()
+            # Complete X11 discovery and the pre-reset screenshot before the
+            # fixed-duration telemetry observer starts. This prevents window
+            # inspection or image capture from consuming the post-reset hold.
+            self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
+            self.start_observer()
             self.dispatch_reset(pid,title,window_id)
-            reset=self.wait_and_classify_reset()
+            reset=self.wait_and_classify_reset(pid,title,window_id)
             result["reset_classification"]=reset.get("classification")
             result["reset_analysis"]=reset
             if reset.get("classification")!="AUTO_RESET_PASS":
