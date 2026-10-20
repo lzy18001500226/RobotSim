@@ -1,13 +1,15 @@
-"""Pure mode-transition classification for the Issue 80 research probe."""
+"""Pure protocol classification for Issue 80's simulation-only first-motion probe."""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 
+MODE_SD = "STAND_DEFAULT"
 MODE_LD = "LOCOMOTION_DEFAULT"
+OFFICIAL_VELOCITY_SOURCE = "node.locomotion_velocity"
+OFFICIAL_ACTION_SOURCE = "rc"
 SUCCESS_STATUS = 1
 TASK_STATES = {
     0: "UNKNOWN",
@@ -22,14 +24,11 @@ TASK_STATES = {
     300: "CREATED",
     400: "RUNNING",
 }
-SDK_INPUT_SOURCE_NAME = "node.set_mc_input_source"
 
 
 def is_valid_input_source_name(value: str) -> bool:
-    """Accept a unique research source or the pinned SDK example identity."""
-    return value == SDK_INPUT_SOURCE_NAME or re.fullmatch(
-        r"issue80_m1_[A-Za-z0-9_]{8,40}", value
-    ) is not None
+    """The live first-motion harness is pinned to the vendor example identity."""
+    return value == OFFICIAL_VELOCITY_SOURCE
 
 
 def assess_input_source_add(
@@ -37,69 +36,50 @@ def assess_input_source_add(
     task_id: int,
     state_value: int,
 ) -> dict[str, Any]:
-    """Separate RPC transport success from the task's registration state."""
+    """Report RPC acceptance separately from the asynchronous Add task result."""
+    code = int(response_header_code)
     state = int(state_value)
-    if int(response_header_code) != 0:
-        assessment = "RPC_FAILED"
+    if code != 0:
+        assessment = "ADD_REJECTED"
     elif state == SUCCESS_STATUS:
-        assessment = "SERVER_STATE_SUCCESS"
-    elif state in (200, 300, 400):
-        assessment = "TASK_PENDING_OR_RUNNING"
-    elif state == 0 and int(task_id) > 0:
-        assessment = "RPC_ACK_STATE_UNKNOWN"
+        assessment = "ADD_TASK_SUCCEEDED"
+    elif state in (2, 3, 4, 5, 6):
+        assessment = "ADD_TASK_TERMINAL_FAILURE"
+    elif state == 100:
+        assessment = "ADD_TASK_NOT_READY"
+    elif state in (0, 200, 300, 400):
+        assessment = "ADD_ACCEPTED_TASK_NOT_TERMINAL"
     else:
-        assessment = "SERVER_STATE_NOT_SUCCESS"
+        assessment = "ADD_TASK_STATE_UNRECOGNIZED"
     return {
-        "response_header_code": int(response_header_code),
+        "response_header_code": code,
         "task_id": int(task_id),
         "state_value": state,
         "state_name": TASK_STATES.get(state, "UNRECOGNIZED"),
         "assessment": assessment,
-        "registration_confirmed": assessment == "SERVER_STATE_SUCCESS",
+        "registration_operation_succeeded": code == 0,
+        "task_state_is_success": state == SUCCESS_STATUS,
+        "enable_fallback_allowed": code != 0 or state in (2, 3, 4, 5, 6),
     }
 
 
-def source_arbitration_confirmed(
-    current_source_name: str,
-    common_source_name: str,
-    expected_source_name: str,
-    common_state_age_s: float | None,
-    *,
-    max_age_s: float = 0.5,
-) -> bool:
-    """Require matching current-source service and fresh McCommonState evidence."""
-    return (
-        current_source_name == expected_source_name
-        and common_source_name == expected_source_name
-        and common_state_age_s is not None
-        and 0.0 <= float(common_state_age_s) <= max_age_s
-    )
-
-
-def nonzero_velocity_authorized(
-    get_action_desc: str | None,
-    get_action_header_code: int | None,
-    common_action_desc: str | None,
-    current_source_name: str,
-    common_source_name: str,
-    expected_source_name: str,
-    common_state_age_s: float | None,
-    *,
-    max_age_s: float = 0.5,
-) -> bool:
-    """Require both live LD readbacks and a fresh, matching active source."""
-    return (
-        get_action_desc == MODE_LD
-        and get_action_header_code == 0
-        and common_action_desc == MODE_LD
-        and source_arbitration_confirmed(
-            current_source_name,
-            common_source_name,
-            expected_source_name,
-            common_state_age_s,
-            max_age_s=max_age_s,
-        )
-    )
+def classify_set_mc_action_response(
+    response_header_code: int,
+    response_status_value: int,
+    response_message: str,
+) -> dict[str, Any]:
+    """Interpret both the detailed result code and common status; do not claim application."""
+    code = int(response_header_code)
+    status = int(response_status_value)
+    accepted = code == 0 and status == SUCCESS_STATUS
+    return {
+        "response_header_code": code,
+        "response_status_value": status,
+        "response_message": str(response_message),
+        "message": str(response_message),
+        "accepted_by_service": accepted,
+        "applied_mode_confirmed": False,
+    }
 
 
 def classify_ld_transition(
@@ -109,11 +89,14 @@ def classify_ld_transition(
     *,
     readback_error: bool = False,
 ) -> str:
-    """Do not treat an RPC acknowledgement as proof of a live LD transition."""
+    """Separate service rejection, request acceptance, and later mode application."""
     if not set_result:
         return "LD_REQUEST_NOT_SENT"
+    header_code = set_result.get("response_header_code")
+    if header_code is not None and int(header_code) != 0:
+        return f"REJECTED_HEADER_CODE_{int(header_code)}"
     if set_result.get("response_status_value") != SUCCESS_STATUS:
-        return "REJECTED"
+        return "REJECTED_STATUS"
     if readback_error:
         return "READBACK_INTERFACE_ERROR"
 
@@ -124,8 +107,14 @@ def classify_ld_transition(
     get_mode = last_action.get("action_desc") if last_action else None
     if last_action and last_action.get("response_header_code") != 0:
         return "READBACK_INTERFACE_ERROR"
+    if get_mode and common_mode and get_mode not in {MODE_SD, MODE_LD}:
+        return "UNRELATED_GET_MODE"
+    if common_mode and common_mode not in {MODE_SD, MODE_LD}:
+        return "UNRELATED_COMMON_MODE"
     if get_mode and common_mode and get_mode != common_mode:
-        return "READBACK_INTERFACE_INCONSISTENCY"
+        return "READBACK_TRANSITION_IN_PROGRESS"
     if get_mode == MODE_LD and common_mode == MODE_LD:
         return "LD_CONFIRMED"
-    return "ACCEPTED_BUT_NOT_TRANSITIONED"
+    if get_mode == MODE_SD and common_mode == MODE_SD:
+        return "ACCEPTED_WAITING_FOR_VALID_LOCOMOTION_INPUT"
+    return "ACCEPTED_MODE_READBACK_PENDING"

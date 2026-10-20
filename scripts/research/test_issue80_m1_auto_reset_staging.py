@@ -10,7 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from issue80_m1_auto_reset_run import BoundedRun, MC_LAUNCH, M1_MODE_LOGIC, SIM_LAUNCH
+from issue80_m1_auto_reset_run import (
+    BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, SIM_LAUNCH,
+)
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
@@ -19,7 +21,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             argparse.Namespace(
                 evidence_dir=str(evidence),
                 container="test-container",
-                source="issue80_m1_test_12345678",
+                maintainer_authorized_first_motion=True,
                 attempt_id="test-attempt",
                 max_runtime_s=10.0,
             )
@@ -36,6 +38,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
             record = next(row for row in manifest["scripts"] if row["name"] == M1_MODE_LOGIC.name)
             self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
             self.assertEqual(record["disposition"], "COPIED")
+
+    def test_stages_first_motion_safety_logic_and_records_its_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.stage_research_scripts()
+            staged = evidence / M1_FIRST_MOTION_LOGIC.name
+            self.assertEqual(staged.read_bytes(), M1_FIRST_MOTION_LOGIC.read_bytes())
+            manifest = json.loads((evidence / "staged_research_scripts.json").read_text())
+            record = next(row for row in manifest["scripts"] if row["name"] == M1_FIRST_MOTION_LOGIC.name)
+            self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
 
     def test_stages_verified_runtime_launchers_under_names_used_by_container(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -60,11 +73,11 @@ class ResearchScriptStagingTests(unittest.TestCase):
             self.assertEqual(stale.read_bytes(), b"stale module")
             self.assertFalse((evidence / "staged_research_scripts.json").exists())
 
-    def test_runner_keeps_sdk_action_identity_distinct_from_registered_source(self) -> None:
+    def test_runner_does_not_start_first_motion_without_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             evidence = Path(temp_dir)
             runner = self.make_runner(evidence)
-            runner.args.set_action_source = "node.set_mc_action"
+            runner.args.maintainer_authorized_first_motion = False
             runner.remaining = lambda: 60.0
             captured: list[list[str]] = []
 
@@ -74,17 +87,62 @@ class ResearchScriptStagingTests(unittest.TestCase):
 
             runner.run = fake_run
             runner.run_m1()
-            self.assertEqual(len(captured), 1)
-            shell_command = captured[0][-1]
-            self.assertIn("--source issue80_m1_test_12345678", shell_command)
-            self.assertIn("--set-action-source node.set_mc_action", shell_command)
+            self.assertEqual(captured, [])
+            self.assertEqual(runner.m1_result["status"], "NOT_AUTHORIZED")
 
-    def test_runner_can_issue_exact_pinned_sdk_identity_pair(self) -> None:
+    def test_parent_does_not_start_container_without_first_motion_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            runner.args.maintainer_authorized_first_motion = False
+            runner.start_container = lambda: self.fail("unauthorized run must not start Docker")
+            result = runner.execute()
+            self.assertEqual(result["status"], "NOT_AUTHORIZED")
+            self.assertFalse(runner.container_created)
+
+    def test_runtime_container_must_be_bridge_isolated(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            inspect_payload = [{
+                "HostConfig": {"NetworkMode": "host"},
+                "Config": {"Env": ["ROS_DOMAIN_ID=20", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"]},
+            }]
+
+            def fake_run(name: str, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                if name == "container_inspect_start":
+                    return subprocess.CompletedProcess(command, 0, json.dumps(inspect_payload), "")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            runner.run = fake_run
+            with self.assertRaisesRegex(RuntimeError, "bridge-isolated"):
+                runner.start_container()
+            self.assertEqual(runner.network_mode, "host")
+
+    def test_container_inspect_rejects_host_network_for_first_motion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            calls: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                calls.append(command)
+                payload = [{
+                    "HostConfig": {"NetworkMode": "host"},
+                    "Config": {"Env": ["ROS_DOMAIN_ID=20", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"]},
+                }]
+                return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+            runner.run = fake_run
+            with self.assertRaisesRegex(RuntimeError, "bridge-isolated"):
+                runner.start_container()
+            self.assertTrue(runner.container_created)
+            self.assertIn("--network=bridge", calls[0])
+
+    def test_authorized_runner_uses_one_pinned_source_and_hard_limited_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             evidence = Path(temp_dir)
             runner = self.make_runner(evidence)
-            runner.source = "node.set_mc_input_source"
-            runner.args.set_action_source = "node.set_mc_action"
+            runner.args.maintainer_authorized_first_motion = True
+            runner.network_mode = "bridge"
+            runner.reset_classification = "AUTO_RESET_PASS"
             runner.remaining = lambda: 60.0
             captured: list[list[str]] = []
 
@@ -95,31 +153,14 @@ class ResearchScriptStagingTests(unittest.TestCase):
             runner.run = fake_run
             runner.run_m1()
             shell_command = captured[0][-1]
-            self.assertIn("--source node.set_mc_input_source", shell_command)
-            self.assertIn("--set-action-source node.set_mc_action", shell_command)
-
-    def test_runner_uses_zero_only_50hz_arbitration_probe_without_activation_pulse(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            evidence = Path(temp_dir)
-            runner = self.make_runner(evidence)
-            runner.source = "node.set_mc_input_source"
-            runner.args.set_action_source = "node.set_mc_action"
-            runner.args.m1_zero_source_arbitration = True
-            runner.remaining = lambda: 60.0
-            captured: list[list[str]] = []
-
-            def fake_run(name: str, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-                captured.append(command)
-                return subprocess.CompletedProcess(command, 0, "", "")
-
-            runner.run = fake_run
-            runner.run_m1()
-            shell_command = captured[0][-1]
-            self.assertIn("--source node.set_mc_input_source", shell_command)
-            self.assertIn("--set-action-source node.set_mc_action", shell_command)
-            self.assertIn("--zero-publish-hz 50", shell_command)
-            self.assertIn("--zero-source-arbitration", shell_command)
+            self.assertIn("first-motion --maintainer-authorized", shell_command)
+            self.assertIn("--reset-gate-verified", shell_command)
+            self.assertIn("--attempt-id test-attempt", shell_command)
+            self.assertIn("ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", captured[0])
+            self.assertIn("--robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml", shell_command)
+            self.assertNotIn("--source ", shell_command)
             self.assertNotIn("--activation-pulse", shell_command)
+            self.assertNotIn("--zero-source-arbitration", shell_command)
 
 
 if __name__ == "__main__":

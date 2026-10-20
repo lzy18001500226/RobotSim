@@ -1,115 +1,98 @@
-"""Offline tests for the Issue 80 mode-transition acceptance gate."""
+"""Offline tests for source and action response semantics in the Issue 80 M1 runner."""
 
 from __future__ import annotations
 
 import unittest
 
 from issue80_m1_mode_logic import (
+    MODE_LD,
+    MODE_SD,
+    OFFICIAL_VELOCITY_SOURCE,
     assess_input_source_add,
     classify_ld_transition,
+    classify_set_mc_action_response,
     is_valid_input_source_name,
-    nonzero_velocity_authorized,
-    source_arbitration_confirmed,
 )
 
 
-class ClassifyLdTransitionTests(unittest.TestCase):
-    @staticmethod
-    def observation(mode: str, code: int = 0) -> dict[str, object]:
+class SourceIdentityAndRegistrationTests(unittest.TestCase):
+    def test_only_documented_velocity_source_is_live_identity(self) -> None:
+        self.assertTrue(is_valid_input_source_name(OFFICIAL_VELOCITY_SOURCE))
+        self.assertFalse(is_valid_input_source_name("node.set_mc_input_source"))
+        self.assertFalse(is_valid_input_source_name("issue80_m1_fake_source"))
+        self.assertFalse(is_valid_input_source_name(""))
+
+    def test_documented_header_success_is_not_rejected_by_unknown_task_state(self) -> None:
+        result = assess_input_source_add(0, task_id=1, state_value=0)
+        self.assertEqual(result["assessment"], "ADD_ACCEPTED_TASK_NOT_TERMINAL")
+        self.assertTrue(result["registration_operation_succeeded"])
+        self.assertFalse(result["task_state_is_success"])
+        self.assertFalse(result["enable_fallback_allowed"])
+        self.assertEqual(result["state_name"], "UNKNOWN")
+
+    def test_nonzero_add_header_requests_enable_recovery(self) -> None:
+        result = assess_input_source_add(3, task_id=4, state_value=5)
+        self.assertEqual(result["assessment"], "ADD_REJECTED")
+        self.assertFalse(result["registration_operation_succeeded"])
+        self.assertTrue(result["enable_fallback_allowed"])
+
+    def test_add_task_terminal_failure_allows_one_enable_recovery(self) -> None:
+        result = assess_input_source_add(0, task_id=7, state_value=2)
+        self.assertEqual(result["assessment"], "ADD_TASK_TERMINAL_FAILURE")
+        self.assertTrue(result["registration_operation_succeeded"])
+        self.assertTrue(result["enable_fallback_allowed"])
+
+    def test_add_not_ready_state_does_not_trigger_enable_replay(self) -> None:
+        result = assess_input_source_add(0, task_id=8, state_value=100)
+        self.assertEqual(result["assessment"], "ADD_TASK_NOT_READY")
+        self.assertTrue(result["registration_operation_succeeded"])
+        self.assertFalse(result["enable_fallback_allowed"])
+
+
+class ActionResponseAndTransitionTests(unittest.TestCase):
+    def observation(self, mode: str, code: int = 0) -> dict[str, object]:
         return {"action_desc": mode, "response_header_code": code}
 
-    def test_ack_without_live_ld_readback_is_not_pass(self) -> None:
-        result = classify_ld_transition(
-            {"response_status_value": 1},
-            [self.observation("STAND_DEFAULT")],
-            "STAND_DEFAULT",
-        )
-        self.assertEqual(result, "ACCEPTED_BUT_NOT_TRANSITIONED")
+    def test_set_action_diagnostics_use_code_status_and_message(self) -> None:
+        success = classify_set_mc_action_response(0, 1, "success")
+        self.assertTrue(success["accepted_by_service"])
+        self.assertFalse(success["applied_mode_confirmed"])
+        self.assertEqual(success["message"], "success")
+        rejected = classify_set_mc_action_response(6, 1, "security protection")
+        self.assertFalse(rejected["accepted_by_service"])
+        self.assertEqual(rejected["response_header_code"], 6)
 
-    def test_request_rejection_stops_before_readback_claim(self) -> None:
+    def test_successful_ld_request_may_wait_for_first_locomotion_input(self) -> None:
         result = classify_ld_transition(
-            {"response_status_value": 2},
-            [self.observation("LOCOMOTION_DEFAULT")],
-            "LOCOMOTION_DEFAULT",
+            {"response_header_code": 0, "response_status_value": 1},
+            [self.observation(MODE_SD)],
+            MODE_SD,
         )
-        self.assertEqual(result, "REJECTED")
+        self.assertEqual(result, "ACCEPTED_WAITING_FOR_VALID_LOCOMOTION_INPUT")
 
-    def test_both_live_readbacks_must_confirm_ld(self) -> None:
+    def test_detailed_header_rejection_wins_over_success_status(self) -> None:
         result = classify_ld_transition(
-            {"response_status_value": 1},
-            [self.observation("LOCOMOTION_DEFAULT")],
-            "STAND_DEFAULT",
+            {"response_header_code": 6, "response_status_value": 1},
+            [self.observation(MODE_LD)],
+            MODE_LD,
         )
-        self.assertEqual(result, "READBACK_INTERFACE_INCONSISTENCY")
+        self.assertEqual(result, "REJECTED_HEADER_CODE_6")
 
-    def test_confirmed_ld_requires_service_and_common_state(self) -> None:
+    def test_ld_requires_actual_get_and_common_readbacks(self) -> None:
         result = classify_ld_transition(
-            {"response_status_value": 1},
-            [self.observation("STAND_DEFAULT"), self.observation("LOCOMOTION_DEFAULT")],
-            "LOCOMOTION_DEFAULT",
+            {"response_header_code": 0, "response_status_value": 1},
+            [self.observation(MODE_SD), self.observation(MODE_LD)],
+            MODE_LD,
         )
         self.assertEqual(result, "LD_CONFIRMED")
 
-    def test_readback_error_blocks_transition_claim(self) -> None:
+    def test_unrelated_mode_is_not_accepted_as_transition(self) -> None:
         result = classify_ld_transition(
-            {"response_status_value": 1},
-            [self.observation("LOCOMOTION_DEFAULT")],
-            "LOCOMOTION_DEFAULT",
-            readback_error=True,
+            {"response_header_code": 0, "response_status_value": 1},
+            [self.observation("PASSIVE_DEFAULT")],
+            "PASSIVE_DEFAULT",
         )
-        self.assertEqual(result, "READBACK_INTERFACE_ERROR")
-
-
-class InputSourceIdentityTests(unittest.TestCase):
-    def test_accepts_exact_pinned_sdk_input_source_identity(self) -> None:
-        self.assertTrue(is_valid_input_source_name("node.set_mc_input_source"))
-
-    def test_accepts_unique_research_source(self) -> None:
-        self.assertTrue(is_valid_input_source_name("issue80_m1_5c3914c1"))
-
-    def test_rejects_unrelated_or_nonunique_source_names(self) -> None:
-        for value in ("node.other", "rc", "issue80_m1_short", ""):
-            with self.subTest(value=value):
-                self.assertFalse(is_valid_input_source_name(value))
-
-
-class InputSourceArbitrationTests(unittest.TestCase):
-    def test_add_rpc_header_success_with_unknown_task_state_is_not_registration_pass(self) -> None:
-        result = assess_input_source_add(0, task_id=1, state_value=0)
-        self.assertEqual(result["assessment"], "RPC_ACK_STATE_UNKNOWN")
-        self.assertEqual(result["state_name"], "UNKNOWN")
-        self.assertFalse(result["registration_confirmed"])
-
-    def test_add_state_success_confirms_only_the_server_task_state(self) -> None:
-        result = assess_input_source_add(0, task_id=1, state_value=1)
-        self.assertEqual(result["assessment"], "SERVER_STATE_SUCCESS")
-        self.assertTrue(result["registration_confirmed"])
-
-    def test_nonzero_header_or_pending_state_does_not_confirm_registration(self) -> None:
-        self.assertEqual(assess_input_source_add(7, 1, 1)["assessment"], "RPC_FAILED")
-        self.assertEqual(assess_input_source_add(0, 1, 200)["assessment"], "TASK_PENDING_OR_RUNNING")
-
-    def test_source_arbitration_requires_both_readbacks_and_fresh_common_state(self) -> None:
-        self.assertTrue(source_arbitration_confirmed("probe", "probe", "probe", 0.1))
-        self.assertFalse(source_arbitration_confirmed("", "probe", "probe", 0.1))
-        self.assertFalse(source_arbitration_confirmed("probe", "", "probe", 0.1))
-        self.assertFalse(source_arbitration_confirmed("probe", "probe", "probe", 0.5001))
-        self.assertFalse(source_arbitration_confirmed("probe", "probe", "probe", None))
-
-    def test_nonzero_requires_live_ld_and_matching_fresh_active_source(self) -> None:
-        valid = dict(
-            get_action_desc="LOCOMOTION_DEFAULT",
-            get_action_header_code=0,
-            common_action_desc="LOCOMOTION_DEFAULT",
-            current_source_name="probe",
-            common_source_name="probe",
-            expected_source_name="probe",
-            common_state_age_s=0.1,
-        )
-        self.assertTrue(nonzero_velocity_authorized(**valid))
-        self.assertFalse(nonzero_velocity_authorized(**{**valid, "get_action_desc":"STAND_DEFAULT"}))
-        self.assertFalse(nonzero_velocity_authorized(**{**valid, "current_source_name":""}))
-        self.assertFalse(nonzero_velocity_authorized(**{**valid, "common_state_age_s":0.6}))
+        self.assertEqual(result, "UNRELATED_GET_MODE")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Bounded, simulation-only X2 Issue #80 source and LD diagnostic."""
+"""Bounded, simulation-only X2 M1 first-motion probe. Requires explicit maintainer authorization."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import math
+import os
 import signal
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,41 +17,34 @@ from typing import Any
 
 import rclpy
 from aimdk_msgs.msg import (
-    CommonRequest,
-    JointCommandArray,
-    JointStateArray,
-    McInputAction,
-    McActionCommand,
-    McCommonState,
-    McLocomotionVelocity,
-    MessageHeader,
-    RequestHeader,
+    CommonRequest, JointCommandArray, JointStateArray, McActionCommand,
+    McCommonState, McInputAction, McLocomotionVelocity, MessageHeader, RequestHeader,
 )
-from aimdk_msgs.srv import (
-    GetCurrentInputSource,
-    GetMcAction,
-    SetMcAction,
-    SetMcInputSource,
-)
+from aimdk_msgs.srv import GetCurrentInputSource, GetMcAction, SetMcAction, SetMcInputSource
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
-from issue80_m1_mode_logic import (
-    assess_input_source_add,
-    classify_ld_transition,
-    is_valid_input_source_name,
-    nonzero_velocity_authorized,
-    source_arbitration_confirmed,
-)
 
+from issue80_m1_first_motion import (
+    ACTION_SOURCE_NAME, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
+    COMMAND_QOS_RELIABILITY, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
+    SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
+    load_leg_joint_limits, run_first_motion_window, validate_local_sim_publishers,
+    validate_first_motion_authorization, validate_runtime_scope,
+)
+from issue80_m1_mode_logic import classify_set_mc_action_response
 
 VELOCITY_TOPIC = "/aima/mc/locomotion/velocity"
 INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
-MODE_LD = "LOCOMOTION_DEFAULT"
+SET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/SetMcAction"
 REQUIRED_TOPICS = ("odom", "imu", "common", "leg_state", "leg_command")
+ROBOT_MODEL_PATH = (
+    "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
+    "lx2501_3_t2d5/sim/robot_model.yaml"
+)
 
 
 def yaw_from_quaternion(q: Any) -> float:
@@ -70,10 +65,7 @@ def roll_pitch_from_quaternion(q: Any) -> tuple[float, float]:
 
 def _json_safe(value: Any) -> Any:
     if hasattr(value, "get_fields_and_field_types"):
-        return {
-            name: _json_safe(getattr(value, name))
-            for name in value.get_fields_and_field_types()
-        }
+        return {name: _json_safe(getattr(value, name)) for name in value.get_fields_and_field_types()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     if isinstance(value, float):
@@ -84,64 +76,73 @@ def _json_safe(value: Any) -> Any:
 
 
 class FocusedM1Diagnostic(Node):
-    """Bounded zero-only MC arbitration and LD readback diagnosis."""
+    """Run one authorized 0.2 m/s first-motion test with fail-closed monitoring."""
 
     def __init__(self, args: argparse.Namespace):
-        super().__init__("issue80_m1_focused_diagnostic")
-        if not is_valid_input_source_name(args.source):
-            raise ValueError(
-                "source must be a fresh issue80_m1_<unique-suffix> name or the pinned SDK identity node.set_mc_input_source"
-            )
-        if not 0.1 <= args.zero_duration <= 1.0:
-            raise ValueError("zero-only interval must be within 0.1..1.0 s")
-        if not 0.1 <= args.mode_observe_duration <= 5.0:
-            raise ValueError("mode observation interval is capped at 5 seconds")
-        if args.zero_publish_hz not in (20.0, 50.0):
-            raise ValueError("zero publish rate must be the existing 20 Hz or source-grounded 50 Hz profile")
-        if args.zero_source_arbitration and args.zero_publish_hz != 50.0:
-            raise ValueError("source arbitration preflight is fixed to the reference bridge's 50 Hz rate")
-        if args.zero_source_arbitration and args.activation_pulse:
-            raise ValueError("zero-source arbitration probe never permits a nonzero activation pulse")
-        if not 1.0 <= args.source_arbitration_duration <= 3.0:
-            raise ValueError("source arbitration observation is bounded to 1..3 seconds")
+        verified_network_mode = os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE")
+        validate_first_motion_authorization(
+            reset_gate_verified=args.reset_gate_verified,
+            maintainer_authorized=args.maintainer_authorized,
+            network_mode=verified_network_mode,
+        )
         if not 0.1 <= args.state_timeout <= 0.5:
-            raise ValueError("state freshness timeout may not exceed the established 0.5 s gate")
-        if args.max_tilt_deg > 15.0 or args.min_root_z < 0.52:
-            raise ValueError("safety guards may be tightened but not weakened")
+            raise ValueError("state freshness limit may not be weakened beyond the existing 0.5 s gate")
+        if args.max_tilt_deg <= 0.0 or args.max_tilt_deg > 15.0:
+            raise ValueError("tilt safety threshold may be tightened but not weakened beyond 15 degrees")
+        if args.min_root_z < 0.52:
+            raise ValueError("root-height safety threshold may be tightened but not weakened below 0.52 m")
+        super().__init__("issue80_m1_first_motion")
         self.args = args
-        self.source = args.source
+        self.verified_network_mode = verified_network_mode
+        self.source = VELOCITY_SOURCE_NAME
         self.output_dir = Path(args.output_dir).resolve(strict=True)
-        self.trace_path = self.output_dir / "m1_diagnostic_trace.jsonl"
-        self.result_path = self.output_dir / "m1_diagnostic_result.json"
+        self.trace_path = self.output_dir / "m1_first_motion_trace.jsonl"
+        self.result_path = self.output_dir / "m1_first_motion_result.json"
         if self.trace_path.exists() or self.result_path.exists():
-            raise FileExistsError("refusing to overwrite prior M1 diagnostic evidence")
+            raise FileExistsError("refusing to overwrite prior M1 evidence")
         self.trace = self.trace_path.open("x", encoding="utf-8", buffering=1)
+        self.joint_limits, self.joint_limits_sha256 = load_leg_joint_limits(args.robot_model_path)
         self.latest: dict[str, Any] = {}
         self.received_at: dict[str, float] = {}
-        self.interrupted = False
-        self.fault: str | None = None
+        self.last_mode: dict[str, Any] | None = None
+        self.last_source: dict[str, Any] | None = None
+        self.readback_at: dict[str, float] = {}
+        self.mode_future = None
+        self.source_future = None
+        self.mode_future_request = None
+        self.source_future_request = None
+        self.mode_future_started = 0.0
+        self.source_future_started = 0.0
+        self.next_mode_query = 0.0
+        self.next_source_query = 0.0
+        self.async_readback_fault: str | None = None
+        self.interrupted = threading.Event()
+        self.publisher_lock = threading.RLock()
+        self.trace_lock = threading.RLock()
         self.nonzero_messages = 0
         self.zero_messages = 0
-        self.source_observations: list[dict[str, Any]] = []
-        self.mode_observations: list[dict[str, Any]] = []
+        self.command_trace: list[dict[str, Any]] = []
+        self.current_phase = "preflight"
         self.events: list[dict[str, Any]] = []
-        self.source_arbitration_result: dict[str, Any] | None = None
+        self.mode_observations: list[dict[str, Any]] = []
+        self.source_observations: list[dict[str, Any]] = []
+        self.scope_evidence: dict[str, Any] | None = None
+        self.pulse_result: dict[str, Any] | None = None
+
         self.state_qos = QoSProfile(
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            history=HistoryPolicy.KEEP_LAST, depth=10,
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.publisher = self.create_publisher(
-            McLocomotionVelocity, VELOCITY_TOPIC, self.state_qos
+        self.command_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=COMMAND_QOS_DEPTH,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
         )
-        self.source_client = self.create_client(
-            GetCurrentInputSource, CURRENT_INPUT_SOURCE_SERVICE
-        )
+        self.publisher = self.create_publisher(McLocomotionVelocity, VELOCITY_TOPIC, self.command_qos)
+        self.source_client = self.create_client(GetCurrentInputSource, CURRENT_INPUT_SOURCE_SERVICE)
         self.register_client = self.create_client(SetMcInputSource, INPUT_SOURCE_SERVICE)
-        self.set_mode_client = self.create_client(
-            SetMcAction, "/aimdk_5Fmsgs/srv/SetMcAction"
-        )
+        self.set_mode_client = self.create_client(SetMcAction, SET_MC_ACTION_SERVICE)
         self.get_mode_client = self.create_client(GetMcAction, GET_MC_ACTION_SERVICE)
         self.create_subscription(
             Odometry, "/aima/hal/odom/state", lambda msg: self._store("odom", msg), self.state_qos
@@ -150,22 +151,13 @@ class FocusedM1Diagnostic(Node):
             Imu, "/aima/hal/imu/torso/state", lambda msg: self._store("imu", msg), self.state_qos
         )
         self.create_subscription(
-            McCommonState,
-            "/aima/mc/common/state",
-            lambda msg: self._store("common", msg),
-            self.state_qos,
+            McCommonState, "/aima/mc/common/state", lambda msg: self._store("common", msg), self.state_qos
         )
         self.create_subscription(
-            JointStateArray,
-            "/aima/hal/joint/leg/state",
-            lambda msg: self._store("leg_state", msg),
-            self.state_qos,
+            JointStateArray, "/aima/hal/joint/leg/state", lambda msg: self._store("leg_state", msg), self.state_qos
         )
         self.create_subscription(
-            JointCommandArray,
-            "/aima/hal/joint/leg/command",
-            lambda msg: self._store("leg_command", msg),
-            self.state_qos,
+            JointCommandArray, "/aima/hal/joint/leg/command", lambda msg: self._store("leg_command", msg), self.state_qos
         )
 
     def _store(self, key: str, msg: Any) -> None:
@@ -174,7 +166,7 @@ class FocusedM1Diagnostic(Node):
 
     def _mode(self) -> str:
         common = self.latest.get("common")
-        return common.action_info.action_desc if common is not None else ""
+        return str(common.action_info.action_desc) if common is not None else ""
 
     def _pose(self) -> dict[str, float] | None:
         odom = self.latest.get("odom")
@@ -194,32 +186,68 @@ class FocusedM1Diagnostic(Node):
 
     def _state_ages(self) -> dict[str, float | None]:
         now = time.monotonic()
-        return {
+        ages = {
             key: now - self.received_at[key] if key in self.received_at else None
             for key in REQUIRED_TOPICS
         }
+        for key in ("get_mode", "get_source"):
+            ages[key] = now - self.readback_at[key] if key in self.readback_at else None
+        return ages
+
+    def _joint_states_as_dicts(self) -> list[dict[str, Any]]:
+        state = self.latest.get("leg_state")
+        if state is None:
+            return []
+        return [
+            {
+                "name": str(joint.name), "position": float(joint.position),
+                "velocity": float(joint.velocity), "effort": float(joint.effort),
+                "error_code": int(joint.error_code),
+            }
+            for joint in state.joints
+        ]
+
+    def _joint_state_fault(self) -> str | None:
+        joints = self._joint_states_as_dicts()
+        if len(joints) != len(self.joint_limits):
+            return "leg_joint_limit_mapping_incomplete"
+        by_name = {joint["name"]: joint for joint in joints}
+        if len(by_name) != len(joints) or set(by_name) != set(self.joint_limits):
+            return "leg_joint_limit_mapping_incomplete"
+        for name, joint in by_name.items():
+            limits = self.joint_limits[name]
+            if not all(math.isfinite(float(joint[k])) for k in ("position", "velocity")):
+                return f"nonfinite_leg_joint_state:{name}"
+            if not float(limits["lower_position"]) <= joint["position"] <= float(limits["upper_position"]):
+                return f"source_joint_position_limit:{name}"
+            if abs(joint["velocity"]) > float(limits["max_velocity"]):
+                return f"source_joint_velocity_limit:{name}"
+        return None
 
     def _safety_fault(self, *, expected_mode: str | tuple[str, ...]) -> str | None:
         ages = self._state_ages()
-        stale = [k for k, age in ages.items() if age is None or age > self.args.state_timeout]
+        stale = [key for key in REQUIRED_TOPICS if ages.get(key) is None or ages[key] > self.args.state_timeout]
         if stale:
             return "stale_or_missing_state:" + ",".join(stale)
-        allowed_modes = (expected_mode,) if isinstance(expected_mode, str) else expected_mode
-        if self._mode() not in allowed_modes:
-            return f"MC_mode_regressed_or_changed:{self._mode()}"
+        allowed = (expected_mode,) if isinstance(expected_mode, str) else expected_mode
+        if self._mode() not in allowed:
+            return f"MC_mode_changed:{self._mode()}"
+        common = self.latest.get("common")
+        if common is None or int(common.body_status.value) != 1:
+            return "non_standing_body_status"
+        fsm = int(common.fsm_state.current_state)
+        if fsm == 4:
+            return "mc_safety_protection_state"
+        if fsm not in (1, 2, 3):
+            return f"unknown_or_unrelated_fsm_state:{fsm}"
         pose = self._pose()
-        if pose is None or not all(
-            math.isfinite(pose[k]) for k in ("x", "y", "z", "roll", "pitch", "yaw")
-        ):
+        if pose is None or not all(math.isfinite(pose[key]) for key in ("x", "y", "z", "roll", "pitch", "yaw")):
             return "missing_or_nonfinite_odom"
         if pose["z"] < self.args.min_root_z:
-            return "root_height_below_safety_floor"
+            return "fall_root_height"
         if max(abs(pose["roll"]), abs(pose["pitch"])) > math.radians(self.args.max_tilt_deg):
-            return "tilt_safety_stop"
-        for joint in self.latest["leg_state"].joints:
-            if not all(math.isfinite(float(v)) for v in (joint.position, joint.velocity)):
-                return "nonfinite_leg_state"
-        return None
+            return "fall_tilt"
+        return self._joint_state_fault()
 
     def _snapshot(self) -> dict[str, Any]:
         common = self.latest.get("common")
@@ -238,19 +266,20 @@ class FocusedM1Diagnostic(Node):
             "imu": _json_safe(self.latest.get("imu")),
         }
 
-    def _trace(self, phase: str, command: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> None:
+    def _trace(self, phase: str, snapshot: Mapping[str, Any] | None = None) -> None:
         row = {
+            "event": "state_sample",
             "phase": phase,
             "source": self.source,
-            "command": {
-                "forward_m_s": command[0],
-                "lateral_m_s": command[1],
-                "yaw_rate_rad_s": command[2],
-            },
-            **self._snapshot(),
-            "fault": self.fault,
+            "snapshot": _json_safe(snapshot if snapshot is not None else self._snapshot()),
+            "wall_utc": datetime.now(timezone.utc).isoformat(),
+            "wall_monotonic_sec": time.monotonic(),
         }
-        self.trace.write(json.dumps(row, allow_nan=False, separators=(",", ":")) + "\n")
+        self._write_trace_row(row)
+
+    def _write_trace_row(self, row: Mapping[str, Any]) -> None:
+        with self.trace_lock:
+            self.trace.write(json.dumps(row, allow_nan=False, separators=(",", ":")) + "\n")
 
     def _publish(self, forward: float = 0.0) -> None:
         msg = McLocomotionVelocity()
@@ -260,611 +289,595 @@ class FocusedM1Diagnostic(Node):
         msg.forward_velocity = float(forward)
         msg.lateral_velocity = 0.0
         msg.angular_velocity = 0.0
-        self.publisher.publish(msg)
-        if forward != 0.0:
-            self.nonzero_messages += 1
-        else:
-            self.zero_messages += 1
-
-    def _zero_period_s(self) -> float:
-        return 1.0 / float(self.args.zero_publish_hz)
+        with self.publisher_lock:
+            command_row = {
+                "event": "velocity_command",
+                "command_kind": "zero_stop" if forward == 0.0 else "nonzero_activation",
+                "publish_outcome": "CALL_STARTED",
+                "wall_utc": datetime.now(timezone.utc).isoformat(),
+                "wall_monotonic_sec": time.monotonic(),
+                "ros_stamp_sec": int(msg.header.stamp.sec),
+                "ros_stamp_nanosec": int(msg.header.stamp.nanosec),
+                "phase": self.current_phase,
+                "source": str(msg.source),
+                "forward_velocity_m_s": float(msg.forward_velocity),
+                "lateral_velocity_m_s": float(msg.lateral_velocity),
+                "angular_velocity_rad_s": float(msg.angular_velocity),
+            }
+            self.command_trace.append(command_row)
+            self._write_trace_row(command_row)
+            try:
+                self.publisher.publish(msg)
+            except Exception as exc:
+                command_row["publish_outcome"] = "RAISED"
+                command_row["publish_error"] = f"{type(exc).__name__}: {exc}"
+                self._write_trace_row({
+                    "event": "velocity_publish_result",
+                    "wall_utc": datetime.now(timezone.utc).isoformat(),
+                    "wall_monotonic_sec": time.monotonic(),
+                    "source": str(msg.source),
+                    "publish_outcome": "RAISED",
+                    "error": command_row["publish_error"],
+                })
+                raise
+            command_row["publish_outcome"] = "CALL_RETURNED"
+            self._write_trace_row({
+                "event": "velocity_publish_result",
+                "wall_utc": datetime.now(timezone.utc).isoformat(),
+                "wall_monotonic_sec": time.monotonic(),
+                "source": str(msg.source),
+                "publish_outcome": "CALL_RETURNED",
+            })
+            if forward != 0.0:
+                self.nonzero_messages += 1
+            else:
+                self.zero_messages += 1
 
     def _wait_service(self, client: Any, label: str, timeout: float = 2.0) -> None:
         deadline = time.monotonic() + timeout
         while rclpy.ok() and time.monotonic() < deadline:
-            if client.wait_for_service(timeout_sec=0.2):
+            if client.wait_for_service(timeout_sec=0.1):
                 return
-            rclpy.spin_once(self, timeout_sec=0.01)
+            rclpy.spin_once(self, timeout_sec=0.005)
         raise TimeoutError(f"{label} service unavailable")
 
-    def _call(self, client: Any, request: Any, label: str, timeout: float = 1.0,
-              heartbeat_mode: str | tuple[str, ...] | None = None) -> Any:
+    def _call(self, client: Any, request: Any, label: str, timeout: float = 1.0) -> Any:
         future = client.call_async(request)
         deadline = time.monotonic() + timeout
-        next_heartbeat = time.monotonic()
         while rclpy.ok() and not future.done() and time.monotonic() < deadline:
-            if self.interrupted:
-                self._publish()
-                self._trace(f"INTERRUPTED_ZERO:{label}")
-                raise RuntimeError("operator_signal_stop")
-            rclpy.spin_once(self, timeout_sec=0.02)
-            now = time.monotonic()
-            if heartbeat_mode is not None and now >= next_heartbeat:
-                fault = self._safety_fault(expected_mode=heartbeat_mode)
-                if fault:
-                    self.fault = fault
-                    self._publish()
-                else:
-                    self._publish()
-                self._trace(f"RPC_HEARTBEAT:{label}")
-                next_heartbeat = now + self._zero_period_s()
+            if self.interrupted.is_set():
+                raise RuntimeError("operator_shutdown")
+            rclpy.spin_once(self, timeout_sec=0.005)
         if not future.done() or future.result() is None:
-            raise TimeoutError(f"{label} service call timed out")
+            raise TimeoutError(f"{label} timed out")
         return future.result()
 
-    def read_input_source(self, label: str, *, heartbeat_mode: str | None = None) -> dict[str, Any]:
+    def read_input_source(self, label: str) -> dict[str, Any]:
         self._wait_service(self.source_client, CURRENT_INPUT_SOURCE_SERVICE)
         request = GetCurrentInputSource.Request()
         request.request = CommonRequest()
         request.request.header.stamp = self.get_clock().now().to_msg()
-        response = self._call(
-            self.source_client, request, f"GetCurrentInputSource:{label}",
-            heartbeat_mode=heartbeat_mode,
-        )
+        response = self._call(self.source_client, request, f"GetCurrentInputSource:{label}")
         result = {
-            "label": label,
-            "wall_utc": datetime.now(timezone.utc).isoformat(),
-            "request": _json_safe(request),
-            "response": _json_safe(response),
+            "label": label, "wall_utc": datetime.now(timezone.utc).isoformat(),
+            "request": _json_safe(request), "response": _json_safe(response),
             "response_header_code": int(response.response.header.code),
             "response_state": int(response.response.state.value),
             "task_id": int(response.response.task_id),
             "input_source": _json_safe(response.input_source),
         }
+        self.last_source = result
+        self.readback_at["get_source"] = time.monotonic()
         self.source_observations.append(result)
         self.events.append({"event": "get_current_input_source", **result})
         return result
 
-    def read_mode(self, label: str, *, heartbeat_mode: str | None = None) -> dict[str, Any]:
+    def read_mode(self, label: str) -> dict[str, Any]:
         self._wait_service(self.get_mode_client, GET_MC_ACTION_SERVICE)
         request = GetMcAction.Request()
         request.request = CommonRequest()
         request.request.header.stamp = self.get_clock().now().to_msg()
-        response = self._call(
-            self.get_mode_client, request, f"GetMcAction:{label}",
-            heartbeat_mode=heartbeat_mode,
-        )
+        response = self._call(self.get_mode_client, request, f"GetMcAction:{label}")
         result = {
-            "label": label,
-            "wall_utc": datetime.now(timezone.utc).isoformat(),
-            "request": _json_safe(request),
-            "response": _json_safe(response),
+            "label": label, "wall_utc": datetime.now(timezone.utc).isoformat(),
+            "request": _json_safe(request), "response": _json_safe(response),
             "response_header_code": int(response.header.code),
             "current_action_value": int(response.info.current_action.value),
-            "action_desc": response.info.action_desc,
+            "action_desc": str(response.info.action_desc),
             "status_value": int(response.info.status.value),
         }
+        self.last_mode = result
+        self.readback_at["get_mode"] = time.monotonic()
         self.mode_observations.append(result)
         self.events.append({"event": "get_mc_action", **result})
         return result
 
-    def register_add_once(self) -> dict[str, Any]:
-        self._wait_service(self.register_client, INPUT_SOURCE_SERVICE)
+    def _make_source_request(self, action_value: int) -> Any:
         request = SetMcInputSource.Request()
         request.request = CommonRequest()
         request.request.header.stamp = self.get_clock().now().to_msg()
         request.action = McInputAction()
-        request.action.value = 1001  # ADD. ENABLE is intentionally not issued.
+        request.action.value = int(action_value)
         request.input_source.name = self.source
-        request.input_source.priority = self.args.priority
-        request.input_source.timeout = self.args.source_timeout_ms
-        response = self._call(self.register_client, request, "SetMcInputSource:ADD")
-        registration_state = assess_input_source_add(
-            int(response.response.header.code),
-            int(response.response.task_id),
-            int(response.response.state.value),
-        )
-        result = {
+        request.input_source.priority = SOURCE_PRIORITY
+        request.input_source.timeout = SOURCE_TIMEOUT_MS
+        return request
+
+    def _source_action_once(self, action_value: int, action_name: str) -> dict[str, Any]:
+        """Submit one mutating source action; never replay an ambiguous timeout."""
+        self._wait_service(self.register_client, INPUT_SOURCE_SERVICE, timeout=8.0)
+        request = self._make_source_request(action_value)
+        try:
+            response = self._call(
+                self.register_client, request, f"SetMcInputSource:{action_name}", timeout=1.0,
+            )
+        except TimeoutError as exc:
+            attempt = {
+                "attempt": 1,
+                "transport_timeout": True,
+                "transport_outcome": "UNKNOWN_REQUEST_MAY_HAVE_BEEN_ACCEPTED",
+                "error": str(exc),
+                "request": _json_safe(request),
+            }
+            return {
+                "action": action_name,
+                "transport_state": "TIMEOUT_UNKNOWN",
+                "attempts": [attempt],
+                "final": None,
+                "enable_fallback_allowed": False,
+            }
+        header_code = int(response.response.header.code)
+        state_value = int(response.response.state.value)
+        attempt = {
+            "attempt": 1,
             "wall_utc": datetime.now(timezone.utc).isoformat(),
             "request": _json_safe(request),
             "response": _json_safe(response),
-            "response_header_code": int(response.response.header.code),
-            "response_state": int(response.response.state.value),
+            "response_header_code": header_code,
+            "response_state": state_value,
             "task_id": int(response.response.task_id),
-            "transport_acknowledged": int(response.response.header.code) == 0,
-            "registration_state_assessment": registration_state,
+            "operation_accepted_by_service": header_code == 0,
+            "task_completion_confirmed": state_value == 1,
         }
-        self.events.append({"event": "set_mc_input_source_add", **result})
+        return {
+            "action": action_name,
+            "transport_state": "RESPONSE_RECEIVED",
+            "attempts": [attempt],
+            "final": attempt,
+            "enable_fallback_allowed": header_code != 0,
+        }
+
+    def register_source(self) -> dict[str, Any]:
+        add = self._source_action_once(1001, "ADD")
+        add_final = add.get("final")
+        enable = None
+        # ENABLE is a bounded recovery only after an explicit ADD rejection.
+        # A timeout is ambiguous and must not be replayed as another mutation.
+        add_assessment = classify_source_registration(add.get("final"))
+        if add_assessment["enable_fallback_allowed"]:
+            enable = self._source_action_once(2001, "ENABLE")
+        registration = classify_source_registration(
+            add_final,
+            enable.get("final") if enable else None,
+        )
+        registration.update({
+            "source": self.source,
+            "priority": SOURCE_PRIORITY,
+            "timeout_ms": SOURCE_TIMEOUT_MS,
+            "add": add,
+            "enable": enable,
+            "transport_ambiguity_blocks_motion": add.get("transport_state") == "TIMEOUT_UNKNOWN",
+        })
+        self.events.append({"event": "register_input_source", **registration})
+        return registration
+
+    def request_ld_once(self) -> dict[str, Any]:
+        self._wait_service(self.set_mode_client, SET_MC_ACTION_SERVICE)
+        request = SetMcAction.Request()
+        request.header = RequestHeader()
+        request.header.stamp = self.get_clock().now().to_msg()
+        request.source = ACTION_SOURCE_NAME
+        request.command = McActionCommand()
+        request.command.action_desc = MODE_LOCOMOTION
+        submitted = datetime.now(timezone.utc).isoformat()
+        response = self._call(self.set_mode_client, request, "SetMcAction:LOCOMOTION_DEFAULT", timeout=1.0)
+        response_payload = _json_safe(response.response)
+        diagnostics = classify_set_mc_action_response(
+            int(response.response.header.code),
+            int(response.response.status.value),
+            str(response.response.message),
+        )
+        result = {
+            "wall_utc_submitted": submitted,
+            "wall_utc_returned": datetime.now(timezone.utc).isoformat(),
+            "request": _json_safe(request),
+            "request_source": str(request.source),
+            "requested_action_desc": str(request.command.action_desc),
+            "response": response_payload,
+            **diagnostics,
+        }
+        self.events.append({"event": "set_mc_action_ld", **result})
         return result
 
     def wait_for_standing(self) -> None:
         deadline = time.monotonic() + self.args.ready_timeout
         while rclpy.ok() and time.monotonic() < deadline:
-            if self.interrupted:
-                raise RuntimeError("operator_signal_stop")
-            rclpy.spin_once(self, timeout_sec=0.05)
-            fault = self._safety_fault(expected_mode="STAND_DEFAULT")
+            if self.interrupted.is_set():
+                raise RuntimeError("operator_shutdown")
+            rclpy.spin_once(self, timeout_sec=0.02)
+            fault = self._safety_fault(expected_mode=MODE_STAND)
+            if (
+                fault is None
+                and int(self.latest["common"].body_status.value) == 1
+                and int(self.latest["common"].fsm_state.current_state) == 2
+            ):
+                return
+        raise TimeoutError("fresh upright STAND_DEFAULT telemetry not observed; verified Reset is required")
+
+    def check_transport_scope(self) -> dict[str, Any]:
+        deadline = time.monotonic() + 2.0
+        last_publishers: list[str] = []
+        last_subscribers: list[str] = []
+        state_topic_publishers: dict[str, list[str]] = {}
+        last_publisher_qos: dict[str, Any] | None = None
+        last_subscriber_qos: list[dict[str, Any]] = []
+        fault = None
+        while rclpy.ok() and time.monotonic() < deadline:
+            publisher_info = list(self.get_publishers_info_by_topic(VELOCITY_TOPIC))
+            subscriber_info = list(self.get_subscriptions_info_by_topic(VELOCITY_TOPIC))
+            last_publishers = [str(info.node_name) for info in publisher_info]
+            last_subscribers = [str(info.node_name) for info in subscriber_info]
+            state_topic_publishers = {
+                topic: [
+                    str(info.node_name)
+                    for info in self.get_publishers_info_by_topic(topic)
+                ]
+                for topic in (
+                    "/aima/hal/odom/state",
+                    "/aima/hal/imu/torso/state",
+                    "/aima/hal/joint/leg/state",
+                    "/aima/hal/joint/leg/command",
+                )
+            }
+            last_publisher_qos = self._endpoint_qos(publisher_info[0]) if len(publisher_info) == 1 else None
+            last_subscriber_qos = [self._endpoint_qos(info) for info in subscriber_info]
+            publisher_qos = last_publisher_qos or {}
+            fault = validate_runtime_scope(
+                rmw_implementation=os.environ.get("RMW_IMPLEMENTATION"),
+                ros_domain_id=os.environ.get("ROS_DOMAIN_ID"),
+                docker_network_mode=os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
+                publisher_names=last_publishers,
+                subscriber_names=last_subscribers,
+                own_node_name=self.get_name(),
+                publisher_reliability=str(publisher_qos.get("reliability", "unknown")),
+                subscriber_reliabilities=[str(qos["reliability"]) for qos in last_subscriber_qos],
+                publisher_durability=str(publisher_qos.get("durability", "unknown")),
+                subscriber_durabilities=[str(qos["durability"]) for qos in last_subscriber_qos],
+                publisher_history=str(publisher_qos.get("history", "unknown")),
+                publisher_depth=int(publisher_qos.get("depth", 0)),
+                subscriber_histories=[str(qos["history"]) for qos in last_subscriber_qos],
+                subscriber_depths=[int(qos["depth"]) for qos in last_subscriber_qos],
+            )
             if fault is None:
-                common = self.latest["common"]
-                if int(common.body_status.value) == 1:
-                    return
-        raise TimeoutError("fresh upright STAND_DEFAULT telemetry not observed; reset is required")
-
-    def check_single_publisher(self) -> list[str]:
-        deadline = time.monotonic() + 1.0
-        while rclpy.ok() and time.monotonic() < deadline:
-            names = [i.node_name for i in self.get_publishers_info_by_topic(VELOCITY_TOPIC)]
-            if names == [self.get_name()]:
-                return names
-            rclpy.spin_once(self, timeout_sec=0.05)
-        names = [i.node_name for i in self.get_publishers_info_by_topic(VELOCITY_TOPIC)]
-        raise RuntimeError(f"velocity topic must have exactly this one publisher; found {names}")
-
-    def zero_phase(self, duration: float, *, expected_mode: str) -> None:
-        end = time.monotonic() + duration
-        next_publish = time.monotonic()
-        while rclpy.ok() and time.monotonic() < end:
-            if self.interrupted:
-                self.fault = "operator_signal_stop"
-            fault = self.fault or self._safety_fault(expected_mode=expected_mode)
-            if fault:
-                self.fault = fault
-                self._publish()
-                self._trace("SAFE_STOP_ZERO")
-                raise RuntimeError(fault)
-            now = time.monotonic()
-            if now >= next_publish:
-                self._publish()
-                self._trace(f"ZERO_ONLY:{expected_mode}")
-                next_publish = now + self._zero_period_s()
-            rclpy.spin_once(self, timeout_sec=0.01)
-
-    def zero_source_arbitration_probe(self) -> dict[str, Any]:
-        """Use only the reference bridge's 50 Hz zero heartbeat before any LD request."""
-        duration = float(self.args.source_arbitration_duration)
-        started = time.monotonic()
-        deadline = started + duration
-        next_publish = started
-        next_readback = started
-        consecutive_active = 0
-        observations: list[dict[str, Any]] = []
-        zero_before = self.zero_messages
-        status = "SOURCE_NOT_SELECTED"
-        reason = "active-source readbacks never matched the registered source"
-        while rclpy.ok() and time.monotonic() < deadline:
-            if self.interrupted:
-                self.fault = "operator_signal_stop"
-            fault = self.fault or self._safety_fault(expected_mode="STAND_DEFAULT")
-            if fault:
-                self.fault = fault
-                self._publish()
-                self._trace("SOURCE_ARBITRATION_SAFE_STOP_ZERO")
-                status, reason = "SAFETY_ABORT", fault
-                break
-
-            now = time.monotonic()
-            if now >= next_publish:
-                self._publish()
-                self._trace("SOURCE_ARBITRATION_ZERO_50HZ")
-                next_publish = now + self._zero_period_s()
-
-            if now >= next_readback:
-                readback = self.read_input_source(
-                    f"source_arbitration_{len(observations) + 1}",
-                    heartbeat_mode="STAND_DEFAULT",
-                )
-                common = self.latest.get("common")
-                common_name = common.input_source.name if common is not None else ""
-                common_age = self._state_ages().get("common")
-                current_name = str(readback["input_source"].get("name", ""))
-                verified = (
-                    readback["response_header_code"] == 0
-                    and source_arbitration_confirmed(
-                        current_name,
-                        common_name,
-                        self.source,
-                        common_age,
-                        max_age_s=self.args.state_timeout,
-                    )
-                )
-                observation = {
-                    "wall_utc": datetime.now(timezone.utc).isoformat(),
-                    "get_current_input_source": readback,
-                    "common_source": _json_safe(common.input_source) if common is not None else None,
-                    "common_state_age_s": common_age,
-                    "source_arbitration_confirmed": verified,
+                fault = validate_local_sim_publishers(state_topic_publishers)
+            if fault is None:
+                result = {
+                    "status": "PASS",
+                    "rmw_implementation": os.environ.get("RMW_IMPLEMENTATION"),
+                    "ros_domain_id": os.environ.get("ROS_DOMAIN_ID"),
+                    "docker_network_mode": os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
+                    "velocity_publishers": last_publishers,
+                    "velocity_subscribers": last_subscribers,
+                    "publisher_qos": last_publisher_qos,
+                    "subscriber_qos": last_subscriber_qos,
+                    "local_state_and_command_publishers": state_topic_publishers,
+                    "command_qos": {
+                        "reliability": COMMAND_QOS_RELIABILITY,
+                        "depth": COMMAND_QOS_DEPTH,
+                        "durability": COMMAND_QOS_DURABILITY,
+                    },
                 }
-                observations.append(observation)
-                if readback["response_header_code"] != 0:
-                    status, reason = "READBACK_ERROR", "GetCurrentInputSource returned a nonzero header.code"
-                    break
-                if current_name not in ("", self.source) or common_name not in ("", self.source):
-                    status, reason = "SOURCE_CONFLICT", "a different source won arbitration"
-                    break
-                consecutive_active = consecutive_active + 1 if verified else 0
-                if consecutive_active >= 2:
-                    status, reason = "SOURCE_ACTIVE_CONFIRMED", "two consecutive fresh readbacks agree"
-                    break
-                next_readback = time.monotonic() + 0.2
-
-            rclpy.spin_once(self, timeout_sec=0.005)
-
-        result = {
-            "status": status,
-            "reason": reason,
-            "source": self.source,
-            "publish_rate_hz": float(self.args.zero_publish_hz),
-            "source_timeout_ms": int(self.args.source_timeout_ms),
-            "requested_duration_s": duration,
-            "actual_duration_s": min(time.monotonic() - started, duration),
-            "zero_messages": self.zero_messages - zero_before,
-            "observations": observations,
-            "requires_two_consecutive_fresh_readbacks": True,
-            "nonzero_velocity_messages": self.nonzero_messages,
-        }
-        self.events.append({"event": "zero_source_arbitration_probe", **result})
-        return result
-
-    def request_ld_once(self) -> dict[str, Any]:
-        self._wait_service(self.set_mode_client, "/aimdk_5Fmsgs/srv/SetMcAction")
-        before = self._mode()
-        request = SetMcAction.Request()
-        request.header = RequestHeader()
-        request.header.stamp = self.get_clock().now().to_msg()
-        # The action caller identity is independent of the registered velocity
-        # source. This probe accepts the pinned SDK pair and continues to send
-        # zero until both GetMcAction and McCommonState confirm live LD.
-        request.source = self.args.set_action_source
-        request.command = McActionCommand()
-        request.command.action_desc = MODE_LD
-        submitted_at = datetime.now(timezone.utc).isoformat()
-        response = self._call(
-            self.set_mode_client, request, "SetMcAction:LOCOMOTION_DEFAULT",
-            timeout=3.0, heartbeat_mode=("STAND_DEFAULT", MODE_LD),
-        )
-        result = {
-            "wall_utc_submitted": submitted_at,
-            "wall_utc_returned": datetime.now(timezone.utc).isoformat(),
-            "request": _json_safe(request),
-            "request_source": request.source,
-            "requested_action_desc": request.command.action_desc,
-            "response": _json_safe(response.response),
-            "response_status_value": int(response.response.status.value),
-            "response_message": response.response.message,
-            "mode_before": before,
-        }
-        self.events.append({"event": "set_mc_action_ld", **result})
-        return result
-
-    def poll_mode_readback(self, duration: float) -> None:
-        end = time.monotonic() + duration
-        next_query = time.monotonic()
-        next_zero = time.monotonic()
-        expected_modes = {"STAND_DEFAULT", MODE_LD}
-        while rclpy.ok() and time.monotonic() < end:
-            if self.interrupted:
-                self.fault = "operator_signal_stop"
-            common_mode = self._mode()
-            fault = self.fault or self._safety_fault(expected_mode=common_mode)
-            if fault or common_mode not in expected_modes:
-                self.fault = fault or f"unexpected_mode_during_diagnosis:{common_mode}"
-                self._publish()
-                self._trace("SAFE_STOP_ZERO")
-                break
-            now = time.monotonic()
-            if now >= next_zero:
-                self._publish()
-                self._trace("MODE_DIAG_ZERO_ONLY")
-                next_zero = now + self._zero_period_s()
-            if now >= next_query:
-                try:
-                    self.read_mode(
-                        f"ld_poll_{len(self.mode_observations)}",
-                        heartbeat_mode=("STAND_DEFAULT", MODE_LD),
-                    )
-                except Exception as exc:
-                    self.events.append({"event": "get_mc_action_error", "error": str(exc)})
-                    break
-                if self._mode() == MODE_LD:
-                    break
-                next_query = time.monotonic() + 0.5
-            rclpy.spin_once(self, timeout_sec=0.01)
-
-    def _classify(self, set_result: dict[str, Any] | None) -> str:
-        return classify_ld_transition(
-            set_result,
-            self.mode_observations,
-            self._mode(),
-            readback_error=any(event["event"] == "get_mc_action_error" for event in self.events),
+                self.scope_evidence = result
+                return result
+            rclpy.spin_once(self, timeout_sec=0.05)
+        raise RuntimeError(
+            f"simulation-only transport isolation failed: {fault}; "
+            f"publishers={last_publishers!r} ({last_publisher_qos!r}); "
+            f"subscribers={last_subscribers!r} ({last_subscriber_qos!r}); "
+            f"local_state_and_command_publishers={state_topic_publishers!r}"
         )
 
-    def activation_pulse(self) -> dict[str, Any]:
-        # Pulse authority is deliberately fixed and cannot be increased by CLI input.
-        if self._mode() != MODE_LD:
-            return {"status": "NOT_RUN", "reason": "GetMcAction/McCommonState did not confirm LD"}
-        last_get_mode = next(
-            (item for item in reversed(self.mode_observations) if item.get("action_desc") is not None),
-            None,
+    @staticmethod
+    def _endpoint_qos(info: Any) -> dict[str, Any]:
+        profile = info.qos_profile
+        reliability = (
+            "reliable" if profile.reliability == ReliabilityPolicy.RELIABLE
+            else "best_effort" if profile.reliability == ReliabilityPolicy.BEST_EFFORT
+            else "unknown"
         )
-        if (
-            last_get_mode is None
-            or last_get_mode.get("response_header_code") != 0
-            or last_get_mode.get("action_desc") != MODE_LD
-        ):
-            return {"status": "BLOCKED", "reason": "latest GetMcAction did not confirm LD"}
-        if self.fault:
-            return {"status": "BLOCKED", "reason": f"prior safety fault: {self.fault}"}
-        self.check_single_publisher()
-        fault = self._safety_fault(expected_mode=MODE_LD)
-        if fault:
-            return {"status": "BLOCKED", "reason": fault}
-        bounds = self.latest["common"].speed_status.forward_bounds
-        if not float(bounds.min_value) <= 0.2 <= float(bounds.max_value):
-            return {
-                "status": "BLOCKED",
-                "reason": "0.2 m/s activation speed is outside live MC bounds",
-                "live_forward_bounds": _json_safe(bounds),
-            }
-        pre_source = self.read_input_source("immediately_before_activation_pulse")
-        pre_name = pre_source["input_source"].get("name", "")
-        common_name = self.latest["common"].input_source.name
-        if pre_source["response_header_code"] != 0:
-            return {"status": "BLOCKED", "reason": "GetCurrentInputSource pre-pulse read failed", "readback": pre_source}
-        common_age = self._state_ages().get("common")
-        if not nonzero_velocity_authorized(
-            get_action_desc=str(last_get_mode["action_desc"]),
-            get_action_header_code=int(last_get_mode["response_header_code"]),
-            common_action_desc=self._mode(),
-            current_source_name=str(pre_name),
-            common_source_name=str(common_name),
-            expected_source_name=self.source,
-            common_state_age_s=common_age,
-            max_age_s=self.args.state_timeout,
-        ):
-            return {
-                "status": "BLOCKED",
-                "reason": "both live LD readbacks and fresh active-source arbitration must pass before any nonzero command",
-                "get_current_input_source_before": pre_source,
-                "common_source_before": common_name,
-                "common_state_age_s": common_age,
-            }
-        start = self._pose()
-        start_yaw = start["yaw"] if start else None
-        started = time.monotonic()
-        end = started + 0.15
-        next_publish = started
-        own_source_seen = True
-        pulse_fault = None
-        while rclpy.ok() and time.monotonic() < end:
-            if self.interrupted:
-                pulse_fault = "operator_signal_stop"
-            pulse_fault = pulse_fault or self._safety_fault(expected_mode=MODE_LD)
-            common_name = self.latest["common"].input_source.name if "common" in self.latest else ""
-            if common_name != self.source:
-                pulse_fault = pulse_fault or f"active_source_mismatch:{common_name!r}"
-            if pulse_fault:
-                self.fault = pulse_fault
-                self._publish()
-                self._trace("PULSE_ABORT_ZERO")
-                break
-            now = time.monotonic()
-            if now >= next_publish:
-                self._publish(0.2)
-                self._trace("ACTIVATION_PULSE", (0.2, 0.0, 0.0))
-                next_publish = now + 0.05
-            rclpy.spin_once(self, timeout_sec=0.01)
-        actual_duration = min(time.monotonic() - started, 0.15)
-        end_pose = self._pose()
-        projection = None
-        if start and end_pose:
-            dx, dy = end_pose["x"] - start["x"], end_pose["y"] - start["y"]
-            projection = dx * math.cos(start_yaw) + dy * math.sin(start_yaw)
-        common_during_pulse = _json_safe(self.latest.get("common"))
-        self._repeat_zero()
-        post_source = self.read_input_source("after_activation_pulse")
-        post_common = self.latest.get("common")
-        if post_source["input_source"].get("name", "") != self.source:
-            pulse_fault = pulse_fault or "GetCurrentInputSource no longer confirms this source after pulse"
-        if post_source["response_header_code"] != 0:
-            pulse_fault = pulse_fault or "GetCurrentInputSource post-pulse read failed"
-        if not post_common or post_common.input_source.name != self.source:
-            pulse_fault = pulse_fault or "McCommonState no longer confirms this source after pulse"
+        durability = (
+            "volatile" if profile.durability == DurabilityPolicy.VOLATILE
+            else "transient_local" if profile.durability == DurabilityPolicy.TRANSIENT_LOCAL
+            else "unknown"
+        )
+        history = (
+            "keep_last" if profile.history == HistoryPolicy.KEEP_LAST
+            else "keep_all" if profile.history == HistoryPolicy.KEEP_ALL
+            else "unknown"
+        )
         return {
-            "status": "ABORTED" if pulse_fault else "EXECUTED",
-            "fault": pulse_fault,
-            "command_forward_m_s": 0.2,
-            "command_yaw_rate_rad_s": 0.0,
-            "command_duration_limit_s": 0.15,
-            "actual_duration_s": actual_duration,
-            "nonzero_messages": self.nonzero_messages,
-            "get_current_input_source_before": pre_source,
-            "get_current_input_source_after": post_source,
-            "common_state_during_pulse": common_during_pulse,
-            "common_source_after": _json_safe(post_common.input_source) if post_common else None,
-            "start_pose_odom": start,
-            "end_pose_odom": end_pose,
-            "forward_projection_m": projection,
-            "source_selected_during_pulse": own_source_seen,
+            "reliability": reliability,
+            "durability": durability,
+            "history": history,
+            "depth": int(profile.depth),
         }
 
-    def _repeat_zero(self) -> None:
-        for _ in range(10):
-            self._publish()
-            self._trace("REPEATED_SAFE_ZERO")
-            time.sleep(0.01)
+    def _start_async_mode_query(self) -> None:
+        request = GetMcAction.Request()
+        request.request = CommonRequest()
+        request.request.header.stamp = self.get_clock().now().to_msg()
+        self.mode_future = self.get_mode_client.call_async(request)
+        self.mode_future_request = request
+        self.mode_future_started = time.monotonic()
+
+    def _start_async_source_query(self) -> None:
+        request = GetCurrentInputSource.Request()
+        request.request = CommonRequest()
+        request.request.header.stamp = self.get_clock().now().to_msg()
+        self.source_future = self.source_client.call_async(request)
+        self.source_future_request = request
+        self.source_future_started = time.monotonic()
+
+    def _poll_async_readbacks(self) -> None:
+        now = time.monotonic()
+        if self.mode_future is not None and self.mode_future.done():
+            try:
+                response = self.mode_future.result()
+                if response is None:
+                    self.async_readback_fault = "GetMcAction returned no response"
+                else:
+                    self._record_mode_response(self.mode_future_request, response, "activation_poll")
+            except Exception as exc:
+                self.async_readback_fault = f"GetMcAction async error:{type(exc).__name__}:{exc}"
+            self.mode_future = None
+            self.mode_future_request = None
+        elif self.mode_future is not None and now - self.mode_future_started > 0.4:
+            self.async_readback_fault = "GetMcAction async response timeout"
+            self.mode_future = None
+            self.mode_future_request = None
+
+        if self.source_future is not None and self.source_future.done():
+            try:
+                response = self.source_future.result()
+                if response is None:
+                    self.async_readback_fault = "GetCurrentInputSource returned no response"
+                else:
+                    self._record_source_response(self.source_future_request, response, "activation_poll")
+            except Exception as exc:
+                self.async_readback_fault = f"GetCurrentInputSource async error:{type(exc).__name__}:{exc}"
+            self.source_future = None
+            self.source_future_request = None
+        elif self.source_future is not None and now - self.source_future_started > 0.4:
+            self.async_readback_fault = "GetCurrentInputSource async response timeout"
+            self.source_future = None
+            self.source_future_request = None
+
+        if self.mode_future is None and now >= self.next_mode_query:
+            self._start_async_mode_query()
+            self.next_mode_query = now + 0.2
+        if self.source_future is None and now >= self.next_source_query:
+            self._start_async_source_query()
+            self.next_source_query = now + 0.2
+
+    def _first_motion_snapshot(self) -> dict[str, Any]:
+        common = self.latest.get("common")
+        now = time.monotonic()
+        ages = {
+            key: now - self.received_at[key] if key in self.received_at else None
+            for key in REQUIRED_TOPICS
+        }
+        ages["get_mode"] = now - self.readback_at["get_mode"] if "get_mode" in self.readback_at else None
+        ages["get_source"] = now - self.readback_at["get_source"] if "get_source" in self.readback_at else None
+        pose = self._pose()
+        bounds = None
+        if common is not None:
+            try:
+                bounds = {
+                    "min_value": float(common.speed_status.forward_bounds.min_value),
+                    "max_value": float(common.speed_status.forward_bounds.max_value),
+                }
+            except (AttributeError, TypeError, ValueError):
+                bounds = None
+        return {
+            "wall_utc": datetime.now(timezone.utc).isoformat(),
+            "state_age_s": ages,
+            "pose": pose,
+            "get_mode_desc": self.last_mode.get("action_desc") if self.last_mode else None,
+            "get_mode_header_code": self.last_mode.get("response_header_code") if self.last_mode else None,
+            "get_mode_status_value": self.last_mode.get("status_value") if self.last_mode else None,
+            "common_mode_desc": str(common.action_info.action_desc) if common else None,
+            "common_mode_status_value": int(common.action_info.status.value) if common else None,
+            "fsm_state": int(common.fsm_state.current_state) if common else None,
+            "body_status": int(common.body_status.value) if common else None,
+            "get_source_header_code": self.last_source.get("response_header_code") if self.last_source else None,
+            "get_source_name": (
+                self.last_source.get("input_source", {}).get("name", "") if self.last_source else ""
+            ),
+            "common_source_name": str(common.input_source.name) if common else "",
+            "forward_bounds": bounds,
+            "leg_states": self._joint_states_as_dicts(),
+            "readback_fault": self.async_readback_fault,
+        }
+
+    def sample_for_first_motion(self) -> dict[str, Any]:
+        rclpy.spin_once(self, timeout_sec=0.005)
+        self._poll_async_readbacks()
+        rclpy.spin_once(self, timeout_sec=0.005)
+        self._poll_async_readbacks()
+        snapshot = self._first_motion_snapshot()
+        if self.async_readback_fault:
+            snapshot["get_mode_header_code"] = -1
+            snapshot["get_source_header_code"] = -1
+        return snapshot
+
+    def _trace_first_motion_sample(self, phase: str, snapshot: dict[str, Any]) -> None:
+        self.current_phase = phase
+        self._trace(phase, snapshot=snapshot)
+
+    def _source_response_before_motion(self) -> dict[str, Any]:
+        result = self.read_input_source("before_first_motion")
+        if result["response_header_code"] != 0:
+            raise RuntimeError("GetCurrentInputSource preflight failed")
+        current = str(result["input_source"].get("name", ""))
+        common = self.latest.get("common")
+        common_name = str(common.input_source.name) if common else ""
+        if current not in ("", self.source) or common_name not in ("", self.source):
+            raise RuntimeError(f"source conflict before first motion: service={current!r}, common={common_name!r}")
+        return result
 
     def execute(self) -> dict[str, Any]:
-        before = after_add = after_zero = before_mode = set_ld = None
-        registration = None
-        pulse: dict[str, Any] = {"status": "NOT_RUN"}
-        publishers: list[str] = []
+        result: dict[str, Any] = {
+            "schema": "robotsim.issue80.m1.first-motion.v2",
+            "simulation_only": True,
+            "attempt_id": self.args.attempt_id,
+            "maintainer_authorized": bool(self.args.maintainer_authorized),
+            "reset_gate_verified_by_parent": bool(self.args.reset_gate_verified),
+            "status": "NOT_RUN",
+            "source": self.source,
+            "action_source": ACTION_SOURCE_NAME,
+            "source_timeout_ms": SOURCE_TIMEOUT_MS,
+            "publish_hz": PUBLISH_HZ,
+            "forward_command_m_s": 0.2,
+            "pulse_limit_s": 1.0,
+            "zero_stop_min_s": 1.0,
+            "post_stop_observe_s": 2.5,
+            "leg_limit_source": self.args.robot_model_path,
+            "leg_limit_source_sha256": self.joint_limits_sha256,
+            "leg_joint_limits": self.joint_limits,
+            "safety_limits": {
+                "state_timeout_s": self.args.state_timeout,
+                "min_root_z_m": self.args.min_root_z,
+                "max_tilt_deg": self.args.max_tilt_deg,
+            },
+            "fault": None,
+        }
         try:
+            result["transport_scope"] = self.check_transport_scope()
             self.wait_for_standing()
-            publishers = self.check_single_publisher()
-            before = self.read_input_source("before_registration")
-            if before["response_header_code"] != 0:
-                raise RuntimeError("GetCurrentInputSource before ADD returned a nonzero header.code")
-            before_mode = self.read_mode("before_registration")
-            if before_mode["response_header_code"] != 0 or before_mode["action_desc"] != "STAND_DEFAULT":
-                raise RuntimeError("GetMcAction did not confirm STAND_DEFAULT before ADD")
-            registration = self.register_add_once()
-            after_add = self.read_input_source("after_add")
-            if after_add["response_header_code"] != 0:
-                raise RuntimeError("GetCurrentInputSource after ADD returned a nonzero header.code")
-            if not registration["transport_acknowledged"]:
-                raise RuntimeError("SetMcInputSource ADD RPC returned a nonzero response header.code")
+            result["standing_preflight"] = "FRESH_STAND_DEFAULT_BODY_STAND"
+            result["source_before_registration"] = self._source_response_before_motion()
+            registration = self.register_source()
+            result["source_registration"] = registration
+            if registration["success"]:
+                self.read_mode("before_set_mc_action_ld")
+                set_action = self.request_ld_once()
+            else:
+                set_action = {
+                    "accepted_by_service": False,
+                    "header_code": None,
+                    "status_value": None,
+                    "message": "source registration failed; SetMcAction was not sent",
+                }
+                self.events.append({"event": "set_mc_action_ld_not_sent", **set_action})
+            result["set_mc_action_ld"] = set_action
+            result["mode_after_ld_request"] = self.read_mode("after_set_mc_action_ld")
+            result["source_after_ld_request"] = self.read_input_source("after_set_mc_action_ld")
 
-            if self.args.zero_source_arbitration:
-                self.source_arbitration_result = self.zero_source_arbitration_probe()
-                if self.source_arbitration_result["status"] != "SOURCE_ACTIVE_CONFIRMED":
-                    classification = "SOURCE_NOT_ACTIVE"
-                else:
-                    source_before_ld = self.read_input_source(
-                        "immediately_before_ld_source_arbitration",
-                        heartbeat_mode="STAND_DEFAULT",
-                    )
-                    mode_before_ld = self.read_mode(
-                        "immediately_before_ld_mode",
-                        heartbeat_mode="STAND_DEFAULT",
-                    )
-                    common = self.latest.get("common")
-                    common_age = self._state_ages().get("common")
-                    common_source = common.input_source.name if common is not None else ""
-                    source_ready = (
-                        source_before_ld["response_header_code"] == 0
-                        and source_arbitration_confirmed(
-                            str(source_before_ld["input_source"].get("name", "")),
-                            common_source,
-                            self.source,
-                            common_age,
-                            max_age_s=self.args.state_timeout,
-                        )
-                    )
-                    mode_ready = (
-                        mode_before_ld["response_header_code"] == 0
-                        and mode_before_ld["action_desc"] == "STAND_DEFAULT"
-                        and self._mode() == "STAND_DEFAULT"
-                    )
-                    self.source_arbitration_result["immediately_before_ld"] = {
-                        "source_readback": source_before_ld,
-                        "mode_readback": mode_before_ld,
-                        "common_source": _json_safe(common.input_source) if common is not None else None,
-                        "common_state_age_s": common_age,
-                        "source_verified": source_ready,
-                        "stand_mode_verified": mode_ready,
-                    }
-                    if not source_ready:
-                        classification = "SOURCE_NOT_ACTIVE_BEFORE_LD"
-                    elif not mode_ready:
-                        classification = "STAND_MODE_NOT_CONFIRMED_BEFORE_LD"
-                    else:
-                        set_ld = self.request_ld_once()
-                        self.poll_mode_readback(self.args.mode_observe_duration)
-                        after_ld_source = self.read_input_source(
-                            "after_ld_readback",
-                            heartbeat_mode=("STAND_DEFAULT", MODE_LD),
-                        )
-                        if after_ld_source["response_header_code"] != 0:
-                            raise RuntimeError("GetCurrentInputSource after LD readback returned a nonzero header.code")
-                        classification = self._classify(set_ld)
-            else:
-                self.zero_phase(self.args.zero_duration, expected_mode="STAND_DEFAULT")
-                after_zero = self.read_input_source("after_zero_only", heartbeat_mode="STAND_DEFAULT")
-                if after_zero["response_header_code"] != 0:
-                    raise RuntimeError("GetCurrentInputSource after zero-only returned a nonzero header.code")
-                after_zero_mode = self.read_mode("after_zero_only", heartbeat_mode="STAND_DEFAULT")
-                if after_zero_mode["response_header_code"] != 0:
-                    raise RuntimeError("GetMcAction after zero-only returned a nonzero header.code")
-                set_ld = self.request_ld_once()
-                self.poll_mode_readback(self.args.mode_observe_duration)
-                after_ld_source = self.read_input_source("after_ld_readback", heartbeat_mode=self._mode())
-                if after_ld_source["response_header_code"] != 0:
-                    raise RuntimeError("GetCurrentInputSource after LD readback returned a nonzero header.code")
-                classification = self._classify(set_ld)
-                if classification == "LD_CONFIRMED" and self.args.activation_pulse:
-                    pulse = self.activation_pulse()
-            self._repeat_zero()
+            # The first nonzero request is permitted after the standing, transport,
+            # registration and SetMcAction response gates. It does not require LD or
+            # an active source beforehand; these are measured during activation.
+            pulse = run_first_motion_window(
+                sample=self.sample_for_first_motion,
+                publish=self._publish,
+                registration=registration,
+                set_action=set_action,
+                joint_limits=self.joint_limits,
+                authorized=True,
+                shutdown_event=self.interrupted,
+                on_sample=self._trace_first_motion_sample,
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+            )
+            self.pulse_result = pulse
+            result["activation"] = pulse
+            result["nonzero_velocity_messages"] = pulse["nonzero_messages"]
+            result["get_mc_action_final"] = self.read_mode("final_post_stop")
+            result["get_current_input_source_final"] = self.read_input_source("final_post_stop")
+            result["final_common_state"] = _json_safe(self.latest.get("common"))
+            result["final_odometry"] = self._pose()
+            result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
+            result["status"] = "PASS" if pulse["status"] == "ACTIVATION_CONFIRMED" else "BLOCKED"
         except Exception as exc:
-            self.fault = str(exc)
-            self._repeat_zero()
-            classification = "DIAGNOSTIC_ABORTED"
+            result["fault"] = f"{type(exc).__name__}: {exc}"
+            result["status"] = "BLOCKED"
+            if self.scope_evidence is not None and self.pulse_result is None:
+                # After graph isolation, an exception before the pulse still takes
+                # the complete source-timeout zero window and post-stop observation.
+                try:
+                    result["exception_safe_activation"] = run_first_motion_window(
+                        sample=self.sample_for_first_motion,
+                        publish=self._publish,
+                        registration={"success": False, "selected_action": None},
+                        set_action={"accepted_by_service": False},
+                        joint_limits=self.joint_limits,
+                        authorized=True,
+                        shutdown_event=self.interrupted,
+                        on_sample=self._trace_first_motion_sample,
+                        state_timeout_s=self.args.state_timeout,
+                        min_root_z=self.args.min_root_z,
+                        max_tilt_deg=self.args.max_tilt_deg,
+                    )
+                except Exception as stop_exc:
+                    result["exception_safe_stop_fault"] = f"{type(stop_exc).__name__}: {stop_exc}"
+            result["final_common_state"] = _json_safe(self.latest.get("common"))
+            result["final_odometry"] = self._pose()
+            result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
         finally:
+            result["events"] = self.events
+            result["get_mc_action_history"] = self.mode_observations
+            result["get_current_input_source_history"] = self.source_observations
+            result["velocity_command_trace"] = self.command_trace
+            result["velocity_publisher_count"] = 1
+            result["limitations"] = [
+                "Nonzero motion requires the maintainer authorization gate in the parent Reset runner and this child command.",
+                "SetMcAction success is not treated as proof of mode application; actual GetMcAction and McCommonState readbacks are recorded.",
+                "Leg position and velocity cutoffs are loaded from the installed MC simulation robot_model.yaml and its SHA-256 is recorded.",
+                "No vendor model, binary, gain, safety threshold, or original reset/standing gate is modified.",
+            ]
             if self.result_path.exists():
-                raise FileExistsError("refusing to overwrite diagnostic result")
-            if self.args.zero_source_arbitration:
-                diagnostic_status = (
-                    "PASS"
-                    if classification == "LD_CONFIRMED" and not self.fault
-                    else "BLOCKED"
-                )
-            else:
-                diagnostic_status = (
-                    "PASS"
-                    if classification == "LD_CONFIRMED"
-                    and pulse.get("status") == "EXECUTED"
-                    and not pulse.get("fault")
-                    and not self.fault
-                    else "BLOCKED"
-                )
-            result = {
-                "schema": "robotsim.issue80.m1.focused-diagnostic.v1",
-                "simulation_only": True,
-                "status": diagnostic_status,
-                "classification": classification,
-                "source": self.source,
-                "set_action_source": self.args.set_action_source,
-                "source_registration": registration,
-                "source_arbitration_probe": self.source_arbitration_result,
-                "zero_publish_hz": float(self.args.zero_publish_hz),
-                "zero_velocity_messages_total": self.zero_messages,
-                "get_current_input_source": self.source_observations,
-                "get_mc_action": self.mode_observations,
-                "set_mc_action_ld": set_ld,
-                "velocity_publishers": publishers,
-                "zero_only_duration_s": self.args.zero_duration,
-                "activation_pulse": pulse,
-                "nonzero_velocity_messages_total": self.nonzero_messages,
-                "final_common_state": _json_safe(self.latest.get("common")),
-                "final_pose_odom": self._pose(),
-                "fault": self.fault,
-                "limitations": [
-                    "ADD transport acknowledgement, registration task state, current-source arbitration, mode transition, and physical motion are separate gates.",
-                    "The source-arbitration run uses only zero commands at the source-grounded 50 Hz profile and never publishes nonzero velocity.",
-                    "A source is considered active only when GetCurrentInputSource and fresh McCommonState agree.",
-                    "A zero-only LD readback result does not prove physical locomotion or M1 motion.",
-                    "Simulation-only gate; no real-robot operation or M2/M3 navigation was attempted.",
-                ],
-            }
+                raise FileExistsError("refusing to overwrite first-motion result")
             with self.result_path.open("x", encoding="utf-8") as stream:
-                json.dump(result, stream, indent=2, allow_nan=False)
+                json.dump(_json_safe(result), stream, indent=2, allow_nan=False)
                 stream.write("\n")
         return result
 
     def close(self) -> None:
-        try:
-            self._repeat_zero()
-        finally:
-            self.trace.close()
+        self.trace.close()
 
 
 def _focused_diagnostic_command(args: argparse.Namespace) -> int:
+    validate_first_motion_authorization(
+        reset_gate_verified=args.reset_gate_verified,
+        maintainer_authorized=args.maintainer_authorized,
+        network_mode=os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
+    )
     rclpy.init()
     node = FocusedM1Diagnostic(args)
 
     def request_stop(signum, frame):
-        node.interrupted = True
+        node.interrupted.set()
 
     previous_sigint = signal.signal(signal.SIGINT, request_stop)
     previous_sigterm = signal.signal(signal.SIGTERM, request_stop)
     try:
         result = node.execute()
-        print(json.dumps(result, indent=2))
+        print(json.dumps(_json_safe(result), indent=2))
         return 0 if result["status"] == "PASS" else 2
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
         signal.signal(signal.SIGTERM, previous_sigterm)
         node.close()
-        node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
 
@@ -872,43 +885,24 @@ def _focused_diagnostic_command(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    diagnose = subparsers.add_parser(
-        "diagnose", help="one ADD, read-only source-arbitration and zero-only LD diagnosis"
+    first = subparsers.add_parser(
+        "first-motion",
+        help="one authorized SIMULATION_ONLY first-motion run following the verified Reset/standing gates",
     )
-    diagnose.add_argument("--source", required=True)
-    diagnose.add_argument(
-        "--set-action-source",
-        default="",
-        help="SetMcAction.source value; empty matches the pinned example, while a registered source is a bounded runtime-parity diagnostic",
-    )
-    diagnose.add_argument("--output-dir", required=True)
-    diagnose.add_argument("--priority", type=int, default=40)
-    diagnose.add_argument("--source-timeout-ms", type=int, default=1000)
-    diagnose.add_argument("--state-timeout", type=float, default=0.5)
-    diagnose.add_argument("--ready-timeout", type=float, default=10.0)
-    diagnose.add_argument("--mode-observe-duration", type=float, default=5.0)
-    diagnose.add_argument(
-        "--zero-publish-hz",
-        type=float,
-        choices=(20.0, 50.0),
-        default=20.0,
-        help="zero-only message cadence: existing probe 20 Hz or source-grounded bridge rate 50 Hz",
-    )
-    diagnose.add_argument(
-        "--zero-source-arbitration",
-        action="store_true",
-        help="require fresh matching active-source readbacks before sending the single LD request; never send nonzero velocity",
-    )
-    diagnose.add_argument("--source-arbitration-duration", type=float, default=2.0)
-    diagnose.add_argument("--max-tilt-deg", type=float, default=15.0)
-    diagnose.add_argument("--min-root-z", type=float, default=0.52)
-    diagnose.add_argument("--zero-duration", type=float, default=0.8)
-    diagnose.add_argument("--activation-pulse", action="store_true")
+    first.add_argument("--maintainer-authorized", action="store_true")
+    first.add_argument("--reset-gate-verified", action="store_true")
+    first.add_argument("--attempt-id", required=True)
+    first.add_argument("--output-dir", required=True)
+    first.add_argument("--robot-model-path", default=ROBOT_MODEL_PATH)
+    first.add_argument("--state-timeout", type=float, default=0.5)
+    first.add_argument("--ready-timeout", type=float, default=4.0)
+    first.add_argument("--max-tilt-deg", type=float, default=15.0)
+    first.add_argument("--min-root-z", type=float, default=0.52)
     args = parser.parse_args()
     try:
         return _focused_diagnostic_command(args)
     except Exception as exc:
-        print(f"BLOCKED: {exc}", file=sys.stderr)
+        print(f"BLOCKED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
 

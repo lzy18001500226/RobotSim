@@ -22,6 +22,7 @@ ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 OBSERVER = Path(__file__).with_name("issue80_m1_reset_state_trace.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
+M1_FIRST_MOTION_LOGIC = Path(__file__).with_name("issue80_m1_first_motion.py")
 SIM_LAUNCH = Path(__file__).with_name("issue80_launch_sim.sh")
 MC_LAUNCH = Path(__file__).with_name("issue80_launch_mc.sh")
 IMAGE = "robotsim:humble-raicom-runtime-20261019"
@@ -44,12 +45,13 @@ class BoundedRun:
         self.args = args
         self.evidence = Path(args.evidence_dir).resolve(strict=True)
         self.container = args.container
-        self.source = args.source
+        self.source = "node.locomotion_velocity"
         self.started = time.monotonic()
         self.deadline = self.started + args.max_runtime_s
         self.step = 0
         self.steps: list[dict[str, Any]] = []
         self.container_created = False
+        self.network_mode: str | None = None
         self.reset_classification = "NOT_ATTEMPTED"
         self.m1_result: dict[str, Any] | None = None
         self.reset_analysis: dict[str, Any] | None = None
@@ -122,6 +124,7 @@ class BoundedRun:
             (M1_RUNNER, M1_RUNNER.name),
             (OBSERVER, OBSERVER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
+            (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
             (SIM_LAUNCH, "launch_sim.sh"),
             (MC_LAUNCH, "launch_mc.sh"),
         )
@@ -165,6 +168,20 @@ class BoundedRun:
         self.run("docker_run", cmd, timeout_s=10.0)
         self.container_created = True
         inspect = self.run("container_inspect_start", ["docker", "inspect", self.container], timeout_s=5.0)
+        payload = json.loads(inspect.stdout)
+        if not isinstance(payload, list) or len(payload) != 1:
+            raise RuntimeError("container inspect did not return one isolated runtime")
+        container = payload[0]
+        self.network_mode = str(container.get("HostConfig", {}).get("NetworkMode", ""))
+        if self.network_mode != "bridge":
+            raise RuntimeError(f"first-motion test requires bridge-isolated container; got {self.network_mode!r}")
+        environment = set(container.get("Config", {}).get("Env", []))
+        required_environment = {
+            "ROS_DOMAIN_ID=20",
+            "RMW_IMPLEMENTATION=rmw_fastrtps_cpp",
+        }
+        if not required_environment.issubset(environment):
+            raise RuntimeError("container ROS domain/RMW do not match the isolated M1 contract")
         with (self.evidence / "container-inspect-start.json").open("x", encoding="utf-8") as f:
             f.write(inspect.stdout)
 
@@ -403,30 +420,28 @@ class BoundedRun:
         return self.reset_analysis
 
     def run_m1(self) -> None:
+        if not self.args.maintainer_authorized_first_motion:
+            self.m1_result = {
+                "status": "NOT_AUTHORIZED",
+                "reason": "first nonzero simulation-only command requires explicit maintainer authorization",
+            }
+            return
+        if self.reset_classification != "AUTO_RESET_PASS":
+            raise RuntimeError("first motion requires the unchanged post-Reset standing gate to pass")
         if self.remaining() < 35.0:
             raise RunDeadline("fewer than 35 seconds remain after AUTO_RESET_PASS; M1 was not started")
-        action_source = getattr(self.args, "set_action_source", None)
-        if action_source is None:
-            action_source = self.source
-        if getattr(self.args, "m1_zero_source_arbitration", False):
-            probe_args = (
-                " --zero-publish-hz 50 --zero-source-arbitration"
-                " --source-arbitration-duration 2 --mode-observe-duration 2"
-                " --ready-timeout 4 --zero-duration 0.4"
-            )
-        else:
-            probe_args = " --activation-pulse --ready-timeout 4 --zero-duration 0.4 --mode-observe-duration 3"
+        if self.network_mode != "bridge":
+            raise RuntimeError("verified bridge isolation is required before M1")
         command = [
-            "docker", "exec", self.container, "bash", "-lc",
-            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py diagnose --source "
-            + self.source
-            + " --set-action-source "
-            + action_source
+            "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", self.container, "bash", "-lc",
+            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion --maintainer-authorized --reset-gate-verified"
+            + " --attempt-id " + self.args.attempt_id
+            + " --robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml"
+            + " --state-timeout 0.5 --ready-timeout 4 --max-tilt-deg 15 --min-root-z 0.52"
             + " --output-dir /workspace/evidence"
-            + probe_args,
         ]
-        result = self.run("m1_source_ld_diagnostic", command, timeout_s=min(40.0, self.remaining()), check=False)
-        result_file = self.evidence / "m1_diagnostic_result.json"
+        result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
+        result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
             self.m1_result = json.loads(result_file.read_text(encoding="utf-8"))
         else:
@@ -457,7 +472,10 @@ class BoundedRun:
             except Exception:pass
 
     def execute(self) -> dict[str, Any]:
-        result={"schema":"robotsim.issue80.m1.auto-reset-run.v1","status":"BLOCKED","attempt_id":self.args.attempt_id,"source":self.source,"container":self.container,"runtime_image_digest":IMAGE_DIGEST,"runtime_limit_s":self.args.max_runtime_s,"reset_classification":"NOT_ATTEMPTED","m1_status":"NOT_RUN","fault":None}
+        result={"schema":"robotsim.issue80.m1.auto-reset-run.v2","status":"NOT_AUTHORIZED","attempt_id":self.args.attempt_id,"source":"node.locomotion_velocity","container":self.container,"runtime_image_digest":IMAGE_DIGEST,"runtime_limit_s":self.args.max_runtime_s,"reset_classification":"NOT_ATTEMPTED","m1_status":"NOT_RUN","fault":None}
+        if not self.args.maintainer_authorized_first_motion:
+            result["fault"] = "explicit maintainer authorization is required before starting the runtime"
+            return result
         try:
             self.stage_research_scripts()
             self.start_container()
@@ -502,18 +520,12 @@ def main() -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-dir",required=True)
     parser.add_argument("--container",required=True)
-    parser.add_argument("--source",required=True)
-    parser.add_argument(
-        "--set-action-source",
-        default=None,
-        help="optional caller identity for SetMcAction.source; defaults to the registered source name",
-    )
     parser.add_argument("--attempt-id",required=True)
     parser.add_argument("--max-runtime-s",type=float,default=180.0)
     parser.add_argument(
-        "--m1-zero-source-arbitration",
+        "--maintainer-authorized-first-motion",
         action="store_true",
-        help="run one source-grounded 50 Hz zero-only arbitration preflight after the Reset gate",
+        help="explicit human authorization for one bounded simulation-only first-motion run",
     )
     args=parser.parse_args()
     run=BoundedRun(args)

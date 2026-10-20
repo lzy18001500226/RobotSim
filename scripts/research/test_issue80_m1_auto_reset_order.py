@@ -63,8 +63,7 @@ class ResetObservationOrderingTests(unittest.TestCase):
                 argparse.Namespace(
                     evidence_dir=temp_dir,
                     container="test-container",
-                    source="issue80_m1_test_12345678",
-                    set_action_source="node.set_mc_action",
+                    maintainer_authorized_first_motion=True,
                     attempt_id="test-attempt",
                     max_runtime_s=10.0,
                 )
