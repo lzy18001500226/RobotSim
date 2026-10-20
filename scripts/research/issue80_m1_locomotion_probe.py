@@ -30,6 +30,7 @@ from issue80_m1_first_motion import (
     ACTION_SOURCE_NAME, COMMAND_PUBLISHER_TOPIC, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
     BASELINE_DURATION_S, BASELINE_SAMPLE_PERIOD_S, BASELINE_WINDOW_COUNT,
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
+    MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
     load_leg_joint_limits, load_mc_input_source_timeouts,
@@ -253,9 +254,9 @@ class FocusedM1Diagnostic(Node):
         if common is None or int(common.body_status.value) != 1:
             return "non_standing_body_status"
         fsm = int(common.fsm_state.current_state)
-        if fsm == 4:
+        if fsm == MC_FSM_SAFE:
             return "mc_safety_protection_state"
-        if fsm not in (1, 2, 3):
+        if fsm not in MC_FSM_ACTIVE_STATES:
             return f"unknown_or_unrelated_fsm_state:{fsm}"
         pose = self._pose()
         if pose is None or not all(math.isfinite(pose[key]) for key in ("x", "y", "z", "roll", "pitch", "yaw")):
@@ -536,7 +537,7 @@ class FocusedM1Diagnostic(Node):
             if (
                 fault is None
                 and int(self.latest["common"].body_status.value) == 1
-                and int(self.latest["common"].fsm_state.current_state) == 2
+                and int(self.latest["common"].fsm_state.current_state) == MC_FSM_STABLE
             ):
                 return
         raise TimeoutError("fresh upright STAND_DEFAULT telemetry not observed; verified Reset is required")
@@ -869,7 +870,7 @@ class FocusedM1Diagnostic(Node):
             if (
                 snapshot.get("get_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
                 or snapshot.get("common_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
-                or snapshot.get("fsm_state") != 2
+                or snapshot.get("fsm_state") != MC_FSM_STABLE
             ):
                 raise RuntimeError("stationary odometry baseline requires SD/LD with stable FSM state")
             if snapshot.get("get_source_name", "") or snapshot.get("common_source_name", ""):

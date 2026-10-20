@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -43,10 +44,37 @@ MODE_STAND = "STAND_DEFAULT"
 MODE_LOCOMOTION = "LOCOMOTION_DEFAULT"
 ALLOWED_MODES = frozenset((MODE_STAND, MODE_LOCOMOTION))
 MC_ACTION_STATUSES = frozenset((0, 100, 200))  # IDLE, RUNNING, TRANSITION
-MC_FSM_ACTIVE_STATES = frozenset((1, 2, 3))  # STARTING, STABLE, MOVING
-MC_FSM_SAFE = 4
-MC_FSM_SPECIAL = 5
-MC_FSM_TEST = 6
+
+
+class McFsmStateCode(IntEnum):
+    """Named FSM codes from the installed AimDK message contract."""
+
+    UNKNOWN = 0
+    STARTING = 1
+    STABLE = 2
+    MOVING = 3
+    SAFE = 4
+    SPECIAL = 5
+    TEST = 6
+
+
+# The deployed x86_64 interface source is byte-identical to AimDK SDK
+# v1.1.0 artifact faf4c945. The source explicitly declares the constants
+# above; its wire field is uint32. This records the interface contract, not
+# a separately symbolized inspection of the stripped MC implementation.
+MC_FSM_INTERFACE_SOURCE_PATH = (
+    "interface/robot/mc/data/msg/common/McFsmState.msg"
+)
+MC_FSM_INTERFACE_SOURCE_SHA256 = (
+    "da8a0370cba82d5d2955004a9b68489ee150f557e4c520dcd085bf58600cf6cf"
+)
+MC_FSM_ACTIVE_STATES = frozenset((
+    int(McFsmStateCode.STARTING),
+    int(McFsmStateCode.STABLE),
+    int(McFsmStateCode.MOVING),
+))
+MC_FSM_STABLE = int(McFsmStateCode.STABLE)
+MC_FSM_SAFE = int(McFsmStateCode.SAFE)
 BODY_POSE_STAND = 1
 REQUIRED_STATE_KEYS = ("odom", "imu", "common", "leg_state", "leg_command", "get_mode", "get_source")
 ZERO_STOP_INTERPRETATION = (

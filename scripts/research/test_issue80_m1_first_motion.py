@@ -19,11 +19,17 @@ from issue80_m1_first_motion import (
     BASELINE_DURATION_S,
     BASELINE_SAMPLE_PERIOD_S,
     BASELINE_WINDOW_COUNT,
+    MC_FSM_ACTIVE_STATES,
+    MC_FSM_INTERFACE_SOURCE_PATH,
+    MC_FSM_INTERFACE_SOURCE_SHA256,
+    MC_FSM_SAFE,
+    MC_FSM_STABLE,
     FORWARD_COMMAND_M_S,
     PULSE_LIMIT_S,
     PUBLISH_HZ,
     SOURCE_TIMEOUT_MS,
     VELOCITY_SOURCE_NAME,
+    McFsmStateCode,
     ZERO_STOP_MIN_S,
     ZERO_STOP_MIN_MESSAGES,
     VerifiedMcRuntimeIdentity,
@@ -197,7 +203,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             "get_mode_header_code": 0,
             "get_mode_status_value": 0,
             "common_mode_status_value": 0,
-            "fsm_state": 2,
+            "fsm_state": MC_FSM_STABLE,
             "body_status": 1,
             "pose": {"x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
             "forward_bounds": {"min_value": -1.0, "max_value": 1.0},
@@ -1076,11 +1082,40 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 self.assertEqual(result["fault"], expected)
                 self.assertEqual(result["nonzero_publish_calls_returned"], 0)
 
-    def test_safety_fsm_and_source_joint_velocity_limit_are_enforced(self) -> None:
-        safe_fsm = self.snapshot(fsm_state=4)
+    def test_installed_fsm_contract_mapping_is_pinned_and_named(self) -> None:
+        self.assertEqual(MC_FSM_INTERFACE_SOURCE_PATH,
+                         "interface/robot/mc/data/msg/common/McFsmState.msg")
+        self.assertEqual(MC_FSM_INTERFACE_SOURCE_SHA256,
+                         "da8a0370cba82d5d2955004a9b68489ee150f557e4c520dcd085bf58600cf6cf")
+        self.assertEqual(
+            {state.name: int(state) for state in McFsmStateCode},
+            {
+                "UNKNOWN": 0,
+                "STARTING": 1,
+                "STABLE": 2,
+                "MOVING": 3,
+                "SAFE": 4,
+                "SPECIAL": 5,
+                "TEST": 6,
+            },
+        )
+        self.assertEqual(MC_FSM_ACTIVE_STATES, frozenset((1, 2, 3)))
+
+    def test_stable_standing_fsm_is_accepted_but_safe_and_unrelated_states_fail(self) -> None:
+        stable_fsm = self.snapshot(fsm_state=MC_FSM_STABLE, body_status=1)
+        self.assertIsNone(snapshot_fault(
+            stable_fsm, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0
+        ))
+        safe_fsm = self.snapshot(fsm_state=MC_FSM_SAFE, body_status=1)
         self.assertEqual(snapshot_fault(
             safe_fsm, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0
         ), "mc_safety_protection_state")
+        for state in (McFsmStateCode.UNKNOWN, McFsmStateCode.SPECIAL, McFsmStateCode.TEST, 99):
+            with self.subTest(state=int(state)):
+                self.assertIn("unrelated_or_unknown_fsm_state", snapshot_fault(
+                    self.snapshot(fsm_state=int(state)), LIMITS,
+                    state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+                ))
         fast_joint = self.snapshot(leg_states=[
             {"name": "left_hip_pitch_joint", "position": 0.0, "velocity": 11.937}
         ])
@@ -1092,7 +1127,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         transitioning = self.snapshot(
             get_mode_desc="LOCOMOTION_DEFAULT",
             common_mode_desc="STAND_DEFAULT",
-            fsm_state=1,
+            fsm_state=int(McFsmStateCode.STARTING),
         )
         self.assertIsNone(snapshot_fault(
             transitioning, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0
@@ -1113,7 +1148,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             common_source_name=VELOCITY_SOURCE_NAME,
             get_mode_desc="LOCOMOTION_DEFAULT",
             common_mode_desc="LOCOMOTION_DEFAULT",
-            fsm_state=3,
+            fsm_state=int(McFsmStateCode.MOVING),
             pose={"x": 0.12, "y": -0.02, "z": 0.64, "roll": 0.0, "pitch": 0.0, "yaw": 0.1},
         ), phase="activation")
         delta = tracker.odometry_delta()
@@ -1131,7 +1166,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         tracker.observe(self.snapshot(
             get_mode_desc="LOCOMOTION_DEFAULT",
             common_mode_desc="LOCOMOTION_DEFAULT",
-            fsm_state=3,
+            fsm_state=int(McFsmStateCode.MOVING),
         ), phase="activation")
         self.assertTrue(tracker.source_acquired)
         self.assertTrue(tracker.ld_observed)
@@ -1145,7 +1180,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             common_source_name=VELOCITY_SOURCE_NAME,
             get_mode_desc="LOCOMOTION_DEFAULT",
             common_mode_desc="LOCOMOTION_DEFAULT",
-            fsm_state=3,
+            fsm_state=int(McFsmStateCode.MOVING),
         )
         row["readback_monotonic_s"] = {"get_mode": 1.0, "get_source": 1.21}
         tracker.observe(row, phase="activation")
@@ -1161,7 +1196,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             common_source_name=VELOCITY_SOURCE_NAME,
             get_mode_desc="LOCOMOTION_DEFAULT",
             common_mode_desc="LOCOMOTION_DEFAULT",
-            fsm_state=3,
+            fsm_state=int(McFsmStateCode.MOVING),
         )
         row["state_age_s"]["common"] = 0.25
         tracker.observe(row, phase="activation")
@@ -1177,7 +1212,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             common_source_name=VELOCITY_SOURCE_NAME,
             get_mode_desc="LOCOMOTION_DEFAULT",
             common_mode_desc="LOCOMOTION_DEFAULT",
-            fsm_state=3,
+            fsm_state=int(McFsmStateCode.MOVING),
         ), phase="activation")
         self.assertTrue(tracker.control_handshake_confirmed)
         self.assertEqual(tracker.classify_control_handshake(), "CONTROL_HANDSHAKE_CONFIRMED")
@@ -1333,6 +1368,25 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         self.assertLessEqual(result["nonzero_publish_calls_returned"], 1)
         self.assertGreaterEqual(result["zero_stop"]["publish_call_return_span_s"], 1.0)
 
+    def test_safe_fsm_during_locomotion_aborts_and_zero_stops(self) -> None:
+        sample = self.snapshot()
+        commands = []
+
+        def publish(value):
+            commands.append(value)
+            if value == FORWARD_COMMAND_M_S:
+                sample["get_source_name"] = VELOCITY_SOURCE_NAME
+                sample["common_source_name"] = VELOCITY_SOURCE_NAME
+                sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["fsm_state"] = MC_FSM_SAFE
+
+        result = self.run_protocol(lambda: sample, publish)
+        self.assertEqual(result["fault"], "mc_safety_protection_state")
+        self.assertLessEqual(result["nonzero_publish_calls_returned"], 1)
+        self.assertGreaterEqual(result["zero_stop"]["publish_call_return_span_s"], 1.0)
+        self.assertTrue(any(command == 0.0 for command in commands))
+
     def test_stale_telemetry_during_activation_aborts(self) -> None:
         sample = self.snapshot()
         count = 0
@@ -1387,6 +1441,25 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         result = self.run_protocol(lambda: sample, publish)
         self.assertEqual(result["status"], "POST_STOP_SAFETY_FAILED")
         self.assertEqual(result["post_stop_fault"], "fall_root_height")
+        self.assertGreaterEqual(result["post_stop_emergency_zero"]["loop_duration_s"], 1.0)
+        self.assertFalse(result["post_stop_emergency_zero"]["mc_stop_confirmed"])
+
+    def test_safe_fsm_during_post_stop_observation_restarts_zero_stop(self) -> None:
+        sample = self.snapshot()
+
+        def publish(value):
+            if value == FORWARD_COMMAND_M_S:
+                sample["get_source_name"] = VELOCITY_SOURCE_NAME
+                sample["common_source_name"] = VELOCITY_SOURCE_NAME
+                sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
+            elif value == 0.0:
+                sample["fsm_state"] = MC_FSM_SAFE
+
+        result = self.run_protocol(lambda: sample, publish)
+        self.assertEqual(result["status"], "POST_STOP_SAFETY_FAILED")
+        self.assertEqual(result["post_stop_fault"], "mc_safety_protection_state")
         self.assertGreaterEqual(result["post_stop_emergency_zero"]["loop_duration_s"], 1.0)
         self.assertFalse(result["post_stop_emergency_zero"]["mc_stop_confirmed"])
 
