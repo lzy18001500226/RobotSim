@@ -1,35 +1,46 @@
-# Issue #80 ROS adapter offline validation
+# Issue #80 ROS 2 point-goal adapter validation
 
 ## Scope
 
-The `robotsim_navigation` ament Python package wraps the existing point-goal controller with ROS 2 subscriptions for `nav_msgs/msg/Odometry` and `geometry_msgs/msg/PoseStamped`. Odometry must use `header.frame_id=odom` and `child_frame_id=base_link`; goals must already be in `odom`. The adapter produces `geometry_msgs/msg/Twist` only on `/robotsim/navigation/cmd_vel_proposal`. It has no MC service/client path and refuses the known live velocity topics.
+This validates the standalone ROS 2 adapter and the existing point-goal controller. It does not connect to Local03, MC, or MuJoCo and does not claim physical navigation.
 
-ROS 2 Humble defines Odometry pose in `header.frame_id` and twist in `child_frame_id`; this adapter consumes the pose fields only. PoseStamped is a stamped pose, and the adapter validates its frame and planar pose without inventing a transform. References: [Odometry.msg](https://github.com/ros2/common_interfaces/blob/humble/nav_msgs/msg/Odometry.msg), [PoseStamped.msg](https://github.com/ros2/common_interfaces/blob/humble/geometry_msgs/msg/PoseStamped.msg).
+The adapter consumes actual `nav_msgs/msg/Odometry` and `geometry_msgs/msg/PoseStamped` objects, requiring Odometry `header.frame_id=odom`, `child_frame_id=base_link`, and goal frame `odom`. It publishes `geometry_msgs/msg/Twist` only to `/robotsim/navigation/cmd_vel_proposal`. It has no MC clients or velocity-topic output. ROS 2 Humble defines Odometry pose in `header.frame_id`, twist in `child_frame_id`, and PoseStamped as a stamped pose: [Odometry.msg](https://github.com/ros2/common_interfaces/blob/humble/nav_msgs/msg/Odometry.msg), [PoseStamped.msg](https://github.com/ros2/common_interfaces/blob/humble/geometry_msgs/msg/PoseStamped.msg).
 
-## Offline results
+## Environment and build
 
-- Pure controller suite: 11/11 passed, including synthetic differential-drive pose-goal convergence, bounded command generation, cancellation, goal timeout, stale-pose stop, frame mismatch, and zero-output terminal states.
-- Adapter field-contract suite: 9 passed, 1 skipped (10 discovered). It covers recorded post-reset upright and pre-reset fallen odometry, monotonic message stamps, parent/child frame checks, quaternion/stamp validation, strict PoseStamped frame and planar orientation checks, bounded command generation from parsed Odometry/PoseStamped fields, and protected output topic selection.
-- The skipped case constructs actual generated ROS message objects. `rclpy`, `nav_msgs`, `geometry_msgs`, `std_msgs`, `std_srvs`, `tf2_ros`, `ros2`, and `colcon` are absent in this WSL environment. No packages were installed. The node import, colcon build, ROS graph behavior, and actual generated-message test remain deferred.
-- Python syntax compilation, package XML parsing, and `git diff --check` passed.
-- No MuJoCo, MC, Docker, DDS, GUI, or physical navigation process was started for this task.
+- WSL host has no ROS 2, colcon, `rclpy`, `nav_msgs`, or `geometry_msgs`; nothing was installed on the host.
+- Existing image `robotsim:humble-raicom-runtime-20261019`, image ID `sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31`, provided ROS 2 Humble, Python 3.10.12, colcon, `ament_python`, `rclpy`, `nav_msgs`, `geometry_msgs`, `std_msgs`, and generated ROS message classes.
+- `colcon build --packages-select robotsim_navigation`: PASS.
+- `python3 -m pytest -q .../test --junitxml=...`: 11 passed, 0 failed, 0 skipped. The actual generated ROS-message object test ran and passed.
+- The package test runner also completed all 11 tests successfully under `colcon test`.
 
-## Data and limits
+The container ran with `--network none`, a private `ROS_DOMAIN_ID=194`, `ROS_LOCALHOST_ONLY=1`, a read-only package source mount, and an ephemeral `/tmp` workspace. It was removed at exit. The test harness requires `ROBOTSIM_ISOLATED_ROS_GRAPH=1`, preventing accidental execution against a workstation ROS graph.
 
-The recorded fixture preserves two existing M1 samples and their source file SHA-256 values: `post_reset_upright` (accepted by the upright gate) and `pre_reset_fallen` (rejected by the base-height gate). Staleness is detected by local monotonic receive age; ROS/simulation stamp age is not compared with wall time because no clock mapping is established. Backward/repeated Odometry stamps fail closed and require restarting the adapter to establish a new session.
+## ROS graph results
 
-The node uses a steady-clock timer, controller goal timeout, cancellation topic, post-stop goal rejection window, zero Twist on active stop conditions, and continuous zero Twist while idle. The proposal output must remain disconnected from live MC until Issue #80 M1 passes and that integration receives a separate review.
+The test launched the installed entry point using `ros2 run robotsim_navigation point_goal_adapter` and used generated message classes for all publishers/subscribers.
+
+- Actual Odometry subscription and PoseStamped goal reception produced a positive bounded proposal on `/robotsim/navigation/cmd_vel_proposal` (limits observed: linear x <= 0.20 m/s, angular z <= 0.30 rad/s).
+- Wrong goal frame (`map`) was rejected; the idle proposal remained zero.
+- Wrong Odometry parent frame and repeated Odometry stamp stopped an active proposal with zero Twist.
+- Unsafe base height and unsafe roll were rejected and stopped the active proposal with zero Twist.
+- `std_msgs/msg/Empty` cancellation stopped an active proposal with zero Twist.
+- Halting Odometry delivery triggered stale-reception rejection and zero Twist.
+- A goal timeout while fresh Odometry continued stopped the proposal with zero Twist.
+- ROS graph introspection found the proposal output and status topic. It found no adapter publisher on `/cmd_vel` or `/aima/mc/locomotion/velocity`, and no adapter service under MC/locomotion namespaces.
+
+Odometry freshness uses monotonic receive age plus rejection of zero/repeated/backward message stamps. It does not compare ROS/simulation stamp age with wall time because no clock mapping is established. The adapter must remain disconnected from live MC until M1 passes and a separate integration change is reviewed.
+
+## Earlier offline evidence retained
+
+The pure controller suite remains 11/11 passing. The host-only adapter field suite is 9 passed and 1 actual-message test skipped because ROS packages are absent on the host. The graph test is also skipped on the host unless the explicit isolated-graph flag is set. In the Humble container, the actual-message test and graph test both passed. The two recorded M1 Odometry fixtures remain unchanged and retain their source hashes.
 
 ## Reproduction
 
-Run from the repository root:
+From the worktree root, with the existing Docker image available:
 
 ```sh
-PYTHONPATH=ros2_ws/src/robotsim_navigation python3 -B -m unittest discover -s scripts/research/issue80 -p 'test_*.py' -v
-PYTHONPATH=ros2_ws/src/robotsim_navigation python3 -B -m unittest discover -s ros2_ws/src/robotsim_navigation/test -p 'test_*.py' -v
-PYTHONPYCACHEPREFIX=/tmp/robotsim-issue80-pycache python3 -m py_compile ros2_ws/src/robotsim_navigation/robotsim_navigation/*.py scripts/research/issue80/*.py
-python3 -c 'import xml.etree.ElementTree as ET; ET.parse("ros2_ws/src/robotsim_navigation/package.xml")'
-git diff --check
+bash scripts/research/issue80/run_adapter_ros_validation.sh
 ```
 
-These results validate the offline controller and message-field adapter only. They do not validate locomotion, localization, obstacle avoidance, the ROS graph, or physical navigation. Issue #80 M1 remains blocked; the adapter is not connected to MC.
+The script builds the package in an isolated temporary workspace, launches the adapter in a private ROS graph, exercises real ROS messages and safety stops, and removes the container. This is ROS adapter validation only, not locomotion or physical navigation acceptance.

@@ -19,6 +19,8 @@ PYTHONPATH=ros2_ws/src/robotsim_navigation python3 -B -m unittest discover -s ro
 
 The tests use ROS-message-shaped synthetic objects and two preserved M1 Odometry samples. Construction with actual generated ROS message classes is an optional test and is skipped if the ROS message packages are unavailable. These checks are not a ROS graph test or physical navigation acceptance.
 
+For a real ROS 2 Humble message-class and graph check in the existing isolated runtime image, run `bash scripts/research/issue80/run_adapter_ros_validation.sh` from the worktree root. It uses Docker `--network none`, a private `ROS_DOMAIN_ID`, `ROS_LOCALHOST_ONLY=1`, a read-only source mount and a disposable `/tmp` workspace. The graph test refuses to run unless `ROBOTSIM_ISOLATED_ROS_GRAPH=1` is set. It launches the installed `ros2 run robotsim_navigation point_goal_adapter` entry point and validates proposal publication and stop behavior; it does not connect to MC.
+
 ## ROS 2 Humble build and isolated proposal run
 
 On a machine that already has ROS 2 Humble and `colcon` installed (none were installed for this task):

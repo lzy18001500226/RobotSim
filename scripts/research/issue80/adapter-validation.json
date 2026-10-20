@@ -1,35 +1,50 @@
 {
-  "schema_version": "robotsim.issue80.navigation-adapter-offline-result.v1",
+  "schema_version": "robotsim.issue80.navigation-adapter-validation.v2",
   "branch": "research/issue80-offline-pointgoal-20261020",
-  "scope": "offline ROS-message contract and point-goal controller only",
-  "results": {
+  "scope": "standalone ROS 2 adapter and point-goal controller; no physical navigation",
+  "host_offline_results": {
     "controller_tests": {"discovered": 11, "passed": 11, "failed": 0},
-    "adapter_tests": {"discovered": 10, "passed": 9, "failed": 0, "skipped": 1},
+    "adapter_field_tests": {"discovered": 10, "passed": 9, "failed": 0, "skipped": 1},
+    "adapter_ros_graph_host": "SKIPPED_NO_HOST_ROS_RUNTIME_OR_ISOLATION_OPT_IN",
     "python_compile": "PASS",
-    "package_xml": "PASS",
-    "git_diff_check": "PASS",
-    "ros2_package_build": "DEFERRED_NO_ROS2_OR_COLCON",
-    "actual_generated_message_test": "SKIPPED_NO_ROS_MESSAGE_PACKAGES",
-    "ros_graph_test": "NOT_RUN",
-    "physical_navigation": "NOT_RUN"
+    "package_xml": "PASS"
+  },
+  "humble_container_results": {
+    "image": "robotsim:humble-raicom-runtime-20261019",
+    "image_id": "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31",
+    "colcon_build": "PASS",
+    "actual_generated_message_test": "PASS",
+    "isolated_ros_graph_pytest": {"discovered": 11, "passed": 11, "failed": 0, "skipped": 0},
+    "graph_cases": [
+      "Odometry subscription and PoseStamped goal reception",
+      "bounded Twist proposal publication",
+      "wrong goal frame rejection",
+      "wrong Odometry frame stop",
+      "repeated Odometry timestamp stop",
+      "unsafe base height stop",
+      "unsafe roll stop",
+      "Empty cancellation stop",
+      "stale received Odometry stop",
+      "goal timeout stop",
+      "no MC velocity publisher or service endpoint"
+    ],
+    "container_network": "none",
+    "ros_domain_id": 194,
+    "ros_localhost_only": true,
+    "temporary_container_removed": true
   },
   "environment": {
-    "platform": "WSL Ubuntu 22.04",
-    "ros2": false,
-    "colcon": false,
-    "rclpy": false,
-    "nav_msgs": false,
-    "geometry_msgs": false,
-    "std_msgs": false,
-    "std_srvs": false,
-    "tf2_ros": false,
-    "dependencies_installed": false,
+    "platform": "WSL Ubuntu 22.04 host plus isolated ROS 2 Humble container",
+    "host_ros2_installed": false,
+    "host_colcon_installed": false,
+    "container_python": "3.10.12",
+    "container_has_ament_python": true,
     "live_mc_connected": false,
-    "mujoco_mc_or_gui_started": false
+    "mujoco_or_physical_navigation_run": false
   },
   "recorded_fixture": {
     "post_reset_upright_source_sha256": "dc5a8579719c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc",
     "pre_reset_fallen_source_sha256": "5d6636f9769c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc"
   },
-  "safety_boundary": "Twist output is isolated at /robotsim/navigation/cmd_vel_proposal and must not be remapped to live MC"
+  "safety_boundary": "Twist output remains isolated at /robotsim/navigation/cmd_vel_proposal and must not be remapped to MC"
 }
