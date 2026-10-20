@@ -8,6 +8,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from issue80_m1_auto_reset_run import (
@@ -136,6 +137,40 @@ class ResearchScriptStagingTests(unittest.TestCase):
             self.assertTrue(runner.container_created)
             self.assertIn("--network=bridge", calls[0])
 
+    def test_cleanup_records_normal_teardown_and_process_crash_limitation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            runner.container_created = True
+            runner.run = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
+            docker_results = [
+                subprocess.CompletedProcess(["docker", "inspect"], 0, "[]", ""),
+                subprocess.CompletedProcess(["docker", "stop"], 0, "test-container", ""),
+                subprocess.CompletedProcess(["docker", "rm"], 0, "test-container", ""),
+                subprocess.CompletedProcess(
+                    ["docker", "inspect"], 1, "", "Error: No such object: test-container"
+                ),
+            ]
+            with patch("issue80_m1_auto_reset_run.subprocess.run", side_effect=docker_results):
+                runner.cleanup()
+            self.assertTrue(runner.cleanup_evidence["container_absent_after_cleanup"])
+            self.assertFalse(runner.cleanup_evidence["process_crash_or_sigkill_cleanup_guaranteed"])
+            self.assertEqual(
+                [row["operation"] for row in runner.cleanup_evidence["operations"]][-3:],
+                ["docker_stop", "docker_rm", "verify_container_absent"],
+            )
+
+    def test_missing_container_teardown_blocks_run_closeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            runner.cleanup_evidence.update({
+                "attempted": True,
+                "container_absent_after_cleanup": False,
+            })
+            result = {"status": "PASS", "fault": None}
+            runner.apply_container_teardown_gate(result)
+            self.assertEqual(result["status"], "BLOCKED")
+            self.assertIn("container teardown", result["fault"])
+
     def test_authorized_runner_uses_one_pinned_source_and_hard_limited_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             evidence = Path(temp_dir)
@@ -158,6 +193,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             self.assertIn("--attempt-id test-attempt", shell_command)
             self.assertIn("ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", captured[0])
             self.assertIn("--robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml", shell_command)
+            self.assertIn("--mc-sim-config-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml", shell_command)
             self.assertNotIn("--source ", shell_command)
             self.assertNotIn("--activation-pulse", shell_command)
             self.assertNotIn("--zero-source-arbitration", shell_command)

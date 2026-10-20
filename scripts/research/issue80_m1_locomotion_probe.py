@@ -28,10 +28,13 @@ from sensor_msgs.msg import Imu
 
 from issue80_m1_first_motion import (
     ACTION_SOURCE_NAME, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
-    COMMAND_QOS_RELIABILITY, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
+    BASELINE_DURATION_S, BASELINE_SAMPLE_PERIOD_S, BASELINE_WINDOW_COUNT,
+    COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
-    load_leg_joint_limits, run_first_motion_window, validate_local_sim_publishers,
-    validate_first_motion_authorization, validate_runtime_scope,
+    derive_stationary_odom_baseline, load_leg_joint_limits, load_mc_input_source_timeouts,
+    run_first_motion_window, snapshot_fault,
+    validate_local_sim_publishers, validate_first_motion_authorization,
+    validate_runtime_scope,
 )
 from issue80_m1_mode_logic import classify_set_mc_action_response
 
@@ -44,6 +47,10 @@ REQUIRED_TOPICS = ("odom", "imu", "common", "leg_state", "leg_command")
 ROBOT_MODEL_PATH = (
     "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
     "lx2501_3_t2d5/sim/robot_model.yaml"
+)
+MC_SIM_CONFIG_PATH = (
+    "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
+    "lx2501_3_t2d5/mc_sim.yaml"
 )
 
 
@@ -102,6 +109,9 @@ class FocusedM1Diagnostic(Node):
             raise FileExistsError("refusing to overwrite prior M1 evidence")
         self.trace = self.trace_path.open("x", encoding="utf-8", buffering=1)
         self.joint_limits, self.joint_limits_sha256 = load_leg_joint_limits(args.robot_model_path)
+        self.mc_input_source_timeouts, self.mc_sim_config_sha256 = load_mc_input_source_timeouts(
+            args.mc_sim_config_path
+        )
         self.latest: dict[str, Any] = {}
         self.received_at: dict[str, float] = {}
         self.last_mode: dict[str, Any] | None = None
@@ -119,8 +129,8 @@ class FocusedM1Diagnostic(Node):
         self.interrupted = threading.Event()
         self.publisher_lock = threading.RLock()
         self.trace_lock = threading.RLock()
-        self.nonzero_messages = 0
-        self.zero_messages = 0
+        self.nonzero_publish_calls_returned = 0
+        self.zero_publish_calls_returned = 0
         self.command_trace: list[dict[str, Any]] = []
         self.current_phase = "preflight"
         self.events: list[dict[str, Any]] = []
@@ -329,9 +339,9 @@ class FocusedM1Diagnostic(Node):
                 "publish_outcome": "CALL_RETURNED",
             })
             if forward != 0.0:
-                self.nonzero_messages += 1
+                self.nonzero_publish_calls_returned += 1
             else:
-                self.zero_messages += 1
+                self.zero_publish_calls_returned += 1
 
     def _wait_service(self, client: Any, label: str, timeout: float = 2.0) -> None:
         deadline = time.monotonic() + timeout
@@ -358,8 +368,13 @@ class FocusedM1Diagnostic(Node):
         request.request = CommonRequest()
         request.request.header.stamp = self.get_clock().now().to_msg()
         response = self._call(self.source_client, request, f"GetCurrentInputSource:{label}")
+        return self._record_source_response(request, response, label)
+
+    def _record_source_response(self, request: Any, response: Any, label: str) -> dict[str, Any]:
+        observed_monotonic = time.monotonic()
         result = {
             "label": label, "wall_utc": datetime.now(timezone.utc).isoformat(),
+            "observed_monotonic_s": observed_monotonic,
             "request": _json_safe(request), "response": _json_safe(response),
             "response_header_code": int(response.response.header.code),
             "response_state": int(response.response.state.value),
@@ -367,7 +382,7 @@ class FocusedM1Diagnostic(Node):
             "input_source": _json_safe(response.input_source),
         }
         self.last_source = result
-        self.readback_at["get_source"] = time.monotonic()
+        self.readback_at["get_source"] = observed_monotonic
         self.source_observations.append(result)
         self.events.append({"event": "get_current_input_source", **result})
         return result
@@ -378,8 +393,13 @@ class FocusedM1Diagnostic(Node):
         request.request = CommonRequest()
         request.request.header.stamp = self.get_clock().now().to_msg()
         response = self._call(self.get_mode_client, request, f"GetMcAction:{label}")
+        return self._record_mode_response(request, response, label)
+
+    def _record_mode_response(self, request: Any, response: Any, label: str) -> dict[str, Any]:
+        observed_monotonic = time.monotonic()
         result = {
             "label": label, "wall_utc": datetime.now(timezone.utc).isoformat(),
+            "observed_monotonic_s": observed_monotonic,
             "request": _json_safe(request), "response": _json_safe(response),
             "response_header_code": int(response.header.code),
             "current_action_value": int(response.info.current_action.value),
@@ -387,7 +407,7 @@ class FocusedM1Diagnostic(Node):
             "status_value": int(response.info.status.value),
         }
         self.last_mode = result
-        self.readback_at["get_mode"] = time.monotonic()
+        self.readback_at["get_mode"] = observed_monotonic
         self.mode_observations.append(result)
         self.events.append({"event": "get_mc_action", **result})
         return result
@@ -690,7 +710,12 @@ class FocusedM1Diagnostic(Node):
                 bounds = None
         return {
             "wall_utc": datetime.now(timezone.utc).isoformat(),
+            "sample_monotonic_s": now,
             "state_age_s": ages,
+            "readback_monotonic_s": {
+                "get_mode": self.readback_at.get("get_mode"),
+                "get_source": self.readback_at.get("get_source"),
+            },
             "pose": pose,
             "get_mode_desc": self.last_mode.get("action_desc") if self.last_mode else None,
             "get_mode_header_code": self.last_mode.get("response_header_code") if self.last_mode else None,
@@ -708,6 +733,66 @@ class FocusedM1Diagnostic(Node):
             "leg_states": self._joint_states_as_dicts(),
             "readback_fault": self.async_readback_fault,
         }
+
+    def collect_stationary_odom_baseline(self) -> dict[str, Any]:
+        """Measure same-run no-command odometry noise before registering or sending velocity."""
+        self.read_mode("stationary_baseline_start")
+        source_start = self.read_input_source("stationary_baseline_start")
+        if source_start["response_header_code"] != 0:
+            raise RuntimeError("GetCurrentInputSource failed before odometry baseline")
+        source_name = str(source_start["input_source"].get("name", ""))
+        if source_name not in ("", self.source):
+            raise RuntimeError(f"source conflict before odometry baseline: {source_name!r}")
+
+        samples: list[dict[str, Any]] = []
+        baseline_start_s: float | None = None
+        next_sample_s: float | None = None
+        baseline_end_s: float | None = None
+        while rclpy.ok():
+            if self.interrupted.is_set():
+                raise RuntimeError("operator_shutdown during stationary odometry baseline")
+            if next_sample_s is not None:
+                delay = next_sample_s - time.monotonic()
+                if delay > 0.0:
+                    time.sleep(delay)
+            snapshot = self.sample_for_first_motion()
+            fault = snapshot_fault(
+                snapshot,
+                self.joint_limits,
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+            )
+            if fault:
+                raise RuntimeError(f"stationary odometry baseline safety fault: {fault}")
+            if (
+                snapshot.get("get_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
+                or snapshot.get("common_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
+                or snapshot.get("fsm_state") != 2
+            ):
+                raise RuntimeError("stationary odometry baseline requires SD/LD with stable FSM state")
+            if snapshot.get("get_source_name", "") or snapshot.get("common_source_name", ""):
+                raise RuntimeError("input source is already active during the no-command odometry baseline")
+            sample_time = float(snapshot["sample_monotonic_s"])
+            if baseline_start_s is None:
+                baseline_start_s = sample_time
+                baseline_end_s = baseline_start_s + BASELINE_DURATION_S
+            samples.append(snapshot)
+            self._trace_first_motion_sample("stationary-baseline", snapshot)
+            if sample_time >= float(baseline_end_s):
+                break
+            next_sample_s = baseline_start_s + len(samples) * BASELINE_SAMPLE_PERIOD_S
+        else:
+            raise RuntimeError("ROS shutdown during stationary odometry baseline")
+
+        baseline = derive_stationary_odom_baseline(samples)
+        baseline.update({
+            "requested_duration_s": BASELINE_DURATION_S,
+            "start_monotonic_s": baseline_start_s,
+            "end_monotonic_s": samples[-1]["sample_monotonic_s"],
+            "commands_sent": 0,
+        })
+        return baseline
 
     def sample_for_first_motion(self) -> dict[str, Any]:
         rclpy.spin_once(self, timeout_sec=0.005)
@@ -736,9 +821,11 @@ class FocusedM1Diagnostic(Node):
         return result
 
     def execute(self) -> dict[str, Any]:
+        stationary_baseline: dict[str, Any] | None = None
         result: dict[str, Any] = {
             "schema": "robotsim.issue80.m1.first-motion.v2",
             "simulation_only": True,
+            "acceptance_scope": "single first-motion diagnostic only; not a locomotion or navigation pass",
             "attempt_id": self.args.attempt_id,
             "maintainer_authorized": bool(self.args.maintainer_authorized),
             "reset_gate_verified_by_parent": bool(self.args.reset_gate_verified),
@@ -746,6 +833,15 @@ class FocusedM1Diagnostic(Node):
             "source": self.source,
             "action_source": ACTION_SOURCE_NAME,
             "source_timeout_ms": SOURCE_TIMEOUT_MS,
+            "installed_mc_sim_config_path": self.args.mc_sim_config_path,
+            "installed_mc_sim_config_sha256": self.mc_sim_config_sha256,
+            "installed_mc_default_source_timeouts": self.mc_input_source_timeouts,
+            "source_timeout_semantics": {
+                "configured_registration_timeout_ms": SOURCE_TIMEOUT_MS,
+                "documented_timeout_effect": "timeout is measured from the last nonzero command; zero commands do not refresh it; after expiry command data is cleared while the selected source remains",
+                "installed_mc_effect_dynamically_verified": False,
+                "mc_receipt_or_stop_ack_available": False,
+            },
             "publish_hz": PUBLISH_HZ,
             "forward_command_m_s": 0.2,
             "pulse_limit_s": 1.0,
@@ -782,6 +878,9 @@ class FocusedM1Diagnostic(Node):
             result["set_mc_action_ld"] = set_action
             result["mode_after_ld_request"] = self.read_mode("after_set_mc_action_ld")
             result["source_after_ld_request"] = self.read_input_source("after_set_mc_action_ld")
+            if registration["success"] and set_action.get("accepted_by_service"):
+                stationary_baseline = self.collect_stationary_odom_baseline()
+            result["stationary_odom_baseline"] = stationary_baseline
 
             # The first nonzero request is permitted after the standing, transport,
             # registration and SetMcAction response gates. It does not require LD or
@@ -792,6 +891,10 @@ class FocusedM1Diagnostic(Node):
                 registration=registration,
                 set_action=set_action,
                 joint_limits=self.joint_limits,
+                baseline_forward_displacements_m=(
+                    [window["forward_displacement_m"] for window in stationary_baseline["windows"]]
+                    if stationary_baseline else None
+                ),
                 authorized=True,
                 shutdown_event=self.interrupted,
                 on_sample=self._trace_first_motion_sample,
@@ -801,13 +904,19 @@ class FocusedM1Diagnostic(Node):
             )
             self.pulse_result = pulse
             result["activation"] = pulse
-            result["nonzero_velocity_messages"] = pulse["nonzero_messages"]
+            result["nonzero_publish_calls_returned"] = pulse["nonzero_publish_calls_returned"]
+            result["zero_publish_calls_returned"] = self.zero_publish_calls_returned
+            result["mc_velocity_receipt_confirmed"] = False
+            result["mc_stop_confirmed"] = False
             result["get_mc_action_final"] = self.read_mode("final_post_stop")
             result["get_current_input_source_final"] = self.read_input_source("final_post_stop")
             result["final_common_state"] = _json_safe(self.latest.get("common"))
             result["final_odometry"] = self._pose()
             result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
-            result["status"] = "PASS" if pulse["status"] == "ACTIVATION_CONFIRMED" else "BLOCKED"
+            result["status"] = (
+                "PASS" if pulse["status"] == "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED"
+                else "BLOCKED"
+            )
         except Exception as exc:
             result["fault"] = f"{type(exc).__name__}: {exc}"
             result["status"] = "BLOCKED"
@@ -821,6 +930,10 @@ class FocusedM1Diagnostic(Node):
                         registration={"success": False, "selected_action": None},
                         set_action={"accepted_by_service": False},
                         joint_limits=self.joint_limits,
+                        baseline_forward_displacements_m=(
+                            [window["forward_displacement_m"] for window in stationary_baseline["windows"]]
+                            if stationary_baseline else None
+                        ),
                         authorized=True,
                         shutdown_event=self.interrupted,
                         on_sample=self._trace_first_motion_sample,
@@ -841,7 +954,10 @@ class FocusedM1Diagnostic(Node):
             result["velocity_publisher_count"] = 1
             result["limitations"] = [
                 "Nonzero motion requires the maintainer authorization gate in the parent Reset runner and this child command.",
-                "SetMcAction success is not treated as proof of mode application; actual GetMcAction and McCommonState readbacks are recorded.",
+                "Control handshake requires contemporaneous source and LD evidence; physical motion is separately classified from forward-projected odometry against this run's stationary baseline.",
+                "The in-process threading.Timer is not a process-external watchdog and cannot publish after this process is killed.",
+                "Publisher.publish returning records only a local call outcome; MC command receipt and zero-command effect have no direct acknowledgement and remain unconfirmed.",
+                "The installed MC config shows a 1000 ms input source timeout and official docs describe command clearing after timeout; exact installed binary stop behavior is not live-verified.",
                 "Leg position and velocity cutoffs are loaded from the installed MC simulation robot_model.yaml and its SHA-256 is recorded.",
                 "No vendor model, binary, gain, safety threshold, or original reset/standing gate is modified.",
             ]
@@ -894,6 +1010,7 @@ def main() -> int:
     first.add_argument("--attempt-id", required=True)
     first.add_argument("--output-dir", required=True)
     first.add_argument("--robot-model-path", default=ROBOT_MODEL_PATH)
+    first.add_argument("--mc-sim-config-path", default=MC_SIM_CONFIG_PATH)
     first.add_argument("--state-timeout", type=float, default=0.5)
     first.add_argument("--ready-timeout", type=float, default=4.0)
     first.add_argument("--max-tilt-deg", type=float, default=15.0)

@@ -15,6 +15,9 @@ from issue80_m1_first_motion import (
     COMMAND_QOS_DEPTH,
     COMMAND_QOS_DURABILITY,
     COMMAND_QOS_RELIABILITY,
+    BASELINE_DURATION_S,
+    BASELINE_SAMPLE_PERIOD_S,
+    BASELINE_WINDOW_COUNT,
     FORWARD_COMMAND_M_S,
     PULSE_LIMIT_S,
     PUBLISH_HZ,
@@ -23,7 +26,10 @@ from issue80_m1_first_motion import (
     ZERO_STOP_MIN_S,
     ZERO_STOP_MIN_MESSAGES,
     classify_source_registration,
+    classify_physical_motion,
+    derive_stationary_odom_baseline,
     load_leg_joint_limits,
+    load_mc_input_source_timeouts,
     run_first_motion_window,
     snapshot_fault,
     validate_first_motion_authorization,
@@ -86,12 +92,14 @@ class FakeTimer:
             if getattr(watchdog, "expired", False):
                 return
             deadline.wait(0.001)
-        raise AssertionError("independent watchdog callback did not expire")
+        raise AssertionError("process-local timer callback did not expire")
 
 
 class FirstMotionSafetyTests(unittest.TestCase):
     def snapshot(self, **overrides):
         value = {
+            "sample_monotonic_s": 0.0,
+            "readback_monotonic_s": {"get_mode": 0.0, "get_source": 0.0},
             "state_age_s": {
                 "odom": 0.01,
                 "imu": 0.01,
@@ -130,10 +138,19 @@ class FirstMotionSafetyTests(unittest.TestCase):
         shutdown_event=None,
         timer_factory=None,
         fake_clock=None,
+        baseline=None,
     ):
         clock = fake_clock or FakeClock()
+
+        def read_sample():
+            row = dict(sample())
+            now = clock.now()
+            row["sample_monotonic_s"] = now
+            row.setdefault("readback_monotonic_s", {"get_mode": now, "get_source": now})
+            return row
+
         return run_first_motion_window(
-            sample=sample,
+            sample=read_sample,
             publish=publish,
             registration=registration or {"success": True, "selected_action": "ADD"},
             set_action=action or {
@@ -143,6 +160,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
                 "message": "success",
             },
             joint_limits=LIMITS,
+            baseline_forward_displacements_m=baseline if baseline is not None else [0.0, 0.0, 0.0],
             authorized=True,
             shutdown_event=shutdown_event,
             state_timeout_s=0.5,
@@ -169,6 +187,18 @@ class FirstMotionSafetyTests(unittest.TestCase):
             limits, digest = load_leg_joint_limits(source)
         self.assertEqual(set(limits), set(names))
         self.assertEqual(limits[names[0]]["max_velocity"], 2.0)
+        self.assertEqual(len(digest), 64)
+
+    def test_installed_mc_timeout_config_is_recorded_as_configuration_not_runtime_proof(self) -> None:
+        document = {"MotionControlModule": {"InputManager": {"input_sources": [
+            {"name": "rc", "priority": 80, "timeout": 1000},
+            {"name": "pnc", "priority": 40, "timeout": 1000},
+        ]}}}
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "mc_sim.yaml"
+            source.write_text(json.dumps(document), encoding="utf-8")
+            sources, digest = load_mc_input_source_timeouts(source)
+        self.assertEqual(sources[0], {"name": "rc", "priority": 80, "timeout_ms": 1000})
         self.assertEqual(len(digest), 64)
 
     def test_protocol_constants_are_hard_limited_to_vendor_example(self) -> None:
@@ -269,8 +299,9 @@ class FirstMotionSafetyTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "ABORTED")
         self.assertEqual(result["fault"], "source_registration_rejected")
-        self.assertEqual(result["nonzero_messages"], 0)
-        self.assertGreaterEqual(result["zero_stop"]["actual_duration_s"], 1.0)
+        self.assertEqual(result["nonzero_publish_calls_returned"], 0)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+        self.assertFalse(result["zero_stop"]["mc_stop_confirmed"])
 
     def test_set_action_rejection_sends_no_nonzero_motion(self) -> None:
         commands = []
@@ -280,7 +311,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             action={"accepted_by_service": False, "header_code": 6, "status_value": 2},
         )
         self.assertEqual(result["fault"], "set_mc_action_rejected")
-        self.assertEqual(result["nonzero_messages"], 0)
+        self.assertEqual(result["nonzero_publish_calls_returned"], 0)
 
     def test_action_response_preserves_header_status_and_message(self) -> None:
         result = classify_set_mc_action_response(6, 2, "security protection")
@@ -406,16 +437,16 @@ class FirstMotionSafetyTests(unittest.TestCase):
         commands = []
         result = self.run_protocol(lambda: sample, commands.append)
         self.assertEqual(result["fault"], "stale_or_missing_state:imu")
-        self.assertEqual(result["nonzero_messages"], 0)
-        self.assertGreaterEqual(result["zero_stop"]["actual_duration_s"], 1.0)
-        self.assertGreaterEqual(result["zero_stop"]["zero_messages"], 49)
+        self.assertEqual(result["nonzero_publish_calls_returned"], 0)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], 49)
 
     def test_source_conflict_rejects_before_motion(self) -> None:
         sample = self.snapshot(get_source_name="rc")
         commands = []
         result = self.run_protocol(lambda: sample, commands.append)
         self.assertIn("input_source_conflict", result["fault"])
-        self.assertEqual(result["nonzero_messages"], 0)
+        self.assertEqual(result["nonzero_publish_calls_returned"], 0)
 
     def test_fall_height_and_tilt_guards_reject_before_motion(self) -> None:
         for pose, expected in (
@@ -426,7 +457,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
                 sample = self.snapshot(pose=pose)
                 result = self.run_protocol(lambda: sample, lambda _v: None)
                 self.assertEqual(result["fault"], expected)
-                self.assertEqual(result["nonzero_messages"], 0)
+                self.assertEqual(result["nonzero_publish_calls_returned"], 0)
 
     def test_safety_fsm_and_source_joint_velocity_limit_are_enforced(self) -> None:
         safe_fsm = self.snapshot(fsm_state=4)
@@ -459,7 +490,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
 
     def test_activation_evidence_reports_observed_odom_delta(self) -> None:
         tracker = ActivationTracker()
-        tracker.observe(self.snapshot())
+        tracker.observe(self.snapshot(), phase="pre-activation")
         tracker.observe(self.snapshot(
             get_source_name=VELOCITY_SOURCE_NAME,
             common_source_name=VELOCITY_SOURCE_NAME,
@@ -467,11 +498,108 @@ class FirstMotionSafetyTests(unittest.TestCase):
             common_mode_desc="LOCOMOTION_DEFAULT",
             fsm_state=3,
             pose={"x": 0.12, "y": -0.02, "z": 0.64, "roll": 0.0, "pitch": 0.0, "yaw": 0.1},
-        ))
+        ), phase="activation")
         delta = tracker.odometry_delta()
         self.assertEqual(delta["dx_m"], 0.12)
         self.assertEqual(delta["dy_m"], -0.02)
+        self.assertGreater(delta["forward_projected_m"], 0.0)
         self.assertEqual(delta["sample_count"], 2)
+
+    def test_source_and_ld_seen_at_different_samples_are_not_a_control_handshake(self) -> None:
+        tracker = ActivationTracker()
+        tracker.observe(self.snapshot(
+            get_source_name=VELOCITY_SOURCE_NAME,
+            common_source_name=VELOCITY_SOURCE_NAME,
+        ), phase="activation")
+        tracker.observe(self.snapshot(
+            get_mode_desc="LOCOMOTION_DEFAULT",
+            common_mode_desc="LOCOMOTION_DEFAULT",
+            fsm_state=3,
+        ), phase="activation")
+        self.assertTrue(tracker.source_acquired)
+        self.assertTrue(tracker.ld_observed)
+        self.assertFalse(tracker.control_handshake_confirmed)
+        self.assertEqual(tracker.classify_control_handshake(), "CONTROL_HANDSHAKE_NOT_CONFIRMED")
+
+    def test_same_sample_with_async_readback_skew_is_not_a_control_handshake(self) -> None:
+        tracker = ActivationTracker()
+        row = self.snapshot(
+            get_source_name=VELOCITY_SOURCE_NAME,
+            common_source_name=VELOCITY_SOURCE_NAME,
+            get_mode_desc="LOCOMOTION_DEFAULT",
+            common_mode_desc="LOCOMOTION_DEFAULT",
+            fsm_state=3,
+        )
+        row["readback_monotonic_s"] = {"get_mode": 1.0, "get_source": 1.21}
+        tracker.observe(row, phase="activation")
+        self.assertTrue(tracker.source_acquired)
+        self.assertTrue(tracker.ld_observed)
+        self.assertFalse(tracker.control_handshake_confirmed)
+        self.assertGreater(tracker.samples[0]["mode_source_readback_skew_s"], 0.2)
+
+    def test_stale_common_state_within_general_gate_is_not_contemporaneous_handshake(self) -> None:
+        tracker = ActivationTracker()
+        row = self.snapshot(
+            get_source_name=VELOCITY_SOURCE_NAME,
+            common_source_name=VELOCITY_SOURCE_NAME,
+            get_mode_desc="LOCOMOTION_DEFAULT",
+            common_mode_desc="LOCOMOTION_DEFAULT",
+            fsm_state=3,
+        )
+        row["state_age_s"]["common"] = 0.25
+        tracker.observe(row, phase="activation")
+        self.assertTrue(tracker.source_acquired)
+        self.assertTrue(tracker.ld_observed)
+        self.assertFalse(tracker.control_handshake_confirmed)
+        self.assertGreater(tracker.samples[0]["mode_source_common_skew_max_s"], 0.2)
+
+    def test_same_sample_and_aligned_readbacks_confirm_control_handshake_only(self) -> None:
+        tracker = ActivationTracker()
+        tracker.observe(self.snapshot(
+            get_source_name=VELOCITY_SOURCE_NAME,
+            common_source_name=VELOCITY_SOURCE_NAME,
+            get_mode_desc="LOCOMOTION_DEFAULT",
+            common_mode_desc="LOCOMOTION_DEFAULT",
+            fsm_state=3,
+        ), phase="activation")
+        self.assertTrue(tracker.control_handshake_confirmed)
+        self.assertEqual(tracker.classify_control_handshake(), "CONTROL_HANDSHAKE_CONFIRMED")
+
+    def test_physical_motion_requires_positive_displacement_above_empirical_noise(self) -> None:
+        self.assertEqual(classify_physical_motion(
+            control_handshake_confirmed=True,
+            pulse_forward_displacement_m=0.0001,
+            baseline_noise_bound_m=0.0,
+        ), "BASELINE_NOISE_UNRESOLVED")
+        self.assertEqual(classify_physical_motion(
+            control_handshake_confirmed=True,
+            pulse_forward_displacement_m=0.01,
+            baseline_noise_bound_m=0.01,
+        ), "CONTROL_HANDSHAKE_ONLY")
+        self.assertEqual(classify_physical_motion(
+            control_handshake_confirmed=True,
+            pulse_forward_displacement_m=0.011,
+            baseline_noise_bound_m=0.01,
+        ), "PHYSICAL_MOTION_CONFIRMED")
+        self.assertEqual(classify_physical_motion(
+            control_handshake_confirmed=False,
+            pulse_forward_displacement_m=0.02,
+            baseline_noise_bound_m=0.01,
+        ), "UNEXPECTED_MOTION_WITHOUT_CONTROL_HANDSHAKE")
+
+    def test_stationary_noise_bound_uses_observed_nonzero_windows_not_a_vendor_threshold(self) -> None:
+        samples = []
+        for index in range(int(BASELINE_DURATION_S / BASELINE_SAMPLE_PERIOD_S) + 1):
+            t = index * BASELINE_SAMPLE_PERIOD_S
+            samples.append({
+                "sample_monotonic_s": t,
+                "pose": {"x": 0.001 * t, "y": 0.0, "yaw": 0.0},
+            })
+        result = derive_stationary_odom_baseline(samples)
+        self.assertEqual(result["window_count"], BASELINE_WINDOW_COUNT)
+        self.assertTrue(all(abs(row["forward_displacement_m"] - 0.001) < 1e-9 for row in result["windows"]))
+        self.assertEqual(result["noise_bound_m"], 0.001)
+        self.assertFalse(result["statistical_confidence_bound"])
 
     def test_forward_command_must_be_inside_live_speed_bounds(self) -> None:
         sample = self.snapshot(forward_bounds={"min_value": -0.1, "max_value": 0.1})
@@ -490,11 +618,20 @@ class FirstMotionSafetyTests(unittest.TestCase):
                 sample["common_source_name"] = VELOCITY_SOURCE_NAME
 
         result = self.run_protocol(lambda: sample, publish)
-        self.assertEqual(result["activation_classification"], "MISSING_MODE_TRANSITION")
-        self.assertEqual(result["status"], "MISSING_MODE_TRANSITION")
+        self.assertEqual(result["control_handshake_status"], "LD_NOT_OBSERVED")
+        self.assertEqual(result["physical_motion_status"], "BASELINE_NOISE_UNRESOLVED")
         self.assertLessEqual(result["last_nonzero_command_offset_s"], PULSE_LIMIT_S)
         self.assertLessEqual(result["pulse_loop_elapsed_s"], 1.0)
         self.assertTrue(all(value in (0.0, 0.2) for value in commands))
+
+    def test_partial_or_missing_baseline_blocks_nonzero_motion(self) -> None:
+        commands = []
+        result = self.run_protocol(
+            lambda: self.snapshot(), commands.append, baseline=[0.001, -0.001]
+        )
+        self.assertEqual(result["fault"], "stationary_odom_baseline_unavailable")
+        self.assertEqual(result["nonzero_publish_calls_returned"], 0)
+        self.assertEqual(result["physical_motion_status"], "BASELINE_UNAVAILABLE")
 
     def test_publish_call_returning_after_hard_deadline_fails_closed(self) -> None:
         clock = FakeClock()
@@ -518,25 +655,33 @@ class FirstMotionSafetyTests(unittest.TestCase):
     def test_success_requires_source_and_both_ld_readback_channels(self) -> None:
         sample = self.snapshot()
         commands = []
+        motion_ticks = 0
 
         def publish(value):
+            nonlocal motion_ticks
             commands.append(value)
             if value == 0.2:
+                motion_ticks += 1
                 sample["get_source_name"] = VELOCITY_SOURCE_NAME
                 sample["common_source_name"] = VELOCITY_SOURCE_NAME
                 sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["fsm_state"] = 3
+                sample["pose"]["x"] = motion_ticks * 0.002
 
-        result = self.run_protocol(lambda: sample, publish)
-        self.assertEqual(result["status"], "ACTIVATION_CONFIRMED")
-        self.assertGreater(result["nonzero_messages"], 0)
+        result = self.run_protocol(lambda: sample, publish, baseline=[0.002, -0.001, 0.001])
+        self.assertEqual(result["status"], "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED")
+        self.assertEqual(result["control_handshake_status"], "CONTROL_HANDSHAKE_CONFIRMED")
+        self.assertEqual(result["physical_motion_status"], "PHYSICAL_MOTION_CONFIRMED")
+        self.assertGreater(result["nonzero_publish_calls_returned"], 0)
         self.assertTrue(result["source_selected_by_get_service"])
         self.assertTrue(result["source_selected_by_common_state"])
-        self.assertGreaterEqual(result["zero_stop"]["actual_duration_s"], 1.0)
-        self.assertGreaterEqual(result["zero_stop"]["published_span_s"], 1.0)
-        self.assertGreaterEqual(result["zero_stop"]["zero_messages"], ZERO_STOP_MIN_MESSAGES)
-        self.assertLess(result["zero_stop"]["max_inter_message_gap_s"], 1.0)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+        self.assertGreaterEqual(result["zero_stop"]["publish_call_return_span_s"], 1.0)
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], ZERO_STOP_MIN_MESSAGES)
+        self.assertLess(result["zero_stop"]["max_gap_between_publish_call_returns_s"], 1.0)
+        self.assertFalse(result["zero_stop"]["mc_receipt_confirmed"])
+        self.assertFalse(result["zero_stop"]["mc_stop_confirmed"])
         self.assertLessEqual(sum(value == 0.2 for value in commands), 50)
         self.assertTrue(all(0.0 <= offset <= PULSE_LIMIT_S for offset in result["nonzero_command_attempt_offsets_s"]))
         self.assertGreaterEqual(sum(value == 0.0 for value in commands), 50)
@@ -554,8 +699,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
 
         result = self.run_protocol(lambda: sample, publish)
         self.assertIn("input_source_conflict", result["fault"])
-        self.assertLessEqual(result["nonzero_messages"], 1)
-        self.assertGreaterEqual(result["zero_stop"]["zero_messages"], 50)
+        self.assertLessEqual(result["nonzero_publish_calls_returned"], 1)
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], 50)
 
     def test_fall_during_activation_aborts_and_zero_stops(self) -> None:
         sample = self.snapshot()
@@ -568,8 +713,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
 
         result = self.run_protocol(lambda: sample, publish)
         self.assertEqual(result["fault"], "fall_root_height")
-        self.assertLessEqual(result["nonzero_messages"], 1)
-        self.assertGreaterEqual(result["zero_stop"]["published_span_s"], 1.0)
+        self.assertLessEqual(result["nonzero_publish_calls_returned"], 1)
+        self.assertGreaterEqual(result["zero_stop"]["publish_call_return_span_s"], 1.0)
 
     def test_stale_telemetry_during_activation_aborts(self) -> None:
         sample = self.snapshot()
@@ -585,7 +730,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
 
         result = self.run_protocol(read, commands.append)
         self.assertEqual(result["fault"], "stale_or_missing_state:odom")
-        self.assertLessEqual(result["nonzero_messages"], 1)
+        self.assertLessEqual(result["nonzero_publish_calls_returned"], 1)
 
     def test_post_pulse_zero_delivery_failure_is_reported(self) -> None:
         sample = self.snapshot()
@@ -605,8 +750,9 @@ class FirstMotionSafetyTests(unittest.TestCase):
                 raise RuntimeError("injected zero publish failure")
 
         result = self.run_protocol(lambda: sample, publish)
-        self.assertEqual(result["status"], "ZERO_STOP_FAILED")
-        self.assertTrue(result["zero_stop"]["publish_errors"])
+        self.assertEqual(result["status"], "ZERO_STOP_PUBLISH_EXCEPTION")
+        self.assertTrue(result["zero_stop"]["publish_exceptions"])
+        self.assertFalse(result["zero_stop"]["mc_receipt_confirmed"])
 
     def test_fall_during_post_stop_observation_restarts_zero_stop(self) -> None:
         sample = self.snapshot()
@@ -624,9 +770,36 @@ class FirstMotionSafetyTests(unittest.TestCase):
         result = self.run_protocol(lambda: sample, publish)
         self.assertEqual(result["status"], "POST_STOP_SAFETY_FAILED")
         self.assertEqual(result["post_stop_fault"], "fall_root_height")
-        self.assertGreaterEqual(result["post_stop_emergency_zero"]["actual_duration_s"], 1.0)
+        self.assertGreaterEqual(result["post_stop_emergency_zero"]["loop_duration_s"], 1.0)
+        self.assertFalse(result["post_stop_emergency_zero"]["mc_stop_confirmed"])
 
-    def test_independent_watchdog_fires_and_forces_full_zero_window(self) -> None:
+    def test_partial_post_stop_observation_does_not_confirm_mc_stop(self) -> None:
+        sample = self.snapshot()
+        stop_started = False
+
+        def publish(value):
+            nonlocal stop_started
+            if value == 0.2:
+                sample["get_source_name"] = VELOCITY_SOURCE_NAME
+                sample["common_source_name"] = VELOCITY_SOURCE_NAME
+                sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["fsm_state"] = 3
+            elif value == 0.0:
+                stop_started = True
+
+        def read():
+            if stop_started:
+                raise RuntimeError("injected post-stop telemetry loss")
+            return sample
+
+        result = self.run_protocol(read, publish, baseline=[0.001, -0.001, 0.001])
+        self.assertEqual(result["status"], "POST_STOP_SAFETY_FAILED")
+        self.assertEqual(result["post_stop_odometry"]["kinematic_status"], "POST_STOP_ODOMETRY_UNOBSERVED")
+        self.assertFalse(result["zero_stop"]["mc_receipt_confirmed"])
+        self.assertFalse(result["zero_stop"]["mc_stop_confirmed"])
+
+    def test_process_local_timer_watchdog_fires_and_starts_full_zero_window(self) -> None:
         sample = self.snapshot()
         commands = []
         timers = []
@@ -644,7 +817,11 @@ class FirstMotionSafetyTests(unittest.TestCase):
         result = self.run_protocol(lambda: sample, publish, timer_factory=timer_factory)
         self.assertEqual(result["fault"], "independent_watchdog_timeout")
         self.assertTrue(any(value == 0.0 for value in commands))
-        self.assertGreaterEqual(result["zero_stop"]["actual_duration_s"], 1.0)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+        self.assertEqual(
+            result["watchdog_scope_limitation"],
+            "threading.Timer runs in this Python process and can request zero while the process is alive; it cannot publish after this process crashes or is killed.",
+        )
         self.assertEqual(timers[0].timeout, 1.0)
         self.assertIsNotNone(timers[0].thread)
         timers[0].thread.join(timeout=1.0)
@@ -665,7 +842,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         result = self.run_protocol(read, commands.append)
         self.assertIn("exception:RuntimeError:injected observer exception", result["fault"])
         self.assertGreater(result["pulse_loop_elapsed_s"], 0.0)
-        self.assertGreaterEqual(result["zero_stop"]["zero_messages"], 49)
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], 49)
 
     def test_exception_during_publish_forces_zero_timeout_window(self) -> None:
         sample = self.snapshot()
@@ -681,8 +858,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
 
         result = self.run_protocol(lambda: sample, publish)
         self.assertIn("exception:RuntimeError:injected publish exception", result["fault"])
-        self.assertEqual(result["nonzero_messages"], 0)
-        self.assertGreaterEqual(result["zero_stop"]["zero_messages"], 49)
+        self.assertEqual(result["nonzero_publish_calls_returned"], 0)
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], 49)
 
     def test_shutdown_during_activation_forces_zero_timeout_window(self) -> None:
         sample = self.snapshot()
@@ -698,7 +875,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
 
         result = self.run_protocol(lambda: sample, publish, shutdown_event=shutdown)
         self.assertEqual(result["fault"], "operator_shutdown")
-        self.assertGreaterEqual(result["zero_stop"]["actual_duration_s"], 1.0)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
 
     def test_unauthorized_call_emits_no_command(self) -> None:
         commands = []
@@ -708,12 +885,13 @@ class FirstMotionSafetyTests(unittest.TestCase):
             registration={"success": True},
             set_action={"accepted_by_service": True},
             joint_limits=LIMITS,
+            baseline_forward_displacements_m=[0.0, 0.0, 0.0],
             authorized=False,
         )
         self.assertEqual(result["status"], "NOT_AUTHORIZED")
         self.assertEqual(commands, [])
 
-    def test_zero_stop_rejects_short_successful_delivery_span(self) -> None:
+    def test_zero_stop_rejects_short_call_return_span_without_claiming_mc_receipt(self) -> None:
         clock = FakeClock()
 
         def slow_zero(command):
@@ -724,8 +902,10 @@ class FirstMotionSafetyTests(unittest.TestCase):
         result = self.run_protocol(
             lambda: self.snapshot(), slow_zero, fake_clock=clock
         )
-        self.assertEqual(result["status"], "ZERO_STOP_DELIVERY_SPAN_TOO_SHORT")
-        self.assertLess(result["zero_stop"]["published_span_s"], SOURCE_TIMEOUT_MS / 1000.0)
+        self.assertEqual(result["status"], "ZERO_STOP_CALL_RETURN_SPAN_TOO_SHORT")
+        self.assertLess(result["zero_stop"]["publish_call_return_span_s"], SOURCE_TIMEOUT_MS / 1000.0)
+        self.assertFalse(result["zero_stop"]["mc_receipt_confirmed"])
+        self.assertFalse(result["zero_stop"]["mc_stop_confirmed"])
 
 
 if __name__ == "__main__":

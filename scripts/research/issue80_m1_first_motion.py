@@ -15,6 +15,10 @@ SOURCE_PRIORITY = 40
 SOURCE_TIMEOUT_MS = 1000
 SOURCE_TASK_TERMINAL_FAILURE_STATES = frozenset((2, 3, 4, 5, 6))
 SOURCE_TASK_KNOWN_STATES = frozenset((0, 1, 2, 3, 4, 5, 6, 100, 200, 300, 400))
+MC_SIM_CONFIG_PATH = (
+    "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
+    "lx2501_3_t2d5/mc_sim.yaml"
+)
 FORWARD_COMMAND_M_S = 0.2
 PULSE_LIMIT_S = 1.0
 PUBLISH_HZ = 50.0
@@ -24,6 +28,11 @@ COMMAND_QOS_DURABILITY = "volatile"
 ZERO_STOP_MIN_S = 1.0
 ZERO_STOP_MIN_MESSAGES = math.ceil(SOURCE_TIMEOUT_MS * PUBLISH_HZ / 1000.0)
 POST_STOP_OBSERVE_S = 2.5
+MODE_SOURCE_READBACK_SKEW_MAX_S = 0.2  # the configured 5 Hz readback polling interval
+BASELINE_WINDOW_S = 1.0
+BASELINE_WINDOW_COUNT = 3
+BASELINE_DURATION_S = BASELINE_WINDOW_S * BASELINE_WINDOW_COUNT
+BASELINE_SAMPLE_PERIOD_S = 1.0 / PUBLISH_HZ
 
 MODE_STAND = "STAND_DEFAULT"
 MODE_LOCOMOTION = "LOCOMOTION_DEFAULT"
@@ -35,6 +44,106 @@ MC_FSM_SPECIAL = 5
 MC_FSM_TEST = 6
 BODY_POSE_STAND = 1
 REQUIRED_STATE_KEYS = ("odom", "imu", "common", "leg_state", "leg_command", "get_mode", "get_source")
+ZERO_STOP_INTERPRETATION = (
+    "Publisher calls returned without exception; this does not confirm MC receipt or that MC stopped."
+)
+WATCHDOG_LIMITATION = (
+    "threading.Timer runs in this Python process and can request zero while the process is alive; "
+    "it cannot publish after this process crashes or is killed."
+)
+
+
+def forward_projected_displacement(start_pose: Mapping[str, Any], end_pose: Mapping[str, Any]) -> float:
+    """Project world-frame odometry displacement onto the start heading."""
+    try:
+        x0, y0, yaw0 = (float(start_pose[key]) for key in ("x", "y", "yaw"))
+        x1, y1 = float(end_pose["x"]), float(end_pose["y"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("odometry pose must contain numeric x, y, and yaw") from exc
+    if not all(math.isfinite(value) for value in (x0, y0, yaw0, x1, y1)):
+        raise ValueError("odometry pose contains a nonfinite coordinate")
+    dx, dy = x1 - x0, y1 - y0
+    return dx * math.cos(yaw0) + dy * math.sin(yaw0)
+
+
+def derive_stationary_odom_baseline(samples: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Build three 1-second forward-drift windows from the no-command baseline.
+
+    The resulting envelope is empirical for this run: maximum absolute drift
+    observed in the baseline windows. It is not a vendor threshold or a
+    statistical confidence bound.
+    """
+    if len(samples) < BASELINE_WINDOW_COUNT + 1:
+        raise ValueError("stationary odometry baseline is incomplete")
+    parsed: list[tuple[float, Mapping[str, Any]]] = []
+    for sample in samples:
+        try:
+            timestamp = float(sample["sample_monotonic_s"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("baseline sample lacks a monotonic timestamp") from exc
+        if not math.isfinite(timestamp) or not isinstance(sample.get("pose"), Mapping):
+            raise ValueError("baseline sample has invalid timestamp or pose")
+        parsed.append((timestamp, sample["pose"]))
+    parsed.sort(key=lambda item: item[0])
+    baseline_start = parsed[0][0]
+    baseline_end = baseline_start + BASELINE_DURATION_S
+    if parsed[-1][0] < baseline_end - BASELINE_SAMPLE_PERIOD_S:
+        raise ValueError("baseline does not cover three complete 1-second windows")
+
+    windows: list[dict[str, float]] = []
+    for index in range(BASELINE_WINDOW_COUNT):
+        target_start = baseline_start + index * BASELINE_WINDOW_S
+        target_end = target_start + BASELINE_WINDOW_S
+        start_sample = min(parsed, key=lambda item: abs(item[0] - target_start))
+        end_sample = min(parsed, key=lambda item: abs(item[0] - target_end))
+        if (
+            abs(start_sample[0] - target_start) > BASELINE_SAMPLE_PERIOD_S
+            or abs(end_sample[0] - target_end) > BASELINE_SAMPLE_PERIOD_S
+        ):
+            raise ValueError("baseline has a gap at a 1-second window boundary")
+        duration = end_sample[0] - start_sample[0]
+        if duration <= 0.0:
+            raise ValueError("baseline window has nonpositive duration")
+        windows.append({
+            "start_monotonic_s": start_sample[0],
+            "end_monotonic_s": end_sample[0],
+            "duration_s": duration,
+            "forward_displacement_m": forward_projected_displacement(start_sample[1], end_sample[1]),
+        })
+    noise_bound = max(abs(window["forward_displacement_m"]) for window in windows)
+    return {
+        "method": "maximum absolute forward displacement in three no-command 1-second windows",
+        "window_duration_s": BASELINE_WINDOW_S,
+        "window_count": len(windows),
+        "sample_count": len(parsed),
+        "windows": windows,
+        "noise_bound_m": noise_bound,
+        "statistical_confidence_bound": False,
+    }
+
+
+def classify_physical_motion(
+    *,
+    control_handshake_confirmed: bool,
+    pulse_forward_displacement_m: float | None,
+    baseline_noise_bound_m: float | None,
+) -> str:
+    """Require measured forward movement beyond this run's empirical baseline envelope."""
+    if baseline_noise_bound_m is None or not math.isfinite(float(baseline_noise_bound_m)):
+        return "BASELINE_UNAVAILABLE"
+    if float(baseline_noise_bound_m) <= 0.0:
+        return "BASELINE_NOISE_UNRESOLVED"
+    if pulse_forward_displacement_m is None or not math.isfinite(float(pulse_forward_displacement_m)):
+        return "PULSE_ODOMETRY_UNAVAILABLE"
+    noise = float(baseline_noise_bound_m)
+    displacement = float(pulse_forward_displacement_m)
+    if displacement < -noise:
+        return "MOTION_OPPOSITE_COMMAND"
+    if displacement <= noise:
+        return "CONTROL_HANDSHAKE_ONLY" if control_handshake_confirmed else "NO_MOTION_CONFIRMED"
+    if not control_handshake_confirmed:
+        return "UNEXPECTED_MOTION_WITHOUT_CONTROL_HANDSHAKE"
+    return "PHYSICAL_MOTION_CONFIRMED"
 
 
 def input_source_action_result(
@@ -136,6 +245,39 @@ def load_leg_joint_limits(path: str | Path) -> tuple[dict[str, dict[str, float]]
     if len(limits) != 12:
         raise ValueError(f"expected 12 source-limited leg joints, found {len(limits)}")
     return limits, hashlib.sha256(payload).hexdigest()
+
+
+def load_mc_input_source_timeouts(path: str | Path) -> tuple[list[dict[str, Any]], str]:
+    """Read the installed MC sim source-timeout settings; this is config evidence only."""
+    import yaml
+
+    source = Path(path)
+    payload = source.read_bytes()
+    document = yaml.safe_load(payload)
+    try:
+        input_sources = document["MotionControlModule"]["InputManager"]["input_sources"]
+    except (TypeError, KeyError) as exc:
+        raise ValueError("mc_sim.yaml has no MotionControlModule.InputManager.input_sources") from exc
+    if not isinstance(input_sources, list) or not input_sources:
+        raise ValueError("mc_sim.yaml input_sources must be a nonempty list")
+    records: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for item in input_sources:
+        if not isinstance(item, Mapping):
+            raise ValueError("mc_sim.yaml has a malformed input source")
+        name = item.get("name")
+        try:
+            priority = int(item["priority"])
+            timeout_ms = int(item["timeout"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("mc_sim.yaml input source needs integer priority and timeout") from exc
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError("mc_sim.yaml input source name is missing or duplicated")
+        if not 0 <= priority <= 100 or timeout_ms <= 0:
+            raise ValueError(f"mc_sim.yaml input source has invalid priority or timeout: {name}")
+        names.add(name)
+        records.append({"name": name, "priority": priority, "timeout_ms": timeout_ms})
+    return records, hashlib.sha256(payload).hexdigest()
 
 
 def validate_runtime_scope(
@@ -327,7 +469,7 @@ def snapshot_fault(
 
 
 class ActivationTracker:
-    """Record source arbitration and SD/LD transition evidence without gating startup."""
+    """Keep source acquisition, LD observation, and same-sample handshake distinct."""
 
     def __init__(self, expected_source: str = VELOCITY_SOURCE_NAME) -> None:
         self.expected_source = expected_source
@@ -335,11 +477,17 @@ class ActivationTracker:
         self.common_source_seen = False
         self.get_locomotion_seen = False
         self.common_locomotion_seen = False
+        self.source_acquired = False
+        self.ld_observed = False
+        self.control_handshake_confirmed = False
         self.samples: list[dict[str, Any]] = []
         self.first_pose: dict[str, float] | None = None
-        self.last_pose: dict[str, float] | None = None
+        self.first_pose_monotonic_s: float | None = None
+        self.last_activation_pose: dict[str, float] | None = None
+        self.last_activation_monotonic_s: float | None = None
+        self.handshake_sample_indices: list[int] = []
 
-    def observe(self, snapshot: Mapping[str, Any]) -> None:
+    def observe(self, snapshot: Mapping[str, Any], *, phase: str) -> None:
         row = {
             "get_mode_desc": snapshot.get("get_mode_desc"),
             "common_mode_desc": snapshot.get("common_mode_desc"),
@@ -347,40 +495,106 @@ class ActivationTracker:
             "common_source_name": snapshot.get("common_source_name", ""),
             "fsm_state": snapshot.get("fsm_state"),
             "pose": dict(snapshot.get("pose", {})) if isinstance(snapshot.get("pose"), Mapping) else None,
+            "sample_monotonic_s": snapshot.get("sample_monotonic_s"),
+            "readback_monotonic_s": dict(snapshot.get("readback_monotonic_s", {})),
+            "get_mode_header_code": snapshot.get("get_mode_header_code"),
+            "get_source_header_code": snapshot.get("get_source_header_code"),
+            "phase": phase,
         }
         self.samples.append(row)
         if isinstance(row["pose"], Mapping):
             pose = {key: float(value) for key, value in row["pose"].items() if isinstance(value, (int, float))}
             if self.first_pose is None:
                 self.first_pose = pose
-            self.last_pose = pose
-        self.get_source_seen |= row["get_source_name"] == self.expected_source
-        self.common_source_seen |= row["common_source_name"] == self.expected_source
-        self.get_locomotion_seen |= row["get_mode_desc"] == MODE_LOCOMOTION
-        self.common_locomotion_seen |= row["common_mode_desc"] == MODE_LOCOMOTION
+                self.first_pose_monotonic_s = row["sample_monotonic_s"]
+            if phase == "activation":
+                self.last_activation_pose = pose
+                self.last_activation_monotonic_s = row["sample_monotonic_s"]
 
-    def classify(self) -> str:
-        if not self.get_source_seen or not self.common_source_seen:
+        source_get = row["get_source_header_code"] == 0 and row["get_source_name"] == self.expected_source
+        source_common = row["common_source_name"] == self.expected_source
+        mode_get = row["get_mode_header_code"] == 0 and row["get_mode_desc"] == MODE_LOCOMOTION
+        mode_common = row["common_mode_desc"] == MODE_LOCOMOTION
+        source_pair = source_get and source_common
+        mode_pair = mode_get and mode_common
+        self.get_source_seen |= source_get
+        self.common_source_seen |= source_common
+        self.get_locomotion_seen |= mode_get
+        self.common_locomotion_seen |= mode_common
+        self.source_acquired |= source_pair
+        self.ld_observed |= mode_pair
+
+        readbacks = row["readback_monotonic_s"]
+        try:
+            mode_time = float(readbacks["get_mode"])
+            source_time = float(readbacks["get_source"])
+            readback_skew = abs(mode_time - source_time)
+            if not math.isfinite(readback_skew):
+                readback_skew = None
+        except (KeyError, TypeError, ValueError):
+            mode_time = source_time = None
+            readback_skew = None
+        common_skew = None
+        try:
+            sample_time = float(row["sample_monotonic_s"])
+            common_age = float(snapshot["state_age_s"]["common"])
+            common_time = sample_time - common_age
+            if mode_time is not None and source_time is not None:
+                common_skew = max(abs(mode_time - common_time), abs(source_time - common_time))
+                if not math.isfinite(common_skew):
+                    common_skew = None
+        except (KeyError, TypeError, ValueError):
+            common_skew = None
+        row["mode_source_readback_skew_s"] = readback_skew
+        row["mode_source_common_skew_max_s"] = common_skew
+        row["mode_source_readbacks_contemporaneous"] = (
+            readback_skew is not None
+            and readback_skew <= MODE_SOURCE_READBACK_SKEW_MAX_S
+            and common_skew is not None
+            and common_skew <= MODE_SOURCE_READBACK_SKEW_MAX_S
+        )
+        row["source_pair_observed"] = source_pair
+        row["ld_pair_observed"] = mode_pair
+        row["control_handshake_observed"] = (
+            source_pair and mode_pair and row["mode_source_readbacks_contemporaneous"]
+        )
+        if row["control_handshake_observed"]:
+            self.control_handshake_confirmed = True
+            self.handshake_sample_indices.append(len(self.samples) - 1)
+
+    def classify_control_handshake(self) -> str:
+        if not self.source_acquired:
             return "SOURCE_NOT_ACQUIRED"
-        if not self.get_locomotion_seen or not self.common_locomotion_seen:
-            return "MISSING_MODE_TRANSITION"
-        return "ACTIVATION_CONFIRMED"
+        if not self.ld_observed:
+            return "LD_NOT_OBSERVED"
+        if not self.control_handshake_confirmed:
+            return "CONTROL_HANDSHAKE_NOT_CONFIRMED"
+        return "CONTROL_HANDSHAKE_CONFIRMED"
 
     def odometry_delta(self) -> dict[str, float | int] | None:
-        """Report observed activation displacement without inventing a pass distance."""
-        if self.first_pose is None or self.last_pose is None:
+        """Return raw world delta and forward projection through the pulse endpoint."""
+        if self.first_pose is None or self.last_activation_pose is None:
             return None
-        delta_yaw = self.last_pose.get("yaw", 0.0) - self.first_pose.get("yaw", 0.0)
+        delta_yaw = self.last_activation_pose.get("yaw", 0.0) - self.first_pose.get("yaw", 0.0)
         return {
-            "dx_m": self.last_pose.get("x", 0.0) - self.first_pose.get("x", 0.0),
-            "dy_m": self.last_pose.get("y", 0.0) - self.first_pose.get("y", 0.0),
+            "dx_m": self.last_activation_pose.get("x", 0.0) - self.first_pose.get("x", 0.0),
+            "dy_m": self.last_activation_pose.get("y", 0.0) - self.first_pose.get("y", 0.0),
             "dyaw_rad": math.atan2(math.sin(delta_yaw), math.cos(delta_yaw)),
+            "forward_projected_m": forward_projected_displacement(self.first_pose, self.last_activation_pose),
+            "start_heading_rad": self.first_pose.get("yaw", 0.0),
+            "start_monotonic_s": self.first_pose_monotonic_s,
+            "end_monotonic_s": self.last_activation_monotonic_s,
             "sample_count": len(self.samples),
         }
 
+    def post_stop_odometry_delta(self, post_stop_pose: Mapping[str, Any] | None) -> float | None:
+        if self.last_activation_pose is None or not isinstance(post_stop_pose, Mapping):
+            return None
+        return forward_projected_displacement(self.last_activation_pose, post_stop_pose)
 
-class IndependentWatchdog:
-    """Timer-backed watchdog that runs outside the ROS executor/spin loop."""
+
+class ProcessLocalTimerWatchdog:
+    """A threading.Timer in this process; not a process-external crash watchdog."""
 
     def __init__(
         self,
@@ -416,7 +630,10 @@ class IndependentWatchdog:
 
 
 class ZeroStopWindow:
-    """One idempotent zero burst covering the full 1000 ms source timeout."""
+    """One idempotent burst of local zero-publish calls spanning the source timeout.
+
+    A Python publisher call returning is not an MC receipt or stop acknowledgement.
+    """
 
     def __init__(
         self,
@@ -443,12 +660,17 @@ class ZeroStopWindow:
         self._done = threading.Event()
         self.result: dict[str, Any] = {
             "requested_duration_s": timeout_s,
-            "actual_duration_s": 0.0,
-            "zero_messages": 0,
-            "successful_message_times_s": [],
-            "published_span_s": 0.0,
-            "max_inter_message_gap_s": None,
-            "publish_errors": [],
+            "start_monotonic_s": None,
+            "loop_duration_s": 0.0,
+            "zero_publish_calls_started": 0,
+            "zero_publish_calls_returned": 0,
+            "publish_call_return_times_s": [],
+            "publish_call_return_span_s": 0.0,
+            "max_gap_between_publish_call_returns_s": None,
+            "publish_exceptions": [],
+            "mc_receipt_confirmed": False,
+            "mc_stop_confirmed": False,
+            "interpretation": ZERO_STOP_INTERPRETATION,
         }
 
     @property
@@ -467,27 +689,29 @@ class ZeroStopWindow:
             return dict(self.result)
 
         start = self.clock()
+        self.result["start_monotonic_s"] = start
         deadline = start + self.timeout_s
         try:
             while self.clock() < deadline:
                 try:
                     with self.command_lock:
+                        self.result["zero_publish_calls_started"] += 1
                         self.publish_zero()
-                    self.result["zero_messages"] += 1
-                    self.result["successful_message_times_s"].append(self.clock() - start)
+                    self.result["zero_publish_calls_returned"] += 1
+                    self.result["publish_call_return_times_s"].append(self.clock() - start)
                 except Exception as exc:
-                    self.result["publish_errors"].append(f"{type(exc).__name__}: {exc}")
+                    self.result["publish_exceptions"].append(f"{type(exc).__name__}: {exc}")
                 remaining = deadline - self.clock()
                 if remaining > 0.0:
                     self.sleep(min(self.period_s, remaining))
         finally:
-            self.result["actual_duration_s"] = max(0.0, self.clock() - start)
-            message_times = self.result["successful_message_times_s"]
-            if message_times:
-                self.result["published_span_s"] = max(0.0, message_times[-1] - message_times[0])
-                if len(message_times) > 1:
-                    self.result["max_inter_message_gap_s"] = max(
-                        later - earlier for earlier, later in zip(message_times, message_times[1:])
+            self.result["loop_duration_s"] = max(0.0, self.clock() - start)
+            return_times = self.result["publish_call_return_times_s"]
+            if return_times:
+                self.result["publish_call_return_span_s"] = max(0.0, return_times[-1] - return_times[0])
+                if len(return_times) > 1:
+                    self.result["max_gap_between_publish_call_returns_s"] = max(
+                        later - earlier for earlier, later in zip(return_times, return_times[1:])
                     )
             self._done.set()
         return dict(self.result)
@@ -500,6 +724,7 @@ def run_first_motion_window(
     registration: Mapping[str, Any],
     set_action: Mapping[str, Any],
     joint_limits: Mapping[str, Mapping[str, float]],
+    baseline_forward_displacements_m: list[float] | None,
     authorized: bool,
     shutdown_event: threading.Event | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -520,9 +745,11 @@ def run_first_motion_window(
         "pulse_limit_s": PULSE_LIMIT_S,
         "publish_hz": PUBLISH_HZ,
         "source_timeout_ms": SOURCE_TIMEOUT_MS,
+        "zero_publish_semantics": ZERO_STOP_INTERPRETATION,
+        "watchdog_scope_limitation": WATCHDOG_LIMITATION,
         "registration": dict(registration),
         "set_mc_action": dict(set_action),
-        "nonzero_messages": 0,
+        "nonzero_publish_calls_returned": 0,
         "samples": [],
         "fault": None,
     }
@@ -535,10 +762,35 @@ def run_first_motion_window(
         pulse_fault = "source_registration_rejected"
     elif not set_action.get("accepted_by_service"):
         pulse_fault = "set_mc_action_rejected"
+    baseline_values: list[float] = []
+    if baseline_forward_displacements_m is not None:
+        try:
+            baseline_values = [float(value) for value in baseline_forward_displacements_m]
+        except (TypeError, ValueError):
+            baseline_values = []
+    if len(baseline_values) != BASELINE_WINDOW_COUNT or not all(math.isfinite(value) for value in baseline_values):
+        pulse_fault = pulse_fault or "stationary_odom_baseline_unavailable"
+    baseline_noise_bound_m = (
+        max(abs(value) for value in baseline_values)
+        if len(baseline_values) == BASELINE_WINDOW_COUNT
+        and all(math.isfinite(value) for value in baseline_values)
+        else None
+    )
+    result["baseline_forward_displacements_m"] = baseline_values
+    result["baseline_noise_bound_m"] = baseline_noise_bound_m
+    result["baseline_criterion"] = (
+        "positive forward-projected pulse displacement must exceed the maximum absolute displacement "
+        "of three no-command 1-second windows measured in this run; empirical envelope, not a vendor threshold or confidence bound"
+    )
+    result["mode_source_readback_skew_limit_s"] = MODE_SOURCE_READBACK_SKEW_MAX_S
 
     command_lock = threading.RLock()
     stop_requested = threading.Event()
     tracker = ActivationTracker()
+    post_stop_first_pose: Mapping[str, Any] | None = None
+    post_stop_last_pose: Mapping[str, Any] | None = None
+    post_pulse_observation: dict[str, Any] | None = None
+    post_stop_fault: str | None = None
 
     def record_sample(phase: str, snapshot: Mapping[str, Any], fault: str | None) -> None:
         row = dict(snapshot)
@@ -557,7 +809,7 @@ def run_first_motion_window(
         sleep=sleep,
         command_lock=command_lock,
     )
-    watchdog: IndependentWatchdog | None = None
+    watchdog: ProcessLocalTimerWatchdog | None = None
     pulse_start: float | None = None
     pulse_end: float | None = None
     nonzero_attempt_offsets_s: list[float] = []
@@ -565,10 +817,9 @@ def run_first_motion_window(
 
     def on_watchdog() -> None:
         nonlocal pulse_fault
-        # The timer is also the independent hard-stop at the nominal one-second
-        # deadline. Only an early firing is a watchdog fault; a deadline firing
-        # still starts the mandatory zero window without turning a normal stop
-        # into a false failure.
+        # This process-local timer thread is the hard stop only while this
+        # Python process remains alive. An on-deadline firing is normal; an
+        # early firing is a watchdog fault. Neither proves MC receipt or stop.
         if clock() < pulse_deadline - 0.01:
             pulse_fault = pulse_fault or "independent_watchdog_timeout"
         stop_requested.set()
@@ -588,13 +839,13 @@ def run_first_motion_window(
             if initial_fault:
                 pulse_fault = initial_fault
             else:
-                tracker.observe(initial)
+                tracker.observe(initial, phase="pre-activation")
 
         if pulse_fault is None:
             pulse_start = clock()
             pulse_deadline = pulse_start + PULSE_LIMIT_S
             next_publish = pulse_start
-            watchdog = IndependentWatchdog(
+            watchdog = ProcessLocalTimerWatchdog(
                 PULSE_LIMIT_S,
                 on_watchdog,
                 timer_factory=timer_factory,
@@ -623,7 +874,11 @@ def run_first_motion_window(
                     pulse_fault = current_fault
                     stop_requested.set()
                     break
-                tracker.observe(current)
+                if clock() >= pulse_deadline:
+                    record_sample("pulse-deadline-observation", current, None)
+                    stop_requested.set()
+                    break
+                tracker.observe(current, phase="activation")
                 record_sample("activation", current, None)
                 now = clock()
                 if shutdown_event is not None and shutdown_event.is_set():
@@ -654,7 +909,7 @@ def run_first_motion_window(
                                 stop_requested.set()
                     if should_stop:
                         break
-                    result["nonzero_messages"] += 1
+                    result["nonzero_publish_calls_returned"] += 1
                     next_publish = now + 1.0 / PUBLISH_HZ
                 remaining = pulse_deadline - clock()
                 if remaining > 0.0:
@@ -672,11 +927,38 @@ def run_first_motion_window(
         stop_requested.set()
         if watchdog is not None:
             watchdog.cancel()
+        try:
+            immediate_post_pulse = sample()
+            immediate_fault = snapshot_fault(
+                immediate_post_pulse,
+                joint_limits,
+                state_timeout_s=state_timeout_s,
+                min_root_z=min_root_z,
+                max_tilt_deg=max_tilt_deg,
+            )
+            record_sample("post-pulse-observation", immediate_post_pulse, immediate_fault)
+            immediate_pose = immediate_post_pulse.get("pose")
+            post_pulse_observation = {
+                "pose": dict(immediate_pose) if isinstance(immediate_pose, Mapping) else None,
+                "sample_monotonic_s": immediate_post_pulse.get("sample_monotonic_s"),
+                "safety_fault": immediate_fault,
+            }
+            if immediate_fault:
+                post_stop_fault = immediate_fault
+        except Exception as exc:
+            post_stop_fault = f"post_pulse_observation_exception:{type(exc).__name__}:{exc}"
+            post_pulse_observation = {"pose": None, "safety_fault": post_stop_fault}
         stop_result = zero_stop.run_once()
         result["zero_stop"] = stop_result
+        if post_pulse_observation is not None:
+            post_pulse_observation["zero_publish_window_started_before_or_during_sample"] = (
+                stop_result["start_monotonic_s"] is not None
+                and post_pulse_observation.get("sample_monotonic_s") is not None
+                and stop_result["start_monotonic_s"] <= post_pulse_observation["sample_monotonic_s"]
+            )
+        result["post_pulse_observation"] = post_pulse_observation
         post_stop_end = clock() + POST_STOP_OBSERVE_S
         post_stop_samples = 0
-        post_stop_fault: str | None = None
         while clock() < post_stop_end:
             try:
                 current = sample()
@@ -691,6 +973,11 @@ def run_first_motion_window(
                     post_stop_fault = current_fault
                 record_sample("post-stop", current, current_fault)
                 post_stop_samples += 1
+                pose = current.get("pose")
+                if isinstance(pose, Mapping):
+                    if post_stop_first_pose is None:
+                        post_stop_first_pose = dict(pose)
+                    post_stop_last_pose = dict(pose)
             except Exception as exc:
                 post_stop_fault = f"post_stop_exception:{type(exc).__name__}:{exc}"
                 current_fault = post_stop_fault
@@ -728,8 +1015,51 @@ def run_first_motion_window(
     result["source_selected_by_common_state"] = tracker.common_source_seen
     result["get_mc_action_locomotion_seen"] = tracker.get_locomotion_seen
     result["common_state_locomotion_seen"] = tracker.common_locomotion_seen
-    result["activation_classification"] = tracker.classify()
-    result["activation_odometry_delta"] = tracker.odometry_delta()
+    result["source_acquired"] = tracker.source_acquired
+    result["ld_observed"] = tracker.ld_observed
+    result["control_handshake_confirmed"] = tracker.control_handshake_confirmed
+    result["control_handshake_status"] = tracker.classify_control_handshake()
+    result["control_handshake_evidence"] = [tracker.samples[index] for index in tracker.handshake_sample_indices]
+    result["pulse_odometry"] = tracker.odometry_delta()
+    pulse_forward = (
+        result["pulse_odometry"].get("forward_projected_m") if result["pulse_odometry"] else None
+    )
+    result["physical_motion_status"] = classify_physical_motion(
+        control_handshake_confirmed=tracker.control_handshake_confirmed,
+        pulse_forward_displacement_m=pulse_forward,
+        baseline_noise_bound_m=baseline_noise_bound_m,
+    )
+    post_stop_forward = None
+    pulse_end_pose = (
+        post_pulse_observation.get("pose")
+        if isinstance(post_pulse_observation, Mapping)
+        else None
+    )
+    if isinstance(pulse_end_pose, Mapping) and post_stop_last_pose is not None:
+        try:
+            post_stop_forward = forward_projected_displacement(pulse_end_pose, post_stop_last_pose)
+        except ValueError:
+            post_stop_forward = None
+    result["post_stop_odometry"] = {
+        "first_pose": post_stop_first_pose,
+        "last_pose": post_stop_last_pose,
+        "forward_displacement_from_pulse_endpoint_m": post_stop_forward,
+        "baseline_noise_bound_m": baseline_noise_bound_m,
+        "kinematic_status": (
+            "POST_STOP_ODOMETRY_UNOBSERVED" if post_stop_forward is None
+            else "POST_STOP_NOISE_UNRESOLVED" if baseline_noise_bound_m is None or baseline_noise_bound_m <= 0.0
+            else "WITHIN_BASELINE_ENVELOPE" if baseline_noise_bound_m is not None and abs(post_stop_forward) <= baseline_noise_bound_m
+            else "ABOVE_BASELINE_ENVELOPE"
+        ),
+        "mc_stop_confirmed": False,
+    }
+    result["mc_receipt_confirmed_for_zero_calls"] = False
+    result["watchdog"] = {
+        "implementation": "threading.Timer in the first-motion Python process",
+        "process_local": True,
+        "covers_stalled_ros_spin_while_process_alive": True,
+        "covers_process_crash_or_kill": False,
+    }
     result["fault"] = pulse_fault or post_stop_fault
     result["post_stop_observation_s"] = POST_STOP_OBSERVE_S
     result["zero_stop_min_messages"] = ZERO_STOP_MIN_MESSAGES
@@ -737,22 +1067,28 @@ def run_first_motion_window(
     result["post_stop_fault"] = post_stop_fault
     if pulse_fault:
         result["status"] = "ABORTED"
-    elif stop_result["publish_errors"]:
-        result["status"] = "ZERO_STOP_FAILED"
-    elif stop_result["actual_duration_s"] < SOURCE_TIMEOUT_MS / 1000.0:
-        result["status"] = "ZERO_STOP_TOO_SHORT"
-    elif stop_result["published_span_s"] < SOURCE_TIMEOUT_MS / 1000.0:
-        result["status"] = "ZERO_STOP_DELIVERY_SPAN_TOO_SHORT"
-    elif stop_result["zero_messages"] < ZERO_STOP_MIN_MESSAGES:
-        result["status"] = "ZERO_STOP_DELIVERY_COUNT_TOO_LOW"
-    elif (stop_result["max_inter_message_gap_s"] or 0.0) >= SOURCE_TIMEOUT_MS / 1000.0:
-        result["status"] = "ZERO_STOP_DELIVERY_GAP_EXCEEDED_SOURCE_TIMEOUT"
+    elif stop_result["publish_exceptions"]:
+        result["status"] = "ZERO_STOP_PUBLISH_EXCEPTION"
+    elif stop_result["loop_duration_s"] < SOURCE_TIMEOUT_MS / 1000.0:
+        result["status"] = "ZERO_STOP_CALL_WINDOW_TOO_SHORT"
+    elif stop_result["publish_call_return_span_s"] < SOURCE_TIMEOUT_MS / 1000.0:
+        result["status"] = "ZERO_STOP_CALL_RETURN_SPAN_TOO_SHORT"
+    elif stop_result["zero_publish_calls_returned"] < ZERO_STOP_MIN_MESSAGES:
+        result["status"] = "ZERO_STOP_CALL_RETURN_COUNT_TOO_LOW"
+    elif (stop_result["max_gap_between_publish_call_returns_s"] or 0.0) >= SOURCE_TIMEOUT_MS / 1000.0:
+        result["status"] = "ZERO_STOP_CALL_RETURN_GAP_EXCEEDED_SOURCE_TIMEOUT"
     elif post_stop_fault:
         result["status"] = "POST_STOP_SAFETY_FAILED"
     elif post_stop_samples == 0:
         result["status"] = "POST_STOP_OBSERVATION_MISSING"
-    elif result["nonzero_messages"] == 0:
+    elif result["nonzero_publish_calls_returned"] == 0:
         result["status"] = "NO_ACTIVATION_COMMAND"
     else:
-        result["status"] = tracker.classify()
+        post_stop_status = result["post_stop_odometry"]["kinematic_status"]
+        if result["physical_motion_status"] == "PHYSICAL_MOTION_CONFIRMED" and post_stop_status == "WITHIN_BASELINE_ENVELOPE":
+            result["status"] = "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED"
+        elif result["physical_motion_status"] == "PHYSICAL_MOTION_CONFIRMED":
+            result["status"] = "PHYSICAL_MOTION_CONFIRMED_POSTSTOP_UNVERIFIED"
+        else:
+            result["status"] = result["physical_motion_status"]
     return result

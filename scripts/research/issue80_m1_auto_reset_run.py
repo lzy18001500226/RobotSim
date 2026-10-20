@@ -52,6 +52,12 @@ class BoundedRun:
         self.steps: list[dict[str, Any]] = []
         self.container_created = False
         self.network_mode: str | None = None
+        self.cleanup_evidence: dict[str, Any] = {
+            "attempted": False,
+            "normal_path": "BoundedRun.execute() finally calls cleanup().",
+            "process_crash_or_sigkill_cleanup_guaranteed": False,
+            "operations": [],
+        }
         self.reset_classification = "NOT_ATTEMPTED"
         self.m1_result: dict[str, Any] | None = None
         self.reset_analysis: dict[str, Any] | None = None
@@ -437,6 +443,7 @@ class BoundedRun:
             "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion --maintainer-authorized --reset-gate-verified"
             + " --attempt-id " + self.args.attempt_id
             + " --robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml"
+            + " --mc-sim-config-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
             + " --state-timeout 0.5 --ready-timeout 4 --max-tilt-deg 15 --min-root-z 0.52"
             + " --output-dir /workspace/evidence"
         ]
@@ -449,27 +456,77 @@ class BoundedRun:
 
     def cleanup(self) -> None:
         if not self.container_created:
+            self.cleanup_evidence["attempted"] = False
+            self.cleanup_evidence["reason"] = "container was not created"
             return
+        self.cleanup_evidence["attempted"] = True
+        self.cleanup_evidence["normal_path"] = (
+            "Python finally copies audit files, then issues docker stop --time 2 and docker rm."
+        )
+        self.cleanup_evidence["process_crash_or_sigkill_cleanup_guaranteed"] = False
         try:
-            self.run(
+            copied = self.run(
                 "copy_tmpfs_audit",
                 ["docker", "exec", self.container, "bash", "-lc",
                  "cp -n /agibot/data/var/MotionControlModule/runtime.yaml /workspace/evidence/runtime_audit_mc.yaml 2>/dev/null || true; cp -n /agibot/data/var/mc/audit.log /workspace/evidence/runtime_audit_mc-audit.log 2>/dev/null || true"],
                 timeout_s=3.0,
                 check=False,
             )
+            self.cleanup_evidence["operations"].append({
+                "operation": "copy_tmpfs_audit",
+                "returncode": copied.returncode,
+            })
         except Exception:
-            pass
+            self.cleanup_evidence["operations"].append({"operation": "copy_tmpfs_audit", "error": "exception"})
         try:
             inspect = subprocess.run(["docker", "inspect", self.container], text=True, capture_output=True, timeout=3.0)
             if inspect.returncode == 0:
                 with (self.evidence / "container-inspect-final.json").open("x", encoding="utf-8") as f:
                     f.write(inspect.stdout)
+            self.cleanup_evidence["operations"].append({
+                "operation": "inspect_before_stop",
+                "returncode": inspect.returncode,
+            })
         except Exception:
-            pass
-        for cmd in (["docker", "stop", "--time", "2", self.container], ["docker", "rm", self.container]):
-            try:subprocess.run(cmd,text=True,capture_output=True,timeout=4.0)
-            except Exception:pass
+            self.cleanup_evidence["operations"].append({"operation": "inspect_before_stop", "error": "exception"})
+        for operation, cmd in (
+            ("docker_stop", ["docker", "stop", "--time", "2", self.container]),
+            ("docker_rm", ["docker", "rm", self.container]),
+        ):
+            try:
+                completed = subprocess.run(cmd, text=True, capture_output=True, timeout=4.0)
+                self.cleanup_evidence["operations"].append({
+                    "operation": operation,
+                    "returncode": completed.returncode,
+                })
+            except Exception:
+                self.cleanup_evidence["operations"].append({"operation": operation, "error": "exception"})
+        try:
+            verify = subprocess.run(
+                ["docker", "inspect", self.container], text=True, capture_output=True, timeout=3.0
+            )
+            absent = verify.returncode != 0 and "No such object" in verify.stderr
+            self.cleanup_evidence["container_absent_after_cleanup"] = absent
+            self.cleanup_evidence["operations"].append({
+                "operation": "verify_container_absent",
+                "returncode": verify.returncode,
+                "container_absent": absent,
+            })
+        except Exception:
+            self.cleanup_evidence["container_absent_after_cleanup"] = False
+            self.cleanup_evidence["operations"].append({
+                "operation": "verify_container_absent",
+                "error": "exception",
+            })
+
+    def apply_container_teardown_gate(self, result: dict[str, Any]) -> None:
+        result["container_teardown"] = self.cleanup_evidence
+        if (
+            self.cleanup_evidence.get("attempted")
+            and not self.cleanup_evidence.get("container_absent_after_cleanup", False)
+        ):
+            result["status"] = "BLOCKED"
+            result["fault"] = result.get("fault") or "container teardown was not verified after M1"
 
     def execute(self) -> dict[str, Any]:
         result={"schema":"robotsim.issue80.m1.auto-reset-run.v2","status":"NOT_AUTHORIZED","attempt_id":self.args.attempt_id,"source":"node.locomotion_velocity","container":self.container,"runtime_image_digest":IMAGE_DIGEST,"runtime_limit_s":self.args.max_runtime_s,"reset_classification":"NOT_ATTEMPTED","m1_status":"NOT_RUN","fault":None}
@@ -511,6 +568,7 @@ class BoundedRun:
             if self.reset_analysis:
                 result["reset_analysis"]=self.reset_analysis
             self.cleanup()
+            self.apply_container_teardown_gate(result)
             output=self.evidence/"auto-reset-run-result.json"
             with output.open("x",encoding="utf-8") as f:json.dump(result,f,indent=2);f.write("\n")
         return result
