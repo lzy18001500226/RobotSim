@@ -8,6 +8,7 @@ from issue80_m1_mode_logic import (
     assess_input_source_add,
     classify_ld_transition,
     is_valid_input_source_name,
+    nonzero_velocity_authorized,
     source_arbitration_confirmed,
 )
 
@@ -94,6 +95,21 @@ class InputSourceArbitrationTests(unittest.TestCase):
         self.assertFalse(source_arbitration_confirmed("probe", "", "probe", 0.1))
         self.assertFalse(source_arbitration_confirmed("probe", "probe", "probe", 0.5001))
         self.assertFalse(source_arbitration_confirmed("probe", "probe", "probe", None))
+
+    def test_nonzero_requires_live_ld_and_matching_fresh_active_source(self) -> None:
+        valid = dict(
+            get_action_desc="LOCOMOTION_DEFAULT",
+            get_action_header_code=0,
+            common_action_desc="LOCOMOTION_DEFAULT",
+            current_source_name="probe",
+            common_source_name="probe",
+            expected_source_name="probe",
+            common_state_age_s=0.1,
+        )
+        self.assertTrue(nonzero_velocity_authorized(**valid))
+        self.assertFalse(nonzero_velocity_authorized(**{**valid, "get_action_desc":"STAND_DEFAULT"}))
+        self.assertFalse(nonzero_velocity_authorized(**{**valid, "current_source_name":""}))
+        self.assertFalse(nonzero_velocity_authorized(**{**valid, "common_state_age_s":0.6}))
 
 
 if __name__ == "__main__":

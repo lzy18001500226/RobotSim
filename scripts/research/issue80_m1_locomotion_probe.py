@@ -39,6 +39,7 @@ from issue80_m1_mode_logic import (
     assess_input_source_add,
     classify_ld_transition,
     is_valid_input_source_name,
+    nonzero_velocity_authorized,
     source_arbitration_confirmed,
 )
 
@@ -581,6 +582,16 @@ class FocusedM1Diagnostic(Node):
         # Pulse authority is deliberately fixed and cannot be increased by CLI input.
         if self._mode() != MODE_LD:
             return {"status": "NOT_RUN", "reason": "GetMcAction/McCommonState did not confirm LD"}
+        last_get_mode = next(
+            (item for item in reversed(self.mode_observations) if item.get("action_desc") is not None),
+            None,
+        )
+        if (
+            last_get_mode is None
+            or last_get_mode.get("response_header_code") != 0
+            or last_get_mode.get("action_desc") != MODE_LD
+        ):
+            return {"status": "BLOCKED", "reason": "latest GetMcAction did not confirm LD"}
         if self.fault:
             return {"status": "BLOCKED", "reason": f"prior safety fault: {self.fault}"}
         self.check_single_publisher()
@@ -599,34 +610,37 @@ class FocusedM1Diagnostic(Node):
         common_name = self.latest["common"].input_source.name
         if pre_source["response_header_code"] != 0:
             return {"status": "BLOCKED", "reason": "GetCurrentInputSource pre-pulse read failed", "readback": pre_source}
-        if pre_name not in ("", self.source) or common_name not in ("", self.source):
+        common_age = self._state_ages().get("common")
+        if not nonzero_velocity_authorized(
+            get_action_desc=str(last_get_mode["action_desc"]),
+            get_action_header_code=int(last_get_mode["response_header_code"]),
+            common_action_desc=self._mode(),
+            current_source_name=str(pre_name),
+            common_source_name=str(common_name),
+            expected_source_name=self.source,
+            common_state_age_s=common_age,
+            max_age_s=self.args.state_timeout,
+        ):
             return {
-                "status": "BLOCKED", "reason": "another source currently owns arbitration",
+                "status": "BLOCKED",
+                "reason": "both live LD readbacks and fresh active-source arbitration must pass before any nonzero command",
                 "get_current_input_source_before": pre_source,
                 "common_source_before": common_name,
+                "common_state_age_s": common_age,
             }
         start = self._pose()
         start_yaw = start["yaw"] if start else None
         started = time.monotonic()
         end = started + 0.15
         next_publish = started
-        own_source_seen = False
-        first_command = True
+        own_source_seen = True
         pulse_fault = None
         while rclpy.ok() and time.monotonic() < end:
             if self.interrupted:
                 pulse_fault = "operator_signal_stop"
             pulse_fault = pulse_fault or self._safety_fault(expected_mode=MODE_LD)
             common_name = self.latest["common"].input_source.name if "common" in self.latest else ""
-            if common_name not in ("", self.source):
-                pulse_fault = pulse_fault or f"active_source_mismatch:{common_name!r}"
-            elapsed = time.monotonic() - started
-            if not first_command and not own_source_seen and elapsed >= 0.05:
-                if common_name == self.source:
-                    own_source_seen = True
-                else:
-                    pulse_fault = pulse_fault or f"source_not_selected_after_first_activation_tick:{common_name!r}"
-            if own_source_seen and common_name != self.source:
+            if common_name != self.source:
                 pulse_fault = pulse_fault or f"active_source_mismatch:{common_name!r}"
             if pulse_fault:
                 self.fault = pulse_fault
@@ -636,23 +650,9 @@ class FocusedM1Diagnostic(Node):
             now = time.monotonic()
             if now >= next_publish:
                 self._publish(0.2)
-                if not first_command and common_name == self.source:
-                    own_source_seen = True
                 self._trace("ACTIVATION_PULSE", (0.2, 0.0, 0.0))
-                first_command = False
                 next_publish = now + 0.05
             rclpy.spin_once(self, timeout_sec=0.01)
-            # Allow the first command one 50 ms arbitration interval, then fail closed.
-            if not first_command and not own_source_seen:
-                common_name = self.latest["common"].input_source.name if "common" in self.latest else ""
-                if common_name == self.source:
-                    own_source_seen = True
-                elif time.monotonic() - started >= 0.05:
-                    pulse_fault = f"source_not_selected_after_first_activation_tick:{common_name!r}"
-                    self.fault = pulse_fault
-                    self._publish()
-                    self._trace("PULSE_ABORT_ZERO")
-                    break
         actual_duration = min(time.monotonic() - started, 0.15)
         end_pose = self._pose()
         projection = None
@@ -663,12 +663,12 @@ class FocusedM1Diagnostic(Node):
         self._repeat_zero()
         post_source = self.read_input_source("after_activation_pulse")
         post_common = self.latest.get("common")
-        if post_source["input_source"].get("name", "") not in ("", self.source):
-            pulse_fault = pulse_fault or "GetCurrentInputSource reports another winner after pulse"
+        if post_source["input_source"].get("name", "") != self.source:
+            pulse_fault = pulse_fault or "GetCurrentInputSource no longer confirms this source after pulse"
         if post_source["response_header_code"] != 0:
             pulse_fault = pulse_fault or "GetCurrentInputSource post-pulse read failed"
-        if post_common and post_common.input_source.name not in ("", self.source):
-            pulse_fault = pulse_fault or "McCommonState reports another winner after pulse"
+        if not post_common or post_common.input_source.name != self.source:
+            pulse_fault = pulse_fault or "McCommonState no longer confirms this source after pulse"
         return {
             "status": "ABORTED" if pulse_fault else "EXECUTED",
             "fault": pulse_fault,

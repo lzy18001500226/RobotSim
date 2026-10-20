@@ -76,6 +76,32 @@ def source_arbitration_confirmed(
     )
 
 
+def nonzero_velocity_authorized(
+    get_action_desc: str | None,
+    get_action_header_code: int | None,
+    common_action_desc: str | None,
+    current_source_name: str,
+    common_source_name: str,
+    expected_source_name: str,
+    common_state_age_s: float | None,
+    *,
+    max_age_s: float = 0.5,
+) -> bool:
+    """Require both live LD readbacks and a fresh, matching active source."""
+    return (
+        get_action_desc == MODE_LD
+        and get_action_header_code == 0
+        and common_action_desc == MODE_LD
+        and source_arbitration_confirmed(
+            current_source_name,
+            common_source_name,
+            expected_source_name,
+            common_state_age_s,
+            max_age_s=max_age_s,
+        )
+    )
+
+
 def classify_ld_transition(
     set_result: Mapping[str, Any] | None,
     mode_observations: Sequence[Mapping[str, Any]],
