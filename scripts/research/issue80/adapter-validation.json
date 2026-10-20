@@ -26,6 +26,8 @@
       "Empty cancellation stop",
       "stale received Odometry stop",
       "goal timeout stop",
+      "repeated zero Twist after cancellation",
+      "ROS remaps to /cmd_vel and /aima/mc/locomotion/velocity rejected before publisher creation",
       "no MC velocity publisher or service endpoint"
     ],
     "container_network": "none",
@@ -43,8 +45,32 @@
     "mujoco_or_physical_navigation_run": false
   },
   "recorded_fixture": {
-    "post_reset_upright_source_sha256": "dc5a8579719c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc",
-    "pre_reset_fallen_source_sha256": "5d6636f9769c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc"
+    "post_reset_upright": {
+      "source_run_id": "x2-nav-m1-20261019T125515Z",
+      "source_filename": "post-reset-odom.yaml",
+      "source_sha256": "dc5a8579719c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc"
+    },
+    "pre_reset_fallen": {
+      "source_run_id": "x2-nav-m1-corrected-gate-20261019T153421Z",
+      "source_filename": "pre_reset_odom.yaml",
+      "source_sha256": "5d6636f9769c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc"
+    }
   },
-  "safety_boundary": "Twist output remains isolated at /robotsim/navigation/cmd_vel_proposal and must not be remapped to MC"
+  "safety_boundary": "Twist output remains isolated at /robotsim/navigation/cmd_vel_proposal and refuses ROS remapping to known live velocity topics",
+  "timestamp_semantics": {
+    "odometry_stamp": "nonzero and strictly increasing for accepted samples",
+    "odometry_freshness": "local monotonic receipt age",
+    "cross_clock_age_comparison": "not performed; ROS/simulation clock mapping is not established",
+    "goal_stamp": "builtin Time fields validated only; not used for freshness or transform lookup"
+  },
+  "qos": {
+    "odometry_subscription": "KEEP_LAST depth 1, BEST_EFFORT, VOLATILE",
+    "proposal_publisher": "KEEP_LAST depth 1, RELIABLE, VOLATILE",
+    "goal_cancel": "reliable volatile depth 10",
+    "live_mc_negotiation": "not tested; isolated graph only"
+  },
+  "docker_reproducibility": {
+    "expected_image_id": "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31",
+    "pull_policy": "never; local image required and ID checked before run"
+  }
 }

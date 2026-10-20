@@ -4,7 +4,8 @@
   "samples": [
     {
       "id": "post_reset_upright",
-      "source_file": "reviews/issue-80/x2-nav-m1-20261019T125515Z/logs/post-reset-odom.yaml",
+      "source_run_id": "x2-nav-m1-20261019T125515Z",
+      "source_filename": "post-reset-odom.yaml",
       "source_sha256": "dc5a8579719c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc",
       "header": {"sec": 1792415045, "nanosec": 913225689, "frame_id": "odom"},
       "child_frame_id": "base_link",
@@ -13,7 +14,8 @@
     },
     {
       "id": "pre_reset_fallen",
-      "source_file": "reviews/issue-80/x2-nav-m1-corrected-gate-20261019T153421Z/pre_reset_odom.yaml",
+      "source_run_id": "x2-nav-m1-corrected-gate-20261019T153421Z",
+      "source_filename": "pre_reset_odom.yaml",
       "source_sha256": "5d6636f9769c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc",
       "header": {"sec": 1792425246, "nanosec": 863915923, "frame_id": "odom"},
       "child_frame_id": "base_link",

@@ -231,6 +231,29 @@ class IsolatedRosGraphTests(unittest.TestCase):
         self.assertIn("/robotsim/navigation/cmd_vel_proposal", publisher_topics)
         self.assertNotIn("/cmd_vel", publisher_topics)
         self.assertNotIn("/aima/mc/locomotion/velocity", publisher_topics)
+
+        # Explicit ROS remaps to either common live command path must fail before
+        # the adapter creates a publisher on the remapped name.
+        for live_topic in ("/cmd_vel", "/aima/mc/locomotion/velocity"):
+            with self.subTest(remap_target=live_topic):
+                probe = subprocess.run(
+                    [
+                        "ros2", "run", "robotsim_navigation", "point_goal_adapter",
+                        "--ros-args", "-r",
+                        f"/robotsim/navigation/cmd_vel_proposal:={live_topic}",
+                    ],
+                    env=os.environ.copy(),
+                    capture_output=True,
+                    text=True,
+                    timeout=5.0,
+                    check=False,
+                )
+                self.assertNotEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+                self.assertIn(
+                    "adapter must remain disconnected from live MC topics",
+                    probe.stdout + probe.stderr,
+                )
+
         services = self.node.get_service_names_and_types_by_node(
             adapter_name, adapter_namespace
         )
@@ -312,6 +335,14 @@ class IsolatedRosGraphTests(unittest.TestCase):
         self._wait_status("CANCELLED", status_index)
         self._wait_twist(lambda linear, angular: abs(linear) < 1e-9 and abs(angular) < 1e-9,
                          twist_index)
+        time.sleep(0.25)
+        with self.lock:
+            idle_after_cancel = self.twists[twist_index:]
+        self.assertGreaterEqual(len(idle_after_cancel), 4)
+        self.assertTrue(all(
+            abs(linear) < 1e-9 and abs(angular) < 1e-9
+            for _time, linear, angular in idle_after_cancel
+        ))
 
         self._begin_goal_and_wait_for_motion()
         self.heartbeat_enabled.clear()
