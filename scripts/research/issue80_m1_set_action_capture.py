@@ -397,14 +397,14 @@ def main() -> int:
             )
             self.set_client = self.create_client(SetMcAction, "/aimdk_5Fmsgs/srv/SetMcAction")
             self.get_client = self.create_client(GetMcAction, "/aimdk_5Fmsgs/srv/GetMcAction")
-            self.subscriptions = (
+            self.topic_specs = (
                 ("odom", "/aima/hal/odom/state", Odometry),
                 ("imu", "/aima/hal/imu/torso/state", Imu),
                 ("common", "/aima/mc/common/state", McCommonState),
                 ("leg_state", "/aima/hal/joint/leg/state", JointStateArray),
                 ("leg_command", "/aima/hal/joint/leg/command", JointCommandArray),
             )
-            for key, topic, msg_type in self.subscriptions:
+            for key, topic, msg_type in self.topic_specs:
                 self.create_subscription(
                     msg_type, topic, lambda msg, name=key: self.store(name, msg), self.qos
                 )
