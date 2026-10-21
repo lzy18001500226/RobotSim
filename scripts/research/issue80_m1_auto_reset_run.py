@@ -127,6 +127,38 @@ def assess_container_absence(
     }
 
 
+def first_post_action_fall(serialized_trace: str, *, action_monotonic_ns: int) -> dict[str, Any] | None:
+    """Return the first post-SD odometry sample outside the existing height/tilt gate."""
+    rows: list[dict[str, Any]] = []
+    for line in serialized_trace.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            row.get("event") == "state"
+            and row.get("topic_key") == "odom"
+            and int(row.get("wall_monotonic_ns", 0)) >= action_monotonic_ns
+        ):
+            rows.append(row)
+    rows.sort(key=lambda row: int(row.get("wall_monotonic_ns", 0)))
+    for row in rows:
+        data = row.get("data", {})
+        try:
+            tilt = max(abs(float(data["roll_deg"])), abs(float(data["pitch_deg"])))
+            unsafe = float(data["z"]) < 0.52 or tilt >= 15.0
+        except (KeyError, TypeError, ValueError):
+            unsafe = True
+        if unsafe:
+            return {
+                "wall_utc": row.get("wall_utc"),
+                "wall_monotonic_ns": int(row.get("wall_monotonic_ns", 0)),
+                "odom": data,
+                "reason": "post-action odometry crossed the unchanged root-height or tilt gate",
+            }
+    return None
+
+
 class BoundedRun:
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -619,10 +651,31 @@ class BoundedRun:
             raise RuntimeError("reset state trace was not produced")
         # The observer is capped at 8 s; wait for its atomic summary with the same bound.
         summary = self.evidence / "reset_state_summary.json"
+        action_ns = int(
+            ((self.sd_result or {}).get("raw_set_mc_action") or {}).get("wall_monotonic_ns_submitted", 0)
+        )
         while time.monotonic() < deadline and not summary.exists():
-            time.sleep(0.05)
+            if trace.exists() and action_ns:
+                fall = first_post_action_fall(
+                    trace.read_text(encoding="utf-8"),
+                    action_monotonic_ns=action_ns,
+                )
+                if fall:
+                    self.reset_classification = "RESET_APPLIED_THEN_FELL"
+                    self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+                    self.reset_analysis = {
+                        "classification": self.reset_classification,
+                        "post_action_fall": fall,
+                        "safety_window_completed": False,
+                        "stop_reason": "stopped on first post-SD unsafe odometry sample",
+                    }
+                    raise RuntimeError(
+                        "post-SD odometry crossed the existing standing safety gate; stopped observer and did not proceed to LD"
+                    )
+            time.sleep(0.02)
         if not summary.exists():
-            raise RuntimeError("bounded reset observer did not finish before its duration plus completion margin")
+            raise RuntimeError("bounded Reset observer did not finish before its duration plus completion margin")
+
         # The state trace, not screenshot completion, owns the stability gate.
         self.finalize_reset_dispatch(pid, title, window_id)
         out = self.evidence / "reset_analysis.json"

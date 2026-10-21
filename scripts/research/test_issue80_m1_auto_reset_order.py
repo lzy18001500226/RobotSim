@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 
-from issue80_m1_auto_reset_run import BoundedRun
+from issue80_m1_auto_reset_run import BoundedRun, first_post_action_fall
 
 
 class ResetBeforeSdOrderingTests(unittest.TestCase):
@@ -120,6 +120,20 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertEqual(snapshot.get("status"), "POST_RESET_UPRIGHT_OBSERVED", snapshot)
         self.assertEqual(snapshot["raw_common_state"], {"fsm_state": 6, "body_status": 2})
         self.assertGreaterEqual(snapshot["dispatch_to_upright_ms"], 0.0)
+
+    def test_post_sd_fall_detector_ignores_pre_action_pose_and_stops_on_first_fall(self) -> None:
+        rows = [
+            {"event": "state", "topic_key": "odom", "wall_monotonic_ns": 90, "wall_utc": "pre",
+             "data": {"z": 0.35, "roll_deg": 0.0, "pitch_deg": -88.0}},
+            {"event": "state", "topic_key": "odom", "wall_monotonic_ns": 110, "wall_utc": "upright",
+             "data": {"z": 0.68, "roll_deg": 0.1, "pitch_deg": 0.2}},
+            {"event": "state", "topic_key": "odom", "wall_monotonic_ns": 120, "wall_utc": "fell",
+             "data": {"z": 0.35, "roll_deg": -170.0, "pitch_deg": -88.0}},
+        ]
+        trace = "".join(json.dumps(row) + "\n" for row in rows)
+        result = first_post_action_fall(trace, action_monotonic_ns=100)
+        self.assertEqual(result["wall_utc"], "fell")
+        self.assertEqual(result["wall_monotonic_ns"], 120)
 
     def test_reset_and_immediate_posture_precede_sd_and_standing_hold(self) -> None:
         events: list[str] = []
