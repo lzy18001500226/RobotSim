@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -54,6 +55,9 @@ RUN38_FOUNDATIONWALK_RUNNER_SHA256 = "0fa34f81a7ec87179309cd78859f5469c5e84ec595
 RUN38_ACTION_SETTING_SHA256 = "60e4b37a2d185515efb63192a67f9cb425558da3f4caabd432aa62bb23f05479"
 RUN38_ROBOT_MODEL_SHA256 = "614b0644976204e4f458f2c3a9d6f92f9a463730ddcaec5bc1cbdd9748727670"
 RUN38_MC_SIM_CONFIG_SHA256 = "999d75f0caed5f20479c670fb95b624910c66722b47d37b60217717a3fe34b60"
+DEFAULT_MC_RL_DEBUG_OVERLAY_SOURCE = REPO / (
+    "reviews/issue-80/autonomous-walking-38-step-boundary-0112-20261021T194921Z"
+)
 RUN38_DIAGNOSTIC_KNEE_ACTION_INDICES = (9, 10)
 RUN38_BASE_KNEE_ACTION_SCALE = 0.25
 RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE = 0.19
@@ -303,6 +307,92 @@ def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
     return "SIMULATION_ONLY_DIAGNOSTIC_NO_WALKING_PASS"
 
 
+def copy_verified_mc_rl_debug_overlay_bundle(
+    source_dir: str | Path,
+    evidence_dir: str | Path,
+    *,
+    approved_root: str | Path,
+) -> dict[str, Any]:
+    """Copy the previously built schema-matched diagnostic overlay without mutation.
+
+    The copied package is generated only from the version-matched Run38 evidence;
+    live runtime introspection is still repeated by ``verify_mc_rl_debug_overlay``.
+    """
+    approved = Path(approved_root).resolve(strict=True)
+    source = Path(source_dir).resolve(strict=True)
+    evidence = Path(evidence_dir).resolve(strict=True)
+    if not source.is_relative_to(approved):
+        raise ValueError("McRLDebug overlay source must remain beneath the approved Issue 80 evidence root")
+    if source == evidence or source.is_relative_to(evidence):
+        raise ValueError("McRLDebug overlay source and destination must be separate runs")
+    source_manifest_path = source / "artifact_paths.json"
+    if source_manifest_path.exists() and (
+        source_manifest_path.is_symlink() or not source_manifest_path.is_file()
+    ):
+        raise ValueError("McRLDebug overlay source artifact manifest is not a regular file")
+    source_manifest_sha256 = None
+    if source_manifest_path.is_file():
+        try:
+            json.loads(source_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("McRLDebug overlay source artifact manifest is invalid") from exc
+        source_manifest_sha256 = hashlib.sha256(source_manifest_path.read_bytes()).hexdigest()
+
+    source_files = (
+        Path("mc_rl_debug_schema.json"),
+        Path("MC_RL_DEBUG_SCHEMA_PROVENANCE.json"),
+        Path("build_mc_debug_overlay.sh"),
+    )
+    overlay_subtrees = (
+        Path("mc_debug_overlay/src"),
+        Path("mc_debug_overlay/install"),
+    )
+    copied_hashes: dict[str, str] = {}
+
+    def copy_regular_file(relative: Path) -> None:
+        origin = source / relative
+        target = evidence / relative
+        if origin.is_symlink() or not origin.is_file():
+            raise ValueError(f"McRLDebug overlay input is missing or not a regular file: {origin}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = origin.read_bytes()
+        with target.open("xb") as stream:
+            stream.write(payload)
+        copied_hashes[relative.as_posix()] = hashlib.sha256(payload).hexdigest()
+
+    for relative in source_files:
+        copy_regular_file(relative)
+    for relative_root in overlay_subtrees:
+        origin_root = source / relative_root
+        target_root = evidence / relative_root
+        if origin_root.is_symlink() or not origin_root.is_dir() or target_root.exists():
+            raise ValueError(f"McRLDebug overlay subtree is missing or already exists: {origin_root}")
+        for origin in origin_root.rglob("*"):
+            if origin.is_symlink():
+                raise ValueError(f"McRLDebug overlay subtree contains a symlink: {origin}")
+        shutil.copytree(origin_root, target_root)
+        for copied in target_root.rglob("*"):
+            if copied.is_file():
+                relative = copied.relative_to(evidence).as_posix()
+                copied_hashes[relative] = hashlib.sha256(copied.read_bytes()).hexdigest()
+
+    if "mc_debug_overlay/install/setup.bash" not in copied_hashes:
+        raise ValueError("McRLDebug overlay source does not contain a built install/setup.bash")
+    tree_descriptor = "\n".join(
+        f"{name} {digest}" for name, digest in sorted(copied_hashes.items())
+    ).encode("utf-8")
+    return {
+        "schema": "robotsim.issue80.mcrldebug-overlay-copy.v1",
+        "classification": "SIMULATION_ONLY_DIAGNOSTIC_MESSAGE_OVERLAY",
+        "source_evidence_dir": str(source),
+        "source_artifact_manifest_present": source_manifest_sha256 is not None,
+        "source_artifact_manifest_sha256": source_manifest_sha256,
+        "copied_file_sha256": copied_hashes,
+        "copied_tree_sha256": hashlib.sha256(tree_descriptor).hexdigest(),
+        "runtime_mc_and_sim_library_hashes_reverified_before_capture": True,
+    }
+
+
 class BoundedRun:
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -327,6 +417,8 @@ class BoundedRun:
         self.mc_rl_debug_capture: dict[str, Any] | None = None
         self.foundationwalk_config_overlay: Path | None = None
         self.foundationwalk_config_overlay_manifest: dict[str, Any] | None = None
+        self.mc_rl_debug_overlay_manifest: dict[str, Any] | None = None
+        self.mc_rl_debug_schema_verification: dict[str, Any] | None = None
         self.reset_analysis: dict[str, Any] | None = None
         self.before_reset_image: dict[str, Any] | None = None
         self.reset_dispatch_payload: dict[str, Any] | None = None
@@ -469,6 +561,27 @@ class BoundedRun:
         self.foundationwalk_config_overlay = overlay
         self.foundationwalk_config_overlay_manifest = manifest
 
+    def prepare_mc_rl_debug_overlay(self) -> None:
+        """Stage and verify the immutable diagnostic message overlay before runtime."""
+        if not getattr(self.args, "capture_mc_rl_debug", False):
+            return
+        source = Path(getattr(
+            self.args,
+            "mc_rl_debug_overlay_source",
+            str(DEFAULT_MC_RL_DEBUG_OVERLAY_SOURCE),
+        ))
+        manifest = copy_verified_mc_rl_debug_overlay_bundle(
+            source,
+            self.evidence,
+            approved_root=REPO / "reviews/issue-80",
+        )
+        manifest_path = self.evidence / "mc_rl_debug_overlay_copy_manifest.json"
+        with manifest_path.open("x", encoding="utf-8") as stream:
+            json.dump(manifest, stream, indent=2)
+            stream.write("\n")
+        self.mc_rl_debug_overlay_manifest = manifest
+        self.mc_rl_debug_schema_verification = self.verify_mc_rl_debug_overlay()
+
     def stage_research_scripts(self) -> None:
         """Stage exact research code snapshots without overwriting evidence."""
         sources = (
@@ -530,6 +643,15 @@ class BoundedRun:
                 "type=bind,source=" + str(self.foundationwalk_config_overlay)
                 + ",target=" + FOUNDATIONWALK_CONFIG_CONTAINER_PATH + ",readonly",
             ]
+        if self.mc_rl_debug_overlay_manifest is not None:
+            mc_debug_install = self.evidence / "mc_debug_overlay/install"
+            if mc_debug_install.is_symlink() or not (mc_debug_install / "setup.bash").is_file():
+                raise RuntimeError("verified McRLDebug install prefix is missing or unsafe to mount")
+            cmd += [
+                "--mount",
+                "type=bind,source=" + str(mc_debug_install)
+                + ",target=/workspace/evidence/mc_debug_overlay/install,readonly",
+            ]
         cmd += [
             "-e", "DISPLAY=:0", "-e", "HOME=/tmp", "-e", "ROS_DOMAIN_ID=20",
             "-e", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp", IMAGE, "sleep", "infinity",
@@ -569,6 +691,22 @@ class BoundedRun:
                 or mount.get("Type") != "bind"
             ):
                 raise RuntimeError("diagnostic FoundationWalk config mount source/type/read-only state is invalid")
+        if self.mc_rl_debug_overlay_manifest is not None:
+            target = "/workspace/evidence/mc_debug_overlay/install"
+            matching_mounts = [
+                mount for mount in container.get("Mounts", [])
+                if mount.get("Destination") == target
+            ]
+            expected_source = (self.evidence / "mc_debug_overlay/install").resolve()
+            if len(matching_mounts) != 1:
+                raise RuntimeError("McRLDebug install overlay mount was not unique")
+            mount = matching_mounts[0]
+            if (
+                Path(str(mount.get("Source", ""))).resolve() != expected_source
+                or mount.get("RW") is not False
+                or mount.get("Type") != "bind"
+            ):
+                raise RuntimeError("McRLDebug install overlay mount source/type/read-only state is invalid")
         with (self.evidence / "container-inspect-start.json").open("x", encoding="utf-8") as f:
             f.write(inspect.stdout)
 
@@ -1064,7 +1202,11 @@ class BoundedRun:
 
     def start_mc_rl_debug_capture(self) -> None:
         """Start one passive, schema-verified MC debug subscriber before M1."""
-        schema_verification = self.verify_mc_rl_debug_overlay()
+        schema_verification = self.mc_rl_debug_schema_verification
+        if schema_verification is None:
+            schema_verification = self.verify_mc_rl_debug_overlay()
+        if schema_verification.get("status") != "PASS":
+            raise RuntimeError("McRLDebug overlay did not pass source verification before capture")
         overlay_setup = self.evidence / "mc_debug_overlay/install/setup.bash"
         if not overlay_setup.is_file():
             raise RuntimeError("McRLDebug capture requested but the evidence-local interface overlay is not built")
@@ -1304,6 +1446,7 @@ class BoundedRun:
             "reset_classification": "NOT_ATTEMPTED",
             "m1_status": "NOT_RUN",
             "mc_rl_debug_capture": None,
+            "mc_rl_debug_overlay": None,
             "outcome_classification": "STANDING_CONTROL_NOT_READY",
             "fault": None,
         }
@@ -1314,6 +1457,7 @@ class BoundedRun:
             return result
         try:
             self.prepare_foundationwalk_diagnostic_overlay()
+            self.prepare_mc_rl_debug_overlay()
             self.stage_research_scripts()
             self.start_container()
             self.start_sim_first()
@@ -1405,6 +1549,7 @@ class BoundedRun:
         finally:
             elapsed = time.monotonic() - self.started
             result["mc_rl_debug_capture"] = self.mc_rl_debug_capture
+            result["mc_rl_debug_overlay"] = self.mc_rl_debug_overlay_manifest
             result["wall_elapsed_s"] = elapsed
             result["wall_budget_exhausted"] = elapsed > self.args.max_runtime_s
             if self.reset_analysis:
@@ -1462,6 +1607,11 @@ def main() -> int:
         "--capture-mc-rl-debug",
         action="store_true",
         help="start the optional version-matched read-only McRLDebug observer before M1 motion",
+    )
+    parser.add_argument(
+        "--mc-rl-debug-overlay-source",
+        default=str(DEFAULT_MC_RL_DEBUG_OVERLAY_SOURCE),
+        help="governed prior Issue 80 evidence directory containing the verified local McRLDebug overlay",
     )
     parser.add_argument(
         "--run38-knee-scale-diagnostic",

@@ -19,6 +19,7 @@ from issue80_m1_auto_reset_run import (
     RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE,
     build_run38_foundationwalk_knee_scale_overlay,
     classify_run38_diagnostic_outcome,
+    copy_verified_mc_rl_debug_overlay_bundle,
 )
 
 
@@ -210,6 +211,97 @@ class FoundationWalkOverlayTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 2)
         self.assertIn("Run38 diagnostic is fixed to 0.112 m/s, 3.0 s", result.stderr)
+
+    def test_mc_rl_debug_bundle_copy_is_limited_to_governed_prior_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            issue_root = Path(temp_dir) / "reviews" / "issue-80"
+            source = issue_root / "prior-run"
+            evidence = issue_root / "next-run"
+            (source / "mc_debug_overlay/src/aimdk_msgs/msg").mkdir(parents=True)
+            (source / "mc_debug_overlay/install").mkdir(parents=True)
+            evidence.mkdir(parents=True)
+            (source / "mc_rl_debug_schema.json").write_text("{\"results\": []}\n", encoding="utf-8")
+            (source / "MC_RL_DEBUG_SCHEMA_PROVENANCE.json").write_text("{}\n", encoding="utf-8")
+            (source / "build_mc_debug_overlay.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            (source / "mc_debug_overlay/src/aimdk_msgs/msg/McRLDebug.msg").write_text(
+                "MessageHeader header\nfloat32[] obs_vec\nfloat32[] action_vec\n", encoding="utf-8"
+            )
+            (source / "mc_debug_overlay/src/aimdk_msgs/msg/MessageHeader.msg").write_text(
+                "uint64 sequence\n", encoding="utf-8"
+            )
+            (source / "mc_debug_overlay/install/setup.bash").write_text("# built overlay\n", encoding="utf-8")
+            (source / "mc_debug_overlay/install/libaimdk_msgs.so").write_bytes(b"test-library")
+
+            manifest = copy_verified_mc_rl_debug_overlay_bundle(
+                source, evidence, approved_root=issue_root
+            )
+
+            self.assertEqual(manifest["classification"], "SIMULATION_ONLY_DIAGNOSTIC_MESSAGE_OVERLAY")
+            self.assertFalse(manifest["source_artifact_manifest_present"])
+            self.assertEqual(
+                (evidence / "mc_debug_overlay/install/libaimdk_msgs.so").read_bytes(),
+                b"test-library",
+            )
+            self.assertIn("mc_debug_overlay/install/setup.bash", manifest["copied_file_sha256"])
+
+    def test_mc_rl_debug_bundle_copy_rejects_source_outside_approved_issue_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            approved = root / "reviews" / "issue-80"
+            approved.mkdir(parents=True)
+            outside = root / "untrusted-source"
+            outside.mkdir()
+            evidence = approved / "next-run"
+            evidence.mkdir()
+            with self.assertRaisesRegex(ValueError, "beneath the approved Issue 80 evidence root"):
+                copy_verified_mc_rl_debug_overlay_bundle(
+                    outside, evidence, approved_root=approved
+                )
+
+    def test_container_mounts_verified_debug_install_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            install = evidence / "mc_debug_overlay/install"
+            install.mkdir(parents=True)
+            (install / "setup.bash").write_text("# overlay\n", encoding="utf-8")
+            args = argparse.Namespace(
+                evidence_dir=str(evidence),
+                container="issue80-test-debug-overlay",
+                attempt_id="test-attempt",
+                max_runtime_s=180.0,
+            )
+            runner = BoundedRun(args)
+            runner.mc_rl_debug_overlay_manifest = {"classification": "SIMULATION_ONLY_DIAGNOSTIC_MESSAGE_OVERLAY"}
+            expected_id = "b" * 64
+
+            def fake_run(name: str, command: list[str], *, timeout_s: float = 8.0, check: bool = True):
+                if name == "docker_run":
+                    return subprocess.CompletedProcess(command, 0, "", "")
+                if name == "container_inspect_start":
+                    inspect = [{
+                        "Id": expected_id,
+                        "HostConfig": {"NetworkMode": "bridge"},
+                        "Config": {"Env": ["ROS_DOMAIN_ID=20", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"]},
+                        "Mounts": [{
+                            "Type": "bind",
+                            "Source": str(install.resolve()),
+                            "Destination": "/workspace/evidence/mc_debug_overlay/install",
+                            "RW": False,
+                        }],
+                    }]
+                    return subprocess.CompletedProcess(command, 0, json.dumps(inspect), "")
+                raise AssertionError(f"unexpected command {name}")
+
+            runner.run = fake_run  # type: ignore[method-assign]
+            runner.start_container()
+            inspect_output = json.loads(
+                (evidence / "container-inspect-start.json").read_text(encoding="utf-8")
+            )
+            debug_mount = next(
+                mount for mount in inspect_output[0]["Mounts"]
+                if mount["Destination"] == "/workspace/evidence/mc_debug_overlay/install"
+            )
+            self.assertFalse(debug_mount["RW"])
 
 
 if __name__ == "__main__":
