@@ -1297,8 +1297,8 @@ def main() -> int:
         or not 0.0 < args.max_observed_planar_speed_m_s <= 0.2
     ):
         parser.error("observed planar speed gate must be positive and no greater than 0.2 m/s")
-    if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 2.5:
-        parser.error("zero-until-stand timeout must remain within 0..2.5 seconds")
+    if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 3.5:
+        parser.error("zero-until-stand timeout must remain within 0..3.5 seconds")
     try:
         return _focused_diagnostic_command(args)
     except Exception as exc:

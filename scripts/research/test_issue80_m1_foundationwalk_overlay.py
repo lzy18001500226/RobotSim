@@ -403,7 +403,7 @@ class FoundationWalkOverlayTests(unittest.TestCase):
             runner.run = fake_run  # type: ignore[method-assign]
             runner.run_m1()
             self.assertIn("--max-observed-planar-speed-m-s 0.2", commands[0][-1])
-            self.assertIn("--zero-until-stand-timeout-s 2.5", commands[0][-1])
+            self.assertIn("--zero-until-stand-timeout-s 3.5", commands[0][-1])
 
 
 if __name__ == "__main__":

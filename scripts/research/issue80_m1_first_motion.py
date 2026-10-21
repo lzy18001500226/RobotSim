@@ -1632,9 +1632,9 @@ def run_first_motion_window(
         pulse_fault = "extra_stop_observation_outside_bounded_budget"
     elif (
         not math.isfinite(zero_until_stand_timeout_s)
-        or not 0.0 <= zero_until_stand_timeout_s <= 2.5
+        or not 0.0 <= zero_until_stand_timeout_s <= 3.5
     ):
-        pulse_fault = "zero_until_stand_timeout_outside_bounded_budget"
+        pulse_fault = "zero_until_stand_timeout_outside_measured_3p5s_budget"
     elif zero_until_stand_timeout_s > 0.0 and after_zero_stop is None:
         pulse_fault = "zero_until_stand_requires_post_stop_action_client"
     elif (

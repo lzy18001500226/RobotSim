@@ -1276,7 +1276,7 @@ class BoundedRun:
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
         if getattr(self.args, "run42_stop_confirmation_diagnostic", False):
-            command[-1] += " --zero-until-stand-timeout-s 2.5"
+            command[-1] += " --zero-until-stand-timeout-s 3.5"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():

@@ -453,7 +453,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             forward_command_m_s=0.112,
             pulse_duration_s=0.1,
             max_pulse_duration_s=0.1,
-            zero_until_stand_timeout_s=2.5,
+            zero_until_stand_timeout_s=3.5,
             after_zero_stop=lambda: {"success": True},
         )
 
