@@ -536,11 +536,13 @@ class BoundedRun:
             detached=True,
         )
         ready_path = self.evidence / "reset_watch_ready.json"
-        deadline = min(self.deadline, time.monotonic() + 3.0)
+        # Child readiness has its own unchanged 3 s budget after Python/ROS
+        # construction. Parent also allows bounded process bootstrap time.
+        deadline = min(self.deadline, time.monotonic() + 5.0)
         while time.monotonic() < deadline and not ready_path.exists():
             time.sleep(0.05)
         if not ready_path.exists():
-            raise RuntimeError("Reset observer did not receive all five fresh state streams in 3 seconds")
+            raise RuntimeError("Reset observer readiness result missing after 5 s including process bootstrap")
         ready = json.loads(ready_path.read_text(encoding="utf-8"))
         if ready.get("status") != "READY":
             raise RuntimeError(f"pre-Reset ROS2 observer/client readiness failed: {ready}")
