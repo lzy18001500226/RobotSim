@@ -57,3 +57,40 @@ PYTHONPATH="$PWD/scripts:/home/lzy18001500226/.cache/robotsim/issue46-vt-2026100
 ```
 
 The run used the same pinned Python environment and the existing governed run directory. `mj_step` stopped at step 55 for runaway velocity; no bottle motion or qpos teleportation occurred.
+
+## Candidate B single-command follow-up (2026-10-21)
+
+This follow-up supersedes the earlier no-coupling result **for the validated source interval only**. It does not promote Candidate B to a manufacturer fact. Starting from the same pinned X2 v1.4.0 assets and corrected D sites, the two existing Candidate B fixed-tendon equalities were restored, one per side:
+
+`(q_root - qpos0_root) + q_B - q_E = 0`
+
+They are marked `UNVERIFIED_EXPERIMENTAL`; the official opposite-root mimic remains intact. There is one right root servo, no independent passive actuators, and no passive qpos writes after the one-time initial pose. The only numerical correction after the first trial was making all five existing equality constraints use the same `solref="0.002 1"`; the equation/topology did not change. With MuJoCo's default equality softness (`0.02 1`), the measured Candidate B residual reached `0.04008 rad` and the open endpoint missed its gate. The tighter solver reference reduced that residual while retaining finite state and bounded constraint forces.
+
+### Source-range motor stroke
+
+The bounded range was CAD q `-0.10..0.00 rad`, the saved source-sampled interval used for this test, with the unchanged official root limits and root mimic. Static preflight passed: 8 velocity coordinates, equality-Jacobian rank 7, 1 remaining system DOF; each side's D closure plus its Candidate B relation leaves one local DOF. Maximum static D gap was `0.000308 mm`, and maximum Candidate B residual was `6.94e-16 rad`.
+
+The real MuJoCo 3.3.6 open-hold → slow close → close-hold → slow reopen → open-hold rollout passed over `4,600` `mj_step`s (`4.600 s`). The root stroke was `0.118221 rad`; the final CAD q was `-0.006952 rad`. Maximum dynamic D gap was `7.11 μm`, Candidate B residual `0.000586 rad`, joint speed `0.486 rad/s`, and remaining internal penetration `0.0293 mm`. The only active gripper actuator was `right_claw_joint_servo`; all external object-contact collision remained available. The scoped four internal diagnostic exclusions are recorded in `overlay.json`.
+
+### Aperture and free-object contact
+
+The official visual STL inner-surface aperture at q=0 measured `35.939 mm` at z=`101 mm`; the canonical bottle neck is `36 mm`, so it has no clearance and was not tested. A free `18 mm` by `20 mm`, `30 g` cylinder was placed on a small static shelf as an independent environment object. It received only one initial free-joint pose write; no weld, attachment, or in-rollout qpos write was used. The cylinder started with no jaw contact and made symmetric narrow/wide jaw contact during closing.
+
+The object test **did not pass load transfer or lift**. Both jaw normals exceeded `0.2 N` simultaneously for `1.590 s`, peaking at `0.269/0.273 N`, below the configured `0.5 N per-side` lift gate. The lift fixture was therefore never actuated. During bilateral contact the summed vertical jaw force on the cylinder remained downward (`-0.173..-0.119 N`); the shelf carried the object. Object rise was only `1.02 mm`, not a lift. This is the measured remaining functional blocker; it does not justify increasing friction or changing the mechanical coupling without further evidence. The maximum source-range jaw opening also rules out using the 36 mm canonical neck for this experiment.
+
+### Follow-up artifacts and reproduction
+
+- Successful one-command motor stroke and contact-fail trace: `reviews/issue-46/candidate-b-test-cylinder-20261021T145844Z/`.
+- Actual MuJoCo open/close video: `single_motor_open_close.mp4`; the 3.27-second test-object clip is `test_cylinder_contact.mp4`.
+- `surface_aperture_measurements.json`, `contact_force_analysis.json`, `test_cylinder_contact_result.json`, and `artifact_paths.json` capture the measured geometry, contact forces, failure status, and output manifest.
+- The first failed default-softness run is preserved separately at `reviews/issue-46/candidate-b-coupled-20261021T142737Z/`; the successful source-range motor run is under `reviews/issue-46/candidate-b-coupled-solref-20261021T143334Z/`.
+
+The headless reproduction commands are:
+
+```bash
+cd /home/lzy18001500226/robotsim-issue46-dpoint-evidence-20261021
+PYTHONPATH="$PWD/scripts:/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/lib/python3.10/site-packages" \
+  /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python scripts/research/issue46_cad_driven_gripper.py test
+```
+
+The recorded actual rollouts are in the governed run manifests; they were not rerun after reaching the three-cycle limit. **Overall result: source-range single-motor opening/closing PASS under the unverified simulation coupling; functional grasp/lift BLOCKED.** No switch to PR #58 was needed because Phase A's motor stroke passed. The experiment remains simulation-only and is not manufacturer-validated.
