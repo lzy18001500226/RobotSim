@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -39,6 +41,22 @@ TOPIC_PROBES = (
     "/aima/hal/imu/torso/state",
     "/aima/hal/joint/leg/state",
 )
+FOUNDATIONWALK_CONFIG_RELATIVE = Path(
+    "mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml"
+)
+FOUNDATIONWALK_CONFIG_CONTAINER_PATH = (
+    "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
+    "lx2501_3_t2d5/rl/foundationwalk_config.yaml"
+)
+RUN38_FOUNDATIONWALK_CONFIG_SHA256 = "b3081e9bca2035d4a986657bdc03b79ca0ed5d4e852c7972d86816f569acc2e9"
+RUN38_FOUNDATIONWALK_ONNX_SHA256 = "b8cca5e9048c3c056e94c56ad06f171f9d5a76149aebd893ad524b365507cc9b"
+RUN38_FOUNDATIONWALK_RUNNER_SHA256 = "0fa34f81a7ec87179309cd78859f5469c5e84ec595588bf7cc7ff935c865556b"
+RUN38_ACTION_SETTING_SHA256 = "60e4b37a2d185515efb63192a67f9cb425558da3f4caabd432aa62bb23f05479"
+RUN38_ROBOT_MODEL_SHA256 = "614b0644976204e4f458f2c3a9d6f92f9a463730ddcaec5bc1cbdd9748727670"
+RUN38_MC_SIM_CONFIG_SHA256 = "999d75f0caed5f20479c670fb95b624910c66722b47d37b60217717a3fe34b60"
+RUN38_DIAGNOSTIC_KNEE_ACTION_INDICES = (9, 10)
+RUN38_BASE_KNEE_ACTION_SCALE = 0.25
+RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE = 0.19
 
 
 class RunDeadline(TimeoutError):
@@ -183,6 +201,108 @@ def first_post_action_fall(serialized_trace: str, *, action_monotonic_ns: int) -
     return None
 
 
+def build_run38_foundationwalk_knee_scale_overlay(
+    source_bytes: bytes,
+    *,
+    expected_source_sha256: str = RUN38_FOUNDATIONWALK_CONFIG_SHA256,
+) -> tuple[bytes, dict[str, Any]]:
+    """Derive the one Run38-only knee-scale counterfactual from its pinned source.
+
+    Only action_scale entries 9 and 10 are changed, symmetrically, from 0.25
+    to 0.19. The ONNX policy, all other configuration values, the robot model,
+    MC binary, and the source joint limits remain outside this overlay.
+    """
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    if source_sha256 != expected_source_sha256:
+        raise ValueError(
+            "FoundationWalk source config SHA-256 differs from the Run38 baseline: "
+            f"{source_sha256}"
+        )
+    try:
+        source_text = source_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("FoundationWalk config is not UTF-8") from exc
+    try:
+        import yaml
+
+        baseline = yaml.safe_load(source_text)
+    except Exception as exc:
+        raise ValueError(f"FoundationWalk config YAML could not be parsed: {exc}") from exc
+    if not isinstance(baseline, Mapping):
+        raise ValueError("FoundationWalk config root must be a mapping")
+    base_config = baseline.get("BaseConfig")
+    if not isinstance(base_config, Mapping):
+        raise ValueError("FoundationWalk config lacks BaseConfig")
+    action_seq = base_config.get("action_seq")
+    action_scale = base_config.get("action_scale")
+    if not isinstance(action_seq, list) or len(action_seq) != 29:
+        raise ValueError("Run38 FoundationWalk action sequence must contain 29 joints")
+    if action_seq[9:11] != ["left_knee_joint", "right_knee_joint"]:
+        raise ValueError("Run38 action indices 9 and 10 are not the left/right knees")
+    if not isinstance(action_scale, list) or len(action_scale) != 29:
+        raise ValueError("Run38 FoundationWalk action_scale must contain 29 values")
+    if any(float(action_scale[index]) != RUN38_BASE_KNEE_ACTION_SCALE
+           for index in RUN38_DIAGNOSTIC_KNEE_ACTION_INDICES):
+        raise ValueError("Run38 source knee action scales are not both 0.25")
+
+    matches = list(re.finditer(
+        r"(?m)^(?P<prefix>\s*action_scale:\s*)\[(?P<values>[^\]]*)\](?P<suffix>\s*)$",
+        source_text,
+    ))
+    if len(matches) != 1:
+        raise ValueError("expected exactly one inline action_scale list in the pinned config")
+    match = matches[0]
+    tokens = [token.strip() for token in match.group("values").split(",")]
+    if len(tokens) != 29 or any(not token for token in tokens):
+        raise ValueError("inline action_scale list must contain exactly 29 values")
+    for index in RUN38_DIAGNOSTIC_KNEE_ACTION_INDICES:
+        if float(tokens[index]) != RUN38_BASE_KNEE_ACTION_SCALE:
+            raise ValueError("text and parsed knee action scales disagree")
+        tokens[index] = f"{RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE:.2f}"
+    replacement = (
+        match.group("prefix") + "[" + ", ".join(tokens) + "]" + match.group("suffix")
+    )
+    overlay_text = source_text[:match.start()] + replacement + source_text[match.end():]
+    try:
+        derived = yaml.safe_load(overlay_text)
+    except Exception as exc:
+        raise ValueError(f"derived FoundationWalk config YAML is invalid: {exc}") from exc
+    expected = copy.deepcopy(baseline)
+    expected["BaseConfig"]["action_scale"][9:11] = [
+        RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE,
+        RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE,
+    ]
+    if derived != expected:
+        raise ValueError("derived config changed values outside the two knee action scales")
+    overlay_bytes = overlay_text.encode("utf-8")
+    return overlay_bytes, {
+        "schema": "robotsim.issue80.foundationwalk-knee-scale-diagnostic.v1",
+        "classification": "SIMULATION_ONLY_DIAGNOSTIC_CONFIG",
+        "source_sha256": source_sha256,
+        "overlay_sha256": hashlib.sha256(overlay_bytes).hexdigest(),
+        "changed_values": [
+            {"action_index": index, "joint": action_seq[index],
+             "source": RUN38_BASE_KNEE_ACTION_SCALE,
+             "diagnostic": RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE}
+            for index in RUN38_DIAGNOSTIC_KNEE_ACTION_INDICES
+        ],
+        "all_other_yaml_values_unchanged": True,
+        "trained_policy_weights_changed": False,
+        "vendor_model_or_joint_limits_changed": False,
+    }
+
+
+def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
+    """Keep a derived config result distinct from original-config acceptance."""
+    if baseline_classification == "FIRST_PHYSICAL_WALKING_PASS":
+        return "SIMULATION_ONLY_DIAGNOSTIC_MOTION_AND_STOP_OBSERVED"
+    if baseline_classification == "FIRST_PHYSICAL_WALKING_MOTION_CONFIRMED_STOP_UNVERIFIED":
+        return "SIMULATION_ONLY_DIAGNOSTIC_MOTION_STOP_UNVERIFIED"
+    if baseline_classification == "FIRST_PHYSICAL_WALKING_FAIL":
+        return "SIMULATION_ONLY_DIAGNOSTIC_SAFETY_FAILURE"
+    return "SIMULATION_ONLY_DIAGNOSTIC_NO_WALKING_PASS"
+
+
 class BoundedRun:
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -205,6 +325,8 @@ class BoundedRun:
         self.reset_classification = "NOT_ATTEMPTED"
         self.m1_result: dict[str, Any] | None = None
         self.mc_rl_debug_capture: dict[str, Any] | None = None
+        self.foundationwalk_config_overlay: Path | None = None
+        self.foundationwalk_config_overlay_manifest: dict[str, Any] | None = None
         self.reset_analysis: dict[str, Any] | None = None
         self.before_reset_image: dict[str, Any] | None = None
         self.reset_dispatch_payload: dict[str, Any] | None = None
@@ -269,6 +391,84 @@ class BoundedRun:
         cmd += [self.container, "bash", "-lc", shell]
         return self.run(name, cmd, timeout_s=timeout_s, check=check)
 
+    def prepare_foundationwalk_diagnostic_overlay(self) -> None:
+        """Create an evidence-local, immutable Run38 knee-scale diagnostic copy."""
+        if not getattr(self.args, "run38_knee_scale_diagnostic", False):
+            return
+        runtime_inputs = {
+            "foundationwalk_config": (
+                FOUNDATIONWALK_CONFIG_RELATIVE,
+                RUN38_FOUNDATIONWALK_CONFIG_SHA256,
+            ),
+            "foundationwalk_onnx": (
+                Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl_models/foundationwalk_v1.onnx"),
+                RUN38_FOUNDATIONWALK_ONNX_SHA256,
+            ),
+            "foundationwalk_runner": (
+                Path("mc/lib/libmc_runner_rl_foundationwalk.so.0.0.0"),
+                RUN38_FOUNDATIONWALK_RUNNER_SHA256,
+            ),
+            "action_setting": (
+                Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/action_setting.yaml"),
+                RUN38_ACTION_SETTING_SHA256,
+            ),
+            "robot_model": (
+                Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/robot_model.yaml"),
+                RUN38_ROBOT_MODEL_SHA256,
+            ),
+            "mc_sim_config": (
+                Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"),
+                RUN38_MC_SIM_CONFIG_SHA256,
+            ),
+        }
+        runtime_hashes: dict[str, str] = {}
+        for name, (relative_path, expected_sha256) in runtime_inputs.items():
+            actual_sha256 = hashlib.sha256((RUNTIME / relative_path).read_bytes()).hexdigest()
+            if actual_sha256 != expected_sha256:
+                raise RuntimeError(
+                    f"Run38 {name} provenance mismatch: expected {expected_sha256}, got {actual_sha256}"
+                )
+            runtime_hashes[name] = actual_sha256
+        try:
+            import yaml
+
+            action_setting = yaml.safe_load(
+                (RUNTIME / runtime_inputs["action_setting"][0]).read_text(encoding="utf-8")
+            )
+            locomotion_default = action_setting["transition_actions"]["LOCOMOTION_DEFAULT"]
+            if (
+                len(locomotion_default) != 1
+                or locomotion_default[0]["runners"] != [{
+                    "name": "rl_foundationwalk",
+                    "cfg_path": "./rl/foundationwalk_config.yaml",
+                }]
+            ):
+                raise ValueError("LOCOMOTION_DEFAULT no longer resolves to the Run38 FoundationWalk config")
+        except Exception as exc:
+            raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
+        source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
+        source_bytes = source.read_bytes()
+        overlay_bytes, manifest = build_run38_foundationwalk_knee_scale_overlay(source_bytes)
+        overlay = self.evidence / "foundationwalk_knee_scale_019.yaml"
+        with overlay.open("xb") as stream:
+            stream.write(overlay_bytes)
+        manifest.update({
+            "source_path": str(source),
+            "overlay_path": str(overlay),
+            "verified_runtime_input_sha256": runtime_hashes,
+            "runtime_image_digest": IMAGE_DIGEST,
+            "runtime_mc_binary_modified": False,
+            "runtime_onnx_modified": False,
+            "source_limits_modified": False,
+            "safety_gates_modified": False,
+        })
+        manifest_path = self.evidence / "foundationwalk_config_overlay_manifest.json"
+        with manifest_path.open("x", encoding="utf-8") as stream:
+            json.dump(manifest, stream, indent=2)
+            stream.write("\n")
+        self.foundationwalk_config_overlay = overlay
+        self.foundationwalk_config_overlay_manifest = manifest
+
     def stage_research_scripts(self) -> None:
         """Stage exact research code snapshots without overwriting evidence."""
         sources = (
@@ -317,6 +517,20 @@ class BoundedRun:
             "--mount", f"type=bind,source={RUNTIME},target=/workspace/raicom2026",
             "--mount", f"type=bind,source={self.evidence},target=/workspace/evidence",
             "--mount", "type=bind,source=/tmp/.X11-unix,target=/tmp/.X11-unix,readonly",
+        ]
+        if self.foundationwalk_config_overlay is not None:
+            if (
+                self.foundationwalk_config_overlay.is_symlink()
+                or not self.foundationwalk_config_overlay.is_file()
+                or self.foundationwalk_config_overlay.parent != self.evidence
+            ):
+                raise RuntimeError("diagnostic FoundationWalk overlay must be a regular file in this evidence directory")
+            cmd += [
+                "--mount",
+                "type=bind,source=" + str(self.foundationwalk_config_overlay)
+                + ",target=" + FOUNDATIONWALK_CONFIG_CONTAINER_PATH + ",readonly",
+            ]
+        cmd += [
             "-e", "DISPLAY=:0", "-e", "HOME=/tmp", "-e", "ROS_DOMAIN_ID=20",
             "-e", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp", IMAGE, "sleep", "infinity",
         ]
@@ -340,6 +554,21 @@ class BoundedRun:
         }
         if not required_environment.issubset(environment):
             raise RuntimeError("container ROS domain/RMW do not match the isolated M1 contract")
+        if self.foundationwalk_config_overlay is not None:
+            mounts = container.get("Mounts", [])
+            matching_mounts = [
+                mount for mount in mounts
+                if mount.get("Destination") == FOUNDATIONWALK_CONFIG_CONTAINER_PATH
+            ]
+            if len(matching_mounts) != 1:
+                raise RuntimeError("diagnostic FoundationWalk config mount was not unique")
+            mount = matching_mounts[0]
+            if (
+                Path(str(mount.get("Source", ""))).resolve() != self.foundationwalk_config_overlay.resolve()
+                or mount.get("RW") is not False
+                or mount.get("Type") != "bind"
+            ):
+                raise RuntimeError("diagnostic FoundationWalk config mount source/type/read-only state is invalid")
         with (self.evidence / "container-inspect-start.json").open("x", encoding="utf-8") as f:
             f.write(inspect.stdout)
 
@@ -362,6 +591,31 @@ class BoundedRun:
             "timeout 25s bash -lc 'until grep -q \"MujocoSimModule Started Succeeded\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
             timeout_s=26.0,
         )
+        if self.foundationwalk_config_overlay is not None:
+            expected = str(self.foundationwalk_config_overlay_manifest["overlay_sha256"])
+            checked = self.docker_exec(
+                "verify_mounted_foundationwalk_config_overlay",
+                "sha256sum " + shlex.quote(FOUNDATIONWALK_CONFIG_CONTAINER_PATH),
+                timeout_s=4.0,
+            )
+            actual = checked.stdout.split()[0] if checked.stdout.split() else ""
+            if actual != expected:
+                raise RuntimeError(
+                    "container sees an unexpected FoundationWalk config overlay SHA-256: "
+                    f"{actual}"
+                )
+            verification = {
+                "schema": "robotsim.issue80.foundationwalk-overlay-runtime-verification.v1",
+                "container_path": FOUNDATIONWALK_CONFIG_CONTAINER_PATH,
+                "expected_sha256": expected,
+                "observed_sha256": actual,
+                "matched_before_mc_launch": True,
+            }
+            with (self.evidence / "foundationwalk_config_overlay_runtime_verification.json").open(
+                "x", encoding="utf-8"
+            ) as stream:
+                json.dump(verification, stream, indent=2)
+                stream.write("\n")
         self.docker_exec(
             "start_mc_after_sim_topics",
             "bash /workspace/evidence/launch_mc.sh > /workspace/evidence/mc-console.log 2>&1",
@@ -1059,6 +1313,7 @@ class BoundedRun:
             result["fault"] = "explicit maintainer standing-takeover or first-motion authorization is required before runtime"
             return result
         try:
+            self.prepare_foundationwalk_diagnostic_overlay()
             self.stage_research_scripts()
             self.start_container()
             self.start_sim_first()
@@ -1157,6 +1412,20 @@ class BoundedRun:
             self.cleanup()
             result["shutdown_classification"] = self.classify_mc_shutdown()
             self.apply_container_teardown_gate(result)
+            if self.foundationwalk_config_overlay_manifest is not None:
+                baseline_classification = str(
+                    result.get("outcome_classification", self.outcome_classification)
+                )
+                result["foundationwalk_config_diagnostic"] = {
+                    "classification": "SIMULATION_ONLY_DIAGNOSTIC_CONFIG",
+                    "manifest": self.foundationwalk_config_overlay_manifest,
+                    "underlying_m1_classification": baseline_classification,
+                    "source_faithful_original_config_acceptance": "NOT_TESTED",
+                }
+                result["outcome_classification"] = classify_run38_diagnostic_outcome(
+                    baseline_classification
+                )
+                result["status_scope"] = "diagnostic_config_only; never original_config_acceptance"
             output = self.evidence / "auto-reset-run-result.json"
             with output.open("x", encoding="utf-8") as f:
                 json.dump(result, f, indent=2)
@@ -1194,6 +1463,14 @@ def main() -> int:
         action="store_true",
         help="start the optional version-matched read-only McRLDebug observer before M1 motion",
     )
+    parser.add_argument(
+        "--run38-knee-scale-diagnostic",
+        action="store_true",
+        help=(
+            "one SIMULATION_ONLY counterfactual: derived FoundationWalk config with only the two "
+            "knee action_scale entries changed from 0.25 to 0.19"
+        ),
+    )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
@@ -1208,6 +1485,24 @@ def main() -> int:
         or not 0.0 < args.ramp_start_speed <= args.forward_speed
     ):
         parser.error("ramp start must be positive and no faster than target speed")
+    if args.run38_knee_scale_diagnostic:
+        if not args.maintainer_authorized_first_motion:
+            parser.error("Run38 knee-scale diagnostic requires the authorized first-motion gate")
+        if (
+            abs(args.forward_speed - 0.112) > 1e-9
+            or abs(args.pulse_duration - 3.0) > 1e-9
+            or abs(args.extra_stop_observation - 5.0) > 1e-9
+            or args.ramp_duration_s != 0.0
+            or args.ramp_start_speed is not None
+            or args.startup_speed is not None
+            or args.startup_transition_displacement is not None
+            or args.startup_transition_timeout_s != 0.0
+            or not args.capture_mc_rl_debug
+        ):
+            parser.error(
+                "Run38 diagnostic is fixed to 0.112 m/s, 3.0 s, 5 s post-stop observation, "
+                "no velocity ramp, and McRLDebug capture"
+            )
     run=BoundedRun(args)
     result=run.execute()
     print(json.dumps(result,indent=2))
