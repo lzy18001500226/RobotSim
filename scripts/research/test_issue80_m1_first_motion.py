@@ -312,6 +312,34 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertEqual(measure_post_stop_forward_tail(samples[-1:], 0.001)["status"],
                          "INCOMPLETE_FINAL_WINDOW")
 
+    def test_post_zero_stop_action_runs_only_after_handshake_and_zero_window(self):
+        from issue80_m1_first_motion import run_first_motion_window
+        clock = FakeClock()
+        sample = self.snapshot()
+        seen = []
+        def publish(value):
+            if value == 0.2:
+                sample["get_source_name"] = VELOCITY_SOURCE_NAME
+                sample["common_source_name"] = VELOCITY_SOURCE_NAME
+                sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
+            seen.append((value, clock.now()))
+        result = run_first_motion_window(
+            sample=lambda: sample, publish=publish,
+            registration={"success": True, "selected_action": "ADD"},
+            set_action={"accepted_by_service": True, "header_code": 0, "status_value": 1},
+            joint_limits=LIMITS, baseline_forward_displacements_m=[0.0, 0.0, 0.0],
+            authorized=True, clock=clock.now, sleep=clock.sleep,
+            state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            after_zero_stop=lambda: {"success": True, "mode": "STAND_DEFAULT"},
+        )
+        action = result["after_zero_stop_action"]
+        self.assertTrue(action["success"])
+        self.assertEqual(action["mode"], "STAND_DEFAULT")
+        self.assertTrue(any(value == 0.0 for value, _ in seen))
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+
     def test_leg_limits_are_loaded_from_the_installed_robot_model_yaml(self) -> None:
         names = [f"leg_joint_{index}" for index in range(12)]
         document = {

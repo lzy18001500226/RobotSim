@@ -1343,6 +1343,7 @@ def run_first_motion_window(
     forward_command_m_s: float = FORWARD_COMMAND_M_S,
     pulse_duration_s: float = PULSE_LIMIT_S,
     extra_post_stop_observe_s: float = 0.0,
+    after_zero_stop: Callable[[], Mapping[str, Any]] | None = None,
     shutdown_event: threading.Event | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
     state_timeout_s: float = 0.5,
@@ -1369,6 +1370,7 @@ def run_first_motion_window(
         "nonzero_publish_calls_returned": 0,
         "samples": [],
         "fault": None,
+        "after_zero_stop_action": None,
     }
     if not authorized:
         result["status"] = "NOT_AUTHORIZED"
@@ -1557,6 +1559,14 @@ def run_first_motion_window(
         result["zero_stop"] = stop_result
         if watchdog is not None:
             watchdog.cancel()
+        if after_zero_stop is not None and tracker.control_handshake_confirmed and result["nonzero_publish_calls_returned"] > 0:
+            try:
+                result["after_zero_stop_action"] = dict(after_zero_stop())
+            except Exception as exc:
+                result["after_zero_stop_action"] = {
+                    "success": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
         first_post_stop_sample_attempt_s = clock()
         try:
             first_post_stop = sample()
@@ -1738,6 +1748,8 @@ def run_first_motion_window(
         result["status"] = "ZERO_STOP_CALL_RETURN_GAP_EXCEEDED_SOURCE_TIMEOUT"
     elif post_stop_fault:
         result["status"] = "POST_STOP_SAFETY_FAILED"
+    elif result.get("after_zero_stop_action") is not None and result["after_zero_stop_action"].get("success") is not True:
+        result["status"] = "POST_STOP_STAND_REQUEST_FAILED"
     elif post_stop_samples == 0:
         result["status"] = "POST_STOP_OBSERVATION_MISSING"
     elif result["nonzero_publish_calls_returned"] == 0:

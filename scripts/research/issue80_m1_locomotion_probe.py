@@ -505,6 +505,52 @@ class FocusedM1Diagnostic(Node):
         self.events.append({"event": "register_input_source", **registration})
         return registration
 
+    def request_postwalk_stand_once(self) -> dict[str, Any]:
+        """Reassert the vendor stand action once after a confirmed stop window."""
+        snapshot = self._first_motion_snapshot()
+        fault = snapshot_fault(
+            snapshot, self.joint_limits,
+            state_timeout_s=self.args.state_timeout,
+            min_root_z=self.args.min_root_z,
+            max_tilt_deg=self.args.max_tilt_deg,
+        )
+        if fault:
+            raise RuntimeError(f"post-stop stand request safety gate failed: {fault}")
+        if (
+            snapshot.get("get_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
+            or snapshot.get("common_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
+        ):
+            raise RuntimeError("post-stop stand request observed unrelated MC action")
+        if snapshot.get("common_source_name") not in ("", self.source):
+            raise RuntimeError("post-stop stand request observed conflicting active source")
+        request = SetMcAction.Request()
+        request.header = RequestHeader()
+        request.header.stamp = self.get_clock().now().to_msg()
+        request.source = ACTION_SOURCE_NAME
+        request.command = McActionCommand()
+        request.command.action_desc = MODE_STAND
+        submitted = datetime.now(timezone.utc).isoformat()
+        response = self._call(
+            self.set_mode_client, request, "SetMcAction:post-stop-STAND_DEFAULT", timeout=1.0
+        )
+        payload = _json_safe(response.response)
+        diagnostics = classify_set_mc_action_response(
+            int(response.response.header.code),
+            int(response.response.status.value),
+            str(response.response.message),
+        )
+        result = {
+            "wall_utc_submitted": submitted,
+            "wall_utc_returned": datetime.now(timezone.utc).isoformat(),
+            "request": _json_safe(request),
+            "response": payload,
+            **diagnostics,
+        }
+        result["success"] = bool(diagnostics.get("accepted_by_service"))
+        self.events.append({"event": "set_mc_action_post_stop_stand", **result})
+        result["mode_readback_after_request"] = self.read_mode("post_stop_stand_reassert")
+        return result
+
     def request_ld_once(self) -> dict[str, Any]:
         self._wait_service(self.set_mode_client, SET_MC_ACTION_SERVICE)
         request = SetMcAction.Request()
@@ -1029,6 +1075,7 @@ class FocusedM1Diagnostic(Node):
                 forward_command_m_s=self.args.forward_speed,
                 pulse_duration_s=self.args.pulse_duration,
                 extra_post_stop_observe_s=self.args.extra_stop_observation,
+                after_zero_stop=self.request_postwalk_stand_once,
                 shutdown_event=self.interrupted,
                 on_sample=self._trace_first_motion_sample,
                 state_timeout_s=self.args.state_timeout,
