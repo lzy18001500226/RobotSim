@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import time
@@ -23,6 +24,7 @@ from issue80_m1_auto_reset_run import (
     SIM_LAUNCH,
     X11_HELPER,
 )
+import issue80_process_identity as process_identity
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
 WORKTREE = Path("/home/lzy18001500226/robotsim-issue80-x2-navigation-20261019")
@@ -97,6 +99,7 @@ class N2Run(BoundedRun):
         self.runtime_hashes_after: dict[str, str] = {}
         self.runtime_hash_changes: dict[str, Any] = {}
         self.current_gate = "NOT_STARTED"
+        self.process_identities: dict[str, dict[str, Any]] = {}
 
     def record_stage(self, stage: str, outcome: str, detail: str | None = None) -> None:
         path = self.evidence / "n2_stage_timeline.jsonl"
@@ -144,12 +147,9 @@ class N2Run(BoundedRun):
                      and ("raicom2026" in row["name"] or "humble-raicom-runtime" in row["image"])]
         if conflicts:
             raise RuntimeError(f"another RAICOM runtime container is active: {conflicts}")
-        host_processes = {}
-        for executable in ("aima-sim-app", "aima-mc-app-main", "soc_sim"):
-            proc = self.run("n2_host_proc_" + executable, ["pgrep", "-a", "-x", executable], check=False)
-            host_processes[executable] = proc.stdout.strip().splitlines()
-            if proc.returncode == 0 and proc.stdout.strip():
-                raise RuntimeError(f"conflicting host process: {proc.stdout.strip()}")
+        host_processes = process_identity.scan_processes(("aima-sim-app", "aima-mc-app-main", "soc_sim"))
+        if host_processes:
+            raise RuntimeError(f"conflicting or ambiguous host X2 runtime processes: {host_processes}")
         ignore = self.run("n2_runtime_ignore", ["git", "-C", str(REPO), "check-ignore", "-v",
             "simulation/mujoco/raicom2026"]).stdout.strip()
         self.runtime_hashes_before = {relative: sha256(RUNTIME / relative) for relative in HASH_FILES}
@@ -174,6 +174,7 @@ class N2Run(BoundedRun):
             (Path(MC_LAUNCH).resolve(strict=True), "launch_mc.sh"),
             (Path(__file__).resolve(strict=True), "issue80_n2_runtime_run.py"),
             (TRACE_SCRIPT.resolve(strict=True), "issue80_n2_runtime_trace.py"),
+            (Path(process_identity.__file__).resolve(strict=True), "issue80_process_identity.py"),
         )
         records: list[dict[str, str]] = []
         for source, staged_name in sources:
@@ -202,6 +203,8 @@ class N2Run(BoundedRun):
         wait = "timeout 25s bash -c 'until grep -Fq \"MujocoSimModule Started Succeeded\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'"
         self.docker_exec("n2_wait_sim_ready", wait, timeout_s=27.0)
         self.record_stage("simulator_ready", "PASS", "MujocoSimModule Started Succeeded")
+        self.process_identities["simulator"] = self.wait_for_container_process(
+            "simulator", "sim_mujoco/bin/aima-sim-app", timeout_s=8.0)
         observer = (
             "source /opt/ros/humble/setup.bash && "
             "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
@@ -216,6 +219,28 @@ class N2Run(BoundedRun):
         if not ready_path.exists():
             raise RuntimeError("simulator did not publish fresh odom/IMU/leg-state")
         self.sim_ready_record = json.loads(ready_path.read_text(encoding="utf-8"))
+
+    def wait_for_container_process(self, role: str, relative_path: str,
+                                   timeout_s: float) -> dict[str, Any]:
+        relative = Path(relative_path).as_posix()
+        expected_hash = file_sha256(RUNTIME / relative)
+        expected_executable = f"/workspace/raicom2026/{relative}"
+        command = "python3 /workspace/evidence/issue80_process_identity.py wait " + " ".join((
+            "--expected-executable " + shlex.quote(expected_executable),
+            "--expected-sha256 " + shlex.quote(expected_hash),
+            "--timeout-s " + shlex.quote(f"{timeout_s:.2f}"), "--poll-s 0.2",
+        ))
+        result = self.docker_exec(f"n2_wait_{role}_identity", command,
+                                  timeout_s=timeout_s + 3.0, check=False)
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{role} identity helper returned invalid JSON: {result.stdout[-500:]}") from exc
+        if result.returncode != 0 or payload.get("status") != "VERIFIED":
+            raise RuntimeError(f"{role} process identity was not verified: {payload}")
+        record = payload["process"]
+        record.update({"expected_executable": expected_executable, "expected_sha256": expected_hash})
+        return record
 
     def reset_and_verify_before_mc(self) -> None:
         pid, title, window_id = self.inspect_window()
@@ -300,10 +325,11 @@ class N2Run(BoundedRun):
         self.docker_exec("n2_launch_mc_once_after_reset",
             "bash /workspace/evidence/launch_mc.sh > /workspace/evidence/mc-console.log 2>&1",
             timeout_s=4.0, detached=True)
-        wait = "timeout 15s bash -c 'until pgrep -x aima-mc-app-main >/dev/null; do sleep 0.2; done'"
-        self.docker_exec("n2_wait_mc_process", wait, timeout_s=17.0)
+        self.process_identities["mc"] = self.wait_for_container_process(
+            "mc", "mc/bin/aima-mc-app-main", timeout_s=15.0)
         self.mc_started = True
-        self.record_stage("mc_process_started", "STARTED", "aima-mc-app-main was observed in the container")
+        self.record_stage("mc_process_started", "STARTED",
+                          f"verified PID {self.process_identities['mc']['pid']} by procfs executable/cmdline/hash")
 
     def observe_runtime_once(self) -> None:
         summary_path = self.evidence / "n2_runtime_summary.json"
@@ -320,14 +346,42 @@ class N2Run(BoundedRun):
     def stop_runtime_processes(self) -> None:
         if not self.container_created:
             return
-        result = self.docker_exec(
-            "n2_graceful_stop_processes",
-            "for p in aima-mc-app-main soc_sim aima-sim-app; do pkill -TERM -x \"$p\" 2>/dev/null || true; done; sleep 1; "
-            "printf 'remaining processes: '; (pgrep -a -x aima-mc-app-main; pgrep -a -x soc_sim; pgrep -a -x aima-sim-app) 2>/dev/null || true",
-            timeout_s=4.0, check=False,
-        )
-        with (self.evidence / "n2_process_stop.txt").open("x", encoding="utf-8") as stream:
-            stream.write(result.stdout + result.stderr)
+        results: list[dict[str, Any]] = []
+        for role in ("mc", "simulator"):
+            record = self.process_identities.get(role)
+            if not record:
+                results.append({"role": role, "status": "NOT_RECORDED_NO_SIGNAL_SENT"})
+                continue
+            identity_args = " ".join((
+                "--pid " + shlex.quote(str(record["pid"])),
+                "--expected-executable " + shlex.quote(record["expected_executable"]),
+                "--expected-sha256 " + shlex.quote(record["expected_sha256"]),
+                "--start-ticks " + shlex.quote(str(record["start_ticks"])),
+            ))
+            term = self.docker_exec(f"n2_terminate_{role}",
+                "python3 /workspace/evidence/issue80_process_identity.py terminate " + identity_args,
+                timeout_s=3.0, check=False)
+            try:
+                term_doc = json.loads(term.stdout)
+            except json.JSONDecodeError:
+                term_doc = {"status": "INVALID_TERMINATION_JSON", "stdout": term.stdout[-500:],
+                            "stderr": term.stderr[-500:]}
+            entry: dict[str, Any] = {"role": role, "pid": record["pid"],
+                                     "terminate_returncode": term.returncode, "terminate": term_doc}
+            if term_doc.get("status") == "SIGTERM_SENT":
+                wait = self.docker_exec(f"n2_wait_{role}_exit",
+                    "python3 /workspace/evidence/issue80_process_identity.py wait-exit " + identity_args +
+                    " --timeout-s 4.0", timeout_s=5.0, check=False)
+                try:
+                    entry["wait_exit"] = json.loads(wait.stdout)
+                except json.JSONDecodeError:
+                    entry["wait_exit"] = {"status": "INVALID_WAIT_EXIT_JSON", "stdout": wait.stdout[-500:],
+                                           "stderr": wait.stderr[-500:]}
+            results.append(entry)
+        self.process_identities["shutdown"] = {"results": results}
+        with (self.evidence / "n2_process_stop.json").open("x", encoding="utf-8") as stream:
+            json.dump({"process_identities": self.process_identities}, stream, indent=2)
+            stream.write("\n")
 
     def run_n2(self) -> dict[str, Any]:
         result: dict[str, Any] = {"schema": "robotsim.issue80.n2.runtime-result.v1",

@@ -289,8 +289,8 @@ class RuntimeTrace(Node):
 
 
 def trace_main(args: argparse.Namespace) -> int:
-    if not 20 <= args.duration <= 55:
-        raise ValueError("trace duration must be within 20..55 seconds")
+    if not 20 <= args.duration <= 150:
+        raise ValueError("trace duration must be within 20..150 seconds")
     rclpy.init()
     node = RuntimeTrace(Path(args.output_dir), args.duration, args.stop_file)
     try:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One bounded N3 reproduction of the previously used MuJoCo -> MC -> SD -> Reset sequence."""
+"""One bounded N4 reproduction of the previously used MuJoCo -> MC -> SD -> Reset sequence."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import shlex
 import shutil
 import sys
 import time
@@ -15,13 +17,14 @@ from pathlib import Path
 from typing import Any
 
 import issue80_n2_runtime_run as n2
+import issue80_process_identity as process_identity
 from issue80_m1_auto_reset_run import BoundedRun, IMAGE, IMAGE_DIGEST
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
 WORKTREE = Path("/home/lzy18001500226/robotsim-issue80-x2-navigation-20261019")
 TRACE_SCRIPT = WORKTREE / "scripts/research/issue80_n2_runtime_trace.py"
 EXPECTED_BRANCH = "research/issue80-x2-navigation-m1-diagnostic-20261019"
-EXPECTED_HEAD = "617ebaba0fa3e291f5fcea795df6c582b5f15535"
+EXPECTED_HEAD = "cc9f37b840f3cbddb97f464c03ebfe7554190b2c"
 ROOT_Z_SCREENING_M = 0.52
 MAX_TILT_SCREENING_DEG = 15.0
 POST_RESET_OBSERVE_S = 30.0
@@ -35,6 +38,50 @@ def write_new(path: Path, payload: Any) -> None:
     with path.open("x", encoding="utf-8") as stream:
         json.dump(payload, stream, indent=2, ensure_ascii=False, allow_nan=False)
         stream.write("\n")
+
+
+def extract_mc_service_identity(console_text: str, service_inventory: str,
+                                process: dict[str, Any] | None) -> dict[str, Any]:
+    """Use MC's own AimRT registration log as the installed Humble CLI has no service-info verb."""
+    targets = {
+        "/aimdk_5Fmsgs/srv/GetMcAction": "/aimdk_msgs/srv/GetMcAction",
+        "/aimdk_5Fmsgs/srv/GetCurrentInputSource": "/aimdk_msgs/srv/GetCurrentInputSource",
+        "/aimdk_5Fmsgs/srv/SetMcAction": "/aimdk_msgs/srv/SetMcAction",
+    }
+    registrations: dict[str, dict[str, Any]] = {}
+    pattern = re.compile(
+        r"Service 'ros2:(?P<type>[^']+)' is registered to ros2 rpc backend, "
+        r"module '(?P<module>[^']+)', ros2 func name is '(?P<name>[^']+)'"
+    )
+    for line in console_text.splitlines():
+        match = pattern.search(line)
+        if not match:
+            continue
+        fields = match.groupdict()
+        if fields["name"] in targets:
+            registrations[fields["name"]] = {
+                "ros2_type_name": fields["type"], "module": fields["module"],
+                "ros2_service_name": fields["name"], "registration_log_line": line.strip(),
+            }
+    graph_nodes = sorted(set(re.findall(r"^(/mc_ros2_node[0-9]+)/describe_parameters",
+                                        service_inventory, flags=re.MULTILINE)))
+    return {
+        "status": "MC_MODULE_SERVICE_REGISTRATIONS_OBSERVED" if registrations else "MC_SERVICE_REGISTRATIONS_NOT_FOUND",
+        "service_registrations": registrations,
+        "observed_mc_ros2_graph_nodes": graph_nodes,
+        "mc_process_identity": ({key: process.get(key) for key in
+                                 ("pid", "exe_path", "exe_sha256", "start_ticks")} if process else None),
+        "identity_basis": "MC AimRT registration logs name MotionControlModule as RPC service owner; ROS graph inventory supplies node candidates.",
+        "limitations": ["Installed ROS 2 CLI does not support `ros2 service info`; node-level endpoint association was not queried."],
+    }
+
+
+def classify_mc_shutdown_log(console_text: str) -> str:
+    if "Segmentation fault" in console_text or "SIGSEGV" in console_text:
+        return "MC_SHUTDOWN_SEGFAULT_OBSERVED"
+    if "MotionControlModule Shutdown Succeeded" in console_text:
+        return "MC_MODULE_SHUTDOWN_MARKER_OBSERVED_NO_SEGFAULT_LINE"
+    return "MC_SHUTDOWN_NOT_CONFIRMED_IN_LOG"
 
 
 def read_rows(path: Path) -> list[dict[str, Any]]:
@@ -76,6 +123,7 @@ class N3Run(BoundedRun):
         self.trace_started = False
         self.reset_event: dict[str, Any] | None = None
         self.reset_attempt_ns: int | None = None
+        self.post_reset_completion_sample_ns: int | None = None
         self.reset_analysis: dict[str, Any] | None = None
         self.summary: dict[str, Any] | None = None
         self.runtime_hashes_before: dict[str, str] = {}
@@ -86,13 +134,11 @@ class N3Run(BoundedRun):
         self.simulator_window: dict[str, Any] | None = None
         self.post_observation_image: dict[str, Any] | None = None
         self.current_gate = "preflight"
-
-    def record_stage(self, stage: str, outcome: str, detail: str | None = None) -> None:
-        path = self.evidence / "n3_stage_timeline.jsonl"
-        item = {"stage": stage, "outcome": outcome, "wall_utc": n2.utc_now(),
-                "wall_monotonic_ns": time.monotonic_ns(), "detail": detail}
-        with path.open("a" if path.exists() else "x", encoding="utf-8") as stream:
-            stream.write(json.dumps(item, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n")
+        self.process_identities: dict[str, dict[str, Any]] = {}
+        self.process_health_checks: list[dict[str, Any]] = []
+        self.process_cleanup_results: list[dict[str, Any]] = []
+        self.service_server_identity: dict[str, dict[str, Any]] = {}
+        self.mc_shutdown_diagnostic = "NOT_CAPTURED"
 
     def record_stage(self, stage: str, outcome: str, detail: str | None = None) -> None:
         path = self.evidence / "n3_stage_timeline.jsonl"
@@ -105,17 +151,17 @@ class N3Run(BoundedRun):
         attempt_path = self.evidence / "attempt.json"
         attempt_record = json.loads(attempt_path.read_text(encoding="utf-8"))
         if attempt_record.get("attempt_id") != self.args.attempt_id or attempt_record.get("authorized_attempts") != 1:
-            raise RuntimeError("evidence reservation does not match the one-shot N3 authorization")
+            raise RuntimeError("evidence reservation does not match the one-shot N4 authorization")
         existing = sorted(p.name for p in self.evidence.iterdir() if p.name not in {
             ".robotsim-output-reservation.json", "attempt.json"})
         if existing:
-            raise RuntimeError(f"N3 evidence directory was not fresh at preflight start: {existing}")
+            raise RuntimeError(f"N4 evidence directory was not fresh at preflight start: {existing}")
         actual_root = self.run("n3_worktree_root", ["git", "-C", str(WORKTREE), "rev-parse", "--show-toplevel"]).stdout.strip()
         if Path(actual_root).resolve(strict=True) != WORKTREE.resolve(strict=True):
             raise RuntimeError(f"worktree root mismatch: {actual_root}")
         actual_runner = Path(__file__).resolve(strict=True)
         if actual_runner != (WORKTREE / "scripts/research/issue80_n3_restore_m1_startup.py").resolve(strict=True):
-            raise RuntimeError(f"N3 runner is not in the verified worktree: {actual_runner}")
+            raise RuntimeError(f"N4 runner is not in the verified worktree: {actual_runner}")
         self.branch = self.run("n3_branch", ["git", "-C", str(WORKTREE), "branch", "--show-current"]).stdout.strip()
         self.head = self.run("n3_head", ["git", "-C", str(WORKTREE), "rev-parse", "HEAD"]).stdout.strip()
         if (self.branch, self.head) != (EXPECTED_BRANCH, EXPECTED_HEAD):
@@ -138,22 +184,23 @@ class N3Run(BoundedRun):
                 raise RuntimeError(f"malformed Docker inventory row: {line!r}")
             containers.append({"id": parts[0], "name": parts[1], "image": parts[2], "status": parts[3]})
         if any(c["name"] == self.container for c in containers):
-            raise RuntimeError(f"N3 container name already exists: {self.container}")
+            raise RuntimeError(f"N4 container name already exists: {self.container}")
         active = [c for c in containers if c["status"].startswith("Up ")
                   and ("raicom2026" in c["name"] or "humble-raicom-runtime" in c["image"])]
         if active:
             raise RuntimeError(f"conflicting RAICOM containers are active: {active}")
-        processes = {}
-        for process in ("aima-sim-app", "aima-mc-app-main", "soc_sim"):
-            p = self.run("n3_host_process_" + process, ["pgrep", "-a", "-x", process], check=False)
-            processes[process] = p.stdout.strip().splitlines()
-            if p.returncode == 0 and p.stdout.strip():
-                raise RuntimeError(f"conflicting host process: {p.stdout.strip()}")
+        processes = process_identity.scan_processes(("aima-sim-app", "aima-mc-app-main", "soc_sim"))
+        with (self.evidence / "n4_host_process_identity_scan.json").open("x", encoding="utf-8") as stream:
+            json.dump({"method": "exact /proc exe basename plus cmdline argv0 resolution",
+                       "processes": processes}, stream, indent=2)
+            stream.write("\n")
+        if processes:
+            raise RuntimeError(f"conflicting or ambiguous host X2 runtime processes: {processes}")
         ignored = self.run("n3_runtime_ignore", ["git", "-C", str(REPO), "check-ignore", "-v",
             "simulation/mujoco/raicom2026"]).stdout.strip()
         self.runtime_hashes_before = {relative: sha256(n2.RUNTIME / relative) for relative in n2.HASH_FILES}
         self.preflight_record = {
-            "schema": "robotsim.issue80.n3.preflight.v1", "attempt_id": self.args.attempt_id,
+            "schema": "robotsim.issue80.n4.preflight.v1", "attempt_id": self.args.attempt_id,
             "worktree_root": actual_root, "runner_path": str(actual_runner), "branch": self.branch,
             "head": self.head, "attempt_record": attempt_record, "docker_server": docker, "image_id": image.split()[0],
             "containers": containers, "host_processes": processes, "display": os.environ["DISPLAY"],
@@ -177,11 +224,15 @@ class N3Run(BoundedRun):
         wait = "timeout 25s bash -c 'until grep -Fq \"MujocoSimModule Started Succeeded\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'"
         self.docker_exec("n3_wait_simulator_ready", wait, timeout_s=27.0)
         self.record_stage("simulator_ready", "PASS", "MujocoSimModule Started Succeeded")
+        self.process_identities["simulator"] = self.wait_for_container_process(
+            "simulator", "sim_mujoco/bin/aima-sim-app", timeout_s=8.0)
+        self.record_stage("simulator_process_identity", "PASS",
+                          f"pid={self.process_identities['simulator']['pid']} verified by exe/cmdline/hash")
         observer = (
             "source /opt/ros/humble/setup.bash && "
             "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
             "exec python3 /workspace/evidence/issue80_n2_runtime_trace.py "
-            "--output-dir /workspace/evidence --duration 55 "
+            f"--output-dir /workspace/evidence --duration {self.args.max_runtime_s:.1f} "
             "--stop-file /workspace/evidence/n3_observation_stop"
         )
         self.docker_exec("n3_start_early_readonly_trace", observer, timeout_s=4.0, detached=True)
@@ -198,15 +249,18 @@ class N3Run(BoundedRun):
         self.docker_exec("n3_launch_mc_after_sim_ready",
             "bash /workspace/evidence/launch_mc.sh > /workspace/evidence/mc-console.log 2>&1",
             timeout_s=4.0, detached=True)
-        # The installed WSL launcher did start MotionControlModule, but this
-        # distribution did not satisfy the assumed `pgrep -x aima-mc-app-main`
-        # name. Gate on the module's own startup marker, then require live
-        # McCommonState below before sending the single SD request.
+        # The module log and the exact procfs executable identity must both
+        # agree. Linux comm is truncated to 15 bytes, so a process-name-only
+        # lookup is not an identity check for the 16-character binary name.
         self.docker_exec("n3_wait_mc_module_started",
             "timeout 15s bash -c 'until grep -Fq \"MotionControlModule Started Succeeded\" /workspace/evidence/mc-console.log; do sleep 0.2; done'",
             timeout_s=17.0)
         self.mc_started = True
         self.record_stage("mc_module_started", "PASS", "MotionControlModule Started Succeeded in mc-console.log")
+        self.process_identities["mc"] = self.wait_for_container_process(
+            "mc", "mc/bin/aima-mc-app-main", timeout_s=8.0)
+        self.record_stage("mc_process_identity", "PASS",
+                          f"pid={self.process_identities['mc']['pid']} verified by exe/cmdline/hash")
         trace_path = self.evidence / "n2_runtime_trace.jsonl"
         deadline = min(self.deadline, time.monotonic() + 5.0)
         while time.monotonic() < deadline:
@@ -214,6 +268,62 @@ class N3Run(BoundedRun):
                 return
             time.sleep(0.05)
         raise RuntimeError("MC process started but no fresh McCommonState was observed before SD request")
+
+    def wait_for_container_process(self, role: str, relative_path: str,
+                                   timeout_s: float) -> dict[str, Any]:
+        relative = Path(relative_path).as_posix()
+        expected_hash = self.runtime_hashes_before.get(relative)
+        if expected_hash is None:
+            raise RuntimeError(f"no pinned runtime hash recorded for {relative}")
+        expected_executable = f"/workspace/raicom2026/{relative}"
+        command = "python3 /workspace/evidence/issue80_process_identity.py wait " + " ".join((
+            "--expected-executable " + shlex.quote(expected_executable),
+            "--expected-sha256 " + shlex.quote(expected_hash),
+            "--timeout-s " + shlex.quote(f"{timeout_s:.2f}"),
+            "--poll-s 0.2",
+        ))
+        result = self.docker_exec(f"n4_wait_{role}_identity", command,
+                                  timeout_s=timeout_s + 3.0, check=False)
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{role} procfs identity helper did not return JSON: {result.stdout[-500:]}") from exc
+        if result.returncode != 0 or payload.get("status") != "VERIFIED":
+            raise RuntimeError(f"{role} process identity was not verified: {payload}")
+        record = payload["process"]
+        self.process_identities[role] = record
+        identity_path = self.evidence / f"n4_{role}_process_identity.json"
+        if not identity_path.exists():
+            with identity_path.open("x", encoding="utf-8") as stream:
+                json.dump({"expected_executable": expected_executable, "expected_sha256": expected_hash,
+                           "identity": record}, stream, indent=2)
+                stream.write("\n")
+        return record
+
+    def verify_recorded_process(self, role: str) -> dict[str, Any]:
+        record = self.process_identities.get(role)
+        if not record:
+            return {"role": role, "verified": False, "reason": "no_recorded_pid"}
+        relative = "mc/bin/aima-mc-app-main" if role == "mc" else "sim_mujoco/bin/aima-sim-app"
+        expected_hash = self.runtime_hashes_before[relative]
+        expected_executable = f"/workspace/raicom2026/{relative}"
+        command = "python3 /workspace/evidence/issue80_process_identity.py verify " + " ".join((
+            "--pid " + shlex.quote(str(record["pid"])),
+            "--expected-executable " + shlex.quote(expected_executable),
+            "--expected-sha256 " + shlex.quote(expected_hash),
+            "--start-ticks " + shlex.quote(str(record["start_ticks"])),
+        ))
+        result = self.docker_exec(f"n4_health_{role}_identity", command,
+                                  timeout_s=3.0, check=False)
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            payload = {"verified": False, "reason": "identity_helper_returned_invalid_json",
+                       "stdout": result.stdout[-500:], "stderr": result.stderr[-500:]}
+        health = {"role": role, "wall_utc": n2.utc_now(), "returncode": result.returncode,
+                  **payload}
+        self.process_health_checks.append(health)
+        return health
 
     def stop_trace_early(self, reason: str) -> None:
         if not self.trace_started:
@@ -237,19 +347,35 @@ class N3Run(BoundedRun):
     def wait_after_reset_30s(self, start_ns: int) -> tuple[bool, str | None]:
         target_ns = start_ns + int(POST_RESET_OBSERVE_S * 1e9)
         next_health_check = time.monotonic()
-        while time.monotonic_ns() < target_ns and time.monotonic() < self.deadline:
+        required_boundary_topics = {"odom", "imu", "leg_state", "common"}
+        while time.monotonic() < self.deadline:
             now = time.monotonic()
             if now >= next_health_check:
-                live = self.docker_exec("n3_health_check", "pgrep -x aima-sim-app >/dev/null && pgrep -x aima-mc-app-main >/dev/null",
-                                         timeout_s=3.0, check=False)
-                if live.returncode != 0:
-                    return False, "simulator or MC process exited during post-Reset observation"
+                simulator = self.verify_recorded_process("simulator")
+                mc = self.verify_recorded_process("mc")
+                if not simulator.get("verified") or not mc.get("verified"):
+                    return False, f"verified simulator/MC PID exited or identity changed: simulator={simulator}; mc={mc}"
                 next_health_check = now + 5.0
             if (self.evidence / "n2_runtime_summary.json").exists():
                 return False, "trace ended before 30 seconds elapsed after Reset"
-            time.sleep(min(0.1, max(0.0, (target_ns - time.monotonic_ns()) / 1e9)))
-        if time.monotonic_ns() < target_ns:
-            return False, "150-second overall runtime deadline reached before 30-second post-Reset window completed"
+            current_ns = time.monotonic_ns()
+            if current_ns >= target_ns:
+                rows = read_rows(self.evidence / "n2_runtime_trace.jsonl")
+                boundary_rows = [r for r in rows if r.get("event") == "state"
+                                 and int(r.get("wall_monotonic_ns", 0)) >= target_ns]
+                boundary_topics = {r.get("topic_key") for r in boundary_rows}
+                if required_boundary_topics.issubset(boundary_topics):
+                    self.post_reset_completion_sample_ns = min(
+                        max(int(r["wall_monotonic_ns"]) for r in boundary_rows
+                            if r.get("topic_key") == topic)
+                        for topic in required_boundary_topics
+                    )
+                    break
+            sleep_s = 0.1 if time.monotonic_ns() >= target_ns else min(
+                0.1, max(0.0, (target_ns - time.monotonic_ns()) / 1e9))
+            time.sleep(sleep_s)
+        else:
+            return False, "bounded overall runtime deadline reached before the full 30-second post-Reset window completed"
         self.stop_trace_early("post-Reset 30-second observation complete")
         deadline = min(self.deadline, time.monotonic() + 4.0)
         summary_path = self.evidence / "n2_runtime_summary.json"
@@ -310,6 +436,36 @@ class N3Run(BoundedRun):
                 first_upright_odom = odom_row
                 matched_imu_tilt = {"roll_deg": tilt[0], "pitch_deg": tilt[1], "odom_imu_skew_s": skew_ns / 1e9}
                 break
+        posture_checks: list[dict[str, Any]] = []
+        for odom_row in post.get("odom", []):
+            odom_data = odom_row.get("data", {})
+            odom_ns = int(odom_row.get("wall_monotonic_ns", 0))
+            imu_candidates = [(abs(int(i.get("wall_monotonic_ns", 0)) - odom_ns), i)
+                              for i in post.get("imu", [])]
+            if not imu_candidates:
+                posture_checks.append({"wall_monotonic_ns": odom_ns, "screened_upright": None,
+                                       "reason": "no_post_reset_imu_sample"})
+                continue
+            skew_ns, imu_row = min(imu_candidates, key=lambda item: item[0])
+            tilt = imu_tilt_deg(imu_row) if skew_ns <= 500_000_000 else None
+            odom_tilt = max(abs(float(odom_data.get("roll_deg", 999.0))),
+                            abs(float(odom_data.get("pitch_deg", 999.0))))
+            good = (tilt is not None and float(odom_data.get("z_m", -999.0)) >= ROOT_Z_SCREENING_M
+                    and odom_tilt < MAX_TILT_SCREENING_DEG
+                    and max(abs(tilt[0]), abs(tilt[1])) < MAX_TILT_SCREENING_DEG)
+            posture_checks.append({
+                "wall_monotonic_ns": odom_ns, "odom_imu_skew_s": skew_ns / 1e9,
+                "odom_z_m": odom_data.get("z_m"), "odom_tilt_max_abs_deg": odom_tilt,
+                "imu_roll_deg": tilt[0] if tilt is not None else None,
+                "imu_pitch_deg": tilt[1] if tilt is not None else None,
+                "screened_upright": bool(good) if tilt is not None else None,
+            })
+        if not posture_checks or any(check.get("screened_upright") is None for check in posture_checks):
+            posture_classification = "INSUFFICIENT_MATCHED_POSTURE_TELEMETRY"
+        elif any(check["screened_upright"] is False for check in posture_checks):
+            posture_classification = "LOW_HEIGHT_OR_UNSAFE_TILT_OBSERVED"
+        else:
+            posture_classification = "SCREENED_UPRIGHT_ALL_RECORDED_ODOMETRY_SAMPLES"
         odom_times = [int(r["wall_monotonic_ns"]) for r in post.get("odom", [])]
         post_span = (odom_times[-1] - odom_times[0]) / 1e9 if len(odom_times) > 1 else 0.0
         post_from_reset = ((odom_times[-1] - reset_ns) / 1e9 if odom_times and reset_ns is not None else 0.0)
@@ -346,6 +502,15 @@ class N3Run(BoundedRun):
             "post_reset_observation_from_reset_event_s": post_from_reset,
             "post_reset_odom_z_reported_m_range": [min(post_z), max(post_z)] if post_z else None,
             "post_reset_odom_tilt_reported_deg_max": max(post_tilts) if post_tilts else None,
+            "post_reset_posture_screen": {
+                "classification": posture_classification,
+                "checked_odom_sample_count": len(posture_checks),
+                "checks": posture_checks,
+                "limits": {"odom_z_min_m": ROOT_Z_SCREENING_M,
+                           "max_abs_odom_tilt_deg": MAX_TILT_SCREENING_DEG,
+                           "max_abs_imu_tilt_deg": MAX_TILT_SCREENING_DEG,
+                           "max_odom_imu_skew_s": 0.5},
+            },
             "post_reset_30s_window_complete": post_from_reset >= POST_RESET_OBSERVE_S,
             "odom_semantics": {
                 "topic_frame_id": (first_odom.get("frame_id") if first_odom else None),
@@ -368,38 +533,89 @@ class N3Run(BoundedRun):
         }
 
     def classify_n3(self, analysis: dict[str, Any]) -> str:
-        summary = self.summary or {}
         all_common = [r for r in read_rows(self.evidence / "n2_runtime_trace.jsonl")
                       if r.get("event") == "state" and r.get("topic_key") == "common"]
-        if not self.mc_started or not all_common:
+        if not self.mc_started:
             return "MC_STARTUP_FAILED"
-        fsms = analysis.get("fsm_values_observed_after_reset", [])
-        last_live = all_common[-1].get("data", {})
-        if last_live.get("fsm_state") == 2 or any(r.get("data", {}).get("fsm_state") == 2 for r in all_common):
-            return "MC_RUNTIME_OBSERVED_STABLE"
-        if 4 in fsms or summary.get("first_safe_state") is not None or any(
-                r.get("data", {}).get("fsm_state") == 4 for r in all_common):
-            return "MC_RUNTIME_OBSERVED_SAFE"
+        if not self.process_identities.get("mc"):
+            return "MC_PROCESS_IDENTITY_UNVERIFIED_AFTER_MODULE_START"
+        if not all_common:
+            return "MC_LIVE_TELEMETRY_MISSING"
+        if self.mode_request.get("status") != "STAND_DEFAULT_READBACK_CONFIRMED":
+            if self.mode_request.get("status") in {"NOT_ATTEMPTED", "REQUESTING_SD"}:
+                return "MC_STARTUP_OR_READINESS_GATE_INCOMPLETE"
+            return "SD_REQUEST_FAILED_OR_NO_STAND_READBACK"
         if not analysis.get("reset_attempted"):
-            return "MC_STARTUP_FAILED"
-        if analysis.get("reset_effect_conclusion") != "RESET_TO_UPRIGHT_OBSERVED":
-            return "SIM_RESET_FAILED"
-        return "MC_STARTUP_FAILED"
+            return "RESET_NOT_ATTEMPTED"
+        if analysis.get("reset_key_delivery_status") != "KEY_DISPATCHED":
+            return "RESET_NOT_CONFIRMED"
+        if not analysis.get("post_reset_30s_window_complete"):
+            return "POST_RESET_30S_OBSERVATION_INCOMPLETE"
+        return "POST_RESET_30S_OBSERVATION_COMPLETE"
+
+    def capture_service_server_identity(self) -> None:
+        console_path = self.evidence / "mc-console.log"
+        console = console_path.read_text(encoding="utf-8", errors="replace") if console_path.exists() else ""
+        inventory = (self.command_text("service_inventory") or {}).get("stdout", "")
+        self.service_server_identity = extract_mc_service_identity(
+            console, inventory, self.process_identities.get("mc"))
+        with (self.evidence / "n4_service_server_identity.json").open("x", encoding="utf-8") as stream:
+            json.dump(self.service_server_identity, stream, indent=2, ensure_ascii=False)
+            stream.write("\n")
 
     def stop_processes_and_cleanup(self) -> None:
-        try:
-            if self.container_created:
-                self.docker_exec("n3_graceful_process_stop",
-                    "for p in aima-mc-app-main soc_sim aima-sim-app; do pkill -TERM -x \"$p\" 2>/dev/null || true; done; sleep 1; "
-                    "printf 'remaining processes: '; (pgrep -a -x aima-mc-app-main; pgrep -a -x soc_sim; pgrep -a -x aima-sim-app) 2>/dev/null || true",
-                    timeout_s=4.0, check=False)
-        except Exception as exc:
-            self.cleanup_evidence["operations"].append({"operation": "n3_graceful_process_stop", "error": f"{type(exc).__name__}: {exc}"})
+        if self.container_created:
+            for role in ("mc", "simulator"):
+                record = self.process_identities.get(role)
+                if not record:
+                    self.process_cleanup_results.append({"role": role, "status": "NOT_RECORDED_NO_SIGNAL_SENT"})
+                    continue
+                relative = "mc/bin/aima-mc-app-main" if role == "mc" else "sim_mujoco/bin/aima-sim-app"
+                expected_executable = f"/workspace/raicom2026/{relative}"
+                expected_hash = self.runtime_hashes_before.get(relative, "")
+                identity_args = " ".join((
+                    "--pid " + shlex.quote(str(record["pid"])),
+                    "--expected-executable " + shlex.quote(expected_executable),
+                    "--expected-sha256 " + shlex.quote(expected_hash),
+                    "--start-ticks " + shlex.quote(str(record["start_ticks"])),
+                ))
+                try:
+                    command = "python3 /workspace/evidence/issue80_process_identity.py terminate " + identity_args
+                    term = self.docker_exec(f"n4_terminate_{role}", command, timeout_s=3.0, check=False)
+                    try:
+                        term_doc = json.loads(term.stdout)
+                    except json.JSONDecodeError:
+                        term_doc = {"status": "INVALID_TERMINATION_JSON", "stdout": term.stdout[-500:],
+                                    "stderr": term.stderr[-500:]}
+                    entry: dict[str, Any] = {"role": role, "pid": record["pid"],
+                                             "terminate_returncode": term.returncode, "terminate": term_doc}
+                    if term_doc.get("status") == "SIGTERM_SENT":
+                        wait = self.docker_exec(f"n4_wait_{role}_exit",
+                            "python3 /workspace/evidence/issue80_process_identity.py wait-exit " + identity_args +
+                            " --timeout-s 4.0", timeout_s=5.0, check=False)
+                        try:
+                            entry["wait_exit"] = json.loads(wait.stdout)
+                        except json.JSONDecodeError:
+                            entry["wait_exit"] = {"status": "INVALID_WAIT_EXIT_JSON", "stdout": wait.stdout[-500:],
+                                                   "stderr": wait.stderr[-500:]}
+                        entry["wait_exit_returncode"] = wait.returncode
+                    self.process_cleanup_results.append(entry)
+                except Exception as exc:
+                    self.process_cleanup_results.append({"role": role, "pid": record["pid"],
+                        "status": "PROCESS_SIGNAL_CHECK_FAILED", "error": f"{type(exc).__name__}: {exc}"})
+            with (self.evidence / "n4_process_cleanup.json").open("x", encoding="utf-8") as stream:
+                json.dump({"recorded_process_identities": self.process_identities,
+                           "termination_results": self.process_cleanup_results}, stream, indent=2)
+                stream.write("\n")
         self.cleanup()
+        console_path = self.evidence / "mc-console.log"
+        if console_path.exists():
+            self.mc_shutdown_diagnostic = classify_mc_shutdown_log(
+                console_path.read_text(encoding="utf-8", errors="replace"))
 
     def run_n3(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"schema": "robotsim.issue80.n3.runtime-result.v1",
-            "attempt_id": self.args.attempt_id, "status": "MC_STARTUP_FAILED", "fault": None}
+        result: dict[str, Any] = {"schema": "robotsim.issue80.n4.runtime-result.v1",
+            "attempt_id": self.args.attempt_id, "status": "NOT_STARTED", "fault": None}
         try:
             self.current_gate = "preflight"
             self.preflight_n3()
@@ -418,6 +634,13 @@ class N3Run(BoundedRun):
             self.start_mc_once()
             self.current_gate = "state_inventory"
             self.capture_service_topic_inventory()
+            self.capture_service_server_identity()
+            first_common = next((r for r in read_rows(self.evidence / "n2_runtime_trace.jsonl")
+                                 if r.get("event") == "state" and r.get("topic_key") == "common"), None)
+            if first_common is not None:
+                with (self.evidence / "n4_initial_mc_state.json").open("x", encoding="utf-8") as stream:
+                    json.dump(first_common, stream, indent=2, ensure_ascii=False)
+                    stream.write("\n")
             self.mode_request = {"status": "REQUESTING_SD", "interface": "/workspace/raicom2026/example/py/set_mode.py SD"}
             self.current_gate = "SD_STAND_DEFAULT"
             try:
@@ -428,6 +651,9 @@ class N3Run(BoundedRun):
             except Exception as exc:
                 self.mode_request = {"status": "REJECTED_OR_NO_STAND_READBACK", "set_mode_example": self.command_text("request_sd"),
                                      "last_mode_readback": self.command_text("read_mode_stand"),
+                                     "service_server_identity": self.service_server_identity,
+                                     "readonly_service_status": (self.summary or {}).get("readonly_service_status"),
+                                     "readonly_service_results": (self.summary or {}).get("readonly_service_results"),
                                      "error": f"{type(exc).__name__}: {exc}"}
                 self.record_stage("sd_request_and_readback", "FAIL", self.mode_request["error"])
                 self.stop_trace_early("SD request rejected or STAND_DEFAULT readback failed; no Reset was sent")
@@ -487,6 +713,9 @@ class N3Run(BoundedRun):
             result["mode_request"] = self.mode_request
             if self.mc_started and (self.evidence / "n2_runtime_summary.json").exists():
                 self.summary = json.loads((self.evidence / "n2_runtime_summary.json").read_text(encoding="utf-8"))
+                if self.mode_request.get("status") == "REJECTED_OR_NO_STAND_READBACK":
+                    self.mode_request["readonly_service_status"] = self.summary.get("readonly_service_status")
+                    self.mode_request["readonly_service_results"] = self.summary.get("readonly_service_results")
                 partial = self.analyze_reset_and_runtime()
                 try:
                     partial["first_safe_context"] = n2.N2Run.first_safe_context(self, self.summary)
@@ -495,8 +724,12 @@ class N3Run(BoundedRun):
                         "error": f"{type(context_exc).__name__}: {context_exc}"}
                 result["analysis"] = partial
                 result["status"] = self.classify_n3(partial)
+            elif self.mc_started:
+                result["status"] = "MC_RUNTIME_TRACE_INCOMPLETE"
             elif not self.mc_started:
-                result["status"] = "MC_STARTUP_FAILED"
+                result["status"] = ("BLOCKED_BEFORE_RUNTIME" if not self.container_created else
+                                     "MC_STARTUP_FAILED" if self.current_gate == "mc_startup" else
+                                     "SIMULATOR_OR_CONTAINER_STARTUP_FAILED")
         finally:
             self.stop_processes_and_cleanup()
             result["cleanup"] = self.cleanup_evidence
@@ -508,13 +741,19 @@ class N3Run(BoundedRun):
         result.update({
             "branch": self.branch, "head_before_commit": self.head, "container": self.container,
             "container_id": self.container_id, "simulator_ready": getattr(self, "sim_ready_record", None),
-            "mc_started": self.mc_started, "runtime_sha256_before": self.runtime_hashes_before,
+            "mc_started": self.mc_started, "process_identities": self.process_identities,
+            "post_reset_completion_sample_monotonic_ns": self.post_reset_completion_sample_ns,
+            "service_server_identity": self.service_server_identity,
+            "process_health_checks": self.process_health_checks,
+            "process_cleanup_results": self.process_cleanup_results,
+            "mc_shutdown_diagnostic": self.mc_shutdown_diagnostic,
+            "runtime_sha256_before": self.runtime_hashes_before,
             "runtime_sha256_after": after, "runtime_hash_changes": changes,
             "container_teardown": self.cleanup_evidence,
             "post_observation_image": self.post_observation_image,
             "forbidden_operations": {"SetMcInputSource": 0, "LD": 0, "nonzero_velocity": 0,
                                       "qpos_writes": 0, "real_hardware": False},
-            "run_command": (f"DISPLAY=:0 python3 {Path(__file__).resolve()} --maintainer-authorized-n3 "
+            "run_command": (f"DISPLAY=:0 python3 {Path(__file__).resolve()} --maintainer-authorized-n4 "
                             f"--attempt-id {self.args.attempt_id} --evidence-dir {self.evidence} "
                             f"--container {self.container} --max-runtime-s {self.args.max_runtime_s:.0f}"),
             "runner_sha256": sha256(Path(__file__).resolve(strict=True)),
@@ -523,8 +762,7 @@ class N3Run(BoundedRun):
                             "Odometry z is reported in its declared frame and is not assumed to equal raw pelvis-origin world z."],
         })
         if changes:
-            result["status"] = "MC_STARTUP_FAILED" if result.get("status") not in {
-                "MC_RUNTIME_OBSERVED_STABLE", "MC_RUNTIME_OBSERVED_SAFE"} else result["status"]
+            result["status"] = "RUNTIME_SOURCE_INTEGRITY_FAILURE"
             result["fault"] = result.get("fault") or "pinned runtime inputs changed during the run"
         if self.container_created and not self.cleanup_evidence.get("container_absent_after_cleanup", False):
             result["fault"] = result.get("fault") or "container absence after cleanup was not verified"
@@ -546,24 +784,6 @@ class N3Run(BoundedRun):
                 return
             time.sleep(0.05)
 
-    def wait_after_reset_30s(self, start_ns: int) -> tuple[bool, str | None]:
-        target = start_ns + int(POST_RESET_OBSERVE_S * 1e9)
-        next_health = time.monotonic()
-        while time.monotonic_ns() < target and time.monotonic() < self.deadline:
-            if time.monotonic() >= next_health:
-                check = self.docker_exec("n3_health_check", "pgrep -x aima-sim-app >/dev/null && pgrep -x aima-mc-app-main >/dev/null",
-                                         timeout_s=3.0, check=False)
-                if check.returncode != 0:
-                    return False, "simulator or MC process exited during observation"
-                next_health = time.monotonic() + 5.0
-            if (self.evidence / "n2_runtime_summary.json").exists():
-                return False, "trace ended before the 30-second post-Reset interval"
-            time.sleep(min(0.1, max(0.0, (target - time.monotonic_ns()) / 1e9)))
-        if time.monotonic_ns() < target:
-            return False, "overall runtime bound expired before the 30-second post-Reset interval"
-        self.stop_trace_early("30 seconds after the single Reset attempt")
-        return self.wait_trace_summary()
-
     def wait_trace_summary(self) -> tuple[bool, str | None]:
         summary_path = self.evidence / "n2_runtime_summary.json"
         deadline = min(self.deadline, time.monotonic() + 4.0)
@@ -577,22 +797,30 @@ class N3Run(BoundedRun):
     def write_n3_report(self, result: dict[str, Any]) -> None:
         analysis = result.get("analysis") or {}
         summary = self.summary or {}
-        report = f"""# Issue #80 N3 Restore M1 Startup Sequence
+        posture = analysis.get("post_reset_posture_screen") or {}
+        posture_report = {key: value for key, value in posture.items() if key != "checks"}
+        report = f"""# Issue #80 N4 MC Startup / SD / Reset Experiment
 
 - Outcome: **{result.get('status')}**
 - Attempt: `{self.args.attempt_id}`
 - Branch / pre-commit HEAD: `{self.branch}` / `{self.head}`
 - Container: `{self.container}` (`{self.container_id}`)
 - MC process started: `{self.mc_started}`
+- Verified process identities: `{json.dumps(self.process_identities, ensure_ascii=False)}`
+- First live MC state: `{json.dumps(analysis.get('first_mc_state_before_reset'), ensure_ascii=False)}`
 - SD procedure: `{json.dumps(result.get('mode_request'), ensure_ascii=False)}`
+- Service server identity: `{json.dumps(self.service_server_identity, ensure_ascii=False)}`
 - Reset key status: `{(analysis.get('reset_key_delivery_status') if analysis else None)}`
 - Reset effect conclusion: `{(analysis.get('reset_effect_conclusion') if analysis else None)}`
 - First SAFE state: `{json.dumps(analysis.get('first_safe_state'), ensure_ascii=False)}`
 - FSM values after Reset: `{analysis.get('fsm_values_observed_after_reset')}`
 - Post-Reset observation span: `{analysis.get('post_reset_observation_from_reset_event_s')} s from Reset; complete={analysis.get('post_reset_30s_window_complete')}`
+- Post-Reset posture screen summary: `{json.dumps(posture_report, ensure_ascii=False)}`
 - Read-only services: `{json.dumps((summary.get('readonly_service_results') or {}), ensure_ascii=False)}`
 - `/clock` sample count / delta: `{summary.get('clock_sample_count')} / {summary.get('sim_clock_delta_s')}`
 - Cleanup verified: `{self.cleanup_evidence.get('container_absent_after_cleanup')}`
+- MC shutdown diagnostic: `{result.get('mc_shutdown_diagnostic')}`
+- MC shutdown process trace: `{json.dumps(result.get('process_cleanup_results'), ensure_ascii=False)}`
 - Runtime hash changes: `{json.dumps(result.get('runtime_hash_changes'), ensure_ascii=False)}`
 - Fault: `{result.get('fault')}`
 
@@ -610,19 +838,24 @@ No LD, nonzero velocity, input-source mutation, qpos write, or hardware connecti
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--maintainer-authorized-n3", action="store_true")
+    parser.add_argument("--maintainer-authorized-n4", action="store_true")
     parser.add_argument("--attempt-id", required=True)
     parser.add_argument("--evidence-dir", required=True)
     parser.add_argument("--container", required=True)
     parser.add_argument("--max-runtime-s", type=float, default=150.0)
     args = parser.parse_args()
-    if not args.maintainer_authorized_n3:
-        parser.error("N3 live run requires --maintainer-authorized-n3")
+    if not args.maintainer_authorized_n4:
+        parser.error("N4 live run requires --maintainer-authorized-n4")
     if args.max_runtime_s > 150.0 or args.max_runtime_s < 60.0:
-        parser.error("N3 runtime bound must be 60..150 seconds")
+        parser.error("N4 runtime bound must be 60..150 seconds")
     result = N3Run(args).run_n3()
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0 if result.get("status") in {"MC_RUNTIME_OBSERVED_STABLE", "MC_RUNTIME_OBSERVED_SAFE"} else 2
+    sequence_complete = result.get("status") == "POST_RESET_30S_OBSERVATION_COMPLETE"
+    shutdown_waits = [row.get("wait_exit", {}).get("status") for row in result.get("process_cleanup_results", [])]
+    cleanup_clean = (result.get("mc_shutdown_diagnostic") == "MC_MODULE_SHUTDOWN_MARKER_OBSERVED_NO_SEGFAULT_LINE"
+                     and all(status in {"EXITED", "ORIGINAL_EXITED_PID_REUSED", None} for status in shutdown_waits))
+    container_absent = (result.get("container_teardown") or {}).get("container_absent_after_cleanup", False)
+    return 0 if sequence_complete and cleanup_clean and container_absent else 2
 
 
 if __name__ == "__main__":
