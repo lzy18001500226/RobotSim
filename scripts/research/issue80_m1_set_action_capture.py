@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -32,6 +33,18 @@ MAX_TILT_DEG = 15.0
 MAX_STATE_AGE_S = 0.5
 REQUIRED_UPRIGHT_ODOM_SAMPLES = 3
 REQUIRED_STAND_COMMON_SAMPLES = 3
+
+
+def write_complete_json(path: Path, value: dict[str, Any]) -> None:
+    """Publish one complete result atomically, without replacing prior evidence."""
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.pending")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(value, stream, indent=2, allow_nan=False)
+            stream.write("\n")
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def json_safe(value: Any) -> Any:
@@ -497,9 +510,7 @@ def main() -> int:
             })
 
         def write_json_once(self, path: Path, value: dict[str, Any]) -> None:
-            with path.open("x", encoding="utf-8") as stream:
-                json.dump(value, stream, indent=2, allow_nan=False)
-                stream.write("\n")
+            write_complete_json(path, value)
 
         def spin_for(self, timeout_s: float) -> None:
             rclpy.spin_once(self, timeout_sec=max(0.0, timeout_s))

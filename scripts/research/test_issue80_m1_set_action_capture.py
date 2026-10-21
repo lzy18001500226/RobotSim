@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import sys
+import json
+import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -14,6 +17,7 @@ from issue80_m1_set_action_capture import (
     installed_body_stand_value,
     set_action_record,
     summarize_takeover_timing,
+    write_complete_json,
 )
 
 
@@ -26,6 +30,23 @@ class FakeMessage:
 
 
 class SetActionCaptureTests(unittest.TestCase):
+    def test_parent_cannot_observe_a_partially_written_result(self) -> None:
+        original_dump = json.dump
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "result.json"
+            def checked_dump(value, stream, **kwargs):
+                stream.write(" ")
+                stream.flush()
+                self.assertFalse(target.exists())
+                original_dump(value, stream, **kwargs)
+                self.assertFalse(target.exists())
+            with patch("issue80_m1_set_action_capture.json.dump", side_effect=checked_dump):
+                write_complete_json(target, {"status": "COMPLETE", "trace": [1] * 10000})
+            self.assertEqual(json.loads(target.read_text())["status"], "COMPLETE")
+            with self.assertRaises(FileExistsError):
+                write_complete_json(target, {"status": "OVERWRITE"})
+            self.assertEqual(json.loads(target.read_text())["status"], "COMPLETE")
+
     def test_runner_has_one_non_retried_service_mutation_call(self) -> None:
         source = Path(__file__).with_name("issue80_m1_set_action_capture.py").read_text()
         self.assertEqual(source.count("self.set_client.call_async(request)"), 1)
