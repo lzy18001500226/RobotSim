@@ -1332,6 +1332,22 @@ def measure_post_stop_forward_tail(
     return result
 
 
+def smoothstep_velocity(
+    start_m_s: float, target_m_s: float, elapsed_s: float, ramp_duration_s: float,
+) -> float:
+    """C1-continuous monotone velocity ramp, bounded by the tested target cap."""
+    values = (start_m_s, target_m_s, elapsed_s, ramp_duration_s)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("velocity ramp values must be finite")
+    if not 0.0 < start_m_s <= target_m_s <= FORWARD_COMMAND_M_S:
+        raise ValueError("velocity ramp must be positive, monotone, and under the command cap")
+    if ramp_duration_s <= 0.0:
+        raise ValueError("velocity ramp duration must be positive")
+    progress = max(0.0, min(1.0, elapsed_s / ramp_duration_s))
+    blend = progress * progress * (3.0 - 2.0 * progress)
+    return start_m_s + (target_m_s - start_m_s) * blend
+
+
 def run_first_motion_window(
     *,
     sample: Callable[[], Mapping[str, Any]],
@@ -1344,6 +1360,8 @@ def run_first_motion_window(
     forward_command_m_s: float = FORWARD_COMMAND_M_S,
     pulse_duration_s: float = PULSE_LIMIT_S,
     max_pulse_duration_s: float = PULSE_LIMIT_S,
+    ramp_start_speed_m_s: float | None = None,
+    ramp_duration_s: float = 0.0,
     extra_post_stop_observe_s: float = 0.0,
     after_zero_stop: Callable[[], Mapping[str, Any]] | None = None,
     shutdown_event: threading.Event | None = None,
@@ -1364,6 +1382,12 @@ def run_first_motion_window(
         "command_angular_velocity_rad_s": 0.0,
         "pulse_limit_s": max_pulse_duration_s,
         "pulse_duration_s_requested": pulse_duration_s,
+        "velocity_profile": {
+            "shape": "smoothstep" if ramp_duration_s > 0.0 else "constant",
+            "ramp_start_speed_m_s": ramp_start_speed_m_s,
+            "target_speed_m_s": forward_command_m_s,
+            "ramp_duration_s": ramp_duration_s,
+        },
         "publish_hz": PUBLISH_HZ,
         "source_timeout_ms": SOURCE_TIMEOUT_MS,
         "zero_publish_semantics": ZERO_STOP_INTERPRETATION,
@@ -1391,6 +1415,14 @@ def run_first_motion_window(
         pulse_fault = "pulse_duration_outside_authorized_cap"
     elif not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
         pulse_fault = "forward_command_outside_authorized_cap"
+    elif not math.isfinite(ramp_duration_s) or not 0.0 <= ramp_duration_s <= pulse_duration_s:
+        pulse_fault = "velocity_ramp_duration_outside_pulse"
+    elif ramp_duration_s > 0.0 and (
+        ramp_start_speed_m_s is None
+        or not math.isfinite(ramp_start_speed_m_s)
+        or not 0.0 < ramp_start_speed_m_s <= forward_command_m_s
+    ):
+        pulse_fault = "velocity_ramp_start_outside_command_range"
     elif not registration.get("success"):
         pulse_fault = "source_registration_rejected"
     elif not set_action.get("accepted_by_service"):
@@ -1533,8 +1565,18 @@ def run_first_motion_window(
                         if stop_requested.is_set() or clock() >= pulse_deadline:
                             should_stop = True
                         else:
-                            nonzero_attempt_offsets_s.append(clock() - pulse_start)
-                            publish(forward_command_m_s)
+                            command_offset = clock() - pulse_start
+                            nonzero_attempt_offsets_s.append(command_offset)
+                            command_speed = (
+                                smoothstep_velocity(
+                                    float(ramp_start_speed_m_s),
+                                    forward_command_m_s,
+                                    command_offset,
+                                    ramp_duration_s,
+                                )
+                                if ramp_duration_s > 0.0 else forward_command_m_s
+                            )
+                            publish(command_speed)
                             published_offset = clock() - pulse_start
                             nonzero_success_offsets_s.append(published_offset)
                             if published_offset > pulse_duration_s:

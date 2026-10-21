@@ -759,6 +759,8 @@ class BoundedRun:
             + " --extra-stop-observation " + str(self.args.extra_stop_observation)
             + " --pulse-duration " + str(self.args.pulse_duration)
             + " --forward-speed " + str(self.args.forward_speed)
+            + " --ramp-start-speed " + str(getattr(self.args, "ramp_start_speed", None) or self.args.forward_speed)
+            + " --ramp-duration-s " + str(getattr(self.args, "ramp_duration_s", 0.0))
             + " --attempt-id " + self.args.attempt_id
             + " --robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml"
             + " --mc-sim-config-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
@@ -1017,6 +1019,8 @@ def main() -> int:
     parser.add_argument("--extra-stop-observation", type=float, default=0.0)
     parser.add_argument("--pulse-duration", type=float, default=1.0)
     parser.add_argument("--forward-speed", type=float, default=0.2)
+    parser.add_argument("--ramp-start-speed", type=float, default=None)
+    parser.add_argument("--ramp-duration-s", type=float, default=0.0)
     parser.add_argument(
         "--maintainer-authorized-first-motion",
         action="store_true",
@@ -1034,6 +1038,13 @@ def main() -> int:
         parser.error("pulse duration must be positive and no greater than 10 seconds")
     if not 0.0 < args.forward_speed <= 0.2:
         parser.error("forward speed must be positive and no greater than 0.2 m/s")
+    if not 0.0 <= args.ramp_duration_s <= args.pulse_duration:
+        parser.error("velocity ramp duration must fit within the pulse duration")
+    if args.ramp_duration_s > 0.0 and (
+        args.ramp_start_speed is None
+        or not 0.0 < args.ramp_start_speed <= args.forward_speed
+    ):
+        parser.error("ramp start must be positive and no faster than target speed")
     run=BoundedRun(args)
     result=run.execute()
     print(json.dumps(result,indent=2))

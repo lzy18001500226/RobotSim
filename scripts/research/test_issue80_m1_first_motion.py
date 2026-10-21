@@ -30,6 +30,7 @@ from issue80_m1_first_motion import (
     FORWARD_COMMAND_M_S,
     PULSE_LIMIT_S,
     MAX_AUTHORIZED_PULSE_S,
+    smoothstep_velocity,
     PUBLISH_HZ,
     SOURCE_TIMEOUT_MS,
     VELOCITY_SOURCE_NAME,
@@ -235,6 +236,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
         forward_command_m_s=0.2,
         pulse_duration_s=1.0,
         max_pulse_duration_s=1.0,
+        ramp_start_speed_m_s=None,
+        ramp_duration_s=0.0,
     ):
         clock = fake_clock or FakeClock()
 
@@ -261,6 +264,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
             forward_command_m_s=forward_command_m_s,
             pulse_duration_s=pulse_duration_s,
             max_pulse_duration_s=max_pulse_duration_s,
+            ramp_start_speed_m_s=ramp_start_speed_m_s,
+            ramp_duration_s=ramp_duration_s,
             shutdown_event=shutdown_event,
             state_timeout_s=0.5,
             min_root_z=0.52,
@@ -358,6 +363,56 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertLessEqual(result["last_nonzero_command_offset_s"], 10.0)
         self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
         self.assertTrue(any(value == 0.0 for value in commands))
+
+    def test_smoothstep_velocity_ramp_has_bounded_endpoints_and_slope(self):
+        values=[smoothstep_velocity(0.105,0.15,t,2.0) for t in (0.0,0.5,1.0,1.5,2.0,3.0)]
+        self.assertAlmostEqual(values[0],0.105)
+        self.assertAlmostEqual(values[-2],0.15)
+        self.assertAlmostEqual(values[-1],0.15)
+        self.assertEqual(values,sorted(values))
+        self.assertAlmostEqual(values[2],0.1275)
+        with self.assertRaisesRegex(ValueError,"under the command cap"):
+            smoothstep_velocity(0.105,0.21,1.0,2.0)
+
+    def test_ten_second_ramp_publishes_fifty_hz_then_stops_at_hard_deadline(self):
+        clock=FakeClock()
+        state=self.snapshot()
+        commands=[]
+        def publish(value):
+            commands.append((clock.now(),value))
+            if value > 0.1:
+                state["get_source_name"]=VELOCITY_SOURCE_NAME
+                state["common_source_name"]=VELOCITY_SOURCE_NAME
+                state["get_mode_desc"]="LOCOMOTION_DEFAULT"
+                state["common_mode_desc"]="LOCOMOTION_DEFAULT"
+                state["fsm_state"]=int(McFsmStateCode.MOVING)
+        result=self.run_protocol(
+            lambda:state,publish,fake_clock=clock,
+            forward_command_m_s=0.15,
+            pulse_duration_s=10.0,max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
+            ramp_start_speed_m_s=0.105,ramp_duration_s=2.0,
+        )
+        active=[value for _,value in commands if value>0]
+        self.assertEqual(len(active),500)
+        self.assertAlmostEqual(active[0],0.105)
+        self.assertAlmostEqual(active[100],0.15,places=5)
+        self.assertTrue(all(a<=b for a,b in zip(active,active[1:])))
+        self.assertLessEqual(result["last_nonzero_command_offset_s"],10.0)
+        self.assertTrue(any(value==0.0 for _,value in commands))
+
+    def test_ramp_inputs_fail_closed(self):
+        for start,duration in ((None,2.0),(0.0,2.0),(0.16,2.0),(0.105,11.0)):
+            commands=[]
+            result=self.run_protocol(
+                self.snapshot,commands.append,forward_command_m_s=0.15,pulse_duration_s=10.0,
+                max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
+                ramp_start_speed_m_s=start,ramp_duration_s=duration,
+            )
+            self.assertEqual(result["nonzero_publish_calls_returned"],0)
+            self.assertTrue(result["fault"] in {
+                "velocity_ramp_duration_outside_pulse",
+                "velocity_ramp_start_outside_command_range",
+            })
 
     def test_leg_limits_are_loaded_from_the_installed_robot_model_yaml(self) -> None:
         names = [f"leg_joint_{index}" for index in range(12)]

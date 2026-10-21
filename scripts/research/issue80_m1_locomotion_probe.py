@@ -101,6 +101,13 @@ class FocusedM1Diagnostic(Node):
         )
         if not 0.0 < args.pulse_duration <= MAX_AUTHORIZED_PULSE_S:
             raise ValueError("pulse duration exceeds the maintainer-reviewed 10 s ceiling")
+        if not 0.0 <= args.ramp_duration_s <= args.pulse_duration:
+            raise ValueError("velocity ramp duration must fit inside the bounded pulse")
+        if args.ramp_duration_s > 0.0 and (
+            args.ramp_start_speed is None
+            or not 0.0 < args.ramp_start_speed <= args.forward_speed
+        ):
+            raise ValueError("smooth ramp start must be positive and no faster than target")
         if not 0.1 <= args.state_timeout <= 0.5:
             raise ValueError("state freshness limit may not be weakened beyond the existing 0.5 s gate")
         if args.max_tilt_deg <= 0.0 or args.max_tilt_deg > 15.0:
@@ -1085,6 +1092,8 @@ class FocusedM1Diagnostic(Node):
                 forward_command_m_s=self.args.forward_speed,
                 pulse_duration_s=self.args.pulse_duration,
                 max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
+                ramp_start_speed_m_s=self.args.ramp_start_speed,
+                ramp_duration_s=self.args.ramp_duration_s,
                 extra_post_stop_observe_s=self.args.extra_stop_observation,
                 after_zero_stop=self.request_postwalk_stand_once,
                 shutdown_event=self.interrupted,
@@ -1210,6 +1219,8 @@ def main() -> int:
     first.add_argument("--extra-stop-observation", type=float, default=0.0)
     first.add_argument("--pulse-duration", type=float, default=1.0)
     first.add_argument("--forward-speed", type=float, default=0.2)
+    first.add_argument("--ramp-start-speed", type=float, default=None)
+    first.add_argument("--ramp-duration-s", type=float, default=0.0)
     first.add_argument("--state-timeout", type=float, default=0.5)
     first.add_argument("--ready-timeout", type=float, default=4.0)
     first.add_argument("--max-tilt-deg", type=float, default=15.0)
