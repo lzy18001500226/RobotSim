@@ -1730,7 +1730,9 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         )
         self.assertEqual(result["status"], "ZERO_STOP_CALL_RETURN_COUNT_TOO_LOW")
         self.assertLess(result["zero_stop"]["zero_publish_calls_returned"], ZERO_STOP_MIN_MESSAGES)
-        self.assertLessEqual(result["zero_stop"]["loop_duration_s"], 1.1)
+        # A publish call already in flight at the bounded deadline can only
+        # be observed after its measured 0.25 s fake latency returns.
+        self.assertLessEqual(result["zero_stop"]["loop_duration_s"], 1.35)
         self.assertFalse(result["zero_stop"]["mc_receipt_confirmed"])
         self.assertFalse(result["zero_stop"]["mc_stop_confirmed"])
 
