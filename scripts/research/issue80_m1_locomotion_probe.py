@@ -30,7 +30,7 @@ from issue80_m1_first_motion import (
     ACTION_SOURCE_NAME, COMMAND_PUBLISHER_TOPIC, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
     BASELINE_DURATION_S, BASELINE_SAMPLE_PERIOD_S, BASELINE_WINDOW_COUNT,
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
-    MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE,
+    MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, verify_mc_fsm_runtime_contract,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
     load_leg_joint_limits, load_mc_input_source_timeouts,
@@ -102,6 +102,9 @@ class FocusedM1Diagnostic(Node):
             raise ValueError("tilt safety threshold may be tightened but not weakened beyond 15 degrees")
         if args.min_root_z < 0.52:
             raise ValueError("root-height safety threshold may be tightened but not weakened below 0.52 m")
+        self.fsm_runtime_contract = verify_mc_fsm_runtime_contract(
+            "/workspace/raicom2026/mc/lib"
+        )
         super().__init__("issue80_m1_first_motion")
         self.args = args
         self.verified_network_mode = verified_network_mode
@@ -938,6 +941,7 @@ class FocusedM1Diagnostic(Node):
             "installed_mc_sim_config_path": self.args.mc_sim_config_path,
             "installed_mc_sim_config_sha256": self.mc_sim_config_sha256,
             "installed_mc_default_source_timeouts": self.mc_input_source_timeouts,
+            "verified_fsm_runtime_library_sha256": self.fsm_runtime_contract,
             "source_timeout_semantics": {
                 "configured_registration_timeout_ms": SOURCE_TIMEOUT_MS,
                 "documented_timeout_effect": "timeout is measured from the last nonzero command; zero commands do not refresh it; after expiry command data is cleared while the selected source remains",

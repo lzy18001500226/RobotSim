@@ -24,6 +24,8 @@ from issue80_m1_first_motion import (
     MC_FSM_INTERFACE_SOURCE_SHA256,
     MC_FSM_SAFE,
     MC_FSM_STABLE,
+    verify_mc_fsm_runtime_contract,
+    MC_FSM_RUNTIME_LIBRARY_SHA256,
     FORWARD_COMMAND_M_S,
     PULSE_LIMIT_S,
     PUBLISH_HZ,
@@ -1091,15 +1093,26 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             {state.name: int(state) for state in McFsmStateCode},
             {
                 "UNKNOWN": 0,
-                "STARTING": 1,
-                "STABLE": 2,
-                "MOVING": 3,
-                "SAFE": 4,
-                "SPECIAL": 5,
-                "TEST": 6,
+                "PREPARE": 1,
+                "STARTING": 2,
+                "FINISH": 3,
+                "STABLE": 4,
+                "MOVING": 5,
+                "SAFE": 6,
+                "SPECIAL": 7,
+                "TEST": 8,
             },
         )
-        self.assertEqual(MC_FSM_ACTIVE_STATES, frozenset((1, 2, 3)))
+        self.assertEqual(MC_FSM_ACTIVE_STATES, frozenset((2, 4, 5)))
+
+    def test_fsm_decoder_rejects_unverified_binary_build(self) -> None:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in MC_FSM_RUNTIME_LIBRARY_SHA256:
+                (Path(tmp) / name).write_bytes(b"unverified build")
+            with self.assertRaisesRegex(ValueError, "binary contract mismatch"):
+                verify_mc_fsm_runtime_contract(tmp)
 
     def test_stable_standing_fsm_is_accepted_but_safe_and_unrelated_states_fail(self) -> None:
         stable_fsm = self.snapshot(fsm_state=MC_FSM_STABLE, body_status=1)
@@ -1110,7 +1123,8 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         self.assertEqual(snapshot_fault(
             safe_fsm, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0
         ), "mc_safety_protection_state")
-        for state in (McFsmStateCode.UNKNOWN, McFsmStateCode.SPECIAL, McFsmStateCode.TEST, 99):
+        for state in (McFsmStateCode.UNKNOWN, McFsmStateCode.PREPARE, McFsmStateCode.FINISH,
+                      McFsmStateCode.SPECIAL, McFsmStateCode.TEST, 99):
             with self.subTest(state=int(state)):
                 self.assertIn("unrelated_or_unknown_fsm_state", snapshot_fault(
                     self.snapshot(fsm_state=int(state)), LIMITS,
@@ -1295,7 +1309,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 sample["common_source_name"] = VELOCITY_SOURCE_NAME
                 sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
-                sample["fsm_state"] = 3
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
                 with clock.lock:
                     clock.value += 1.01
 
@@ -1318,7 +1332,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 sample["common_source_name"] = VELOCITY_SOURCE_NAME
                 sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
-                sample["fsm_state"] = 3
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
                 sample["pose"]["x"] = motion_ticks * 0.002
 
         result = self.run_protocol(lambda: sample, publish, baseline=[0.002, -0.001, 0.001])
@@ -1415,7 +1429,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 sample["common_source_name"] = VELOCITY_SOURCE_NAME
                 sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
-                sample["fsm_state"] = 3
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
                 return
             if pulse_started:
                 raise RuntimeError("injected zero publish failure")
@@ -1434,7 +1448,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 sample["common_source_name"] = VELOCITY_SOURCE_NAME
                 sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
-                sample["fsm_state"] = 3
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
             elif value == 0.0:
                 sample["pose"]["z"] = 0.50
 
@@ -1474,7 +1488,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 sample["common_source_name"] = VELOCITY_SOURCE_NAME
                 sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
-                sample["fsm_state"] = 3
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
             elif value == 0.0:
                 stop_started = True
 
@@ -1558,7 +1572,7 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 sample["common_source_name"] = VELOCITY_SOURCE_NAME
                 sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
-                sample["fsm_state"] = 3
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
             elif value == 0.0:
                 if not zero_seen.is_set():
                     first_zero_watchdog_cancel_state.append(timers[0].cancelled)

@@ -47,27 +47,34 @@ MC_ACTION_STATUSES = frozenset((0, 100, 200))  # IDLE, RUNNING, TRANSITION
 
 
 class McFsmStateCode(IntEnum):
-    """Named FSM codes from the installed AimDK message contract."""
+    """Wire codes verified in the pinned MC state library, not stale SDK constants."""
 
     UNKNOWN = 0
-    STARTING = 1
-    STABLE = 2
-    MOVING = 3
-    SAFE = 4
-    SPECIAL = 5
-    TEST = 6
+    PREPARE = 1
+    STARTING = 2
+    FINISH = 3
+    STABLE = 4
+    MOVING = 5
+    SAFE = 6
+    SPECIAL = 7
+    TEST = 8
 
 
-# The deployed x86_64 interface source is byte-identical to AimDK SDK
-# v1.1.0 artifact faf4c945. The source explicitly declares the constants
-# above; its wire field is uint32. This records the interface contract, not
-# a separately symbolized inspection of the stripped MC implementation.
-MC_FSM_INTERFACE_SOURCE_PATH = (
-    "interface/robot/mc/data/msg/common/McFsmState.msg"
-)
+# SDK message constants disagree with this MC build; its uint32 wire field
+# remains compatible. StateManager::RunLoop maps state-action categories to
+# 1..8 at offsets 0xd646e..0xd6570; GetCurrentState returns that integer and
+# CommonStatePublisher publishes it directly. Do not use this mapping on
+# another binary build. Original interface provenance is retained below.
+MC_FSM_INTERFACE_SOURCE_PATH = "interface/robot/mc/data/msg/common/McFsmState.msg"
 MC_FSM_INTERFACE_SOURCE_SHA256 = (
     "da8a0370cba82d5d2955004a9b68489ee150f557e4c520dcd085bf58600cf6cf"
 )
+MC_FSM_RUNTIME_LIBRARY_SHA256 = {
+    "libmc_manager_state.so":
+        "554e3e58752f3c640fa0074d7121663ebeda33037acd73a8d9234e94174c33aa",
+    "libmc_module_main_publisher.so":
+        "c159d55d6cf1c3217dc9fb4f655c25125b33204ee36432d98e5cc180653e72b9",
+}
 MC_FSM_ACTIVE_STATES = frozenset((
     int(McFsmStateCode.STARTING),
     int(McFsmStateCode.STABLE),
@@ -75,6 +82,19 @@ MC_FSM_ACTIVE_STATES = frozenset((
 ))
 MC_FSM_STABLE = int(McFsmStateCode.STABLE)
 MC_FSM_SAFE = int(McFsmStateCode.SAFE)
+
+
+def verify_mc_fsm_runtime_contract(library_dir: str | Path) -> dict[str, str]:
+    """Fail closed before motion if the binary-backed decoder no longer applies."""
+    actual = {
+        name: hashlib.sha256((Path(library_dir) / name).read_bytes()).hexdigest()
+        for name in MC_FSM_RUNTIME_LIBRARY_SHA256
+    }
+    if actual != MC_FSM_RUNTIME_LIBRARY_SHA256:
+        raise ValueError("MC FSM binary contract mismatch; motion prohibited")
+    return actual
+
+
 BODY_POSE_STAND = 1
 REQUIRED_STATE_KEYS = ("odom", "imu", "common", "leg_state", "leg_command", "get_mode", "get_source")
 ZERO_STOP_INTERPRETATION = (

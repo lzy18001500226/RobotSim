@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from issue80_m1_first_motion import MC_FSM_STABLE, VELOCITY_SOURCE_NAME
+from issue80_m1_first_motion import MC_FSM_SAFE, MC_FSM_STABLE, VELOCITY_SOURCE_NAME
 from issue80_navigation_bridge_gate import gate_navigation_twist_proposal
 
 
@@ -101,7 +101,7 @@ class NavigationBridgeGateTests(unittest.TestCase):
     def test_unknown_unsafe_or_non_locomotion_modes_fail_closed_to_zero(self):
         cases = (
             snapshot(fsm_state=0),
-            snapshot(fsm_state=4),
+            snapshot(fsm_state=MC_FSM_SAFE),
             snapshot(get_mode_desc="STAND_DEFAULT", common_mode_desc="STAND_DEFAULT"),
             snapshot(get_mode_desc="LOCOMOTION_DEFAULT", common_mode_desc="PASSIVE_DEFAULT"),
         )
