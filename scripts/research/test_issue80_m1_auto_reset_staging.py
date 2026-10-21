@@ -30,6 +30,13 @@ class ResearchScriptStagingTests(unittest.TestCase):
             )
         )
 
+    def test_mc_velocity_graph_discovery_is_bounded_and_polls_executor(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text()
+        self.assertIn("MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0", source)
+        self.assertIn("deadline = discovery_started + MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S", source)
+        self.assertIn("rclpy.spin_once(self, timeout_sec=min(0.05", source)
+        self.assertIn("expected_only_verified_mc_subscriber", Path(__file__).with_name("issue80_m1_first_motion.py").read_text())
+
     def test_parent_parser_supports_only_reviewed_ten_second_ceiling(self) -> None:
         source = Path(__file__).with_name("issue80_m1_auto_reset_run.py").read_text()
         self.assertIn('args.pulse_duration <= 10.0', source)

@@ -43,6 +43,7 @@ from issue80_m1_first_motion import (
 from issue80_m1_mode_logic import classify_set_mc_action_response
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
+MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0
 INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
@@ -622,7 +623,9 @@ class FocusedM1Diagnostic(Node):
             raise RuntimeError(f"MC velocity subscriber provenance could not be verified: {exc}") from exc
         dds_qos_override_environment = capture_dds_qos_override_environment()
         self.mc_runtime_identity = mc_identity
-        deadline = time.monotonic() + 2.0
+        discovery_started = time.monotonic()
+        deadline = discovery_started + MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S
+        graph_poll_count = 0
         last_publishers: list[str] = []
         last_subscribers: list[str] = []
         state_topic_publishers: dict[str, list[str]] = {}
@@ -631,6 +634,7 @@ class FocusedM1Diagnostic(Node):
         last_subscriber_endpoint_metadata: list[dict[str, Any]] = []
         fault = None
         while rclpy.ok() and time.monotonic() < deadline:
+            graph_poll_count += 1
             publisher_info = list(self.get_publishers_info_by_topic(VELOCITY_TOPIC))
             subscriber_info = list(self.get_subscriptions_info_by_topic(VELOCITY_TOPIC))
             last_publishers = [str(info.node_name) for info in publisher_info]
@@ -710,6 +714,8 @@ class FocusedM1Diagnostic(Node):
                     "docker_network_mode": os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
                     "velocity_publishers": last_publishers,
                     "velocity_subscribers": last_subscribers,
+                    "graph_discovery_poll_count": graph_poll_count,
+                    "graph_discovery_wait_s": time.monotonic() - discovery_started,
                     "verified_mc_runtime_identity": mc_identity.as_dict(),
                     "publisher_qos": last_publisher_qos,
                     "publisher_local_identity": local_publisher_identity,
@@ -758,9 +764,11 @@ class FocusedM1Diagnostic(Node):
                 }
                 self.scope_evidence = result
                 return result
-            rclpy.spin_once(self, timeout_sec=0.05)
+            rclpy.spin_once(self, timeout_sec=min(0.05, max(0.0, deadline - time.monotonic())))
         raise RuntimeError(
-            f"simulation-only transport isolation failed: {fault}; "
+            f"simulation-only transport isolation failed after "
+            f"{time.monotonic() - discovery_started:.3f}s/{graph_poll_count} graph polls: {fault}; "
+            f"MC startup provenance={mc_subscriber_provenance!r}; "
             f"publishers={last_publishers!r} ({last_publisher_qos!r}); "
             f"subscribers={last_subscribers!r} ({last_subscriber_qos!r}); "
             f"local_state_and_command_publishers={state_topic_publishers!r}"
