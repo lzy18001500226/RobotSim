@@ -1247,8 +1247,20 @@ class ZeroStopWindow:
         start = self.clock()
         self.result["start_monotonic_s"] = start
         deadline = start + self.timeout_s
+        hard_deadline = deadline + 5.0 * self.period_s
         try:
-            while self.clock() < deadline:
+            # A wall-time burst alone can finish with the first/last returned
+            # calls less than one source timeout apart under ROS scheduling
+            # jitter. Permit only a bounded tail of ZERO calls to finish the
+            # original >=1 s / >=50 calls gate; never extend nonzero motion.
+            while self.clock() < hard_deadline:
+                times = self.result["publish_call_return_times_s"]
+                complete = (
+                    len(times) >= ZERO_STOP_MIN_MESSAGES
+                    and times[-1] - times[0] >= ZERO_STOP_MIN_S
+                )
+                if self.clock() >= deadline and complete:
+                    break
                 try:
                     with self.command_lock:
                         self.result["zero_publish_calls_started"] += 1
@@ -1259,7 +1271,7 @@ class ZeroStopWindow:
                     self.result["publish_call_return_times_s"].append(self.clock() - start)
                 except Exception as exc:
                     self.result["publish_exceptions"].append(f"{type(exc).__name__}: {exc}")
-                remaining = deadline - self.clock()
+                remaining = hard_deadline - self.clock()
                 if remaining > 0.0:
                     self.sleep(min(self.period_s, remaining))
         finally:

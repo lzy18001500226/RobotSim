@@ -1728,8 +1728,9 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         result = self.run_protocol(
             lambda: self.snapshot(), slow_zero, fake_clock=clock
         )
-        self.assertEqual(result["status"], "ZERO_STOP_CALL_RETURN_SPAN_TOO_SHORT")
-        self.assertLess(result["zero_stop"]["publish_call_return_span_s"], SOURCE_TIMEOUT_MS / 1000.0)
+        self.assertEqual(result["status"], "ZERO_STOP_CALL_RETURN_COUNT_TOO_LOW")
+        self.assertLess(result["zero_stop"]["zero_publish_calls_returned"], ZERO_STOP_MIN_MESSAGES)
+        self.assertLessEqual(result["zero_stop"]["loop_duration_s"], 1.1)
         self.assertFalse(result["zero_stop"]["mc_receipt_confirmed"])
         self.assertFalse(result["zero_stop"]["mc_stop_confirmed"])
 
