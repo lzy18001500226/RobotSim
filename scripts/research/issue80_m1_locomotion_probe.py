@@ -549,10 +549,16 @@ class FocusedM1Diagnostic(Node):
         raise TimeoutError("fresh upright STAND_DEFAULT telemetry not observed; verified Reset is required")
 
     def check_transport_scope(self) -> dict[str, Any]:
+        # Freeze one byte-identical evidence input for both provenance checks.
+        # The live MC log keeps appending warnings between reads; that is not
+        # an executable/identity change. Live /proc verification remains strict.
+        startup_snapshot = self.output_dir / "mc-startup-provenance.snapshot.log"
+        with startup_snapshot.open("xb") as stream:
+            stream.write((self.output_dir / "mc-console.log").read_bytes())
         try:
             mc_identity = load_verified_mc_runtime_identity(
                 self.args.mc_sim_config_path,
-                self.output_dir / "mc-console.log",
+                startup_snapshot,
             )
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"MC runtime identity could not be verified: {exc}") from exc
@@ -561,7 +567,7 @@ class FocusedM1Diagnostic(Node):
         try:
             mc_subscriber_provenance = load_verified_mc_velocity_subscriber_provenance(
                 self.args.mc_sim_config_path,
-                self.output_dir / "mc-console.log",
+                startup_snapshot,
                 mc_identity,
             )
         except (OSError, ValueError) as exc:
