@@ -12,7 +12,8 @@ from unittest.mock import patch
 from pathlib import Path
 
 from issue80_m1_auto_reset_run import (
-    BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, SET_ACTION_CAPTURE, SIM_LAUNCH,
+    BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, MC_RL_DEBUG_CAPTURE,
+    SET_ACTION_CAPTURE, SIM_LAUNCH,
     assess_container_absence, classify_first_motion_outcome, decode_m1_child_result,
 )
 
@@ -29,6 +30,58 @@ class ResearchScriptStagingTests(unittest.TestCase):
                 max_runtime_s=10.0,
             )
         )
+
+    def make_debug_overlay_fixture(self, evidence: Path, runtime: Path) -> None:
+        header_source = runtime / "aimdk_msgs_ws/src/aimdk_msgs/interface/robot/common/msg/MessageHeader.msg"
+        header_source.parent.mkdir(parents=True)
+        header_source.write_text("builtin_interfaces/Time stamp\nstring frame_id\nuint32 sequence\nbuiltin_interfaces/Time meas_stamp\n")
+        overlay = evidence / "mc_debug_overlay/src/aimdk_msgs/msg"
+        overlay.mkdir(parents=True)
+        (overlay / "MessageHeader.msg").write_bytes(header_source.read_bytes())
+        (overlay / "McRLDebug.msg").write_text(
+            "MessageHeader header\nfloat32[] obs_vec\nfloat32[] action_vec\n"
+        )
+        (evidence / "mc_debug_overlay/install").mkdir(parents=True)
+        (evidence / "mc_debug_overlay/install/setup.bash").write_text("# built overlay\n")
+        mc_lib = runtime / "mc/lib/libaimdk_msgs__rosidl_typesupport_introspection_cpp.so"
+        sim_lib = runtime / "sim_mujoco/lib/libaimdk_msgs__rosidl_typesupport_introspection_cpp.so"
+        mc_lib.parent.mkdir(parents=True)
+        sim_lib.parent.mkdir(parents=True)
+        mc_lib.write_bytes(b"mc-typesupport")
+        sim_lib.write_bytes(b"sim-typesupport")
+        fields = [
+            {"name": "header", "type": "aimdk_msgs/msg/MessageHeader"},
+            {"name": "obs_vec", "type": "float32[]"},
+            {"name": "action_vec", "type": "float32[]"},
+        ]
+        header_sha = hashlib.sha256(header_source.read_bytes()).hexdigest()
+        mc_sha = hashlib.sha256(mc_lib.read_bytes()).hexdigest()
+        sim_sha = hashlib.sha256(sim_lib.read_bytes()).hexdigest()
+        provenance = {
+            "classification": "SIMULATION_ONLY_DIAGNOSTIC_MESSAGE_OVERLAY",
+            "type": "aimdk_msgs/msg/McRLDebug",
+            "fields_in_order": fields,
+            "message_header_source_sha256": header_sha,
+            "mc_introspection_library_sha256": mc_sha,
+            "sim_introspection_library_sha256": sim_sha,
+            "field_metadata_matches_in_mc_and_sim": True,
+        }
+        (evidence / "MC_RL_DEBUG_SCHEMA_PROVENANCE.json").write_text(json.dumps(provenance))
+        results = []
+        for path, sha in ((mc_lib, mc_sha), (sim_lib, sim_sha)):
+            results.append({
+                "library": str(path), "sha256": sha, "namespace": "aimdk_msgs::msg",
+                "message": "McRLDebug", "member_count": 3,
+                "fields": [
+                    {"name": "header", "type_id": 18, "is_array": False,
+                     "nested": {"message": "MessageHeader"}},
+                    {"name": "obs_vec", "type_id": 1, "is_array": True,
+                     "array_size": 0, "is_upper_bound": False, "nested": None},
+                    {"name": "action_vec", "type_id": 1, "is_array": True,
+                     "array_size": 0, "is_upper_bound": False, "nested": None},
+                ],
+            })
+        (evidence / "mc_rl_debug_schema.json").write_text(json.dumps({"results": results}))
 
     def test_mc_velocity_graph_discovery_is_bounded_and_polls_executor(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text()
@@ -91,6 +144,81 @@ class ResearchScriptStagingTests(unittest.TestCase):
             manifest = json.loads((evidence / "staged_research_scripts.json").read_text())
             record = next(row for row in manifest["scripts"] if row["name"] == M1_FIRST_MOTION_LOGIC.name)
             self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
+
+    def test_stages_mc_rl_debug_capture_sidecar_and_records_its_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.stage_research_scripts()
+            staged = evidence / MC_RL_DEBUG_CAPTURE.name
+            self.assertEqual(staged.read_bytes(), MC_RL_DEBUG_CAPTURE.read_bytes())
+            manifest = json.loads((evidence / "staged_research_scripts.json").read_text())
+            record = next(row for row in manifest["scripts"] if row["name"] == MC_RL_DEBUG_CAPTURE.name)
+            self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
+
+    def test_mc_rl_debug_capture_is_read_only_and_starts_before_m1(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir) / "evidence"
+            runtime = Path(temp_dir) / "runtime"
+            evidence.mkdir()
+            self.make_debug_overlay_fixture(evidence, runtime)
+            (evidence / "mc_rl_debug_ready.json").write_text(
+                json.dumps({"status": "READY", "publisher_count": 1, "topic": "/aima/mc/rl/debug"})
+            )
+            runner = self.make_runner(evidence)
+            calls = []
+
+            def fake_docker_exec(name, shell, **kwargs):
+                calls.append((name, shell, kwargs))
+                return subprocess.CompletedProcess([], 0, "", "")
+
+            runner.docker_exec = fake_docker_exec
+            with patch("issue80_m1_auto_reset_run.RUNTIME", runtime):
+                runner.start_mc_rl_debug_capture()
+
+            self.assertEqual([call[0] for call in calls], [
+                "start_mc_rl_debug_capture", "wait_mc_rl_debug_capture_ready"
+            ])
+            self.assertTrue(calls[0][2]["detached"])
+            self.assertIn("issue80_mc_rl_debug_capture.py", calls[0][1])
+            self.assertIn("mc_debug_overlay/install/setup.bash", calls[0][1])
+            self.assertNotIn("publisher", calls[0][1].lower())
+            self.assertEqual(runner.mc_rl_debug_capture["status"], "READY")
+
+    def test_requested_mc_rl_debug_observer_starts_before_the_single_m1_child(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            runner.args.capture_mc_rl_debug = True
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.network_mode = "bridge"
+            runner.remaining = lambda: 60.0
+            calls = []
+            runner.start_mc_rl_debug_capture = lambda: calls.append("debug_observer")
+
+            def fake_run(name, command, **kwargs):
+                calls.append(name)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            runner.run = fake_run
+            runner.run_m1()
+
+            self.assertEqual(calls, ["debug_observer", "m1_first_motion_diagnostic"])
+            self.assertEqual(runner.m1_result["status"], "NO_RESULT_FILE")
+
+    def test_mc_rl_debug_overlay_hash_mismatch_blocks_before_observer_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir) / "evidence"
+            runtime = Path(temp_dir) / "runtime"
+            evidence.mkdir()
+            self.make_debug_overlay_fixture(evidence, runtime)
+            (runtime / "mc/lib/libaimdk_msgs__rosidl_typesupport_introspection_cpp.so").write_bytes(b"changed")
+            runner = self.make_runner(evidence)
+            calls = []
+            runner.docker_exec = lambda *args, **kwargs: calls.append((args, kwargs))
+            with patch("issue80_m1_auto_reset_run.RUNTIME", runtime):
+                with self.assertRaisesRegex(RuntimeError, "mc McRLDebug introspection library hash"):
+                    runner.start_mc_rl_debug_capture()
+            self.assertEqual(calls, [])
 
     def test_stages_verified_runtime_launchers_under_names_used_by_container(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -35,6 +35,7 @@ from issue80_m1_first_motion import (
     startup_then_cruise_velocity,
     joint_command_array_snapshot,
     float64_multi_array_snapshot,
+    mc_rl_debug_snapshot,
     PUBLISH_HZ,
     SOURCE_TIMEOUT_MS,
     VELOCITY_SOURCE_NAME,
@@ -110,6 +111,45 @@ class McDebugFloatArraySnapshotTests(unittest.TestCase):
 
     def test_absent_optional_debug_message_returns_none(self):
         self.assertIsNone(float64_multi_array_snapshot(None))
+
+
+class McRlDebugSnapshotTests(unittest.TestCase):
+    def test_preserves_version_matched_header_observation_and_action_vectors(self):
+        message = SimpleNamespace(
+            header=SimpleNamespace(
+                stamp=SimpleNamespace(sec=12, nanosec=34),
+                frame_id="mc",
+                sequence=56,
+                meas_stamp=SimpleNamespace(sec=11, nanosec=99),
+            ),
+            obs_vec=[0.105, 0.0, 0.0],
+            action_vec=[0.1, -0.2],
+        )
+
+        result = mc_rl_debug_snapshot(message, 20.5)
+
+        self.assertEqual(result["received_monotonic_s"], 20.5)
+        self.assertEqual(result["header"]["stamp"], {"sec": 12, "nanosec": 34})
+        self.assertEqual(result["header"]["meas_stamp"], {"sec": 11, "nanosec": 99})
+        self.assertEqual(result["header"]["frame_id"], "mc")
+        self.assertEqual(result["header"]["sequence"], 56)
+        self.assertEqual(result["obs_vec"], [0.105, 0.0, 0.0])
+        self.assertEqual(result["action_vec"], [0.1, -0.2])
+        self.assertEqual(result["nonfinite_obs_indexes"], [])
+        self.assertEqual(result["nonfinite_action_indexes"], [])
+
+    def test_nonfinite_policy_values_are_json_safe_and_indexed(self):
+        message = SimpleNamespace(header=None, obs_vec=[float("nan"), 0.1], action_vec=[float("inf")])
+
+        result = mc_rl_debug_snapshot(message)
+
+        self.assertEqual(result["obs_vec"], [None, 0.1])
+        self.assertEqual(result["action_vec"], [None])
+        self.assertEqual(result["nonfinite_obs_indexes"], [0])
+        self.assertEqual(result["nonfinite_action_indexes"], [0])
+
+    def test_absent_mcrldebug_message_returns_none(self):
+        self.assertIsNone(mc_rl_debug_snapshot(None))
 
 
 VALID_MC_SUBSCRIBER_PROVENANCE = {

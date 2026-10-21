@@ -1200,7 +1200,11 @@ class FocusedM1Diagnostic(Node):
                     if self.latest_mc_debug_f64_snapshot else None
                 ),
                 "mc_rl_debug_topic": "/aima/mc/rl/debug",
-                "mc_rl_debug_schema": "NOT_SUBSCRIBED: matching schema was not found in the pinned installed message sources; no field semantics are guessed",
+                "mc_rl_debug_schema": (
+                    "Available from the installed MC and simulator introspection libraries as "
+                    "header + float32[] obs_vec + float32[] action_vec; this M1 node does not subscribe, "
+                    "and the optional isolated sidecar records it without assigning vector-index semantics."
+                ),
             }
             result["get_mc_action_history"] = self.mode_observations
             result["get_current_input_source_history"] = self.source_observations

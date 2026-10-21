@@ -26,6 +26,7 @@ M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 M1_FIRST_MOTION_LOGIC = Path(__file__).with_name("issue80_m1_first_motion.py")
 SET_ACTION_CAPTURE = Path(__file__).with_name("issue80_m1_set_action_capture.py")
+MC_RL_DEBUG_CAPTURE = Path(__file__).with_name("issue80_mc_rl_debug_capture.py")
 SIM_LAUNCH = Path(__file__).with_name("issue80_launch_sim.sh")
 MC_LAUNCH = Path(__file__).with_name("issue80_launch_mc.sh")
 IMAGE = "robotsim:humble-raicom-runtime-20261019"
@@ -192,6 +193,7 @@ class BoundedRun:
         }
         self.reset_classification = "NOT_ATTEMPTED"
         self.m1_result: dict[str, Any] | None = None
+        self.mc_rl_debug_capture: dict[str, Any] | None = None
         self.reset_analysis: dict[str, Any] | None = None
         self.before_reset_image: dict[str, Any] | None = None
         self.reset_dispatch_payload: dict[str, Any] | None = None
@@ -266,6 +268,7 @@ class BoundedRun:
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
             (SET_ACTION_CAPTURE, SET_ACTION_CAPTURE.name),
+            (MC_RL_DEBUG_CAPTURE, MC_RL_DEBUG_CAPTURE.name),
             (SIM_LAUNCH, "launch_sim.sh"),
             (MC_LAUNCH, "launch_mc.sh"),
         )
@@ -753,6 +756,8 @@ class BoundedRun:
             raise RunDeadline("fewer than 35 seconds remain after AUTO_RESET_PASS; M1 was not started")
         if self.network_mode != "bridge":
             raise RuntimeError("verified bridge isolation is required before M1")
+        if getattr(self.args, "capture_mc_rl_debug", False):
+            self.start_mc_rl_debug_capture()
         command = [
             "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", self.container, "bash", "-lc",
             "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion --maintainer-authorized --reset-gate-verified"
@@ -791,6 +796,112 @@ class BoundedRun:
                 }
         else:
             self.m1_result = {"status":"NO_RESULT_FILE","returncode":result.returncode,"stdout":result.stdout,"stderr":result.stderr}
+
+    def start_mc_rl_debug_capture(self) -> None:
+        """Start one passive, schema-verified MC debug subscriber before M1."""
+        schema_verification = self.verify_mc_rl_debug_overlay()
+        overlay_setup = self.evidence / "mc_debug_overlay/install/setup.bash"
+        if not overlay_setup.is_file():
+            raise RuntimeError("McRLDebug capture requested but the evidence-local interface overlay is not built")
+        start = (
+            "source /opt/ros/humble/setup.bash && "
+            "source /workspace/evidence/mc_debug_overlay/install/setup.bash && "
+            "python3 /workspace/evidence/issue80_mc_rl_debug_capture.py "
+            "--output /workspace/evidence/mc_rl_debug_trace.jsonl "
+            "--ready-marker /workspace/evidence/mc_rl_debug_ready.json "
+            "--summary /workspace/evidence/mc_rl_debug_summary.json "
+            "--ready-timeout-s 5 --max-duration-s 80"
+        )
+        self.docker_exec("start_mc_rl_debug_capture", start, timeout_s=5.0, detached=True)
+        wait_ready = (
+            "timeout 7s bash -lc 'until test -f /workspace/evidence/mc_rl_debug_ready.json; "
+            "do sleep 0.05; done'"
+        )
+        self.docker_exec("wait_mc_rl_debug_capture_ready", wait_ready, timeout_s=8.0)
+        ready_path = self.evidence / "mc_rl_debug_ready.json"
+        if not ready_path.is_file():
+            raise RuntimeError("McRLDebug observer did not write its readiness record")
+        self.mc_rl_debug_capture = json.loads(ready_path.read_text(encoding="utf-8"))
+        if self.mc_rl_debug_capture.get("status") != "READY":
+            raise RuntimeError(
+                "version-matched McRLDebug publisher was not uniquely discovered before M1"
+            )
+        self.mc_rl_debug_capture["schema_verification"] = schema_verification
+
+    def verify_mc_rl_debug_overlay(self) -> dict[str, Any]:
+        """Fail closed unless the temporary ROS interface overlay matches both installed runtimes."""
+        schema_path = self.evidence / "mc_rl_debug_schema.json"
+        provenance_path = self.evidence / "MC_RL_DEBUG_SCHEMA_PROVENANCE.json"
+        message_path = self.evidence / "mc_debug_overlay/src/aimdk_msgs/msg/McRLDebug.msg"
+        header_path = self.evidence / "mc_debug_overlay/src/aimdk_msgs/msg/MessageHeader.msg"
+        overlay_setup = self.evidence / "mc_debug_overlay/install/setup.bash"
+        if not all(path.is_file() for path in (schema_path, provenance_path, message_path, header_path, overlay_setup)):
+            raise RuntimeError("McRLDebug schema evidence or generated overlay is incomplete")
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+        expected_fields = [
+            {"name": "header", "type": "aimdk_msgs/msg/MessageHeader"},
+            {"name": "obs_vec", "type": "float32[]"},
+            {"name": "action_vec", "type": "float32[]"},
+        ]
+        provenance_fields = provenance.get("fields_in_order", [])
+        provenance_field_projection = [
+            {"name": item.get("name"), "type": item.get("type")}
+            for item in provenance_fields if isinstance(item, dict)
+        ]
+        if (
+            provenance.get("classification") != "SIMULATION_ONLY_DIAGNOSTIC_MESSAGE_OVERLAY"
+            or provenance.get("type") != "aimdk_msgs/msg/McRLDebug"
+            or provenance_field_projection != expected_fields
+            or provenance.get("field_metadata_matches_in_mc_and_sim") is not True
+        ):
+            raise RuntimeError("McRLDebug provenance does not match the reviewed diagnostic schema")
+        expected_message = "MessageHeader header\nfloat32[] obs_vec\nfloat32[] action_vec\n"
+        if message_path.read_text(encoding="utf-8") != expected_message:
+            raise RuntimeError("McRLDebug overlay message definition differs from the introspected fields")
+        header_source = RUNTIME / "aimdk_msgs_ws/src/aimdk_msgs/interface/robot/common/msg/MessageHeader.msg"
+        if not header_source.is_file():
+            raise RuntimeError("version-matched MessageHeader source is unavailable")
+        header_hash = hashlib.sha256(header_path.read_bytes()).hexdigest()
+        if (
+            header_hash != provenance.get("message_header_source_sha256")
+            or hashlib.sha256(header_source.read_bytes()).hexdigest() != header_hash
+        ):
+            raise RuntimeError("McRLDebug overlay MessageHeader is not the exact installed source file")
+        expected_libraries = {
+            "mc": RUNTIME / "mc/lib/libaimdk_msgs__rosidl_typesupport_introspection_cpp.so",
+            "sim": RUNTIME / "sim_mujoco/lib/libaimdk_msgs__rosidl_typesupport_introspection_cpp.so",
+        }
+        results = schema.get("results")
+        if not isinstance(results, list) or len(results) != 2:
+            raise RuntimeError("introspection evidence must include both MC and simulator libraries")
+        observed_by_sha = {item.get("sha256"): item for item in results if isinstance(item, dict)}
+        library_hashes = {}
+        for label, path in expected_libraries.items():
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            recorded = provenance.get(f"{label}_introspection_library_sha256")
+            item = observed_by_sha.get(actual)
+            if actual != recorded or item is None:
+                raise RuntimeError(f"{label} McRLDebug introspection library hash does not match evidence")
+            fields = item.get("fields", [])
+            if [field.get("name") for field in fields] != ["header", "obs_vec", "action_vec"]:
+                raise RuntimeError(f"{label} McRLDebug field order differs from the overlay")
+            if (
+                fields[0].get("nested", {}).get("message") != "MessageHeader"
+                or any(field.get("type_id") != 1 or field.get("is_array") is not True for field in fields[1:])
+                or any(field.get("array_size") != 0 or field.get("is_upper_bound") is not False for field in fields[1:])
+            ):
+                raise RuntimeError(f"{label} McRLDebug vector types are not unbounded float32 sequences")
+            library_hashes[label] = actual
+        return {
+            "status": "PASS",
+            "classification": "SIMULATION_ONLY_DIAGNOSTIC_MESSAGE_OVERLAY",
+            "type": "aimdk_msgs/msg/McRLDebug",
+            "fields": expected_fields,
+            "message_header_sha256": header_hash,
+            "introspection_library_sha256": library_hashes,
+            "overlay_setup": str(overlay_setup),
+        }
 
     def cleanup(self) -> None:
         if not self.container_created:
@@ -918,6 +1029,7 @@ class BoundedRun:
             "runtime_limit_s": self.args.max_runtime_s,
             "reset_classification": "NOT_ATTEMPTED",
             "m1_status": "NOT_RUN",
+            "mc_rl_debug_capture": None,
             "outcome_classification": "STANDING_CONTROL_NOT_READY",
             "fault": None,
         }
@@ -958,6 +1070,7 @@ class BoundedRun:
 
             self.run_m1()
             result["m1_result"] = self.m1_result
+            result["mc_rl_debug_capture"] = self.mc_rl_debug_capture
             result["m1_status"] = (self.m1_result or {}).get("status", "UNKNOWN")
             child_fault = (self.m1_result or {}).get("fault")
             if isinstance(child_fault, str) and child_fault:
@@ -1004,6 +1117,7 @@ class BoundedRun:
             result["status"] = "BLOCKED"
         finally:
             elapsed = time.monotonic() - self.started
+            result["mc_rl_debug_capture"] = self.mc_rl_debug_capture
             result["wall_elapsed_s"] = elapsed
             result["wall_budget_exhausted"] = elapsed > self.args.max_runtime_s
             if self.reset_analysis:
@@ -1042,6 +1156,11 @@ def main() -> int:
         "--maintainer-authorized-standing-takeover",
         action="store_true",
         help="explicit human authorization for one simulation-only standing-takeover test; no LD or velocity command",
+    )
+    parser.add_argument(
+        "--capture-mc-rl-debug",
+        action="store_true",
+        help="start the optional version-matched read-only McRLDebug observer before M1 motion",
     )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:

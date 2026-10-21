@@ -1460,6 +1460,69 @@ def float64_multi_array_snapshot(
     }
 
 
+def mc_rl_debug_snapshot(message: Any, received_monotonic_s: float | None = None) -> dict[str, Any] | None:
+    """Keep the version-matched MC observation/action vectors and raw header."""
+    if message is None:
+        return None
+
+    def field(value: Any, name: str, default: Any = None) -> Any:
+        return value.get(name, default) if isinstance(value, Mapping) else getattr(value, name, default)
+
+    def timestamp(value: Any) -> dict[str, int] | None:
+        if value is None:
+            return None
+        return {
+            "sec": int(field(value, "sec", 0)),
+            "nanosec": int(field(value, "nanosec", 0)),
+        }
+
+    def vector(values: Any) -> tuple[list[float | None], list[int]]:
+        result: list[float | None] = []
+        invalid: list[int] = []
+        for index, raw in enumerate(values or ()):
+            try:
+                parsed = float(raw)
+            except (TypeError, ValueError):
+                parsed = math.nan
+            if math.isfinite(parsed):
+                result.append(parsed)
+            else:
+                result.append(None)
+                invalid.append(index)
+        return result, invalid
+
+    header = field(message, "header")
+    stamp = field(header, "stamp") if header is not None else None
+    measured = field(header, "meas_stamp") if header is not None else None
+    receive_time = None
+    if received_monotonic_s is not None:
+        try:
+            parsed_receive_time = float(received_monotonic_s)
+        except (TypeError, ValueError):
+            parsed_receive_time = math.nan
+        if math.isfinite(parsed_receive_time):
+            receive_time = parsed_receive_time
+    obs, obs_invalid = vector(field(message, "obs_vec", ()))
+    action, action_invalid = vector(field(message, "action_vec", ()))
+    return {
+        "received_monotonic_s": receive_time,
+        "header": {
+            "stamp": timestamp(stamp),
+            "frame_id": str(field(header, "frame_id", "")) if header is not None else None,
+            "sequence": int(field(header, "sequence", 0)) if header is not None else None,
+            "meas_stamp": timestamp(measured),
+        },
+        "obs_vec": obs,
+        "action_vec": action,
+        "nonfinite_obs_indexes": obs_invalid,
+        "nonfinite_action_indexes": action_invalid,
+        "interpretation": (
+            "Version-matched fields are named obs_vec/action_vec; vector indices are left raw "
+            "until mapped to the matching FoundationWalk configuration."
+        ),
+    }
+
+
 def run_first_motion_window(
     *,
     sample: Callable[[], Mapping[str, Any]],
