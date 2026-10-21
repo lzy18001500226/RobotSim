@@ -567,7 +567,8 @@ class BoundedRun:
         run44 = bool(getattr(self.args, "run44_threshold_margin_diagnostic", False))
         run45 = bool(getattr(self.args, "run45_ten_second_gait_diagnostic", False))
         run46 = bool(getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False))
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46))
+        run47 = bool(getattr(self.args, "run47_startup_timeout_extension_diagnostic", False))
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run47))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -625,7 +626,7 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        if run41 or run42 or run43 or run44 or run45 or run46:
+        if run41 or run42 or run43 or run44 or run45 or run46 or run47:
             overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
             overlay_name = "foundationwalk_knee019_minrun010.yaml"
         else:
@@ -644,6 +645,15 @@ class BoundedRun:
             "source_limits_modified": False,
             "safety_gates_modified": False,
         })
+        manifest["command_speed_m_s"] = float(self.args.forward_speed)
+        manifest["command_profile"] = {
+            "shape": "motion-triggered-startup-then-cruise"
+            if getattr(self.args, "startup_speed", None) is not None else "constant",
+            "startup_speed_m_s": getattr(self.args, "startup_speed", None),
+            "cruise_speed_m_s": float(self.args.forward_speed),
+            "transition_displacement_m": getattr(self.args, "startup_transition_displacement", None),
+            "startup_timeout_s": getattr(self.args, "startup_transition_timeout_s", 0.0),
+        }
         manifest_path = self.evidence / "foundationwalk_config_overlay_manifest.json"
         with manifest_path.open("x", encoding="utf-8") as stream:
             json.dump(manifest, stream, indent=2)
@@ -1281,6 +1291,7 @@ class BoundedRun:
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
+            or getattr(self.args, "run47_startup_timeout_extension_diagnostic", False)
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
         if (
@@ -1289,6 +1300,7 @@ class BoundedRun:
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
+            or getattr(self.args, "run47_startup_timeout_extension_diagnostic", False)
         ):
             command[-1] += " --zero-until-stand-timeout-s 3.5"
         if (
@@ -1296,6 +1308,7 @@ class BoundedRun:
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
+            or getattr(self.args, "run47_startup_timeout_extension_diagnostic", False)
         ):
             command[-1] += " --zero-only-stop"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
@@ -1784,6 +1797,15 @@ def main() -> int:
             "pulse and the unchanged 0.2 m/s measured root-speed guard"
         ),
     )
+    parser.add_argument(
+        "--run47-startup-timeout-extension-diagnostic",
+        action="store_true",
+        help=(
+            "follow Run46 after its 0.75 s startup window stopped 0.75 mm short of the "
+            "10 mm trigger; change only that timeout to 1.0 s, keeping the 0.12 to "
+            "0.105 m/s profile, 3-second pulse, and 0.2 m/s root-speed guard"
+        ),
+    )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
@@ -1806,6 +1828,7 @@ def main() -> int:
         args.run44_threshold_margin_diagnostic,
         args.run45_ten_second_gait_diagnostic,
         args.run46_startup_cruise_threshold_diagnostic,
+        args.run47_startup_timeout_extension_diagnostic,
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
@@ -1814,18 +1837,21 @@ def main() -> int:
             parser.error("FoundationWalk diagnostic requires the authorized first-motion gate")
         if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic:
             target_speed = 0.14
-        elif args.run46_startup_cruise_threshold_diagnostic:
+        elif args.run46_startup_cruise_threshold_diagnostic or args.run47_startup_timeout_extension_diagnostic:
             target_speed = 0.105
         else:
             target_speed = 0.112
         target_pulse = 10.0 if args.run45_ten_second_gait_diagnostic else 3.0
-        if args.run46_startup_cruise_threshold_diagnostic:
+        if args.run46_startup_cruise_threshold_diagnostic or args.run47_startup_timeout_extension_diagnostic:
+            expected_startup_timeout = (
+                1.0 if args.run47_startup_timeout_extension_diagnostic else 0.75
+            )
             startup_profile_valid = (
                 args.startup_speed is not None
                 and abs(args.startup_speed - 0.12) <= 1e-9
                 and args.startup_transition_displacement is not None
                 and abs(args.startup_transition_displacement - 0.01) <= 1e-9
-                and abs(args.startup_transition_timeout_s - 0.75) <= 1e-9
+                and abs(args.startup_transition_timeout_s - expected_startup_timeout) <= 1e-9
             )
         else:
             startup_profile_valid = (
@@ -1842,6 +1868,12 @@ def main() -> int:
             or not startup_profile_valid
             or not args.capture_mc_rl_debug
         ):
+            if args.run47_startup_timeout_extension_diagnostic:
+                parser.error(
+                    "Run47 is fixed to a 0.12 m/s startup, 0.105 m/s cruise after 10 mm, "
+                    "1.0 s transition timeout, 3 s pulse, 5 s post-stop observation, "
+                    "no additional ramp, and McRLDebug capture"
+                )
             if args.run46_startup_cruise_threshold_diagnostic:
                 parser.error(
                     "Run46 is fixed to 0.12 m/s startup, 0.105 m/s cruise after 10 mm, "
