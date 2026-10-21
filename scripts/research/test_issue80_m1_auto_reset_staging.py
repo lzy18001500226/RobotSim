@@ -111,6 +111,18 @@ class ResearchScriptStagingTests(unittest.TestCase):
         activation["nonzero_publish_calls_returned"] = 0
         self.assertEqual(classify_first_motion_outcome(activation), "VELOCITY_COMMAND_NOT_EXECUTED")
 
+    def test_source_joint_velocity_abort_overrides_unverified_stop_classification(self) -> None:
+        activation = {
+            "nonzero_publish_calls_returned": 54,
+            "physical_motion_status": "PHYSICAL_MOTION_CONFIRMED",
+            "status": "ABORTED",
+            "fault": "source_joint_velocity_limit:left_knee_joint",
+        }
+        self.assertEqual(
+            classify_first_motion_outcome(activation),
+            "FIRST_PHYSICAL_WALKING_FAIL",
+        )
+
     def test_stages_current_mode_logic_and_records_its_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             evidence = Path(temp_dir)

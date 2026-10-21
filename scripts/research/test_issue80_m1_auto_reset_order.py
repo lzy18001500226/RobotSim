@@ -20,6 +20,7 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         *,
         posture_ok: bool = True,
         standing_only: bool = False,
+        m1_result: dict | None = None,
     ) -> BoundedRun:
         class RecordingRun(BoundedRun):
             def stage_research_scripts(self) -> None:
@@ -68,7 +69,7 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
 
             def run_m1(self) -> None:
                 events.append("first_motion_after_standing_gate")
-                self.m1_result = {
+                self.m1_result = m1_result if m1_result is not None else {
                     "status": "PASS",
                     "source_registration": {"success": True},
                     "set_mc_action_ld": {"accepted_by_service": True, "response_header_code": 0},
@@ -157,6 +158,26 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertLess(events.index("fresh_post_reset_pose"), events.index("sd_once"))
         self.assertLess(events.index("sd_once"), events.index("post_sd_standing_window"))
         self.assertLess(events.index("post_sd_standing_window"), events.index("first_motion_after_standing_gate"))
+
+    def test_parent_reports_activation_joint_limit_fault_as_walking_failure(self) -> None:
+        events: list[str] = []
+        m1_result = {
+            "status": "BLOCKED",
+            "source_registration": {"success": True},
+            "set_mc_action_ld": {"accepted_by_service": True, "response_header_code": 0},
+            "activation": {
+                "nonzero_publish_calls_returned": 54,
+                "physical_motion_status": "PHYSICAL_MOTION_CONFIRMED",
+                "status": "ABORTED",
+                "fault": "source_joint_velocity_limit:left_knee_joint",
+            },
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(events, temp_dir, m1_result=m1_result)
+            result = runner.execute()
+
+        self.assertEqual(result["outcome_classification"], "FIRST_PHYSICAL_WALKING_FAIL")
+        self.assertEqual(result["fault"], "source_joint_velocity_limit:left_knee_joint")
 
     def test_unsuitable_post_reset_pose_stops_before_sd(self) -> None:
         events: list[str] = []

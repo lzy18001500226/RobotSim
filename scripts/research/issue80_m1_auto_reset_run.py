@@ -47,6 +47,14 @@ class RunDeadline(TimeoutError):
 
 M1_CHILD_RESULT_STATUSES = frozenset({"PASS", "BLOCKED"})
 CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+M1_SAFETY_FAULT_MARKERS = (
+    "fall_",
+    "mc_safety",
+    "non_standing_body_status",
+    "stale_or_missing_state",
+    "source_joint_position_limit",
+    "source_joint_velocity_limit",
+)
 
 
 def decode_m1_child_result(serialized: str) -> dict[str, Any]:
@@ -87,6 +95,9 @@ def classify_first_motion_outcome(activation: Mapping[str, Any] | None) -> str:
         return "VELOCITY_COMMAND_NOT_EXECUTED"
     if int(activation.get("nonzero_publish_calls_returned", 0) or 0) <= 0:
         return "VELOCITY_COMMAND_NOT_EXECUTED"
+    activation_fault = str(activation.get("fault") or "").lower()
+    if any(marker in activation_fault for marker in M1_SAFETY_FAULT_MARKERS):
+        return "FIRST_PHYSICAL_WALKING_FAIL"
     if activation.get("status") == "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED":
         return "FIRST_PHYSICAL_WALKING_PASS"
     if activation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED":
@@ -1085,12 +1096,24 @@ class BoundedRun:
             if isinstance(child_fault, str) and child_fault:
                 result["fault"] = child_fault
             m1 = self.m1_result or {}
-            fault_text = str(m1.get("fault") or "").lower()
+            activation = m1.get("activation")
+            activation_fault = (
+                str(activation.get("fault") or "")
+                if isinstance(activation, Mapping) else ""
+            )
+            if activation_fault and not result.get("fault"):
+                result["fault"] = activation_fault
+            fault_text = " ".join(
+                value for value in (str(m1.get("fault") or ""), activation_fault)
+                if value
+            ).lower()
             registration = m1.get("source_registration")
             ld_action = m1.get("set_mc_action_ld")
-            activation = m1.get("activation")
             nonzero_calls = int(activation.get("nonzero_publish_calls_returned", 0) or 0) if isinstance(activation, Mapping) else 0
-            safety_fault = any(token in fault_text for token in ("standing", "non_standing", "fall_", "stale_or_missing", "mc_safety"))
+            safety_fault = any(
+                token in fault_text
+                for token in (*M1_SAFETY_FAULT_MARKERS, "standing")
+            )
             if safety_fault and nonzero_calls > 0:
                 self.outcome_classification = "FIRST_PHYSICAL_WALKING_FAIL"
                 result["outcome_classification"] = self.outcome_classification
