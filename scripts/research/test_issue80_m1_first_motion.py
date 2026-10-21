@@ -29,6 +29,7 @@ from issue80_m1_first_motion import (
     MC_FSM_RUNTIME_LIBRARY_SHA256,
     FORWARD_COMMAND_M_S,
     PULSE_LIMIT_S,
+    MAX_AUTHORIZED_PULSE_S,
     PUBLISH_HZ,
     SOURCE_TIMEOUT_MS,
     VELOCITY_SOURCE_NAME,
@@ -233,6 +234,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         baseline=None,
         forward_command_m_s=0.2,
         pulse_duration_s=1.0,
+        max_pulse_duration_s=1.0,
     ):
         clock = fake_clock or FakeClock()
 
@@ -258,6 +260,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             authorized=True,
             forward_command_m_s=forward_command_m_s,
             pulse_duration_s=pulse_duration_s,
+            max_pulse_duration_s=max_pulse_duration_s,
             shutdown_event=shutdown_event,
             state_timeout_s=0.5,
             min_root_z=0.52,
@@ -284,7 +287,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
         commands = []
         result = self.run_protocol(self.snapshot, commands.append, pulse_duration_s=0.6)
         self.assertLessEqual(result["last_nonzero_command_offset_s"], 0.6)
-        self.assertEqual(result["pulse_limit_s"], 0.6)
+        self.assertEqual(result["pulse_duration_s_requested"], 0.6)
+        self.assertEqual(result["pulse_limit_s"], 1.0)
         self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
         for invalid in (0.0, -0.1, 1.001, float("nan")):
             result = self.run_protocol(self.snapshot, lambda v: None, pulse_duration_s=invalid)
@@ -340,6 +344,21 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertTrue(any(value == 0.0 for value, _ in seen))
         self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
 
+    def test_reviewed_ten_second_pulse_remains_continuous_and_stops_at_deadline(self):
+        commands = []
+        result = self.run_protocol(
+            self.snapshot, commands.append,
+            pulse_duration_s=10.0,
+            max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
+        )
+        nonzero = [value for value in commands if value > 0.0]
+        self.assertEqual(len(nonzero), 500)
+        self.assertEqual(result["pulse_duration_s_requested"], 10.0)
+        self.assertEqual(result["pulse_limit_s"], 10.0)
+        self.assertLessEqual(result["last_nonzero_command_offset_s"], 10.0)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+        self.assertTrue(any(value == 0.0 for value in commands))
+
     def test_leg_limits_are_loaded_from_the_installed_robot_model_yaml(self) -> None:
         names = [f"leg_joint_{index}" for index in range(12)]
         document = {
@@ -375,6 +394,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertEqual(ACTION_SOURCE_NAME, "rc")
         self.assertEqual(FORWARD_COMMAND_M_S, 0.2)
         self.assertEqual(PULSE_LIMIT_S, 1.0)
+        self.assertEqual(MAX_AUTHORIZED_PULSE_S, 10.0)
         self.assertEqual(PUBLISH_HZ, 50.0)
         self.assertEqual(SOURCE_TIMEOUT_MS, 1000)
         self.assertEqual(ZERO_STOP_MIN_S, 1.0)

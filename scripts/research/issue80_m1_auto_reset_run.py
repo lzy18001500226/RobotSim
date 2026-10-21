@@ -1030,8 +1030,8 @@ def main() -> int:
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
-    if not 0.0 < args.pulse_duration <= 1.0:
-        parser.error("pulse duration must be positive and no greater than 1 second")
+    if not 0.0 < args.pulse_duration <= 10.0:
+        parser.error("pulse duration must be positive and no greater than 10 seconds")
     if not 0.0 < args.forward_speed <= 0.2:
         parser.error("forward speed must be positive and no greater than 0.2 m/s")
     run=BoundedRun(args)

@@ -30,6 +30,11 @@ class ResearchScriptStagingTests(unittest.TestCase):
             )
         )
 
+    def test_parent_parser_supports_only_reviewed_ten_second_ceiling(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_auto_reset_run.py").read_text()
+        self.assertIn('args.pulse_duration <= 10.0', source)
+        self.assertIn('pulse duration must be positive and no greater than 10 seconds', source)
+
     def test_motion_is_reported_separately_from_unverified_stop(self) -> None:
         activation = {
             "nonzero_publish_calls_returned": 30,

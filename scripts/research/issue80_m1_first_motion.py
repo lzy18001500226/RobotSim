@@ -24,7 +24,8 @@ MC_SIM_CONFIG_PATH = (
     "lx2501_3_t2d5/mc_sim.yaml"
 )
 FORWARD_COMMAND_M_S = 0.2
-PULSE_LIMIT_S = 1.0
+PULSE_LIMIT_S = 1.0  # conservative default for unextended first-motion probes
+MAX_AUTHORIZED_PULSE_S = 10.0  # current maintainer-reviewed simulation-only ceiling
 PUBLISH_HZ = 50.0
 COMMAND_QOS_RELIABILITY = "reliable"
 COMMAND_QOS_DEPTH = 10
@@ -1342,6 +1343,7 @@ def run_first_motion_window(
     authorized: bool,
     forward_command_m_s: float = FORWARD_COMMAND_M_S,
     pulse_duration_s: float = PULSE_LIMIT_S,
+    max_pulse_duration_s: float = PULSE_LIMIT_S,
     extra_post_stop_observe_s: float = 0.0,
     after_zero_stop: Callable[[], Mapping[str, Any]] | None = None,
     shutdown_event: threading.Event | None = None,
@@ -1353,14 +1355,15 @@ def run_first_motion_window(
     sleep: Callable[[float], None] = time.sleep,
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
 ) -> dict[str, Any]:
-    """One bounded <=0.2 m/s, <=1 s, 50 Hz pulse followed by stop and observation."""
+    """One bounded <=0.2 m/s, at most the supplied authorized duration, 50 Hz pulse."""
     result: dict[str, Any] = {
         "status": "NOT_RUN",
         "source": VELOCITY_SOURCE_NAME,
         "command_forward_m_s": forward_command_m_s,
         "command_lateral_m_s": 0.0,
         "command_angular_velocity_rad_s": 0.0,
-        "pulse_limit_s": pulse_duration_s,
+        "pulse_limit_s": max_pulse_duration_s,
+        "pulse_duration_s_requested": pulse_duration_s,
         "publish_hz": PUBLISH_HZ,
         "source_timeout_ms": SOURCE_TIMEOUT_MS,
         "zero_publish_semantics": ZERO_STOP_INTERPRETATION,
@@ -1379,7 +1382,12 @@ def run_first_motion_window(
     pulse_fault: str | None = None
     if not math.isfinite(extra_post_stop_observe_s) or not 0.0 <= extra_post_stop_observe_s <= 5.0:
         pulse_fault = "extra_stop_observation_outside_bounded_budget"
-    elif not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= PULSE_LIMIT_S:
+    elif (
+        not math.isfinite(max_pulse_duration_s)
+        or not 0.0 < max_pulse_duration_s <= MAX_AUTHORIZED_PULSE_S
+        or not math.isfinite(pulse_duration_s)
+        or not 0.0 < pulse_duration_s <= max_pulse_duration_s
+    ):
         pulse_fault = "pulse_duration_outside_authorized_cap"
     elif not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
         pulse_fault = "forward_command_outside_authorized_cap"

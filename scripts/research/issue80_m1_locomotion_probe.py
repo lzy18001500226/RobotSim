@@ -30,7 +30,7 @@ from issue80_m1_first_motion import (
     ACTION_SOURCE_NAME, COMMAND_PUBLISHER_TOPIC, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
     BASELINE_DURATION_S, BASELINE_SAMPLE_PERIOD_S, BASELINE_WINDOW_COUNT,
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
-    MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, verify_mc_fsm_runtime_contract,
+    MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, MAX_AUTHORIZED_PULSE_S, verify_mc_fsm_runtime_contract,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
     load_leg_joint_limits, load_mc_input_source_timeouts,
@@ -98,6 +98,8 @@ class FocusedM1Diagnostic(Node):
             maintainer_authorized=args.maintainer_authorized,
             network_mode=verified_network_mode,
         )
+        if not 0.0 < args.pulse_duration <= MAX_AUTHORIZED_PULSE_S:
+            raise ValueError("pulse duration exceeds the maintainer-reviewed 10 s ceiling")
         if not 0.1 <= args.state_timeout <= 0.5:
             raise ValueError("state freshness limit may not be weakened beyond the existing 0.5 s gate")
         if args.max_tilt_deg <= 0.0 or args.max_tilt_deg > 15.0:
@@ -1074,6 +1076,7 @@ class FocusedM1Diagnostic(Node):
                 authorized=True,
                 forward_command_m_s=self.args.forward_speed,
                 pulse_duration_s=self.args.pulse_duration,
+                max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
                 extra_post_stop_observe_s=self.args.extra_stop_observation,
                 after_zero_stop=self.request_postwalk_stand_once,
                 shutdown_event=self.interrupted,
@@ -1118,6 +1121,7 @@ class FocusedM1Diagnostic(Node):
                         authorized=True,
                         forward_command_m_s=self.args.forward_speed,
                         pulse_duration_s=self.args.pulse_duration,
+                        max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
                         extra_post_stop_observe_s=self.args.extra_stop_observation,
                         shutdown_event=self.interrupted,
                         on_sample=self._trace_first_motion_sample,
