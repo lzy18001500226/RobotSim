@@ -1136,7 +1136,10 @@ class FocusedM1Diagnostic(Node):
                 startup_transition_displacement_m=self.args.startup_transition_displacement,
                 startup_transition_timeout_s=self.args.startup_transition_timeout_s,
                 extra_post_stop_observe_s=self.args.extra_stop_observation,
-                after_zero_stop=self.request_postwalk_stand_once,
+                after_zero_stop=(
+                    None if getattr(self.args, "zero_only_stop", False)
+                    else self.request_postwalk_stand_once
+                ),
                 shutdown_event=self.interrupted,
                 on_sample=self._trace_first_motion_sample,
                 state_timeout_s=self.args.state_timeout,
@@ -1183,6 +1186,10 @@ class FocusedM1Diagnostic(Node):
                         pulse_duration_s=self.args.pulse_duration,
                         max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
                         extra_post_stop_observe_s=self.args.extra_stop_observation,
+                        after_zero_stop=(
+                            None if getattr(self.args, "zero_only_stop", False)
+                            else self.request_postwalk_stand_once
+                        ),
                         shutdown_event=self.interrupted,
                         on_sample=self._trace_first_motion_sample,
                         state_timeout_s=self.args.state_timeout,
@@ -1291,6 +1298,7 @@ def main() -> int:
     first.add_argument("--min-root-z", type=float, default=0.52)
     first.add_argument("--max-observed-planar-speed-m-s", type=float, default=None)
     first.add_argument("--zero-until-stand-timeout-s", type=float, default=0.0)
+    first.add_argument("--zero-only-stop", action="store_true")
     args = parser.parse_args()
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)

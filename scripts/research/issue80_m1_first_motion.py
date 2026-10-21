@@ -1635,8 +1635,6 @@ def run_first_motion_window(
         or not 0.0 <= zero_until_stand_timeout_s <= 3.5
     ):
         pulse_fault = "zero_until_stand_timeout_outside_measured_3p5s_budget"
-    elif zero_until_stand_timeout_s > 0.0 and after_zero_stop is None:
-        pulse_fault = "zero_until_stand_requires_post_stop_action_client"
     elif (
         not math.isfinite(max_pulse_duration_s)
         or not 0.0 < max_pulse_duration_s <= MAX_AUTHORIZED_PULSE_S
@@ -1918,6 +1916,11 @@ def run_first_motion_window(
         stop_transition_confirmation: dict[str, Any] = {
             "status": "NOT_REQUESTED" if zero_until_stand_timeout_s == 0.0 else "WAITING_FOR_STAND_READBACK",
             "requested_timeout_s": zero_until_stand_timeout_s,
+            "stand_action_requested": bool(
+                after_zero_stop is not None
+                and tracker.control_handshake_confirmed
+                and result["nonzero_publish_calls_returned"] > 0
+            ),
             "request_result": None,
             "started_monotonic_s": None,
             "deadline_monotonic_s": None,
@@ -1981,7 +1984,11 @@ def run_first_motion_window(
                 post_stop_last_pose = dict(first_post_stop_pose)
             if zero_until_stand_timeout_s > 0.0 and stand_mode_readback_confirmed(first_post_stop):
                 stop_mode_confirmed = True
-                stop_transition_confirmation["status"] = "STAND_READBACK_CONFIRMED"
+                stop_transition_confirmation["status"] = (
+                    "STAND_READBACK_CONFIRMED"
+                    if stop_transition_confirmation["stand_action_requested"]
+                    else "AUTO_STAND_READBACK_CONFIRMED"
+                )
                 stop_transition_confirmation["stand_confirmed"] = True
                 stop_transition_confirmation["confirmed_monotonic_s"] = float(
                     first_post_stop.get("sample_monotonic_s", clock())
@@ -2010,9 +2017,19 @@ def run_first_motion_window(
             if zero_until_stand_timeout_s > 0.0 and not stop_mode_confirmed:
                 deadline = float(stop_transition_confirmation["deadline_monotonic_s"])
                 if now >= deadline and stop_transition_confirmation["status"] == "WAITING_FOR_STAND_READBACK":
-                    stop_transition_confirmation["status"] = "STAND_READBACK_TIMEOUT"
-                    post_stop_zero_extension["status"] = "STAND_READBACK_TIMEOUT_ZERO_CONTINUES"
-                    post_stop_fault = post_stop_fault or "post_stop_stand_readback_timeout"
+                    transition_timeout = (
+                        "STAND_READBACK_TIMEOUT"
+                        if stop_transition_confirmation["stand_action_requested"]
+                        else "AUTO_STAND_READBACK_TIMEOUT"
+                    )
+                    stop_transition_confirmation["status"] = transition_timeout
+                    post_stop_zero_extension["status"] = transition_timeout + "_ZERO_CONTINUES"
+                    timeout_fault = (
+                        "post_stop_stand_readback_timeout"
+                        if stop_transition_confirmation["stand_action_requested"]
+                        else "post_stop_auto_stand_transition_timeout"
+                    )
+                    post_stop_fault = post_stop_fault or timeout_fault
                 if next_post_stop_zero_publish is not None and now >= next_post_stop_zero_publish:
                     try:
                         publish(0.0)
@@ -2055,7 +2072,11 @@ def run_first_motion_window(
                         stop_transition_confirmation["status"] = (
                             "LATE_STAND_READBACK_CONFIRMED"
                             if prior_status == "STAND_READBACK_TIMEOUT"
+                            else "LATE_AUTO_STAND_READBACK_CONFIRMED"
+                            if prior_status == "AUTO_STAND_READBACK_TIMEOUT"
                             else "STAND_READBACK_CONFIRMED"
+                            if stop_transition_confirmation["stand_action_requested"]
+                            else "AUTO_STAND_READBACK_CONFIRMED"
                         )
                         stop_transition_confirmation["stand_confirmed"] = True
                         stop_transition_confirmation["confirmed_monotonic_s"] = float(

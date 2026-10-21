@@ -563,7 +563,8 @@ class BoundedRun:
         run38 = bool(getattr(self.args, "run38_knee_scale_diagnostic", False))
         run41 = bool(getattr(self.args, "run41_min_run_diagnostic", False))
         run42 = bool(getattr(self.args, "run42_stop_confirmation_diagnostic", False))
-        selected_variants = sum((run38, run41, run42))
+        run43 = bool(getattr(self.args, "run43_zero_only_stop_diagnostic", False))
+        selected_variants = sum((run38, run41, run42, run43))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -621,7 +622,7 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        if run41 or run42:
+        if run41 or run42 or run43:
             overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
             overlay_name = "foundationwalk_knee019_minrun010.yaml"
         else:
@@ -1273,10 +1274,16 @@ class BoundedRun:
         if (
             getattr(self.args, "run41_min_run_diagnostic", False)
             or getattr(self.args, "run42_stop_confirmation_diagnostic", False)
+            or getattr(self.args, "run43_zero_only_stop_diagnostic", False)
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
-        if getattr(self.args, "run42_stop_confirmation_diagnostic", False):
+        if (
+            getattr(self.args, "run42_stop_confirmation_diagnostic", False)
+            or getattr(self.args, "run43_zero_only_stop_diagnostic", False)
+        ):
             command[-1] += " --zero-until-stand-timeout-s 3.5"
+        if getattr(self.args, "run43_zero_only_stop_diagnostic", False):
+            command[-1] += " --zero-only-stop"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
@@ -1730,6 +1737,14 @@ def main() -> int:
             "and enforce the 0.2 m/s measured root-speed guard"
         ),
     )
+    parser.add_argument(
+        "--run43-zero-only-stop-diagnostic",
+        action="store_true",
+        help=(
+            "reuse Run41 config and bounded speed guard; follow upstream zero-only stop behavior "
+            "without an explicit SetMcAction STAND request"
+        ),
+    )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
@@ -1748,6 +1763,7 @@ def main() -> int:
         args.run38_knee_scale_diagnostic,
         args.run41_min_run_diagnostic,
         args.run42_stop_confirmation_diagnostic,
+        args.run43_zero_only_stop_diagnostic,
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")

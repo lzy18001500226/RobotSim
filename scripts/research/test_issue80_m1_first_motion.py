@@ -482,15 +482,12 @@ class FirstMotionSafetyTests(unittest.TestCase):
             pulse_duration_s=0.1,
             max_pulse_duration_s=0.1,
             zero_until_stand_timeout_s=0.2,
-            after_zero_stop=lambda: {"success": True},
         )
 
-        self.assertEqual(result["stop_transition_confirmation"]["status"], "STAND_READBACK_TIMEOUT")
-        self.assertIn("post_stop_stand_readback_timeout", result["post_stop_fault"])
-        self.assertEqual(
-            result["post_stop_zero_extension"]["status"],
-            "STAND_READBACK_TIMEOUT_ZERO_CONTINUES",
-        )
+        self.assertEqual(result["stop_transition_confirmation"]["status"], "AUTO_STAND_READBACK_TIMEOUT")
+        self.assertIn("post_stop_auto_stand_transition_timeout", result["post_stop_fault"])
+        self.assertIsNone(result["after_zero_stop_action"])
+        self.assertEqual(result["post_stop_zero_extension"]["status"], "AUTO_STAND_READBACK_TIMEOUT_ZERO_CONTINUES")
         self.assertGreater(result["post_stop_zero_extension"]["zero_publish_calls_returned"], 1)
         self.assertFalse(result["stop_transition_confirmation"]["stand_confirmed"])
 
