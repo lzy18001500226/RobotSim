@@ -75,7 +75,8 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
                     "activation": {
                         "nonzero_publish_calls_returned": 1,
                         "physical_motion_status": "PHYSICAL_MOTION_CONFIRMED",
-                        "post_stop_odometry": {"kinematic_status": "WITHIN_BASELINE_ENVELOPE"},
+                        "status": "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED",
+                        "post_stop_forward_tail": {"status": "WITHIN_BASELINE_ENVELOPE"},
                     },
                 }
 

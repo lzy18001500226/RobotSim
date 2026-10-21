@@ -13,7 +13,7 @@ from pathlib import Path
 
 from issue80_m1_auto_reset_run import (
     BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, SET_ACTION_CAPTURE, SIM_LAUNCH,
-    assess_container_absence, decode_m1_child_result,
+    assess_container_absence, classify_first_motion_outcome, decode_m1_child_result,
 )
 
 
@@ -29,6 +29,22 @@ class ResearchScriptStagingTests(unittest.TestCase):
                 max_runtime_s=10.0,
             )
         )
+
+    def test_motion_is_reported_separately_from_unverified_stop(self) -> None:
+        activation = {
+            "nonzero_publish_calls_returned": 30,
+            "physical_motion_status": "PHYSICAL_MOTION_CONFIRMED",
+            "status": "PHYSICAL_MOTION_CONFIRMED_POSTSTOP_UNVERIFIED",
+            "post_stop_forward_tail": {"status": "ABOVE_BASELINE_ENVELOPE"},
+        }
+        self.assertEqual(
+            classify_first_motion_outcome(activation),
+            "FIRST_PHYSICAL_WALKING_MOTION_CONFIRMED_STOP_UNVERIFIED",
+        )
+        activation["status"] = "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED"
+        self.assertEqual(classify_first_motion_outcome(activation), "FIRST_PHYSICAL_WALKING_PASS")
+        activation["nonzero_publish_calls_returned"] = 0
+        self.assertEqual(classify_first_motion_outcome(activation), "VELOCITY_COMMAND_NOT_EXECUTED")
 
     def test_stages_current_mode_logic_and_records_its_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

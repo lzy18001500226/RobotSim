@@ -80,6 +80,19 @@ def decode_m1_child_result(serialized: str) -> dict[str, Any]:
     return result
 
 
+def classify_first_motion_outcome(activation: Mapping[str, Any] | None) -> str:
+    """Keep measured motion distinct from an unverified post-stop gate."""
+    if not isinstance(activation, Mapping):
+        return "VELOCITY_COMMAND_NOT_EXECUTED"
+    if int(activation.get("nonzero_publish_calls_returned", 0) or 0) <= 0:
+        return "VELOCITY_COMMAND_NOT_EXECUTED"
+    if activation.get("status") == "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED":
+        return "FIRST_PHYSICAL_WALKING_PASS"
+    if activation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED":
+        return "FIRST_PHYSICAL_WALKING_MOTION_CONFIRMED_STOP_UNVERIFIED"
+    return "FIRST_PHYSICAL_WALKING_FAIL"
+
+
 def assess_container_absence(
     *,
     inspect_returncode: int,
@@ -963,15 +976,7 @@ class BoundedRun:
             ):
                 self.outcome_classification = "LD_REJECTED_WITH_EXACT_CODE"
             elif isinstance(activation, Mapping):
-                if int(activation.get("nonzero_publish_calls_returned", 0) or 0) <= 0:
-                    self.outcome_classification = "VELOCITY_COMMAND_NOT_EXECUTED"
-                elif (
-                    activation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED"
-                    and activation.get("post_stop_odometry", {}).get("kinematic_status") == "WITHIN_BASELINE_ENVELOPE"
-                ):
-                    self.outcome_classification = "FIRST_PHYSICAL_WALKING_PASS"
-                else:
-                    self.outcome_classification = "FIRST_PHYSICAL_WALKING_FAIL"
+                self.outcome_classification = classify_first_motion_outcome(activation)
             elif result["m1_status"] == "BLOCKED":
                 self.outcome_classification = "STANDING_CONTROL_NOT_READY"
             result["outcome_classification"] = self.outcome_classification
