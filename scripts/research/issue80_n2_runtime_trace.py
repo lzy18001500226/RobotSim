@@ -76,9 +76,12 @@ def pose_data(message: Odometry) -> dict[str, Any]:
 
 
 class RuntimeTrace(Node):
-    def __init__(self, output_dir: Path, duration_s: float):
+    def __init__(self, output_dir: Path, duration_s: float, stop_file: Path | None = None):
         super().__init__("issue80_n2_runtime_trace")
         self.output_dir = output_dir.resolve(strict=True)
+        self.stop_file = stop_file.resolve(strict=False) if stop_file is not None else None
+        if self.stop_file is not None and not self.stop_file.is_relative_to(self.output_dir):
+            raise ValueError("stop file must be inside the evidence directory")
         self.trace_path = self.output_dir / "n2_runtime_trace.jsonl"
         self.ready_path = self.output_dir / "n2_sim_ready.json"
         self.summary_path = self.output_dir / "n2_runtime_summary.json"
@@ -254,6 +257,8 @@ class RuntimeTrace(Node):
         )
         return {"schema": "robotsim.issue80.n2.runtime-summary.v1", "wall_utc": utc_now(),
                 "wall_observation_duration_s": time.monotonic() - self.start_mono,
+                "stop_file": str(self.stop_file) if self.stop_file is not None else None,
+                "stop_file_observed": bool(self.stop_file and self.stop_file.exists()),
                 "message_callback_counts": dict(self.counts), "clock_sample_count": len(clocks),
                 "sim_clock_first_s": clocks[0] if clocks else None, "sim_clock_last_s": clocks[-1] if clocks else None,
                 "sim_clock_delta_s": clock_delta, "odom_header_stamp_delta_s": stamp_delta,
@@ -275,7 +280,8 @@ class RuntimeTrace(Node):
                                 "Observer is read-only and emits no MC command or mode/source mutation."]}
 
     def run(self) -> dict[str, Any]:
-        while rclpy.ok() and time.monotonic() < self.end_mono:
+        while (rclpy.ok() and time.monotonic() < self.end_mono
+               and not (self.stop_file is not None and self.stop_file.exists())):
             rclpy.spin_once(self, timeout_sec=0.01)
         summary = self.summarize()
         write_json_atomically_new(self.summary_path, summary)
@@ -286,7 +292,7 @@ def trace_main(args: argparse.Namespace) -> int:
     if not 20 <= args.duration <= 55:
         raise ValueError("trace duration must be within 20..55 seconds")
     rclpy.init()
-    node = RuntimeTrace(Path(args.output_dir), args.duration)
+    node = RuntimeTrace(Path(args.output_dir), args.duration, args.stop_file)
     try:
         summary = node.run()
         print(json.dumps(summary, indent=2, ensure_ascii=False))
@@ -302,6 +308,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--duration", type=float, default=40.0)
+    parser.add_argument("--stop-file", type=Path, default=None,
+                        help="optional in-evidence marker that ends the trace early")
     args = parser.parse_args()
     return trace_main(args)
 
