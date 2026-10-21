@@ -570,6 +570,16 @@ class X11:
         identity_ready = self._target_identity(expected_pid, expected_title, window)
         self.lib.XSync(self.display, 0)
         focus_after = self._input_focus()
+        final_focus_reassertion = {"status": "NOT_NEEDED"}
+        if identity_ready is not None and focus_after != window:
+            # WSLg can revoke focus asynchronously after the first direct
+            # request. One bounded reassertion is allowed, never another key.
+            final_focus_reassertion = self.focus_window_direct(
+                window, timeout_s=direct_timeout_s
+            )
+            identity_ready = self._target_identity(expected_pid, expected_title, window)
+            self.lib.XSync(self.display, 0)
+            focus_after = self._input_focus()
         if identity_ready is None or focus_after != window:
             return {
                 "status": "RESET_NOT_DELIVERED",
@@ -581,6 +591,7 @@ class X11:
                 "identity_before_dispatch": identity_ready,
                 "ewmh_activation": activation,
                 "direct_focus": direct_focus,
+                "final_focus_reassertion": final_focus_reassertion,
                 "focus_before": focus_before,
                 "focus_after": focus_after,
                 "xtest_key_events_sent": 0,
@@ -619,6 +630,7 @@ class X11:
             "identity_before_dispatch": identity_ready,
             "ewmh_activation": activation,
             "direct_focus": direct_focus,
+            "final_focus_reassertion": final_focus_reassertion,
             "focus_before": focus_before,
             "focus_verified_target": focus_after,
             "focus_restored": restored,

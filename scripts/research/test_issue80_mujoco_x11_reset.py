@@ -137,6 +137,26 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
         self.assertEqual(result["xtest_key_events_sent"], 0)
         self.assertEqual(x11.xtst.events, [])
 
+    def test_transient_focus_loss_is_reasserted_but_still_verified(self) -> None:
+        x11 = make_x11(accept_direct_focus=True)
+        matching = x11.list_windows()[0]
+        count = [0]
+        def identities():
+            count[0] += 1
+            if count[0] == 2:
+                x11.lib.focus = 0  # WSLg revokes initial direct focus
+            return [matching]
+        x11.list_windows = identities
+        result = x11.send_backspace_once(
+            0x5678, expected_pid=4321, expected_title="MuJoCo : X2 simulator",
+            ewmh_timeout_s=0.0, direct_timeout_s=0.0,
+        )
+        self.assertEqual(result["status"], "KEY_DISPATCHED")
+        self.assertEqual(result["final_focus_reassertion"]["status"], "FOCUSED")
+        self.assertEqual(result["focus_verified_target"], 0x5678)
+        self.assertEqual(x11.xtst.events, [(22, 1), (22, 0)])
+        self.assertEqual(count[0], 3)
+
     def test_identity_mismatch_blocks_focus_and_key_dispatch(self) -> None:
         x11 = make_x11(accept_direct_focus=True)
         x11.list_windows = lambda: []
