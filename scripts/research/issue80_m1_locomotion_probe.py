@@ -77,6 +77,8 @@ def roll_pitch_from_quaternion(q: Any) -> tuple[float, float]:
 def _json_safe(value: Any) -> Any:
     if hasattr(value, "get_fields_and_field_types"):
         return {name: _json_safe(getattr(value, name)) for name in value.get_fields_and_field_types()}
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     if isinstance(value, float):
@@ -899,11 +901,21 @@ class FocusedM1Diagnostic(Node):
         })
         return baseline
 
+    def _spin_for(self, duration_s: float) -> None:
+        """Service telemetry/readbacks while waiting, including the zero-stop window.
+
+        Two spin_once calls per sample cannot consume all five state streams.
+        A plain sleep during zero-stop prevents any callbacks for >1 second
+        and manufactures stale telemetry. Keep the existing deadline and
+        watchdog; pumping begins only after each command publication.
+        """
+        deadline = time.monotonic() + max(0.0, duration_s)
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=min(0.001, max(0.0, deadline - time.monotonic())))
+            self._poll_async_readbacks()
+
     def sample_for_first_motion(self) -> dict[str, Any]:
-        rclpy.spin_once(self, timeout_sec=0.005)
-        self._poll_async_readbacks()
-        rclpy.spin_once(self, timeout_sec=0.005)
-        self._poll_async_readbacks()
+        self._spin_for(0.005)
         snapshot = self._first_motion_snapshot()
         if self.async_readback_fault:
             snapshot["get_mode_header_code"] = -1
@@ -994,6 +1006,7 @@ class FocusedM1Diagnostic(Node):
             pulse = run_first_motion_window(
                 sample=self.sample_for_first_motion,
                 publish=self._publish,
+                sleep=self._spin_for,
                 registration=registration,
                 set_action=set_action,
                 joint_limits=self.joint_limits,
@@ -1033,6 +1046,7 @@ class FocusedM1Diagnostic(Node):
                     result["exception_safe_activation"] = run_first_motion_window(
                         sample=self.sample_for_first_motion,
                         publish=self._publish,
+                        sleep=self._spin_for,
                         registration={"success": False, "selected_action": None},
                         set_action={"accepted_by_service": False},
                         joint_limits=self.joint_limits,
