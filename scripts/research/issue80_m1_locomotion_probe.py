@@ -1022,6 +1022,7 @@ class FocusedM1Diagnostic(Node):
                 authorized=True,
                 forward_command_m_s=self.args.forward_speed,
                 pulse_duration_s=self.args.pulse_duration,
+                extra_post_stop_observe_s=self.args.extra_stop_observation,
                 shutdown_event=self.interrupted,
                 on_sample=self._trace_first_motion_sample,
                 state_timeout_s=self.args.state_timeout,
@@ -1064,6 +1065,7 @@ class FocusedM1Diagnostic(Node):
                         authorized=True,
                         forward_command_m_s=self.args.forward_speed,
                         pulse_duration_s=self.args.pulse_duration,
+                        extra_post_stop_observe_s=self.args.extra_stop_observation,
                         shutdown_event=self.interrupted,
                         on_sample=self._trace_first_motion_sample,
                         state_timeout_s=self.args.state_timeout,
@@ -1140,6 +1142,7 @@ def main() -> int:
     first.add_argument("--output-dir", required=True)
     first.add_argument("--robot-model-path", default=ROBOT_MODEL_PATH)
     first.add_argument("--mc-sim-config-path", default=MC_SIM_CONFIG_PATH)
+    first.add_argument("--extra-stop-observation", type=float, default=0.0)
     first.add_argument("--pulse-duration", type=float, default=1.0)
     first.add_argument("--forward-speed", type=float, default=0.2)
     first.add_argument("--state-timeout", type=float, default=0.5)

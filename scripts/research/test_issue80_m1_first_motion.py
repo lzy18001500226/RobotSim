@@ -24,6 +24,7 @@ from issue80_m1_first_motion import (
     MC_FSM_INTERFACE_SOURCE_SHA256,
     MC_FSM_SAFE,
     MC_FSM_STABLE,
+    measure_post_stop_forward_tail,
     verify_mc_fsm_runtime_contract,
     MC_FSM_RUNTIME_LIBRARY_SHA256,
     FORWARD_COMMAND_M_S,
@@ -289,6 +290,27 @@ class FirstMotionSafetyTests(unittest.TestCase):
             result = self.run_protocol(self.snapshot, lambda v: None, pulse_duration_s=invalid)
             self.assertEqual(result["fault"], "pulse_duration_outside_authorized_cap")
             self.assertEqual(result["nonzero_publish_calls_returned"], 0)
+
+    def test_stopping_tail_separates_braking_from_continued_motion(self):
+        def row(t, x):
+            return {"phase": "post-stop", "sample_monotonic_s": t,
+                    "pose": {"x": x, "y": 0.0, "yaw": 0.0},
+                    "safety_fault": None, "get_mode_desc": "STAND_DEFAULT",
+                    "common_mode_desc": "STAND_DEFAULT", "fsm_state": MC_FSM_STABLE}
+        samples = [row(0.0, 0.0), row(0.5, 0.1), row(1.0, 0.2),
+                   row(1.5, 0.2), row(2.0, 0.2), row(2.5, 0.2)]
+        result = measure_post_stop_forward_tail(samples, 0.001)
+        self.assertEqual(result["status"], "WITHIN_BASELINE_ENVELOPE")
+        self.assertEqual(result["max_forward_excursion_m"], 0.0)
+        samples[-2]["pose"]["x"] += 0.01  # cancellation must not fake stopping
+        self.assertEqual(measure_post_stop_forward_tail(samples, 0.001)["status"],
+                         "ABOVE_BASELINE_ENVELOPE")
+        samples[-2]["pose"]["x"] -= 0.01
+        samples[-1]["safety_fault"] = "stale_or_missing_state:imu"
+        self.assertNotEqual(measure_post_stop_forward_tail(samples, 0.001)["status"],
+                            "WITHIN_BASELINE_ENVELOPE")
+        self.assertEqual(measure_post_stop_forward_tail(samples[-1:], 0.001)["status"],
+                         "INCOMPLETE_FINAL_WINDOW")
 
     def test_leg_limits_are_loaded_from_the_installed_robot_model_yaml(self) -> None:
         names = [f"leg_joint_{index}" for index in range(12)]
@@ -1362,6 +1384,9 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
                 sample["fsm_state"] = int(McFsmStateCode.MOVING)
                 sample["pose"]["x"] = motion_ticks * 0.002
+            else:
+                sample["get_mode_desc"] = sample["common_mode_desc"] = "STAND_DEFAULT"
+                sample["fsm_state"] = MC_FSM_STABLE
 
         result = self.run_protocol(lambda: sample, publish, baseline=[0.002, -0.001, 0.001])
         self.assertEqual(result["status"], "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED")

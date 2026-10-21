@@ -743,6 +743,7 @@ class BoundedRun:
         command = [
             "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", self.container, "bash", "-lc",
             "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion --maintainer-authorized --reset-gate-verified"
+            + " --extra-stop-observation " + str(self.args.extra_stop_observation)
             + " --pulse-duration " + str(self.args.pulse_duration)
             + " --forward-speed " + str(self.args.forward_speed)
             + " --attempt-id " + self.args.attempt_id
@@ -1008,6 +1009,7 @@ def main() -> int:
     parser.add_argument("--container",required=True)
     parser.add_argument("--attempt-id",required=True)
     parser.add_argument("--max-runtime-s",type=float,default=180.0)
+    parser.add_argument("--extra-stop-observation", type=float, default=0.0)
     parser.add_argument("--pulse-duration", type=float, default=1.0)
     parser.add_argument("--forward-speed", type=float, default=0.2)
     parser.add_argument(
@@ -1021,6 +1023,8 @@ def main() -> int:
         help="explicit human authorization for one simulation-only standing-takeover test; no LD or velocity command",
     )
     args=parser.parse_args()
+    if not 0.0 <= args.extra_stop_observation <= 5.0:
+        parser.error("extra zero-only observation must remain within 0..5 seconds")
     if not 0.0 < args.pulse_duration <= 1.0:
         parser.error("pulse duration must be positive and no greater than 1 second")
     if not 0.0 < args.forward_speed <= 0.2:

@@ -24,7 +24,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
                 evidence_dir=str(evidence),
                 container="test-container",
                 maintainer_authorized_first_motion=True,
-                forward_speed=0.2, pulse_duration=1.0,
+                forward_speed=0.2, pulse_duration=1.0, extra_stop_observation=0.0,
                 attempt_id="test-attempt",
                 max_runtime_s=10.0,
             )

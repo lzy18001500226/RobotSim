@@ -1277,6 +1277,48 @@ class ZeroStopWindow:
         return dict(self.result)
 
 
+def measure_post_stop_forward_tail(
+    samples: list[Mapping[str, Any]], baseline_noise_bound_m: float | None,
+) -> dict[str, Any]:
+    """Separate braking travel from motion over a complete final baseline-length window.
+
+    Keep the original pulse-endpoint displacement as braking evidence. A
+    stationary final window need not coincide with the moving pulse endpoint.
+    Use maximum excursion, so returning to the starting position cannot fake
+    stationary behavior. This remains an empirical odometry test, not MC ACK.
+    """
+    rows = [s for s in samples if s.get("phase") == "post-stop"
+            and isinstance(s.get("pose"), Mapping)]
+    result: dict[str, Any] = {"status": "INCOMPLETE_FINAL_WINDOW", "mc_stop_confirmed": False}
+    if not rows:
+        return result
+    end = float(rows[-1]["sample_monotonic_s"])
+    eligible = [i for i, s in enumerate(rows)
+                if float(s["sample_monotonic_s"]) <= end - BASELINE_WINDOW_S]
+    if not eligible:
+        return result
+    tail = rows[eligible[-1]:]
+    excursion = max(abs(forward_projected_displacement(tail[0]["pose"], s["pose"]))
+                    for s in tail)
+    result.update({
+        "duration_s": end - float(tail[0]["sample_monotonic_s"]),
+        "sample_count": len(tail),
+        "max_forward_excursion_m": excursion,
+        "baseline_noise_bound_m": baseline_noise_bound_m,
+        "start_pose": dict(tail[0]["pose"]), "end_pose": dict(tail[-1]["pose"]),
+        "status": "ABOVE_BASELINE_ENVELOPE",
+        "scope": "forward odometry stationary relative to the same-run baseline, not an MC stop acknowledgement",
+    })
+    if (baseline_noise_bound_m is not None and baseline_noise_bound_m > 0.0
+            and excursion <= baseline_noise_bound_m
+            and all(not s.get("safety_fault") for s in tail)
+            and all(s.get("common_mode_desc") == MODE_STAND
+                    and s.get("get_mode_desc") == MODE_STAND
+                    and s.get("fsm_state") == MC_FSM_STABLE for s in tail)):
+        result["status"] = "WITHIN_BASELINE_ENVELOPE"
+    return result
+
+
 def run_first_motion_window(
     *,
     sample: Callable[[], Mapping[str, Any]],
@@ -1288,6 +1330,7 @@ def run_first_motion_window(
     authorized: bool,
     forward_command_m_s: float = FORWARD_COMMAND_M_S,
     pulse_duration_s: float = PULSE_LIMIT_S,
+    extra_post_stop_observe_s: float = 0.0,
     shutdown_event: threading.Event | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
     state_timeout_s: float = 0.5,
@@ -1320,7 +1363,9 @@ def run_first_motion_window(
         return result
 
     pulse_fault: str | None = None
-    if not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= PULSE_LIMIT_S:
+    if not math.isfinite(extra_post_stop_observe_s) or not 0.0 <= extra_post_stop_observe_s <= 5.0:
+        pulse_fault = "extra_stop_observation_outside_bounded_budget"
+    elif not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= PULSE_LIMIT_S:
         pulse_fault = "pulse_duration_outside_authorized_cap"
     elif not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
         pulse_fault = "forward_command_outside_authorized_cap"
@@ -1541,7 +1586,7 @@ def run_first_motion_window(
                 ),
             }
         result["post_stop_first_observation"] = post_stop_first_observation
-        post_stop_end = clock() + POST_STOP_OBSERVE_S
+        post_stop_end = clock() + POST_STOP_OBSERVE_S + (extra_post_stop_observe_s if pulse_fault is None else 0.0)
         post_stop_samples = 0
         while clock() < post_stop_end:
             try:
@@ -1651,6 +1696,9 @@ def run_first_motion_window(
         ),
         "mc_stop_confirmed": False,
     }
+    result["post_stop_forward_tail"] = measure_post_stop_forward_tail(
+        result["samples"], baseline_noise_bound_m
+    )
     result["mc_receipt_confirmed_for_zero_calls"] = False
     result["watchdog"] = {
         "implementation": "threading.Timer in the first-motion Python process",
@@ -1660,6 +1708,7 @@ def run_first_motion_window(
     }
     result["fault"] = pulse_fault or post_stop_fault
     result["post_stop_observation_s"] = POST_STOP_OBSERVE_S
+    result["extra_post_stop_observation_s"] = extra_post_stop_observe_s
     result["zero_stop_min_messages"] = ZERO_STOP_MIN_MESSAGES
     result["post_stop_sample_count"] = post_stop_samples
     result["post_stop_fault"] = post_stop_fault
@@ -1682,7 +1731,7 @@ def run_first_motion_window(
     elif result["nonzero_publish_calls_returned"] == 0:
         result["status"] = "NO_ACTIVATION_COMMAND"
     else:
-        post_stop_status = result["post_stop_odometry"]["kinematic_status"]
+        post_stop_status = result["post_stop_forward_tail"]["status"]
         if result["physical_motion_status"] == "PHYSICAL_MOTION_CONFIRMED" and post_stop_status == "WITHIN_BASELINE_ENVELOPE":
             result["status"] = "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED"
         elif result["physical_motion_status"] == "PHYSICAL_MOTION_CONFIRMED":
