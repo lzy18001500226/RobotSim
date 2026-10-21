@@ -810,21 +810,30 @@ class BoundedRun:
             "--output /workspace/evidence/mc_rl_debug_trace.jsonl "
             "--ready-marker /workspace/evidence/mc_rl_debug_ready.json "
             "--summary /workspace/evidence/mc_rl_debug_summary.json "
-            "--ready-timeout-s 5 --max-duration-s 80"
+            "--ready-timeout-s 5 --max-duration-s 80 "
+            "> /workspace/evidence/mc_rl_debug_capture_console.log 2>&1"
         )
         self.docker_exec("start_mc_rl_debug_capture", start, timeout_s=5.0, detached=True)
         wait_ready = (
             "timeout 7s bash -lc 'until test -f /workspace/evidence/mc_rl_debug_ready.json; "
             "do sleep 0.05; done'"
         )
-        self.docker_exec("wait_mc_rl_debug_capture_ready", wait_ready, timeout_s=8.0)
+        wait_result = self.docker_exec(
+            "wait_mc_rl_debug_capture_ready", wait_ready, timeout_s=8.0, check=False
+        )
         ready_path = self.evidence / "mc_rl_debug_ready.json"
         if not ready_path.is_file():
-            raise RuntimeError("McRLDebug observer did not write its readiness record")
+            console_path = self.evidence / "mc_rl_debug_capture_console.log"
+            console_tail = console_path.read_text(encoding="utf-8", errors="replace")[-3000:] if console_path.is_file() else ""
+            raise RuntimeError(
+                "McRLDebug observer did not write its readiness record; "
+                f"wait rc={wait_result.returncode}; observer log tail={console_tail!r}"
+            )
         self.mc_rl_debug_capture = json.loads(ready_path.read_text(encoding="utf-8"))
         if self.mc_rl_debug_capture.get("status") != "READY":
             raise RuntimeError(
-                "version-matched McRLDebug publisher was not uniquely discovered before M1"
+                "version-matched McRLDebug publisher was not uniquely discovered before M1: "
+                f"{self.mc_rl_debug_capture.get('status')}: {self.mc_rl_debug_capture.get('fault')}"
             )
         self.mc_rl_debug_capture["schema_verification"] = schema_verification
 

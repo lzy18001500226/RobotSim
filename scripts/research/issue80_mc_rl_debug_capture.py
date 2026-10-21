@@ -45,6 +45,7 @@ class McRlDebugCapture(Node):
         self.endpoint_records: list[dict[str, Any]] = []
         self.ready_timeout_s = args.ready_timeout_s
         self.ready_status = "WAITING_FOR_SINGLE_MC_PUBLISHER"
+        self.fault: str | None = None
         self.qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
@@ -58,7 +59,7 @@ class McRlDebugCapture(Node):
             self.qos,
         )
 
-    def _publishers(self) -> list[dict[str, Any]]:
+    def _debug_topic_publishers(self) -> list[dict[str, Any]]:
         endpoints = self.get_publishers_info_by_topic(MC_RL_DEBUG_TOPIC)
         records = []
         for endpoint in endpoints:
@@ -78,7 +79,7 @@ class McRlDebugCapture(Node):
     def wait_ready(self) -> dict[str, Any]:
         deadline = time.monotonic() + self.ready_timeout_s
         while rclpy.ok() and time.monotonic() < deadline:
-            records = self._publishers()
+            records = self._debug_topic_publishers()
             matching = [record for record in records if record["topic_type"] == MC_RL_DEBUG_TYPE]
             if len(records) == 1 and len(matching) == 1:
                 self.ready_status = "READY"
@@ -97,6 +98,7 @@ class McRlDebugCapture(Node):
             "publisher_count": len(self.endpoint_records),
             "publishers": self.endpoint_records,
             "observer_node": self.get_name(),
+            "fault": self.fault,
             "ready_wall_utc": datetime.now(timezone.utc).isoformat(),
             "ready_monotonic_s": time.monotonic(),
         }
@@ -143,6 +145,7 @@ class McRlDebugCapture(Node):
             "last_receive_monotonic_s": self.last_receive_monotonic_s,
             "duration_s": time.monotonic() - self.started_monotonic_s,
             "ready_status": self.ready_status,
+            "fault": self.fault,
             "trace_path": str(self.output_path),
             "interpretation_limit": (
                 "Only the installed introspection field schema is asserted; observation/action index semantics "
@@ -184,6 +187,13 @@ def main() -> int:
         while rclpy.ok() and not node.stop_event.is_set() and time.monotonic() < node.deadline_monotonic_s:
             rclpy.spin_once(node, timeout_sec=0.05)
         return 0
+    except Exception as exc:
+        node.fault = f"{type(exc).__name__}: {exc}"
+        node.ready_status = "OBSERVER_ERROR"
+        if not node.ready_path.exists():
+            node._write_ready_marker()
+        print(node.fault, flush=True)
+        return 3
     finally:
         summary = node.close()
         print(json.dumps(summary, separators=(",", ":")), flush=True)

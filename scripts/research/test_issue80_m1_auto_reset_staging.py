@@ -185,6 +185,12 @@ class ResearchScriptStagingTests(unittest.TestCase):
             self.assertNotIn("publisher", calls[0][1].lower())
             self.assertEqual(runner.mc_rl_debug_capture["status"], "READY")
 
+    def test_mc_rl_debug_discovery_method_does_not_shadow_rclpy_publishers_state(self) -> None:
+        source = MC_RL_DEBUG_CAPTURE.read_text(encoding="utf-8")
+        self.assertIn("def _debug_topic_publishers(", source)
+        self.assertNotIn("def _publishers(", source)
+        self.assertIn("records = self._debug_topic_publishers()", source)
+
     def test_requested_mc_rl_debug_observer_starts_before_the_single_m1_child(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = self.make_runner(Path(temp_dir))
