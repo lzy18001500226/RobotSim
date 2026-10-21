@@ -34,6 +34,7 @@ from issue80_m1_first_motion import (
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
     load_leg_joint_limits, load_mc_input_source_timeouts,
+    joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
     run_first_motion_window, snapshot_fault,
@@ -908,6 +909,9 @@ class FocusedM1Diagnostic(Node):
             "common_source_name": str(common.input_source.name) if common else "",
             "forward_bounds": bounds,
             "leg_states": self._joint_states_as_dicts(),
+            "mc_leg_command": joint_command_array_snapshot(
+                self.latest.get("leg_command"), self.received_at.get("leg_command")
+            ),
             "readback_fault": self.async_readback_fault,
         }
 
@@ -1094,6 +1098,9 @@ class FocusedM1Diagnostic(Node):
                 max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
                 ramp_start_speed_m_s=self.args.ramp_start_speed,
                 ramp_duration_s=self.args.ramp_duration_s,
+                startup_speed_m_s=self.args.startup_speed,
+                startup_transition_displacement_m=self.args.startup_transition_displacement,
+                startup_transition_timeout_s=self.args.startup_transition_timeout_s,
                 extra_post_stop_observe_s=self.args.extra_stop_observation,
                 after_zero_stop=self.request_postwalk_stand_once,
                 shutdown_event=self.interrupted,
@@ -1221,6 +1228,9 @@ def main() -> int:
     first.add_argument("--forward-speed", type=float, default=0.2)
     first.add_argument("--ramp-start-speed", type=float, default=None)
     first.add_argument("--ramp-duration-s", type=float, default=0.0)
+    first.add_argument("--startup-speed", type=float, default=None)
+    first.add_argument("--startup-transition-displacement", type=float, default=None)
+    first.add_argument("--startup-transition-timeout-s", type=float, default=0.0)
     first.add_argument("--state-timeout", type=float, default=0.5)
     first.add_argument("--ready-timeout", type=float, default=4.0)
     first.add_argument("--max-tilt-deg", type=float, default=15.0)

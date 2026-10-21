@@ -357,6 +357,9 @@ class ResearchScriptStagingTests(unittest.TestCase):
             runner.args.maintainer_authorized_first_motion = True
             runner.args.ramp_start_speed = 0.105
             runner.args.ramp_duration_s = 2.0
+            runner.args.startup_speed = 0.12
+            runner.args.startup_transition_displacement = 0.02
+            runner.args.startup_transition_timeout_s = 0.5
             runner.network_mode = "bridge"
             runner.reset_classification = "AUTO_RESET_PASS"
             runner.remaining = lambda: 60.0
@@ -374,6 +377,9 @@ class ResearchScriptStagingTests(unittest.TestCase):
             self.assertIn("--attempt-id test-attempt", shell_command)
             self.assertIn("--ramp-start-speed 0.105", shell_command)
             self.assertIn("--ramp-duration-s 2.0", shell_command)
+            self.assertIn("--startup-speed 0.12", shell_command)
+            self.assertIn("--startup-transition-displacement 0.02", shell_command)
+            self.assertIn("--startup-transition-timeout-s 0.5", shell_command)
             self.assertIn("ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", captured[0])
             self.assertIn("--robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml", shell_command)
             self.assertIn("--mc-sim-config-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml", shell_command)

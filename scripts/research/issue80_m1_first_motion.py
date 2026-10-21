@@ -1348,6 +1348,62 @@ def smoothstep_velocity(
     return start_m_s + (target_m_s - start_m_s) * blend
 
 
+def startup_then_cruise_velocity(
+    startup_m_s: float,
+    cruise_m_s: float,
+    forward_displacement_m: float,
+    transition_displacement_m: float,
+) -> float:
+    """Use a bounded start command until measured forward motion, then cruise."""
+    values = (startup_m_s, cruise_m_s, forward_displacement_m, transition_displacement_m)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("startup profile values must be finite")
+    if not 0.0 < cruise_m_s < startup_m_s <= FORWARD_COMMAND_M_S:
+        raise ValueError("startup speed must exceed cruise speed and remain under the command cap")
+    if transition_displacement_m <= 0.0:
+        raise ValueError("startup transition displacement must be positive")
+    return cruise_m_s if forward_displacement_m >= transition_displacement_m else startup_m_s
+
+
+def joint_command_array_snapshot(message: Any, received_monotonic_s: float | None = None) -> dict[str, Any] | None:
+    """Keep the MC-to-simulator joint targets and header stamp in the run trace."""
+    if message is None:
+        return None
+
+    def field(value: Any, name: str, default: Any = None) -> Any:
+        return value.get(name, default) if isinstance(value, Mapping) else getattr(value, name, default)
+
+    def numeric(value: Any) -> float | None:
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return None
+        return result if math.isfinite(result) else None
+
+    header = field(message, "header")
+    stamp = field(header, "stamp") if header is not None else None
+    joints = field(message, "joints", ()) or ()
+    records = []
+    for joint in joints:
+        records.append({
+            "name": str(field(joint, "name", "")),
+            "position": numeric(field(joint, "position")),
+            "velocity": numeric(field(joint, "velocity")),
+            "effort": numeric(field(joint, "effort")),
+            "stiffness": numeric(field(joint, "stiffness")),
+            "damping": numeric(field(joint, "damping")),
+        })
+    received = numeric(received_monotonic_s)
+    return {
+        "header_stamp": {
+            "sec": int(field(stamp, "sec", 0)) if stamp is not None else None,
+            "nanosec": int(field(stamp, "nanosec", 0)) if stamp is not None else None,
+        },
+        "received_monotonic_s": received,
+        "joints": records,
+    }
+
+
 def run_first_motion_window(
     *,
     sample: Callable[[], Mapping[str, Any]],
@@ -1362,6 +1418,9 @@ def run_first_motion_window(
     max_pulse_duration_s: float = PULSE_LIMIT_S,
     ramp_start_speed_m_s: float | None = None,
     ramp_duration_s: float = 0.0,
+    startup_speed_m_s: float | None = None,
+    startup_transition_displacement_m: float | None = None,
+    startup_transition_timeout_s: float = 0.0,
     extra_post_stop_observe_s: float = 0.0,
     after_zero_stop: Callable[[], Mapping[str, Any]] | None = None,
     shutdown_event: threading.Event | None = None,
@@ -1383,10 +1442,20 @@ def run_first_motion_window(
         "pulse_limit_s": max_pulse_duration_s,
         "pulse_duration_s_requested": pulse_duration_s,
         "velocity_profile": {
-            "shape": "smoothstep" if ramp_duration_s > 0.0 else "constant",
+            "shape": (
+                "motion-triggered-startup-then-cruise" if startup_speed_m_s is not None
+                else "smoothstep" if ramp_duration_s > 0.0 else "constant"
+            ),
             "ramp_start_speed_m_s": ramp_start_speed_m_s,
             "target_speed_m_s": forward_command_m_s,
             "ramp_duration_s": ramp_duration_s,
+            "startup_speed_m_s": startup_speed_m_s,
+            "cruise_speed_m_s": forward_command_m_s if startup_speed_m_s is not None else None,
+            "transition_displacement_m": startup_transition_displacement_m,
+            "startup_timeout_s": startup_transition_timeout_s,
+            "transition_observed": False,
+            "transition_monotonic_s": None,
+            "transition_displacement_observed_m": None,
         },
         "publish_hz": PUBLISH_HZ,
         "source_timeout_ms": SOURCE_TIMEOUT_MS,
@@ -1423,6 +1492,24 @@ def run_first_motion_window(
         or not 0.0 < ramp_start_speed_m_s <= forward_command_m_s
     ):
         pulse_fault = "velocity_ramp_start_outside_command_range"
+    elif startup_speed_m_s is None and (
+        startup_transition_displacement_m is not None or startup_transition_timeout_s != 0.0
+    ):
+        pulse_fault = "startup_profile_parameters_incomplete"
+    elif startup_speed_m_s is not None and (
+        not math.isfinite(startup_speed_m_s)
+        or not 0.0 < forward_command_m_s < startup_speed_m_s <= FORWARD_COMMAND_M_S
+    ):
+        pulse_fault = "startup_profile_speed_outside_command_range"
+    elif startup_speed_m_s is not None and (
+        ramp_duration_s > 0.0
+        or startup_transition_displacement_m is None
+        or not math.isfinite(startup_transition_displacement_m)
+        or not 0.0 < startup_transition_displacement_m <= 0.10
+        or not math.isfinite(startup_transition_timeout_s)
+        or not 0.0 < startup_transition_timeout_s <= min(0.75, pulse_duration_s)
+    ):
+        pulse_fault = "startup_profile_transition_gate_invalid"
     elif not registration.get("success"):
         pulse_fault = "source_registration_rejected"
     elif not set_action.get("accepted_by_service"):
@@ -1477,6 +1564,8 @@ def run_first_motion_window(
     watchdog: ProcessLocalTimerWatchdog | None = None
     pulse_start: float | None = None
     pulse_end: float | None = None
+    startup_origin_pose: Mapping[str, Any] | None = None
+    startup_transition_observed = False
     nonzero_attempt_offsets_s: list[float] = []
     nonzero_success_offsets_s: list[float] = []
 
@@ -1505,6 +1594,8 @@ def run_first_motion_window(
                 pulse_fault = initial_fault
             else:
                 tracker.observe(initial, phase="pre-activation")
+                pose = initial.get("pose")
+                startup_origin_pose = dict(pose) if isinstance(pose, Mapping) else None
 
         if pulse_fault is None:
             pulse_start = clock()
@@ -1543,6 +1634,42 @@ def run_first_motion_window(
                     record_sample("pulse-deadline-observation", current, None)
                     stop_requested.set()
                     break
+                command_offset = clock() - pulse_start
+                startup_displacement = None
+                if startup_speed_m_s is not None:
+                    try:
+                        if startup_origin_pose is None or not isinstance(current.get("pose"), Mapping):
+                            raise ValueError("startup profile requires odometry pose")
+                        startup_displacement = forward_projected_displacement(
+                            startup_origin_pose, current["pose"]
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        pulse_fault = f"startup_profile_odometry_unavailable:{exc}"
+                        stop_requested.set()
+                        record_sample("activation", current, None)
+                        break
+                    if (
+                        not startup_transition_observed
+                        and startup_displacement >= float(startup_transition_displacement_m)
+                    ):
+                        startup_transition_observed = True
+                        result["velocity_profile"].update({
+                            "transition_observed": True,
+                            "transition_monotonic_s": clock(),
+                            "transition_displacement_observed_m": startup_displacement,
+                        })
+                    if not startup_transition_observed and command_offset >= startup_transition_timeout_s:
+                        row = dict(current)
+                        row["command_profile_stage"] = "startup-timeout"
+                        row["forward_displacement_since_start_m"] = startup_displacement
+                        row["command_profile_fault"] = "startup_displacement_not_reached_before_timeout"
+                        record_sample("activation", row, None)
+                        pulse_fault = "startup_displacement_not_reached_before_timeout"
+                        stop_requested.set()
+                        break
+                    current = dict(current)
+                    current["command_profile_stage"] = "cruise" if startup_transition_observed else "startup"
+                    current["forward_displacement_since_start_m"] = startup_displacement
                 tracker.observe(current, phase="activation")
                 record_sample("activation", current, None)
                 now = clock()
@@ -1567,15 +1694,25 @@ def run_first_motion_window(
                         else:
                             command_offset = clock() - pulse_start
                             nonzero_attempt_offsets_s.append(command_offset)
-                            command_speed = (
-                                smoothstep_velocity(
-                                    float(ramp_start_speed_m_s),
+                            if startup_speed_m_s is not None:
+                                if startup_origin_pose is None:
+                                    raise RuntimeError("startup origin pose missing")
+                                command_speed = startup_then_cruise_velocity(
+                                    startup_speed_m_s,
                                     forward_command_m_s,
-                                    command_offset,
-                                    ramp_duration_s,
+                                    startup_displacement if startup_displacement is not None else 0.0,
+                                    float(startup_transition_displacement_m),
                                 )
-                                if ramp_duration_s > 0.0 else forward_command_m_s
-                            )
+                            else:
+                                command_speed = (
+                                    smoothstep_velocity(
+                                        float(ramp_start_speed_m_s),
+                                        forward_command_m_s,
+                                        command_offset,
+                                        ramp_duration_s,
+                                    )
+                                    if ramp_duration_s > 0.0 else forward_command_m_s
+                                )
                             publish(command_speed)
                             published_offset = clock() - pulse_start
                             nonzero_success_offsets_s.append(published_offset)

@@ -31,6 +31,8 @@ from issue80_m1_first_motion import (
     PULSE_LIMIT_S,
     MAX_AUTHORIZED_PULSE_S,
     smoothstep_velocity,
+    startup_then_cruise_velocity,
+    joint_command_array_snapshot,
     PUBLISH_HZ,
     SOURCE_TIMEOUT_MS,
     VELOCITY_SOURCE_NAME,
@@ -238,6 +240,9 @@ class FirstMotionSafetyTests(unittest.TestCase):
         max_pulse_duration_s=1.0,
         ramp_start_speed_m_s=None,
         ramp_duration_s=0.0,
+        startup_speed_m_s=None,
+        startup_transition_displacement_m=None,
+        startup_transition_timeout_s=0.0,
     ):
         clock = fake_clock or FakeClock()
 
@@ -266,6 +271,9 @@ class FirstMotionSafetyTests(unittest.TestCase):
             max_pulse_duration_s=max_pulse_duration_s,
             ramp_start_speed_m_s=ramp_start_speed_m_s,
             ramp_duration_s=ramp_duration_s,
+            startup_speed_m_s=startup_speed_m_s,
+            startup_transition_displacement_m=startup_transition_displacement_m,
+            startup_transition_timeout_s=startup_transition_timeout_s,
             shutdown_event=shutdown_event,
             state_timeout_s=0.5,
             min_root_z=0.52,
@@ -373,6 +381,83 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertAlmostEqual(values[2],0.1275)
         with self.assertRaisesRegex(ValueError,"under the command cap"):
             smoothstep_velocity(0.105,0.21,1.0,2.0)
+
+    def test_motion_triggered_startup_uses_cruise_only_after_measured_displacement(self):
+        self.assertEqual(startup_then_cruise_velocity(0.12, 0.08, 0.0199, 0.02), 0.12)
+        self.assertEqual(startup_then_cruise_velocity(0.12, 0.08, 0.02, 0.02), 0.08)
+        with self.assertRaisesRegex(ValueError, "under the command cap"):
+            startup_then_cruise_velocity(0.21, 0.08, 0.02, 0.02)
+
+    def test_joint_command_snapshot_preserves_mc_targets_and_timing(self):
+        result = joint_command_array_snapshot({
+            "header": {"stamp": {"sec": 123, "nanosec": 456}},
+            "joints": [{
+                "name": "left_knee_joint", "position": 0.5, "velocity": 1.25,
+                "effort": 2.5, "stiffness": 100.0, "damping": 5.0,
+            }],
+        }, received_monotonic_s=10.25)
+        self.assertEqual(result["header_stamp"], {"sec": 123, "nanosec": 456})
+        self.assertEqual(result["received_monotonic_s"], 10.25)
+        self.assertEqual(result["joints"][0]["name"], "left_knee_joint")
+        self.assertEqual(result["joints"][0]["velocity"], 1.25)
+        self.assertEqual(result["joints"][0]["stiffness"], 100.0)
+
+    def test_motion_triggered_startup_transitions_once_and_keeps_hard_deadline(self):
+        clock=FakeClock()
+        state=self.snapshot()
+        commands=[]
+        def sample():
+            state["pose"]["x"] = min(clock.now() * 0.12, 0.04)
+            return state
+        def publish(value):
+            commands.append((clock.now(),value))
+            if value > 0.0:
+                state["get_source_name"]=VELOCITY_SOURCE_NAME
+                state["common_source_name"]=VELOCITY_SOURCE_NAME
+            if value > 0.1:
+                state["get_mode_desc"]="LOCOMOTION_DEFAULT"
+                state["common_mode_desc"]="LOCOMOTION_DEFAULT"
+                state["fsm_state"]=int(McFsmStateCode.MOVING)
+        result=self.run_protocol(
+            sample,publish,fake_clock=clock,
+            forward_command_m_s=0.08,
+            pulse_duration_s=10.0,max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
+            startup_speed_m_s=0.12,
+            startup_transition_displacement_m=0.02,
+            startup_transition_timeout_s=0.5,
+        )
+        nonzero=[value for _,value in commands if value>0.0]
+        self.assertEqual(len(nonzero),500)
+        self.assertEqual(nonzero[0],0.12)
+        self.assertIn(0.08,nonzero)
+        self.assertTrue(result["velocity_profile"]["transition_observed"])
+        self.assertGreaterEqual(result["velocity_profile"]["transition_displacement_observed_m"],0.02)
+        self.assertLessEqual(result["last_nonzero_command_offset_s"],10.0)
+        self.assertTrue(any(value==0.0 for _,value in commands))
+
+    def test_motion_triggered_startup_stops_if_displacement_gate_times_out(self):
+        clock=FakeClock()
+        state=self.snapshot()
+        commands=[]
+        def publish(value):
+            commands.append((clock.now(),value))
+            if value > 0.1:
+                state["get_source_name"]=VELOCITY_SOURCE_NAME
+                state["common_source_name"]=VELOCITY_SOURCE_NAME
+                state["get_mode_desc"]="LOCOMOTION_DEFAULT"
+                state["common_mode_desc"]="LOCOMOTION_DEFAULT"
+                state["fsm_state"]=int(McFsmStateCode.MOVING)
+        result=self.run_protocol(
+            lambda:state,publish,fake_clock=clock,
+            forward_command_m_s=0.08,
+            pulse_duration_s=10.0,max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
+            startup_speed_m_s=0.12,
+            startup_transition_displacement_m=0.02,
+            startup_transition_timeout_s=0.05,
+        )
+        self.assertEqual(result["fault"],"startup_displacement_not_reached_before_timeout")
+        self.assertLess(result["nonzero_publish_calls_returned"],10)
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"],50)
 
     def test_ten_second_ramp_publishes_fifty_hz_then_stops_at_hard_deadline(self):
         clock=FakeClock()

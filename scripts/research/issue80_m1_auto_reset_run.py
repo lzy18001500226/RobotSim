@@ -767,6 +767,15 @@ class BoundedRun:
             + " --state-timeout 0.5 --ready-timeout 4 --max-tilt-deg 15 --min-root-z 0.52"
             + " --output-dir /workspace/evidence"
         ]
+        startup_speed = getattr(self.args, "startup_speed", None)
+        if startup_speed is not None:
+            command[-1] += (
+                " --startup-speed " + str(startup_speed)
+                + " --startup-transition-displacement "
+                + str(getattr(self.args, "startup_transition_displacement", None))
+                + " --startup-transition-timeout-s "
+                + str(getattr(self.args, "startup_transition_timeout_s", 0.0))
+            )
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
@@ -1021,6 +1030,9 @@ def main() -> int:
     parser.add_argument("--forward-speed", type=float, default=0.2)
     parser.add_argument("--ramp-start-speed", type=float, default=None)
     parser.add_argument("--ramp-duration-s", type=float, default=0.0)
+    parser.add_argument("--startup-speed", type=float, default=None)
+    parser.add_argument("--startup-transition-displacement", type=float, default=None)
+    parser.add_argument("--startup-transition-timeout-s", type=float, default=0.0)
     parser.add_argument(
         "--maintainer-authorized-first-motion",
         action="store_true",
