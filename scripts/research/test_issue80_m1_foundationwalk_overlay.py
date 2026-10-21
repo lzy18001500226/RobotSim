@@ -446,6 +446,48 @@ class FoundationWalkOverlayTests(unittest.TestCase):
             self.assertIn("--zero-until-stand-timeout-s 3.5", child_command)
             self.assertIn("--zero-only-stop", child_command)
 
+    def test_run44_threshold_margin_is_fixed_at_014_and_keeps_root_speed_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="issue80-test-run44",
+                attempt_id="test-attempt",
+                max_runtime_s=180.0,
+                maintainer_authorized_first_motion=True,
+                maintainer_authorized_standing_takeover=False,
+                run41_min_run_diagnostic=False,
+                run42_stop_confirmation_diagnostic=False,
+                run43_zero_only_stop_diagnostic=False,
+                run44_threshold_margin_diagnostic=True,
+                run38_knee_scale_diagnostic=False,
+                capture_mc_rl_debug=False,
+                extra_stop_observation=5.0,
+                pulse_duration=3.0,
+                forward_speed=0.14,
+                ramp_start_speed=None,
+                ramp_duration_s=0.0,
+                startup_speed=None,
+                startup_transition_displacement=None,
+                startup_transition_timeout_s=0.0,
+            )
+            runner = BoundedRun(args)
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.network_mode = "bridge"
+            commands: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], *, timeout_s: float = 8.0,
+                         check: bool = True):
+                self.assertEqual(name, "m1_first_motion_diagnostic")
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            runner.run = fake_run  # type: ignore[method-assign]
+            runner.run_m1()
+            child_command = commands[0][-1]
+            self.assertIn("--forward-speed 0.14", child_command)
+            self.assertIn("--max-observed-planar-speed-m-s 0.2", child_command)
+            self.assertIn("--zero-only-stop", child_command)
+
 
 if __name__ == "__main__":
     unittest.main()
