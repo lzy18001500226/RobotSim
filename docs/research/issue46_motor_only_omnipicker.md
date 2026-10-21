@@ -93,4 +93,20 @@ PYTHONPATH="$PWD/scripts:/home/lzy18001500226/.cache/robotsim/issue46-vt-2026100
   /home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python scripts/research/issue46_cad_driven_gripper.py test
 ```
 
+For a new, no-overwrite experiment run, reserve a unique governed directory and execute:
+
+```bash
+cd /home/lzy18001500226/robotsim-issue46-dpoint-evidence-20261021
+export ROBOTSIM_PY=/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/bin/python
+export PYTHONPATH="$PWD/scripts:/home/lzy18001500226/.cache/robotsim/issue46-vt-20261007/lib/python3.10/site-packages"
+export RUN_DIR="/home/lzy18001500226/projects/RobotSim/reviews/issue-46/candidate-b-repro-$(date -u +%Y%m%dT%H%M%SZ)"
+"$ROBOTSIM_PY" -c "from agent.path_governance import create_output_directory; create_output_directory('$RUN_DIR', authorized_roots=['/home/lzy18001500226/projects/RobotSim/reviews'], environment='wsl')"
+"$ROBOTSIM_PY" scripts/research/issue46_cad_driven_gripper.py prepare --run-dir "$RUN_DIR"
+"$ROBOTSIM_PY" scripts/research/issue46_cad_driven_gripper.py physics --run-dir "$RUN_DIR"
+"$ROBOTSIM_PY" scripts/research/issue46_cad_driven_gripper.py probe --run-dir "$RUN_DIR"
+"$ROBOTSIM_PY" scripts/research/issue46_cad_driven_gripper.py finalize --run-dir "$RUN_DIR"
+```
+
+The contact probe is gated on the saved `SINGLE_MOTOR_PHYSICS_PASS`. A fresh reproduction uses a new reserved directory; never point these commands at a completed evidence run.
+
 The recorded actual rollouts are in the governed run manifests; they were not rerun after reaching the three-cycle limit. **Overall result: source-range single-motor opening/closing PASS under the unverified simulation coupling; functional grasp/lift BLOCKED.** No switch to PR #58 was needed because Phase A's motor stroke passed. The experiment remains simulation-only and is not manufacturer-validated.
