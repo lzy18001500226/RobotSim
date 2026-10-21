@@ -231,6 +231,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         fake_clock=None,
         baseline=None,
         forward_command_m_s=0.2,
+        pulse_duration_s=1.0,
     ):
         clock = fake_clock or FakeClock()
 
@@ -255,6 +256,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             baseline_forward_displacements_m=baseline if baseline is not None else [0.0, 0.0, 0.0],
             authorized=True,
             forward_command_m_s=forward_command_m_s,
+            pulse_duration_s=pulse_duration_s,
             shutdown_event=shutdown_event,
             state_timeout_s=0.5,
             min_root_z=0.52,
@@ -276,6 +278,17 @@ class FirstMotionSafetyTests(unittest.TestCase):
             self.assertEqual(result["fault"], "forward_command_outside_authorized_cap")
             self.assertEqual(result["nonzero_publish_calls_returned"], 0)
             self.assertTrue(all(v == 0.0 for v in commands))
+
+    def test_shorter_pulse_cannot_extend_original_deadline(self):
+        commands = []
+        result = self.run_protocol(self.snapshot, commands.append, pulse_duration_s=0.6)
+        self.assertLessEqual(result["last_nonzero_command_offset_s"], 0.6)
+        self.assertEqual(result["pulse_limit_s"], 0.6)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+        for invalid in (0.0, -0.1, 1.001, float("nan")):
+            result = self.run_protocol(self.snapshot, lambda v: None, pulse_duration_s=invalid)
+            self.assertEqual(result["fault"], "pulse_duration_outside_authorized_cap")
+            self.assertEqual(result["nonzero_publish_calls_returned"], 0)
 
     def test_leg_limits_are_loaded_from_the_installed_robot_model_yaml(self) -> None:
         names = [f"leg_joint_{index}" for index in range(12)]

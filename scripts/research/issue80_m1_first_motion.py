@@ -1287,6 +1287,7 @@ def run_first_motion_window(
     baseline_forward_displacements_m: list[float] | None,
     authorized: bool,
     forward_command_m_s: float = FORWARD_COMMAND_M_S,
+    pulse_duration_s: float = PULSE_LIMIT_S,
     shutdown_event: threading.Event | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
     state_timeout_s: float = 0.5,
@@ -1303,7 +1304,7 @@ def run_first_motion_window(
         "command_forward_m_s": forward_command_m_s,
         "command_lateral_m_s": 0.0,
         "command_angular_velocity_rad_s": 0.0,
-        "pulse_limit_s": PULSE_LIMIT_S,
+        "pulse_limit_s": pulse_duration_s,
         "publish_hz": PUBLISH_HZ,
         "source_timeout_ms": SOURCE_TIMEOUT_MS,
         "zero_publish_semantics": ZERO_STOP_INTERPRETATION,
@@ -1319,7 +1320,9 @@ def run_first_motion_window(
         return result
 
     pulse_fault: str | None = None
-    if not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
+    if not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= PULSE_LIMIT_S:
+        pulse_fault = "pulse_duration_outside_authorized_cap"
+    elif not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
         pulse_fault = "forward_command_outside_authorized_cap"
     elif not registration.get("success"):
         pulse_fault = "source_registration_rejected"
@@ -1406,10 +1409,10 @@ def run_first_motion_window(
 
         if pulse_fault is None:
             pulse_start = clock()
-            pulse_deadline = pulse_start + PULSE_LIMIT_S
+            pulse_deadline = pulse_start + pulse_duration_s
             next_publish = pulse_start
             watchdog = ProcessLocalTimerWatchdog(
-                PULSE_LIMIT_S,
+                pulse_duration_s,
                 on_watchdog,
                 timer_factory=timer_factory,
             )
@@ -1467,7 +1470,7 @@ def run_first_motion_window(
                             publish(forward_command_m_s)
                             published_offset = clock() - pulse_start
                             nonzero_success_offsets_s.append(published_offset)
-                            if published_offset > PULSE_LIMIT_S:
+                            if published_offset > pulse_duration_s:
                                 pulse_fault = pulse_fault or "nonzero_publish_returned_after_hard_deadline"
                                 stop_requested.set()
                     if should_stop:

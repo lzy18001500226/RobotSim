@@ -743,6 +743,7 @@ class BoundedRun:
         command = [
             "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", self.container, "bash", "-lc",
             "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion --maintainer-authorized --reset-gate-verified"
+            + " --pulse-duration " + str(self.args.pulse_duration)
             + " --forward-speed " + str(self.args.forward_speed)
             + " --attempt-id " + self.args.attempt_id
             + " --robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml"
@@ -1007,6 +1008,7 @@ def main() -> int:
     parser.add_argument("--container",required=True)
     parser.add_argument("--attempt-id",required=True)
     parser.add_argument("--max-runtime-s",type=float,default=180.0)
+    parser.add_argument("--pulse-duration", type=float, default=1.0)
     parser.add_argument("--forward-speed", type=float, default=0.2)
     parser.add_argument(
         "--maintainer-authorized-first-motion",
@@ -1019,6 +1021,8 @@ def main() -> int:
         help="explicit human authorization for one simulation-only standing-takeover test; no LD or velocity command",
     )
     args=parser.parse_args()
+    if not 0.0 < args.pulse_duration <= 1.0:
+        parser.error("pulse duration must be positive and no greater than 1 second")
     if not 0.0 < args.forward_speed <= 0.2:
         parser.error("forward speed must be positive and no greater than 0.2 m/s")
     run=BoundedRun(args)
