@@ -138,6 +138,7 @@ class FocusedM1Diagnostic(Node):
         self.interrupted = threading.Event()
         self.publisher_lock = threading.RLock()
         self.trace_lock = threading.RLock()
+        self.ros_spin_lock = threading.RLock()
         self.nonzero_publish_calls_returned = 0
         self.zero_publish_calls_returned = 0
         self.command_trace: list[dict[str, Any]] = []
@@ -911,8 +912,12 @@ class FocusedM1Diagnostic(Node):
         """
         deadline = time.monotonic() + max(0.0, duration_s)
         while rclpy.ok() and time.monotonic() < deadline:
-            rclpy.spin_once(self, timeout_sec=min(0.001, max(0.0, deadline - time.monotonic())))
-            self._poll_async_readbacks()
+            # The watchdog may service zero-stop waits on its own thread.
+            # Never spin the same executor concurrently; zero publication
+            # already happened before waiting for this short lock.
+            with self.ros_spin_lock:
+                rclpy.spin_once(self, timeout_sec=min(0.001, max(0.0, deadline - time.monotonic())))
+                self._poll_async_readbacks()
 
     def sample_for_first_motion(self) -> dict[str, Any]:
         self._spin_for(0.005)

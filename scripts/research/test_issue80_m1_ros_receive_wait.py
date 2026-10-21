@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 import unittest
+import threading
 
 SOURCE = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 
@@ -28,7 +29,8 @@ class RosReceiveWaitTests(unittest.TestCase):
             received[tuple(received)[count[0] % 5]] = now[0]
             count[0] += 1
         polls = []
-        node = SimpleNamespace(_poll_async_readbacks=lambda: polls.append(now[0]))
+        node = SimpleNamespace(_poll_async_readbacks=lambda: polls.append(now[0]),
+                               ros_spin_lock=threading.RLock())
         wait = load_function("_spin_for", {
             "time": SimpleNamespace(monotonic=lambda: now[0]),
             "rclpy": SimpleNamespace(ok=lambda: True, spin_once=spin_once),
