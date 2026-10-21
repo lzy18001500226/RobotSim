@@ -12,6 +12,9 @@ SOURCE = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 
 def load_function(name, namespace):
     tree = ast.parse(SOURCE.read_text())
+    for imported in tree.body:
+        if isinstance(imported, ast.ImportFrom) and imported.module == "typing":
+            exec(compile(ast.Module(body=[imported], type_ignores=[]), str(SOURCE), "exec"), namespace)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             exec(compile(ast.Module(body=[node], type_ignores=[]), str(SOURCE), "exec"), namespace)
@@ -42,7 +45,7 @@ class RosReceiveWaitTests(unittest.TestCase):
         self.assertEqual(len(polls), count[0])
 
     def test_result_mapping_is_json_object_not_python_repr_string(self):
-        safe = load_function("_json_safe", {"Any": Any, "Mapping": Mapping})
+        safe = load_function("_json_safe", {})
         actual = safe({"activation": {"status": "PASS"}, "samples": [1, 2]})
         self.assertIsInstance(actual, dict)
         self.assertEqual(actual["activation"]["status"], "PASS")
