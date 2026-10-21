@@ -320,6 +320,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
         startup_transition_displacement_m=None,
         startup_transition_timeout_s=0.0,
         max_observed_planar_speed_m_s=None,
+        zero_until_stand_timeout_s=0.0,
+        after_zero_stop=None,
     ):
         clock = fake_clock or FakeClock()
 
@@ -356,6 +358,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
             min_root_z=0.52,
             max_tilt_deg=15.0,
             max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
+            zero_until_stand_timeout_s=zero_until_stand_timeout_s,
+            after_zero_stop=after_zero_stop,
             clock=clock.now,
             sleep=clock.sleep,
             timer_factory=timer_factory,
@@ -411,6 +415,84 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertEqual(result["nonzero_publish_calls_returned"], 0)
         self.assertTrue(commands)
         self.assertTrue(all(command == 0.0 for command in commands))
+
+    def test_zero_stream_continues_until_stand_mode_is_actually_applied(self):
+        clock = FakeClock()
+        transition_at = 1.20
+
+        def sample():
+            if clock.now() < 0.01:
+                return self.snapshot(
+                    get_mode_status_value=100,
+                    common_mode_status_value=100,
+                )
+            if clock.now() < transition_at:
+                return self.snapshot(
+                    get_mode_desc="LOCOMOTION_DEFAULT",
+                    common_mode_desc="LOCOMOTION_DEFAULT",
+                    get_mode_status_value=100,
+                    common_mode_status_value=100,
+                    fsm_state=5,
+                    get_source_name=VELOCITY_SOURCE_NAME,
+                    common_source_name=VELOCITY_SOURCE_NAME,
+                )
+            return self.snapshot(
+                get_mode_desc="STAND_DEFAULT",
+                common_mode_desc="STAND_DEFAULT",
+                get_mode_status_value=100,
+                common_mode_status_value=100,
+                fsm_state=MC_FSM_STABLE,
+                body_status=1,
+            )
+
+        commands = []
+        result = self.run_protocol(
+            sample,
+            commands.append,
+            fake_clock=clock,
+            forward_command_m_s=0.112,
+            pulse_duration_s=0.1,
+            max_pulse_duration_s=0.1,
+            zero_until_stand_timeout_s=2.5,
+            after_zero_stop=lambda: {"success": True},
+        )
+
+        confirmation = result["stop_transition_confirmation"]
+        extension = result["post_stop_zero_extension"]
+        self.assertEqual(confirmation["status"], "STAND_READBACK_CONFIRMED")
+        self.assertTrue(confirmation["stand_confirmed"])
+        self.assertGreater(extension["zero_publish_calls_returned"], 0)
+        self.assertEqual(extension["status"], "STAND_READBACK_CONFIRMED")
+
+    def test_zero_stream_timeout_is_reported_and_zero_continues(self):
+        commands = []
+        loco = self.snapshot(
+            get_mode_desc="LOCOMOTION_DEFAULT",
+            common_mode_desc="LOCOMOTION_DEFAULT",
+            get_mode_status_value=100,
+            common_mode_status_value=100,
+            fsm_state=5,
+            get_source_name=VELOCITY_SOURCE_NAME,
+            common_source_name=VELOCITY_SOURCE_NAME,
+        )
+        result = self.run_protocol(
+            lambda: loco,
+            commands.append,
+            forward_command_m_s=0.112,
+            pulse_duration_s=0.1,
+            max_pulse_duration_s=0.1,
+            zero_until_stand_timeout_s=0.2,
+            after_zero_stop=lambda: {"success": True},
+        )
+
+        self.assertEqual(result["stop_transition_confirmation"]["status"], "STAND_READBACK_TIMEOUT")
+        self.assertIn("post_stop_stand_readback_timeout", result["post_stop_fault"])
+        self.assertEqual(
+            result["post_stop_zero_extension"]["status"],
+            "STAND_READBACK_TIMEOUT_ZERO_CONTINUES",
+        )
+        self.assertGreater(result["post_stop_zero_extension"]["zero_publish_calls_returned"], 1)
+        self.assertFalse(result["stop_transition_confirmation"]["stand_confirmed"])
 
         commands = []
         invalid_cap = self.run_protocol(

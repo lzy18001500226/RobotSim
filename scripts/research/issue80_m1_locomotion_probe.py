@@ -1083,6 +1083,7 @@ class FocusedM1Diagnostic(Node):
                 "min_root_z_m": self.args.min_root_z,
                 "max_tilt_deg": self.args.max_tilt_deg,
                 "max_observed_planar_speed_m_s": getattr(self.args, "max_observed_planar_speed_m_s", None),
+                "zero_until_stand_timeout_s": getattr(self.args, "zero_until_stand_timeout_s", 0.0),
             },
             "fault": None,
         }
@@ -1142,6 +1143,7 @@ class FocusedM1Diagnostic(Node):
                 min_root_z=self.args.min_root_z,
                 max_tilt_deg=self.args.max_tilt_deg,
                 max_observed_planar_speed_m_s=getattr(self.args, "max_observed_planar_speed_m_s", None),
+                zero_until_stand_timeout_s=getattr(self.args, "zero_until_stand_timeout_s", 0.0),
             )
             self.pulse_result = pulse
             result["activation"] = pulse
@@ -1187,6 +1189,7 @@ class FocusedM1Diagnostic(Node):
                         min_root_z=self.args.min_root_z,
                         max_tilt_deg=self.args.max_tilt_deg,
                         max_observed_planar_speed_m_s=getattr(self.args, "max_observed_planar_speed_m_s", None),
+                        zero_until_stand_timeout_s=getattr(self.args, "zero_until_stand_timeout_s", 0.0),
                     )
                 except Exception as stop_exc:
                     result["exception_safe_stop_fault"] = f"{type(stop_exc).__name__}: {stop_exc}"
@@ -1287,12 +1290,15 @@ def main() -> int:
     first.add_argument("--max-tilt-deg", type=float, default=15.0)
     first.add_argument("--min-root-z", type=float, default=0.52)
     first.add_argument("--max-observed-planar-speed-m-s", type=float, default=None)
+    first.add_argument("--zero-until-stand-timeout-s", type=float, default=0.0)
     args = parser.parse_args()
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)
         or not 0.0 < args.max_observed_planar_speed_m_s <= 0.2
     ):
         parser.error("observed planar speed gate must be positive and no greater than 0.2 m/s")
+    if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 2.5:
+        parser.error("zero-until-stand timeout must remain within 0..2.5 seconds")
     try:
         return _focused_diagnostic_command(args)
     except Exception as exc:

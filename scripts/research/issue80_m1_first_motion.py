@@ -1351,6 +1351,19 @@ def measure_post_stop_forward_tail(
     return result
 
 
+def stand_mode_readback_confirmed(snapshot: Mapping[str, Any]) -> bool:
+    """Require both applied-mode readbacks and stable FSM before ending zero hold."""
+    return (
+        snapshot.get("get_mode_desc") == MODE_STAND
+        and snapshot.get("common_mode_desc") == MODE_STAND
+        and snapshot.get("get_mode_header_code") == 0
+        and snapshot.get("get_mode_status_value") == 100
+        and snapshot.get("common_mode_status_value") == 100
+        and snapshot.get("fsm_state") == MC_FSM_STABLE
+        and snapshot.get("body_status") == BODY_POSE_STAND
+    )
+
+
 def smoothstep_velocity(
     start_m_s: float, target_m_s: float, elapsed_s: float, ramp_duration_s: float,
 ) -> float:
@@ -1567,6 +1580,7 @@ def run_first_motion_window(
     min_root_z: float = 0.52,
     max_tilt_deg: float = 15.0,
     max_observed_planar_speed_m_s: float | None = None,
+    zero_until_stand_timeout_s: float = 0.0,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
@@ -1601,6 +1615,7 @@ def run_first_motion_window(
         "zero_publish_semantics": ZERO_STOP_INTERPRETATION,
         "watchdog_scope_limitation": WATCHDOG_LIMITATION,
         "max_observed_planar_speed_m_s": max_observed_planar_speed_m_s,
+        "zero_until_stand_timeout_s": zero_until_stand_timeout_s,
         "registration": dict(registration),
         "set_mc_action": dict(set_action),
         "nonzero_publish_calls_returned": 0,
@@ -1615,6 +1630,13 @@ def run_first_motion_window(
     pulse_fault: str | None = None
     if not math.isfinite(extra_post_stop_observe_s) or not 0.0 <= extra_post_stop_observe_s <= 5.0:
         pulse_fault = "extra_stop_observation_outside_bounded_budget"
+    elif (
+        not math.isfinite(zero_until_stand_timeout_s)
+        or not 0.0 <= zero_until_stand_timeout_s <= 2.5
+    ):
+        pulse_fault = "zero_until_stand_timeout_outside_bounded_budget"
+    elif zero_until_stand_timeout_s > 0.0 and after_zero_stop is None:
+        pulse_fault = "zero_until_stand_requires_post_stop_action_client"
     elif (
         not math.isfinite(max_pulse_duration_s)
         or not 0.0 < max_pulse_duration_s <= MAX_AUTHORIZED_PULSE_S
@@ -1893,6 +1915,25 @@ def run_first_motion_window(
         result["zero_stop"] = stop_result
         if watchdog is not None:
             watchdog.cancel()
+        stop_transition_confirmation: dict[str, Any] = {
+            "status": "NOT_REQUESTED" if zero_until_stand_timeout_s == 0.0 else "WAITING_FOR_STAND_READBACK",
+            "requested_timeout_s": zero_until_stand_timeout_s,
+            "request_result": None,
+            "started_monotonic_s": None,
+            "deadline_monotonic_s": None,
+            "confirmed_monotonic_s": None,
+            "stand_confirmed": False,
+        }
+        stop_mode_confirmed = False
+        post_stop_zero_extension = {
+            "status": "NOT_REQUESTED" if zero_until_stand_timeout_s == 0.0 else "WAITING_FOR_STAND_READBACK",
+            "requested_timeout_s": zero_until_stand_timeout_s,
+            "zero_publish_calls_returned": 0,
+            "first_publish_monotonic_s": None,
+            "last_publish_monotonic_s": None,
+            "publish_exceptions": [],
+            "mc_receipt_confirmed": False,
+        }
         if after_zero_stop is not None and tracker.control_handshake_confirmed and result["nonzero_publish_calls_returned"] > 0:
             try:
                 result["after_zero_stop_action"] = dict(after_zero_stop())
@@ -1901,6 +1942,16 @@ def run_first_motion_window(
                     "success": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+        if zero_until_stand_timeout_s > 0.0:
+            stop_transition_confirmation["request_result"] = result.get("after_zero_stop_action")
+            stop_transition_confirmation["started_monotonic_s"] = clock()
+            stop_transition_confirmation["deadline_monotonic_s"] = (
+                float(stop_transition_confirmation["started_monotonic_s"])
+                + zero_until_stand_timeout_s
+            )
+            next_post_stop_zero_publish = float(stop_transition_confirmation["started_monotonic_s"])
+        else:
+            next_post_stop_zero_publish = None
         first_post_stop_sample_attempt_s = clock()
         try:
             first_post_stop = sample()
@@ -1928,6 +1979,14 @@ def run_first_motion_window(
             if isinstance(first_post_stop_pose, Mapping):
                 post_stop_first_pose = dict(first_post_stop_pose)
                 post_stop_last_pose = dict(first_post_stop_pose)
+            if zero_until_stand_timeout_s > 0.0 and stand_mode_readback_confirmed(first_post_stop):
+                stop_mode_confirmed = True
+                stop_transition_confirmation["status"] = "STAND_READBACK_CONFIRMED"
+                stop_transition_confirmation["stand_confirmed"] = True
+                stop_transition_confirmation["confirmed_monotonic_s"] = float(
+                    first_post_stop.get("sample_monotonic_s", clock())
+                )
+                post_stop_zero_extension["status"] = "STAND_READBACK_CONFIRMED"
             if immediate_fault:
                 post_stop_fault = immediate_fault
         except Exception as exc:
@@ -1946,6 +2005,28 @@ def run_first_motion_window(
         post_stop_end = clock() + POST_STOP_OBSERVE_S + (extra_post_stop_observe_s if pulse_fault is None else 0.0)
         post_stop_samples = 0
         while clock() < post_stop_end:
+            now = clock()
+            stop_extension_publish_fault: str | None = None
+            if zero_until_stand_timeout_s > 0.0 and not stop_mode_confirmed:
+                deadline = float(stop_transition_confirmation["deadline_monotonic_s"])
+                if now >= deadline and stop_transition_confirmation["status"] == "WAITING_FOR_STAND_READBACK":
+                    stop_transition_confirmation["status"] = "STAND_READBACK_TIMEOUT"
+                    post_stop_zero_extension["status"] = "STAND_READBACK_TIMEOUT_ZERO_CONTINUES"
+                    post_stop_fault = post_stop_fault or "post_stop_stand_readback_timeout"
+                if next_post_stop_zero_publish is not None and now >= next_post_stop_zero_publish:
+                    try:
+                        publish(0.0)
+                        if post_stop_zero_extension["first_publish_monotonic_s"] is None:
+                            post_stop_zero_extension["first_publish_monotonic_s"] = now
+                        post_stop_zero_extension["last_publish_monotonic_s"] = now
+                        post_stop_zero_extension["zero_publish_calls_returned"] += 1
+                    except Exception as exc:
+                        error = f"{type(exc).__name__}: {exc}"
+                        post_stop_zero_extension["publish_exceptions"].append(error)
+                        post_stop_zero_extension["status"] = "ZERO_PUBLISH_FAILED"
+                        stop_extension_publish_fault = "post_stop_zero_publish_exception:" + error
+                        post_stop_fault = post_stop_fault or stop_extension_publish_fault
+                    next_post_stop_zero_publish = clock() + 1.0 / PUBLISH_HZ
             try:
                 current = sample()
                 current_fault = snapshot_fault(
@@ -1956,6 +2037,8 @@ def run_first_motion_window(
                     max_tilt_deg=max_tilt_deg,
                     max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                 )
+                if stop_extension_publish_fault and not current_fault:
+                    current_fault = stop_extension_publish_fault
                 if current_fault:
                     post_stop_fault = current_fault
                 record_sample("post-stop", current, current_fault)
@@ -1965,6 +2048,20 @@ def run_first_motion_window(
                     if post_stop_first_pose is None:
                         post_stop_first_pose = dict(pose)
                     post_stop_last_pose = dict(pose)
+                if zero_until_stand_timeout_s > 0.0 and not stop_mode_confirmed:
+                    if stand_mode_readback_confirmed(current):
+                        stop_mode_confirmed = True
+                        prior_status = str(stop_transition_confirmation["status"])
+                        stop_transition_confirmation["status"] = (
+                            "LATE_STAND_READBACK_CONFIRMED"
+                            if prior_status == "STAND_READBACK_TIMEOUT"
+                            else "STAND_READBACK_CONFIRMED"
+                        )
+                        stop_transition_confirmation["stand_confirmed"] = True
+                        stop_transition_confirmation["confirmed_monotonic_s"] = float(
+                            current.get("sample_monotonic_s", clock())
+                        )
+                        post_stop_zero_extension["status"] = stop_transition_confirmation["status"]
             except Exception as exc:
                 post_stop_fault = f"post_stop_exception:{type(exc).__name__}:{exc}"
                 current_fault = post_stop_fault
@@ -1981,7 +2078,10 @@ def run_first_motion_window(
                 break
             remaining = post_stop_end - clock()
             if remaining > 0.0:
-                sleep(min(0.05, remaining))
+                pending_stand_confirmation = (
+                    zero_until_stand_timeout_s > 0.0 and not stop_mode_confirmed
+                )
+                sleep(min(1.0 / PUBLISH_HZ if pending_stand_confirmation else 0.05, remaining))
 
     result["pulse_actual_duration_s"] = (
         max(0.0, pulse_end - pulse_start) if pulse_start is not None and pulse_end is not None else 0.0
@@ -1989,6 +2089,9 @@ def run_first_motion_window(
     # Loop elapsed time includes sensor sampling after the hard command deadline;
     # publish offsets below measure when nonzero sends actually began/returned.
     result["pulse_loop_elapsed_s"] = result.pop("pulse_actual_duration_s")
+    if zero_until_stand_timeout_s > 0.0:
+        result["stop_transition_confirmation"] = stop_transition_confirmation
+        result["post_stop_zero_extension"] = post_stop_zero_extension
     result["nonzero_command_attempt_offsets_s"] = nonzero_attempt_offsets_s
     result["nonzero_command_success_offsets_s"] = nonzero_success_offsets_s
     result["nonzero_command_span_s"] = (
