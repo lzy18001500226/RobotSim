@@ -608,12 +608,12 @@ class FoundationWalkOverlayTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Run46 is fixed to 0.12 m/s startup, 0.105 m/s cruise", result.stderr)
 
-    def test_run47_changes_only_the_evidence_derived_startup_timeout(self) -> None:
+    def test_run48_tests_the_low_cruise_command_without_startup_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             args = argparse.Namespace(
                 evidence_dir=temp_dir,
-                container="issue80-test-run47",
-                attempt_id="test-attempt-run47",
+                container="issue80-test-run48",
+                attempt_id="test-attempt-run48",
                 max_runtime_s=180.0,
                 maintainer_authorized_first_motion=True,
                 maintainer_authorized_standing_takeover=False,
@@ -624,16 +624,16 @@ class FoundationWalkOverlayTests(unittest.TestCase):
                 run44_threshold_margin_diagnostic=False,
                 run45_ten_second_gait_diagnostic=False,
                 run46_startup_cruise_threshold_diagnostic=False,
-                run47_startup_timeout_extension_diagnostic=True,
+                run48_low_cruise_baseline_diagnostic=True,
                 capture_mc_rl_debug=True,
                 extra_stop_observation=5.0,
                 pulse_duration=3.0,
                 forward_speed=0.105,
                 ramp_start_speed=None,
                 ramp_duration_s=0.0,
-                startup_speed=0.12,
-                startup_transition_displacement=0.01,
-                startup_transition_timeout_s=1.0,
+                startup_speed=None,
+                startup_transition_displacement=None,
+                startup_transition_timeout_s=0.0,
             )
             runner = BoundedRun(args)
             runner.reset_classification = "AUTO_RESET_PASS"
@@ -652,14 +652,13 @@ class FoundationWalkOverlayTests(unittest.TestCase):
             child = commands[0][-1]
             self.assertIn("--forward-speed 0.105", child)
             self.assertIn("--pulse-duration 3.0", child)
-            self.assertIn("--startup-speed 0.12", child)
-            self.assertIn("--startup-transition-displacement 0.01", child)
-            self.assertIn("--startup-transition-timeout-s 1.0", child)
+            self.assertNotIn("--startup-speed", child)
+            self.assertNotIn("--startup-transition-displacement", child)
             self.assertIn("--max-observed-planar-speed-m-s 0.2", child)
             self.assertIn("--zero-until-stand-timeout-s 3.5", child)
             self.assertIn("--zero-only-stop", child)
 
-    def test_run47_cli_rejects_any_timeout_other_than_one_second(self) -> None:
+    def test_run48_cli_rejects_a_changed_low_cruise_target_before_runtime(self) -> None:
         script = Path(__file__).with_name("issue80_m1_auto_reset_run.py")
         with tempfile.TemporaryDirectory() as temp_dir:
             result = subprocess.run(
@@ -667,15 +666,12 @@ class FoundationWalkOverlayTests(unittest.TestCase):
                     sys.executable, str(script),
                     "--evidence-dir", temp_dir,
                     "--container", "must-not-start",
-                    "--attempt-id", "offline-run47-rejection",
-                    "--run47-startup-timeout-extension-diagnostic",
+                    "--attempt-id", "offline-run48-rejection",
+                    "--run48-low-cruise-baseline-diagnostic",
                     "--capture-mc-rl-debug",
                     "--maintainer-authorized-first-motion",
-                    "--forward-speed", "0.105",
+                    "--forward-speed", "0.106",
                     "--pulse-duration", "3.0",
-                    "--startup-speed", "0.12",
-                    "--startup-transition-displacement", "0.01",
-                    "--startup-transition-timeout-s", "0.75",
                     "--extra-stop-observation", "5.0",
                 ],
                 text=True,
@@ -683,7 +679,30 @@ class FoundationWalkOverlayTests(unittest.TestCase):
                 check=False,
             )
         self.assertEqual(result.returncode, 2)
-        self.assertIn("Run47 is fixed to a 0.12 m/s startup", result.stderr)
+        self.assertIn("Run48 is fixed to constant 0.105 m/s", result.stderr)
+
+    def test_cli_refuses_valid_motion_with_an_unreserved_temporary_evidence_dir(self) -> None:
+        script = Path(__file__).with_name("issue80_m1_auto_reset_run.py")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = subprocess.run(
+                [
+                    sys.executable, str(script),
+                    "--evidence-dir", temp_dir,
+                    "--container", "must-not-start",
+                    "--attempt-id", "offline-unreserved-evidence-rejection",
+                    "--run48-low-cruise-baseline-diagnostic",
+                    "--capture-mc-rl-debug",
+                    "--maintainer-authorized-first-motion",
+                    "--forward-speed", "0.105",
+                    "--pulse-duration", "3.0",
+                    "--extra-stop-observation", "5.0",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("evidence directory failed path-governance reservation check", result.stderr)
 
 
 if __name__ == "__main__":

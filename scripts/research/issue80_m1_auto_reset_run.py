@@ -69,6 +69,31 @@ class RunDeadline(TimeoutError):
     pass
 
 
+def validate_reserved_evidence_directory(path: str | os.PathLike[str]) -> Path:
+    """Require a canonical, path-governance-reserved run directory before runtime."""
+    helper_path = str(REPO / "scripts/agent")
+    if helper_path not in sys.path:
+        sys.path.insert(0, helper_path)
+    from path_governance import validate_output_path
+
+    location = validate_output_path(
+        path, require_exists=True, expected_kind="directory"
+    )
+    marker = location.native_path / ".robotsim-output-reservation.json"
+    if marker.is_symlink() or not marker.is_file():
+        raise ValueError("evidence directory has no regular output reservation marker")
+    try:
+        reservation = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("evidence directory reservation marker is unreadable") from exc
+    if reservation != {
+        "schema_version": "robotsim.output-reservation.v1",
+        "path": location.wsl_path,
+    }:
+        raise ValueError("evidence directory reservation marker does not match its path")
+    return location.native_path
+
+
 M1_CHILD_RESULT_STATUSES = frozenset({"PASS", "BLOCKED"})
 CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 M1_SAFETY_FAULT_MARKERS = (
@@ -567,8 +592,8 @@ class BoundedRun:
         run44 = bool(getattr(self.args, "run44_threshold_margin_diagnostic", False))
         run45 = bool(getattr(self.args, "run45_ten_second_gait_diagnostic", False))
         run46 = bool(getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False))
-        run47 = bool(getattr(self.args, "run47_startup_timeout_extension_diagnostic", False))
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run47))
+        run48 = bool(getattr(self.args, "run48_low_cruise_baseline_diagnostic", False))
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -626,7 +651,7 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        if run41 or run42 or run43 or run44 or run45 or run46 or run47:
+        if run41 or run42 or run43 or run44 or run45 or run46 or run48:
             overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
             overlay_name = "foundationwalk_knee019_minrun010.yaml"
         else:
@@ -1291,7 +1316,7 @@ class BoundedRun:
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
-            or getattr(self.args, "run47_startup_timeout_extension_diagnostic", False)
+            or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
         if (
@@ -1300,7 +1325,7 @@ class BoundedRun:
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
-            or getattr(self.args, "run47_startup_timeout_extension_diagnostic", False)
+            or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
         ):
             command[-1] += " --zero-until-stand-timeout-s 3.5"
         if (
@@ -1308,7 +1333,7 @@ class BoundedRun:
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
-            or getattr(self.args, "run47_startup_timeout_extension_diagnostic", False)
+            or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
         ):
             command[-1] += " --zero-only-stop"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
@@ -1798,12 +1823,12 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--run47-startup-timeout-extension-diagnostic",
+        "--run48-low-cruise-baseline-diagnostic",
         action="store_true",
         help=(
-            "follow Run46 after its 0.75 s startup window stopped 0.75 mm short of the "
-            "10 mm trigger; change only that timeout to 1.0 s, keeping the 0.12 to "
-            "0.105 m/s profile, 3-second pulse, and 0.2 m/s root-speed guard"
+            "reuse the Run41 SIMULATION_ONLY config and Run43 zero-only stop for one "
+            "constant 0.105 m/s, 3-second diagnostic, isolating the low cruise level "
+            "without a motion-triggered startup profile"
         ),
     )
     args=parser.parse_args()
@@ -1828,7 +1853,7 @@ def main() -> int:
         args.run44_threshold_margin_diagnostic,
         args.run45_ten_second_gait_diagnostic,
         args.run46_startup_cruise_threshold_diagnostic,
-        args.run47_startup_timeout_extension_diagnostic,
+        args.run48_low_cruise_baseline_diagnostic,
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
@@ -1837,21 +1862,18 @@ def main() -> int:
             parser.error("FoundationWalk diagnostic requires the authorized first-motion gate")
         if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic:
             target_speed = 0.14
-        elif args.run46_startup_cruise_threshold_diagnostic or args.run47_startup_timeout_extension_diagnostic:
+        elif args.run46_startup_cruise_threshold_diagnostic or args.run48_low_cruise_baseline_diagnostic:
             target_speed = 0.105
         else:
             target_speed = 0.112
         target_pulse = 10.0 if args.run45_ten_second_gait_diagnostic else 3.0
-        if args.run46_startup_cruise_threshold_diagnostic or args.run47_startup_timeout_extension_diagnostic:
-            expected_startup_timeout = (
-                1.0 if args.run47_startup_timeout_extension_diagnostic else 0.75
-            )
+        if args.run46_startup_cruise_threshold_diagnostic:
             startup_profile_valid = (
                 args.startup_speed is not None
                 and abs(args.startup_speed - 0.12) <= 1e-9
                 and args.startup_transition_displacement is not None
                 and abs(args.startup_transition_displacement - 0.01) <= 1e-9
-                and abs(args.startup_transition_timeout_s - expected_startup_timeout) <= 1e-9
+                and abs(args.startup_transition_timeout_s - 0.75) <= 1e-9
             )
         else:
             startup_profile_valid = (
@@ -1868,22 +1890,25 @@ def main() -> int:
             or not startup_profile_valid
             or not args.capture_mc_rl_debug
         ):
-            if args.run47_startup_timeout_extension_diagnostic:
-                parser.error(
-                    "Run47 is fixed to a 0.12 m/s startup, 0.105 m/s cruise after 10 mm, "
-                    "1.0 s transition timeout, 3 s pulse, 5 s post-stop observation, "
-                    "no additional ramp, and McRLDebug capture"
-                )
             if args.run46_startup_cruise_threshold_diagnostic:
                 parser.error(
                     "Run46 is fixed to 0.12 m/s startup, 0.105 m/s cruise after 10 mm, "
                     "0.75 s transition timeout, 3 s pulse, 5 s post-stop observation, "
                     "no additional ramp, and McRLDebug capture"
                 )
+            if args.run48_low_cruise_baseline_diagnostic:
+                parser.error(
+                    "Run48 is fixed to constant 0.105 m/s, 3 s pulse, 5 s post-stop "
+                    "observation, no ramp or startup profile, and McRLDebug capture"
+                )
             parser.error(
                 f"FoundationWalk diagnostic is fixed to {target_speed} m/s, {target_pulse} s, "
                 "5 s post-stop observation, no velocity ramp, and McRLDebug capture"
             )
+    try:
+        validate_reserved_evidence_directory(args.evidence_dir)
+    except (OSError, ValueError, RuntimeError) as exc:
+        parser.error(f"evidence directory failed path-governance reservation check: {exc}")
     run=BoundedRun(args)
     result=run.execute()
     print(json.dumps(result,indent=2))
