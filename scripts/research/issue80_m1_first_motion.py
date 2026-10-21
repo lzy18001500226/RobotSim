@@ -1286,6 +1286,7 @@ def run_first_motion_window(
     joint_limits: Mapping[str, Mapping[str, float]],
     baseline_forward_displacements_m: list[float] | None,
     authorized: bool,
+    forward_command_m_s: float = FORWARD_COMMAND_M_S,
     shutdown_event: threading.Event | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
     state_timeout_s: float = 0.5,
@@ -1295,11 +1296,11 @@ def run_first_motion_window(
     sleep: Callable[[float], None] = time.sleep,
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
 ) -> dict[str, Any]:
-    """One immutable 0.2 m/s, <=1 s, 50 Hz pulse followed by stop and observation."""
+    """One bounded <=0.2 m/s, <=1 s, 50 Hz pulse followed by stop and observation."""
     result: dict[str, Any] = {
         "status": "NOT_RUN",
         "source": VELOCITY_SOURCE_NAME,
-        "command_forward_m_s": FORWARD_COMMAND_M_S,
+        "command_forward_m_s": forward_command_m_s,
         "command_lateral_m_s": 0.0,
         "command_angular_velocity_rad_s": 0.0,
         "pulse_limit_s": PULSE_LIMIT_S,
@@ -1318,7 +1319,9 @@ def run_first_motion_window(
         return result
 
     pulse_fault: str | None = None
-    if not registration.get("success"):
+    if not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
+        pulse_fault = "forward_command_outside_authorized_cap"
+    elif not registration.get("success"):
         pulse_fault = "source_registration_rejected"
     elif not set_action.get("accepted_by_service"):
         pulse_fault = "set_mc_action_rejected"
@@ -1461,7 +1464,7 @@ def run_first_motion_window(
                             should_stop = True
                         else:
                             nonzero_attempt_offsets_s.append(clock() - pulse_start)
-                            publish(FORWARD_COMMAND_M_S)
+                            publish(forward_command_m_s)
                             published_offset = clock() - pulse_start
                             nonzero_success_offsets_s.append(published_offset)
                             if published_offset > PULSE_LIMIT_S:
@@ -1470,7 +1473,9 @@ def run_first_motion_window(
                     if should_stop:
                         break
                     result["nonzero_publish_calls_returned"] += 1
-                    next_publish = now + 1.0 / PUBLISH_HZ
+                    next_publish += 1.0 / PUBLISH_HZ
+                    if next_publish < now:
+                        next_publish = now + 1.0 / PUBLISH_HZ
                 remaining = pulse_deadline - clock()
                 if remaining > 0.0:
                     sleep(min(0.005, remaining))

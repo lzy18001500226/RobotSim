@@ -230,6 +230,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         timer_factory=None,
         fake_clock=None,
         baseline=None,
+        forward_command_m_s=0.2,
     ):
         clock = fake_clock or FakeClock()
 
@@ -253,6 +254,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             joint_limits=LIMITS,
             baseline_forward_displacements_m=baseline if baseline is not None else [0.0, 0.0, 0.0],
             authorized=True,
+            forward_command_m_s=forward_command_m_s,
             shutdown_event=shutdown_event,
             state_timeout_s=0.5,
             min_root_z=0.52,
@@ -261,6 +263,19 @@ class FirstMotionSafetyTests(unittest.TestCase):
             sleep=clock.sleep,
             timer_factory=timer_factory,
         )
+
+    def test_reduced_probe_speed_keeps_hard_cap_and_safety_gates(self):
+        commands = []
+        result = self.run_protocol(self.snapshot, commands.append, forward_command_m_s=0.1)
+        self.assertIn(0.1, commands)
+        self.assertNotIn(0.2, commands)
+        self.assertEqual(result["command_forward_m_s"], 0.1)
+        for invalid in (0.0, -0.1, 0.201, float("nan")):
+            commands = []
+            result = self.run_protocol(self.snapshot, commands.append, forward_command_m_s=invalid)
+            self.assertEqual(result["fault"], "forward_command_outside_authorized_cap")
+            self.assertEqual(result["nonzero_publish_calls_returned"], 0)
+            self.assertTrue(all(v == 0.0 for v in commands))
 
     def test_leg_limits_are_loaded_from_the_installed_robot_model_yaml(self) -> None:
         names = [f"leg_joint_{index}" for index in range(12)]
