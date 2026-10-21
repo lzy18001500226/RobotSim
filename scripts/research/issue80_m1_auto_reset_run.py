@@ -388,7 +388,7 @@ class BoundedRun:
             "source /opt/ros/humble/setup.bash && "
             "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
             "timeout 5s python3 /workspace/evidence/issue80_m1_set_action_capture.py "
-            "--action STAND_DEFAULT --source node.set_mc_action --timeout-s 2"
+            "--action STAND_DEFAULT --source node.set_mc_action --precondition-timeout-s 2 --timeout-s 2"
         )
         result = self.docker_exec("request_sd_once_with_full_response", command, timeout_s=6.0, check=False)
         try:
