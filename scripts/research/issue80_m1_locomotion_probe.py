@@ -25,6 +25,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
+from std_msgs.msg import Float64MultiArray
 
 from issue80_m1_first_motion import (
     ACTION_SOURCE_NAME, COMMAND_PUBLISHER_TOPIC, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
@@ -33,7 +34,7 @@ from issue80_m1_first_motion import (
     MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, MAX_AUTHORIZED_PULSE_S, verify_mc_fsm_runtime_contract,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
-    load_leg_joint_limits, load_mc_input_source_timeouts,
+    float64_multi_array_snapshot, load_leg_joint_limits, load_mc_input_source_timeouts,
     joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
@@ -49,6 +50,7 @@ INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
 SET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/SetMcAction"
+MC_DEBUG_F64_TOPIC = "/aima/mc_debug_f64"
 REQUIRED_TOPICS = ("odom", "imu", "common", "leg_state", "leg_command")
 ROBOT_MODEL_PATH = (
     "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
@@ -146,6 +148,9 @@ class FocusedM1Diagnostic(Node):
         self.next_mode_query = 0.0
         self.next_source_query = 0.0
         self.async_readback_fault: str | None = None
+        self.mc_debug_f64_message_count = 0
+        self.mc_debug_f64_first_layout: dict[str, Any] | None = None
+        self.latest_mc_debug_f64_snapshot: dict[str, Any] | None = None
         self.interrupted = threading.Event()
         self.publisher_lock = threading.RLock()
         self.trace_lock = threading.RLock()
@@ -194,10 +199,34 @@ class FocusedM1Diagnostic(Node):
         self.create_subscription(
             JointCommandArray, "/aima/hal/joint/leg/command", lambda msg: self._store("leg_command", msg), self.state_qos
         )
+        # Optional raw diagnostic only: its values are not safety gates and are
+        # never assigned semantics from the generic Float64MultiArray type.
+        self.create_subscription(
+            Float64MultiArray, MC_DEBUG_F64_TOPIC, self._store_mc_debug_f64, self.state_qos
+        )
 
     def _store(self, key: str, msg: Any) -> None:
         self.latest[key] = msg
         self.received_at[key] = time.monotonic()
+
+    def _store_mc_debug_f64(self, msg: Float64MultiArray) -> None:
+        received = time.monotonic()
+        payload = float64_multi_array_snapshot(msg, received)
+        if payload is None:
+            return
+        self.mc_debug_f64_message_count += 1
+        if self.mc_debug_f64_first_layout is None:
+            self.mc_debug_f64_first_layout = payload["layout"]
+        self.latest_mc_debug_f64_snapshot = payload
+        self._write_trace_row({
+            "event": "mc_debug_f64",
+            "phase": self.current_phase,
+            "source": self.source,
+            "topic": MC_DEBUG_F64_TOPIC,
+            "payload": payload,
+            "wall_utc": datetime.now(timezone.utc).isoformat(),
+            "wall_monotonic_sec": received,
+        })
 
     def _mode(self) -> str:
         common = self.latest.get("common")
@@ -912,6 +941,7 @@ class FocusedM1Diagnostic(Node):
             "mc_leg_command": joint_command_array_snapshot(
                 self.latest.get("leg_command"), self.received_at.get("leg_command")
             ),
+            "mc_debug_f64_latest": self.latest_mc_debug_f64_snapshot,
             "readback_fault": self.async_readback_fault,
         }
 
@@ -1160,6 +1190,18 @@ class FocusedM1Diagnostic(Node):
             result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
         finally:
             result["events"] = self.events
+            result["optional_debug_capture"] = {
+                "mc_debug_f64_topic": MC_DEBUG_F64_TOPIC,
+                "mc_debug_f64_type": "std_msgs/msg/Float64MultiArray",
+                "mc_debug_f64_message_count": self.mc_debug_f64_message_count,
+                "mc_debug_f64_first_layout": self.mc_debug_f64_first_layout,
+                "mc_debug_f64_last_layout": (
+                    self.latest_mc_debug_f64_snapshot.get("layout")
+                    if self.latest_mc_debug_f64_snapshot else None
+                ),
+                "mc_rl_debug_topic": "/aima/mc/rl/debug",
+                "mc_rl_debug_schema": "NOT_SUBSCRIBED: matching schema was not found in the pinned installed message sources; no field semantics are guessed",
+            }
             result["get_mc_action_history"] = self.mode_observations
             result["get_current_input_source_history"] = self.source_observations
             result["velocity_command_trace"] = self.command_trace

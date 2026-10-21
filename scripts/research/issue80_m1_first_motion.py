@@ -1404,6 +1404,62 @@ def joint_command_array_snapshot(message: Any, received_monotonic_s: float | Non
     }
 
 
+def float64_multi_array_snapshot(
+    message: Any,
+    received_monotonic_s: float | None = None,
+) -> dict[str, Any] | None:
+    """Record mc_debug_f64 payload and labels without assigning undocumented meanings."""
+    if message is None:
+        return None
+
+    def field(value: Any, name: str, default: Any = None) -> Any:
+        return value.get(name, default) if isinstance(value, Mapping) else getattr(value, name, default)
+
+    layout = field(message, "layout")
+    dimensions = field(layout, "dim", ()) if layout is not None else ()
+    data = field(message, "data", ()) or ()
+    values: list[float | None] = []
+    nonfinite_indexes: list[int] = []
+    for index, raw in enumerate(data):
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = math.nan
+        if math.isfinite(value):
+            values.append(value)
+        else:
+            values.append(None)
+            nonfinite_indexes.append(index)
+    receive_time = None
+    if received_monotonic_s is not None:
+        try:
+            parsed_receive_time = float(received_monotonic_s)
+        except (TypeError, ValueError):
+            parsed_receive_time = math.nan
+        if math.isfinite(parsed_receive_time):
+            receive_time = parsed_receive_time
+    return {
+        "received_monotonic_s": receive_time,
+        "layout": {
+            "data_offset": int(field(layout, "data_offset", 0)) if layout is not None else None,
+            "dimensions": [
+                {
+                    "label": str(field(dimension, "label", "")),
+                    "size": int(field(dimension, "size", 0)),
+                    "stride": int(field(dimension, "stride", 0)),
+                }
+                for dimension in dimensions
+            ],
+        },
+        "data": values,
+        "nonfinite_indexes": nonfinite_indexes,
+        "interpretation": (
+            "raw std_msgs/Float64MultiArray values; do not assign field semantics "
+            "unless the installed MC build provides matching documentation"
+        ),
+    }
+
+
 def run_first_motion_window(
     *,
     sample: Callable[[], Mapping[str, Any]],

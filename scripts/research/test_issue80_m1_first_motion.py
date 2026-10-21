@@ -8,6 +8,7 @@ import json
 import hashlib
 import tempfile
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 from issue80_m1_first_motion import (
@@ -33,6 +34,7 @@ from issue80_m1_first_motion import (
     smoothstep_velocity,
     startup_then_cruise_velocity,
     joint_command_array_snapshot,
+    float64_multi_array_snapshot,
     PUBLISH_HZ,
     SOURCE_TIMEOUT_MS,
     VELOCITY_SOURCE_NAME,
@@ -74,6 +76,40 @@ TEST_MC_IDENTITY = VerifiedMcRuntimeIdentity(
     mc_config_sha256="a" * 64,
     startup_log_sha256="b" * 64,
 )
+
+
+class McDebugFloatArraySnapshotTests(unittest.TestCase):
+    def test_preserves_layout_labels_values_and_receive_time_without_semantic_aliases(self):
+        message = SimpleNamespace(
+            layout=SimpleNamespace(
+                data_offset=1,
+                dim=[SimpleNamespace(label="raw_axis", size=2, stride=3)],
+            ),
+            data=[0.25, -0.5, 1.0],
+        )
+
+        result = float64_multi_array_snapshot(message, 12.5)
+
+        self.assertEqual(result["received_monotonic_s"], 12.5)
+        self.assertEqual(result["layout"]["data_offset"], 1)
+        self.assertEqual(
+            result["layout"]["dimensions"],
+            [{"label": "raw_axis", "size": 2, "stride": 3}],
+        )
+        self.assertEqual(result["data"], [0.25, -0.5, 1.0])
+        self.assertEqual(result["nonfinite_indexes"], [])
+        self.assertIn("do not assign field semantics", result["interpretation"])
+
+    def test_nonfinite_debug_values_remain_json_safe_and_are_indexed(self):
+        message = SimpleNamespace(layout=SimpleNamespace(dim=[]), data=[float("nan"), 2.0])
+
+        result = float64_multi_array_snapshot(message)
+
+        self.assertEqual(result["data"], [None, 2.0])
+        self.assertEqual(result["nonfinite_indexes"], [0])
+
+    def test_absent_optional_debug_message_returns_none(self):
+        self.assertIsNone(float64_multi_array_snapshot(None))
 
 
 VALID_MC_SUBSCRIBER_PROVENANCE = {
