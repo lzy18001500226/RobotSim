@@ -565,7 +565,8 @@ class BoundedRun:
         run42 = bool(getattr(self.args, "run42_stop_confirmation_diagnostic", False))
         run43 = bool(getattr(self.args, "run43_zero_only_stop_diagnostic", False))
         run44 = bool(getattr(self.args, "run44_threshold_margin_diagnostic", False))
-        selected_variants = sum((run38, run41, run42, run43, run44))
+        run45 = bool(getattr(self.args, "run45_ten_second_gait_diagnostic", False))
+        selected_variants = sum((run38, run41, run42, run43, run44, run45))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -623,7 +624,7 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        if run41 or run42 or run43 or run44:
+        if run41 or run42 or run43 or run44 or run45:
             overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
             overlay_name = "foundationwalk_knee019_minrun010.yaml"
         else:
@@ -1277,17 +1278,20 @@ class BoundedRun:
             or getattr(self.args, "run42_stop_confirmation_diagnostic", False)
             or getattr(self.args, "run43_zero_only_stop_diagnostic", False)
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
+            or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
         if (
             getattr(self.args, "run42_stop_confirmation_diagnostic", False)
             or getattr(self.args, "run43_zero_only_stop_diagnostic", False)
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
+            or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
         ):
             command[-1] += " --zero-until-stand-timeout-s 3.5"
         if (
             getattr(self.args, "run43_zero_only_stop_diagnostic", False)
             or getattr(self.args, "run44_threshold_margin_diagnostic", False)
+            or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
         ):
             command[-1] += " --zero-only-stop"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
@@ -1759,6 +1763,14 @@ def main() -> int:
             "with the same 0.2 m/s measured root-speed guard"
         ),
     )
+    parser.add_argument(
+        "--run45-ten-second-gait-diagnostic",
+        action="store_true",
+        help=(
+            "reuse Run44 config and zero-only stop for one continuous 10-second command window "
+            "with the same 0.2 m/s measured root-speed guard"
+        ),
+    )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
@@ -1779,16 +1791,22 @@ def main() -> int:
         args.run42_stop_confirmation_diagnostic,
         args.run43_zero_only_stop_diagnostic,
         args.run44_threshold_margin_diagnostic,
+        args.run45_ten_second_gait_diagnostic,
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
     if any(diagnostic_variants):
         if not args.maintainer_authorized_first_motion:
             parser.error("FoundationWalk diagnostic requires the authorized first-motion gate")
-        target_speed = 0.14 if args.run44_threshold_margin_diagnostic else 0.112
+        target_speed = (
+            0.14
+            if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic
+            else 0.112
+        )
+        target_pulse = 10.0 if args.run45_ten_second_gait_diagnostic else 3.0
         if (
             abs(args.forward_speed - target_speed) > 1e-9
-            or abs(args.pulse_duration - 3.0) > 1e-9
+            or abs(args.pulse_duration - target_pulse) > 1e-9
             or abs(args.extra_stop_observation - 5.0) > 1e-9
             or args.ramp_duration_s != 0.0
             or args.ramp_start_speed is not None
@@ -1798,7 +1816,7 @@ def main() -> int:
             or not args.capture_mc_rl_debug
         ):
             parser.error(
-                f"FoundationWalk diagnostic is fixed to {target_speed} m/s, 3.0 s, "
+                f"FoundationWalk diagnostic is fixed to {target_speed} m/s, {target_pulse} s, "
                 "5 s post-stop observation, no velocity ramp, and McRLDebug capture"
             )
     run=BoundedRun(args)
