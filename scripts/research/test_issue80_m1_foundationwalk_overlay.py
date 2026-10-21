@@ -18,6 +18,7 @@ from issue80_m1_auto_reset_run import (
     FOUNDATIONWALK_CONFIG_CONTAINER_PATH,
     RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE,
     build_run38_foundationwalk_knee_scale_overlay,
+    build_run41_foundationwalk_min_run_overlay,
     classify_run38_diagnostic_outcome,
     copy_verified_mc_rl_debug_overlay_bundle,
 )
@@ -37,6 +38,7 @@ def make_config(*, left_scale: float = 0.25, right_scale: float = 0.25) -> bytes
         "  dt: 0.02\n"
         "FoundationWalkConfig:\n"
         "  foundationwalk:\n"
+        "    min_run_velx: 0.50\n"
         "    cmd_threshold: 0.1\n"
     ).encode("utf-8")
 
@@ -79,6 +81,32 @@ class FoundationWalkOverlayTests(unittest.TestCase):
             build_run38_foundationwalk_knee_scale_overlay(
                 source, expected_source_sha256=digest
             )
+
+    def test_run41_overlay_changes_only_knees_and_measured_min_run_floor(self) -> None:
+        source = make_config()
+        digest = hashlib.sha256(source).hexdigest()
+        overlay, manifest = build_run41_foundationwalk_min_run_overlay(
+            source, expected_source_sha256=digest
+        )
+        source_yaml = yaml.safe_load(source)
+        overlay_yaml = yaml.safe_load(overlay)
+        changed_scale_indexes = [
+            index for index, (old, new) in enumerate(zip(
+                source_yaml["BaseConfig"]["action_scale"],
+                overlay_yaml["BaseConfig"]["action_scale"],
+            )) if old != new
+        ]
+        self.assertEqual(changed_scale_indexes, [9, 10])
+        self.assertEqual(
+            overlay_yaml["FoundationWalkConfig"]["foundationwalk"]["min_run_velx"],
+            0.1,
+        )
+        self.assertEqual(
+            overlay_yaml["FoundationWalkConfig"]["foundationwalk"]["cmd_threshold"],
+            source_yaml["FoundationWalkConfig"]["foundationwalk"]["cmd_threshold"],
+        )
+        self.assertEqual(manifest["schema"], "robotsim.issue80.foundationwalk-knee-minrun-diagnostic.v1")
+        self.assertEqual(manifest["changed_values"][-1]["config_path"], "FoundationWalkConfig.foundationwalk.min_run_velx")
 
     def test_overlay_rejects_duplicate_action_scale_lines(self) -> None:
         source = make_config() + b"  action_scale: [0.25]\n"
@@ -210,7 +238,7 @@ class FoundationWalkOverlayTests(unittest.TestCase):
                 check=False,
             )
         self.assertEqual(result.returncode, 2)
-        self.assertIn("Run38 diagnostic is fixed to 0.112 m/s, 3.0 s", result.stderr)
+        self.assertIn("FoundationWalk diagnostic is fixed to 0.112 m/s, 3.0 s", result.stderr)
 
     def test_mc_rl_debug_bundle_copy_is_limited_to_governed_prior_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -302,6 +330,42 @@ class FoundationWalkOverlayTests(unittest.TestCase):
                 if mount["Destination"] == "/workspace/evidence/mc_debug_overlay/install"
             )
             self.assertFalse(debug_mount["RW"])
+
+    def test_run41_runner_passes_the_measured_speed_guard_to_the_child(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="issue80-test-run41",
+                attempt_id="test-attempt",
+                max_runtime_s=180.0,
+                maintainer_authorized_first_motion=True,
+                maintainer_authorized_standing_takeover=False,
+                run41_min_run_diagnostic=True,
+                run38_knee_scale_diagnostic=False,
+                capture_mc_rl_debug=False,
+                extra_stop_observation=5.0,
+                pulse_duration=3.0,
+                forward_speed=0.112,
+                ramp_start_speed=None,
+                ramp_duration_s=0.0,
+                startup_speed=None,
+                startup_transition_displacement=None,
+                startup_transition_timeout_s=0.0,
+            )
+            runner = BoundedRun(args)
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.network_mode = "bridge"
+            commands: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], *, timeout_s: float = 8.0,
+                         check: bool = True):
+                self.assertEqual(name, "m1_first_motion_diagnostic")
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            runner.run = fake_run  # type: ignore[method-assign]
+            runner.run_m1()
+            self.assertIn("--max-observed-planar-speed-m-s 0.2", commands[0][-1])
 
 
 if __name__ == "__main__":

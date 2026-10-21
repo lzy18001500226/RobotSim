@@ -61,6 +61,8 @@ DEFAULT_MC_RL_DEBUG_OVERLAY_SOURCE = REPO / (
 RUN38_DIAGNOSTIC_KNEE_ACTION_INDICES = (9, 10)
 RUN38_BASE_KNEE_ACTION_SCALE = 0.25
 RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE = 0.19
+RUN41_BASE_MIN_RUN_VELX = 0.5
+RUN41_DIAGNOSTIC_MIN_RUN_VELX = 0.1
 
 
 class RunDeadline(TimeoutError):
@@ -76,6 +78,7 @@ M1_SAFETY_FAULT_MARKERS = (
     "stale_or_missing_state",
     "source_joint_position_limit",
     "source_joint_velocity_limit",
+    "measured_root_planar_speed_limit",
 )
 
 
@@ -292,8 +295,80 @@ def build_run38_foundationwalk_knee_scale_overlay(
         ],
         "all_other_yaml_values_unchanged": True,
         "trained_policy_weights_changed": False,
+        "policy_output_config_changed": True,
         "vendor_model_or_joint_limits_changed": False,
     }
+
+
+def build_run41_foundationwalk_min_run_overlay(
+    source_bytes: bytes,
+    *,
+    expected_source_sha256: str = RUN38_FOUNDATIONWALK_CONFIG_SHA256,
+) -> tuple[bytes, dict[str, Any]]:
+    """Keep Run40's knee scale and lower only the observed min_run_velx floor."""
+    knee_overlay, manifest = build_run38_foundationwalk_knee_scale_overlay(
+        source_bytes,
+        expected_source_sha256=expected_source_sha256,
+    )
+    try:
+        import yaml
+
+        baseline = yaml.safe_load(source_bytes.decode("utf-8"))
+        intermediate = yaml.safe_load(knee_overlay.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Run41 FoundationWalk YAML could not be parsed: {exc}") from exc
+    foundationwalk = baseline.get("FoundationWalkConfig", {}).get("foundationwalk", {})
+    if float(foundationwalk.get("min_run_velx", float("nan"))) != RUN41_BASE_MIN_RUN_VELX:
+        raise ValueError("Run41 source min_run_velx is not the measured 0.5 baseline")
+    pattern = re.compile(
+        r"(?m)^(?P<prefix>\s*min_run_velx:\s*)(?P<value>[^\s#]+)(?P<suffix>\s*(?:#.*)?)$"
+    )
+    text = knee_overlay.decode("utf-8")
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1 or float(matches[0].group("value")) != RUN41_BASE_MIN_RUN_VELX:
+        raise ValueError("Run41 expected one min_run_velx value of 0.5 in the derived knee config")
+    match = matches[0]
+    replacement = (
+        match.group("prefix")
+        + f"{RUN41_DIAGNOSTIC_MIN_RUN_VELX:.1f}"
+        + match.group("suffix")
+    )
+    text = text[:match.start()] + replacement + text[match.end():]
+    overlay_bytes = text.encode("utf-8")
+    try:
+        derived = yaml.safe_load(text)
+    except Exception as exc:
+        raise ValueError(f"Run41 derived FoundationWalk YAML is invalid: {exc}") from exc
+    expected = copy.deepcopy(baseline)
+    expected["BaseConfig"]["action_scale"][9:11] = [
+        RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE,
+        RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE,
+    ]
+    expected["FoundationWalkConfig"]["foundationwalk"]["min_run_velx"] = (
+        RUN41_DIAGNOSTIC_MIN_RUN_VELX
+    )
+    if derived != expected or intermediate["FoundationWalkConfig"]["foundationwalk"]["min_run_velx"] != RUN41_BASE_MIN_RUN_VELX:
+        raise ValueError("Run41 overlay changed values outside knee action scales and min_run_velx")
+    manifest.update({
+        "schema": "robotsim.issue80.foundationwalk-knee-minrun-diagnostic.v1",
+        "classification": "SIMULATION_ONLY_DIAGNOSTIC_CONFIG",
+        "changed_values": manifest["changed_values"] + [{
+            "config_path": "FoundationWalkConfig.foundationwalk.min_run_velx",
+            "source": RUN41_BASE_MIN_RUN_VELX,
+            "diagnostic": RUN41_DIAGNOSTIC_MIN_RUN_VELX,
+            "semantics": "empirical floor hypothesis; vendor field meaning remains unverified",
+        }],
+        "overlay_sha256": hashlib.sha256(overlay_bytes).hexdigest(),
+        "all_other_yaml_values_unchanged": True,
+        "command_speed_m_s": 0.112,
+        "trained_policy_weights_changed": False,
+        "policy_output_config_changed": True,
+        "additional_safety_guard": {
+            "measured_root_planar_speed_m_s": 0.2,
+            "basis": "same as the existing maximum authorized forward command speed",
+        },
+    })
+    return overlay_bytes, manifest
 
 
 def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
@@ -485,8 +560,12 @@ class BoundedRun:
 
     def prepare_foundationwalk_diagnostic_overlay(self) -> None:
         """Create an evidence-local, immutable Run38 knee-scale diagnostic copy."""
-        if not getattr(self.args, "run38_knee_scale_diagnostic", False):
+        run38 = bool(getattr(self.args, "run38_knee_scale_diagnostic", False))
+        run41 = bool(getattr(self.args, "run41_min_run_diagnostic", False))
+        if not run38 and not run41:
             return
+        if run38 == run41:
+            raise ValueError("select exactly one FoundationWalk diagnostic config variant")
         runtime_inputs = {
             "foundationwalk_config": (
                 FOUNDATIONWALK_CONFIG_RELATIVE,
@@ -540,8 +619,13 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        overlay_bytes, manifest = build_run38_foundationwalk_knee_scale_overlay(source_bytes)
-        overlay = self.evidence / "foundationwalk_knee_scale_019.yaml"
+        if run41:
+            overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
+            overlay_name = "foundationwalk_knee019_minrun010.yaml"
+        else:
+            overlay_bytes, manifest = build_run38_foundationwalk_knee_scale_overlay(source_bytes)
+            overlay_name = "foundationwalk_knee_scale_019.yaml"
+        overlay = self.evidence / overlay_name
         with overlay.open("xb") as stream:
             stream.write(overlay_bytes)
         manifest.update({
@@ -1184,6 +1268,8 @@ class BoundedRun:
                 + " --startup-transition-timeout-s "
                 + str(getattr(self.args, "startup_transition_timeout_s", 0.0))
             )
+        if getattr(self.args, "run41_min_run_diagnostic", False):
+            command[-1] += " --max-observed-planar-speed-m-s 0.2"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
@@ -1621,6 +1707,14 @@ def main() -> int:
             "knee action_scale entries changed from 0.25 to 0.19"
         ),
     )
+    parser.add_argument(
+        "--run41-min-run-diagnostic",
+        action="store_true",
+        help=(
+            "one SIMULATION_ONLY counterfactual: keep both knee action_scale values at 0.19, "
+            "set min_run_velx to 0.1, and abort if measured root speed exceeds 0.2 m/s"
+        ),
+    )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
@@ -1635,9 +1729,11 @@ def main() -> int:
         or not 0.0 < args.ramp_start_speed <= args.forward_speed
     ):
         parser.error("ramp start must be positive and no faster than target speed")
-    if args.run38_knee_scale_diagnostic:
+    if args.run38_knee_scale_diagnostic and args.run41_min_run_diagnostic:
+        parser.error("select only one FoundationWalk diagnostic config variant")
+    if args.run38_knee_scale_diagnostic or args.run41_min_run_diagnostic:
         if not args.maintainer_authorized_first_motion:
-            parser.error("Run38 knee-scale diagnostic requires the authorized first-motion gate")
+            parser.error("FoundationWalk diagnostic requires the authorized first-motion gate")
         if (
             abs(args.forward_speed - 0.112) > 1e-9
             or abs(args.pulse_duration - 3.0) > 1e-9
@@ -1650,7 +1746,7 @@ def main() -> int:
             or not args.capture_mc_rl_debug
         ):
             parser.error(
-                "Run38 diagnostic is fixed to 0.112 m/s, 3.0 s, 5 s post-stop observation, "
+                "FoundationWalk diagnostic is fixed to 0.112 m/s, 3.0 s, 5 s post-stop observation, "
                 "no velocity ramp, and McRLDebug capture"
             )
     run=BoundedRun(args)

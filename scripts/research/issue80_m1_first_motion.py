@@ -920,6 +920,7 @@ def snapshot_fault(
     max_tilt_deg: float,
     expected_source: str = VELOCITY_SOURCE_NAME,
     required_forward_mps: float = FORWARD_COMMAND_M_S,
+    max_observed_planar_speed_m_s: float | None = None,
 ) -> str | None:
     if snapshot.get("readback_fault"):
         return f"readback_fault:{snapshot['readback_fault']}"
@@ -965,7 +966,6 @@ def snapshot_fault(
         return "fall_root_height"
     if max(abs(roll), abs(pitch)) > math.radians(max_tilt_deg):
         return "fall_tilt"
-
     bounds = snapshot.get("forward_bounds")
     if not isinstance(bounds, Mapping):
         return "missing_live_forward_bounds"
@@ -1020,6 +1020,25 @@ def snapshot_fault(
             return f"source_joint_position_limit:{name}"
         if abs(velocity) > max_velocity:
             return f"source_joint_velocity_limit:{name}"
+    if max_observed_planar_speed_m_s is not None:
+        try:
+            vx = float(pose["vx"])
+            vy = float(pose["vy"])
+            observed_planar_speed = math.hypot(vx, vy)
+            maximum_planar_speed = float(max_observed_planar_speed_m_s)
+        except (KeyError, TypeError, ValueError):
+            return "malformed_odom_planar_velocity"
+        if (
+            not math.isfinite(observed_planar_speed)
+            or not math.isfinite(maximum_planar_speed)
+            or maximum_planar_speed <= 0.0
+        ):
+            return "nonfinite_or_invalid_odom_speed_gate"
+        if observed_planar_speed > maximum_planar_speed:
+            return (
+                "measured_root_planar_speed_limit:"
+                f"{observed_planar_speed:.6f}>{maximum_planar_speed:.6f}"
+            )
     return None
 
 
@@ -1547,6 +1566,7 @@ def run_first_motion_window(
     state_timeout_s: float = 0.5,
     min_root_z: float = 0.52,
     max_tilt_deg: float = 15.0,
+    max_observed_planar_speed_m_s: float | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
@@ -1580,6 +1600,7 @@ def run_first_motion_window(
         "source_timeout_ms": SOURCE_TIMEOUT_MS,
         "zero_publish_semantics": ZERO_STOP_INTERPRETATION,
         "watchdog_scope_limitation": WATCHDOG_LIMITATION,
+        "max_observed_planar_speed_m_s": max_observed_planar_speed_m_s,
         "registration": dict(registration),
         "set_mc_action": dict(set_action),
         "nonzero_publish_calls_returned": 0,
@@ -1603,6 +1624,11 @@ def run_first_motion_window(
         pulse_fault = "pulse_duration_outside_authorized_cap"
     elif not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
         pulse_fault = "forward_command_outside_authorized_cap"
+    elif max_observed_planar_speed_m_s is not None and (
+        not math.isfinite(max_observed_planar_speed_m_s)
+        or not 0.0 < max_observed_planar_speed_m_s <= FORWARD_COMMAND_M_S
+    ):
+        pulse_fault = "observed_planar_speed_gate_outside_authorized_cap"
     elif not math.isfinite(ramp_duration_s) or not 0.0 <= ramp_duration_s <= pulse_duration_s:
         pulse_fault = "velocity_ramp_duration_outside_pulse"
     elif ramp_duration_s > 0.0 and (
@@ -1707,6 +1733,7 @@ def run_first_motion_window(
                 state_timeout_s=state_timeout_s,
                 min_root_z=min_root_z,
                 max_tilt_deg=max_tilt_deg,
+                max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
             )
             record_sample("pre-activation", initial, initial_fault)
             if initial_fault:
@@ -1743,6 +1770,7 @@ def run_first_motion_window(
                     state_timeout_s=state_timeout_s,
                     min_root_z=min_root_z,
                     max_tilt_deg=max_tilt_deg,
+                    max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                 )
                 if current_fault:
                     record_sample("activation", current, current_fault)
@@ -1882,6 +1910,7 @@ def run_first_motion_window(
                 state_timeout_s=state_timeout_s,
                 min_root_z=min_root_z,
                 max_tilt_deg=max_tilt_deg,
+                max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
             )
             record_sample("post-stop-first-observation", first_post_stop, immediate_fault)
             first_post_stop_pose = first_post_stop.get("pose")
@@ -1925,6 +1954,7 @@ def run_first_motion_window(
                     state_timeout_s=state_timeout_s,
                     min_root_z=min_root_z,
                     max_tilt_deg=max_tilt_deg,
+                    max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                 )
                 if current_fault:
                     post_stop_fault = current_fault

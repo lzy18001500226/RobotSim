@@ -319,6 +319,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         startup_speed_m_s=None,
         startup_transition_displacement_m=None,
         startup_transition_timeout_s=0.0,
+        max_observed_planar_speed_m_s=None,
     ):
         clock = fake_clock or FakeClock()
 
@@ -354,6 +355,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             state_timeout_s=0.5,
             min_root_z=0.52,
             max_tilt_deg=15.0,
+            max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
             clock=clock.now,
             sleep=clock.sleep,
             timer_factory=timer_factory,
@@ -383,6 +385,41 @@ class FirstMotionSafetyTests(unittest.TestCase):
             result = self.run_protocol(self.snapshot, lambda v: None, pulse_duration_s=invalid)
             self.assertEqual(result["fault"], "pulse_duration_outside_authorized_cap")
             self.assertEqual(result["nonzero_publish_calls_returned"], 0)
+
+    def test_measured_root_planar_speed_guard_stops_before_overbound_motion(self):
+        initial = self.snapshot(pose={
+            "x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+            "vx": 0.0, "vy": 0.0,
+        })
+        fast = self.snapshot(pose={
+            "x": 0.01, "y": 0.0, "z": 0.64, "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+            "vx": 0.201, "vy": 0.0,
+        })
+        rows = iter((initial, fast))
+        commands = []
+
+        def sample():
+            return next(rows, fast)
+
+        result = self.run_protocol(
+            sample, commands.append,
+            forward_command_m_s=0.112,
+            max_observed_planar_speed_m_s=0.2,
+        )
+
+        self.assertEqual(result["fault"], "measured_root_planar_speed_limit:0.201000>0.200000")
+        self.assertEqual(result["nonzero_publish_calls_returned"], 0)
+        self.assertTrue(commands)
+        self.assertTrue(all(command == 0.0 for command in commands))
+
+        commands = []
+        invalid_cap = self.run_protocol(
+            self.snapshot, commands.append,
+            forward_command_m_s=0.112,
+            max_observed_planar_speed_m_s=0.201,
+        )
+        self.assertEqual(invalid_cap["fault"], "observed_planar_speed_gate_outside_authorized_cap")
+        self.assertEqual(invalid_cap["nonzero_publish_calls_returned"], 0)
 
     def test_stopping_tail_separates_braking_from_continued_motion(self):
         def row(t, x):
