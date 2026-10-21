@@ -12,7 +12,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from issue80_m1_auto_reset_run import (
-    BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, SIM_LAUNCH,
+    BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, SET_ACTION_CAPTURE, SIM_LAUNCH,
     assess_container_absence, decode_m1_child_result,
 )
 
@@ -40,6 +40,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
             record = next(row for row in manifest["scripts"] if row["name"] == M1_MODE_LOGIC.name)
             self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
             self.assertEqual(record["disposition"], "COPIED")
+
+    def test_stages_single_action_capture_helper_and_records_its_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.stage_research_scripts()
+            staged = evidence / SET_ACTION_CAPTURE.name
+            self.assertEqual(staged.read_bytes(), SET_ACTION_CAPTURE.read_bytes())
+            manifest = json.loads((evidence / "staged_research_scripts.json").read_text())
+            record = next(row for row in manifest["scripts"] if row["name"] == SET_ACTION_CAPTURE.name)
+            self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
 
     def test_stages_first_motion_safety_logic_and_records_its_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -268,7 +279,12 @@ class ResearchScriptStagingTests(unittest.TestCase):
             runner.start_container = lambda: None
             runner.start_sim_first = lambda: None
             runner.capture_service_topic_inventory = lambda: None
-            runner.request_sd_and_verify = lambda: "STAND_DEFAULT"
+            runner.request_sd_and_verify = lambda: {
+                "response_status_value": 0,
+                "response_header_code": 0,
+                "get_mc_action_readback": [{"stdout": "Mode: STAND_DEFAULT, Status: 100"}],
+            }
+            runner.wait_for_immediate_reset_pose = lambda: {"status": "POST_RESET_UPRIGHT_OBSERVED"}
             runner.inspect_window = lambda: (42, "MuJoCo", 7)
             runner.capture_reset_image = lambda *args: {"status": "NOT_CAPTURED"}
             runner.start_observer = lambda: None

@@ -26,12 +26,14 @@ M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 OBSERVER = Path(__file__).with_name("issue80_m1_reset_state_trace.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 M1_FIRST_MOTION_LOGIC = Path(__file__).with_name("issue80_m1_first_motion.py")
+SET_ACTION_CAPTURE = Path(__file__).with_name("issue80_m1_set_action_capture.py")
 SIM_LAUNCH = Path(__file__).with_name("issue80_launch_sim.sh")
 MC_LAUNCH = Path(__file__).with_name("issue80_launch_mc.sh")
 IMAGE = "robotsim:humble-raicom-runtime-20261019"
 IMAGE_DIGEST = "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31"
 RESET_OBSERVER_DURATION_S = 8.0
 RESET_OBSERVER_COMPLETION_MARGIN_S = 3.0
+POST_RESET_UPRIGHT_TIMEOUT_S = 2.0
 TOPIC_PROBES = (
     "/aima/hal/odom/state",
     "/aima/hal/imu/torso/state",
@@ -149,6 +151,9 @@ class BoundedRun:
         self.reset_analysis: dict[str, Any] | None = None
         self.before_reset_image: dict[str, Any] | None = None
         self.reset_dispatch_payload: dict[str, Any] | None = None
+        self.immediate_reset_pose: dict[str, Any] | None = None
+        self.sd_result: dict[str, Any] | None = None
+        self.outcome_classification = "STANDING_CONTROL_NOT_READY"
         self.fault: str | None = None
 
     def remaining(self) -> float:
@@ -217,6 +222,7 @@ class BoundedRun:
             (OBSERVER, OBSERVER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
+            (SET_ACTION_CAPTURE, SET_ACTION_CAPTURE.name),
             (SIM_LAUNCH, "launch_sim.sh"),
             (MC_LAUNCH, "launch_mc.sh"),
         )
@@ -306,31 +312,150 @@ class BoundedRun:
             detached=True,
         )
 
-    def request_sd_and_verify(self) -> str:
-        self.docker_exec(
-            "request_sd",
-            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && timeout 8s python3 /workspace/raicom2026/example/py/set_mode.py SD",
-            timeout_s=10.0,
-        )
-        deadline = min(self.deadline, time.monotonic() + 12.0)
-        last = ""
+    def wait_for_immediate_reset_pose(self) -> dict[str, Any]:
+        event = (self.reset_dispatch_payload or {}).get("event", {})
+        if event.get("status") != "KEY_DISPATCHED" or not event.get("dispatch_monotonic_ns"):
+            raise RuntimeError("verified Reset dispatch timestamp is missing")
+        dispatch_ns = int(event["dispatch_monotonic_ns"])
+        trace = self.evidence / "reset_state_trace.jsonl"
+        required = {"odom", "imu", "common", "leg_state", "leg_command"}
+        deadline = min(self.deadline, time.monotonic() + POST_RESET_UPRIGHT_TIMEOUT_S)
+        last = {"status": "POST_RESET_TRACE_NOT_AVAILABLE", "dispatch_monotonic_ns": dispatch_ns}
         while time.monotonic() < deadline:
-            result = self.docker_exec(
-                "read_mode_stand",
-                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && timeout 4s python3 /workspace/raicom2026/example/py/get_mode.py",
-                timeout_s=5.0,
+            latest: dict[str, dict[str, Any]] = {}
+            upright: list[dict[str, Any]] = []
+            if trace.exists():
+                for line in trace.read_text(encoding="utf-8").splitlines():
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if row.get("event") != "state" or int(row.get("wall_monotonic_ns", 0)) <= dispatch_ns:
+                        continue
+                    key = row.get("topic_key")
+                    if key in required:
+                        latest[key] = row
+                    if key == "odom":
+                        data = row.get("data", {})
+                        try:
+                            ok = float(data["z"]) >= 0.52 and max(abs(float(data["roll_deg"])), abs(float(data["pitch_deg"]))) < 15.0
+                        except (KeyError, TypeError, ValueError):
+                            ok = False
+                        if ok:
+                            upright.append(row)
+                        else:
+                            upright.clear()
+                now_ns = time.monotonic_ns()
+                ages = {key: (now_ns - int(row["wall_monotonic_ns"])) / 1e9 for key, row in latest.items()}
+                fresh = required.issubset(latest) and all(0.0 <= ages[key] <= 0.5 for key in required)
+                last = {
+                    "status": "POST_RESET_UPRIGHT_NOT_YET_CONFIRMED",
+                    "dispatch_monotonic_ns": dispatch_ns,
+                    "state_ages_s": ages,
+                    "fresh_all_required_topics": fresh,
+                    "consecutive_upright_odom_samples": len(upright),
+                    "latest_odom": latest.get("odom"),
+                    "latest_raw_common_state": latest.get("common"),
+                }
+                if fresh and len(upright) >= 3:
+                    last.update({
+                        "status": "POST_RESET_UPRIGHT_OBSERVED",
+                        "wall_utc": datetime.now(timezone.utc).isoformat(),
+                        "dispatch_to_upright_ms": (int(upright[-3]["wall_monotonic_ns"]) - dispatch_ns) / 1e6,
+                        "pose": upright[-1].get("data"),
+                        "raw_common_state": latest.get("common", {}).get("data"),
+                        "imu": latest.get("imu", {}).get("data"),
+                        "leg_state": latest.get("leg_state", {}).get("data"),
+                        "leg_command": latest.get("leg_command", {}).get("data"),
+                    })
+                    self.immediate_reset_pose = last
+                    with (self.evidence / "reset_immediate_posture.json").open("x", encoding="utf-8") as f:
+                        json.dump(last, f, indent=2)
+                        f.write("\n")
+                    return last
+            time.sleep(0.02)
+        last["status"] = "POST_RESET_UPRIGHT_TIMEOUT"
+        last["timeout_s"] = POST_RESET_UPRIGHT_TIMEOUT_S
+        self.immediate_reset_pose = last
+        self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+        with (self.evidence / "reset_immediate_posture.json").open("x", encoding="utf-8") as f:
+            json.dump(last, f, indent=2)
+            f.write("\n")
+        raise RuntimeError("Reset did not produce a fresh upright pose within 2 s; SD was not sent")
+
+    def request_sd_and_verify(self) -> dict[str, Any]:
+        command = (
+            "source /opt/ros/humble/setup.bash && "
+            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+            "timeout 5s python3 /workspace/evidence/issue80_m1_set_action_capture.py "
+            "--action STAND_DEFAULT --source node.set_mc_action --timeout-s 2"
+        )
+        result = self.docker_exec("request_sd_once_with_full_response", command, timeout_s=6.0, check=False)
+        try:
+            raw = json.loads(result.stdout.strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError):
+            raw = {
+                "transport_state": "NO_RESULT_JSON",
+                "child_returncode": result.returncode,
+                "stdout_tail": result.stdout[-2000:],
+                "stderr_tail": result.stderr[-2000:],
+                "response_status_value": None,
+                "response_header_code": None,
+            }
+        record: dict[str, Any] = {
+            "wall_utc_observed": datetime.now(timezone.utc).isoformat(),
+            "requested_action_desc": "STAND_DEFAULT",
+            "request_source": "node.set_mc_action",
+            "raw_set_mc_action": raw,
+            "get_mc_action_readback": [],
+            "response_status_value": raw.get("response_status_value"),
+            "response_header_code": raw.get("response_header_code"),
+            "response_message": raw.get("response_message"),
+        }
+        self.sd_result = record
+        if raw.get("transport_state") != "RESPONSE_RECEIVED":
+            self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+            self._write_sd_record(record)
+            raise RuntimeError(f"SetMcAction SD response unavailable: {raw.get('transport_state')}")
+        if raw.get("service_success") is not True or raw.get("action_result_success") is not True:
+            self.outcome_classification = "SD_REJECTED_WITH_EXACT_CODE"
+            self._write_sd_record(record)
+            raise RuntimeError(
+                "SetMcAction SD was rejected: "
+                f"status={record['response_status_value']} header.code={record['response_header_code']} "
+                f"message={record['response_message']!r}"
+            )
+
+        deadline = min(self.deadline, time.monotonic() + 3.0)
+        while time.monotonic() < deadline:
+            readback = self.docker_exec(
+                "read_mode_after_sd",
+                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && timeout 3s python3 /workspace/raicom2026/example/py/get_mode.py",
+                timeout_s=4.0,
                 check=False,
             )
-            last = result.stdout + result.stderr
-            if "Mode: STAND_DEFAULT" in last:
-                with (self.evidence / "get-mode-pre-reset.log").open("x", encoding="utf-8") as f:
-                    f.write(last)
-                return last
-            if time.monotonic() < deadline:
-                time.sleep(min(0.3, self.remaining()))
-        with (self.evidence / "get-mode-pre-reset.log").open("x", encoding="utf-8") as f:
-            f.write(last)
-        raise RuntimeError(f"MC did not confirm STAND_DEFAULT before Reset: {last[-500:]}")
+            text = readback.stdout + readback.stderr
+            record["get_mc_action_readback"].append({
+                "wall_utc": datetime.now(timezone.utc).isoformat(),
+                "returncode": readback.returncode,
+                "stdout": readback.stdout,
+                "stderr": readback.stderr,
+            })
+            if "Mode: STAND_DEFAULT" in text:
+                self._write_sd_record(record)
+                return record
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+        self._write_sd_record(record)
+        raise RuntimeError("successful SD response lacked STAND_DEFAULT GetMcAction readback within 3 s")
+
+    def _write_sd_record(self, record: dict[str, Any]) -> None:
+        path = self.evidence / "set_mc_action_sd.json"
+        if path.exists():
+            return
+        with path.open("x", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+            f.write("\n")
 
     def capture_service_topic_inventory(self) -> None:
         self.docker_exec(
@@ -360,9 +485,10 @@ class BoundedRun:
         if not ready_path.exists():
             raise RuntimeError("Reset observer did not receive all five fresh state streams in 3 seconds")
         ready = json.loads(ready_path.read_text(encoding="utf-8"))
-        if ready.get("mode") != "STAND_DEFAULT" or len(ready.get("fresh_topics", [])) != 5:
-            raise RuntimeError(f"Reset precondition failed: {ready}")
-        with (self.evidence / "pre-reset-ready-snapshot.json").open("x", encoding="utf-8") as f:
+        if len(ready.get("fresh_topics", [])) != 5:
+            raise RuntimeError(f"Reset precondition failed: live state streams are incomplete: {ready}")
+        # Pre-SD mode/FSM values are retained raw and are not a standing gate.
+        with (self.evidence / "pre-reset-telemetry-snapshot.json").open("x", encoding="utf-8") as f:
             json.dump(ready, f, indent=2)
             f.write("\n")
 
@@ -644,8 +770,43 @@ class BoundedRun:
             result["status"] = "BLOCKED"
             result["fault"] = result.get("fault") or "container teardown was not verified after M1"
 
+    def classify_mc_shutdown(self) -> dict[str, Any]:
+        candidates = (
+            self.evidence / "mc-console.log",
+            self.evidence / "mc_logs" / "mc.log",
+        )
+        inspected = []
+        for path in candidates:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            inspected.append(str(path))
+            if re.search(r"SIGSEGV|segmentation fault", text, flags=re.IGNORECASE):
+                return {
+                    "classification": "MC_SHUTDOWN_SIGSEGV",
+                    "evidence_files": inspected,
+                    "note": "shutdown crash is separate from the standing/walking experiment result",
+                }
+        return {
+            "classification": "MC_SHUTDOWN_SIGSEGV_NOT_OBSERVED_IN_CAPTURED_LOGS",
+            "evidence_files": inspected,
+            "note": "absence from captured logs does not prove a clean MC shutdown",
+        }
+
     def execute(self) -> dict[str, Any]:
-        result={"schema":"robotsim.issue80.m1.auto-reset-run.v2","status":"NOT_AUTHORIZED","attempt_id":self.args.attempt_id,"source":"node.locomotion_velocity","container":self.container,"runtime_image_digest":IMAGE_DIGEST,"runtime_limit_s":self.args.max_runtime_s,"reset_classification":"NOT_ATTEMPTED","m1_status":"NOT_RUN","fault":None}
+        result = {
+            "schema": "robotsim.issue80.m1.auto-reset-run.v3",
+            "status": "NOT_AUTHORIZED",
+            "attempt_id": self.args.attempt_id,
+            "source": "node.locomotion_velocity",
+            "container": self.container,
+            "runtime_image_digest": IMAGE_DIGEST,
+            "runtime_limit_s": self.args.max_runtime_s,
+            "reset_classification": "NOT_ATTEMPTED",
+            "m1_status": "NOT_RUN",
+            "outcome_classification": "STANDING_CONTROL_NOT_READY",
+            "fault": None,
+        }
         if not self.args.maintainer_authorized_first_motion:
             result["fault"] = "explicit maintainer authorization is required before starting the runtime"
             return result
@@ -654,43 +815,90 @@ class BoundedRun:
             self.start_container()
             self.start_sim_first()
             self.capture_service_topic_inventory()
-            self.request_sd_and_verify()
-            pid,title,window_id=self.inspect_window()
-            # Complete X11 discovery and the pre-reset screenshot before the
-            # fixed-duration telemetry observer starts. This prevents window
-            # inspection or image capture from consuming the post-reset hold.
+            pid, title, window_id = self.inspect_window()
             self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
             self.start_observer()
-            self.dispatch_reset(pid,title,window_id)
-            reset=self.wait_and_classify_reset(pid,title,window_id)
-            result["reset_classification"]=reset.get("classification")
-            result["reset_analysis"]=reset
-            if reset.get("classification")!="AUTO_RESET_PASS":
-                raise RuntimeError(f"Reset gate failed: {reset.get('classification')}")
+            self.dispatch_reset(pid, title, window_id)
+            result["reset_immediate_posture"] = self.wait_for_immediate_reset_pose()
+            # Reset occurs before SD; the action is sent immediately after fresh
+            # upright pose evidence. No multi-second uncontrolled posture hold.
+            result["set_mc_action_sd"] = self.request_sd_and_verify()
+            reset = self.wait_and_classify_reset(pid, title, window_id)
+            result["reset_classification"] = reset.get("classification")
+            result["reset_analysis"] = reset
+            if reset.get("classification") != "AUTO_RESET_PASS":
+                self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+                raise RuntimeError(f"post-SD standing safety gate failed: {reset.get('classification')}")
+
             self.run_m1()
-            result["m1_result"]=self.m1_result
-            result["m1_status"]=(self.m1_result or {}).get("status","UNKNOWN")
-            child_fault=(self.m1_result or {}).get("fault")
-            if isinstance(child_fault,str) and child_fault:
-                result["fault"]=child_fault
-            result["status"]="PASS" if result["m1_status"]=="PASS" else "BLOCKED"
+            result["m1_result"] = self.m1_result
+            result["m1_status"] = (self.m1_result or {}).get("status", "UNKNOWN")
+            child_fault = (self.m1_result or {}).get("fault")
+            if isinstance(child_fault, str) and child_fault:
+                result["fault"] = child_fault
+            m1 = self.m1_result or {}
+            fault_text = str(m1.get("fault") or "").lower()
+            registration = m1.get("source_registration")
+            ld_action = m1.get("set_mc_action_ld")
+            activation = m1.get("activation")
+            nonzero_calls = int(activation.get("nonzero_publish_calls_returned", 0) or 0) if isinstance(activation, Mapping) else 0
+            safety_fault = any(token in fault_text for token in ("standing", "non_standing", "fall_", "stale_or_missing", "mc_safety"))
+            if safety_fault and nonzero_calls > 0:
+                self.outcome_classification = "FIRST_PHYSICAL_WALKING_FAIL"
+                result["outcome_classification"] = self.outcome_classification
+                result["status"] = "BLOCKED"
+                return result
+            if safety_fault:
+                self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+                result["outcome_classification"] = self.outcome_classification
+                result["status"] = "BLOCKED"
+                return result
+            if isinstance(registration, Mapping) and registration.get("success") is not True:
+                self.outcome_classification = "LOCOMOTION_SOURCE_REJECTED"
+            elif isinstance(ld_action, Mapping) and (
+                ld_action.get("accepted_by_service") is not True
+                or ld_action.get("response_header_code") not in (0, None)
+            ):
+                self.outcome_classification = "LD_REJECTED_WITH_EXACT_CODE"
+            elif isinstance(activation, Mapping):
+                if int(activation.get("nonzero_publish_calls_returned", 0) or 0) <= 0:
+                    self.outcome_classification = "VELOCITY_COMMAND_NOT_EXECUTED"
+                elif (
+                    activation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED"
+                    and activation.get("post_stop_odometry", {}).get("kinematic_status") == "WITHIN_BASELINE_ENVELOPE"
+                ):
+                    self.outcome_classification = "FIRST_PHYSICAL_WALKING_PASS"
+                else:
+                    self.outcome_classification = "FIRST_PHYSICAL_WALKING_FAIL"
+            elif result["m1_status"] == "BLOCKED":
+                self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+            result["outcome_classification"] = self.outcome_classification
+            result["status"] = (
+                "PASS" if self.outcome_classification == "FIRST_PHYSICAL_WALKING_PASS" else "BLOCKED"
+            )
         except Exception as exc:
-            self.fault=f"{type(exc).__name__}: {exc}"
-            result["fault"]=self.fault
-            result["reset_classification"]=self.reset_classification
-            result["m1_result"]=self.m1_result
-            result["status"]="BLOCKED"
+            self.fault = f"{type(exc).__name__}: {exc}"
+            result["fault"] = self.fault
+            result["reset_classification"] = self.reset_classification
+            result["set_mc_action_sd"] = self.sd_result
+            result["m1_result"] = self.m1_result
+            result["outcome_classification"] = self.outcome_classification
+            result["status"] = "BLOCKED"
         finally:
-            elapsed=time.monotonic()-self.started
-            result["wall_elapsed_s"]=elapsed
-            result["wall_budget_exhausted"]=elapsed>self.args.max_runtime_s
+            elapsed = time.monotonic() - self.started
+            result["wall_elapsed_s"] = elapsed
+            result["wall_budget_exhausted"] = elapsed > self.args.max_runtime_s
             if self.reset_analysis:
-                result["reset_analysis"]=self.reset_analysis
+                result["reset_analysis"] = self.reset_analysis
             self.cleanup()
+            result["shutdown_classification"] = self.classify_mc_shutdown()
             self.apply_container_teardown_gate(result)
-            output=self.evidence/"auto-reset-run-result.json"
-            with output.open("x",encoding="utf-8") as f:json.dump(result,f,indent=2);f.write("\n")
+            output = self.evidence / "auto-reset-run-result.json"
+            with output.open("x", encoding="utf-8") as f:
+                json.dump(result, f, indent=2)
+                f.write("\n")
         return result
+
 
 
 def main() -> int:
