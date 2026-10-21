@@ -23,7 +23,6 @@ RUNTIME = REPO / "simulation/mujoco/raicom2026"
 X11_HELPER = Path(__file__).with_name("issue80_mujoco_x11_reset.py")
 ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
-OBSERVER = Path(__file__).with_name("issue80_m1_reset_state_trace.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 M1_FIRST_MOTION_LOGIC = Path(__file__).with_name("issue80_m1_first_motion.py")
 SET_ACTION_CAPTURE = Path(__file__).with_name("issue80_m1_set_action_capture.py")
@@ -251,7 +250,6 @@ class BoundedRun:
             (X11_HELPER, X11_HELPER.name),
             (ANALYZER, ANALYZER.name),
             (M1_RUNNER, M1_RUNNER.name),
-            (OBSERVER, OBSERVER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
             (SET_ACTION_CAPTURE, SET_ACTION_CAPTURE.name),
@@ -416,40 +414,73 @@ class BoundedRun:
         raise RuntimeError("Reset did not produce a fresh upright pose within 2 s; SD was not sent")
 
     def request_sd_and_verify(self) -> dict[str, Any]:
-        command = (
-            "source /opt/ros/humble/setup.bash && "
-            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-            "timeout 5s python3 /workspace/evidence/issue80_m1_set_action_capture.py "
-            "--action STAND_DEFAULT --source node.set_mc_action --precondition-timeout-s 2 --timeout-s 2"
-        )
-        result = self.docker_exec("request_sd_once_with_full_response", command, timeout_s=6.0, check=False)
-        try:
-            raw = json.loads(result.stdout.strip().splitlines()[-1])
-        except (json.JSONDecodeError, IndexError):
+        # The ROS node, all state subscriptions, and both MC service clients
+        # were created before Reset by start_observer(). Read the transaction
+        # produced by that persistent process; do not spawn Python/DDS here.
+        result_path = self.evidence / "set_action_capture_result.json"
+        summary_path = self.evidence / "reset_state_summary.json"
+        deadline = min(self.deadline, time.monotonic() + RESET_OBSERVER_DURATION_S + 2.0)
+        while time.monotonic() < deadline and not result_path.exists():
+            if summary_path.exists():
+                break
+            time.sleep(0.01)
+        if result_path.exists():
+            try:
+                raw = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raw = {
+                    "status": "BLOCKED_RESULT_READ",
+                    "blocking_stage": "RESULT_READ",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+        else:
             raw = {
-                "transport_state": "NO_RESULT_JSON",
-                "child_returncode": result.returncode,
-                "stdout_tail": result.stdout[-2000:],
-                "stderr_tail": result.stderr[-2000:],
-                "response_status_value": None,
-                "response_header_code": None,
+                "status": "BLOCKED_RESULT_TIMEOUT",
+                "blocking_stage": "RESULT_TIMEOUT",
+                "error": "the pre-armed ROS process did not publish its result before the bounded capture window ended",
             }
+        raw_sd = raw.get("stand_default_set_mc_action") or {}
         record: dict[str, Any] = {
             "wall_utc_observed": datetime.now(timezone.utc).isoformat(),
             "requested_action_desc": "STAND_DEFAULT",
             "request_source": "node.set_mc_action",
-            "raw_set_mc_action": raw,
-            "get_mc_action_readback": [],
-            "response_status_value": raw.get("response_status_value"),
-            "response_header_code": raw.get("response_header_code"),
-            "response_message": raw.get("response_message"),
+            "takeover_status": raw.get("status"),
+            "blocking_stage": raw.get("blocking_stage"),
+            "error": raw.get("error"),
+            "pre_reset_get_mc_action": raw.get("pre_reset_get_mc_action"),
+            "post_reset_upright_gate": raw.get("post_reset_upright_gate"),
+            "joint_default_set_mc_action": raw.get("joint_default_set_mc_action"),
+            "joint_to_stand_gate": raw.get("joint_to_stand_gate"),
+            "raw_set_mc_action": raw_sd,
+            "get_mc_action_readback": raw.get("get_mc_action_readbacks", []),
+            "timing_ms": raw.get("timing_ms"),
+            "limitations": raw.get("limitations", []),
+            "response_status_value": raw_sd.get("response_status_value"),
+            "response_header_code": raw_sd.get("response_header_code"),
+            "response_message": raw_sd.get("response_message"),
         }
         self.sd_result = record
-        if raw.get("transport_state") != "RESPONSE_RECEIVED":
-            self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+        if raw.get("status") != "TAKEOVER_SEQUENCE_COMPLETE":
+            jd = raw.get("joint_default_set_mc_action") or {}
+            sd = raw.get("stand_default_set_mc_action") or {}
+            stage = raw.get("blocking_stage")
+            detail = sd if sd else jd
+            if (
+                stage == "STAND_DEFAULT"
+                and detail.get("transport_state") == "RESPONSE_RECEIVED"
+                and (detail.get("service_success") is not True or detail.get("action_result_success") is not True)
+            ):
+                self.outcome_classification = "SD_REJECTED_WITH_EXACT_CODE"
+            else:
+                self.outcome_classification = "STANDING_CONTROL_NOT_READY"
             self._write_sd_record(record)
-            raise RuntimeError(f"SetMcAction SD response unavailable: {raw.get('transport_state')}")
-        if raw.get("service_success") is not True or raw.get("action_result_success") is not True:
+            raise RuntimeError(
+                "source-supported PD -> JD -> SD handoff did not complete: "
+                f"stage={raw.get('blocking_stage')!r} status={detail.get('response_status_value')} "
+                f"header.code={detail.get('response_header_code')} message={detail.get('response_message')!r} "
+                f"reason={raw.get('error')!r}"
+            )
+        if raw_sd.get("service_success") is not True or raw_sd.get("action_result_success") is not True:
             self.outcome_classification = "SD_REJECTED_WITH_EXACT_CODE"
             self._write_sd_record(record)
             raise RuntimeError(
@@ -457,29 +488,16 @@ class BoundedRun:
                 f"status={record['response_status_value']} header.code={record['response_header_code']} "
                 f"message={record['response_message']!r}"
             )
-
-        deadline = min(self.deadline, time.monotonic() + 3.0)
-        while time.monotonic() < deadline:
-            readback = self.docker_exec(
-                "read_mode_after_sd",
-                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && timeout 3s python3 /workspace/raicom2026/example/py/get_mode.py",
-                timeout_s=4.0,
-                check=False,
-            )
-            text = readback.stdout + readback.stderr
-            record["get_mc_action_readback"].append({
-                "wall_utc": datetime.now(timezone.utc).isoformat(),
-                "returncode": readback.returncode,
-                "stdout": readback.stdout,
-                "stderr": readback.stderr,
-            })
-            if "Mode: STAND_DEFAULT" in text:
-                self._write_sd_record(record)
-                return record
-            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
-        self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+        stand_readbacks = [
+            item for item in record["get_mc_action_readback"]
+            if item.get("action_desc") == "STAND_DEFAULT" and item.get("action_status_value") == 100
+        ]
+        if not stand_readbacks:
+            self.outcome_classification = "STANDING_CONTROL_NOT_READY"
+            self._write_sd_record(record)
+            raise RuntimeError("the persistent GetMcAction client did not confirm STAND_DEFAULT/status=100")
         self._write_sd_record(record)
-        raise RuntimeError("successful SD response lacked STAND_DEFAULT GetMcAction readback within 3 s")
+        return record
 
     def _write_sd_record(self, record: dict[str, Any]) -> None:
         path = self.evidence / "set_mc_action_sd.json"
@@ -503,10 +521,17 @@ class BoundedRun:
 
     def start_observer(self) -> None:
         self.docker_exec(
-            "start_reset_state_observer",
-            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_reset_state_trace.py --output-dir /workspace/evidence --duration "
-            + f"{RESET_OBSERVER_DURATION_S:.1f}"
-            + " > /workspace/evidence/reset-observer-console.log 2>&1",
+            "start_prearmed_standing_takeover_observer",
+            "source /opt/ros/humble/setup.bash && "
+            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+            "timeout 45s python3 /workspace/evidence/issue80_m1_set_action_capture.py "
+            "--action STAND_DEFAULT --source node.set_mc_action "
+            "--output-dir /workspace/evidence "
+            "--reset-event-file /workspace/evidence/reset_dispatch_event.json "
+            "--ready-timeout-s 3 --reset-wait-timeout-s 30 --upright-timeout-s 2 "
+            "--joint-stand-timeout-s 4 --set-timeout-s 2 --get-timeout-s 0.75 "
+            f"--duration-s {RESET_OBSERVER_DURATION_S:.1f} "
+            "> /workspace/evidence/takeover-capture-console.log 2>&1",
             timeout_s=4.0,
             detached=True,
         )
@@ -517,8 +542,15 @@ class BoundedRun:
         if not ready_path.exists():
             raise RuntimeError("Reset observer did not receive all five fresh state streams in 3 seconds")
         ready = json.loads(ready_path.read_text(encoding="utf-8"))
+        if ready.get("status") != "READY":
+            raise RuntimeError(f"pre-Reset ROS2 observer/client readiness failed: {ready}")
         if len(ready.get("fresh_topics", [])) != 5:
             raise RuntimeError(f"Reset precondition failed: live state streams are incomplete: {ready}")
+        if ready.get("set_mc_action_service_ready") is not True or ready.get("get_mc_action_service_ready") is not True:
+            raise RuntimeError(f"Reset precondition failed: persistent MC action services are not ready: {ready}")
+        pre_mode = ready.get("pre_reset_get_mc_action", {})
+        if pre_mode.get("action_desc") != "PASSIVE_DEFAULT" or pre_mode.get("action_status_value") != 100:
+            raise RuntimeError(f"Reset precondition failed: expected PASSIVE_DEFAULT, got {pre_mode}")
         # Pre-SD mode/FSM values are retained raw and are not a standing gate.
         with (self.evidence / "pre-reset-telemetry-snapshot.json").open("x", encoding="utf-8") as f:
             json.dump(ready, f, indent=2)
@@ -821,7 +853,7 @@ class BoundedRun:
             and not self.cleanup_evidence.get("container_absent_after_cleanup", False)
         ):
             result["status"] = "BLOCKED"
-            result["fault"] = result.get("fault") or "container teardown was not verified after M1"
+            result["fault"] = result.get("fault") or "container teardown was not verified after runtime"
 
     def classify_mc_shutdown(self) -> dict[str, Any]:
         candidates = (
@@ -848,7 +880,7 @@ class BoundedRun:
 
     def execute(self) -> dict[str, Any]:
         result = {
-            "schema": "robotsim.issue80.m1.auto-reset-run.v3",
+            "schema": "robotsim.issue80.m1.auto-reset-run.v4",
             "status": "NOT_AUTHORIZED",
             "attempt_id": self.args.attempt_id,
             "source": "node.locomotion_velocity",
@@ -860,8 +892,10 @@ class BoundedRun:
             "outcome_classification": "STANDING_CONTROL_NOT_READY",
             "fault": None,
         }
-        if not self.args.maintainer_authorized_first_motion:
-            result["fault"] = "explicit maintainer authorization is required before starting the runtime"
+        standing_only = bool(getattr(self.args, "maintainer_authorized_standing_takeover", False))
+        first_motion_authorized = bool(getattr(self.args, "maintainer_authorized_first_motion", False))
+        if not standing_only and not first_motion_authorized:
+            result["fault"] = "explicit maintainer standing-takeover or first-motion authorization is required before runtime"
             return result
         try:
             self.stage_research_scripts()
@@ -873,8 +907,8 @@ class BoundedRun:
             self.start_observer()
             self.dispatch_reset(pid, title, window_id)
             result["reset_immediate_posture"] = self.wait_for_immediate_reset_pose()
-            # Reset occurs before SD; the action is sent immediately after fresh
-            # upright pose evidence. No multi-second uncontrolled posture hold.
+            # The pre-armed node sends the source-supported PD -> JD -> SD
+            # handoff; SD is gated on fresh upright telemetry and MC STAND state.
             result["set_mc_action_sd"] = self.request_sd_and_verify()
             reset = self.wait_and_classify_reset(pid, title, window_id)
             result["reset_classification"] = reset.get("classification")
@@ -882,6 +916,16 @@ class BoundedRun:
             if reset.get("classification") != "AUTO_RESET_PASS":
                 self.outcome_classification = "STANDING_CONTROL_NOT_READY"
                 raise RuntimeError(f"post-SD standing safety gate failed: {reset.get('classification')}")
+
+            if standing_only and not first_motion_authorized:
+                # This authorization is limited to the standing takeover gate.
+                # It must not fall through to source registration, LD, or velocity.
+                self.outcome_classification = "STANDING_TAKEOVER_PASS"
+                result["m1_status"] = "NOT_RUN_STANDING_ONLY"
+                result["outcome_classification"] = self.outcome_classification
+                result["status"] = "PASS"
+                result["next_motion_stage"] = "NOT_RUN_REQUIRES_SEPARATE_AUTHORIZATION"
+                return result
 
             self.run_m1()
             result["m1_result"] = self.m1_result
@@ -964,6 +1008,11 @@ def main() -> int:
         "--maintainer-authorized-first-motion",
         action="store_true",
         help="explicit human authorization for one bounded simulation-only first-motion run",
+    )
+    parser.add_argument(
+        "--maintainer-authorized-standing-takeover",
+        action="store_true",
+        help="explicit human authorization for one simulation-only standing-takeover test; no LD or velocity command",
     )
     args=parser.parse_args()
     run=BoundedRun(args)

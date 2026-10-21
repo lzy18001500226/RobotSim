@@ -13,7 +13,14 @@ from issue80_m1_auto_reset_run import BoundedRun, first_post_action_fall
 
 
 class ResetBeforeSdOrderingTests(unittest.TestCase):
-    def make_runner(self, events: list[str], temp_dir: str, *, posture_ok: bool = True) -> BoundedRun:
+    def make_runner(
+        self,
+        events: list[str],
+        temp_dir: str,
+        *,
+        posture_ok: bool = True,
+        standing_only: bool = False,
+    ) -> BoundedRun:
         class RecordingRun(BoundedRun):
             def stage_research_scripts(self) -> None:
                 events.append("stage")
@@ -79,6 +86,7 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
             evidence_dir=temp_dir,
             container="test-container",
             maintainer_authorized_first_motion=True,
+            maintainer_authorized_standing_takeover=standing_only,
             attempt_id="test-attempt",
             max_runtime_s=30.0,
         ))
@@ -143,6 +151,7 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
 
         self.assertEqual(result["outcome_classification"], "FIRST_PHYSICAL_WALKING_PASS")
         self.assertLess(events.index("sim_and_mc"), events.index("reset_once"))
+        self.assertLess(events.index("observer_ready"), events.index("reset_once"))
         self.assertLess(events.index("reset_once"), events.index("fresh_post_reset_pose"))
         self.assertLess(events.index("fresh_post_reset_pose"), events.index("sd_once"))
         self.assertLess(events.index("sd_once"), events.index("post_sd_standing_window"))
@@ -158,6 +167,19 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertNotIn("sd_once", events)
         self.assertNotIn("first_motion_after_standing_gate", events)
         self.assertEqual(result["m1_status"], "NOT_RUN")
+
+    def test_standing_takeover_only_does_not_reach_m1(self) -> None:
+        events: list[str] = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(events, temp_dir, standing_only=True)
+            runner.args.maintainer_authorized_first_motion = False
+            result = runner.execute()
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["outcome_classification"], "STANDING_TAKEOVER_PASS")
+        self.assertEqual(result["m1_status"], "NOT_RUN_STANDING_ONLY")
+        self.assertEqual(result["next_motion_stage"], "NOT_RUN_REQUIRES_SEPARATE_AUTHORIZATION")
+        self.assertNotIn("first_motion_after_standing_gate", events)
 
 
 if __name__ == "__main__":
