@@ -165,6 +165,12 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
                 runner.validate_run65_point_goal_profile(valid_profile(heading_change_rad=0.20)),
                 expected,
             )
+            self.assertEqual(
+                runner.validate_run65_point_goal_profile(
+                    valid_profile(extra_stop_observation=7.0)
+                ),
+                expected,
+            )
 
         for override in (
             {"maintainer_authorized_first_motion": False},
@@ -172,6 +178,7 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
             {"forward_speed": 0.12},
             {"pulse_duration": 10.01},
             {"extra_stop_observation": 4.9},
+            {"extra_stop_observation": 7.0001},
             {"ramp_duration_s": 0.1},
             {"capture_mc_rl_debug": False},
             {"turning_reassessment_json": None},

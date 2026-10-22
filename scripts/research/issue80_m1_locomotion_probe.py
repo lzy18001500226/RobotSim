@@ -78,6 +78,8 @@ POINT_GOAL_ANGULAR_TAPER_START_ERROR_M = 0.25
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
 POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
+POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S = 5.0
+POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S = 7.0
 # The pinned community Task1 pose-goal example uses a 0.17 rad default yaw
 # tolerance; this is an intermediate SIMULATION_ONLY heading-goal criterion.
 POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
@@ -2085,7 +2087,9 @@ def main() -> int:
         or args.ramp_duration_s != 0.0
         or args.deceleration_duration_s != 0.0
         or args.startup_speed is not None
-        or args.extra_stop_observation != 5.0
+        or not POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S
+        <= args.extra_stop_observation
+        <= POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
         or args.max_observed_planar_speed_m_s != 0.2
         or args.zero_until_stand_timeout_s != 3.5
         or not args.zero_only_stop
@@ -2095,7 +2099,7 @@ def main() -> int:
         parser.error(
             "point-goal diagnostics use 0.14 m/s forward input, a heading offset bounded to 0.20 rad, the validated "
             "+/-0.075 rad/s heading envelope, a 10-second hard cap, zero-only stop, "
-            "0.2 m/s measured-speed guard, 3.5-second stand window, and 5-second observation"
+            "0.2 m/s measured-speed guard, 3.5-second stand window, and 5-7-second observation"
         )
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)

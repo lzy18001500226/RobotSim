@@ -48,6 +48,8 @@ RESET_STARTUP_OBSERVATION_TIMEOUT_S = 4.0
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 POINT_GOAL_FORWARD_COMMAND_M_S = 0.14
 POINT_GOAL_DISTANCE_M = 0.30
+POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S = 5.0
+POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S = 7.0
 POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
 POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.12
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
@@ -239,7 +241,9 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
         )
     if (
         not getattr(args, "capture_mc_rl_debug", False)
-        or abs(float(args.extra_stop_observation) - 5.0) > 1e-9
+        or not POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S
+        <= float(args.extra_stop_observation)
+        <= POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
         or abs(float(args.forward_speed) - POINT_GOAL_FORWARD_COMMAND_M_S) > 1e-9
         or abs(float(args.pulse_duration) - 10.0) > 1e-9
         or float(args.ramp_duration_s) != 0.0
@@ -251,7 +255,7 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
     ):
         raise ValueError(
             "point-goal uses the 0.14 m/s forward command, 10-second hard cap, "
-            "5-second post-stop observation, optional bounded heading change, McRLDebug capture, "
+            "5-7 second post-stop observation, optional bounded heading change, McRLDebug capture, "
             "and verified Run65 reassessment"
         )
     return validate_turning_reassessment_file(args.turning_reassessment_json)
@@ -2472,8 +2476,15 @@ def main() -> int:
     )
     add_run65_point_goal_arguments(parser)
     args=parser.parse_args()
-    if not 0.0 <= args.extra_stop_observation <= 5.0:
-        parser.error("extra zero-only observation must remain within 0..5 seconds")
+    extra_observation_limit = (
+        POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
+        if args.run65_ground_truth_point_goal
+        else 5.0
+    )
+    if not 0.0 <= args.extra_stop_observation <= extra_observation_limit:
+        parser.error(
+            f"extra zero-only observation must remain within 0..{extra_observation_limit:g} seconds"
+        )
     if not 0.0 < args.pulse_duration <= 10.0:
         parser.error("pulse duration must be positive and no greater than 10 seconds")
     if not 0.0 < args.forward_speed <= 0.2:
