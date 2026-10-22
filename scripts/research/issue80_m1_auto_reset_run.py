@@ -1905,7 +1905,10 @@ class BoundedRun:
         if getattr(self.args, "run53_turning_diagnostic", False):
             command[-1] += " --turning-diagnostic"
         if run65_point_goal_enabled(self.args):
-            command[-1] += " --point-goal-diagnostic"
+            command[-1] += (
+                " --point-goal-diagnostic --heading-change-rad "
+                + str(float(getattr(self.args, "heading_change_rad", 0.0)))
+            )
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():

@@ -2052,6 +2052,7 @@ def main() -> int:
     first.add_argument("--zero-only-stop", action="store_true")
     first.add_argument("--turning-diagnostic", action="store_true")
     first.add_argument("--point-goal-diagnostic", action="store_true")
+    first.add_argument("--heading-change-rad", type=float, default=0.0)
     args = parser.parse_args()
     if args.turning_diagnostic and args.point_goal_diagnostic:
         parser.error("select only one of turning or point-goal diagnostics")
@@ -2065,9 +2066,11 @@ def main() -> int:
         or args.max_observed_planar_speed_m_s != 0.2
         or args.zero_until_stand_timeout_s != 3.5
         or not args.zero_only_stop
+        or not math.isfinite(args.heading_change_rad)
+        or abs(args.heading_change_rad) > POINT_GOAL_MAX_HEADING_CHANGE_RAD
     ):
         parser.error(
-            "point-goal diagnostics use constant 0.14 m/s forward input, the validated "
+            "point-goal diagnostics use 0.14 m/s forward input, a heading offset bounded to 0.20 rad, the validated "
             "+/-0.075 rad/s heading envelope, a 10-second hard cap, zero-only stop, "
             "0.2 m/s measured-speed guard, 3.5-second stand window, and 5-second observation"
         )

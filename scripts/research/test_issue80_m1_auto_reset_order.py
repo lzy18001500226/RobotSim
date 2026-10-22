@@ -20,6 +20,45 @@ from issue80_mujoco_x11_reset import (
 
 
 class ResetBeforeSdOrderingTests(unittest.TestCase):
+    def test_parent_forwards_heading_change_into_child_point_goal_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="test-container",
+                attempt_id="heading-goal-test",
+                max_runtime_s=180.0,
+                maintainer_authorized_first_motion=True,
+                capture_mc_rl_debug=False,
+                extra_stop_observation=5.0,
+                pulse_duration=10.0,
+                forward_speed=0.14,
+                ramp_start_speed=None,
+                ramp_duration_s=0.0,
+                startup_speed=None,
+                startup_transition_displacement=None,
+                startup_transition_timeout_s=0.0,
+                turning_reassessment_json="/reviews/run65/result.json",
+                run65_ground_truth_point_goal=True,
+                run53_turning_diagnostic=False,
+                heading_change_rad=0.20,
+            )
+            runner = BoundedRun(args)
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.network_mode = "bridge"
+            runner.deadline = time.monotonic() + 120.0
+            commands = []
+
+            def fake_run(_name, command, **_kwargs):
+                commands.append(command)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            runner.run = fake_run
+            runner.run_m1()
+
+        child = commands[0][-1]
+        self.assertIn("--point-goal-diagnostic", child)
+        self.assertIn("--heading-change-rad 0.2", child)
+
     def test_native_reset_layout_uses_button_pixel_signature_not_full_window_size(self) -> None:
         # MuJoCo 3.3.6 Run76 screenshot at 1866x840 shows the same fixed
         # Simulation/Reset menu control at the calibrated client coordinates.
