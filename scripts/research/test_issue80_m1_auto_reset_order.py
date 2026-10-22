@@ -12,10 +12,29 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as reset_runner
-from issue80_m1_auto_reset_run import BoundedRun, first_post_action_fall
+from issue80_m1_auto_reset_run import BoundedRun, RunDeadline, first_post_action_fall
 
 
 class ResetBeforeSdOrderingTests(unittest.TestCase):
+    def test_timed_out_review_screenshot_does_not_block_reset_safety_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BoundedRun(argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="test-container",
+                attempt_id="screenshot-timeout-test",
+                max_runtime_s=30.0,
+            ))
+
+            def timeout(_name: str, _command: list[str], **_kwargs):
+                raise RunDeadline("x11_capture_before_reset timed out")
+
+            runner.run = timeout
+            result = runner.capture_reset_image(19, "MuJoCo : test", 99, "before")
+
+        self.assertEqual(result["status"], "NOT_CAPTURED")
+        self.assertIn("x11_capture_before_reset timed out", result["reason"])
+        self.assertFalse(result["input_sent"])
+
     def test_runner_dispatches_native_reset_button_without_keyboard_or_windows_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = BoundedRun(argparse.Namespace(

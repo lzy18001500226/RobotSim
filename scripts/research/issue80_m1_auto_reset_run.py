@@ -1403,7 +1403,18 @@ class BoundedRun:
             "--expected-pid", str(pid), "--expected-title", title,
             "--window-id", str(window_id), "--output", str(output),
         ]
-        result = self.run(f"x11_capture_{phase}_reset", command, timeout_s=8.0, check=False)
+        try:
+            result = self.run(f"x11_capture_{phase}_reset", command, timeout_s=8.0, check=False)
+        except RunDeadline as exc:
+            # Screenshots are review evidence, not a Reset or posture-safety gate.
+            # The Reset path independently rechecks the exact process/title/window
+            # and pointer target before it can dispatch any GUI input.
+            return {
+                "status": "NOT_CAPTURED",
+                "reason": f"capture_helper_timeout: {exc}",
+                "timeout_s": 8.0,
+                "input_sent": False,
+            }
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
