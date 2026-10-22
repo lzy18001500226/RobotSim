@@ -5,9 +5,11 @@ import math
 import unittest
 import xml.etree.ElementTree as ET
 
+import mujoco
 import numpy as np
 
 import issue46_urdf_pipeline as p
+import issue46_single_motor_travel as t
 
 
 class PipelineTests(unittest.TestCase):
@@ -96,6 +98,39 @@ class PipelineTests(unittest.TestCase):
             for name in before:
                 np.testing.assert_allclose(before[name][0], after[name][0], atol=1e-15)
                 np.testing.assert_allclose(before[name][1], after[name][1], atol=1e-15)
+
+    def test_passive_spring_candidate_has_no_candidate_b_rate_equality(self):
+        xml = p.convert(self.derived, json.loads((p.REPO/'reviews/issue-46/omnipicker-collision-decomp-20261020T061939Z/decomposition.json').read_text()),
+                        actuation='single-motor-passive-spring-experimental', spring_stiffness_nm_rad=.08,
+                        spring_reference_rad=.025, spring_damping_nm_s_rad=.003,
+                        root_servo_kp=2.0, root_servo_kv=.1, root_servo_force_limit_nm=.5)
+        model = mujoco.MjModel.from_xml_string(ET.tostring(xml, encoding='unicode'))
+        self.assertEqual(model.nu, 1)
+        self.assertAlmostEqual(float(model.actuator_gainprm[0, 0]), 2.0)
+        self.assertAlmostEqual(float(model.actuator_biasprm[0, 2]), -0.1)
+        np.testing.assert_allclose(model.actuator_forcerange[0], [-.5, .5])
+        self.assertEqual(len(xml.findall('./tendon/*')), 0)
+        self.assertEqual(len(xml.findall('./equality/tendon')), 0)
+        self.assertEqual(len(xml.findall('./equality/connect')), 2)
+        self.assertEqual(len(xml.findall('./equality/joint')), 1)
+        data = mujoco.MjData(model)
+        t.set_static(model, data, p.CandidateLaw(), 0.)
+        self.assertEqual(t.equality_jacobian(model, data)['remaining_dofs'], 3)
+        self.assertLess(max(p.gaps(model, data)), 1e-8)
+        for name in p.TORSION_SPRING_JOINTS:
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            self.assertAlmostEqual(float(model.jnt_stiffness[jid]), .08)
+            self.assertAlmostEqual(float(model.qpos_spring[model.jnt_qposadr[jid]]), .025)
+            self.assertAlmostEqual(float(model.dof_damping[model.jnt_dofadr[jid]]), .003)
+        for name in set(p.FOLLOWERS)-set(p.TORSION_SPRING_JOINTS):
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            self.assertEqual(float(model.jnt_stiffness[jid]), 0.)
+
+    def test_passive_spring_parameters_reject_invalid_values(self):
+        decomposition = json.loads((p.REPO/'reviews/issue-46/omnipicker-collision-decomp-20261020T061939Z/decomposition.json').read_text())
+        for kwargs in ({'spring_stiffness_nm_rad': 0.}, {'spring_reference_rad': float('nan')}, {'spring_damping_nm_s_rad': -1.}):
+            with self.assertRaises(ValueError):
+                p.convert(self.derived, decomposition, actuation='single-motor-passive-spring-experimental', **kwargs)
 
 
 if __name__ == '__main__':

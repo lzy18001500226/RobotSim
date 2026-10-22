@@ -42,6 +42,7 @@ GROUPS = {
 }
 FOLLOWERS = [n for group in GROUPS.values() for n in group[1:]]
 ACTUATED = [GROUPS['narrow'][0], *FOLLOWERS]
+TORSION_SPRING_JOINTS = ('R_hand_narrow2_joint', 'R_hand_wide2_joint')
 D_POINTS = {
     'narrow': {'jaw': [0.000691289490, -0.010408336990, -0.000011495782],
                'loop': [0.032861209960, -0.003021010867, -0.000039601384]},
@@ -214,7 +215,10 @@ def serialize_derived(raw, derived):
     return text
 
 
-def convert(urdf, decomposition, *, actuation='seven-servo-reference'):
+def convert(urdf, decomposition, *, actuation='seven-servo-reference',
+            spring_stiffness_nm_rad=0.05, spring_reference_rad=0.0,
+            spring_damping_nm_s_rad=0.002, root_servo_kp=0.5,
+            root_servo_kv=0.05, root_servo_force_limit_nm=0.5):
     """Read the derived URDF itself; no body placements copied from an old MJCF."""
     links = {l.get('name'): l for l in urdf.findall('link')}
     joints = urdf.findall('joint')
@@ -286,6 +290,13 @@ def convert(urdf, decomposition, *, actuation='seven-servo-reference'):
                     attrs.update(limited='true', range=f'{lim.get("lower")} {lim.get("upper")}')
                 else:
                     attrs['limited'] = 'false'
+                if actuation == 'single-motor-passive-spring-experimental' and j.get('name') in TORSION_SPRING_JOINTS:
+                    params = (spring_stiffness_nm_rad, spring_reference_rad, spring_damping_nm_s_rad)
+                    if not all(math.isfinite(float(v)) for v in params) or spring_stiffness_nm_rad <= 0 or spring_damping_nm_s_rad < 0:
+                        raise ValueError('passive spring parameters must be finite; stiffness positive and damping nonnegative')
+                    attrs.update(stiffness=f'{spring_stiffness_nm_rad:.16g}',
+                                 springref=f'{spring_reference_rad:.16g}',
+                                 damping=f'{spring_damping_nm_s_rad:.16g}')
                 ET.SubElement(b, 'joint', attrs)
             walk(child, b)
     walk('R_omnipicker_base_link', base)
@@ -303,7 +314,7 @@ def convert(urdf, decomposition, *, actuation='seven-servo-reference'):
     contact = ET.SubElement(root, 'contact')
     for a, b in INTERNAL_EXCLUSIONS:
         ET.SubElement(contact, 'exclude', body1=a, body2=b)
-    if actuation not in ('seven-servo-reference', 'single-motor-experimental'):
+    if actuation not in ('seven-servo-reference', 'single-motor-experimental', 'single-motor-passive-spring-experimental'):
         raise ValueError('unknown experimental actuation mode')
     if actuation == 'single-motor-experimental':
         # Same PR #84 Candidate B relation, re-expressed for URDF coordinates.
@@ -317,11 +328,21 @@ def convert(urdf, decomposition, *, actuation='seven-servo-reference'):
             phase = PHASE if side == 'narrow' else -PHASE
             ET.SubElement(eq, 'tendon', name=f'candidate_{side}_rate_eq', tendon1=f'candidate_{side}_rate',
                           polycoef=f'{phase:.16g} 1 0 0 0', solref='0.002 1')
-    root.set('model', 'UNVERIFIED_EXPERIMENTAL_SINGLE_MOTOR' if actuation == 'single-motor-experimental' else 'SEVEN_SERVO_KINEMATIC_REFERENCE')
+    if actuation == 'single-motor-experimental':
+        model_name = 'UNVERIFIED_EXPERIMENTAL_SINGLE_MOTOR_CANDIDATE_B'
+    elif actuation == 'single-motor-passive-spring-experimental':
+        model_name = 'UNVERIFIED_EXPERIMENTAL_SINGLE_MOTOR_PASSIVE_B_SPRING'
+    else:
+        model_name = 'SEVEN_SERVO_KINEMATIC_REFERENCE'
+    root.set('model', model_name)
     actuators = ET.SubElement(root, 'actuator')
-    driven = ['right_claw_joint'] if actuation == 'single-motor-experimental' else ACTUATED
+    driven = ['right_claw_joint'] if actuation in ('single-motor-experimental', 'single-motor-passive-spring-experimental') else ACTUATED
     for name in driven:
-        attrs = {'name': f'servo_{name}', 'joint': name, 'kp': '0.5', 'kv': '0.05', 'forcelimited': 'true', 'forcerange': '-0.5 0.5'}
+        kp, kv, effort = (root_servo_kp, root_servo_kv, root_servo_force_limit_nm) if name == 'right_claw_joint' else (0.5, 0.05, 0.5)
+        if not all(math.isfinite(float(v)) for v in (kp, kv, effort)) or kp <= 0 or kv < 0 or effort <= 0:
+            raise ValueError('root servo parameters must be finite; kp and force limit positive, kv nonnegative')
+        attrs = {'name': f'servo_{name}', 'joint': name, 'kp': f'{kp:.16g}', 'kv': f'{kv:.16g}',
+                 'forcelimited': 'true', 'forcerange': f'{-effort:.16g} {effort:.16g}'}
         if name == 'right_claw_joint':
             attrs.update(ctrllimited='true', ctrlrange='-1 0')
         ET.SubElement(actuators, 'position', attrs)

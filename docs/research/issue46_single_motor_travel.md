@@ -287,3 +287,10 @@ MuJoCo experiments. Keep the four exclusions, source-fidelity limitations and
 gravity compensation visible in review. Only the maintainer can authorize a
 subsequent bottle-contact phase. Research disposition: KEEP-AS-TOOL pending review;
 no production/runtime source depends on this experiment.
+
+The subsequent no-fixed-tendon, CAD-located B-axis torsion-spring candidate is
+reported separately in [issue46_passive_spring_candidate.md](issue46_passive_spring_candidate.md).
+That distinct candidate used one root actuator and actual `mj_step`, but failed
+before the requested open endpoint because its measured inner-face section
+became undefined and the passive C/loop angles over-folded. It does not replace
+or validate the earlier Candidate B coupling result.
