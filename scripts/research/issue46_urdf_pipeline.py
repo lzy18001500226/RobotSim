@@ -214,7 +214,7 @@ def serialize_derived(raw, derived):
     return text
 
 
-def convert(urdf, decomposition):
+def convert(urdf, decomposition, *, actuation='seven-servo-reference'):
     """Read the derived URDF itself; no body placements copied from an old MJCF."""
     links = {l.get('name'): l for l in urdf.findall('link')}
     joints = urdf.findall('joint')
@@ -303,8 +303,24 @@ def convert(urdf, decomposition):
     contact = ET.SubElement(root, 'contact')
     for a, b in INTERNAL_EXCLUSIONS:
         ET.SubElement(contact, 'exclude', body1=a, body2=b)
+    if actuation not in ('seven-servo-reference', 'single-motor-experimental'):
+        raise ValueError('unknown experimental actuation mode')
+    if actuation == 'single-motor-experimental':
+        # Same PR #84 Candidate B relation, re-expressed for URDF coordinates.
+        # This converter has root ref=0, unlike the old ref=+/-PHASE model.
+        # Fixed-tendon length therefore needs the source phase as its offset.
+        tendons = ET.SubElement(root, 'tendon')
+        for side, names in GROUPS.items():
+            tendon = ET.SubElement(tendons, 'fixed', name=f'candidate_{side}_rate')
+            for joint, coefficient in ((names[0], '1'), (names[1], '1'), (names[3], '-1')):
+                ET.SubElement(tendon, 'joint', joint=joint, coef=coefficient)
+            phase = PHASE if side == 'narrow' else -PHASE
+            ET.SubElement(eq, 'tendon', name=f'candidate_{side}_rate_eq', tendon1=f'candidate_{side}_rate',
+                          polycoef=f'{phase:.16g} 1 0 0 0', solref='0.002 1')
+    root.set('model', 'UNVERIFIED_EXPERIMENTAL_SINGLE_MOTOR' if actuation == 'single-motor-experimental' else 'SEVEN_SERVO_KINEMATIC_REFERENCE')
     actuators = ET.SubElement(root, 'actuator')
-    for name in ACTUATED:
+    driven = ['right_claw_joint'] if actuation == 'single-motor-experimental' else ACTUATED
+    for name in driven:
         attrs = {'name': f'servo_{name}', 'joint': name, 'kp': '0.5', 'kv': '0.05', 'forcelimited': 'true', 'forcerange': '-0.5 0.5'}
         if name == 'right_claw_joint':
             attrs.update(ctrllimited='true', ctrlrange='-1 0')
@@ -394,6 +410,11 @@ def static_check(urdf, model, law):
 
 
 def rollout(model, law, run, motion='source-window'):
+    """Historical seven-servo experiment helper; not the target physics path.
+
+    The public exporter no longer invokes this. Use the single-motor travel
+    entrypoint for new physical validation; retained only for old evidence.
+    """
     data = mujoco.MjData(model)
     addrs = addresses(model)
     actuators = {n: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f'servo_{n}') for n in ACTUATED}
@@ -495,7 +516,7 @@ def main():
     urdf, changes = derive_urdf(raw, alignment)
     xml = convert(urdf, dec)
     law = CandidateLaw()
-    location = pg.create_unique_output_directory(args.reviews, prefix='official-urdf-cad-pipeline', environment='wsl')
+    location = pg.create_unique_output_directory(args.reviews, prefix='seven-servo-reference', environment='wsl')
     run = location.native_path
     urdf_path = run/'X2-Ultra_omnipicker_CAD_EXPERIMENTAL.urdf'
     put(run, urdf_path.name, serialize_derived(raw, urdf))
@@ -505,7 +526,8 @@ def main():
     model = mujoco.MjModel.from_xml_path(str(run/'gripper.xml'))
     statics = static_check(ET.parse(urdf_path).getroot(), model, law)
     put(run, 'static_validation.json', statics)
-    physics = rollout(model, law, run, args.motion)
+    physics = {'status':'REFERENCE_ONLY_NOT_RUN','steps':0,'simulation_time_s':0.,'stop_reason':None,
+               'scope':'seven-servo static/visual reference only; use issue46_single_motor_travel.py for physical validation'}
     put(run, 'physics_result.json', physics)
     provenance = {'classification': 'UNVERIFIED_EXPERIMENTAL_MODEL', 'official_repo': 'AgibotTech/agibot_x2_urdf', 'official_commit': PIN,
                   'official_urdf_sha256': URDF_HASH, 'derived_urdf_sha256': sha(urdf_path), 'mjcf_sha256': sha(run/'gripper.xml'),

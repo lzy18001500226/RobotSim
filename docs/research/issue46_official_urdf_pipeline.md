@@ -1,5 +1,13 @@
 # Issue 46: official URDF / reviewed CAD overlay delivery
 
+**Superseded as the physical controller:** the seven-servo runs below are
+historical reference evidence only. New generation through this script exports
+the reference without stepping it. The [single-root travel study](issue46_single_motor_travel.md)
+owns current physical motion, measured surface aperture and the full-travel
+review gate. Positive CAD candidate angles were analytic continuation, not
+STEP-measured motion; the older “sampled range” wording referred to generated
+candidate samples, not manufacturer pose measurements.
+
 This is an isolated `UNVERIFIED_EXPERIMENTAL_MODEL`, not the accepted X2 runtime.
 It completes the missing source chain: pinned official full URDF → derived full
 URDF → parse its right gripper subtree → generated MJCF → real physics.
@@ -55,7 +63,7 @@ They remain ignored local evidence, not durable public download links.
 | --- | --- |
 | Official-source integrity / scoped edits | PASS; pinned inputs, preserved inertias/mesh identity, left hand and root contract |
 | Independent URDF FK vs actual MuJoCo FK | PASS at 21 poses; position error ≤1.66e-17 m, rotation-matrix error ≤6.67e-16 |
-| Prior sampled range, q_CAD [−0.10,+0.20] | 6,000 `mj_step`, 6 s, gravity on; max D gap 0.00840 mm, penetration 0.18854 mm, speed 0.54269 rad/s. `official-urdf-cad-pipeline-20261022T065759Z/` |
+| Historical seven-servo analytic reference, q_CAD [−0.10,+0.20] | 6,000 `mj_step`, 6 s, gravity on; max D gap 0.00840 mm, penetration 0.18854 mm, speed 0.54269 rad/s. `official-urdf-cad-pipeline-20261022T065759Z/` |
 | Continuous source-start → open → root-limit end | 6,000 steps, gravity on; D gap 0.04460 mm, penetration 0.54014 mm, speed 0.58186 rad/s; target error 0.05627 rad. `official-urdf-cad-pipeline-20261022T070211Z/` |
 | Root-limit precision | Commands obey official ranges; observed soft-limit excursion up to **0.000887 rad** in the logged trace. The run passes its explicit 0.001 rad numerical stop tolerance; this is **not zero limit violation** |
 | Abrupt closed-limit initialization | FAIL at step 9, wide root −0.001102 rad. Preserved in `official-urdf-cad-pipeline-20261022T065135Z/`. The later test starts from the mapped STEP source instead; it does not erase this failure |
@@ -86,8 +94,9 @@ No install, vendor extraction or canonical-model update is required.
 cd /home/lzy18001500226/robotsim-issue46-official-urdf-articulation
 PY=/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python
 $PY -m unittest discover -s scripts/research -p test_issue46_urdf_pipeline.py -v
-MUJOCO_GL=egl $PY scripts/research/issue46_urdf_pipeline.py --motion source-window
-MUJOCO_GL=egl $PY scripts/research/issue46_urdf_pipeline.py --motion root-endpoint
+# Current command exports only the static seven-servo reference; it does not
+# rerun the historical physical tests. Use the linked single-root workflow.
+MUJOCO_GL=egl $PY scripts/research/issue46_urdf_pipeline.py
 # Exact tested model, native MuJoCo window + local scalar slider, gravity on:
 MUJOCO_GL=glfw $PY scripts/research/issue46_urdf_review.py \
   --model-run /home/lzy18001500226/projects/RobotSim/reviews/issue-46/official-urdf-cad-pipeline-20261022T070211Z
