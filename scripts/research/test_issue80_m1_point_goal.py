@@ -293,9 +293,9 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         self.assertAlmostEqual(angular, 0.064, places=12)
 
     def test_terminal_angular_taper_uses_predicted_endpoint_without_changing_acceptance(self) -> None:
-        self.assertEqual(point_goal_angular_taper_factor(0.20), 1.0)
-        self.assertEqual(point_goal_angular_taper_factor(0.15), 1.0)
-        self.assertAlmostEqual(point_goal_angular_taper_factor(0.10), 0.5)
+        self.assertEqual(point_goal_angular_taper_factor(0.30), 1.0)
+        self.assertEqual(point_goal_angular_taper_factor(0.25), 1.0)
+        self.assertAlmostEqual(point_goal_angular_taper_factor(0.15), 0.5)
         self.assertEqual(point_goal_angular_taper_factor(0.05), 0.0)
         self.assertEqual(point_goal_angular_taper_factor(0.04), 0.0)
         with self.assertRaisesRegex(ValueError, "begin outside"):

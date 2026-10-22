@@ -666,7 +666,7 @@ def point_goal_command_from_bearing_error(
 def point_goal_angular_taper_factor(
     predicted_settled_error_m: float,
     *,
-    taper_start_error_m: float = 0.15,
+    taper_start_error_m: float = 0.25,
     final_tolerance_m: float = 0.05,
 ) -> float:
     """Fade angular input over the terminal approach when final yaw is unconstrained."""

@@ -68,7 +68,11 @@ POINT_GOAL_MAX_DURATION_S = 10.0
 POINT_GOAL_MAX_PLANAR_SPEED_M_S = 0.2
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 POINT_GOAL_HEADING_GAIN = 0.8
-POINT_GOAL_ANGULAR_TAPER_START_ERROR_M = 0.15
+# Run80's 0.15 m taper still missed the yaw stop gate by 0.13 deg. A saved-pose
+# command-only replay showed 0.25 m start reduces angular command integral
+# further; this is one bounded terminal-settling diagnostic, not a new goal
+# tolerance or physical-stability threshold.
+POINT_GOAL_ANGULAR_TAPER_START_ERROR_M = 0.25
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
 # Bounded two-run SIMULATION_ONLY fit: Run69 and Run73 endpoint shifts versus
