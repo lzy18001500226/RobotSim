@@ -14,11 +14,22 @@ from pathlib import Path
 from issue80_m1_auto_reset_run import (
     BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, MC_RL_DEBUG_CAPTURE,
     SET_ACTION_CAPTURE, SIM_LAUNCH,
-    assess_container_absence, classify_first_motion_outcome, decode_m1_child_result,
+    assess_container_absence, classify_first_motion_outcome, classify_run38_diagnostic_outcome,
+    decode_m1_child_result,
 )
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_turning_result_stays_simulation_only_and_does_not_claim_manufacturer_acceptance(self):
+        self.assertEqual(
+            classify_run38_diagnostic_outcome("SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS"),
+            "SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS",
+        )
+        self.assertEqual(
+            classify_run38_diagnostic_outcome("SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED"),
+            "SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED",
+        )
+
     def make_runner(self, evidence: Path) -> BoundedRun:
         return BoundedRun(
             argparse.Namespace(

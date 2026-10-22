@@ -62,6 +62,12 @@ PHYSICAL_STOP_MAX_JOINT_RANGE_RAD = 0.02
 PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD = 0.02
 PHYSICAL_STOP_TARGET_STABILITY_WINDOW_S = 1.0
 PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD = 0.01
+TURN_COMMAND_RAD_S = 0.14
+TURN_PULSE_S = 2.0
+TURN_RAMP_S = 0.25
+TURN_MAX_OBSERVED_YAW_RATE_RAD_S = 0.28
+TURN_MIN_HEADING_CHANGE_RAD = math.radians(5.0)
+TURN_MAX_PLANAR_DISPLACEMENT_M = 0.05
 
 MODE_STAND = "STAND_DEFAULT"
 MODE_LOCOMOTION = "LOCOMOTION_DEFAULT"
@@ -1862,6 +1868,405 @@ def stand_mode_readback_confirmed(snapshot: Mapping[str, Any]) -> bool:
     )
 
 
+def classify_turning_rotation(
+    *, start_yaw_rad: float | None, end_yaw_rad: float | None,
+    commanded_angular_velocity_rad_s: float, baseline_yaw_noise_rad: float | None,
+) -> dict[str, Any]:
+    """Require measured yaw in the commanded direction beyond baseline noise."""
+    if (
+        start_yaw_rad is None or end_yaw_rad is None
+        or not math.isfinite(float(start_yaw_rad))
+        or not math.isfinite(float(end_yaw_rad))
+        or not math.isfinite(commanded_angular_velocity_rad_s)
+        or commanded_angular_velocity_rad_s == 0.0
+    ):
+        return {"status": "TURN_ODOMETRY_UNAVAILABLE"}
+    delta = math.atan2(
+        math.sin(float(end_yaw_rad) - float(start_yaw_rad)),
+        math.cos(float(end_yaw_rad) - float(start_yaw_rad)),
+    )
+    measured_noise = (
+        abs(float(baseline_yaw_noise_rad))
+        if baseline_yaw_noise_rad is not None and math.isfinite(float(baseline_yaw_noise_rad))
+        else 0.0
+    )
+    threshold = max(TURN_MIN_HEADING_CHANGE_RAD, 5.0 * measured_noise)
+    signed_delta = delta * math.copysign(1.0, commanded_angular_velocity_rad_s)
+    status = (
+        "TURN_DIRECTION_PASS" if signed_delta >= threshold
+        else "TURN_OPPOSITE_DIRECTION" if signed_delta <= -threshold
+        else "TURN_HEADING_CHANGE_TOO_SMALL"
+    )
+    return {
+        "status": status,
+        "start_yaw_rad": float(start_yaw_rad),
+        "end_yaw_rad": float(end_yaw_rad),
+        "signed_yaw_delta_rad": delta,
+        "commanded_sign_yaw_delta_rad": signed_delta,
+        "minimum_measured_yaw_delta_rad": threshold,
+        "stationary_yaw_noise_bound_rad": measured_noise,
+    }
+
+
+def run_angular_turn_window(
+    *, sample: Callable[[], Mapping[str, Any]],
+    publish_turn: Callable[[float], None], publish_zero: Callable[[], None],
+    registration: Mapping[str, Any], set_action: Mapping[str, Any],
+    joint_limits: Mapping[str, Mapping[str, float]],
+    baseline_forward_displacements_m: list[float] | None,
+    baseline_state_summary: Mapping[str, Any] | None,
+    authorized: bool, angular_velocity_rad_s: float,
+    pulse_duration_s: float = TURN_PULSE_S,
+    max_observed_planar_speed_m_s: float = 0.2,
+    zero_until_stand_timeout_s: float = 3.5,
+    extra_post_stop_observe_s: float = 5.0,
+    state_timeout_s: float = 0.5,
+    min_root_z: float = 0.52,
+    max_tilt_deg: float = 15.0,
+    shutdown_event: threading.Event | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
+    on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Run one 0.14 rad/s yaw pulse with bounded zero stop and physical settling check."""
+    result: dict[str, Any] = {
+        "status": "NOT_RUN",
+        "command_kind": "YAW_ONLY_TURN",
+        "source": VELOCITY_SOURCE_NAME,
+        "angular_velocity_rad_s": angular_velocity_rad_s,
+        "forward_velocity_m_s": 0.0,
+        "lateral_velocity_m_s": 0.0,
+        "pulse_duration_s": pulse_duration_s,
+        "ramp_duration_s_each_end": TURN_RAMP_S,
+        "publish_hz": PUBLISH_HZ,
+        "angular_command_limit_rad_s": TURN_COMMAND_RAD_S,
+        "max_observed_yaw_rate_rad_s": TURN_MAX_OBSERVED_YAW_RATE_RAD_S,
+        "max_observed_planar_speed_m_s": max_observed_planar_speed_m_s,
+        "source_timeout_ms": SOURCE_TIMEOUT_MS,
+        "registration": dict(registration),
+        "set_mc_action": dict(set_action),
+        "samples": [],
+        "fault": None,
+        "mc_zero_receipt_ack": False,
+        "mc_stop_ack": False,
+    }
+    validation_fault = None
+    if not authorized:
+        result["status"] = "NOT_AUTHORIZED"
+        return result
+    if not math.isfinite(angular_velocity_rad_s) or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S:
+        validation_fault = "turn_command_outside_fixed_0p10_rad_s_cap"
+    elif not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= TURN_PULSE_S:
+        validation_fault = "turn_duration_outside_fixed_2_second_cap"
+    elif not math.isfinite(max_observed_planar_speed_m_s) or not 0.0 < max_observed_planar_speed_m_s <= 0.2:
+        validation_fault = "planar_speed_guard_outside_existing_0p2_m_s_cap"
+    elif not math.isfinite(zero_until_stand_timeout_s) or not 0.0 < zero_until_stand_timeout_s <= 3.5:
+        validation_fault = "zero_until_stand_timeout_outside_existing_budget"
+    elif not math.isfinite(extra_post_stop_observe_s) or not 0.0 <= extra_post_stop_observe_s <= 5.0:
+        validation_fault = "post_stop_observation_outside_existing_budget"
+    elif registration.get("success") is not True:
+        validation_fault = "source_registration_rejected"
+    elif set_action.get("accepted_by_service") is not True:
+        validation_fault = "set_mc_action_rejected"
+    if validation_fault:
+        result["status"] = "ABORTED"
+        result["fault"] = validation_fault
+        return result
+
+    samples: list[dict[str, Any]] = result["samples"]
+    command_lock = threading.RLock()
+    stop_requested = threading.Event()
+    tracker = ActivationTracker()
+    pulse_fault: str | None = None
+    post_stop_fault: str | None = None
+    initial: Mapping[str, Any] | None = None
+    last_active: Mapping[str, Any] | None = None
+    pulse_start: float | None = None
+    pulse_end: float | None = None
+    nonzero_publish_attempts = 0
+    nonzero_publish_calls_returned = 0
+    zero_extension_count = 0
+    zero_extension_first: float | None = None
+    zero_extension_last: float | None = None
+    stand_confirmed_s: float | None = None
+    stop_result: dict[str, Any] = {}
+    zero_stop = ZeroStopWindow(
+        publish_zero,
+        timeout_s=max(ZERO_STOP_MIN_S, SOURCE_TIMEOUT_MS / 1000.0) + 1.0 / PUBLISH_HZ,
+        publish_hz=PUBLISH_HZ,
+        clock=clock,
+        sleep=sleep,
+        command_lock=command_lock,
+    )
+    watchdog: ProcessLocalTimerWatchdog | None = None
+
+    def record(phase: str, snapshot: Mapping[str, Any], fault: str | None = None) -> None:
+        row = dict(snapshot)
+        row["phase"] = phase
+        row["safety_check"] = "FAIL" if fault else "PASS"
+        row["safety_fault"] = fault
+        samples.append(row)
+        if on_sample:
+            on_sample(phase, row)
+
+    def watchdog_stop() -> None:
+        nonlocal pulse_fault
+        if pulse_start is not None and clock() < pulse_start + pulse_duration_s - 0.01:
+            pulse_fault = pulse_fault or "independent_watchdog_timeout"
+        stop_requested.set()
+        zero_stop.run_once()
+
+    try:
+        initial = sample()
+        preflight_fault = snapshot_fault(
+            initial, joint_limits, state_timeout_s=state_timeout_s,
+            min_root_z=min_root_z, max_tilt_deg=max_tilt_deg,
+            max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
+        )
+        if not stand_mode_readback_confirmed(initial):
+            preflight_fault = preflight_fault or "turn_requires_fresh_stable_STAND_preflight"
+        if initial.get("readback_fault"):
+            preflight_fault = preflight_fault or "readback_fault:" + str(initial.get("readback_fault"))
+        current_source = str(initial.get("common_source_name") or "")
+        if current_source not in ("", VELOCITY_SOURCE_NAME):
+            preflight_fault = preflight_fault or "conflicting_common_state_input_source"
+        speed_status = initial.get("speed_status")
+        angular_bounds = speed_status.get("angular_bounds") if isinstance(speed_status, Mapping) else None
+        try:
+            speed_mode = int(speed_status["speed_mode"])
+            bound_min = float(angular_bounds["min_value"])
+            bound_max = float(angular_bounds["max_value"])
+            if speed_mode == 0 or not bound_min <= angular_velocity_rad_s <= bound_max:
+                preflight_fault = preflight_fault or "turn_command_outside_live_angular_bounds"
+        except (KeyError, TypeError, ValueError):
+            speed_mode, bound_min, bound_max = None, None, None
+            preflight_fault = preflight_fault or "live_angular_bounds_unavailable"
+        result["live_speed_status_preflight"] = {
+            "speed_mode": speed_mode,
+            "angular_bounds": {"min_value": bound_min, "max_value": bound_max}
+            if bound_min is not None else None,
+            "requested_angular_velocity_rad_s": angular_velocity_rad_s,
+        }
+        if preflight_fault:
+            record("turn-preflight", initial, preflight_fault)
+            pulse_fault = preflight_fault
+        else:
+            tracker.observe(initial, phase="pre-activation")
+            record("turn-preflight", initial)
+            pulse_start = clock()
+            deadline = pulse_start + pulse_duration_s
+            next_publish = pulse_start
+            watchdog = ProcessLocalTimerWatchdog(
+                pulse_duration_s, watchdog_stop, timer_factory=timer_factory,
+            )
+            watchdog.start()
+            while clock() < deadline:
+                if shutdown_event is not None and shutdown_event.is_set():
+                    pulse_fault = "operator_shutdown"
+                    stop_requested.set()
+                    break
+                if stop_requested.is_set() or watchdog.expired:
+                    break
+                current = sample()
+                current_fault = snapshot_fault(
+                    current, joint_limits, state_timeout_s=state_timeout_s,
+                    min_root_z=min_root_z, max_tilt_deg=max_tilt_deg,
+                    max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
+                )
+                if current.get("readback_fault"):
+                    current_fault = current_fault or "readback_fault:" + str(current.get("readback_fault"))
+                try:
+                    yaw_rate = float(current["pose"]["wz"])
+                    current_bounds = current["speed_status"]["angular_bounds"]
+                    if not math.isfinite(yaw_rate) or abs(yaw_rate) > TURN_MAX_OBSERVED_YAW_RATE_RAD_S:
+                        current_fault = current_fault or "observed_yaw_rate_limit"
+                    if not float(current_bounds["min_value"]) <= angular_velocity_rad_s <= float(current_bounds["max_value"]):
+                        current_fault = current_fault or "live_angular_bound_changed"
+                except (KeyError, TypeError, ValueError):
+                    current_fault = current_fault or "turn_angular_state_or_bounds_unavailable"
+                if current_fault:
+                    record("turn-activation", current, current_fault)
+                    pulse_fault = current_fault
+                    stop_requested.set()
+                    break
+                tracker.observe(current, phase="activation")
+                record("turn-activation", current)
+                now = clock()
+                if shutdown_event is not None and shutdown_event.is_set():
+                    pulse_fault = "operator_shutdown"
+                    stop_requested.set()
+                    break
+                if now >= deadline or stop_requested.is_set() or watchdog.expired:
+                    break
+                if now >= next_publish:
+                    offset = clock() - pulse_start
+                    command = smooth_turn_velocity(angular_velocity_rad_s, offset, pulse_duration_s)
+                    with command_lock:
+                        if stop_requested.is_set() or clock() >= deadline:
+                            break
+                        if command != 0.0:
+                            nonzero_publish_attempts += 1
+                        publish_turn(command)
+                        if command != 0.0:
+                            nonzero_publish_calls_returned += 1
+                            if clock() > deadline:
+                                pulse_fault = pulse_fault or "nonzero_turn_publish_returned_after_hard_deadline"
+                                stop_requested.set()
+                    if stop_requested.is_set():
+                        break
+                    next_publish += 1.0 / PUBLISH_HZ
+                    if next_publish < now:
+                        next_publish = now + 1.0 / PUBLISH_HZ
+                last_active = current
+                remaining = deadline - clock()
+                if remaining > 0.0:
+                    sleep(min(0.005, remaining))
+            pulse_end = clock()
+    except Exception as exc:
+        pulse_fault = pulse_fault or f"exception:{type(exc).__name__}:{exc}"
+        stop_requested.set()
+    finally:
+        if pulse_start is not None and pulse_end is None:
+            pulse_end = clock()
+        stop_requested.set()
+        stop_result = zero_stop.run_once()
+        if watchdog is not None:
+            watchdog.cancel()
+
+    zero_start = float(stop_result.get("start_monotonic_s", clock()))
+    zero_end = float(stop_result.get("end_monotonic_s", clock()))
+    post_end = zero_end + POST_STOP_OBSERVE_S + extra_post_stop_observe_s
+    stand_deadline = zero_end + zero_until_stand_timeout_s
+    next_zero = zero_end
+    while clock() < post_end:
+        current = sample()
+        current_fault = snapshot_fault(
+            current, joint_limits, state_timeout_s=state_timeout_s,
+            min_root_z=min_root_z, max_tilt_deg=max_tilt_deg,
+            max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
+        )
+        if current.get("readback_fault"):
+            current_fault = current_fault or "readback_fault:" + str(current.get("readback_fault"))
+        try:
+            yaw_rate = float(current["pose"]["wz"])
+            if not math.isfinite(yaw_rate) or abs(yaw_rate) > TURN_MAX_OBSERVED_YAW_RATE_RAD_S:
+                current_fault = current_fault or "post_stop_yaw_rate_limit"
+        except (KeyError, TypeError, ValueError):
+            current_fault = current_fault or "post_stop_angular_velocity_unavailable"
+        now = clock()
+        if current_fault:
+            post_stop_fault = current_fault
+            record("post-stop", current, current_fault)
+            ZeroStopWindow(
+                publish_zero, timeout_s=ZERO_STOP_MIN_S + 1.0 / PUBLISH_HZ,
+                publish_hz=PUBLISH_HZ, clock=clock, sleep=sleep,
+                command_lock=command_lock,
+            ).run_once()
+            break
+        tracker.observe(current, phase="post-stop")
+        record("post-stop", current)
+        if stand_confirmed_s is None and stand_mode_readback_confirmed(current):
+            stand_confirmed_s = float(current["sample_monotonic_s"])
+        if stand_confirmed_s is None and now >= stand_deadline:
+            post_stop_fault = post_stop_fault or "post_stop_stand_readback_timeout"
+        if stand_confirmed_s is None and now >= next_zero:
+            if zero_extension_first is None:
+                zero_extension_first = now
+            publish_zero()
+            zero_extension_last = clock()
+            zero_extension_count += 1
+            next_zero = clock() + 1.0 / PUBLISH_HZ
+        remaining = post_end - clock()
+        if remaining > 0.0:
+            sleep(min(0.05, remaining))
+
+    first_pose = initial.get("pose") if isinstance(initial, Mapping) else None
+    last_pose = last_active.get("pose") if isinstance(last_active, Mapping) else None
+    start_yaw = float(first_pose["yaw"]) if isinstance(first_pose, Mapping) else None
+    end_yaw = float(last_pose["yaw"]) if isinstance(last_pose, Mapping) else None
+    rotation = classify_turning_rotation(
+        start_yaw_rad=start_yaw,
+        end_yaw_rad=end_yaw,
+        commanded_angular_velocity_rad_s=angular_velocity_rad_s,
+        baseline_yaw_noise_rad=(
+            baseline_state_summary.get("maxima", {}).get("max_abs_yaw_excursion_rad")
+            if isinstance(baseline_state_summary, Mapping) else None
+        ),
+    )
+    planar_displacement = None
+    if isinstance(first_pose, Mapping) and isinstance(last_pose, Mapping):
+        planar_displacement = math.hypot(
+            float(last_pose["x"]) - float(first_pose["x"]),
+            float(last_pose["y"]) - float(first_pose["y"]),
+        )
+    baseline_values = []
+    if baseline_forward_displacements_m is not None:
+        try:
+            baseline_values = [float(value) for value in baseline_forward_displacements_m]
+        except (TypeError, ValueError):
+            baseline_values = []
+    baseline_noise = max((abs(value) for value in baseline_values), default=None)
+    legacy_stop = measure_post_stop_forward_tail(samples, baseline_noise)
+    physical_stop = evaluate_physical_stop_gate(
+        samples,
+        zero_start_monotonic_s=float(stop_result.get("start_monotonic_s", zero_start)),
+        stand_confirmed_monotonic_s=stand_confirmed_s,
+        baseline_state_summary=baseline_state_summary,
+    )
+    result.update({
+        "pulse_start_monotonic_s": pulse_start,
+        "pulse_end_monotonic_s": pulse_end,
+        "pulse_actual_duration_s": max(0.0, pulse_end - pulse_start)
+        if pulse_start is not None and pulse_end is not None else 0.0,
+        "nonzero_publish_attempts": nonzero_publish_attempts,
+        "nonzero_publish_calls_returned": nonzero_publish_calls_returned,
+        "control_handshake_confirmed": tracker.control_handshake_confirmed,
+        "control_handshake_status": tracker.classify_control_handshake(),
+        "control_handshake_evidence": [tracker.samples[index] for index in tracker.handshake_sample_indices],
+        "rotation": rotation,
+        "planar_displacement_during_turn_m": planar_displacement,
+        "stand_confirmed_monotonic_s": stand_confirmed_s,
+        "zero_stop": stop_result,
+        "zero_until_stand": {
+            "requested_timeout_s": zero_until_stand_timeout_s,
+            "stand_confirmed": stand_confirmed_s is not None,
+            "stand_confirmed_monotonic_s": stand_confirmed_s,
+            "zero_publish_calls_returned": zero_extension_count,
+            "first_publish_monotonic_s": zero_extension_first,
+            "last_publish_monotonic_s": zero_extension_last,
+            "mc_receipt_confirmed": False,
+        },
+        "legacy_baseline_stop_gate": {
+            "status": legacy_stop.get("status"),
+            "tail_window": legacy_stop,
+            "interpretation": "Unchanged empirical baseline gate; it remains visible independently of PHYSICAL_STOP_GATE.",
+        },
+        "physical_stop_gate": physical_stop,
+        "post_stop_fault": post_stop_fault,
+        "mc_zero_receipt_ack": False,
+        "mc_stop_ack": False,
+        "fault": pulse_fault or post_stop_fault,
+    })
+    if pulse_fault or post_stop_fault:
+        result["status"] = "ABORTED"
+    elif stop_result.get("publish_exceptions"):
+        result["status"] = "ZERO_STOP_PUBLISH_EXCEPTION"
+    elif stop_result.get("zero_publish_calls_returned", 0) < ZERO_STOP_MIN_MESSAGES:
+        result["status"] = "ZERO_STOP_CALL_COUNT_TOO_LOW"
+    elif not tracker.control_handshake_confirmed:
+        result["status"] = "TURN_CONTROL_HANDSHAKE_NOT_CONFIRMED"
+    elif rotation.get("status") != "TURN_DIRECTION_PASS":
+        result["status"] = rotation.get("status", "TURN_NOT_CONFIRMED")
+    elif planar_displacement is None or planar_displacement > TURN_MAX_PLANAR_DISPLACEMENT_M:
+        result["status"] = "TURN_PLANAR_DRIFT_EXCEEDED"
+    elif physical_stop.get("status") != "PASS":
+        result["status"] = "TURN_PHYSICAL_STOP_NOT_PASSED"
+    else:
+        result["status"] = "PHYSICAL_TURN_AND_STOP_PASS"
+    return result
+
+
 def smoothstep_velocity(
     start_m_s: float, target_m_s: float, elapsed_s: float, ramp_duration_s: float,
 ) -> float:
@@ -1893,6 +2298,29 @@ def smoothstep_deceleration_velocity(
     progress = max(0.0, min(1.0, elapsed_s / deceleration_duration_s))
     blend = progress * progress * (3.0 - 2.0 * progress)
     return end_m_s + (start_m_s - end_m_s) * (1.0 - blend)
+
+
+def smooth_turn_velocity(angular_velocity_rad_s: float, elapsed_s: float, duration_s: float) -> float:
+    """Bounded C1 angular command with short symmetric ramps for one turn probe."""
+    if (
+        not math.isfinite(angular_velocity_rad_s)
+        or not math.isfinite(elapsed_s)
+        or not math.isfinite(duration_s)
+        or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S
+        or not 0.0 < duration_s <= TURN_PULSE_S
+    ):
+        raise ValueError("turn command must be within the fixed 0.14 rad/s, 2.0 s profile")
+    ramp = min(TURN_RAMP_S, duration_s / 2.0)
+    if elapsed_s < 0.0 or elapsed_s >= duration_s:
+        return 0.0
+    if elapsed_s < ramp:
+        phase = elapsed_s / ramp
+    elif elapsed_s > duration_s - ramp:
+        phase = (duration_s - elapsed_s) / ramp
+    else:
+        phase = 1.0
+    blend = phase * phase * (3.0 - 2.0 * phase)
+    return math.copysign(abs(angular_velocity_rad_s) * blend, angular_velocity_rad_s)
 
 
 def startup_then_cruise_velocity(

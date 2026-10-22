@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from issue80_m1_first_motion import TURN_COMMAND_RAD_S, TURN_PULSE_S
+
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
 RUNTIME = REPO / "simulation/mujoco/raicom2026"
@@ -404,6 +406,12 @@ def build_run41_foundationwalk_min_run_overlay(
 
 def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
     """Keep a derived config result distinct from original-config acceptance."""
+    if baseline_classification in (
+        "SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS",
+        "SIMULATION_ONLY_DIAGNOSTIC_TURNING_FAIL",
+        "SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED",
+    ):
+        return baseline_classification
     if baseline_classification == "FIRST_PHYSICAL_WALKING_PASS":
         return "SIMULATION_ONLY_DIAGNOSTIC_MOTION_AND_STOP_OBSERVED"
     if baseline_classification == "FIRST_PHYSICAL_WALKING_MOTION_CONFIRMED_STOP_UNVERIFIED":
@@ -601,7 +609,8 @@ class BoundedRun:
         run48 = bool(getattr(self.args, "run48_low_cruise_baseline_diagnostic", False))
         run49 = bool(getattr(self.args, "run49_smoothstop_diagnostic", False))
         run50 = bool(getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False))
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50))
+        run53 = bool(getattr(self.args, "run53_turning_diagnostic", False))
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -659,7 +668,7 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        if run41 or run42 or run43 or run44 or run45 or run46 or run48 or run49 or run50:
+        if run41 or run42 or run43 or run44 or run45 or run46 or run48 or run49 or run50 or run53:
             overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
             overlay_name = "foundationwalk_knee019_minrun010.yaml"
         else:
@@ -678,8 +687,15 @@ class BoundedRun:
             "source_limits_modified": False,
             "safety_gates_modified": False,
         })
-        manifest["command_speed_m_s"] = float(self.args.forward_speed)
-        manifest["command_profile"] = {
+        manifest["command_speed_m_s"] = 0.0 if run53 else float(self.args.forward_speed)
+        manifest["command_profile"] = ({
+            "shape": "left-right-yaw-only",
+            "forward_velocity_m_s": 0.0,
+            "lateral_velocity_m_s": 0.0,
+            "angular_velocity_rad_s": [TURN_COMMAND_RAD_S, -TURN_COMMAND_RAD_S],
+            "pulse_duration_s_each": TURN_PULSE_S,
+            "total_active_command_s": 2.0 * TURN_PULSE_S,
+        } if run53 else {
             "shape": "motion-triggered-startup-then-cruise"
             if getattr(self.args, "startup_speed", None) is not None
             else "constant-then-smoothstep-deceleration"
@@ -696,7 +712,7 @@ class BoundedRun:
             "deceleration_end_speed_m_s": 0.112
             if getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
             else 0.0 if getattr(self.args, "run49_smoothstop_diagnostic", False) else None,
-        }
+        })
         manifest_path = self.evidence / "foundationwalk_config_overlay_manifest.json"
         with manifest_path.open("x", encoding="utf-8") as stream:
             json.dump(manifest, stream, indent=2)
@@ -1337,6 +1353,7 @@ class BoundedRun:
             or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
             or getattr(self.args, "run49_smoothstop_diagnostic", False)
             or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
+            or getattr(self.args, "run53_turning_diagnostic", False)
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
         if (
@@ -1348,6 +1365,7 @@ class BoundedRun:
             or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
             or getattr(self.args, "run49_smoothstop_diagnostic", False)
             or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
+            or getattr(self.args, "run53_turning_diagnostic", False)
         ):
             command[-1] += " --zero-until-stand-timeout-s 3.5"
         if (
@@ -1358,12 +1376,15 @@ class BoundedRun:
             or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
             or getattr(self.args, "run49_smoothstop_diagnostic", False)
             or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
+            or getattr(self.args, "run53_turning_diagnostic", False)
         ):
             command[-1] += " --zero-only-stop"
         if getattr(self.args, "run49_smoothstop_diagnostic", False):
             command[-1] += " --deceleration-duration-s 1.0"
         if getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False):
             command[-1] += " --deceleration-duration-s 1.0 --deceleration-end-speed-m-s 0.112"
+        if getattr(self.args, "run53_turning_diagnostic", False):
+            command[-1] += " --turning-diagnostic"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
@@ -1675,6 +1696,27 @@ class BoundedRun:
             if isinstance(child_fault, str) and child_fault:
                 result["fault"] = child_fault
             m1 = self.m1_result or {}
+            if getattr(self.args, "run53_turning_diagnostic", False):
+                turning = m1.get("turning_diagnostic")
+                result["turning_diagnostic"] = turning
+                turn_text = json.dumps(turning, sort_keys=True).lower() if isinstance(turning, Mapping) else ""
+                safety_fault = any(
+                    token in turn_text
+                    for token in M1_SAFETY_FAULT_MARKERS
+                )
+                self.outcome_classification = (
+                    "SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS"
+                    if isinstance(turning, Mapping) and turning.get("status") == "PASS"
+                    else "SIMULATION_ONLY_DIAGNOSTIC_TURNING_FAIL"
+                    if safety_fault
+                    else "SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED"
+                )
+                result["outcome_classification"] = self.outcome_classification
+                result["status"] = (
+                    "PASS" if self.outcome_classification == "SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS"
+                    else "BLOCKED"
+                )
+                return result
             activation = m1.get("activation")
             activation_fault = (
                 str(activation.get("fault") or "")
@@ -1877,6 +1919,14 @@ def main() -> int:
             "command cutoff), then use the unchanged zero-only stop protocol"
         ),
     )
+    parser.add_argument(
+        "--run53-turning-diagnostic",
+        action="store_true",
+        help=(
+            "reuse the verified SIMULATION_ONLY FoundationWalk overlay for one bounded 0.14 rad/s "
+            "left/right yaw-only turn pair with the unchanged physical stop gates"
+        ),
+    )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
@@ -1902,69 +1952,87 @@ def main() -> int:
         args.run48_low_cruise_baseline_diagnostic,
         args.run49_smoothstop_diagnostic,
         args.run50_threshold_respecting_smoothstop_diagnostic,
+        args.run53_turning_diagnostic,
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
     if any(diagnostic_variants):
         if not args.maintainer_authorized_first_motion:
             parser.error("FoundationWalk diagnostic requires the authorized first-motion gate")
-        if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic:
-            target_speed = 0.14
-        elif args.run46_startup_cruise_threshold_diagnostic or args.run48_low_cruise_baseline_diagnostic:
-            target_speed = 0.105
+        if args.run53_turning_diagnostic:
+            if (
+                not args.capture_mc_rl_debug
+                or abs(args.extra_stop_observation - 5.0) > 1e-9
+                or args.pulse_duration != 1.0
+                or abs(args.forward_speed - 0.2) > 1e-9
+                or args.ramp_duration_s != 0.0
+                or args.ramp_start_speed is not None
+                or args.startup_speed is not None
+                or args.startup_transition_displacement is not None
+                or args.startup_transition_timeout_s != 0.0
+            ):
+                parser.error(
+                    "Run53 uses the fixed two-second ±0.14 rad/s turn pair, 5-second observation, "
+                    "McRLDebug capture, and no startup/forward-ramp profile"
+                )
         else:
-            target_speed = 0.112
-        target_pulse = 10.0 if args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic else 3.0
-        if args.run46_startup_cruise_threshold_diagnostic:
-            startup_profile_valid = (
-                args.startup_speed is not None
-                and abs(args.startup_speed - 0.12) <= 1e-9
-                and args.startup_transition_displacement is not None
-                and abs(args.startup_transition_displacement - 0.01) <= 1e-9
-                and abs(args.startup_transition_timeout_s - 0.75) <= 1e-9
-            )
-        else:
-            startup_profile_valid = (
-                args.startup_speed is None
-                and args.startup_transition_displacement is None
-                and args.startup_transition_timeout_s == 0.0
-            )
-        if (
-            abs(args.forward_speed - target_speed) > 1e-9
-            or abs(args.pulse_duration - target_pulse) > 1e-9
-            or abs(args.extra_stop_observation - 5.0) > 1e-9
-            or args.ramp_duration_s != 0.0
-            or args.ramp_start_speed is not None
-            or not startup_profile_valid
-            or not args.capture_mc_rl_debug
-        ):
+            if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic:
+                target_speed = 0.14
+            elif args.run46_startup_cruise_threshold_diagnostic or args.run48_low_cruise_baseline_diagnostic:
+                target_speed = 0.105
+            else:
+                target_speed = 0.112
+            target_pulse = 10.0 if args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic else 3.0
             if args.run46_startup_cruise_threshold_diagnostic:
-                parser.error(
-                    "Run46 is fixed to 0.12 m/s startup, 0.105 m/s cruise after 10 mm, "
-                    "0.75 s transition timeout, 3 s pulse, 5 s post-stop observation, "
-                    "no additional ramp, and McRLDebug capture"
+                startup_profile_valid = (
+                    args.startup_speed is not None
+                    and abs(args.startup_speed - 0.12) <= 1e-9
+                    and args.startup_transition_displacement is not None
+                    and abs(args.startup_transition_displacement - 0.01) <= 1e-9
+                    and abs(args.startup_transition_timeout_s - 0.75) <= 1e-9
                 )
-            if args.run48_low_cruise_baseline_diagnostic:
-                parser.error(
-                    "Run48 is fixed to constant 0.105 m/s, 3 s pulse, 5 s post-stop "
-                    "observation, no ramp or startup profile, and McRLDebug capture"
+            else:
+                startup_profile_valid = (
+                    args.startup_speed is None
+                    and args.startup_transition_displacement is None
+                    and args.startup_transition_timeout_s == 0.0
                 )
-            if args.run49_smoothstop_diagnostic:
+            if (
+                abs(args.forward_speed - target_speed) > 1e-9
+                or abs(args.pulse_duration - target_pulse) > 1e-9
+                or abs(args.extra_stop_observation - 5.0) > 1e-9
+                or args.ramp_duration_s != 0.0
+                or args.ramp_start_speed is not None
+                or not startup_profile_valid
+                or not args.capture_mc_rl_debug
+            ):
+                if args.run46_startup_cruise_threshold_diagnostic:
+                    parser.error(
+                        "Run46 is fixed to 0.12 m/s startup, 0.105 m/s cruise after 10 mm, "
+                        "0.75 s transition timeout, 3 s pulse, 5 s post-stop observation, "
+                        "no additional ramp, and McRLDebug capture"
+                    )
+                if args.run48_low_cruise_baseline_diagnostic:
+                    parser.error(
+                        "Run48 is fixed to constant 0.105 m/s, 3 s pulse, 5 s post-stop "
+                        "observation, no ramp or startup profile, and McRLDebug capture"
+                    )
+                if args.run49_smoothstop_diagnostic:
+                    parser.error(
+                        "Run49 is fixed to a 10-second 0.14 m/s command with a 1-second "
+                        "smooth deceleration, 5-second post-stop observation, no startup/ramp, "
+                        "and McRLDebug capture"
+                    )
+                if args.run50_threshold_respecting_smoothstop_diagnostic:
+                    parser.error(
+                        "Run50 is fixed to a 10-second 0.14 m/s command with a 1-second "
+                        "smooth reduction to 0.112 m/s, 5-second post-stop observation, "
+                        "no startup/ramp, and McRLDebug capture"
+                    )
                 parser.error(
-                    "Run49 is fixed to a 10-second 0.14 m/s command with a 1-second "
-                    "smooth deceleration, 5-second post-stop observation, no startup/ramp, "
-                    "and McRLDebug capture"
+                    f"FoundationWalk diagnostic is fixed to {target_speed} m/s, {target_pulse} s, "
+                    "5 s post-stop observation, no velocity ramp, and McRLDebug capture"
                 )
-            if args.run50_threshold_respecting_smoothstop_diagnostic:
-                parser.error(
-                    "Run50 is fixed to a 10-second 0.14 m/s command with a 1-second "
-                    "smooth reduction to 0.112 m/s, 5-second post-stop observation, "
-                    "no startup/ramp, and McRLDebug capture"
-                )
-            parser.error(
-                f"FoundationWalk diagnostic is fixed to {target_speed} m/s, {target_pulse} s, "
-                "5 s post-stop observation, no velocity ramp, and McRLDebug capture"
-            )
     try:
         validate_reserved_evidence_directory(args.evidence_dir)
     except (OSError, ValueError, RuntimeError) as exc:

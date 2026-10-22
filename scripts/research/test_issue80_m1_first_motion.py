@@ -27,6 +27,7 @@ from issue80_m1_first_motion import (
     MC_FSM_STABLE,
     measure_post_stop_forward_tail,
     evaluate_physical_stop_gate,
+    run_angular_turn_window,
     verify_mc_fsm_runtime_contract,
     MC_FSM_RUNTIME_LIBRARY_SHA256,
     FORWARD_COMMAND_M_S,
@@ -34,6 +35,8 @@ from issue80_m1_first_motion import (
     MAX_AUTHORIZED_PULSE_S,
     smoothstep_velocity,
     smoothstep_deceleration_velocity,
+    smooth_turn_velocity,
+    classify_turning_rotation,
     startup_then_cruise_velocity,
     joint_command_array_snapshot,
     float64_multi_array_snapshot,
@@ -2327,6 +2330,109 @@ class PhysicalStopGateTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("stable_window_too_short", result["final_window_violations"])
+
+
+class BoundedTurningProfileTests(unittest.TestCase):
+    def test_turn_ramp_is_symmetric_signed_and_never_exceeds_point_one_four_rad_s(self):
+        left = [smooth_turn_velocity(0.14, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
+        right = [smooth_turn_velocity(-0.14, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
+        self.assertEqual(left[0], 0.0)
+        self.assertEqual(left[-1], 0.0)
+        self.assertEqual(right, [-value for value in left])
+        self.assertLessEqual(max(map(abs, left)), 0.14)
+        self.assertEqual(left[2], 0.14)
+
+    def test_turn_profile_rejects_command_or_duration_above_the_fixed_cap(self):
+        with self.assertRaises(ValueError):
+            smooth_turn_velocity(0.14001, 0.5, 2.0)
+        with self.assertRaises(ValueError):
+            smooth_turn_velocity(-0.1, 0.5, 2.001)
+
+    def test_turn_direction_requires_heading_change_beyond_stationary_noise(self):
+        left = classify_turning_rotation(
+            start_yaw_rad=0.0,
+            end_yaw_rad=0.10,
+            commanded_angular_velocity_rad_s=0.1,
+            baseline_yaw_noise_rad=0.001,
+        )
+        self.assertEqual(left["status"], "TURN_DIRECTION_PASS")
+
+        right = classify_turning_rotation(
+            start_yaw_rad=0.0,
+            end_yaw_rad=-0.10,
+            commanded_angular_velocity_rad_s=-0.1,
+            baseline_yaw_noise_rad=0.001,
+        )
+        self.assertEqual(right["status"], "TURN_DIRECTION_PASS")
+
+        opposite = classify_turning_rotation(
+            start_yaw_rad=0.0,
+            end_yaw_rad=-0.10,
+            commanded_angular_velocity_rad_s=0.1,
+            baseline_yaw_noise_rad=0.001,
+        )
+        self.assertEqual(opposite["status"], "TURN_OPPOSITE_DIRECTION")
+
+        too_small = classify_turning_rotation(
+            start_yaw_rad=0.0,
+            end_yaw_rad=0.01,
+            commanded_angular_velocity_rad_s=0.1,
+            baseline_yaw_noise_rad=0.001,
+        )
+        self.assertEqual(too_small["status"], "TURN_HEADING_CHANGE_TOO_SMALL")
+
+    def test_turn_preflight_rejects_live_angular_bound_before_nonzero_publish(self):
+        clock = FakeClock()
+        base = FirstMotionSafetyTests().snapshot(
+            get_mode_status_value=100,
+            common_mode_status_value=100,
+            pose={
+                "x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0,
+                "pitch": 0.0, "yaw": 0.0, "vx": 0.0, "vy": 0.0,
+                "vz": 0.0, "wz": 0.0, "frame_id": "odom", "child_frame_id": "base_link",
+            },
+            speed_status={
+                "speed_mode": 1,
+                "angular_bounds": {"min_value": -0.05, "max_value": 0.05},
+            },
+            leg_states=[
+                {"name": "left_hip_pitch_joint", "position": 0.0, "velocity": 0.0, "error_code": 0}
+            ],
+            mc_leg_command={
+                "joints": [{"name": "left_hip_pitch_joint", "position": 0.0}]
+            },
+        )
+        turn_commands = []
+        zero_commands = []
+
+        def sample():
+            row = dict(base)
+            row["sample_monotonic_s"] = clock.now()
+            row["readback_monotonic_s"] = {"get_mode": clock.now(), "get_source": clock.now()}
+            row["mc_leg_command"] = {"joints": [{"name": "left_hip_pitch_joint", "position": 0.0}]}
+            return row
+
+        result = run_angular_turn_window(
+            sample=sample,
+            publish_turn=turn_commands.append,
+            publish_zero=lambda: zero_commands.append(0.0),
+            registration={"success": True, "selected_action": "ADD"},
+            set_action={"accepted_by_service": True},
+            joint_limits=LIMITS,
+            baseline_forward_displacements_m=[0.0, 0.0, 0.0],
+            baseline_state_summary={"body_status": 1, "maxima": {"max_abs_yaw_excursion_rad": 0.001}},
+            authorized=True,
+            angular_velocity_rad_s=0.1,
+            pulse_duration_s=2.0,
+            extra_post_stop_observe_s=0.0,
+            clock=clock.now,
+            sleep=clock.sleep,
+        )
+        self.assertEqual(result["status"], "ABORTED")
+        self.assertEqual(result["fault"], "turn_command_outside_live_angular_bounds")
+        self.assertEqual(turn_commands, [])
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], 49)
+        self.assertFalse(result["mc_stop_ack"])
 
 
 if __name__ == "__main__":

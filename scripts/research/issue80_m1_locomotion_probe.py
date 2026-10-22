@@ -33,6 +33,7 @@ from issue80_m1_first_motion import (
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
     MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, MAX_AUTHORIZED_PULSE_S, verify_mc_fsm_runtime_contract,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
+    TURN_COMMAND_RAD_S, TURN_PULSE_S, run_angular_turn_window,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
     float64_multi_array_snapshot, load_leg_joint_limits, load_mc_input_source_timeouts,
     joint_command_array_snapshot,
@@ -245,6 +246,9 @@ class FocusedM1Diagnostic(Node):
             "vx": float(odom.twist.twist.linear.x),
             "vy": float(odom.twist.twist.linear.y),
             "vz": float(odom.twist.twist.linear.z),
+            "wx": float(odom.twist.twist.angular.x),
+            "wy": float(odom.twist.twist.angular.y),
+            "wz": float(odom.twist.twist.angular.z),
             "frame_id": str(odom.header.frame_id),
             "child_frame_id": str(odom.child_frame_id),
             "twist_frame_id": str(odom.child_frame_id),
@@ -349,18 +353,24 @@ class FocusedM1Diagnostic(Node):
         with self.trace_lock:
             self.trace.write(json.dumps(row, allow_nan=False, separators=(",", ":")) + "\n")
 
-    def _publish(self, forward: float = 0.0) -> None:
+    def _publish(
+        self, forward: float = 0.0, lateral: float = 0.0, angular: float = 0.0,
+    ) -> None:
         msg = McLocomotionVelocity()
         msg.header = MessageHeader()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.source = self.source
         msg.forward_velocity = float(forward)
-        msg.lateral_velocity = 0.0
-        msg.angular_velocity = 0.0
+        msg.lateral_velocity = float(lateral)
+        msg.angular_velocity = float(angular)
         with self.publisher_lock:
             command_row = {
                 "event": "velocity_command",
-                "command_kind": "zero_stop" if forward == 0.0 else "nonzero_activation",
+                "command_kind": (
+                    "zero_stop" if forward == 0.0 and lateral == 0.0 and angular == 0.0
+                    else "turning_activation" if forward == 0.0 and lateral == 0.0
+                    else "nonzero_activation"
+                ),
                 "publish_outcome": "CALL_STARTED",
                 "wall_utc": datetime.now(timezone.utc).isoformat(),
                 "wall_monotonic_sec": time.monotonic(),
@@ -396,7 +406,7 @@ class FocusedM1Diagnostic(Node):
                 "source": str(msg.source),
                 "publish_outcome": "CALL_RETURNED",
             })
-            if forward != 0.0:
+            if forward != 0.0 or lateral != 0.0 or angular != 0.0:
                 self.nonzero_publish_calls_returned += 1
             else:
                 self.zero_publish_calls_returned += 1
@@ -912,6 +922,7 @@ class FocusedM1Diagnostic(Node):
         ages["get_source"] = now - self.readback_at["get_source"] if "get_source" in self.readback_at else None
         pose = self._pose()
         bounds = None
+        speed_status = None
         if common is not None:
             try:
                 bounds = {
@@ -920,6 +931,21 @@ class FocusedM1Diagnostic(Node):
                 }
             except (AttributeError, TypeError, ValueError):
                 bounds = None
+            try:
+                status = common.speed_status
+                def _bounds(value: Any) -> dict[str, float]:
+                    return {
+                        "min_value": float(value.min_value),
+                        "max_value": float(value.max_value),
+                    }
+                speed_status = {
+                    "speed_mode": int(status.speed_mode.value),
+                    "forward_bounds": _bounds(status.forward_bounds),
+                    "lateral_bounds": _bounds(status.lateral_bounds),
+                    "angular_bounds": _bounds(status.angular_bounds),
+                }
+            except (AttributeError, TypeError, ValueError):
+                speed_status = None
         return {
             "wall_utc": datetime.now(timezone.utc).isoformat(),
             "sample_monotonic_s": now,
@@ -942,6 +968,7 @@ class FocusedM1Diagnostic(Node):
             ),
             "common_source_name": str(common.input_source.name) if common else "",
             "forward_bounds": bounds,
+            "speed_status": speed_status,
             "leg_states": self._joint_states_as_dicts(),
             "mc_leg_command": joint_command_array_snapshot(
                 self.latest.get("leg_command"), self.received_at.get("leg_command")
@@ -1052,12 +1079,79 @@ class FocusedM1Diagnostic(Node):
             raise RuntimeError(f"source conflict before first motion: service={current!r}, common={common_name!r}")
         return result
 
+    def run_turning_pair(
+        self,
+        *,
+        registration: Mapping[str, Any],
+        set_action: Mapping[str, Any],
+        stationary_baseline: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        baseline_displacements = [
+            float(window["forward_displacement_m"])
+            for window in stationary_baseline.get("windows", [])
+        ]
+        baseline_state_summary = stationary_baseline.get("physical_state_summary")
+        directions = (("left", TURN_COMMAND_RAD_S), ("right", -TURN_COMMAND_RAD_S))
+        turns = []
+        for name, angular in directions:
+            turn = run_angular_turn_window(
+                sample=self.sample_for_first_motion,
+                publish_turn=lambda value: self._publish(0.0, 0.0, value),
+                publish_zero=lambda: self._publish(0.0, 0.0, 0.0),
+                registration=registration,
+                set_action=set_action,
+                joint_limits=self.joint_limits,
+                baseline_forward_displacements_m=baseline_displacements,
+                baseline_state_summary=baseline_state_summary,
+                authorized=True,
+                angular_velocity_rad_s=angular,
+                pulse_duration_s=TURN_PULSE_S,
+                max_observed_planar_speed_m_s=0.2,
+                zero_until_stand_timeout_s=3.5,
+                extra_post_stop_observe_s=5.0,
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+                shutdown_event=self.interrupted,
+                on_sample=lambda phase, snapshot, side=name: self._trace_first_motion_sample(
+                    f"turn-{side}-{phase}", snapshot,
+                ),
+            )
+            turn["direction"] = name
+            turns.append(turn)
+            if turn.get("status") != "PHYSICAL_TURN_AND_STOP_PASS":
+                break
+        passed = len(turns) == len(directions) and all(
+            turn.get("status") == "PHYSICAL_TURN_AND_STOP_PASS" for turn in turns
+        )
+        return {
+            "status": "PASS" if passed else "BLOCKED",
+            "classification": "SIMULATION_ONLY_DERIVED_FOUNDATIONWALK_TURNING",
+            "directions": [turn.get("direction") for turn in turns],
+            "angular_command_rad_s": TURN_COMMAND_RAD_S,
+            "pulse_duration_each_s": TURN_PULSE_S,
+            "total_active_command_s": sum(
+                float(turn.get("pulse_actual_duration_s", 0.0)) for turn in turns
+            ),
+            "turns": turns,
+            "not_run_directions": [name for name, _ in directions[len(turns):]],
+            "limitations": [
+                "No foot contact force or MC stop acknowledgement is published by the installed runtime.",
+                "Acceptance requires measured simulator yaw in both commanded directions and a passing PHYSICAL_STOP gate after each turn.",
+            ],
+        }
+
     def execute(self) -> dict[str, Any]:
         stationary_baseline: dict[str, Any] | None = None
         result: dict[str, Any] = {
             "schema": "robotsim.issue80.m1.first-motion.v2",
             "simulation_only": True,
-            "acceptance_scope": "SIMULATION_ONLY derived-configuration locomotion and physical-stop validation; not manufacturer-original acceptance, turning, or point-goal navigation",
+            "acceptance_scope": (
+                "SIMULATION_ONLY derived-configuration left/right turning and physical-stop validation; "
+                "not manufacturer-original acceptance or point-goal navigation"
+                if getattr(self.args, "turning_diagnostic", False)
+                else "SIMULATION_ONLY derived-configuration locomotion and physical-stop validation; not manufacturer-original acceptance, turning, or point-goal navigation"
+            ),
             "attempt_id": self.args.attempt_id,
             "maintainer_authorized": bool(self.args.maintainer_authorized),
             "reset_gate_verified_by_parent": bool(self.args.reset_gate_verified),
@@ -1092,6 +1186,9 @@ class FocusedM1Diagnostic(Node):
             },
             "fault": None,
         }
+        if getattr(self.args, "turning_diagnostic", False):
+            result["forward_command_m_s"] = 0.0
+            result["pulse_limit_s"] = TURN_PULSE_S
         try:
             result["transport_scope"] = self.check_transport_scope()
             self.wait_for_standing()
@@ -1116,6 +1213,41 @@ class FocusedM1Diagnostic(Node):
             if registration["success"] and set_action.get("accepted_by_service"):
                 stationary_baseline = self.collect_stationary_odom_baseline()
             result["stationary_odom_baseline"] = stationary_baseline
+
+            if getattr(self.args, "turning_diagnostic", False):
+                turning = self.run_turning_pair(
+                    registration=registration,
+                    set_action=set_action,
+                    stationary_baseline=stationary_baseline or {},
+                )
+                self.pulse_result = turning
+                result["turning_diagnostic"] = turning
+                result["nonzero_publish_calls_returned"] = sum(
+                    int(turn.get("nonzero_publish_calls_returned", 0) or 0)
+                    for turn in turning.get("turns", [])
+                )
+                result["zero_publish_calls_returned"] = self.zero_publish_calls_returned
+                result["mc_velocity_receipt_confirmed"] = False
+                result["mc_stop_confirmed"] = False
+                result["legacy_baseline_stop_gates"] = [
+                    turn.get("legacy_baseline_stop_gate")
+                    for turn in turning.get("turns", [])
+                ]
+                result["physical_stop_gates"] = [
+                    turn.get("physical_stop_gate")
+                    for turn in turning.get("turns", [])
+                ]
+                result["fault"] = next(
+                    (turn.get("fault") for turn in turning.get("turns", []) if turn.get("fault")),
+                    None,
+                )
+                result["get_mc_action_final"] = self.read_mode("final_turning_post_stop")
+                result["get_current_input_source_final"] = self.read_input_source("final_turning_post_stop")
+                result["final_common_state"] = _json_safe(self.latest.get("common"))
+                result["final_odometry"] = self._pose()
+                result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
+                result["status"] = "PASS" if turning.get("status") == "PASS" else "BLOCKED"
+                return result
 
             # The first nonzero request is permitted after the standing, transport,
             # registration and SetMcAction response gates. It does not require LD or
@@ -1323,6 +1455,8 @@ def main() -> int:
     first.add_argument("--max-observed-planar-speed-m-s", type=float, default=None)
     first.add_argument("--zero-until-stand-timeout-s", type=float, default=0.0)
     first.add_argument("--zero-only-stop", action="store_true")
+    first.add_argument("--turning-diagnostic", action="store_true")
+    first.add_argument("--turning-diagnostic", action="store_true")
     args = parser.parse_args()
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)

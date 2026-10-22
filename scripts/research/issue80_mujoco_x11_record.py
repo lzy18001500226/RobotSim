@@ -2,7 +2,7 @@
 """Passive, window-verified X11 recording for an isolated Issue 80 MuJoCo run.
 
 This helper reads only the MuJoCo window named by the run's verified Reset event.
-It sends no input and begins recording at the first nonzero velocity event.
+It sends no input and begins recording at the first nonzero linear or angular command.
 """
 
 from __future__ import annotations
@@ -212,13 +212,20 @@ def record_verified_walk_window(
     while pulse_start is None and time.monotonic() < trace_deadline:
         offset, events = _next_complete_trace_event(trace_path, offset)
         for event in events:
-            if event.get("event") == "velocity_command" and event.get("forward_velocity_m_s", 0.0) > 0.0:
+            command_values = (
+                event.get("forward_velocity_m_s", 0.0),
+                event.get("lateral_velocity_m_s", 0.0),
+                event.get("angular_velocity_rad_s", 0.0),
+            )
+            if event.get("event") == "velocity_command" and any(
+                abs(float(value or 0.0)) > 0.0 for value in command_values
+            ):
                 pulse_start = float(event["wall_monotonic_sec"])
                 break
         if pulse_start is None:
             time.sleep(0.02)
     if pulse_start is None:
-        raise TimeoutError("nonzero M1 command was not observed in the trace")
+        raise TimeoutError("nonzero M1 linear or angular command was not observed in the trace")
 
     from PIL import Image
 
