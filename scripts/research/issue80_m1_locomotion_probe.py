@@ -1132,6 +1132,7 @@ class FocusedM1Diagnostic(Node):
                 max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
                 ramp_start_speed_m_s=self.args.ramp_start_speed,
                 ramp_duration_s=self.args.ramp_duration_s,
+                deceleration_duration_s=self.args.deceleration_duration_s,
                 startup_speed_m_s=self.args.startup_speed,
                 startup_transition_displacement_m=self.args.startup_transition_displacement,
                 startup_transition_timeout_s=self.args.startup_transition_timeout_s,
@@ -1289,6 +1290,7 @@ def main() -> int:
     first.add_argument("--forward-speed", type=float, default=0.2)
     first.add_argument("--ramp-start-speed", type=float, default=None)
     first.add_argument("--ramp-duration-s", type=float, default=0.0)
+    first.add_argument("--deceleration-duration-s", type=float, default=0.0)
     first.add_argument("--startup-speed", type=float, default=None)
     first.add_argument("--startup-transition-displacement", type=float, default=None)
     first.add_argument("--startup-transition-timeout-s", type=float, default=0.0)

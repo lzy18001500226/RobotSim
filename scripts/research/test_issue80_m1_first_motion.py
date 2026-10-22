@@ -32,6 +32,7 @@ from issue80_m1_first_motion import (
     PULSE_LIMIT_S,
     MAX_AUTHORIZED_PULSE_S,
     smoothstep_velocity,
+    smoothstep_deceleration_velocity,
     startup_then_cruise_velocity,
     joint_command_array_snapshot,
     float64_multi_array_snapshot,
@@ -316,6 +317,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         max_pulse_duration_s=1.0,
         ramp_start_speed_m_s=None,
         ramp_duration_s=0.0,
+        deceleration_duration_s=0.0,
         startup_speed_m_s=None,
         startup_transition_displacement_m=None,
         startup_transition_timeout_s=0.0,
@@ -350,6 +352,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             max_pulse_duration_s=max_pulse_duration_s,
             ramp_start_speed_m_s=ramp_start_speed_m_s,
             ramp_duration_s=ramp_duration_s,
+            deceleration_duration_s=deceleration_duration_s,
             startup_speed_m_s=startup_speed_m_s,
             startup_transition_displacement_m=startup_transition_displacement_m,
             startup_transition_timeout_s=startup_transition_timeout_s,
@@ -573,6 +576,66 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertAlmostEqual(values[2],0.1275)
         with self.assertRaisesRegex(ValueError,"under the command cap"):
             smoothstep_velocity(0.105,0.21,1.0,2.0)
+
+    def test_smoothstep_deceleration_reaches_zero_monotonically_within_one_second(self):
+        values = [
+            smoothstep_deceleration_velocity(0.14, t, 1.0)
+            for t in (0.0, 0.25, 0.5, 0.75, 1.0, 1.1)
+        ]
+        self.assertEqual(values[0], 0.14)
+        self.assertEqual(values[2], 0.07)
+        self.assertEqual(values[4:], [0.0, 0.0])
+        self.assertTrue(all(0.0 <= right <= left <= 0.14 for left, right in zip(values, values[1:])))
+        with self.assertRaisesRegex(ValueError, "in \(0, 1\] seconds"):
+            smoothstep_deceleration_velocity(0.14, 0.5, 1.01)
+
+    def test_run_window_decelerates_only_in_final_second_then_uses_zero_stop(self):
+        clock = FakeClock()
+        commands = []
+        result = self.run_protocol(
+            self.snapshot,
+            lambda value: commands.append((clock.now(), value)),
+            fake_clock=clock,
+            baseline=[0.001, 0.001, 0.001],
+            forward_command_m_s=0.14,
+            pulse_duration_s=2.0,
+            max_pulse_duration_s=2.0,
+            deceleration_duration_s=1.0,
+        )
+        pulse = [(t, value) for t, value in commands if value > 0.0]
+        self.assertEqual(len(pulse), 100)
+        self.assertTrue(all(abs(value - 0.14) < 1e-12 for _, value in pulse[:50]))
+        decelerating = [value for _, value in pulse[50:]]
+        self.assertTrue(all(right <= left for left, right in zip(decelerating, decelerating[1:])))
+        self.assertGreater(decelerating[0], 0.13)
+        self.assertLess(decelerating[-1], 0.001)
+        self.assertEqual(result["velocity_profile"]["shape"], "constant-then-smoothstep-deceleration")
+        self.assertEqual(result["velocity_profile"]["deceleration_start_s"], 1.0)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
+
+    def test_bounded_pulse_uses_final_second_for_smooth_deceleration_then_zero_stop(self):
+        clock = FakeClock()
+        commands = []
+        result = self.run_protocol(
+            self.snapshot,
+            lambda value: commands.append((clock.now(), value)),
+            fake_clock=clock,
+            baseline=[0.001, 0.001, 0.001],
+            forward_command_m_s=0.14,
+            pulse_duration_s=2.0,
+            max_pulse_duration_s=2.0,
+            deceleration_duration_s=1.0,
+        )
+        pulse = [(t, value) for t, value in commands if value > 0.0]
+        self.assertEqual(len(pulse), 100)
+        self.assertTrue(all(abs(value - 0.14) < 1e-12 for _, value in pulse[:50]))
+        decelerating = [value for _, value in pulse[50:]]
+        self.assertTrue(all(right <= left for left, right in zip(decelerating, decelerating[1:])))
+        self.assertGreater(decelerating[0], 0.13)
+        self.assertLess(decelerating[-1], 0.001)
+        self.assertEqual(result["velocity_profile"]["shape"], "constant-then-smoothstep-deceleration")
+        self.assertEqual(result["velocity_profile"]["deceleration_start_s"], 1.0)
+        self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
 
     def test_motion_triggered_startup_uses_cruise_only_after_measured_displacement(self):
         self.assertEqual(startup_then_cruise_velocity(0.12, 0.08, 0.0199, 0.02), 0.12)

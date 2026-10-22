@@ -1380,6 +1380,22 @@ def smoothstep_velocity(
     return start_m_s + (target_m_s - start_m_s) * blend
 
 
+def smoothstep_deceleration_velocity(
+    start_m_s: float, elapsed_s: float, deceleration_duration_s: float,
+) -> float:
+    """C1-continuous one-second-bounded reduction of a positive command to zero."""
+    values = (start_m_s, elapsed_s, deceleration_duration_s)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("deceleration values must be finite")
+    if not 0.0 < start_m_s <= FORWARD_COMMAND_M_S:
+        raise ValueError("deceleration start must be positive and under the command cap")
+    if not 0.0 < deceleration_duration_s <= 1.0:
+        raise ValueError("deceleration duration must be in (0, 1] seconds")
+    progress = max(0.0, min(1.0, elapsed_s / deceleration_duration_s))
+    blend = progress * progress * (3.0 - 2.0 * progress)
+    return start_m_s * (1.0 - blend)
+
+
 def startup_then_cruise_velocity(
     startup_m_s: float,
     cruise_m_s: float,
@@ -1569,6 +1585,7 @@ def run_first_motion_window(
     max_pulse_duration_s: float = PULSE_LIMIT_S,
     ramp_start_speed_m_s: float | None = None,
     ramp_duration_s: float = 0.0,
+    deceleration_duration_s: float = 0.0,
     startup_speed_m_s: float | None = None,
     startup_transition_displacement_m: float | None = None,
     startup_transition_timeout_s: float = 0.0,
@@ -1597,11 +1614,18 @@ def run_first_motion_window(
         "velocity_profile": {
             "shape": (
                 "motion-triggered-startup-then-cruise" if startup_speed_m_s is not None
+                else "constant-then-smoothstep-deceleration" if deceleration_duration_s > 0.0
                 else "smoothstep" if ramp_duration_s > 0.0 else "constant"
             ),
             "ramp_start_speed_m_s": ramp_start_speed_m_s,
             "target_speed_m_s": forward_command_m_s,
             "ramp_duration_s": ramp_duration_s,
+            "deceleration_duration_s": deceleration_duration_s,
+            "deceleration_start_s": (
+                pulse_duration_s - deceleration_duration_s
+                if deceleration_duration_s > 0.0 else None
+            ),
+            "end_speed_m_s": 0.0 if deceleration_duration_s > 0.0 else None,
             "startup_speed_m_s": startup_speed_m_s,
             "cruise_speed_m_s": forward_command_m_s if startup_speed_m_s is not None else None,
             "transition_displacement_m": startup_transition_displacement_m,
@@ -1651,6 +1675,15 @@ def run_first_motion_window(
         pulse_fault = "observed_planar_speed_gate_outside_authorized_cap"
     elif not math.isfinite(ramp_duration_s) or not 0.0 <= ramp_duration_s <= pulse_duration_s:
         pulse_fault = "velocity_ramp_duration_outside_pulse"
+    elif (
+        not math.isfinite(deceleration_duration_s)
+        or not 0.0 <= deceleration_duration_s <= min(1.0, pulse_duration_s)
+    ):
+        pulse_fault = "velocity_deceleration_duration_outside_one_second_bound"
+    elif deceleration_duration_s > 0.0 and (
+        ramp_duration_s > 0.0 or startup_speed_m_s is not None
+    ):
+        pulse_fault = "velocity_deceleration_profile_conflicts_with_startup_or_ramp"
     elif ramp_duration_s > 0.0 and (
         ramp_start_speed_m_s is None
         or not math.isfinite(ramp_start_speed_m_s)
@@ -1861,7 +1894,16 @@ def run_first_motion_window(
                         else:
                             command_offset = clock() - pulse_start
                             nonzero_attempt_offsets_s.append(command_offset)
-                            if startup_speed_m_s is not None:
+                            if (
+                                deceleration_duration_s > 0.0
+                                and command_offset >= pulse_duration_s - deceleration_duration_s
+                            ):
+                                command_speed = smoothstep_deceleration_velocity(
+                                    forward_command_m_s,
+                                    command_offset - (pulse_duration_s - deceleration_duration_s),
+                                    deceleration_duration_s,
+                                )
+                            elif startup_speed_m_s is not None:
                                 if startup_origin_pose is None:
                                     raise RuntimeError("startup origin pose missing")
                                 command_speed = startup_then_cruise_velocity(

@@ -681,6 +681,80 @@ class FoundationWalkOverlayTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Run48 is fixed to constant 0.105 m/s", result.stderr)
 
+    def test_run49_locks_ten_second_pulse_and_final_second_deceleration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="issue80-test-run49",
+                attempt_id="test-attempt-run49",
+                max_runtime_s=180.0,
+                maintainer_authorized_first_motion=True,
+                maintainer_authorized_standing_takeover=False,
+                run38_knee_scale_diagnostic=False,
+                run41_min_run_diagnostic=False,
+                run42_stop_confirmation_diagnostic=False,
+                run43_zero_only_stop_diagnostic=False,
+                run44_threshold_margin_diagnostic=False,
+                run45_ten_second_gait_diagnostic=False,
+                run46_startup_cruise_threshold_diagnostic=False,
+                run48_low_cruise_baseline_diagnostic=False,
+                run49_smoothstop_diagnostic=True,
+                capture_mc_rl_debug=True,
+                extra_stop_observation=5.0,
+                pulse_duration=10.0,
+                forward_speed=0.14,
+                ramp_start_speed=None,
+                ramp_duration_s=0.0,
+                startup_speed=None,
+                startup_transition_displacement=None,
+                startup_transition_timeout_s=0.0,
+            )
+            runner = BoundedRun(args)
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.network_mode = "bridge"
+            runner.start_mc_rl_debug_capture = lambda: None  # type: ignore[method-assign]
+            commands: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], *, timeout_s: float = 8.0,
+                         check: bool = True):
+                self.assertEqual(name, "m1_first_motion_diagnostic")
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            runner.run = fake_run  # type: ignore[method-assign]
+            runner.run_m1()
+            child = commands[0][-1]
+            self.assertIn("--pulse-duration 10.0", child)
+            self.assertIn("--forward-speed 0.14", child)
+            self.assertIn("--deceleration-duration-s 1.0", child)
+            self.assertIn("--max-observed-planar-speed-m-s 0.2", child)
+            self.assertIn("--zero-until-stand-timeout-s 3.5", child)
+            self.assertIn("--zero-only-stop", child)
+            self.assertNotIn("--startup-speed", child)
+
+    def test_run49_cli_rejects_a_changed_forward_target_before_runtime(self) -> None:
+        script = Path(__file__).with_name("issue80_m1_auto_reset_run.py")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = subprocess.run(
+                [
+                    sys.executable, str(script),
+                    "--evidence-dir", temp_dir,
+                    "--container", "must-not-start",
+                    "--attempt-id", "offline-run49-rejection",
+                    "--run49-smoothstop-diagnostic",
+                    "--capture-mc-rl-debug",
+                    "--maintainer-authorized-first-motion",
+                    "--forward-speed", "0.139",
+                    "--pulse-duration", "10.0",
+                    "--extra-stop-observation", "5.0",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Run49 is fixed to a 10-second 0.14 m/s command", result.stderr)
+
     def test_cli_refuses_valid_motion_with_an_unreserved_temporary_evidence_dir(self) -> None:
         script = Path(__file__).with_name("issue80_m1_auto_reset_run.py")
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -703,6 +777,80 @@ class FoundationWalkOverlayTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 2)
         self.assertIn("evidence directory failed path-governance reservation check", result.stderr)
+
+    def test_run49_locks_ten_second_pulse_and_final_second_deceleration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            args = argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="issue80-test-run49",
+                attempt_id="test-attempt-run49",
+                max_runtime_s=180.0,
+                maintainer_authorized_first_motion=True,
+                maintainer_authorized_standing_takeover=False,
+                run38_knee_scale_diagnostic=False,
+                run41_min_run_diagnostic=False,
+                run42_stop_confirmation_diagnostic=False,
+                run43_zero_only_stop_diagnostic=False,
+                run44_threshold_margin_diagnostic=False,
+                run45_ten_second_gait_diagnostic=False,
+                run46_startup_cruise_threshold_diagnostic=False,
+                run48_low_cruise_baseline_diagnostic=False,
+                run49_smoothstop_diagnostic=True,
+                capture_mc_rl_debug=True,
+                extra_stop_observation=5.0,
+                pulse_duration=10.0,
+                forward_speed=0.14,
+                ramp_start_speed=None,
+                ramp_duration_s=0.0,
+                startup_speed=None,
+                startup_transition_displacement=None,
+                startup_transition_timeout_s=0.0,
+            )
+            runner = BoundedRun(args)
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.network_mode = "bridge"
+            runner.start_mc_rl_debug_capture = lambda: None  # type: ignore[method-assign]
+            commands: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], *, timeout_s: float = 8.0,
+                         check: bool = True):
+                self.assertEqual(name, "m1_first_motion_diagnostic")
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            runner.run = fake_run  # type: ignore[method-assign]
+            runner.run_m1()
+            child = commands[0][-1]
+            self.assertIn("--pulse-duration 10.0", child)
+            self.assertIn("--forward-speed 0.14", child)
+            self.assertIn("--deceleration-duration-s 1.0", child)
+            self.assertIn("--max-observed-planar-speed-m-s 0.2", child)
+            self.assertIn("--zero-until-stand-timeout-s 3.5", child)
+            self.assertIn("--zero-only-stop", child)
+            self.assertNotIn("--startup-speed", child)
+
+    def test_run49_cli_rejects_a_changed_forward_target_before_runtime(self) -> None:
+        script = Path(__file__).with_name("issue80_m1_auto_reset_run.py")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = subprocess.run(
+                [
+                    sys.executable, str(script),
+                    "--evidence-dir", temp_dir,
+                    "--container", "must-not-start",
+                    "--attempt-id", "offline-run49-rejection",
+                    "--run49-smoothstop-diagnostic",
+                    "--capture-mc-rl-debug",
+                    "--maintainer-authorized-first-motion",
+                    "--forward-speed", "0.139",
+                    "--pulse-duration", "10.0",
+                    "--extra-stop-observation", "5.0",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Run49 is fixed to a 10-second 0.14 m/s command", result.stderr)
 
 
 if __name__ == "__main__":

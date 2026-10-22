@@ -593,7 +593,8 @@ class BoundedRun:
         run45 = bool(getattr(self.args, "run45_ten_second_gait_diagnostic", False))
         run46 = bool(getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False))
         run48 = bool(getattr(self.args, "run48_low_cruise_baseline_diagnostic", False))
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48))
+        run49 = bool(getattr(self.args, "run49_smoothstop_diagnostic", False))
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -651,7 +652,7 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        if run41 or run42 or run43 or run44 or run45 or run46 or run48:
+        if run41 or run42 or run43 or run44 or run45 or run46 or run48 or run49:
             overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
             overlay_name = "foundationwalk_knee019_minrun010.yaml"
         else:
@@ -673,11 +674,16 @@ class BoundedRun:
         manifest["command_speed_m_s"] = float(self.args.forward_speed)
         manifest["command_profile"] = {
             "shape": "motion-triggered-startup-then-cruise"
-            if getattr(self.args, "startup_speed", None) is not None else "constant",
+            if getattr(self.args, "startup_speed", None) is not None
+            else "constant-then-smoothstep-deceleration"
+            if getattr(self.args, "run49_smoothstop_diagnostic", False)
+            else "constant",
             "startup_speed_m_s": getattr(self.args, "startup_speed", None),
             "cruise_speed_m_s": float(self.args.forward_speed),
             "transition_displacement_m": getattr(self.args, "startup_transition_displacement", None),
             "startup_timeout_s": getattr(self.args, "startup_transition_timeout_s", 0.0),
+            "deceleration_duration_s": 1.0
+            if getattr(self.args, "run49_smoothstop_diagnostic", False) else 0.0,
         }
         manifest_path = self.evidence / "foundationwalk_config_overlay_manifest.json"
         with manifest_path.open("x", encoding="utf-8") as stream:
@@ -1317,6 +1323,7 @@ class BoundedRun:
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
             or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
+            or getattr(self.args, "run49_smoothstop_diagnostic", False)
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
         if (
@@ -1326,6 +1333,7 @@ class BoundedRun:
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
             or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
+            or getattr(self.args, "run49_smoothstop_diagnostic", False)
         ):
             command[-1] += " --zero-until-stand-timeout-s 3.5"
         if (
@@ -1334,8 +1342,11 @@ class BoundedRun:
             or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
             or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
             or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
+            or getattr(self.args, "run49_smoothstop_diagnostic", False)
         ):
             command[-1] += " --zero-only-stop"
+        if getattr(self.args, "run49_smoothstop_diagnostic", False):
+            command[-1] += " --deceleration-duration-s 1.0"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
@@ -1831,6 +1842,15 @@ def main() -> int:
             "without a motion-triggered startup profile"
         ),
     )
+    parser.add_argument(
+        "--run49-smoothstop-diagnostic",
+        action="store_true",
+        help=(
+            "reuse the Run41 SIMULATION_ONLY config for one 10-second 0.14 m/s "
+            "forward run, smoothly decelerating to zero over the final second; keep "
+            "the 0.2 m/s root-speed guard and existing zero-only stop gates"
+        ),
+    )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
@@ -1854,19 +1874,20 @@ def main() -> int:
         args.run45_ten_second_gait_diagnostic,
         args.run46_startup_cruise_threshold_diagnostic,
         args.run48_low_cruise_baseline_diagnostic,
+        args.run49_smoothstop_diagnostic,
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
     if any(diagnostic_variants):
         if not args.maintainer_authorized_first_motion:
             parser.error("FoundationWalk diagnostic requires the authorized first-motion gate")
-        if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic:
+        if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic:
             target_speed = 0.14
         elif args.run46_startup_cruise_threshold_diagnostic or args.run48_low_cruise_baseline_diagnostic:
             target_speed = 0.105
         else:
             target_speed = 0.112
-        target_pulse = 10.0 if args.run45_ten_second_gait_diagnostic else 3.0
+        target_pulse = 10.0 if args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic else 3.0
         if args.run46_startup_cruise_threshold_diagnostic:
             startup_profile_valid = (
                 args.startup_speed is not None
@@ -1900,6 +1921,12 @@ def main() -> int:
                 parser.error(
                     "Run48 is fixed to constant 0.105 m/s, 3 s pulse, 5 s post-stop "
                     "observation, no ramp or startup profile, and McRLDebug capture"
+                )
+            if args.run49_smoothstop_diagnostic:
+                parser.error(
+                    "Run49 is fixed to a 10-second 0.14 m/s command with a 1-second "
+                    "smooth deceleration, 5-second post-stop observation, no startup/ramp, "
+                    "and McRLDebug capture"
                 )
             parser.error(
                 f"FoundationWalk diagnostic is fixed to {target_speed} m/s, {target_pulse} s, "
