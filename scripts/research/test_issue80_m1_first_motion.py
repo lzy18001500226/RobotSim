@@ -39,6 +39,7 @@ from issue80_m1_first_motion import (
     classify_turning_rotation,
     classify_turn_planar_motion,
     TURN_FORWARD_COMMAND_M_S,
+    TURN_FORWARD_WARMUP_S,
     startup_then_cruise_velocity,
     joint_command_array_snapshot,
     float64_multi_array_snapshot,
@@ -2511,6 +2512,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             },
         )
         zero_commands = []
+        turn_commands = []
         post_stop_samples = []
 
         def sample():
@@ -2532,7 +2534,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
 
         result = run_angular_turn_window(
             sample=sample,
-            publish_turn=lambda _forward, _angular: None,
+            publish_turn=lambda forward, angular: turn_commands.append((forward, angular)),
             publish_zero=lambda: zero_commands.append(clock.now()),
             registration={"success": True, "selected_action": "ADD"},
             set_action={"accepted_by_service": True},
@@ -2542,6 +2544,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             authorized=True,
             angular_velocity_rad_s=0.07,
             forward_velocity_m_s=TURN_FORWARD_COMMAND_M_S,
+            forward_warmup_s=TURN_FORWARD_WARMUP_S,
             pulse_duration_s=2.0,
             extra_post_stop_observe_s=0.0,
             clock=clock.now,
@@ -2559,6 +2562,9 @@ class BoundedTurningProfileTests(unittest.TestCase):
         self.assertLessEqual(result["zero_stop"]["max_gap_between_publish_call_returns_s"], 0.020001)
         self.assertTrue(post_stop_samples)
         self.assertTrue(all(s["state_age_s"]["get_mode"] == 0.0 for s in post_stop_samples))
+        self.assertEqual(result["fault"], "turn_control_handshake_not_confirmed_after_forward_warmup")
+        self.assertGreater(len(turn_commands), 0)
+        self.assertTrue(all(angular == 0.0 for _forward, angular in turn_commands))
 
     def test_forward_arc_planar_envelope_preserves_lateral_drift_limit(self):
         start = {"x": 0.0, "y": 0.0, "yaw": 0.0}

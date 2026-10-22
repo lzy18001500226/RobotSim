@@ -33,7 +33,8 @@ from issue80_m1_first_motion import (
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
     MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, MAX_AUTHORIZED_PULSE_S, verify_mc_fsm_runtime_contract,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
-    TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_PULSE_S, run_angular_turn_window,
+    TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S,
+    TURN_PULSE_S, run_angular_turn_window,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
     float64_multi_array_snapshot, load_leg_joint_limits, load_mc_input_source_timeouts,
     joint_command_array_snapshot,
@@ -1107,6 +1108,7 @@ class FocusedM1Diagnostic(Node):
                 authorized=True,
                 angular_velocity_rad_s=angular,
                 forward_velocity_m_s=forward_velocity,
+                forward_warmup_s=TURN_FORWARD_WARMUP_S,
                 pulse_duration_s=TURN_PULSE_S,
                 max_observed_planar_speed_m_s=0.2,
                 zero_until_stand_timeout_s=3.5,
@@ -1131,6 +1133,7 @@ class FocusedM1Diagnostic(Node):
             "classification": "SIMULATION_ONLY_DERIVED_FOUNDATIONWALK_TURNING",
             "directions": [turn.get("direction") for turn in turns],
             "forward_velocity_m_s": forward_velocity,
+            "forward_warmup_s": TURN_FORWARD_WARMUP_S,
             "angular_command_rad_s": TURN_COMMAND_RAD_S,
             "pulse_duration_each_s": TURN_PULSE_S,
             "total_active_command_s": sum(
@@ -1191,7 +1194,9 @@ class FocusedM1Diagnostic(Node):
         }
         if getattr(self.args, "turning_diagnostic", False):
             result["forward_command_m_s"] = TURN_FORWARD_COMMAND_M_S
+            result["forward_warmup_s"] = TURN_FORWARD_WARMUP_S
             result["pulse_limit_s"] = TURN_PULSE_S
+            result["total_turn_command_window_s"] = TURN_FORWARD_WARMUP_S + TURN_PULSE_S
         try:
             result["transport_scope"] = self.check_transport_scope()
             self.wait_for_standing()

@@ -20,7 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from issue80_m1_first_motion import TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_PULSE_S
+from issue80_m1_first_motion import (
+    TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S, TURN_PULSE_S,
+)
 
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
@@ -690,12 +692,13 @@ class BoundedRun:
         })
         manifest["command_speed_m_s"] = TURN_FORWARD_COMMAND_M_S if run53 else float(self.args.forward_speed)
         manifest["command_profile"] = ({
-            "shape": "left-right-forward-arc",
+            "shape": "left-right-forward-warmup-arc",
             "forward_velocity_m_s": TURN_FORWARD_COMMAND_M_S,
+            "forward_warmup_s": TURN_FORWARD_WARMUP_S,
             "lateral_velocity_m_s": 0.0,
             "angular_velocity_rad_s": [TURN_COMMAND_RAD_S, -TURN_COMMAND_RAD_S],
             "pulse_duration_s_each": TURN_PULSE_S,
-            "total_active_command_s": 2.0 * TURN_PULSE_S,
+            "total_active_command_s": 2.0 * (TURN_FORWARD_WARMUP_S + TURN_PULSE_S),
         } if run53 else {
             "shape": "motion-triggered-startup-then-cruise"
             if getattr(self.args, "startup_speed", None) is not None
@@ -2103,7 +2106,8 @@ def main() -> int:
         action="store_true",
         help=(
             "reuse the verified SIMULATION_ONLY FoundationWalk overlay for one bounded "
-            "0.12 m/s forward, +/-0.07 rad/s left/right arc pair with unchanged physical safety gates"
+            "0.5 s forward warmup, then 0.12 m/s forward and +/-0.07 rad/s left/right arc pair "
+            "with unchanged physical safety gates"
         ),
     )
     args=parser.parse_args()
@@ -2151,8 +2155,8 @@ def main() -> int:
                 or args.startup_transition_timeout_s != 0.0
             ):
                 parser.error(
-                    "Run53 uses the fixed two-second ±0.07 rad/s turn pair, 5-second observation, "
-                    "McRLDebug capture, and no startup/forward-ramp profile"
+                    "Run53 uses a fixed 0.5-second forward warmup followed by the two-second "
+                    "±0.07 rad/s forward-arc turn pair, 5-second observation, and McRLDebug capture"
                 )
         else:
             if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic:

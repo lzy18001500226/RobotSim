@@ -72,6 +72,7 @@ TURN_MAX_OBSERVED_YAW_RATE_RAD_S = 0.28
 TURN_MIN_HEADING_CHANGE_RAD = math.radians(5.0)
 TURN_MAX_PLANAR_DISPLACEMENT_M = 0.05
 TURN_FORWARD_COMMAND_M_S = 0.12
+TURN_FORWARD_WARMUP_S = 0.5
 
 MODE_STAND = "STAND_DEFAULT"
 MODE_LOCOMOTION = "LOCOMOTION_DEFAULT"
@@ -1982,6 +1983,7 @@ def run_angular_turn_window(
     baseline_state_summary: Mapping[str, Any] | None,
     authorized: bool, angular_velocity_rad_s: float,
     forward_velocity_m_s: float = 0.0,
+    forward_warmup_s: float = 0.0,
     pulse_duration_s: float = TURN_PULSE_S,
     max_observed_planar_speed_m_s: float = 0.2,
     zero_until_stand_timeout_s: float = 3.5,
@@ -2002,8 +2004,10 @@ def run_angular_turn_window(
         "source": VELOCITY_SOURCE_NAME,
         "angular_velocity_rad_s": angular_velocity_rad_s,
         "forward_velocity_m_s": forward_velocity_m_s,
+        "forward_warmup_s": forward_warmup_s,
         "lateral_velocity_m_s": 0.0,
         "pulse_duration_s": pulse_duration_s,
+        "total_command_duration_s": forward_warmup_s + pulse_duration_s,
         "ramp_duration_s_each_end": TURN_RAMP_S,
         "publish_hz": PUBLISH_HZ,
         "angular_command_limit_rad_s": TURN_COMMAND_RAD_S,
@@ -2023,6 +2027,8 @@ def run_angular_turn_window(
         return result
     if not math.isfinite(forward_velocity_m_s) or not 0.0 <= forward_velocity_m_s <= 0.2:
         validation_fault = "turn_forward_command_outside_fixed_0p2_m_s_cap"
+    elif not math.isfinite(forward_warmup_s) or not 0.0 <= forward_warmup_s <= 1.0:
+        validation_fault = "turn_forward_warmup_outside_fixed_0_to_1_second_cap"
     elif not math.isfinite(angular_velocity_rad_s) or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S:
         validation_fault = "turn_command_outside_fixed_0p07_rad_s_cap"
     elif not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= TURN_PULSE_S:
@@ -2052,6 +2058,8 @@ def run_angular_turn_window(
     last_active: Mapping[str, Any] | None = None
     pulse_start: float | None = None
     pulse_end: float | None = None
+    turn_start_snapshot: Mapping[str, Any] | None = None
+    turn_start_monotonic_s: float | None = None
     nonzero_publish_attempts = 0
     nonzero_publish_calls_returned = 0
     zero_extension_count = 0
@@ -2105,7 +2113,7 @@ def run_angular_turn_window(
 
     def watchdog_stop() -> None:
         nonlocal pulse_fault
-        if pulse_start is not None and clock() < pulse_start + pulse_duration_s - 0.01:
+        if pulse_start is not None and clock() < pulse_start + forward_warmup_s + pulse_duration_s - 0.01:
             pulse_fault = pulse_fault or "independent_watchdog_timeout"
         stop_requested.set()
         zero_stop.run_once()
@@ -2157,10 +2165,12 @@ def run_angular_turn_window(
             tracker.observe(initial, phase="pre-activation")
             record("turn-preflight", initial)
             pulse_start = clock()
-            deadline = pulse_start + pulse_duration_s
+            deadline = pulse_start + forward_warmup_s + pulse_duration_s
             next_publish = pulse_start
             watchdog = ProcessLocalTimerWatchdog(
-                pulse_duration_s, watchdog_stop, timer_factory=timer_factory,
+                forward_warmup_s + pulse_duration_s,
+                watchdog_stop,
+                timer_factory=timer_factory,
             )
             watchdog.start()
             while clock() < deadline:
@@ -2171,6 +2181,9 @@ def run_angular_turn_window(
                 if stop_requested.is_set() or watchdog.expired:
                     break
                 current = sample()
+                elapsed_s = max(0.0, clock() - pulse_start)
+                warmup_active = elapsed_s < forward_warmup_s
+                sample_phase = "turn-forward-warmup" if warmup_active else "turn-activation"
                 current_fault = snapshot_fault(
                     current, joint_limits, state_timeout_s=state_timeout_s,
                     min_root_z=min_root_z, max_tilt_deg=max_tilt_deg,
@@ -2188,12 +2201,20 @@ def run_angular_turn_window(
                 except (KeyError, TypeError, ValueError):
                     current_fault = current_fault or "turn_angular_state_or_bounds_unavailable"
                 if current_fault:
-                    record("turn-activation", current, current_fault)
+                    record(sample_phase, current, current_fault)
                     pulse_fault = current_fault
                     stop_requested.set()
                     break
                 tracker.observe(current, phase="activation")
-                record("turn-activation", current)
+                record(sample_phase, current)
+                if not warmup_active and turn_start_snapshot is None:
+                    if forward_warmup_s > 0.0 and not tracker.control_handshake_confirmed:
+                        pulse_fault = "turn_control_handshake_not_confirmed_after_forward_warmup"
+                        record("turn-activation", current, pulse_fault)
+                        stop_requested.set()
+                        break
+                    turn_start_snapshot = current
+                    turn_start_monotonic_s = float(current.get("sample_monotonic_s", clock()))
                 now = clock()
                 if shutdown_event is not None and shutdown_event.is_set():
                     pulse_fault = "operator_shutdown"
@@ -2202,15 +2223,19 @@ def run_angular_turn_window(
                 if now >= deadline or stop_requested.is_set() or watchdog.expired:
                     break
                 if now >= next_publish:
-                    offset = clock() - pulse_start
-                    command = smooth_turn_velocity(angular_velocity_rad_s, offset, pulse_duration_s)
+                    turn_elapsed_s = max(0.0, clock() - pulse_start - forward_warmup_s)
+                    command = (
+                        0.0 if warmup_active
+                        else smooth_turn_velocity(angular_velocity_rad_s, turn_elapsed_s, pulse_duration_s)
+                    )
                     with command_lock:
                         if stop_requested.is_set() or clock() >= deadline:
                             break
-                        if command != 0.0:
+                        nonzero_command = forward_velocity_m_s != 0.0 or command != 0.0
+                        if nonzero_command:
                             nonzero_publish_attempts += 1
                         publish_turn(forward_velocity_m_s, command)
-                        if command != 0.0:
+                        if nonzero_command:
                             nonzero_publish_calls_returned += 1
                             if clock() > deadline:
                                 pulse_fault = pulse_fault or "nonzero_turn_publish_returned_after_hard_deadline"
@@ -2284,9 +2309,10 @@ def run_angular_turn_window(
         if remaining > 0.0:
             sleep(min(0.05, remaining))
 
-    first_pose = initial.get("pose") if isinstance(initial, Mapping) else None
+    motion_start_pose = initial.get("pose") if isinstance(initial, Mapping) else None
+    turn_start_pose = turn_start_snapshot.get("pose") if isinstance(turn_start_snapshot, Mapping) else None
     last_pose = last_active.get("pose") if isinstance(last_active, Mapping) else None
-    start_yaw = float(first_pose["yaw"]) if isinstance(first_pose, Mapping) else None
+    start_yaw = float(turn_start_pose["yaw"]) if isinstance(turn_start_pose, Mapping) else None
     end_yaw = float(last_pose["yaw"]) if isinstance(last_pose, Mapping) else None
     rotation = classify_turning_rotation(
         start_yaw_rad=start_yaw,
@@ -2299,13 +2325,13 @@ def run_angular_turn_window(
     )
     planar_displacement = None
     planar_motion: dict[str, Any] = {"status": "TURN_ODOMETRY_UNAVAILABLE"}
-    if isinstance(first_pose, Mapping) and isinstance(last_pose, Mapping):
+    if isinstance(motion_start_pose, Mapping) and isinstance(last_pose, Mapping):
         actual_duration = (
             max(0.0, pulse_end - pulse_start)
             if pulse_start is not None and pulse_end is not None else 0.0
         )
         planar_motion = classify_turn_planar_motion(
-            start_pose=first_pose,
+            start_pose=motion_start_pose,
             end_pose=last_pose,
             forward_velocity_m_s=forward_velocity_m_s,
             pulse_duration_s=actual_duration,
@@ -2330,6 +2356,7 @@ def run_angular_turn_window(
         "pulse_end_monotonic_s": pulse_end,
         "pulse_actual_duration_s": max(0.0, pulse_end - pulse_start)
         if pulse_start is not None and pulse_end is not None else 0.0,
+        "turn_start_monotonic_s": turn_start_monotonic_s,
         "nonzero_publish_attempts": nonzero_publish_attempts,
         "nonzero_publish_calls_returned": nonzero_publish_calls_returned,
         "control_handshake_confirmed": tracker.control_handshake_confirmed,
