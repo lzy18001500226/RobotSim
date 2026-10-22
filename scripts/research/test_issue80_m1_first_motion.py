@@ -338,6 +338,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
         max_observed_planar_speed_m_s=None,
         zero_until_stand_timeout_s=0.0,
         after_zero_stop=None,
+        termination_condition=None,
+        termination_condition_name="external_condition",
     ):
         clock = fake_clock or FakeClock()
 
@@ -378,6 +380,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
             max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
             zero_until_stand_timeout_s=zero_until_stand_timeout_s,
             after_zero_stop=after_zero_stop,
+            termination_condition=termination_condition,
+            termination_condition_name=termination_condition_name,
             clock=clock.now,
             sleep=clock.sleep,
             timer_factory=timer_factory,
@@ -1876,6 +1880,46 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         self.assertTrue(all(0.0 <= offset <= PULSE_LIMIT_S for offset in result["nonzero_command_attempt_offsets_s"]))
         self.assertGreaterEqual(sum(value == 0.0 for value in commands), 50)
         self.assertGreaterEqual(result["post_stop_sample_count"], 1)
+
+    def test_ground_truth_goal_condition_stops_early_then_uses_existing_zero_protocol(self) -> None:
+        sample = self.snapshot()
+        commands = []
+        motion_ticks = 0
+
+        def publish(value):
+            nonlocal motion_ticks
+            commands.append(value)
+            if value > 0.0:
+                motion_ticks += 1
+                sample["get_source_name"] = VELOCITY_SOURCE_NAME
+                sample["common_source_name"] = VELOCITY_SOURCE_NAME
+                sample["get_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["common_mode_desc"] = "LOCOMOTION_DEFAULT"
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
+                sample["pose"]["x"] = motion_ticks * 0.005
+            else:
+                sample["get_mode_desc"] = "STAND_DEFAULT"
+                sample["common_mode_desc"] = "STAND_DEFAULT"
+                sample["fsm_state"] = MC_FSM_STABLE
+
+        result = self.run_protocol(
+            lambda: sample,
+            publish,
+            baseline=[0.001, -0.001, 0.001],
+            forward_command_m_s=0.12,
+            pulse_duration_s=1.0,
+            max_pulse_duration_s=1.0,
+            zero_until_stand_timeout_s=2.0,
+            termination_condition=lambda row: float(row["pose"]["x"]) >= 0.015,
+            termination_condition_name="point_goal_tolerance_reached",
+        )
+
+        self.assertTrue(result["termination_condition_met"])
+        self.assertEqual(result["termination_condition_name"], "point_goal_tolerance_reached")
+        self.assertLess(result["pulse_loop_elapsed_s"], 1.0)
+        self.assertGreater(result["nonzero_publish_calls_returned"], 0)
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], ZERO_STOP_MIN_MESSAGES)
+        self.assertGreaterEqual(sum(value == 0.0 for value in commands), ZERO_STOP_MIN_MESSAGES)
 
     def test_source_conflict_during_activation_aborts_and_zero_stops(self) -> None:
         sample = self.snapshot()

@@ -28,19 +28,20 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Float64MultiArray
 
 from issue80_m1_first_motion import (
-    ACTION_SOURCE_NAME, COMMAND_PUBLISHER_TOPIC, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
+    ACTION_SOURCE_NAME, ActivationTracker, COMMAND_PUBLISHER_TOPIC, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
     BASELINE_DURATION_S, BASELINE_SAMPLE_PERIOD_S, BASELINE_WINDOW_COUNT,
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
     MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, MAX_AUTHORIZED_PULSE_S, verify_mc_fsm_runtime_contract,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S,
-    TURN_PULSE_S, run_angular_turn_window,
+    TURN_PULSE_S, ZERO_STOP_MIN_MESSAGES, SustainedYawRateWindow, run_angular_turn_window,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
     float64_multi_array_snapshot, load_leg_joint_limits, load_mc_input_source_timeouts,
     joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
     run_first_motion_window, snapshot_fault,
+    stand_mode_readback_confirmed,
     summarize_stationary_physical_state,
     validate_local_sim_publishers, validate_first_motion_authorization,
     validate_runtime_scope,
@@ -49,6 +50,14 @@ from issue80_m1_mode_logic import classify_set_mc_action_response
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
 MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0
+POINT_GOAL_DISTANCE_M = 0.30
+POINT_GOAL_STOP_TRIGGER_M = 0.10
+POINT_GOAL_FINAL_TOLERANCE_M = 0.05
+POINT_GOAL_COMMAND_M_S = 0.12
+POINT_GOAL_MAX_DURATION_S = 10.0
+POINT_GOAL_SETTLED_SAMPLES = 3
+POINT_GOAL_HEADING_DEADBAND_RAD = 0.03
+POINT_GOAL_HEADING_GAIN = 1.0
 INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
@@ -1080,6 +1089,260 @@ class FocusedM1Diagnostic(Node):
             raise RuntimeError(f"source conflict before first motion: service={current!r}, common={common_name!r}")
         return result
 
+    def run_ground_truth_point_goal(
+        self,
+        *,
+        registration: Mapping[str, Any],
+        set_action: Mapping[str, Any],
+        stationary_baseline: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Drive one short odom-frame point goal from MuJoCo ground truth with MC safety gates."""
+        preflight = self.sample_for_first_motion()
+        preflight_fault = snapshot_fault(
+            preflight,
+            self.joint_limits,
+            state_timeout_s=self.args.state_timeout,
+            min_root_z=self.args.min_root_z,
+            max_tilt_deg=self.args.max_tilt_deg,
+            required_forward_mps=POINT_GOAL_COMMAND_M_S,
+            max_observed_planar_speed_m_s=0.2,
+        )
+        if preflight_fault:
+            return {"status": "BLOCKED", "fault": f"point_goal_preflight:{preflight_fault}"}
+        if not stand_mode_readback_confirmed(preflight):
+            return {"status": "BLOCKED", "fault": "point_goal_requires_fresh_stand_preflight"}
+        start_pose = preflight.get("pose")
+        if not isinstance(start_pose, Mapping):
+            return {"status": "BLOCKED", "fault": "point_goal_preflight_pose_missing"}
+        if start_pose.get("frame_id") != "odom" or start_pose.get("child_frame_id") != "base_link":
+            return {
+                "status": "BLOCKED",
+                "fault": "point_goal_requires_odom_to_base_link_frame_pair",
+                "observed_frame_pair": [start_pose.get("frame_id"), start_pose.get("child_frame_id")],
+            }
+
+        start_x = float(start_pose["x"])
+        start_y = float(start_pose["y"])
+        start_yaw = float(start_pose["yaw"])
+        goal = {
+            "frame_id": "odom",
+            "x": start_x + POINT_GOAL_DISTANCE_M * math.cos(start_yaw),
+            "y": start_y + POINT_GOAL_DISTANCE_M * math.sin(start_yaw),
+        }
+        latest: dict[str, Any] = {"snapshot": dict(preflight)}
+        activation_tracker = ActivationTracker(expected_source=self.source)
+        odom_stamp_monitor = SustainedYawRateWindow()
+        goal_trace: list[dict[str, Any]] = []
+        state: dict[str, Any] = {
+            "inside_trigger_samples": 0,
+            "goal_triggered": False,
+            "fault": None,
+            "last_metrics": None,
+            "angular_bounds": None,
+            "forward_bounds": None,
+        }
+        command_trace: list[dict[str, Any]] = []
+
+        def metrics(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+            pose = snapshot.get("pose")
+            if not isinstance(pose, Mapping):
+                raise ValueError("point_goal_odometry_missing")
+            if pose.get("frame_id") != "odom" or pose.get("child_frame_id") != "base_link":
+                raise ValueError("point_goal_frame_pair_changed")
+            dx = goal["x"] - float(pose["x"])
+            dy = goal["y"] - float(pose["y"])
+            distance = math.hypot(dx, dy)
+            bearing = math.atan2(dy, dx)
+            yaw = float(pose["yaw"])
+            heading_error = math.atan2(math.sin(bearing - yaw), math.cos(bearing - yaw))
+            return {
+                "distance_to_goal_m": distance,
+                "forward_error_m": dx * math.cos(start_yaw) + dy * math.sin(start_yaw),
+                "lateral_error_m": -dx * math.sin(start_yaw) + dy * math.cos(start_yaw),
+                "heading_error_rad": heading_error,
+                "pose": dict(pose),
+            }
+
+        def on_goal_sample(phase: str, snapshot: Mapping[str, Any]) -> None:
+            current = dict(snapshot)
+            latest["snapshot"] = current
+            activation_tracker.observe(current, phase="activation" if phase == "activation" else phase)
+            stamp_rate = odom_stamp_monitor.update(current)
+            try:
+                current_metrics = metrics(current)
+                state["last_metrics"] = current_metrics
+                trace_row = {
+                    "phase": phase,
+                    "sample_monotonic_s": current.get("sample_monotonic_s"),
+                    **current_metrics,
+                    "source_stamp_diagnostic": {
+                        "status": stamp_rate.get("status"),
+                        "source_stamp_s": stamp_rate.get("source_stamp_s"),
+                        "regression_count": odom_stamp_monitor.source_stamp_regression_count,
+                        "duplicate_count": odom_stamp_monitor.source_stamp_duplicate_count,
+                    },
+                }
+            except (KeyError, TypeError, ValueError) as exc:
+                state["fault"] = f"point_goal_state:{type(exc).__name__}:{exc}"
+                trace_row = {
+                    "phase": phase,
+                    "sample_monotonic_s": current.get("sample_monotonic_s"),
+                    "fault": state["fault"],
+                }
+            goal_trace.append(trace_row)
+            current["point_goal"] = trace_row
+            self._trace_first_motion_sample(f"point-goal-{phase}", current)
+
+        def publish_goal(forward_velocity_m_s: float) -> None:
+            if forward_velocity_m_s <= 0.0:
+                self._publish(0.0, 0.0, 0.0)
+                return
+            snapshot = latest.get("snapshot")
+            if not isinstance(snapshot, Mapping):
+                raise RuntimeError("point_goal_has_no_current_ground_truth_snapshot")
+            point_metrics = metrics(snapshot)
+            error = float(point_metrics["heading_error_rad"])
+            if (
+                abs(error) <= POINT_GOAL_HEADING_DEADBAND_RAD
+                or not activation_tracker.control_handshake_confirmed
+            ):
+                angular = 0.0
+            else:
+                angular = max(
+                    -TURN_COMMAND_RAD_S,
+                    min(TURN_COMMAND_RAD_S, POINT_GOAL_HEADING_GAIN * error),
+                )
+            speed_status = snapshot.get("speed_status")
+            if not isinstance(speed_status, Mapping):
+                raise RuntimeError("point_goal_live_speed_bounds_missing")
+            forward_bounds = speed_status.get("forward_bounds")
+            angular_bounds = speed_status.get("angular_bounds")
+            if not isinstance(forward_bounds, Mapping) or not isinstance(angular_bounds, Mapping):
+                raise RuntimeError("point_goal_live_speed_bounds_malformed")
+            if not float(forward_bounds["min_value"]) <= forward_velocity_m_s <= float(forward_bounds["max_value"]):
+                raise RuntimeError("point_goal_forward_command_outside_live_bounds")
+            if not float(angular_bounds["min_value"]) <= angular <= float(angular_bounds["max_value"]):
+                raise RuntimeError("point_goal_angular_command_outside_live_bounds")
+            self._publish(forward_velocity_m_s, 0.0, angular)
+            command_trace.append({
+                "sample_monotonic_s": snapshot.get("sample_monotonic_s"),
+                "forward_velocity_m_s": forward_velocity_m_s,
+                "lateral_velocity_m_s": 0.0,
+                "angular_velocity_rad_s": angular,
+                "goal_distance_m": point_metrics["distance_to_goal_m"],
+                "heading_error_rad": error,
+                "control_handshake_confirmed": activation_tracker.control_handshake_confirmed,
+            })
+
+        def goal_reached(snapshot: Mapping[str, Any]) -> bool:
+            if state.get("fault"):
+                return True
+            point_metrics = metrics(snapshot)
+            if point_metrics["distance_to_goal_m"] <= POINT_GOAL_STOP_TRIGGER_M:
+                state["inside_trigger_samples"] += 1
+            else:
+                state["inside_trigger_samples"] = 0
+            if state["inside_trigger_samples"] >= POINT_GOAL_SETTLED_SAMPLES:
+                state["goal_triggered"] = True
+                return True
+            return False
+
+        activation = run_first_motion_window(
+            sample=self.sample_for_first_motion,
+            publish=publish_goal,
+            registration=registration,
+            set_action=set_action,
+            joint_limits=self.joint_limits,
+            baseline_forward_displacements_m=[
+                float(window["forward_displacement_m"])
+                for window in stationary_baseline.get("windows", [])
+            ],
+            baseline_state_summary=stationary_baseline.get("physical_state_summary"),
+            authorized=True,
+            forward_command_m_s=POINT_GOAL_COMMAND_M_S,
+            pulse_duration_s=POINT_GOAL_MAX_DURATION_S,
+            max_pulse_duration_s=POINT_GOAL_MAX_DURATION_S,
+            extra_post_stop_observe_s=5.0,
+            after_zero_stop=self.request_postwalk_stand_once,
+            shutdown_event=self.interrupted,
+            on_sample=on_goal_sample,
+            state_timeout_s=self.args.state_timeout,
+            min_root_z=self.args.min_root_z,
+            max_tilt_deg=self.args.max_tilt_deg,
+            max_observed_planar_speed_m_s=0.2,
+            zero_until_stand_timeout_s=3.5,
+            termination_condition=goal_reached,
+            termination_condition_name="ground_truth_goal_within_stop_trigger_for_three_samples",
+        )
+        final_metrics = state.get("last_metrics")
+        final_distance = (
+            float(final_metrics["distance_to_goal_m"])
+            if isinstance(final_metrics, Mapping) else None
+        )
+        physical_stop = activation.get("physical_stop_gate", {})
+        zero_stop = activation.get("zero_stop", {})
+        acceptance_gates = {
+            "goal_triggered_inside_stop_radius": state.get("goal_triggered") is True,
+            "final_distance_within_50mm": (
+                final_distance is not None and final_distance <= POINT_GOAL_FINAL_TOLERANCE_M
+            ),
+            "termination_condition_triggered_stop": activation.get("termination_condition_met") is True,
+            "measured_physical_motion": activation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED",
+            "same_sample_source_locomotion_handshake": activation.get("control_handshake_status") == "CONTROL_HANDSHAKE_CONFIRMED",
+            "independent_physical_stop_gate": (
+                isinstance(physical_stop, Mapping) and physical_stop.get("status") == "PASS"
+            ),
+            "zero_stop_stream_minimum": (
+                isinstance(zero_stop, Mapping)
+                and int(zero_stop.get("zero_publish_calls_returned", 0) or 0) >= ZERO_STOP_MIN_MESSAGES
+            ),
+        }
+        goal_pass = (
+            all(acceptance_gates.values())
+            and state.get("fault") is None
+        )
+        result = {
+            "schema": "robotsim.issue80.point-goal-ground-truth.v1",
+            "classification": "SIMULATION_ONLY_DIRECT_MUJOCO_GROUND_TRUTH_POINT_GOAL",
+            "status": "PASS" if goal_pass else "BLOCKED",
+            "goal_frame": "odom",
+            "start_pose": dict(start_pose),
+            "target_pose": goal,
+            "distance_m": POINT_GOAL_DISTANCE_M,
+            "stop_trigger_radius_m": POINT_GOAL_STOP_TRIGGER_M,
+            "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
+            "required_consecutive_goal_samples": POINT_GOAL_SETTLED_SAMPLES,
+            "forward_command_m_s": POINT_GOAL_COMMAND_M_S,
+            "maximum_active_command_s": POINT_GOAL_MAX_DURATION_S,
+            "command_profile": "ground-truth bearing correction with fixed forward speed; heading steering only after same-sample source/LOCOMOTION handshake",
+            "goal_triggered": state.get("goal_triggered"),
+            "final_distance_to_goal_m": final_distance,
+            "acceptance_gates": acceptance_gates,
+            "controller_fault": state.get("fault"),
+            "source_odometry_stamp_integrity": {
+                "status": (
+                    "UNAVAILABLE" if odom_stamp_monitor.source_stamp_sample_count == 0
+                    else "NONMONOTONIC"
+                    if odom_stamp_monitor.source_stamp_regression_count or odom_stamp_monitor.source_stamp_duplicate_count
+                    else "MONOTONIC"
+                ),
+                "sample_count": odom_stamp_monitor.source_stamp_sample_count,
+                "regression_count": odom_stamp_monitor.source_stamp_regression_count,
+                "duplicate_count": odom_stamp_monitor.source_stamp_duplicate_count,
+                "first_regression": odom_stamp_monitor.first_source_stamp_regression,
+                "first_duplicate": odom_stamp_monitor.first_source_stamp_duplicate,
+                "control_time_basis": "host_monotonic_receive_time",
+            },
+            "activation": activation,
+            "goal_trace": goal_trace,
+            "command_trace": command_trace,
+            "limitations": [
+                "SIMULATION_ONLY direct MC command path; no Nav2, localization, LiDAR, obstacle avoidance, or physical robot.",
+                "Ground truth is the simulator-owned odometry stream; source header stamp integrity is reported separately.",
+            ],
+        }
+        return result
+
     def run_turning_pair(
         self,
         *,
@@ -1153,7 +1416,9 @@ class FocusedM1Diagnostic(Node):
             "schema": "robotsim.issue80.m1.first-motion.v2",
             "simulation_only": True,
             "acceptance_scope": (
-                "SIMULATION_ONLY derived-configuration left/right turning and physical-stop validation; "
+                "SIMULATION_ONLY direct MuJoCo ground-truth point-goal; not Nav2, localization, LiDAR, or manufacturer-original acceptance"
+                if getattr(self.args, "point_goal_diagnostic", False)
+                else "SIMULATION_ONLY derived-configuration left/right turning and physical-stop validation; "
                 "not manufacturer-original acceptance or point-goal navigation"
                 if getattr(self.args, "turning_diagnostic", False)
                 else "SIMULATION_ONLY derived-configuration locomotion and physical-stop validation; not manufacturer-original acceptance, turning, or point-goal navigation"
@@ -1192,6 +1457,9 @@ class FocusedM1Diagnostic(Node):
             },
             "fault": None,
         }
+        if getattr(self.args, "point_goal_diagnostic", False):
+            result["forward_command_m_s"] = POINT_GOAL_COMMAND_M_S
+            result["pulse_limit_s"] = POINT_GOAL_MAX_DURATION_S
         if getattr(self.args, "turning_diagnostic", False):
             result["forward_command_m_s"] = TURN_FORWARD_COMMAND_M_S
             result["forward_warmup_s"] = TURN_FORWARD_WARMUP_S
@@ -1221,6 +1489,35 @@ class FocusedM1Diagnostic(Node):
             if registration["success"] and set_action.get("accepted_by_service"):
                 stationary_baseline = self.collect_stationary_odom_baseline()
             result["stationary_odom_baseline"] = stationary_baseline
+
+            if getattr(self.args, "point_goal_diagnostic", False):
+                point_goal = self.run_ground_truth_point_goal(
+                    registration=registration,
+                    set_action=set_action,
+                    stationary_baseline=stationary_baseline or {},
+                )
+                activation = point_goal.get("activation")
+                result["point_goal_diagnostic"] = point_goal
+                result["activation"] = activation
+                result["nonzero_publish_calls_returned"] = (
+                    int(activation.get("nonzero_publish_calls_returned", 0) or 0)
+                    if isinstance(activation, Mapping) else 0
+                )
+                result["zero_publish_calls_returned"] = int(self.zero_publish_calls_returned)
+                result["physical_stop_gate"] = (
+                    activation.get("physical_stop_gate") if isinstance(activation, Mapping) else None
+                )
+                result["legacy_baseline_stop_gate"] = (
+                    activation.get("legacy_baseline_stop_gate") if isinstance(activation, Mapping) else None
+                )
+                result["get_mc_action_final"] = self.read_mode("final_point_goal_post_stop")
+                result["get_current_input_source_final"] = self.read_input_source("final_point_goal_post_stop")
+                result["final_common_state"] = _json_safe(self.latest.get("common"))
+                result["final_odometry"] = self._pose()
+                result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
+                result["fault"] = point_goal.get("controller_fault")
+                result["status"] = "PASS" if point_goal.get("status") == "PASS" else "BLOCKED"
+                return result
 
             if getattr(self.args, "turning_diagnostic", False):
                 turning = self.run_turning_pair(
@@ -1464,7 +1761,24 @@ def main() -> int:
     first.add_argument("--zero-until-stand-timeout-s", type=float, default=0.0)
     first.add_argument("--zero-only-stop", action="store_true")
     first.add_argument("--turning-diagnostic", action="store_true")
+    first.add_argument("--point-goal-diagnostic", action="store_true")
     args = parser.parse_args()
+    if args.turning_diagnostic and args.point_goal_diagnostic:
+        parser.error("select only one of turning or point-goal diagnostics")
+    if args.point_goal_diagnostic and (
+        args.forward_speed != POINT_GOAL_COMMAND_M_S
+        or args.pulse_duration != POINT_GOAL_MAX_DURATION_S
+        or args.ramp_duration_s != 0.0
+        or args.deceleration_duration_s != 0.0
+        or args.startup_speed is not None
+        or args.extra_stop_observation != 5.0
+        or args.max_observed_planar_speed_m_s != 0.2
+        or args.zero_until_stand_timeout_s != 3.5
+    ):
+        parser.error(
+            "point-goal diagnostics use the fixed 0.12 m/s, 10-second, no-ramp profile, "
+            "0.2 m/s measured-speed guard, 3.5-second stand window, and 5-second observation"
+        )
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)
         or not 0.0 < args.max_observed_planar_speed_m_s <= 0.2

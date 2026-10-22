@@ -2844,6 +2844,8 @@ def run_first_motion_window(
     after_zero_stop: Callable[[], Mapping[str, Any]] | None = None,
     shutdown_event: threading.Event | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
+    termination_condition: Callable[[Mapping[str, Any]], bool] | None = None,
+    termination_condition_name: str = "external_condition",
     state_timeout_s: float = 0.5,
     min_root_z: float = 0.52,
     max_tilt_deg: float = 15.0,
@@ -2902,6 +2904,8 @@ def run_first_motion_window(
         "samples": [],
         "fault": None,
         "after_zero_stop_action": None,
+        "termination_condition_met": False,
+        "termination_condition_name": None,
     }
     if not authorized:
         result["status"] = "NOT_AUTHORIZED"
@@ -3134,6 +3138,18 @@ def run_first_motion_window(
                     current["forward_displacement_since_start_m"] = startup_displacement
                 tracker.observe(current, phase="activation")
                 record_sample("activation", current, None)
+                if termination_condition is not None:
+                    try:
+                        reached = bool(termination_condition(current))
+                    except Exception as exc:
+                        pulse_fault = f"termination_condition_exception:{type(exc).__name__}:{exc}"
+                        stop_requested.set()
+                        break
+                    if reached:
+                        result["termination_condition_met"] = True
+                        result["termination_condition_name"] = termination_condition_name
+                        stop_requested.set()
+                        break
                 now = clock()
                 if shutdown_event is not None and shutdown_event.is_set():
                     pulse_fault = "operator_shutdown"

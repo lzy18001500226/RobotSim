@@ -8,6 +8,7 @@ import ast
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -22,6 +23,7 @@ from typing import Any
 
 from issue80_m1_first_motion import (
     TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S, TURN_PULSE_S,
+    ZERO_STOP_MIN_MESSAGES,
 )
 
 
@@ -42,6 +44,7 @@ IMAGE_DIGEST = "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b
 RESET_OBSERVER_DURATION_S = 8.0
 RESET_OBSERVER_COMPLETION_MARGIN_S = 3.0
 POST_RESET_UPRIGHT_TIMEOUT_S = 2.0
+POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 TOPIC_PROBES = (
     "/aima/hal/odom/state",
     "/aima/hal/imu/torso/state",
@@ -97,6 +100,180 @@ def validate_reserved_evidence_directory(path: str | os.PathLike[str]) -> Path:
     }:
         raise ValueError("evidence directory reservation marker does not match its path")
     return location.native_path
+
+
+def validate_turning_reassessment_file(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Require a reserved, hashed Run65 reassessment with both turn and stop gates passing."""
+    helper_path = str(REPO / "scripts/agent")
+    if helper_path not in sys.path:
+        sys.path.insert(0, helper_path)
+    from path_governance import validate_output_path
+
+    file_location = validate_output_path(path, require_exists=True, expected_kind="file")
+    if file_location.native_path.is_symlink() or file_location.native_path.name != "result.json":
+        raise ValueError("point-goal precondition must be a regular result.json in governed evidence")
+    if not file_location.wsl_path.startswith(str(REPO / "reviews/issue-80") + "/"):
+        raise ValueError("Run65 prerequisite must come from the governed Issue 80 evidence root")
+    run_location = validate_output_path(
+        file_location.native_path.parent, require_exists=True, expected_kind="directory"
+    )
+    if run_location.native_path.is_symlink():
+        raise ValueError("Run65 reassessment directory must not be a symlink")
+    marker = run_location.native_path / ".robotsim-output-reservation.json"
+    if marker.is_symlink() or not marker.is_file():
+        raise ValueError("turning reassessment directory lacks its governed reservation")
+    reservation = json.loads(marker.read_text(encoding="utf-8"))
+    if reservation != {
+        "schema_version": "robotsim.output-reservation.v1",
+        "path": run_location.wsl_path,
+    }:
+        raise ValueError("turning reassessment reservation path does not match")
+    artifact_manifest = run_location.native_path / "artifact_paths.json"
+    if artifact_manifest.is_symlink() or not artifact_manifest.is_file():
+        raise ValueError("Run65 reassessment has no regular artifact_paths.json manifest")
+    manifest = json.loads(artifact_manifest.read_text(encoding="utf-8"))
+    if not isinstance(manifest, Mapping):
+        raise ValueError("Run65 reassessment artifact manifest is malformed")
+    if manifest.get("schema_version") != "robotsim.local-artifacts.v1":
+        raise ValueError("Run65 reassessment artifact manifest has an unsupported schema")
+    report_path = run_location.native_path / "REPORT.md"
+    if report_path.is_symlink() or not report_path.is_file():
+        raise ValueError("Run65 reassessment report is missing or not a regular file")
+    artifacts = manifest.get("artifacts")
+    required_paths = {
+        file_location.wsl_path,
+        f"{run_location.wsl_path}/REPORT.md",
+        f"{run_location.wsl_path}/artifact_paths.json",
+    }
+    if not isinstance(artifacts, list) or not required_paths.issubset({
+        item.get("WSL_PATH") for item in artifacts if isinstance(item, Mapping)
+    }):
+        raise ValueError("Run65 reassessment artifact manifest omits its report or result")
+    evidence = json.loads(file_location.native_path.read_text(encoding="utf-8"))
+    if not isinstance(evidence, Mapping):
+        raise ValueError("Run65 reassessment result must be a JSON object")
+    return validate_turning_reassessment_evidence(
+        evidence,
+        evidence_path=file_location.wsl_path,
+        sha256=hashlib.sha256(file_location.native_path.read_bytes()).hexdigest(),
+    )
+
+
+def validate_turning_reassessment_evidence(
+    evidence: Mapping[str, Any], *, evidence_path: str, sha256: str,
+) -> dict[str, Any]:
+    """Check the independently reviewed Run65 turn/stop result before point-goal motion."""
+    if (
+        evidence.get("schema") != "robotsim.issue80.run65-forward-arc-reassessment.v1"
+        or evidence.get("classification") != "SIMULATION_ONLY_DERIVED_FOUNDATIONWALK_TURN_PAIR_PASS_REASSESSED"
+    ):
+        raise ValueError("point-goal requires the verified Run65 forward-arc reassessment PASS")
+    acceptance = evidence.get("acceptance")
+    if not isinstance(acceptance, Mapping):
+        raise ValueError("Run65 reassessment acceptance record is missing")
+    turns = acceptance.get("turns")
+    if not isinstance(turns, list) or len(turns) != 2 or any(not isinstance(turn, Mapping) for turn in turns):
+        raise ValueError("point-goal requires two well-formed Run65 turn records")
+    if {turn.get("direction") for turn in turns} != {"left", "right"}:
+        raise ValueError("point-goal requires reassessed left and right turn evidence")
+    for turn in turns:
+        gates = turn.get("gates", {})
+        if not isinstance(gates, Mapping):
+            raise ValueError(f"turning reassessment gates are malformed for {turn.get('direction')}")
+        if (
+            turn.get("reassessed_status") != "PHYSICAL_TURN_AND_STOP_PASS"
+            or any(gates.get(key) is not True for key in (
+                "same_sample_source_and_locomotion_handshake",
+                "measured_heading_in_commanded_direction",
+                "commanded_forward_arc_envelope",
+                "physical_stop_gate",
+                "no_controller_or_post_stop_fault",
+            ))
+        ):
+            raise ValueError(f"turning reassessment has a failed gate for {turn.get('direction')}")
+    original = evidence.get("original_run")
+    if not isinstance(original, Mapping):
+        raise ValueError("Run65 reassessment original-run provenance is missing")
+    if (
+        original.get("reset_status") != "AUTO_RESET_PASS"
+        or original.get("container_cleanup_verified") is not True
+        or original.get("runtime_image_digest") != IMAGE_DIGEST
+    ):
+        raise ValueError("Run65 reassessment provenance or cleanup did not pass")
+    source_faithfulness = acceptance.get("source_faithful_original_config")
+    if source_faithfulness != "NOT_TESTED":
+        raise ValueError("point-goal must retain the explicit derived-config/source-faithful boundary")
+    return {
+        "status": "PASS",
+        "schema": evidence["schema"],
+        "classification": evidence["classification"],
+        "path": evidence_path,
+        "sha256": sha256,
+        "source_attempt_id": original.get("attempt_id"),
+        "source_run_evidence_dir": original.get("evidence_dir"),
+        "reassessed_directions": [turn.get("direction") for turn in turns],
+        "source_faithful_original_config": source_faithfulness,
+        "navigation_timestamp_limitation": acceptance.get("odometry_stamp_limitation"),
+    }
+
+
+def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any]:
+    """Enforce the single reviewed point-goal profile before any runtime starts."""
+    if not getattr(args, "maintainer_authorized_first_motion", False):
+        raise ValueError("point-goal diagnostic requires first-motion authorization")
+    if (
+        not getattr(args, "capture_mc_rl_debug", False)
+        or abs(float(args.extra_stop_observation) - 5.0) > 1e-9
+        or abs(float(args.forward_speed) - 0.12) > 1e-9
+        or abs(float(args.pulse_duration) - 10.0) > 1e-9
+        or float(args.ramp_duration_s) != 0.0
+        or args.ramp_start_speed is not None
+        or args.startup_speed is not None
+        or args.startup_transition_displacement is not None
+        or float(args.startup_transition_timeout_s) != 0.0
+        or not getattr(args, "turning_reassessment_json", None)
+    ):
+        raise ValueError(
+            "point-goal uses the fixed 0.12 m/s, 10-second, no-ramp profile, "
+            "5-second post-stop observation, McRLDebug capture, and verified Run65 reassessment"
+        )
+    return validate_turning_reassessment_file(args.turning_reassessment_json)
+
+
+def classify_point_goal_result(point_goal: Mapping[str, Any] | None) -> str:
+    """Classify only a completed ground-truth goal plus the child's guarded stop gates as pass."""
+    if not isinstance(point_goal, Mapping):
+        return "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_BLOCKED"
+    activation = point_goal.get("activation")
+    fault = str(point_goal.get("controller_fault") or "")
+    if isinstance(activation, Mapping):
+        fault = " ".join((fault, str(activation.get("fault") or ""))).strip()
+    if any(token in fault.lower() for token in M1_SAFETY_FAULT_MARKERS):
+        return "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_FAIL"
+    activation = activation if isinstance(activation, Mapping) else {}
+    final_distance = point_goal.get("final_distance_to_goal_m")
+    acceptance_gates = point_goal.get("acceptance_gates")
+    physical_stop = activation.get("physical_stop_gate")
+    zero_stop = activation.get("zero_stop")
+    if (
+        point_goal.get("status") == "PASS"
+        and isinstance(acceptance_gates, Mapping)
+        and acceptance_gates
+        and all(value is True for value in acceptance_gates.values())
+        and point_goal.get("goal_triggered") is True
+        and isinstance(final_distance, (int, float))
+        and math.isfinite(float(final_distance))
+        and float(final_distance) <= POINT_GOAL_FINAL_TOLERANCE_M
+        and activation.get("termination_condition_met") is True
+        and activation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED"
+        and activation.get("control_handshake_status") == "CONTROL_HANDSHAKE_CONFIRMED"
+        and isinstance(physical_stop, Mapping)
+        and physical_stop.get("status") == "PASS"
+        and isinstance(zero_stop, Mapping)
+        and int(zero_stop.get("zero_publish_calls_returned", 0) or 0) >= ZERO_STOP_MIN_MESSAGES
+    ):
+        return "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_PASS"
+    return "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_BLOCKED"
 
 
 M1_CHILD_RESULT_STATUSES = frozenset({"PASS", "BLOCKED"})
@@ -413,6 +590,9 @@ def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
         "SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS",
         "SIMULATION_ONLY_DIAGNOSTIC_TURNING_FAIL",
         "SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED",
+        "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_PASS",
+        "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_FAIL",
+        "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_BLOCKED",
     ):
         return baseline_classification
     if baseline_classification == "FIRST_PHYSICAL_WALKING_PASS":
@@ -613,7 +793,8 @@ class BoundedRun:
         run49 = bool(getattr(self.args, "run49_smoothstop_diagnostic", False))
         run50 = bool(getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False))
         run53 = bool(getattr(self.args, "run53_turning_diagnostic", False))
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53))
+        run65 = bool(getattr(self.args, "run65_point_goal_diagnostic", False))
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -671,7 +852,7 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        if run41 or run42 or run43 or run44 or run45 or run46 or run48 or run49 or run50 or run53:
+        if run41 or run42 or run43 or run44 or run45 or run46 or run48 or run49 or run50 or run53 or run65:
             overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
             overlay_name = "foundationwalk_knee019_minrun010.yaml"
         else:
@@ -690,7 +871,11 @@ class BoundedRun:
             "source_limits_modified": False,
             "safety_gates_modified": False,
         })
-        manifest["command_speed_m_s"] = TURN_FORWARD_COMMAND_M_S if run53 else float(self.args.forward_speed)
+        manifest["command_speed_m_s"] = (
+            TURN_FORWARD_COMMAND_M_S if run53
+            else 0.12 if run65
+            else float(self.args.forward_speed)
+        )
         manifest["command_profile"] = ({
             "shape": "left-right-forward-warmup-arc",
             "forward_velocity_m_s": TURN_FORWARD_COMMAND_M_S,
@@ -700,6 +885,15 @@ class BoundedRun:
             "pulse_duration_s_each": TURN_PULSE_S,
             "total_active_command_s": 2.0 * (TURN_FORWARD_WARMUP_S + TURN_PULSE_S),
         } if run53 else {
+            "shape": "ground-truth-point-goal",
+            "target_distance_m": 0.30,
+            "stop_trigger_radius_m": 0.10,
+            "final_tolerance_m": 0.05,
+            "forward_velocity_m_s": 0.12,
+            "angular_controller_cap_rad_s": 0.075,
+            "active_command_limit_s": 10.0,
+            "maximum_planar_speed_m_s": 0.2,
+        } if run65 else {
             "shape": "motion-triggered-startup-then-cruise"
             if getattr(self.args, "startup_speed", None) is not None
             else "constant-then-smoothstep-deceleration"
@@ -1536,6 +1730,7 @@ class BoundedRun:
             or getattr(self.args, "run49_smoothstop_diagnostic", False)
             or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
             or getattr(self.args, "run53_turning_diagnostic", False)
+            or getattr(self.args, "run65_point_goal_diagnostic", False)
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
         if (
@@ -1548,6 +1743,7 @@ class BoundedRun:
             or getattr(self.args, "run49_smoothstop_diagnostic", False)
             or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
             or getattr(self.args, "run53_turning_diagnostic", False)
+            or getattr(self.args, "run65_point_goal_diagnostic", False)
         ):
             command[-1] += " --zero-until-stand-timeout-s 3.5"
         if (
@@ -1567,6 +1763,8 @@ class BoundedRun:
             command[-1] += " --deceleration-duration-s 1.0 --deceleration-end-speed-m-s 0.112"
         if getattr(self.args, "run53_turning_diagnostic", False):
             command[-1] += " --turning-diagnostic"
+        if getattr(self.args, "run65_point_goal_diagnostic", False):
+            command[-1] += " --point-goal-diagnostic"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
@@ -1830,6 +2028,9 @@ class BoundedRun:
             "m1_status": "NOT_RUN",
             "mc_rl_debug_capture": None,
             "mc_rl_debug_overlay": None,
+            "turning_reassessment_prerequisite": getattr(
+                self.args, "turning_reassessment_provenance", None
+            ),
             "outcome_classification": "STANDING_CONTROL_NOT_READY",
             "fault": None,
         }
@@ -1896,6 +2097,19 @@ class BoundedRun:
                 result["outcome_classification"] = self.outcome_classification
                 result["status"] = (
                     "PASS" if self.outcome_classification == "SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS"
+                    else "BLOCKED"
+                )
+                return result
+            if getattr(self.args, "run65_point_goal_diagnostic", False):
+                point_goal = m1.get("point_goal_diagnostic")
+                result["point_goal_diagnostic"] = point_goal
+                self.outcome_classification = classify_point_goal_result(
+                    point_goal if isinstance(point_goal, Mapping) else None
+                )
+                result["outcome_classification"] = self.outcome_classification
+                result["status"] = (
+                    "PASS"
+                    if self.outcome_classification == "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_PASS"
                     else "BLOCKED"
                 )
                 return result
@@ -2110,6 +2324,19 @@ def main() -> int:
             "capped at 10 s total active commands with unchanged physical safety gates"
         ),
     )
+    parser.add_argument(
+        "--run65-ground-truth-point-goal",
+        action="store_true",
+        help=(
+            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with the verified Run65 turn/stop "
+            "prerequisite, 0.12 m/s cap, 10-second command cap, and unchanged physical-stop gates"
+        ),
+    )
+    parser.add_argument(
+        "--turning-reassessment-json",
+        default=None,
+        help="governed Run65 forward-arc reassessment result.json required before point-goal runtime",
+    )
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
@@ -2136,13 +2363,19 @@ def main() -> int:
         args.run49_smoothstop_diagnostic,
         args.run50_threshold_respecting_smoothstop_diagnostic,
         args.run53_turning_diagnostic,
+        args.run65_ground_truth_point_goal,
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
     if any(diagnostic_variants):
         if not args.maintainer_authorized_first_motion:
             parser.error("FoundationWalk diagnostic requires the authorized first-motion gate")
-        if args.run53_turning_diagnostic:
+        if args.run65_ground_truth_point_goal:
+            try:
+                args.turning_reassessment_provenance = validate_run65_point_goal_profile(args)
+            except (OSError, ValueError, RuntimeError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                parser.error(f"point-goal preflight failed before runtime: {exc}")
+        elif args.run53_turning_diagnostic:
             if (
                 not args.capture_mc_rl_debug
                 or abs(args.extra_stop_observation - 5.0) > 1e-9
