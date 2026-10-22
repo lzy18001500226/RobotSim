@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as runner
 from issue80_m1_first_motion import (
-    build_forward_point_goal, point_goal_forward_speed_m_s, point_goal_heading_error_rad,
+    build_forward_point_goal, point_goal_command_from_bearing_error,
+    point_goal_forward_speed_m_s, point_goal_heading_error_rad,
     point_goal_stop_reason, speed_scaled_point_goal_stop_advance_m,
     stale_readback_keys,
 )
@@ -246,31 +247,54 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             point_goal_forward_speed_m_s(world_frame, start_yaw_rad=math.pi / 2), 0.16,
         )
 
-    def test_point_goal_heading_holds_start_orientation_and_uses_bounded_lateral_correction(self) -> None:
-        self.assertAlmostEqual(
-            point_goal_heading_error_rad(
-                current_yaw_rad=0.60,
-                start_yaw_rad=0.50,
-                lateral_error_m=0.0,
-            ),
-            -0.10,
+    def test_run73_waypoint_bearing_is_restored_with_validated_command_envelope(self) -> None:
+        # Run75's saved lateral-guard state: remaining along-track distance
+        # 84.151 mm, lateral error -50.107 mm, yaw delta from start +20.245 mrad.
+        start_yaw = 0.0488158
+        current_yaw = start_yaw + 0.020245
+        remaining_along = 0.084151
+        remaining_lateral = 0.050107
+        goal_dx = math.cos(start_yaw) * remaining_along - math.sin(start_yaw) * remaining_lateral
+        goal_dy = math.sin(start_yaw) * remaining_along + math.cos(start_yaw) * remaining_lateral
+        error = point_goal_heading_error_rad(
+            current_yaw_rad=current_yaw,
+            goal_dx_m=goal_dx,
+            goal_dy_m=goal_dy,
         )
-        self.assertAlmostEqual(
-            point_goal_heading_error_rad(
-                current_yaw_rad=0.50,
-                start_yaw_rad=0.50,
-                lateral_error_m=0.02,
-            ),
-            -0.01,
+        self.assertAlmostEqual(error, 0.5168, places=3)
+        forward, angular = point_goal_command_from_bearing_error(error)
+        self.assertEqual(forward, 0.12)
+        self.assertEqual(angular, 0.075)
+
+    def test_run73_command_profile_uses_cruise_when_goal_bearing_is_aligned(self) -> None:
+        error = point_goal_heading_error_rad(
+            current_yaw_rad=0.5,
+            goal_dx_m=math.cos(0.5),
+            goal_dy_m=math.sin(0.5),
         )
-        self.assertAlmostEqual(
-            point_goal_heading_error_rad(
-                current_yaw_rad=0.50,
-                start_yaw_rad=0.50,
-                lateral_error_m=-1.0,
-            ),
-            0.04,
+        self.assertAlmostEqual(error, 0.0, places=6)
+        self.assertEqual(point_goal_command_from_bearing_error(error), (0.14, 0.0))
+
+    def test_run73_recorded_waypoint_bearing_command_is_reproduced(self) -> None:
+        # Run73 sample near progress=109.7 mm; recorded command was
+        # (0.12 m/s, +0.0628316654 rad/s).
+        error = point_goal_heading_error_rad(
+            current_yaw_rad=0.07815519346248044,
+            goal_dx_m=0.18895332682911467,
+            goal_dy_m=0.02985272713830441,
         )
+        self.assertAlmostEqual(error, 0.07853958179851628, places=10)
+        forward, angular = point_goal_command_from_bearing_error(error)
+        self.assertEqual(forward, 0.12)
+        self.assertAlmostEqual(angular, 0.06283166543881302, places=10)
+
+    def test_point_goal_heading_error_wraps_across_pi(self) -> None:
+        error = point_goal_heading_error_rad(
+            current_yaw_rad=math.pi - 0.01,
+            goal_dx_m=-1.0,
+            goal_dy_m=0.01,
+        )
+        self.assertAlmostEqual(error, 0.0, places=6)
 
     def test_goal_controller_stops_on_dynamic_crossing_and_bounded_guards(self) -> None:
         common = {

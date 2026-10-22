@@ -615,34 +615,52 @@ def point_goal_forward_speed_m_s(pose: Mapping[str, Any], *, start_yaw_rad: floa
 def point_goal_heading_error_rad(
     *,
     current_yaw_rad: float,
-    start_yaw_rad: float,
-    lateral_error_m: float,
-    lateral_gain_rad_per_m: float = 0.5,
-    max_lateral_heading_correction_rad: float = 0.04,
+    goal_dx_m: float,
+    goal_dy_m: float,
 ) -> float:
-    """Hold the initial travel heading with a small cross-track correction.
-
-    The target heading is anchored to the measured start pose; it does not
-    rotate toward a waypoint that may be behind the robot after crossing.
-    """
-    values = (
-        current_yaw_rad,
-        start_yaw_rad,
-        lateral_error_m,
-        lateral_gain_rad_per_m,
-        max_lateral_heading_correction_rad,
-    )
+    """Return the wrapped bearing error from the current pose to the goal."""
+    values = (current_yaw_rad, goal_dx_m, goal_dy_m)
     try:
-        current_yaw, start_yaw, lateral, gain, max_correction = tuple(float(v) for v in values)
+        current_yaw, dx, dy = tuple(float(v) for v in values)
     except (TypeError, ValueError) as exc:
         raise ValueError("point-goal heading inputs must be numeric") from exc
-    if not all(math.isfinite(value) for value in (current_yaw, start_yaw, lateral, gain, max_correction)):
+    if not all(math.isfinite(value) for value in (current_yaw, dx, dy)):
         raise ValueError("point-goal heading inputs must be finite")
-    if gain < 0.0 or max_correction <= 0.0:
-        raise ValueError("point-goal lateral heading correction bounds are invalid")
-    correction = max(-max_correction, min(max_correction, -gain * lateral))
-    desired_yaw = start_yaw + correction
-    return math.atan2(math.sin(desired_yaw - current_yaw), math.cos(desired_yaw - current_yaw))
+    bearing = math.atan2(dy, dx)
+    return math.atan2(math.sin(bearing - current_yaw), math.cos(bearing - current_yaw))
+
+
+def point_goal_command_from_bearing_error(
+    heading_error_rad: float,
+    *,
+    cruise_forward_m_s: float = 0.14,
+    steering_forward_m_s: float = TURN_FORWARD_COMMAND_M_S,
+    heading_gain: float = 0.8,
+    maximum_angular_rad_s: float = 0.075,
+    steering_threshold_rad: float = 0.005,
+) -> tuple[float, float]:
+    """Apply the validated Run73 speed profile and bounded heading response."""
+    values = (
+        heading_error_rad,
+        cruise_forward_m_s,
+        steering_forward_m_s,
+        heading_gain,
+        maximum_angular_rad_s,
+        steering_threshold_rad,
+    )
+    try:
+        error, cruise, steering, gain, maximum_angular, threshold = tuple(
+            float(value) for value in values
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("point-goal command inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (error, cruise, steering, gain, maximum_angular, threshold)):
+        raise ValueError("point-goal command inputs must be finite")
+    if cruise <= 0.0 or steering <= 0.0 or gain < 0.0 or maximum_angular <= 0.0 or threshold < 0.0:
+        raise ValueError("point-goal command bounds are invalid")
+    forward = steering if abs(error) > threshold else cruise
+    angular = max(-maximum_angular, min(maximum_angular, gain * error))
+    return forward, angular
 
 
 def build_forward_point_goal(
@@ -1121,6 +1139,35 @@ def validate_first_motion_authorization(
         raise ValueError("first motion requires the parent runner's verified bridge marker")
 
 
+def _source_only_readback_fault(value: Any) -> bool:
+    if not value:
+        return False
+    parts = [part.strip() for part in str(value).split(";") if part.strip()]
+    return bool(parts) and all(part.startswith("GetCurrentInputSource") for part in parts)
+
+
+def source_readback_gap(snapshot: Mapping[str, Any], *, state_timeout_s: float) -> str | None:
+    """Describe an unavailable source readback without classifying it as physical-state loss."""
+    source_fault = snapshot.get("get_source_readback_fault")
+    if source_fault:
+        return str(source_fault)
+    # Compatibility with captured snapshots created before readback faults
+    # were separated by service.
+    generic_fault = snapshot.get("readback_fault")
+    if _source_only_readback_fault(generic_fault):
+        return str(generic_fault)
+    ages = snapshot.get("state_age_s")
+    age = ages.get("get_source") if isinstance(ages, Mapping) else None
+    if (
+        not isinstance(age, (int, float)) or not math.isfinite(float(age))
+        or not 0.0 <= float(age) <= state_timeout_s
+    ):
+        return "GetCurrentInputSource readback is missing or stale"
+    if snapshot.get("get_source_header_code") != 0:
+        return "GetCurrentInputSource response header is not successful"
+    return None
+
+
 def snapshot_fault(
     snapshot: Mapping[str, Any],
     joint_limits: Mapping[str, Mapping[str, float]],
@@ -1131,13 +1178,25 @@ def snapshot_fault(
     expected_source: str = VELOCITY_SOURCE_NAME,
     required_forward_mps: float = FORWARD_COMMAND_M_S,
     max_observed_planar_speed_m_s: float | None = None,
+    allow_source_readback_gap: bool = False,
 ) -> str | None:
-    if snapshot.get("readback_fault"):
+    if allow_source_readback_gap:
+        mode_readback_fault = snapshot.get("get_mode_readback_fault")
+        if mode_readback_fault:
+            return f"readback_fault:{mode_readback_fault}"
+        generic_readback_fault = snapshot.get("readback_fault")
+        if generic_readback_fault and not _source_only_readback_fault(generic_readback_fault):
+            return f"readback_fault:{generic_readback_fault}"
+    elif snapshot.get("readback_fault"):
         return f"readback_fault:{snapshot['readback_fault']}"
     ages = snapshot.get("state_age_s")
     if not isinstance(ages, Mapping):
         return "missing_state_ages"
-    for key in REQUIRED_STATE_KEYS:
+    required_state_keys = (
+        tuple(key for key in REQUIRED_STATE_KEYS if key != "get_source")
+        if allow_source_readback_gap else REQUIRED_STATE_KEYS
+    )
+    for key in required_state_keys:
         age = ages.get(key)
         if not isinstance(age, (int, float)) or not math.isfinite(float(age)) or not 0.0 <= float(age) <= state_timeout_s:
             return f"stale_or_missing_state:{key}"
@@ -1196,7 +1255,7 @@ def snapshot_fault(
         snapshot.get("get_source_name", ""),
         snapshot.get("common_source_name", ""),
     )
-    if snapshot.get("get_source_header_code") != 0:
+    if not allow_source_readback_gap and snapshot.get("get_source_header_code") != 0:
         return "get_current_input_source_readback_error"
     if any(name not in ("", expected_source) for name in source_names):
         return f"input_source_conflict:{source_names!r}"
@@ -1951,6 +2010,25 @@ def evaluate_physical_stop_gate(
         (row for row in samples if row.get("phase") == "post-stop"
          and isinstance(row.get("pose"), Mapping)),
         key=lambda row: float(row.get("sample_monotonic_s", -math.inf)),
+    )
+    # A transient source-service outage is observable but cannot contribute to
+    # acceptance. If service readback later recovers, only one uninterrupted
+    # readback epoch can satisfy the complete post-STAND physical hold.
+    eligible_epochs = [
+        int(row.get("post_stop_readback_epoch", 0))
+        for row in post_rows
+        if row.get("post_stop_gate_eligible", True)
+    ]
+    latest_epoch = max(eligible_epochs) if eligible_epochs else None
+    post_rows = [
+        row for row in post_rows
+        if row.get("post_stop_gate_eligible", True)
+        and (latest_epoch is None or int(row.get("post_stop_readback_epoch", 0)) == latest_epoch)
+    ]
+    result["readback_epoch_used"] = latest_epoch
+    result["readback_gap_samples_excluded"] = sum(
+        1 for row in samples
+        if row.get("phase") == "post-stop" and not row.get("post_stop_gate_eligible", True)
     )
     after_stand = [
         row for row in post_rows
@@ -3181,12 +3259,21 @@ def run_first_motion_window(
     post_stop_last_pose: Mapping[str, Any] | None = None
     post_stop_first_observation: dict[str, Any] | None = None
     post_stop_fault: str | None = None
+    post_stop_readback_epoch = 0
+    post_stop_readback_gap_active = False
+    post_stop_readback_events: list[dict[str, Any]] = []
+    post_stop_readback_valid_monotonic_s: float | None = None
+    post_stop_acceptance_gap_active = False
+    post_stop_acceptance_gap_events: list[dict[str, Any]] = []
 
     def record_sample(phase: str, snapshot: Mapping[str, Any], fault: str | None) -> None:
         row = dict(snapshot)
         row["phase"] = phase
-        row["safety_check"] = "FAIL" if fault else "PASS"
-        row["safety_fault"] = fault
+        readback_gap = row.get("post_stop_source_readback_gap") if phase == "post-stop" else None
+        row["safety_check"] = "FAIL" if fault else "INCOMPLETE" if readback_gap else "PASS"
+        row["safety_fault"] = fault or (
+            f"required service readback unavailable: {readback_gap}" if readback_gap else None
+        )
         result["samples"].append(row)
         if on_sample:
             on_sample(phase, row)
@@ -3424,22 +3511,114 @@ def run_first_motion_window(
         }
         stop_mode_confirmed = False
         post_stop_zero_extension = {
-            "status": "NOT_REQUESTED" if zero_until_stand_timeout_s == 0.0 else "WAITING_FOR_STAND_READBACK",
+            "status": "ZERO_CONTINUES_THROUGH_POST_STOP_OBSERVATION",
             "requested_timeout_s": zero_until_stand_timeout_s,
             "zero_publish_calls_returned": 0,
             "first_publish_monotonic_s": None,
             "last_publish_monotonic_s": None,
+            "max_gap_between_publish_call_returns_s": 0.0,
             "publish_exceptions": [],
             "mc_receipt_confirmed": False,
         }
-        if after_zero_stop is not None and tracker.control_handshake_confirmed and result["nonzero_publish_calls_returned"] > 0:
+
+        def publish_post_stop_zero(now_s: float) -> str | None:
             try:
-                result["after_zero_stop_action"] = dict(after_zero_stop())
+                with command_lock:
+                    publish(0.0)
+                returned = clock()
+                previous = post_stop_zero_extension["last_publish_monotonic_s"]
+                if previous is not None:
+                    gap = max(0.0, returned - float(previous))
+                    post_stop_zero_extension["max_gap_between_publish_call_returns_s"] = max(
+                        float(post_stop_zero_extension["max_gap_between_publish_call_returns_s"]),
+                        gap,
+                    )
+                    if gap >= SOURCE_TIMEOUT_MS / 1000.0:
+                        return "post_stop_zero_publish_gap_exceeded_source_timeout"
+                if post_stop_zero_extension["first_publish_monotonic_s"] is None:
+                    post_stop_zero_extension["first_publish_monotonic_s"] = float(now_s)
+                post_stop_zero_extension["last_publish_monotonic_s"] = returned
+                post_stop_zero_extension["zero_publish_calls_returned"] += 1
+                return None
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                post_stop_zero_extension["publish_exceptions"].append(error)
+                post_stop_zero_extension["status"] = "ZERO_PUBLISH_FAILED"
+                return "post_stop_zero_publish_exception:" + error
+
+        # Continue zero immediately after the initial window, before a
+        # potentially blocking post-walk SetMcAction/readback call.
+        initial_post_stop_zero_fault = publish_post_stop_zero(clock())
+        if initial_post_stop_zero_fault:
+            post_stop_fault = initial_post_stop_zero_fault
+        if after_zero_stop is not None and tracker.control_handshake_confirmed and result["nonzero_publish_calls_returned"] > 0:
+            callback_zero_stop = threading.Event()
+            callback_zero_metrics: dict[str, Any] = {
+                "started": False,
+                "publish_calls_returned": 0,
+                "publish_faults": [],
+                "max_inter_publish_gap_s": 0.0,
+                "start_wall_monotonic_s": None,
+                "end_wall_monotonic_s": None,
+                "thread_joined": True,
+            }
+
+            def callback_zero_pump() -> None:
+                period = 1.0 / PUBLISH_HZ
+                next_send = time.monotonic()
+                last_return: float | None = None
+                callback_zero_metrics["started"] = True
+                callback_zero_metrics["start_wall_monotonic_s"] = next_send
+                while not callback_zero_stop.is_set():
+                    now_wall = time.monotonic()
+                    if now_wall < next_send:
+                        callback_zero_stop.wait(next_send - now_wall)
+                        continue
+                    fault = publish_post_stop_zero(clock())
+                    returned_wall = time.monotonic()
+                    callback_zero_metrics["publish_calls_returned"] += int(fault is None)
+                    if last_return is not None:
+                        callback_zero_metrics["max_inter_publish_gap_s"] = max(
+                            float(callback_zero_metrics["max_inter_publish_gap_s"]),
+                            returned_wall - last_return,
+                        )
+                    last_return = returned_wall
+                    if fault:
+                        callback_zero_metrics["publish_faults"].append(fault)
+                    next_send = returned_wall + period
+                callback_zero_metrics["end_wall_monotonic_s"] = time.monotonic()
+
+            callback_zero_thread = threading.Thread(
+                target=callback_zero_pump,
+                name="issue80-post-stop-zero-pump",
+                daemon=True,
+            )
+            callback_zero_thread.start()
+            try:
+                if initial_post_stop_zero_fault is None:
+                    result["after_zero_stop_action"] = dict(after_zero_stop())
+                else:
+                    result["after_zero_stop_action"] = {
+                        "success": False, "error": initial_post_stop_zero_fault,
+                    }
             except Exception as exc:
                 result["after_zero_stop_action"] = {
                     "success": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+            finally:
+                callback_zero_stop.set()
+                callback_zero_thread.join(timeout=0.5)
+                callback_zero_metrics["thread_joined"] = not callback_zero_thread.is_alive()
+                if not callback_zero_metrics["thread_joined"]:
+                    callback_zero_metrics["publish_faults"].append(
+                        "post_stop_zero_pump_thread_join_timeout"
+                    )
+                if callback_zero_metrics["publish_faults"]:
+                    post_stop_fault = post_stop_fault or str(
+                        callback_zero_metrics["publish_faults"][0]
+                    )
+            post_stop_zero_extension["blocking_action_zero_pump"] = callback_zero_metrics
         if zero_until_stand_timeout_s > 0.0:
             stop_transition_confirmation["request_result"] = result.get("after_zero_stop_action")
             stop_transition_confirmation["started_monotonic_s"] = clock()
@@ -3449,7 +3628,7 @@ def run_first_motion_window(
             )
             next_post_stop_zero_publish = float(stop_transition_confirmation["started_monotonic_s"])
         else:
-            next_post_stop_zero_publish = None
+            next_post_stop_zero_publish = clock()
         first_post_stop_sample_attempt_s = clock()
         try:
             first_post_stop = sample()
@@ -3460,7 +3639,24 @@ def run_first_motion_window(
                 min_root_z=min_root_z,
                 max_tilt_deg=max_tilt_deg,
                 max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
+                allow_source_readback_gap=True,
             )
+            first_source_readback_gap = source_readback_gap(
+                first_post_stop, state_timeout_s=state_timeout_s,
+            )
+            first_sample_time = float(first_post_stop.get("sample_monotonic_s", clock()))
+            if first_source_readback_gap:
+                post_stop_readback_epoch += 1
+                post_stop_readback_gap_active = True
+                post_stop_readback_events.append({
+                    "start_monotonic_s": first_sample_time,
+                    "end_monotonic_s": None,
+                    "reason": first_source_readback_gap,
+                    "recovered": False,
+                    "readback_epoch": post_stop_readback_epoch,
+                })
+            else:
+                post_stop_readback_valid_monotonic_s = first_sample_time
             record_sample("post-stop-first-observation", first_post_stop, immediate_fault)
             first_post_stop_pose = first_post_stop.get("pose")
             post_stop_first_observation = {
@@ -3468,6 +3664,8 @@ def run_first_motion_window(
                 "sample_attempt_monotonic_s": first_post_stop_sample_attempt_s,
                 "sample_monotonic_s": first_post_stop.get("sample_monotonic_s"),
                 "safety_fault": immediate_fault,
+                "source_readback_gap": first_source_readback_gap,
+                "physical_state_observation_valid": immediate_fault is None,
                 "timing_relation": "sampled_after_zero_stop_window",
                 "zero_window_complete_before_sample": (
                     stop_result["end_monotonic_s"] is not None
@@ -3525,20 +3723,11 @@ def run_first_motion_window(
                         else "post_stop_auto_stand_transition_timeout"
                     )
                     post_stop_fault = post_stop_fault or timeout_fault
-                if next_post_stop_zero_publish is not None and now >= next_post_stop_zero_publish:
-                    try:
-                        publish(0.0)
-                        if post_stop_zero_extension["first_publish_monotonic_s"] is None:
-                            post_stop_zero_extension["first_publish_monotonic_s"] = now
-                        post_stop_zero_extension["last_publish_monotonic_s"] = now
-                        post_stop_zero_extension["zero_publish_calls_returned"] += 1
-                    except Exception as exc:
-                        error = f"{type(exc).__name__}: {exc}"
-                        post_stop_zero_extension["publish_exceptions"].append(error)
-                        post_stop_zero_extension["status"] = "ZERO_PUBLISH_FAILED"
-                        stop_extension_publish_fault = "post_stop_zero_publish_exception:" + error
-                        post_stop_fault = post_stop_fault or stop_extension_publish_fault
-                    next_post_stop_zero_publish = clock() + 1.0 / PUBLISH_HZ
+            if now >= next_post_stop_zero_publish:
+                stop_extension_publish_fault = publish_post_stop_zero(now)
+                if stop_extension_publish_fault:
+                    post_stop_fault = post_stop_fault or stop_extension_publish_fault
+                next_post_stop_zero_publish = clock() + 1.0 / PUBLISH_HZ
             try:
                 current = sample()
                 current_fault = snapshot_fault(
@@ -3548,18 +3737,12 @@ def run_first_motion_window(
                     min_root_z=min_root_z,
                     max_tilt_deg=max_tilt_deg,
                     max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
+                    allow_source_readback_gap=True,
                 )
                 if stop_extension_publish_fault and not current_fault:
                     current_fault = stop_extension_publish_fault
                 if current_fault:
                     post_stop_fault = current_fault
-                record_sample("post-stop", current, current_fault)
-                post_stop_samples += 1
-                pose = current.get("pose")
-                if isinstance(pose, Mapping):
-                    if post_stop_first_pose is None:
-                        post_stop_first_pose = dict(pose)
-                    post_stop_last_pose = dict(pose)
                 if zero_until_stand_timeout_s > 0.0 and not stop_mode_confirmed:
                     if stand_mode_readback_confirmed(current):
                         stop_mode_confirmed = True
@@ -3578,6 +3761,72 @@ def run_first_motion_window(
                             current.get("sample_monotonic_s", clock())
                         )
                         post_stop_zero_extension["status"] = stop_transition_confirmation["status"]
+                current_sample_time = float(current.get("sample_monotonic_s", clock()))
+                current_source_readback_gap = source_readback_gap(
+                    current, state_timeout_s=state_timeout_s,
+                )
+                if current_source_readback_gap:
+                    if not post_stop_readback_gap_active:
+                        post_stop_readback_epoch += 1
+                        post_stop_readback_events.append({
+                            "start_monotonic_s": current_sample_time,
+                            "end_monotonic_s": None,
+                            "reason": current_source_readback_gap,
+                            "recovered": False,
+                            "readback_epoch": post_stop_readback_epoch,
+                        })
+                    post_stop_readback_gap_active = True
+                    post_stop_readback_valid_monotonic_s = None
+                else:
+                    if post_stop_readback_gap_active:
+                        event = post_stop_readback_events[-1]
+                        event["end_monotonic_s"] = current_sample_time
+                        event["duration_s"] = max(
+                            0.0, current_sample_time - float(event["start_monotonic_s"])
+                        )
+                        event["recovered"] = True
+                        post_stop_readback_gap_active = False
+                    post_stop_readback_valid_monotonic_s = current_sample_time
+                stand_readback_is_current = stand_mode_readback_confirmed(current)
+                acceptance_gap = (
+                    current_source_readback_gap
+                    or (None if stand_readback_is_current else "fresh STAND readback not present")
+                    or current_fault
+                )
+                if acceptance_gap:
+                    current["post_stop_gate_eligible"] = False
+                    current["post_stop_acceptance_gap"] = acceptance_gap
+                    if not post_stop_acceptance_gap_active:
+                        if not current_source_readback_gap:
+                            post_stop_readback_epoch += 1
+                        post_stop_acceptance_gap_events.append({
+                            "start_monotonic_s": current_sample_time,
+                            "end_monotonic_s": None,
+                            "reason": acceptance_gap,
+                            "readback_epoch": post_stop_readback_epoch,
+                        })
+                        post_stop_acceptance_gap_active = True
+                else:
+                    current["post_stop_gate_eligible"] = current_fault is None
+                    current["post_stop_acceptance_gap"] = None
+                    if post_stop_acceptance_gap_active and post_stop_acceptance_gap_events:
+                        event = post_stop_acceptance_gap_events[-1]
+                        if event["end_monotonic_s"] is None:
+                            event["end_monotonic_s"] = current_sample_time
+                            event["duration_s"] = max(
+                                0.0, current_sample_time - float(event["start_monotonic_s"])
+                            )
+                    post_stop_acceptance_gap_active = False
+                current["post_stop_source_readback_gap"] = current_source_readback_gap
+                current["post_stop_readback_epoch"] = post_stop_readback_epoch
+                current["post_stop_readback_valid_monotonic_s"] = post_stop_readback_valid_monotonic_s
+                record_sample("post-stop", current, current_fault)
+                post_stop_samples += 1
+                pose = current.get("pose")
+                if isinstance(pose, Mapping):
+                    if post_stop_first_pose is None:
+                        post_stop_first_pose = dict(pose)
+                    post_stop_last_pose = dict(pose)
             except Exception as exc:
                 post_stop_fault = f"post_stop_exception:{type(exc).__name__}:{exc}"
                 current_fault = post_stop_fault
@@ -3594,10 +3843,19 @@ def run_first_motion_window(
                 break
             remaining = post_stop_end - clock()
             if remaining > 0.0:
-                pending_stand_confirmation = (
-                    zero_until_stand_timeout_s > 0.0 and not stop_mode_confirmed
-                )
-                sleep(min(1.0 / PUBLISH_HZ if pending_stand_confirmation else 0.05, remaining))
+                sleep(min(1.0 / PUBLISH_HZ, remaining))
+
+        if post_stop_readback_gap_active:
+            post_stop_fault = post_stop_fault or "post_stop_required_readback_not_recovered"
+            if post_stop_readback_events and post_stop_readback_events[-1]["end_monotonic_s"] is None:
+                post_stop_readback_events[-1]["observation_deadline_monotonic_s"] = post_stop_end
+        if not post_stop_zero_extension["publish_exceptions"] and post_stop_fault is None:
+            post_stop_zero_extension["status"] = (
+                "STAND_READBACK_CONFIRMED_ZERO_CONTINUES_THROUGH_POST_STOP_OBSERVATION"
+                if stop_mode_confirmed
+                else "ZERO_CONTINUED_THROUGH_POST_STOP_OBSERVATION_STAND_UNCONFIRMED"
+            )
+        post_stop_zero_extension["end_monotonic_s"] = clock()
 
     result["pulse_actual_duration_s"] = (
         max(0.0, pulse_end - pulse_start) if pulse_start is not None and pulse_end is not None else 0.0
@@ -3608,6 +3866,8 @@ def run_first_motion_window(
     if zero_until_stand_timeout_s > 0.0:
         result["stop_transition_confirmation"] = stop_transition_confirmation
         result["post_stop_zero_extension"] = post_stop_zero_extension
+    result["post_stop_readback_gap_events"] = post_stop_readback_events
+    result["post_stop_acceptance_gap_events"] = post_stop_acceptance_gap_events
     result["nonzero_command_attempt_offsets_s"] = nonzero_attempt_offsets_s
     result["nonzero_command_success_offsets_s"] = nonzero_success_offsets_s
     result["nonzero_command_span_s"] = (

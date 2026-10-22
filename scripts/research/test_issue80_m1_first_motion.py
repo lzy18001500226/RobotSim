@@ -25,6 +25,8 @@ from issue80_m1_first_motion import (
     MC_FSM_INTERFACE_SOURCE_SHA256,
     MC_FSM_SAFE,
     MC_FSM_STABLE,
+    MODE_LOCOMOTION,
+    MODE_STAND,
     measure_post_stop_forward_tail,
     evaluate_physical_stop_gate,
     run_angular_turn_window,
@@ -68,6 +70,7 @@ from issue80_m1_first_motion import (
     mc_subscriber_history_depth_evidence,
     run_first_motion_window,
     snapshot_fault,
+    source_readback_gap,
     validate_first_motion_authorization,
     validate_local_sim_publishers,
     validate_runtime_scope as _validate_runtime_scope,
@@ -387,6 +390,112 @@ class FirstMotionSafetyTests(unittest.TestCase):
             timer_factory=timer_factory,
         )
 
+    def test_only_source_readback_gap_is_tolerated_for_physical_observation(self):
+        sample = self.snapshot(
+            readback_fault="GetCurrentInputSource async response timeout",
+            get_source_readback_fault="GetCurrentInputSource async response timeout",
+        )
+        sample["state_age_s"]["get_source"] = 0.9
+        self.assertIsNotNone(source_readback_gap(sample, state_timeout_s=0.5))
+        self.assertTrue(snapshot_fault(
+            sample, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+        ))
+        self.assertIsNone(snapshot_fault(
+            sample, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            allow_source_readback_gap=True,
+        ))
+
+        stale_odom = dict(sample)
+        stale_odom["state_age_s"] = dict(sample["state_age_s"], odom=0.6)
+        self.assertEqual(snapshot_fault(
+            stale_odom, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            allow_source_readback_gap=True,
+        ), "stale_or_missing_state:odom")
+
+        stale_mode = dict(sample)
+        stale_mode["get_mode_readback_fault"] = "GetMcAction async response timeout"
+        self.assertEqual(snapshot_fault(
+            stale_mode, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            allow_source_readback_gap=True,
+        ), "readback_fault:GetMcAction async response timeout")
+
+        ambiguous_legacy_fault = self.snapshot(
+            readback_fault=(
+                "GetCurrentInputSource async response timeout; GetMcAction async response timeout"
+            ),
+        )
+        self.assertTrue(snapshot_fault(
+            ambiguous_legacy_fault, LIMITS, state_timeout_s=0.5,
+            min_root_z=0.52, max_tilt_deg=15.0, allow_source_readback_gap=True,
+        ))
+
+    def test_transient_source_timeout_keeps_zero_stream_and_observation_running(self):
+        clock = FakeClock()
+        base = self.snapshot()
+        commands = []
+
+        def read():
+            row = dict(base)
+            row["state_age_s"] = dict(base["state_age_s"])
+            now = clock.now()
+            if 1.28 <= now <= 1.44:
+                row["get_source_readback_fault"] = "GetCurrentInputSource async response timeout"
+                row["readback_fault"] = "GetCurrentInputSource async response timeout"
+                row["state_age_s"]["get_source"] = 0.9
+            return row
+
+        def publish(value):
+            commands.append((clock.now(), value))
+            if value > 0.0:
+                base["get_source_name"] = VELOCITY_SOURCE_NAME
+                base["common_source_name"] = VELOCITY_SOURCE_NAME
+                base["get_mode_desc"] = MODE_LOCOMOTION
+                base["common_mode_desc"] = MODE_LOCOMOTION
+                base["fsm_state"] = int(McFsmStateCode.MOVING)
+            else:
+                base["get_mode_desc"] = MODE_STAND
+                base["common_mode_desc"] = MODE_STAND
+                base["get_mode_status_value"] = 100
+                base["common_mode_status_value"] = 100
+                base["fsm_state"] = MC_FSM_STABLE
+                base["get_source_name"] = ""
+                base["common_source_name"] = ""
+
+        result = run_first_motion_window(
+            sample=lambda: (lambda row: {**row, "sample_monotonic_s": clock.now()})(read()),
+            publish=publish,
+            registration={"success": True, "selected_action": "ADD"},
+            set_action={"accepted_by_service": True, "header_code": 0, "status_value": 1},
+            joint_limits=LIMITS,
+            baseline_forward_displacements_m=[0.001, -0.001, 0.001],
+            authorized=True,
+            forward_command_m_s=0.2,
+            pulse_duration_s=0.2,
+            max_pulse_duration_s=0.2,
+            zero_until_stand_timeout_s=2.0,
+            clock=clock.now,
+            sleep=clock.sleep,
+            state_timeout_s=0.5,
+            min_root_z=0.52,
+            max_tilt_deg=15.0,
+        )
+        self.assertIsNone(result["post_stop_fault"])
+        self.assertGreaterEqual(result["post_stop_sample_count"], 100)
+        gap_events = result["post_stop_readback_gap_events"]
+        self.assertEqual(len(gap_events), 1)
+        self.assertTrue(gap_events[0]["recovered"])
+        self.assertGreater(gap_events[0]["duration_s"], 0.0)
+        extension = result["post_stop_zero_extension"]
+        self.assertEqual(
+            extension["status"],
+            "STAND_READBACK_CONFIRMED_ZERO_CONTINUES_THROUGH_POST_STOP_OBSERVATION",
+        )
+        self.assertGreaterEqual(extension["zero_publish_calls_returned"], 100)
+        self.assertGreaterEqual(
+            extension["last_publish_monotonic_s"] - extension["first_publish_monotonic_s"], 2.4,
+        )
+        self.assertFalse(result["physical_stop_gate"]["status"] == "PASS")
+
     def test_reduced_probe_speed_keeps_hard_cap_and_safety_gates(self):
         commands = []
         result = self.run_protocol(self.snapshot, commands.append, forward_command_m_s=0.1)
@@ -468,6 +577,13 @@ class FirstMotionSafetyTests(unittest.TestCase):
             )
 
         commands = []
+
+        def bounded_stand_request_delay():
+            # Exercise the synchronous service wait while zero commands must
+            # continue independently of that potentially blocking callback.
+            time.sleep(0.08)
+            return {"success": True}
+
         result = self.run_protocol(
             sample,
             commands.append,
@@ -476,7 +592,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             pulse_duration_s=0.1,
             max_pulse_duration_s=0.1,
             zero_until_stand_timeout_s=3.5,
-            after_zero_stop=lambda: {"success": True},
+            after_zero_stop=bounded_stand_request_delay,
         )
 
         confirmation = result["stop_transition_confirmation"]
@@ -484,7 +600,16 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertEqual(confirmation["status"], "STAND_READBACK_CONFIRMED")
         self.assertTrue(confirmation["stand_confirmed"])
         self.assertGreater(extension["zero_publish_calls_returned"], 0)
-        self.assertEqual(extension["status"], "STAND_READBACK_CONFIRMED")
+        self.assertEqual(
+            extension["status"],
+            "STAND_READBACK_CONFIRMED_ZERO_CONTINUES_THROUGH_POST_STOP_OBSERVATION",
+        )
+        callback_pump = extension["blocking_action_zero_pump"]
+        self.assertTrue(callback_pump["started"])
+        self.assertGreaterEqual(callback_pump["publish_calls_returned"], 3)
+        self.assertEqual(callback_pump["publish_faults"], [])
+        self.assertTrue(callback_pump["thread_joined"])
+        self.assertLess(callback_pump["max_inter_publish_gap_s"], 1.0)
 
     def test_zero_stream_timeout_is_reported_and_zero_continues(self):
         commands = []
@@ -1861,6 +1986,8 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
                 sample["pose"]["x"] = motion_ticks * 0.002
             else:
                 sample["get_mode_desc"] = sample["common_mode_desc"] = "STAND_DEFAULT"
+                sample["get_mode_status_value"] = 100
+                sample["common_mode_status_value"] = 100
                 sample["fsm_state"] = MC_FSM_STABLE
 
         result = self.run_protocol(lambda: sample, publish, baseline=[0.002, -0.001, 0.001])
@@ -2379,6 +2506,39 @@ class PhysicalStopGateTests(unittest.TestCase):
         short = [row for row in rows if row.get("phase") == "post-stop" and row["sample_monotonic_s"] <= 6.3]
         result = evaluate_physical_stop_gate(
             short, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("stable_window_too_short", result["final_window_violations"])
+
+    def test_recovered_source_readback_requires_a_new_complete_two_second_hold(self):
+        rows = self._fixture()
+        rows.extend(self._sample(t / 20.0) for t in range(161, 166))
+        for row in rows:
+            if row.get("phase") != "post-stop":
+                continue
+            t = row["sample_monotonic_s"]
+            if 6.0 <= t < 6.15:
+                row["post_stop_gate_eligible"] = False
+                row["post_stop_readback_epoch"] = 1
+                row["post_stop_source_readback_gap"] = "GetCurrentInputSource async response timeout"
+                row["readback_fault"] = "GetCurrentInputSource async response timeout"
+            elif t >= 6.15:
+                row["post_stop_gate_eligible"] = True
+                row["post_stop_readback_epoch"] = 1
+
+        result = evaluate_physical_stop_gate(
+            rows, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["readback_epoch_used"], 1)
+        self.assertGreater(result["readback_gap_samples_excluded"], 0)
+        self.assertGreaterEqual(result["final_window"]["duration_s"], 1.9)
+
+        incomplete = [row for row in rows if row.get("phase") != "post-stop" or row["sample_monotonic_s"] <= 7.95]
+        result = evaluate_physical_stop_gate(
+            incomplete, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
             baseline_state_summary={"body_status": 1},
         )
         self.assertEqual(result["status"], "FAIL")

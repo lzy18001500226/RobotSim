@@ -50,8 +50,6 @@ POINT_GOAL_DISTANCE_M = 0.30
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
-POINT_GOAL_LATERAL_HEADING_GAIN = 0.5
-POINT_GOAL_MAX_LATERAL_HEADING_CORRECTION_RAD = 0.04
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
 TOPIC_PROBES = (
@@ -924,8 +922,7 @@ class BoundedRun:
             "endpoint_response_intercept_m": POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
             "endpoint_response_time_s": POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
             "max_angular_command_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
-            "lateral_heading_gain_rad_per_m": POINT_GOAL_LATERAL_HEADING_GAIN,
-            "max_lateral_heading_correction_rad": POINT_GOAL_MAX_LATERAL_HEADING_CORRECTION_RAD,
+            "heading_policy": "Run73_waypoint_bearing_to_current_ground_truth_goal",
             "max_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
             "max_overshoot_m": POINT_GOAL_MAX_OVERSHOOT_M,
             "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,

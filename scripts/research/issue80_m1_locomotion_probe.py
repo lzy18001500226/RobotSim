@@ -40,7 +40,8 @@ from issue80_m1_first_motion import (
     joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
-    build_forward_point_goal, point_goal_forward_speed_m_s, point_goal_heading_error_rad,
+    build_forward_point_goal, point_goal_command_from_bearing_error,
+    point_goal_forward_speed_m_s, point_goal_heading_error_rad,
     point_goal_stop_reason,
     speed_scaled_point_goal_stop_advance_m, run_first_motion_window,
     snapshot_fault, stale_readback_keys,
@@ -61,8 +62,6 @@ POINT_GOAL_MAX_DURATION_S = 10.0
 POINT_GOAL_MAX_PLANAR_SPEED_M_S = 0.2
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 POINT_GOAL_HEADING_GAIN = 0.8
-POINT_GOAL_LATERAL_HEADING_GAIN = 0.5
-POINT_GOAL_MAX_LATERAL_HEADING_CORRECTION_RAD = 0.04
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
 # Bounded two-run SIMULATION_ONLY fit: Run69 and Run73 endpoint shifts versus
@@ -171,7 +170,11 @@ class FocusedM1Diagnostic(Node):
         self.source_future_started = 0.0
         self.next_mode_query = 0.0
         self.next_source_query = 0.0
-        self.async_readback_fault: str | None = None
+        # Keep mode and source service failures independent. A source query
+        # timeout may occur while simulator-owned safety state is still fresh;
+        # it must be auditable without poisoning every later readback forever.
+        self.async_mode_readback_fault: str | None = None
+        self.async_source_readback_fault: str | None = None
         self.mc_debug_f64_message_count = 0
         self.mc_debug_f64_first_layout: dict[str, Any] | None = None
         self.latest_mc_debug_f64_snapshot: dict[str, Any] | None = None
@@ -898,15 +901,21 @@ class FocusedM1Diagnostic(Node):
             try:
                 response = self.mode_future.result()
                 if response is None:
-                    self.async_readback_fault = "GetMcAction returned no response"
+                    self.async_mode_readback_fault = "GetMcAction returned no response"
                 else:
-                    self._record_mode_response(self.mode_future_request, response, "activation_poll")
+                    recorded = self._record_mode_response(
+                        self.mode_future_request, response, "activation_poll"
+                    )
+                    self.async_mode_readback_fault = (
+                        None if recorded["response_header_code"] == 0
+                        else f"GetMcAction header code={recorded['response_header_code']}"
+                    )
             except Exception as exc:
-                self.async_readback_fault = f"GetMcAction async error:{type(exc).__name__}:{exc}"
+                self.async_mode_readback_fault = f"GetMcAction async error:{type(exc).__name__}:{exc}"
             self.mode_future = None
             self.mode_future_request = None
         elif self.mode_future is not None and now - self.mode_future_started > 0.4:
-            self.async_readback_fault = "GetMcAction async response timeout"
+            self.async_mode_readback_fault = "GetMcAction async response timeout"
             self.mode_future = None
             self.mode_future_request = None
 
@@ -914,15 +923,21 @@ class FocusedM1Diagnostic(Node):
             try:
                 response = self.source_future.result()
                 if response is None:
-                    self.async_readback_fault = "GetCurrentInputSource returned no response"
+                    self.async_source_readback_fault = "GetCurrentInputSource returned no response"
                 else:
-                    self._record_source_response(self.source_future_request, response, "activation_poll")
+                    recorded = self._record_source_response(
+                        self.source_future_request, response, "activation_poll"
+                    )
+                    self.async_source_readback_fault = (
+                        None if recorded["response_header_code"] == 0
+                        else f"GetCurrentInputSource header code={recorded['response_header_code']}"
+                    )
             except Exception as exc:
-                self.async_readback_fault = f"GetCurrentInputSource async error:{type(exc).__name__}:{exc}"
+                self.async_source_readback_fault = f"GetCurrentInputSource async error:{type(exc).__name__}:{exc}"
             self.source_future = None
             self.source_future_request = None
         elif self.source_future is not None and now - self.source_future_started > 0.4:
-            self.async_readback_fault = "GetCurrentInputSource async response timeout"
+            self.async_source_readback_fault = "GetCurrentInputSource async response timeout"
             self.source_future = None
             self.source_future_request = None
 
@@ -996,7 +1011,14 @@ class FocusedM1Diagnostic(Node):
                 self.latest.get("leg_command"), self.received_at.get("leg_command")
             ),
             "mc_debug_f64_latest": self.latest_mc_debug_f64_snapshot,
-            "readback_fault": self.async_readback_fault,
+            "get_mode_readback_fault": self.async_mode_readback_fault,
+            "get_source_readback_fault": self.async_source_readback_fault,
+            "readback_fault": "; ".join(
+                fault for fault in (
+                    self.async_mode_readback_fault,
+                    self.async_source_readback_fault,
+                ) if fault
+            ) or None,
         }
 
     def collect_stationary_odom_baseline(self) -> dict[str, Any]:
@@ -1090,9 +1112,6 @@ class FocusedM1Diagnostic(Node):
             stale = stale_readback_keys(snapshot, float(self.args.state_timeout))
         snapshot["readback_refresh_wait_s"] = time.monotonic() - started
         snapshot["readback_refresh_stale_keys"] = list(stale)
-        if self.async_readback_fault:
-            snapshot["get_mode_header_code"] = -1
-            snapshot["get_source_header_code"] = -1
         return snapshot
 
     def _trace_first_motion_sample(self, phase: str, snapshot: dict[str, Any]) -> None:
@@ -1200,12 +1219,13 @@ class FocusedM1Diagnostic(Node):
             stop_distance = math.hypot(stop_dx, stop_dy)
             predicted_settled_error = math.hypot(stop_progress - progress, lateral)
             yaw = float(pose["yaw"])
+            # Restore Run73's waypoint-bearing policy: aim at the measured
+            # ground-truth goal from the current pose. Keep the newer dynamic
+            # predicted-settled endpoint solely in the stop decision below.
             heading_error = point_goal_heading_error_rad(
                 current_yaw_rad=yaw,
-                start_yaw_rad=start_yaw,
-                lateral_error_m=lateral,
-                lateral_gain_rad_per_m=POINT_GOAL_LATERAL_HEADING_GAIN,
-                max_lateral_heading_correction_rad=POINT_GOAL_MAX_LATERAL_HEADING_CORRECTION_RAD,
+                goal_dx_m=dx,
+                goal_dy_m=dy,
             )
             return {
                 "distance_to_goal_m": distance,
@@ -1268,16 +1288,12 @@ class FocusedM1Diagnostic(Node):
             # Keep forward input above the measured FoundationWalk deadzone.
             # Heading/lateral correction uses only the already validated
             # Run65 angular envelope; it does not turn after the stop line.
-            forward_command = (
-                POINT_GOAL_STEERING_COMMAND_M_S
-                if abs(error) > 0.005 else POINT_GOAL_COMMAND_M_S
-            )
-            angular = max(
-                -POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
-                min(
-                    POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
-                    POINT_GOAL_HEADING_GAIN * error,
-                ),
+            forward_command, angular = point_goal_command_from_bearing_error(
+                error,
+                cruise_forward_m_s=POINT_GOAL_COMMAND_M_S,
+                steering_forward_m_s=POINT_GOAL_STEERING_COMMAND_M_S,
+                heading_gain=POINT_GOAL_HEADING_GAIN,
+                maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
             )
             speed_status = snapshot.get("speed_status")
             if not isinstance(speed_status, Mapping):
@@ -1484,8 +1500,7 @@ class FocusedM1Diagnostic(Node):
                 "measured_effective_forward_deadzone_m_s": 0.111,
                 "maximum_angular_velocity_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                 "heading_gain": POINT_GOAL_HEADING_GAIN,
-                "lateral_heading_gain_rad_per_m": POINT_GOAL_LATERAL_HEADING_GAIN,
-                "maximum_lateral_heading_correction_rad": POINT_GOAL_MAX_LATERAL_HEADING_CORRECTION_RAD,
+                "heading_policy": "Run73_waypoint_bearing_to_current_ground_truth_goal",
                 "maximum_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
                 "maximum_overshoot_m": POINT_GOAL_MAX_OVERSHOOT_M,
             },
