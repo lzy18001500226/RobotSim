@@ -37,6 +37,8 @@ from issue80_m1_first_motion import (
     smoothstep_deceleration_velocity,
     smooth_turn_velocity,
     classify_turning_rotation,
+    classify_turn_planar_motion,
+    TURN_FORWARD_COMMAND_M_S,
     startup_then_cruise_velocity,
     joint_command_array_snapshot,
     float64_multi_array_snapshot,
@@ -2414,7 +2416,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
 
         result = run_angular_turn_window(
             sample=sample,
-            publish_turn=turn_commands.append,
+            publish_turn=lambda _forward, _angular: turn_commands.append(0.0),
             publish_zero=lambda: zero_commands.append(0.0),
             registration={"success": True, "selected_action": "ADD"},
             set_action={"accepted_by_service": True},
@@ -2434,6 +2436,58 @@ class BoundedTurningProfileTests(unittest.TestCase):
         self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], 49)
         self.assertFalse(result["mc_stop_ack"])
 
+    def test_forward_arc_preflight_rejects_command_above_live_forward_bound(self):
+        clock = FakeClock()
+        base = FirstMotionSafetyTests().snapshot(
+            get_mode_status_value=100,
+            common_mode_status_value=100,
+            pose={
+                "x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0,
+                "pitch": 0.0, "yaw": 0.0, "vx": 0.0, "vy": 0.0,
+                "vz": 0.0, "wz": 0.0, "frame_id": "odom", "child_frame_id": "base_link",
+            },
+            speed_status={
+                "speed_mode": 1,
+                "angular_bounds": {"min_value": -1.0, "max_value": 1.0},
+                "forward_bounds": {"min_value": -0.2, "max_value": 0.1},
+            },
+            leg_states=[
+                {"name": "left_hip_pitch_joint", "position": 0.0, "velocity": 0.0, "error_code": 0}
+            ],
+            mc_leg_command={
+                "joints": [{"name": "left_hip_pitch_joint", "position": 0.0}]
+            },
+        )
+        turn_commands = []
+
+        def sample():
+            row = dict(base)
+            row["sample_monotonic_s"] = clock.now()
+            row["readback_monotonic_s"] = {"get_mode": clock.now(), "get_source": clock.now()}
+            return row
+
+        result = run_angular_turn_window(
+            sample=sample,
+            publish_turn=lambda forward, angular: turn_commands.append((forward, angular)),
+            publish_zero=lambda: None,
+            registration={"success": True, "selected_action": "ADD"},
+            set_action={"accepted_by_service": True},
+            joint_limits=LIMITS,
+            baseline_forward_displacements_m=[0.0, 0.0, 0.0],
+            baseline_state_summary={"body_status": 1, "maxima": {"max_abs_yaw_excursion_rad": 0.001}},
+            authorized=True,
+            angular_velocity_rad_s=0.07,
+            forward_velocity_m_s=0.12,
+            pulse_duration_s=2.0,
+            extra_post_stop_observe_s=0.0,
+            clock=clock.now,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(result["status"], "ABORTED")
+        self.assertEqual(result["fault"], "turn_forward_command_outside_live_forward_bounds")
+        self.assertEqual(turn_commands, [])
+
     def test_turn_zero_stop_keeps_ros_readbacks_fresh_during_zero_stream(self):
         clock = FakeClock()
         base = FirstMotionSafetyTests().snapshot(
@@ -2447,6 +2501,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             speed_status={
                 "speed_mode": 1,
                 "angular_bounds": {"min_value": -1.0, "max_value": 1.0},
+                "forward_bounds": {"min_value": -1.0, "max_value": 0.8},
             },
             leg_states=[
                 {"name": "left_hip_pitch_joint", "position": 0.0, "velocity": 0.0, "error_code": 0}
@@ -2477,7 +2532,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
 
         result = run_angular_turn_window(
             sample=sample,
-            publish_turn=lambda _: None,
+            publish_turn=lambda _forward, _angular: None,
             publish_zero=lambda: zero_commands.append(clock.now()),
             registration={"success": True, "selected_action": "ADD"},
             set_action={"accepted_by_service": True},
@@ -2486,6 +2541,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             baseline_state_summary={"body_status": 1, "maxima": {"max_abs_yaw_excursion_rad": 0.001}},
             authorized=True,
             angular_velocity_rad_s=0.07,
+            forward_velocity_m_s=TURN_FORWARD_COMMAND_M_S,
             pulse_duration_s=2.0,
             extra_post_stop_observe_s=0.0,
             clock=clock.now,
@@ -2503,6 +2559,34 @@ class BoundedTurningProfileTests(unittest.TestCase):
         self.assertLessEqual(result["zero_stop"]["max_gap_between_publish_call_returns_s"], 0.020001)
         self.assertTrue(post_stop_samples)
         self.assertTrue(all(s["state_age_s"]["get_mode"] == 0.0 for s in post_stop_samples))
+
+    def test_forward_arc_planar_envelope_preserves_lateral_drift_limit(self):
+        start = {"x": 0.0, "y": 0.0, "yaw": 0.0}
+        expected_arc = classify_turn_planar_motion(
+            start_pose=start,
+            end_pose={"x": 0.24, "y": 0.01, "yaw": 0.14},
+            forward_velocity_m_s=0.12,
+            pulse_duration_s=2.0,
+        )
+        self.assertEqual(expected_arc["status"], "PASS")
+        self.assertAlmostEqual(expected_arc["expected_forward_displacement_m"], 0.24)
+        self.assertEqual(expected_arc["allowed_planar_displacement_m"], 0.29)
+
+        excessive_lateral = classify_turn_planar_motion(
+            start_pose=start,
+            end_pose={"x": 0.20, "y": 0.051, "yaw": 0.14},
+            forward_velocity_m_s=0.12,
+            pulse_duration_s=2.0,
+        )
+        self.assertEqual(excessive_lateral["status"], "PLANAR_MOTION_OUTSIDE_COMMAND_ENVELOPE")
+
+        yaw_only_drift = classify_turn_planar_motion(
+            start_pose=start,
+            end_pose={"x": 0.051, "y": 0.0, "yaw": 0.14},
+            forward_velocity_m_s=0.0,
+            pulse_duration_s=2.0,
+        )
+        self.assertEqual(yaw_only_drift["status"], "PLANAR_MOTION_OUTSIDE_COMMAND_ENVELOPE")
 
 
 if __name__ == "__main__":

@@ -71,6 +71,7 @@ TURN_RAMP_S = 0.25
 TURN_MAX_OBSERVED_YAW_RATE_RAD_S = 0.28
 TURN_MIN_HEADING_CHANGE_RAD = math.radians(5.0)
 TURN_MAX_PLANAR_DISPLACEMENT_M = 0.05
+TURN_FORWARD_COMMAND_M_S = 0.12
 
 MODE_STAND = "STAND_DEFAULT"
 MODE_LOCOMOTION = "LOCOMOTION_DEFAULT"
@@ -1931,14 +1932,56 @@ def classify_turning_rotation(
     }
 
 
+def classify_turn_planar_motion(
+    *, start_pose: Mapping[str, Any], end_pose: Mapping[str, Any],
+    forward_velocity_m_s: float, pulse_duration_s: float,
+) -> dict[str, Any]:
+    """Bound translation by the intended forward arc plus the existing 5 cm drift margin."""
+    values = (forward_velocity_m_s, pulse_duration_s)
+    if not all(math.isfinite(float(value)) for value in values) or pulse_duration_s < 0.0:
+        raise ValueError("turn planar-motion inputs must be finite with a non-negative duration")
+    start_yaw = float(start_pose["yaw"])
+    dx = float(end_pose["x"]) - float(start_pose["x"])
+    dy = float(end_pose["y"]) - float(start_pose["y"])
+    forward_projection = dx * math.cos(start_yaw) + dy * math.sin(start_yaw)
+    lateral_projection = -dx * math.sin(start_yaw) + dy * math.cos(start_yaw)
+    planar_displacement = math.hypot(dx, dy)
+    expected_forward = forward_velocity_m_s * pulse_duration_s
+    allowed_planar = abs(expected_forward) + TURN_MAX_PLANAR_DISPLACEMENT_M
+    allowed_lateral = TURN_MAX_PLANAR_DISPLACEMENT_M
+    unexpected_reverse = (
+        abs(forward_velocity_m_s) > 1e-12
+        and forward_projection * math.copysign(1.0, forward_velocity_m_s) < -allowed_lateral
+    )
+    within = (
+        planar_displacement <= allowed_planar
+        and abs(lateral_projection) <= allowed_lateral
+        and not unexpected_reverse
+    )
+    return {
+        "status": "PASS" if within else "PLANAR_MOTION_OUTSIDE_COMMAND_ENVELOPE",
+        "forward_velocity_command_m_s": forward_velocity_m_s,
+        "pulse_duration_s": pulse_duration_s,
+        "expected_forward_displacement_m": expected_forward,
+        "measured_forward_projection_m": forward_projection,
+        "measured_lateral_projection_m": lateral_projection,
+        "measured_planar_displacement_m": planar_displacement,
+        "allowed_planar_displacement_m": allowed_planar,
+        "allowed_lateral_drift_m": allowed_lateral,
+        "unexpected_reverse_motion": unexpected_reverse,
+        "margin_basis": "commanded forward arc distance plus the unchanged 0.05 m unintended-drift allowance",
+    }
+
+
 def run_angular_turn_window(
     *, sample: Callable[[], Mapping[str, Any]],
-    publish_turn: Callable[[float], None], publish_zero: Callable[[], None],
+    publish_turn: Callable[[float, float], None], publish_zero: Callable[[], None],
     registration: Mapping[str, Any], set_action: Mapping[str, Any],
     joint_limits: Mapping[str, Mapping[str, float]],
     baseline_forward_displacements_m: list[float] | None,
     baseline_state_summary: Mapping[str, Any] | None,
     authorized: bool, angular_velocity_rad_s: float,
+    forward_velocity_m_s: float = 0.0,
     pulse_duration_s: float = TURN_PULSE_S,
     max_observed_planar_speed_m_s: float = 0.2,
     zero_until_stand_timeout_s: float = 3.5,
@@ -1952,13 +1995,13 @@ def run_angular_turn_window(
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one 0.07 rad/s yaw pulse with bounded zero stop and physical settling check."""
+    """Run one bounded forward-arc turn with measured yaw and physical settling checks."""
     result: dict[str, Any] = {
         "status": "NOT_RUN",
-        "command_kind": "YAW_ONLY_TURN",
+        "command_kind": "YAW_ONLY_TURN" if forward_velocity_m_s == 0.0 else "FORWARD_ARC_TURN",
         "source": VELOCITY_SOURCE_NAME,
         "angular_velocity_rad_s": angular_velocity_rad_s,
-        "forward_velocity_m_s": 0.0,
+        "forward_velocity_m_s": forward_velocity_m_s,
         "lateral_velocity_m_s": 0.0,
         "pulse_duration_s": pulse_duration_s,
         "ramp_duration_s_each_end": TURN_RAMP_S,
@@ -1978,7 +2021,9 @@ def run_angular_turn_window(
     if not authorized:
         result["status"] = "NOT_AUTHORIZED"
         return result
-    if not math.isfinite(angular_velocity_rad_s) or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S:
+    if not math.isfinite(forward_velocity_m_s) or not 0.0 <= forward_velocity_m_s <= 0.2:
+        validation_fault = "turn_forward_command_outside_fixed_0p2_m_s_cap"
+    elif not math.isfinite(angular_velocity_rad_s) or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S:
         validation_fault = "turn_command_outside_fixed_0p07_rad_s_cap"
     elif not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= TURN_PULSE_S:
         validation_fault = "turn_duration_outside_fixed_2_second_cap"
@@ -2087,14 +2132,23 @@ def run_angular_turn_window(
             bound_max = float(angular_bounds["max_value"])
             if speed_mode == 0 or not bound_min <= angular_velocity_rad_s <= bound_max:
                 preflight_fault = preflight_fault or "turn_command_outside_live_angular_bounds"
+            forward_bounds = speed_status.get("forward_bounds")
+            if forward_velocity_m_s > 0.0:
+                if not isinstance(forward_bounds, Mapping):
+                    preflight_fault = preflight_fault or "live_forward_bounds_unavailable"
+                elif not float(forward_bounds["min_value"]) <= forward_velocity_m_s <= float(forward_bounds["max_value"]):
+                    preflight_fault = preflight_fault or "turn_forward_command_outside_live_forward_bounds"
         except (KeyError, TypeError, ValueError):
             speed_mode, bound_min, bound_max = None, None, None
+            forward_bounds = None
             preflight_fault = preflight_fault or "live_angular_bounds_unavailable"
         result["live_speed_status_preflight"] = {
             "speed_mode": speed_mode,
             "angular_bounds": {"min_value": bound_min, "max_value": bound_max}
             if bound_min is not None else None,
+            "forward_bounds": dict(forward_bounds) if isinstance(forward_bounds, Mapping) else None,
             "requested_angular_velocity_rad_s": angular_velocity_rad_s,
+            "requested_forward_velocity_m_s": forward_velocity_m_s,
         }
         if preflight_fault:
             record("turn-preflight", initial, preflight_fault)
@@ -2155,7 +2209,7 @@ def run_angular_turn_window(
                             break
                         if command != 0.0:
                             nonzero_publish_attempts += 1
-                        publish_turn(command)
+                        publish_turn(forward_velocity_m_s, command)
                         if command != 0.0:
                             nonzero_publish_calls_returned += 1
                             if clock() > deadline:
@@ -2244,11 +2298,19 @@ def run_angular_turn_window(
         ),
     )
     planar_displacement = None
+    planar_motion: dict[str, Any] = {"status": "TURN_ODOMETRY_UNAVAILABLE"}
     if isinstance(first_pose, Mapping) and isinstance(last_pose, Mapping):
-        planar_displacement = math.hypot(
-            float(last_pose["x"]) - float(first_pose["x"]),
-            float(last_pose["y"]) - float(first_pose["y"]),
+        actual_duration = (
+            max(0.0, pulse_end - pulse_start)
+            if pulse_start is not None and pulse_end is not None else 0.0
         )
+        planar_motion = classify_turn_planar_motion(
+            start_pose=first_pose,
+            end_pose=last_pose,
+            forward_velocity_m_s=forward_velocity_m_s,
+            pulse_duration_s=actual_duration,
+        )
+        planar_displacement = float(planar_motion["measured_planar_displacement_m"])
     baseline_values = []
     if baseline_forward_displacements_m is not None:
         try:
@@ -2275,6 +2337,7 @@ def run_angular_turn_window(
         "control_handshake_evidence": [tracker.samples[index] for index in tracker.handshake_sample_indices],
         "rotation": rotation,
         "planar_displacement_during_turn_m": planar_displacement,
+        "planar_motion": planar_motion,
         "stand_confirmed_monotonic_s": stand_confirmed_s,
         "zero_stop": stop_result,
         "zero_until_stand": {
@@ -2309,7 +2372,7 @@ def run_angular_turn_window(
         result["status"] = "TURN_CONTROL_HANDSHAKE_NOT_CONFIRMED"
     elif rotation.get("status") != "TURN_DIRECTION_PASS":
         result["status"] = rotation.get("status", "TURN_NOT_CONFIRMED")
-    elif planar_displacement is None or planar_displacement > TURN_MAX_PLANAR_DISPLACEMENT_M:
+    elif planar_motion.get("status") != "PASS":
         result["status"] = "TURN_PLANAR_DRIFT_EXCEEDED"
     elif physical_stop.get("status") != "PASS":
         result["status"] = "TURN_PHYSICAL_STOP_NOT_PASSED"

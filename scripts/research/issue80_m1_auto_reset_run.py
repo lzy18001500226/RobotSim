@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from issue80_m1_first_motion import TURN_COMMAND_RAD_S, TURN_PULSE_S
+from issue80_m1_first_motion import TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_PULSE_S
 
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
@@ -688,10 +688,10 @@ class BoundedRun:
             "source_limits_modified": False,
             "safety_gates_modified": False,
         })
-        manifest["command_speed_m_s"] = 0.0 if run53 else float(self.args.forward_speed)
+        manifest["command_speed_m_s"] = TURN_FORWARD_COMMAND_M_S if run53 else float(self.args.forward_speed)
         manifest["command_profile"] = ({
-            "shape": "left-right-yaw-only",
-            "forward_velocity_m_s": 0.0,
+            "shape": "left-right-forward-arc",
+            "forward_velocity_m_s": TURN_FORWARD_COMMAND_M_S,
             "lateral_velocity_m_s": 0.0,
             "angular_velocity_rad_s": [TURN_COMMAND_RAD_S, -TURN_COMMAND_RAD_S],
             "pulse_duration_s_each": TURN_PULSE_S,
@@ -2102,8 +2102,8 @@ def main() -> int:
         "--run53-turning-diagnostic",
         action="store_true",
         help=(
-            "reuse the verified SIMULATION_ONLY FoundationWalk overlay for one bounded 0.07 rad/s "
-            "left/right yaw-only turn pair with the unchanged physical stop gates"
+            "reuse the verified SIMULATION_ONLY FoundationWalk overlay for one bounded "
+            "0.12 m/s forward, +/-0.07 rad/s left/right arc pair with unchanged physical safety gates"
         ),
     )
     args=parser.parse_args()
