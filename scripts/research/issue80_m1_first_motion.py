@@ -593,6 +593,36 @@ def forward_projected_displacement(start_pose: Mapping[str, Any], end_pose: Mapp
     return dx * math.cos(yaw0) + dy * math.sin(yaw0)
 
 
+def build_forward_point_goal(
+    start_pose: Mapping[str, Any], *, distance_m: float, stop_compensation_m: float = 0.0,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build an odom-frame target and a forward stop waypoint from one measured start pose."""
+    if start_pose.get("frame_id") != "odom" or start_pose.get("child_frame_id") != "base_link":
+        raise ValueError("point-goal start pose must be odom -> base_link")
+    try:
+        x, y, yaw = (float(start_pose[key]) for key in ("x", "y", "yaw"))
+        distance = float(distance_m)
+        compensation = float(stop_compensation_m)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("point-goal inputs must contain numeric pose, distance, and stop compensation") from exc
+    if not all(math.isfinite(value) for value in (x, y, yaw, distance, compensation)):
+        raise ValueError("point-goal inputs must be finite")
+    if distance <= 0.0 or compensation < 0.0:
+        raise ValueError("point-goal distance must be positive and stop compensation nonnegative")
+    heading_x, heading_y = math.cos(yaw), math.sin(yaw)
+    goal = {
+        "frame_id": "odom",
+        "x": x + distance * heading_x,
+        "y": y + distance * heading_y,
+    }
+    stop_target = {
+        "frame_id": "odom",
+        "x": goal["x"] + compensation * heading_x,
+        "y": goal["y"] + compensation * heading_y,
+    }
+    return goal, stop_target
+
+
 def derive_stationary_odom_baseline(samples: list[Mapping[str, Any]]) -> dict[str, Any]:
     """Build three 1-second forward-drift windows from the no-command baseline.
 

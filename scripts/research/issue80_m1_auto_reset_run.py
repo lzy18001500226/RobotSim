@@ -45,6 +45,10 @@ RESET_OBSERVER_DURATION_S = 8.0
 RESET_OBSERVER_COMPLETION_MARGIN_S = 3.0
 POST_RESET_UPRIGHT_TIMEOUT_S = 2.0
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
+POINT_GOAL_FORWARD_COMMAND_M_S = 0.14
+POINT_GOAL_DISTANCE_M = 0.30
+POINT_GOAL_STOP_COMPENSATION_M = 0.08
+POINT_GOAL_STOP_TRIGGER_M = 0.02
 TOPIC_PROBES = (
     "/aima/hal/odom/state",
     "/aima/hal/imu/torso/state",
@@ -224,7 +228,7 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
     if (
         not getattr(args, "capture_mc_rl_debug", False)
         or abs(float(args.extra_stop_observation) - 5.0) > 1e-9
-        or abs(float(args.forward_speed) - 0.12) > 1e-9
+        or abs(float(args.forward_speed) - POINT_GOAL_FORWARD_COMMAND_M_S) > 1e-9
         or abs(float(args.pulse_duration) - 10.0) > 1e-9
         or float(args.ramp_duration_s) != 0.0
         or args.ramp_start_speed is not None
@@ -234,7 +238,7 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
         or not getattr(args, "turning_reassessment_json", None)
     ):
         raise ValueError(
-            "point-goal uses the fixed 0.12 m/s, 10-second, no-ramp profile, "
+            "point-goal uses the fixed 0.14 m/s, 10-second, no-ramp profile, "
             "5-second post-stop observation, McRLDebug capture, and verified Run65 reassessment"
         )
     return validate_turning_reassessment_file(args.turning_reassessment_json)
@@ -251,8 +255,9 @@ def add_run65_point_goal_arguments(parser: argparse.ArgumentParser) -> None:
         dest="run65_ground_truth_point_goal",
         action="store_true",
         help=(
-            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with the verified Run65 turn/stop "
-            "prerequisite, 0.12 m/s cap, 10-second command cap, and unchanged physical-stop gates"
+            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with a measured 0.08 m terminal "
+            "stop compensation, verified Run65 turn/stop prerequisite, 0.14 m/s cap, 10-second "
+            "command cap, and unchanged physical-stop gates"
         ),
     )
     parser.add_argument(
@@ -895,7 +900,7 @@ class BoundedRun:
         })
         manifest["command_speed_m_s"] = (
             TURN_FORWARD_COMMAND_M_S if run53
-            else 0.12 if run65
+            else POINT_GOAL_FORWARD_COMMAND_M_S if run65
             else float(self.args.forward_speed)
         )
         manifest["command_profile"] = ({
@@ -908,13 +913,19 @@ class BoundedRun:
             "total_active_command_s": 2.0 * (TURN_FORWARD_WARMUP_S + TURN_PULSE_S),
         } if run53 else {
             "shape": "ground-truth-point-goal",
-            "target_distance_m": 0.30,
-            "stop_trigger_radius_m": 0.10,
-            "final_tolerance_m": 0.05,
-            "forward_velocity_m_s": 0.12,
+            "target_distance_m": POINT_GOAL_DISTANCE_M,
+            "stop_compensation_m": POINT_GOAL_STOP_COMPENSATION_M,
+            "stop_target_distance_m": POINT_GOAL_DISTANCE_M + POINT_GOAL_STOP_COMPENSATION_M,
+            "stop_trigger_radius_m": POINT_GOAL_STOP_TRIGGER_M,
+            "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
+            "forward_velocity_m_s": POINT_GOAL_FORWARD_COMMAND_M_S,
             "angular_controller_cap_rad_s": 0.075,
             "active_command_limit_s": 10.0,
             "maximum_planar_speed_m_s": 0.2,
+            "stop_behavior": "zero-only; wait for fresh automatic STAND readback and physical-stop gate",
+            "zero_stop_min_duration_s": 1.0,
+            "post_stop_observation_s": 5.0,
+            "stop_compensation_basis_attempt_id": "4507e50b-e659-4315-bb7d-39cf57ee5888",
         } if run65 else {
             "shape": "motion-triggered-startup-then-cruise"
             if getattr(self.args, "startup_speed", None) is not None
@@ -1777,6 +1788,7 @@ class BoundedRun:
             or getattr(self.args, "run49_smoothstop_diagnostic", False)
             or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
             or getattr(self.args, "run53_turning_diagnostic", False)
+            or run65_point_goal_enabled(self.args)
         ):
             command[-1] += " --zero-only-stop"
         if getattr(self.args, "run49_smoothstop_diagnostic", False):

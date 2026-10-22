@@ -13,6 +13,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as runner
+from issue80_m1_first_motion import build_forward_point_goal
 
 
 def valid_reassessment() -> dict:
@@ -49,7 +50,7 @@ def valid_profile(**overrides) -> argparse.Namespace:
         "maintainer_authorized_first_motion": True,
         "capture_mc_rl_debug": True,
         "extra_stop_observation": 5.0,
-        "forward_speed": 0.12,
+        "forward_speed": 0.14,
         "pulse_duration": 10.0,
         "ramp_duration_s": 0.0,
         "ramp_start_speed": None,
@@ -151,6 +152,7 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
         for override in (
             {"maintainer_authorized_first_motion": False},
             {"forward_speed": 0.13},
+            {"forward_speed": 0.12},
             {"pulse_duration": 10.01},
             {"extra_stop_observation": 4.9},
             {"ramp_duration_s": 0.1},
@@ -162,6 +164,24 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
 
 
 class PointGoalAcceptanceTests(unittest.TestCase):
+    def test_stop_target_offsets_the_final_goal_along_measured_heading(self) -> None:
+        start = {
+            "x": 1.2,
+            "y": -0.4,
+            "yaw": 1.5707963267948966,
+            "frame_id": "odom",
+            "child_frame_id": "base_link",
+        }
+        goal, stop_target = build_forward_point_goal(
+            start, distance_m=0.30, stop_compensation_m=0.08,
+        )
+        self.assertAlmostEqual(goal["x"], 1.2, places=12)
+        self.assertAlmostEqual(goal["y"], -0.1, places=12)
+        self.assertAlmostEqual(stop_target["x"], 1.2, places=12)
+        self.assertAlmostEqual(stop_target["y"], -0.02, places=12)
+        with self.assertRaisesRegex(ValueError, "odom -> base_link"):
+            build_forward_point_goal({**start, "frame_id": "map"}, distance_m=0.30)
+
     def passing_result(self) -> dict:
         return {
             "status": "PASS",

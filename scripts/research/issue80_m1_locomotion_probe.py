@@ -40,7 +40,7 @@ from issue80_m1_first_motion import (
     joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
-    run_first_motion_window, snapshot_fault,
+    build_forward_point_goal, run_first_motion_window, snapshot_fault,
     stand_mode_readback_confirmed,
     summarize_stationary_physical_state,
     validate_local_sim_publishers, validate_first_motion_authorization,
@@ -51,9 +51,10 @@ from issue80_m1_mode_logic import classify_set_mc_action_response
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
 MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0
 POINT_GOAL_DISTANCE_M = 0.30
-POINT_GOAL_STOP_TRIGGER_M = 0.10
+POINT_GOAL_STOP_COMPENSATION_M = 0.08
+POINT_GOAL_STOP_TRIGGER_M = 0.02
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
-POINT_GOAL_COMMAND_M_S = 0.12
+POINT_GOAL_COMMAND_M_S = 0.14
 POINT_GOAL_MAX_DURATION_S = 10.0
 POINT_GOAL_SETTLED_SAMPLES = 3
 POINT_GOAL_HEADING_DEADBAND_RAD = 0.03
@@ -1120,15 +1121,15 @@ class FocusedM1Diagnostic(Node):
                 "fault": "point_goal_requires_odom_to_base_link_frame_pair",
                 "observed_frame_pair": [start_pose.get("frame_id"), start_pose.get("child_frame_id")],
             }
-
-        start_x = float(start_pose["x"])
-        start_y = float(start_pose["y"])
-        start_yaw = float(start_pose["yaw"])
-        goal = {
-            "frame_id": "odom",
-            "x": start_x + POINT_GOAL_DISTANCE_M * math.cos(start_yaw),
-            "y": start_y + POINT_GOAL_DISTANCE_M * math.sin(start_yaw),
-        }
+        try:
+            start_yaw = float(start_pose["yaw"])
+            goal, stop_target = build_forward_point_goal(
+                start_pose,
+                distance_m=POINT_GOAL_DISTANCE_M,
+                stop_compensation_m=POINT_GOAL_STOP_COMPENSATION_M,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"status": "BLOCKED", "fault": f"point_goal_target:{type(exc).__name__}:{exc}"}
         latest: dict[str, Any] = {"snapshot": dict(preflight)}
         activation_tracker = ActivationTracker(expected_source=self.source)
         odom_stamp_monitor = SustainedYawRateWindow()
@@ -1152,11 +1153,15 @@ class FocusedM1Diagnostic(Node):
             dx = goal["x"] - float(pose["x"])
             dy = goal["y"] - float(pose["y"])
             distance = math.hypot(dx, dy)
-            bearing = math.atan2(dy, dx)
+            stop_dx = stop_target["x"] - float(pose["x"])
+            stop_dy = stop_target["y"] - float(pose["y"])
+            stop_distance = math.hypot(stop_dx, stop_dy)
+            bearing = math.atan2(stop_dy, stop_dx)
             yaw = float(pose["yaw"])
             heading_error = math.atan2(math.sin(bearing - yaw), math.cos(bearing - yaw))
             return {
                 "distance_to_goal_m": distance,
+                "distance_to_stop_target_m": stop_distance,
                 "forward_error_m": dx * math.cos(start_yaw) + dy * math.sin(start_yaw),
                 "lateral_error_m": -dx * math.sin(start_yaw) + dy * math.cos(start_yaw),
                 "heading_error_rad": heading_error,
@@ -1230,6 +1235,7 @@ class FocusedM1Diagnostic(Node):
                 "lateral_velocity_m_s": 0.0,
                 "angular_velocity_rad_s": angular,
                 "goal_distance_m": point_metrics["distance_to_goal_m"],
+                "stop_target_distance_m": point_metrics["distance_to_stop_target_m"],
                 "heading_error_rad": error,
                 "control_handshake_confirmed": activation_tracker.control_handshake_confirmed,
             })
@@ -1238,7 +1244,7 @@ class FocusedM1Diagnostic(Node):
             if state.get("fault"):
                 return True
             point_metrics = metrics(snapshot)
-            if point_metrics["distance_to_goal_m"] <= POINT_GOAL_STOP_TRIGGER_M:
+            if point_metrics["distance_to_stop_target_m"] <= POINT_GOAL_STOP_TRIGGER_M:
                 state["inside_trigger_samples"] += 1
             else:
                 state["inside_trigger_samples"] = 0
@@ -1279,10 +1285,14 @@ class FocusedM1Diagnostic(Node):
             float(final_metrics["distance_to_goal_m"])
             if isinstance(final_metrics, Mapping) else None
         )
+        final_stop_target_distance = (
+            float(final_metrics["distance_to_stop_target_m"])
+            if isinstance(final_metrics, Mapping) else None
+        )
         physical_stop = activation.get("physical_stop_gate", {})
         zero_stop = activation.get("zero_stop", {})
         acceptance_gates = {
-            "goal_triggered_inside_stop_radius": state.get("goal_triggered") is True,
+            "compensated_stop_target_triggered_inside_radius": state.get("goal_triggered") is True,
             "final_distance_within_50mm": (
                 final_distance is not None and final_distance <= POINT_GOAL_FINAL_TOLERANCE_M
             ),
@@ -1296,6 +1306,9 @@ class FocusedM1Diagnostic(Node):
                 isinstance(zero_stop, Mapping)
                 and int(zero_stop.get("zero_publish_calls_returned", 0) or 0) >= ZERO_STOP_MIN_MESSAGES
             ),
+            "no_controller_or_post_stop_fault": (
+                activation.get("fault") is None and activation.get("post_stop_fault") is None
+            ),
         }
         goal_pass = (
             all(acceptance_gates.values())
@@ -1308,15 +1321,30 @@ class FocusedM1Diagnostic(Node):
             "goal_frame": "odom",
             "start_pose": dict(start_pose),
             "target_pose": goal,
+            "compensated_stop_target_pose": stop_target,
             "distance_m": POINT_GOAL_DISTANCE_M,
+            "stop_compensation_m": POINT_GOAL_STOP_COMPENSATION_M,
             "stop_trigger_radius_m": POINT_GOAL_STOP_TRIGGER_M,
             "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
             "required_consecutive_goal_samples": POINT_GOAL_SETTLED_SAMPLES,
             "forward_command_m_s": POINT_GOAL_COMMAND_M_S,
             "maximum_active_command_s": POINT_GOAL_MAX_DURATION_S,
-            "command_profile": "ground-truth bearing correction with fixed forward speed; heading steering only after same-sample source/LOCOMOTION handshake",
+            "command_profile": "ground-truth bearing correction to a stop-compensated waypoint; the final target remains the unshifted user goal; heading steering only after same-sample source/LOCOMOTION handshake",
             "goal_triggered": state.get("goal_triggered"),
+            "stop_target_triggered": state.get("goal_triggered"),
             "final_distance_to_goal_m": final_distance,
+            "final_distance_to_compensated_stop_target_m": final_stop_target_distance,
+            "measured_stop_compensation_basis": {
+                "source_attempt_id": "4507e50b-e659-4315-bb7d-39cf57ee5888",
+                "observed_backward_forward_projection_m": -0.07971708773511874,
+                "physical_stop_gate_delay_to_final_hold_s": 6.579952483007219,
+                "status": "SIMULATION_ONLY_SINGLE_RUN_ESTIMATE",
+            },
+            "postwalk_stand_action": (
+                "NOT_REQUESTED_ZERO_ONLY_STOP; wait for measured automatic transition and physical stop gate"
+            ),
+            "activation_fault": activation.get("fault"),
+            "post_stop_fault": activation.get("post_stop_fault"),
             "acceptance_gates": acceptance_gates,
             "controller_fault": state.get("fault"),
             "source_odometry_stamp_integrity": {
@@ -1774,10 +1802,12 @@ def main() -> int:
         or args.extra_stop_observation != 5.0
         or args.max_observed_planar_speed_m_s != 0.2
         or args.zero_until_stand_timeout_s != 3.5
+        or not args.zero_only_stop
     ):
         parser.error(
-            "point-goal diagnostics use the fixed 0.12 m/s, 10-second, no-ramp profile, "
-            "0.2 m/s measured-speed guard, 3.5-second stand window, and 5-second observation"
+            "point-goal diagnostics use the fixed 0.14 m/s, 10-second, no-ramp profile, "
+            "zero-only stop, 0.2 m/s measured-speed guard, 3.5-second stand window, "
+            "and 5-second observation"
         )
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)
