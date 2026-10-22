@@ -634,12 +634,12 @@ def point_goal_command_from_bearing_error(
     heading_error_rad: float,
     *,
     cruise_forward_m_s: float = 0.14,
-    steering_forward_m_s: float = TURN_FORWARD_COMMAND_M_S,
+    steering_forward_m_s: float = 0.14,
     heading_gain: float = 0.8,
     maximum_angular_rad_s: float = 0.075,
     steering_threshold_rad: float = 0.005,
 ) -> tuple[float, float]:
-    """Apply the validated Run73 speed profile and bounded heading response."""
+    """Apply the bounded point-goal speed profile and heading response."""
     values = (
         heading_error_rad,
         cruise_forward_m_s,
@@ -3094,6 +3094,7 @@ def run_first_motion_window(
     startup_transition_timeout_s: float = 0.0,
     extra_post_stop_observe_s: float = 0.0,
     after_zero_stop: Callable[[], Mapping[str, Any]] | None = None,
+    during_zero_callback: Callable[[], None] | None = None,
     shutdown_event: threading.Event | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
     termination_condition: Callable[[Mapping[str, Any]], bool] | None = None,
@@ -3285,6 +3286,7 @@ def run_first_motion_window(
         clock=clock,
         sleep=sleep,
         command_lock=command_lock,
+        during_zero_callback=during_zero_callback,
     )
     watchdog: ProcessLocalTimerWatchdog | None = None
     pulse_start: float | None = None
@@ -3493,6 +3495,10 @@ def run_first_motion_window(
         # until the stop path has been initiated by run_once().
         stop_result = zero_stop.run_once()
         result["zero_stop"] = stop_result
+        zero_window_callback_errors = list(stop_result.get("during_zero_callback_errors", []))
+        if zero_window_callback_errors:
+            post_stop_fault = "zero_stop_telemetry_callback_error:" + zero_window_callback_errors[0]
+        result["zero_stop_callback_errors"] = zero_window_callback_errors
         if watchdog is not None:
             watchdog.cancel()
         stop_transition_confirmation: dict[str, Any] = {
@@ -3551,6 +3557,16 @@ def run_first_motion_window(
         initial_post_stop_zero_fault = publish_post_stop_zero(clock())
         if initial_post_stop_zero_fault:
             post_stop_fault = initial_post_stop_zero_fault
+        initial_zero_callback_error: str | None = None
+        if during_zero_callback is not None:
+            try:
+                during_zero_callback()
+            except Exception as exc:
+                initial_zero_callback_error = f"{type(exc).__name__}: {exc}"
+                post_stop_fault = post_stop_fault or (
+                    "post_stop_initial_zero_callback_error:" + initial_zero_callback_error
+                )
+        post_stop_zero_extension["initial_zero_callback_error"] = initial_zero_callback_error
         if after_zero_stop is not None and tracker.control_handshake_confirmed and result["nonzero_publish_calls_returned"] > 0:
             callback_zero_stop = threading.Event()
             callback_zero_metrics: dict[str, Any] = {
@@ -3595,11 +3611,22 @@ def run_first_motion_window(
             )
             callback_zero_thread.start()
             try:
-                if initial_post_stop_zero_fault is None:
+                if (
+                    initial_post_stop_zero_fault is None
+                    and initial_zero_callback_error is None
+                    and not zero_window_callback_errors
+                ):
                     result["after_zero_stop_action"] = dict(after_zero_stop())
                 else:
                     result["after_zero_stop_action"] = {
-                        "success": False, "error": initial_post_stop_zero_fault,
+                        "success": False,
+                        "error": (
+                            initial_post_stop_zero_fault
+                            or ("post_stop_initial_zero_callback_error:" + initial_zero_callback_error
+                                if initial_zero_callback_error else None)
+                            or ("zero_stop_telemetry_callback_error:" + zero_window_callback_errors[0]
+                                if zero_window_callback_errors else None)
+                        ),
                     }
             except Exception as exc:
                 result["after_zero_stop_action"] = {
@@ -3838,6 +3865,7 @@ def run_first_motion_window(
                     clock=clock,
                     sleep=sleep,
                     command_lock=command_lock,
+                    during_zero_callback=during_zero_callback,
                 )
                 result["post_stop_emergency_zero"] = emergency_stop.run_once()
                 break

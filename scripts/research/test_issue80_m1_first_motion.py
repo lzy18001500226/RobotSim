@@ -341,6 +341,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         max_observed_planar_speed_m_s=None,
         zero_until_stand_timeout_s=0.0,
         after_zero_stop=None,
+        during_zero_callback=None,
         termination_condition=None,
         termination_condition_name="external_condition",
     ):
@@ -383,6 +384,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
             zero_until_stand_timeout_s=zero_until_stand_timeout_s,
             after_zero_stop=after_zero_stop,
+            during_zero_callback=during_zero_callback,
             termination_condition=termination_condition,
             termination_condition_name=termination_condition_name,
             clock=clock.now,
@@ -495,6 +497,55 @@ class FirstMotionSafetyTests(unittest.TestCase):
             extension["last_publish_monotonic_s"] - extension["first_publish_monotonic_s"], 2.4,
         )
         self.assertFalse(result["physical_stop_gate"]["status"] == "PASS")
+
+    def test_zero_window_processes_fresh_ros_state_before_postwalk_stand_request(self):
+        clock = FakeClock()
+        sample = self.snapshot()
+        callbacks = []
+        stale_injected = False
+
+        def publish(value):
+            nonlocal stale_injected
+            if value > 0.0:
+                sample["get_source_name"] = VELOCITY_SOURCE_NAME
+                sample["common_source_name"] = VELOCITY_SOURCE_NAME
+                sample["get_mode_desc"] = MODE_LOCOMOTION
+                sample["common_mode_desc"] = MODE_LOCOMOTION
+                sample["fsm_state"] = int(McFsmStateCode.MOVING)
+            else:
+                sample["get_mode_desc"] = MODE_STAND
+                sample["common_mode_desc"] = MODE_STAND
+                sample["get_mode_status_value"] = 100
+                sample["common_mode_status_value"] = 100
+                sample["fsm_state"] = MC_FSM_STABLE
+                if not stale_injected:
+                    sample["state_age_s"]["odom"] = 0.9
+                    stale_injected = True
+
+        def during_zero():
+            callbacks.append(clock.now())
+            sample["state_age_s"]["odom"] = 0.01
+
+        def request_stand():
+            fault = snapshot_fault(
+                sample, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            )
+            return {"success": fault is None, "precheck_fault": fault}
+
+        result = self.run_protocol(
+            lambda: sample,
+            publish,
+            fake_clock=clock,
+            zero_until_stand_timeout_s=2.0,
+            after_zero_stop=request_stand,
+            during_zero_callback=during_zero,
+        )
+        self.assertGreaterEqual(result["zero_stop"]["during_zero_callback_count"], ZERO_STOP_MIN_MESSAGES)
+        self.assertEqual(result["zero_stop"]["during_zero_callback_errors"], [])
+        self.assertEqual(result["zero_stop_callback_errors"], [])
+        self.assertTrue(result["after_zero_stop_action"]["success"])
+        self.assertIsNone(result["after_zero_stop_action"]["precheck_fault"])
+        self.assertEqual(result["stop_transition_confirmation"]["status"], "STAND_READBACK_CONFIRMED")
 
     def test_reduced_probe_speed_keeps_hard_cap_and_safety_gates(self):
         commands = []

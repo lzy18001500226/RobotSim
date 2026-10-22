@@ -57,7 +57,11 @@ MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0
 POINT_GOAL_DISTANCE_M = 0.30
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 POINT_GOAL_COMMAND_M_S = 0.14
-POINT_GOAL_STEERING_COMMAND_M_S = TURN_FORWARD_COMMAND_M_S
+# Run77's 0.12 m/s steering profile left the measured gait targets nearly
+# static after the first step sequence. Use the already validated 0.14 m/s
+# profile during heading correction to test command-floor margin, still within
+# the original M1 forward-command envelope.
+POINT_GOAL_STEERING_COMMAND_M_S = POINT_GOAL_COMMAND_M_S
 POINT_GOAL_MAX_DURATION_S = 10.0
 POINT_GOAL_MAX_PLANAR_SPEED_M_S = 0.2
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
@@ -586,7 +590,10 @@ class FocusedM1Diagnostic(Node):
 
     def request_postwalk_stand_once(self) -> dict[str, Any]:
         """Reassert the vendor stand action once after a confirmed stop window."""
-        snapshot = self._first_motion_snapshot()
+        # The one-second zero burst services its own ROS callbacks; refresh the
+        # snapshot again before the safety gate so its cached odometry is not
+        # falsely rejected as stale at the end of that bounded burst.
+        snapshot = self.sample_for_first_motion()
         fault = snapshot_fault(
             snapshot, self.joint_limits,
             state_timeout_s=self.args.state_timeout,
@@ -1378,6 +1385,7 @@ class FocusedM1Diagnostic(Node):
             max_pulse_duration_s=POINT_GOAL_MAX_DURATION_S,
             extra_post_stop_observe_s=5.0,
             after_zero_stop=self.request_postwalk_stand_once,
+            during_zero_callback=lambda: self._spin_for(0.001),
             shutdown_event=self.interrupted,
             on_sample=on_goal_sample,
             state_timeout_s=self.args.state_timeout,

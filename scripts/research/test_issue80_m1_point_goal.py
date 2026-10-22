@@ -247,7 +247,7 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             point_goal_forward_speed_m_s(world_frame, start_yaw_rad=math.pi / 2), 0.16,
         )
 
-    def test_run73_waypoint_bearing_is_restored_with_validated_command_envelope(self) -> None:
+    def test_run75_bearing_replay_uses_full_validated_angular_envelope(self) -> None:
         # Run75's saved lateral-guard state: remaining along-track distance
         # 84.151 mm, lateral error -50.107 mm, yaw delta from start +20.245 mrad.
         start_yaw = 0.0488158
@@ -262,9 +262,20 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             goal_dy_m=goal_dy,
         )
         self.assertAlmostEqual(error, 0.5168, places=3)
-        forward, angular = point_goal_command_from_bearing_error(error)
-        self.assertEqual(forward, 0.12)
+        forward, angular = point_goal_command_from_bearing_error(
+            error, steering_forward_m_s=0.14,
+        )
+        self.assertEqual(forward, 0.14)
         self.assertEqual(angular, 0.075)
+
+    def test_run73_steering_speed_and_new_command_margin_are_both_validated_profiles(self) -> None:
+        error = 0.07853958179851628
+        old_profile = point_goal_command_from_bearing_error(error, steering_forward_m_s=0.12)
+        margin_profile = point_goal_command_from_bearing_error(error, steering_forward_m_s=0.14)
+        self.assertEqual(old_profile[0], 0.12)
+        self.assertEqual(margin_profile[0], 0.14)
+        self.assertAlmostEqual(old_profile[1], 0.06283166543881302, places=12)
+        self.assertAlmostEqual(margin_profile[1], old_profile[1], places=12)
 
     def test_run73_command_profile_uses_cruise_when_goal_bearing_is_aligned(self) -> None:
         error = point_goal_heading_error_rad(
@@ -275,6 +286,11 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         self.assertAlmostEqual(error, 0.0, places=6)
         self.assertEqual(point_goal_command_from_bearing_error(error), (0.14, 0.0))
 
+    def test_forward_margin_profile_keeps_validated_speed_during_heading_correction(self) -> None:
+        forward, angular = point_goal_command_from_bearing_error(0.08)
+        self.assertEqual(forward, 0.14)
+        self.assertAlmostEqual(angular, 0.064, places=12)
+
     def test_run73_recorded_waypoint_bearing_command_is_reproduced(self) -> None:
         # Run73 sample near progress=109.7 mm; recorded command was
         # (0.12 m/s, +0.0628316654 rad/s).
@@ -284,7 +300,9 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             goal_dy_m=0.02985272713830441,
         )
         self.assertAlmostEqual(error, 0.07853958179851628, places=10)
-        forward, angular = point_goal_command_from_bearing_error(error)
+        forward, angular = point_goal_command_from_bearing_error(
+            error, steering_forward_m_s=0.12,
+        )
         self.assertEqual(forward, 0.12)
         self.assertAlmostEqual(angular, 0.06283166543881302, places=10)
 
