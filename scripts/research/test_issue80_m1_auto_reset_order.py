@@ -13,9 +13,34 @@ from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as reset_runner
 from issue80_m1_auto_reset_run import BoundedRun, RunDeadline, first_post_action_fall
+from issue80_mujoco_x11_reset import (
+    NATIVE_RESET_BUTTON_PIXEL_POINTS,
+    native_reset_button_signature_matches,
+)
 
 
 class ResetBeforeSdOrderingTests(unittest.TestCase):
+    def test_native_reset_layout_uses_button_pixel_signature_not_full_window_size(self) -> None:
+        # MuJoCo 3.3.6 Run76 screenshot at 1866x840 shows the same fixed
+        # Simulation/Reset menu control at the calibrated client coordinates.
+        self.assertEqual(NATIVE_RESET_BUTTON_PIXEL_POINTS, {
+            "top": (68, 444), "left": (13, 456), "right": (124, 456),
+            "bottom": (68, 468), "center": (68, 456),
+        })
+        pixels = {
+            "top": (153, 102, 102),
+            "left": (153, 102, 102),
+            "right": (153, 102, 102),
+            "bottom": (153, 102, 102),
+            "center": (26, 26, 26),
+        }
+        self.assertTrue(native_reset_button_signature_matches(pixels))
+        self.assertFalse(native_reset_button_signature_matches({"center": (26, 26, 26)}))
+
+        wrong_control = dict(pixels)
+        wrong_control["right"] = (26, 26, 26)
+        self.assertFalse(native_reset_button_signature_matches(wrong_control))
+
     def test_timed_out_review_screenshot_does_not_block_reset_safety_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = BoundedRun(argparse.Namespace(

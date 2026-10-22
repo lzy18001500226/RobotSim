@@ -26,10 +26,41 @@ ALL_PLANES = ctypes.c_ulong(-1).value
 CLIENT_MESSAGE = 33
 SUBSTRUCTURE_NOTIFY_MASK = 1 << 19
 SUBSTRUCTURE_REDIRECT_MASK = 1 << 20
-# Calibrated from the pinned MuJoCo 3.3.6 GUI screenshot at 1706x1066. The
-# direct native Reset button avoids WSLg's unreliable keyboard focus path.
-NATIVE_RESET_WINDOW_SIZE = (1706, 1066)
+# Calibrated from the pinned MuJoCo 3.3.6 GUI. Verify the rendered native
+# Simulation/Reset button itself before sending input; do not assume a
+# particular desktop resolution from the window's full dimensions.
 NATIVE_RESET_BUTTON_POINT = (68, 456)
+NATIVE_RESET_BUTTON_PIXEL_POINTS = {
+    "top": (68, 444),
+    "left": (13, 456),
+    "right": (124, 456),
+    "bottom": (68, 468),
+    "center": NATIVE_RESET_BUTTON_POINT,
+}
+NATIVE_RESET_BUTTON_BORDER_RGB = (153, 102, 102)
+NATIVE_RESET_BUTTON_BACKGROUND_RGB = (26, 26, 26)
+NATIVE_RESET_BUTTON_COLOR_TOLERANCE = 24
+
+
+def native_reset_button_signature_matches(pixels: dict[str, tuple[int, int, int]]) -> bool:
+    """Require the Reset button's rendered four-edge and center pixel signature."""
+    required = set(NATIVE_RESET_BUTTON_PIXEL_POINTS)
+    if set(pixels) != required:
+        return False
+
+    def near(actual: tuple[int, int, int], expected: tuple[int, int, int]) -> bool:
+        return all(
+            isinstance(channel, int)
+            and abs(channel - reference) <= NATIVE_RESET_BUTTON_COLOR_TOLERANCE
+            for channel, reference in zip(actual, expected)
+        )
+
+    border_visible = all(
+        near(pixels[name], NATIVE_RESET_BUTTON_BORDER_RGB)
+        for name in ("top", "left", "right", "bottom")
+    )
+    center_is_background = near(pixels["center"], NATIVE_RESET_BUTTON_BACKGROUND_RGB)
+    return border_visible and center_is_background
 
 
 class XClientMessageData(ctypes.Union):
@@ -505,6 +536,35 @@ class X11:
         finally:
             self.lib.XDestroyImage(image)
 
+    def native_reset_button_pixels(self, window: int) -> dict[str, tuple[int, int, int]] | None:
+        """Read the calibrated Reset border/background pixels from this exact XID."""
+        attrs = self.attributes(window)
+        if not attrs:
+            return None
+        if (
+            attrs.width <= max(point[0] for point in NATIVE_RESET_BUTTON_PIXEL_POINTS.values())
+            or attrs.height <= max(point[1] for point in NATIVE_RESET_BUTTON_PIXEL_POINTS.values())
+        ):
+            return None
+        pixels: dict[str, tuple[int, int, int]] = {}
+        for label, (x, y) in NATIVE_RESET_BUTTON_PIXEL_POINTS.items():
+            image = self.lib.XGetImage(
+                self.display, window, x, y, 1, 1, ALL_PLANES, Z_PIXMAP,
+            )
+            if not image:
+                return None
+            try:
+                image_data = image.contents
+                pixel = int(self.lib.XGetPixel(image, 0, 0))
+                pixels[label] = (
+                    self._channel(pixel, int(image_data.red_mask)),
+                    self._channel(pixel, int(image_data.green_mask)),
+                    self._channel(pixel, int(image_data.blue_mask)),
+                )
+            finally:
+                self.lib.XDestroyImage(image)
+        return pixels
+
     def _input_focus(self) -> int:
         focus = ctypes.c_ulong()
         revert = ctypes.c_int()
@@ -707,8 +767,8 @@ class X11:
 
         WSLg may deny X input focus while still routing a verified pointer click
         to the exact client window. This path sends no key and is accepted only
-        for the calibrated GUI dimensions and the documented Reset button
-        point; state change must still be verified from simulator telemetry.
+        when the native Reset button's rendered pixel signature and pointer
+        location both verify; state change must still be verified from telemetry.
         """
         identity_before = self._target_identity(expected_pid, expected_title, window)
         if identity_before is None:
@@ -722,13 +782,26 @@ class X11:
                 "key_events_sent": 0,
             }
         width, height = int(identity_before["width"]), int(identity_before["height"])
-        if (width, height) != NATIVE_RESET_WINDOW_SIZE:
+        required_width = max(point[0] for point in NATIVE_RESET_BUTTON_PIXEL_POINTS.values()) + 1
+        required_height = max(point[1] for point in NATIVE_RESET_BUTTON_PIXEL_POINTS.values()) + 1
+        if width < required_width or height < required_height:
             return {
                 "status": "RESET_NOT_DELIVERED",
-                "reason": "MuJoCo window size does not match the calibrated native Reset button layout",
+                "reason": "MuJoCo window is too small to contain the calibrated native Reset control",
                 "target_window_id": window,
                 "observed_window_size": [width, height],
-                "required_window_size": list(NATIVE_RESET_WINDOW_SIZE),
+                "minimum_window_size": [required_width, required_height],
+                "mouse_button_events_sent": 0,
+                "key_events_sent": 0,
+            }
+        button_pixels = self.native_reset_button_pixels(window)
+        if button_pixels is None or not native_reset_button_signature_matches(button_pixels):
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "native Reset control pixel signature was not verified; no click sent",
+                "target_window_id": window,
+                "observed_window_size": [width, height],
+                "button_pixel_signature": button_pixels,
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
             }
@@ -790,6 +863,7 @@ class X11:
                 "identity_before": identity_before,
                 "identity_before_click": identity_before_click,
                 "pointer_verification": pointer_record,
+                "button_pixel_signature": button_pixels,
                 "xtest_pointer_events_sent": int(bool(move_return)),
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
@@ -855,6 +929,7 @@ class X11:
             "identity_before_click": identity_before_click,
             "identity_before_dispatch": identity_before_dispatch,
             "window_size": [width, height],
+            "button_pixel_signature": button_pixels,
             "pointer_verification": pointer_record,
             "dispatch_wall_utc": dispatch_utc,
             "dispatch_monotonic_ns": dispatch_monotonic_ns,
