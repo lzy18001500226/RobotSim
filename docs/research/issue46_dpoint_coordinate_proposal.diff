@@ -1,0 +1,30 @@
+UNAPPLIED PROPOSAL ONLY
+Target: the ignored derived candidate MJCF and its offline command-coordinate adapter.
+No vendor file, official root axis/limit, collision geometry, or active model is changed.
+
+--- candidate_B_official_meshes.xml (local-only current candidate)
++++ candidate_B_official_meshes.xml (proposed source-coordinate mapping)
+@@ narrow D anchors
+- <site name="candidate_narrow_D_jaw" pos="0 -0.0104 0" quat="1 0 0 0" size="0.00035" type="sphere" group="2" />
++ <site name="candidate_narrow_D_jaw" pos="0.000691289490 -0.010408336990 -0.000011495782" quat="1 0 0 0" size="0.00035" type="sphere" group="2" />
+- <site name="candidate_narrow_D_loop" pos="0.0316000012456 -0.00972182496859 -2.81056021852e-05" size="0.00035" group="2" />
++ <site name="candidate_narrow_D_loop" pos="0.032861209960 -0.003021010867 -0.000039601384" size="0.00035" group="2" />
+@@ wide D anchors
+- <site name="candidate_wide_D_jaw" pos="0 0.0104 0" quat="1 0 0 0" size="0.00035" type="sphere" group="2" />
++ <site name="candidate_wide_D_jaw" pos="0.000691281259 0.010408390232 0.000011860848" quat="1 0 0 0" size="0.00035" type="sphere" group="2" />
+- <site name="candidate_wide_D_loop" pos="0.0315999987547 0.00972180634187 2.79793618239e-05" size="0.00035" group="2" />
++ <site name="candidate_wide_D_loop" pos="0.032861206432 0.003021046105 0.000039840210" size="0.00035" group="2" />
+
+--- offline command adapter
++++ offline command adapter (proposed CAD-to-URDF coordinate conversion)
+@@ root target conversion
+- q_urdf_abs = q_source_phase + q_candidate_CAD_rel
++ q_urdf_abs = q_source_phase - q_candidate_CAD_rel
+@@ measured passive joint-state conversion
+- q_urdf_B/C/E = q_candidate_CAD_B/C/E
++ q_urdf_B/C/E = -q_candidate_CAD_B/C/E
+
+The official MJCF joint axes remain `(0,0,-1)`. Since every candidate coordinate changes sign together, the zero-valued candidate relation remains algebraically equivalent:
+`q_urdf_root_rel + q_urdf_B - q_urdf_E = -(q_CAD_root + q_CAD_B - q_CAD_E)`.
+
+This proposal maps the same CAD D point into each measured official link frame. The local site round-trip is within `1e-12 mm` at the source sample and the candidate forward-kinematic samples stay within `0.00061 mm`. It is not a claim that the official link meshes or candidate mechanism are mechanically validated.
