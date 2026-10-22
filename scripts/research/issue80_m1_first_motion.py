@@ -623,6 +623,49 @@ def build_forward_point_goal(
     return goal, stop_target
 
 
+def proximity_smoothstep_speed(
+    distance_to_target_m: float,
+    now_s: float,
+    deceleration_start_s: float | None,
+    *,
+    deceleration_start_distance_m: float,
+    initial_speed_m_s: float,
+    terminal_speed_m_s: float,
+    deceleration_duration_s: float,
+) -> tuple[float, float | None, str]:
+    """Reduce a bounded forward command smoothly near a target using monotonic sample time."""
+    values = (
+        distance_to_target_m,
+        now_s,
+        deceleration_start_distance_m,
+        initial_speed_m_s,
+        terminal_speed_m_s,
+        deceleration_duration_s,
+    )
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ValueError("point-goal speed schedule requires finite values")
+    distance = float(distance_to_target_m)
+    now = float(now_s)
+    threshold = float(deceleration_start_distance_m)
+    initial = float(initial_speed_m_s)
+    terminal = float(terminal_speed_m_s)
+    duration = float(deceleration_duration_s)
+    if distance < 0.0 or threshold <= 0.0 or duration <= 0.0:
+        raise ValueError("point-goal distance, deceleration threshold, or duration is invalid")
+    if initial <= 0.0 or terminal <= 0.0 or terminal > initial:
+        raise ValueError("terminal forward speed must be positive and no faster than the initial speed")
+    if deceleration_start_s is None and distance > threshold:
+        return initial, None, "cruise"
+    start = now if deceleration_start_s is None else float(deceleration_start_s)
+    if not math.isfinite(start):
+        raise ValueError("deceleration start time must be finite")
+    progress = min(1.0, max(0.0, (now - start) / duration))
+    smooth = progress * progress * (3.0 - 2.0 * progress)
+    speed = initial + (terminal - initial) * smooth
+    phase = "decelerating" if progress < 1.0 else "terminal_speed"
+    return speed, start, phase
+
+
 def derive_stationary_odom_baseline(samples: list[Mapping[str, Any]]) -> dict[str, Any]:
     """Build three 1-second forward-drift windows from the no-command baseline.
 

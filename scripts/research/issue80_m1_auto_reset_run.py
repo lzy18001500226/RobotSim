@@ -47,8 +47,11 @@ POST_RESET_UPRIGHT_TIMEOUT_S = 2.0
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 POINT_GOAL_FORWARD_COMMAND_M_S = 0.14
 POINT_GOAL_DISTANCE_M = 0.30
-POINT_GOAL_STOP_COMPENSATION_M = 0.08
-POINT_GOAL_STOP_TRIGGER_M = 0.02
+POINT_GOAL_TERMINAL_COMMAND_M_S = 0.112
+POINT_GOAL_DECEL_START_DISTANCE_M = 0.12
+POINT_GOAL_DECEL_DURATION_S = 1.0
+POINT_GOAL_STOP_COMPENSATION_M = 0.10
+POINT_GOAL_STOP_TRIGGER_M = 0.04
 TOPIC_PROBES = (
     "/aima/hal/odom/state",
     "/aima/hal/imu/torso/state",
@@ -255,7 +258,7 @@ def add_run65_point_goal_arguments(parser: argparse.ArgumentParser) -> None:
         dest="run65_ground_truth_point_goal",
         action="store_true",
         help=(
-            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with a measured 0.08 m terminal "
+            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with a Run52-derived terminal "
             "stop compensation, verified Run65 turn/stop prerequisite, 0.14 m/s cap, 10-second "
             "command cap, and unchanged physical-stop gates"
         ),
@@ -919,13 +922,16 @@ class BoundedRun:
             "stop_trigger_radius_m": POINT_GOAL_STOP_TRIGGER_M,
             "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
             "forward_velocity_m_s": POINT_GOAL_FORWARD_COMMAND_M_S,
-            "angular_controller_cap_rad_s": 0.075,
+            "terminal_velocity_m_s": POINT_GOAL_TERMINAL_COMMAND_M_S,
+            "deceleration_start_distance_m": POINT_GOAL_DECEL_START_DISTANCE_M,
+            "deceleration_duration_s": POINT_GOAL_DECEL_DURATION_S,
+            "angular_velocity_rad_s": 0.0,
             "active_command_limit_s": 10.0,
             "maximum_planar_speed_m_s": 0.2,
             "stop_behavior": "zero-only; wait for fresh automatic STAND readback and physical-stop gate",
             "zero_stop_min_duration_s": 1.0,
             "post_stop_observation_s": 5.0,
-            "stop_compensation_basis_attempt_id": "4507e50b-e659-4315-bb7d-39cf57ee5888",
+            "stop_compensation_basis_attempt_id": "ceadcc39-350d-4318-ab91-2ae2d66f9c2f",
         } if run65 else {
             "shape": "motion-triggered-startup-then-cruise"
             if getattr(self.args, "startup_speed", None) is not None

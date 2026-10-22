@@ -40,7 +40,7 @@ from issue80_m1_first_motion import (
     joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
-    build_forward_point_goal, run_first_motion_window, snapshot_fault,
+    build_forward_point_goal, proximity_smoothstep_speed, run_first_motion_window, snapshot_fault,
     stand_mode_readback_confirmed,
     summarize_stationary_physical_state,
     validate_local_sim_publishers, validate_first_motion_authorization,
@@ -51,14 +51,15 @@ from issue80_m1_mode_logic import classify_set_mc_action_response
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
 MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0
 POINT_GOAL_DISTANCE_M = 0.30
-POINT_GOAL_STOP_COMPENSATION_M = 0.08
-POINT_GOAL_STOP_TRIGGER_M = 0.02
+POINT_GOAL_STOP_COMPENSATION_M = 0.10
+POINT_GOAL_STOP_TRIGGER_M = 0.04
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 POINT_GOAL_COMMAND_M_S = 0.14
+POINT_GOAL_TERMINAL_COMMAND_M_S = 0.112
+POINT_GOAL_DECEL_START_DISTANCE_M = 0.12
+POINT_GOAL_DECEL_DURATION_S = 1.0
 POINT_GOAL_MAX_DURATION_S = 10.0
 POINT_GOAL_SETTLED_SAMPLES = 3
-POINT_GOAL_HEADING_DEADBAND_RAD = 0.03
-POINT_GOAL_HEADING_GAIN = 1.0
 INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
@@ -1139,8 +1140,9 @@ class FocusedM1Diagnostic(Node):
             "goal_triggered": False,
             "fault": None,
             "last_metrics": None,
-            "angular_bounds": None,
             "forward_bounds": None,
+            "deceleration_start_monotonic_s": None,
+            "deceleration_phase": "cruise",
         }
         command_trace: list[dict[str, Any]] = []
 
@@ -1207,16 +1209,19 @@ class FocusedM1Diagnostic(Node):
                 raise RuntimeError("point_goal_has_no_current_ground_truth_snapshot")
             point_metrics = metrics(snapshot)
             error = float(point_metrics["heading_error_rad"])
-            if (
-                abs(error) <= POINT_GOAL_HEADING_DEADBAND_RAD
-                or not activation_tracker.control_handshake_confirmed
-            ):
-                angular = 0.0
-            else:
-                angular = max(
-                    -TURN_COMMAND_RAD_S,
-                    min(TURN_COMMAND_RAD_S, POINT_GOAL_HEADING_GAIN * error),
+            sample_monotonic_s = float(snapshot["sample_monotonic_s"])
+            forward_command, state["deceleration_start_monotonic_s"], state["deceleration_phase"] = (
+                proximity_smoothstep_speed(
+                    point_metrics["distance_to_stop_target_m"],
+                    sample_monotonic_s,
+                    state["deceleration_start_monotonic_s"],
+                    deceleration_start_distance_m=POINT_GOAL_DECEL_START_DISTANCE_M,
+                    initial_speed_m_s=POINT_GOAL_COMMAND_M_S,
+                    terminal_speed_m_s=POINT_GOAL_TERMINAL_COMMAND_M_S,
+                    deceleration_duration_s=POINT_GOAL_DECEL_DURATION_S,
                 )
+            )
+            angular = 0.0
             speed_status = snapshot.get("speed_status")
             if not isinstance(speed_status, Mapping):
                 raise RuntimeError("point_goal_live_speed_bounds_missing")
@@ -1224,19 +1229,21 @@ class FocusedM1Diagnostic(Node):
             angular_bounds = speed_status.get("angular_bounds")
             if not isinstance(forward_bounds, Mapping) or not isinstance(angular_bounds, Mapping):
                 raise RuntimeError("point_goal_live_speed_bounds_malformed")
-            if not float(forward_bounds["min_value"]) <= forward_velocity_m_s <= float(forward_bounds["max_value"]):
+            if not float(forward_bounds["min_value"]) <= forward_command <= float(forward_bounds["max_value"]):
                 raise RuntimeError("point_goal_forward_command_outside_live_bounds")
             if not float(angular_bounds["min_value"]) <= angular <= float(angular_bounds["max_value"]):
                 raise RuntimeError("point_goal_angular_command_outside_live_bounds")
-            self._publish(forward_velocity_m_s, 0.0, angular)
+            self._publish(forward_command, 0.0, angular)
             command_trace.append({
-                "sample_monotonic_s": snapshot.get("sample_monotonic_s"),
-                "forward_velocity_m_s": forward_velocity_m_s,
+                "sample_monotonic_s": sample_monotonic_s,
+                "forward_velocity_m_s": forward_command,
                 "lateral_velocity_m_s": 0.0,
                 "angular_velocity_rad_s": angular,
                 "goal_distance_m": point_metrics["distance_to_goal_m"],
                 "stop_target_distance_m": point_metrics["distance_to_stop_target_m"],
                 "heading_error_rad": error,
+                "profile_phase": state["deceleration_phase"],
+                "deceleration_start_monotonic_s": state["deceleration_start_monotonic_s"],
                 "control_handshake_confirmed": activation_tracker.control_handshake_confirmed,
             })
 
@@ -1329,20 +1336,28 @@ class FocusedM1Diagnostic(Node):
             "required_consecutive_goal_samples": POINT_GOAL_SETTLED_SAMPLES,
             "forward_command_m_s": POINT_GOAL_COMMAND_M_S,
             "maximum_active_command_s": POINT_GOAL_MAX_DURATION_S,
-            "command_profile": "ground-truth bearing correction to a stop-compensated waypoint; the final target remains the unshifted user goal; heading steering only after same-sample source/LOCOMOTION handshake",
+            "command_profile": "straight-ahead point goal from measured initial heading; 0.14 m/s cruise, 1-second smoothstep to 0.112 m/s when within 0.12 m of the stop waypoint, then zero-only stop; no angular command",
             "goal_triggered": state.get("goal_triggered"),
             "stop_target_triggered": state.get("goal_triggered"),
             "final_distance_to_goal_m": final_distance,
             "final_distance_to_compensated_stop_target_m": final_stop_target_distance,
             "measured_stop_compensation_basis": {
-                "source_attempt_id": "4507e50b-e659-4315-bb7d-39cf57ee5888",
-                "observed_backward_forward_projection_m": -0.07971708773511874,
-                "physical_stop_gate_delay_to_final_hold_s": 6.579952483007219,
-                "status": "SIMULATION_ONLY_SINGLE_RUN_ESTIMATE",
+                "source_attempt_id": "ceadcc39-350d-4318-ab91-2ae2d66f9c2f",
+                "observed_backward_forward_projection_m": -0.0589638706430671,
+                "command_end_speed_m_s": 0.112,
+                "physical_stop_gate_status": "PASS",
+                "status": "SIMULATION_ONLY_DERIVED_FROM_PRIOR_PHYSICAL_STOP_PASS",
             },
             "postwalk_stand_action": (
                 "NOT_REQUESTED_ZERO_ONLY_STOP; wait for measured automatic transition and physical stop gate"
             ),
+            "command_profile_parameters": {
+                "cruise_speed_m_s": POINT_GOAL_COMMAND_M_S,
+                "terminal_speed_m_s": POINT_GOAL_TERMINAL_COMMAND_M_S,
+                "deceleration_start_distance_m": POINT_GOAL_DECEL_START_DISTANCE_M,
+                "deceleration_duration_s": POINT_GOAL_DECEL_DURATION_S,
+                "angular_velocity_rad_s": 0.0,
+            },
             "activation_fault": activation.get("fault"),
             "post_stop_fault": activation.get("post_stop_fault"),
             "acceptance_gates": acceptance_gates,

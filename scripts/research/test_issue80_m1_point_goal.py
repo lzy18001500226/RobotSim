@@ -13,7 +13,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as runner
-from issue80_m1_first_motion import build_forward_point_goal
+from issue80_m1_first_motion import build_forward_point_goal, proximity_smoothstep_speed
 
 
 def valid_reassessment() -> dict:
@@ -181,6 +181,44 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         self.assertAlmostEqual(stop_target["y"], -0.02, places=12)
         with self.assertRaisesRegex(ValueError, "odom -> base_link"):
             build_forward_point_goal({**start, "frame_id": "map"}, distance_m=0.30)
+
+    def test_point_goal_terminal_speed_profile_is_bounded_and_smooth(self) -> None:
+        speed, start, phase = proximity_smoothstep_speed(
+            0.13, 10.0, None,
+            deceleration_start_distance_m=0.12,
+            initial_speed_m_s=0.14,
+            terminal_speed_m_s=0.112,
+            deceleration_duration_s=1.0,
+        )
+        self.assertEqual((speed, start, phase), (0.14, None, "cruise"))
+        speed, start, phase = proximity_smoothstep_speed(
+            0.11, 10.0, None,
+            deceleration_start_distance_m=0.12,
+            initial_speed_m_s=0.14,
+            terminal_speed_m_s=0.112,
+            deceleration_duration_s=1.0,
+        )
+        self.assertAlmostEqual(speed, 0.14)
+        self.assertEqual(start, 10.0)
+        self.assertEqual(phase, "decelerating")
+        speed, start, phase = proximity_smoothstep_speed(
+            0.05, 10.5, start,
+            deceleration_start_distance_m=0.12,
+            initial_speed_m_s=0.14,
+            terminal_speed_m_s=0.112,
+            deceleration_duration_s=1.0,
+        )
+        self.assertAlmostEqual(speed, 0.126)
+        self.assertEqual(phase, "decelerating")
+        speed, start, phase = proximity_smoothstep_speed(
+            0.01, 11.0, start,
+            deceleration_start_distance_m=0.12,
+            initial_speed_m_s=0.14,
+            terminal_speed_m_s=0.112,
+            deceleration_duration_s=1.0,
+        )
+        self.assertAlmostEqual(speed, 0.112)
+        self.assertEqual(phase, "terminal_speed")
 
     def passing_result(self) -> dict:
         return {
