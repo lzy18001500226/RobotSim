@@ -18,7 +18,8 @@ from issue80_m1_first_motion import (
     build_forward_point_goal, classify_heading_goal_measurement,
     point_goal_command_from_bearing_error,
     point_goal_angular_taper_factor, point_goal_forward_speed_m_s,
-    point_goal_heading_error_rad,
+    point_goal_heading_error_rad, point_goal_pose_angular_taper_factor,
+    point_goal_pose_heading_error_rad,
     point_goal_stop_reason, speed_scaled_point_goal_stop_advance_m,
     stale_readback_keys,
 )
@@ -345,6 +346,28 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         forward, angular = point_goal_command_from_bearing_error(0.08)
         self.assertEqual(forward, 0.14)
         self.assertAlmostEqual(angular, 0.064, places=12)
+
+    def test_heading_change_goal_tracks_requested_yaw_not_endpoint_bearing(self) -> None:
+        error = point_goal_pose_heading_error_rad(
+            current_yaw_rad=0.05,
+            goal_dx_m=1.0,
+            goal_dy_m=0.2,
+            target_yaw_rad=-0.05,
+        )
+        self.assertAlmostEqual(error, -0.1, places=12)
+        self.assertGreater(
+            point_goal_heading_error_rad(
+                current_yaw_rad=0.05,
+                goal_dx_m=1.0,
+                goal_dy_m=0.2,
+            ),
+            0.0,
+        )
+        self.assertEqual(point_goal_command_from_bearing_error(error), (0.14, -0.075))
+
+    def test_heading_target_retains_terminal_angular_authority(self) -> None:
+        self.assertEqual(point_goal_pose_angular_taper_factor(0.05, has_heading_target=True), 1.0)
+        self.assertEqual(point_goal_pose_angular_taper_factor(0.05, has_heading_target=False), 0.0)
 
     def test_heading_change_starts_with_validated_forward_warmup_before_turning(self) -> None:
         self.assertEqual(

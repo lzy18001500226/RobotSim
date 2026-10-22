@@ -630,6 +630,30 @@ def point_goal_heading_error_rad(
     return math.atan2(math.sin(bearing - current_yaw), math.cos(bearing - current_yaw))
 
 
+def point_goal_pose_heading_error_rad(
+    *,
+    current_yaw_rad: float,
+    goal_dx_m: float,
+    goal_dy_m: float,
+    target_yaw_rad: float | None = None,
+) -> float:
+    """Use position bearing for point goals and explicit yaw error for pose goals."""
+    if target_yaw_rad is None:
+        return point_goal_heading_error_rad(
+            current_yaw_rad=current_yaw_rad,
+            goal_dx_m=goal_dx_m,
+            goal_dy_m=goal_dy_m,
+        )
+    try:
+        current_yaw = float(current_yaw_rad)
+        target_yaw = float(target_yaw_rad)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("point-goal pose heading inputs must be numeric") from exc
+    if not math.isfinite(current_yaw) or not math.isfinite(target_yaw):
+        raise ValueError("point-goal pose heading inputs must be finite")
+    return math.atan2(math.sin(target_yaw - current_yaw), math.cos(target_yaw - current_yaw))
+
+
 def classify_heading_goal_measurement(
     *,
     start_yaw_rad: float,
@@ -740,6 +764,23 @@ def point_goal_angular_taper_factor(
     if error <= tolerance:
         return 0.0
     return (error - tolerance) / (taper_start - tolerance)
+
+
+def point_goal_pose_angular_taper_factor(
+    predicted_settled_error_m: float,
+    *,
+    has_heading_target: bool,
+    taper_start_error_m: float = 0.25,
+    final_tolerance_m: float = 0.05,
+) -> float:
+    """Keep yaw authority for pose goals; taper only position-only point goals."""
+    if has_heading_target:
+        return 1.0
+    return point_goal_angular_taper_factor(
+        predicted_settled_error_m,
+        taper_start_error_m=taper_start_error_m,
+        final_tolerance_m=final_tolerance_m,
+    )
 
 
 def build_forward_point_goal(

@@ -43,8 +43,9 @@ from issue80_m1_first_motion import (
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
     build_forward_point_goal, classify_heading_goal_measurement,
     point_goal_command_from_bearing_error,
-    point_goal_angular_taper_factor, point_goal_forward_speed_m_s,
-    point_goal_heading_error_rad,
+    point_goal_forward_speed_m_s,
+    point_goal_heading_error_rad, point_goal_pose_angular_taper_factor,
+    point_goal_pose_heading_error_rad,
     point_goal_stop_reason,
     speed_scaled_point_goal_stop_advance_m, run_first_motion_window,
     readback_refresh_needed,
@@ -1286,6 +1287,8 @@ class FocusedM1Diagnostic(Node):
                 "dynamic_stop_line_crossed": progress >= stop_progress,
                 "dynamic_stop_target_pose": stop_target,
                 "heading_error_rad": heading_error,
+                "goal_dx_m": dx,
+                "goal_dy_m": dy,
                 "pose": dict(pose),
             }
 
@@ -1331,7 +1334,17 @@ class FocusedM1Diagnostic(Node):
             if not isinstance(snapshot, Mapping):
                 raise RuntimeError("point_goal_has_no_current_ground_truth_snapshot")
             point_metrics = metrics(snapshot)
-            error = float(point_metrics["heading_error_rad"])
+            pose = snapshot.get("pose")
+            if not isinstance(pose, Mapping):
+                raise RuntimeError("point_goal_has_no_current_pose_for_steering")
+            position_bearing_error = float(point_metrics["heading_error_rad"])
+            has_heading_target = abs(heading_change_rad) > 1e-9
+            error = point_goal_pose_heading_error_rad(
+                current_yaw_rad=float(pose["yaw"]),
+                goal_dx_m=float(point_metrics["goal_dx_m"]),
+                goal_dy_m=float(point_metrics["goal_dy_m"]),
+                target_yaw_rad=path_yaw if has_heading_target else None,
+            )
             sample_monotonic_s = float(snapshot["sample_monotonic_s"])
             activation_started = state.get("activation_started_monotonic_s")
             activation_elapsed = (
@@ -1354,8 +1367,9 @@ class FocusedM1Diagnostic(Node):
                 turn_warmup_active=heading_warmup_active,
                 warmup_forward_m_s=POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S,
             )
-            angular_taper_factor = point_goal_angular_taper_factor(
+            angular_taper_factor = point_goal_pose_angular_taper_factor(
                 float(point_metrics["predicted_settled_goal_error_m"]),
+                has_heading_target=has_heading_target,
                 taper_start_error_m=POINT_GOAL_ANGULAR_TAPER_START_ERROR_M,
                 final_tolerance_m=POINT_GOAL_FINAL_TOLERANCE_M,
             )
@@ -1385,6 +1399,8 @@ class FocusedM1Diagnostic(Node):
                 "dynamic_stop_progress_m": point_metrics["dynamic_stop_progress_m"],
                 "dynamic_stop_line_crossed": point_metrics["dynamic_stop_line_crossed"],
                 "heading_error_rad": error,
+                "position_bearing_error_rad": position_bearing_error,
+                "heading_reference": "target_yaw" if has_heading_target else "Run73_position_bearing",
                 "activation_elapsed_s": activation_elapsed,
                 "heading_turn_warmup_active": heading_warmup_active,
                 "predicted_settled_goal_error_m": point_metrics["predicted_settled_goal_error_m"],
@@ -1445,7 +1461,7 @@ class FocusedM1Diagnostic(Node):
             forward_command_m_s=POINT_GOAL_COMMAND_M_S,
             pulse_duration_s=POINT_GOAL_MAX_DURATION_S,
             max_pulse_duration_s=POINT_GOAL_MAX_DURATION_S,
-            extra_post_stop_observe_s=5.0,
+            extra_post_stop_observe_s=self.args.extra_stop_observation,
             after_zero_stop=self.request_postwalk_stand_once,
             during_zero_callback=lambda: self._spin_for(0.001),
             shutdown_event=self.interrupted,
@@ -1622,7 +1638,9 @@ class FocusedM1Diagnostic(Node):
                 "measured_effective_forward_deadzone_m_s": 0.111,
                 "maximum_angular_velocity_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                 "heading_gain": POINT_GOAL_HEADING_GAIN,
-                "heading_policy": "Run73_waypoint_bearing_to_current_ground_truth_goal",
+                "post_stop_observation_s": self.args.extra_stop_observation,
+                "heading_control_for_pose_goal": "track target yaw without terminal angular taper",
+                "heading_policy": "Run73_position_bearing_for_point_goals; target-yaw tracking for heading-change goals",
                 "angular_taper_start_predicted_error_m": POINT_GOAL_ANGULAR_TAPER_START_ERROR_M,
                 "angular_taper_end_predicted_error_m": POINT_GOAL_FINAL_TOLERANCE_M,
                 "maximum_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
