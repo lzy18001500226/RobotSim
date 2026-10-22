@@ -41,6 +41,7 @@ from issue80_m1_first_motion import (
     TURN_FORWARD_COMMAND_M_S,
     TURN_FORWARD_WARMUP_S,
     TURN_MAX_COMMAND_WINDOW_S,
+    TURN_MAX_PLANAR_DISPLACEMENT_M,
     TURN_PULSE_S,
     TURN_MAX_SUSTAINED_YAW_RATE_RAD_S,
     TURN_YAW_RATE_WINDOW_S,
@@ -2633,16 +2634,21 @@ class BoundedTurningProfileTests(unittest.TestCase):
             end_pose={"x": 0.24, "y": 0.01, "yaw": 0.14},
             forward_velocity_m_s=0.12,
             pulse_duration_s=2.0,
+            angular_velocity_rad_s=0.07,
+            forward_warmup_s=0.5,
         )
         self.assertEqual(expected_arc["status"], "PASS")
         self.assertAlmostEqual(expected_arc["expected_forward_displacement_m"], 0.24)
         self.assertEqual(expected_arc["allowed_planar_displacement_m"], 0.29)
+        self.assertGreater(expected_arc["allowed_lateral_drift_m"], TURN_MAX_PLANAR_DISPLACEMENT_M)
 
         excessive_lateral = classify_turn_planar_motion(
             start_pose=start,
-            end_pose={"x": 0.20, "y": 0.051, "yaw": 0.14},
+            end_pose={"x": 0.20, "y": 0.07, "yaw": 0.14},
             forward_velocity_m_s=0.12,
             pulse_duration_s=2.0,
+            angular_velocity_rad_s=0.07,
+            forward_warmup_s=0.5,
         )
         self.assertEqual(excessive_lateral["status"], "PLANAR_MOTION_OUTSIDE_COMMAND_ENVELOPE")
 
@@ -2651,6 +2657,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             end_pose={"x": 0.051, "y": 0.0, "yaw": 0.14},
             forward_velocity_m_s=0.0,
             pulse_duration_s=2.0,
+            angular_velocity_rad_s=0.07,
         )
         self.assertEqual(yaw_only_drift["status"], "PLANAR_MOTION_OUTSIDE_COMMAND_ENVELOPE")
 

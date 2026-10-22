@@ -1939,20 +1939,40 @@ def classify_turning_rotation(
 def classify_turn_planar_motion(
     *, start_pose: Mapping[str, Any], end_pose: Mapping[str, Any],
     forward_velocity_m_s: float, pulse_duration_s: float,
+    angular_velocity_rad_s: float = 0.0, forward_warmup_s: float = 0.0,
 ) -> dict[str, Any]:
-    """Bound translation by the intended forward arc plus the existing 5 cm drift margin."""
-    values = (forward_velocity_m_s, pulse_duration_s)
+    """Bound translation by the integrated commanded arc plus the existing 5 cm drift margin."""
+    values = (forward_velocity_m_s, pulse_duration_s, angular_velocity_rad_s, forward_warmup_s)
     if not all(math.isfinite(float(value)) for value in values) or pulse_duration_s < 0.0:
         raise ValueError("turn planar-motion inputs must be finite with a non-negative duration")
+    if forward_warmup_s < 0.0:
+        raise ValueError("forward warmup duration must be non-negative")
     start_yaw = float(start_pose["yaw"])
     dx = float(end_pose["x"]) - float(start_pose["x"])
     dy = float(end_pose["y"]) - float(start_pose["y"])
     forward_projection = dx * math.cos(start_yaw) + dy * math.sin(start_yaw)
     lateral_projection = -dx * math.sin(start_yaw) + dy * math.cos(start_yaw)
     planar_displacement = math.hypot(dx, dy)
+    # The measured sample window can exceed the command deadline by a few
+    # milliseconds while the first post-deadline snapshot is captured.
+    turn_duration_s = min(TURN_PULSE_S, max(0.0, pulse_duration_s - forward_warmup_s))
     expected_forward = forward_velocity_m_s * pulse_duration_s
+    expected_lateral = 0.0
+    if turn_duration_s > 0.0 and angular_velocity_rad_s != 0.0 and forward_velocity_m_s != 0.0:
+        step_count = max(1, math.ceil(turn_duration_s / 0.005))
+        step_s = turn_duration_s / step_count
+        heading_delta = 0.0
+        for index in range(step_count):
+            midpoint_s = (index + 0.5) * step_s
+            angular_midpoint = smooth_turn_velocity(
+                angular_velocity_rad_s, midpoint_s, turn_duration_s,
+            )
+            expected_lateral += (
+                forward_velocity_m_s * math.sin(heading_delta + 0.5 * angular_midpoint * step_s) * step_s
+            )
+            heading_delta += angular_midpoint * step_s
     allowed_planar = abs(expected_forward) + TURN_MAX_PLANAR_DISPLACEMENT_M
-    allowed_lateral = TURN_MAX_PLANAR_DISPLACEMENT_M
+    allowed_lateral = abs(expected_lateral) + TURN_MAX_PLANAR_DISPLACEMENT_M
     unexpected_reverse = (
         abs(forward_velocity_m_s) > 1e-12
         and forward_projection * math.copysign(1.0, forward_velocity_m_s) < -allowed_lateral
@@ -1967,13 +1987,19 @@ def classify_turn_planar_motion(
         "forward_velocity_command_m_s": forward_velocity_m_s,
         "pulse_duration_s": pulse_duration_s,
         "expected_forward_displacement_m": expected_forward,
+        "expected_lateral_displacement_m": expected_lateral,
         "measured_forward_projection_m": forward_projection,
         "measured_lateral_projection_m": lateral_projection,
         "measured_planar_displacement_m": planar_displacement,
         "allowed_planar_displacement_m": allowed_planar,
         "allowed_lateral_drift_m": allowed_lateral,
         "unexpected_reverse_motion": unexpected_reverse,
-        "margin_basis": "commanded forward arc distance plus the unchanged 0.05 m unintended-drift allowance",
+        "lateral_direction_matches_expected_arc": (
+            expected_lateral == 0.0
+            or lateral_projection * expected_lateral >= 0.0
+            or abs(lateral_projection) <= TURN_MAX_PLANAR_DISPLACEMENT_M
+        ),
+        "margin_basis": "integrated commanded-arc envelope plus the unchanged 0.05 m unintended-drift allowance",
     }
 
 
@@ -2466,6 +2492,8 @@ def run_angular_turn_window(
             end_pose=last_pose,
             forward_velocity_m_s=forward_velocity_m_s,
             pulse_duration_s=actual_duration,
+            angular_velocity_rad_s=angular_velocity_rad_s,
+            forward_warmup_s=forward_warmup_s,
         )
         planar_displacement = float(planar_motion["measured_planar_displacement_m"])
     baseline_values = []
