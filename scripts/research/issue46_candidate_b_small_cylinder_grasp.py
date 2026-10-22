@@ -474,7 +474,7 @@ def run_physics(output: Path, model: mujoco.MjModel, object_center: np.ndarray,
         contact = object_contacts(model, data, object_gid, table_gid)
         speed = float(np.max(np.abs(data.qvel[gripper_dofs])))
         penetration = max((max(0.0, -float(c.dist)) for c in data.contact), default=0.0)
-        dgap = max(travel.gaps(model, data))
+        dgap = max(p.gaps(model, data))
         coupling = max(abs(v) for v in travel.coupled_residuals(model, data).values())
         root = float(data.qpos[gripper_addrs["right_claw_joint"]])
         limit_error = max(0.0, root, -1.0-root)
