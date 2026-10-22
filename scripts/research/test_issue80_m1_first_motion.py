@@ -40,6 +40,9 @@ from issue80_m1_first_motion import (
     classify_turn_planar_motion,
     TURN_FORWARD_COMMAND_M_S,
     TURN_FORWARD_WARMUP_S,
+    TURN_MAX_SUSTAINED_YAW_RATE_RAD_S,
+    TURN_YAW_RATE_WINDOW_S,
+    SustainedYawRateWindow,
     startup_then_cruise_velocity,
     joint_command_array_snapshot,
     float64_multi_array_snapshot,
@@ -2336,6 +2339,35 @@ class PhysicalStopGateTests(unittest.TestCase):
 
 
 class BoundedTurningProfileTests(unittest.TestCase):
+    def test_sustained_yaw_rate_gate_filters_single_twist_spike(self):
+        monitor = SustainedYawRateWindow(TURN_YAW_RATE_WINDOW_S)
+        measurement = None
+        for index in range(6):
+            t = index * 0.1
+            measurement = monitor.update({
+                "sample_monotonic_s": t,
+                "pose": {"yaw": 0.0, "wz": 1.2 if index == 2 else 0.0},
+            })
+        self.assertEqual(measurement["status"], "MEASURED")
+        self.assertEqual(measurement["absolute_net_yaw_rate_rad_s"], 0.0)
+        self.assertEqual(monitor.max_abs_raw_twist_rad_s, 1.2)
+        self.assertLess(monitor.max_abs_window_rate_rad_s, TURN_MAX_SUSTAINED_YAW_RATE_RAD_S)
+
+    def test_sustained_yaw_rate_gate_detects_net_heading_rate_over_limit(self):
+        monitor = SustainedYawRateWindow(TURN_YAW_RATE_WINDOW_S)
+        measurement = None
+        for index in range(7):
+            t = index * 0.1
+            measurement = monitor.update({
+                "sample_monotonic_s": t,
+                "pose": {"yaw": 0.4 * t, "wz": 0.4},
+            })
+        self.assertEqual(measurement["status"], "MEASURED")
+        self.assertGreater(
+            measurement["absolute_net_yaw_rate_rad_s"],
+            TURN_MAX_SUSTAINED_YAW_RATE_RAD_S,
+        )
+
     def test_turn_ramp_is_symmetric_signed_and_never_exceeds_point_zero_seven_rad_s(self):
         left = [smooth_turn_velocity(0.07, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
         right = [smooth_turn_velocity(-0.07, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]

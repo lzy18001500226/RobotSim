@@ -68,11 +68,12 @@ PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD = 0.01
 TURN_COMMAND_RAD_S = 0.07
 TURN_PULSE_S = 2.0
 TURN_RAMP_S = 0.25
-TURN_MAX_OBSERVED_YAW_RATE_RAD_S = 0.28
+TURN_MAX_SUSTAINED_YAW_RATE_RAD_S = 0.28
 TURN_MIN_HEADING_CHANGE_RAD = math.radians(5.0)
 TURN_MAX_PLANAR_DISPLACEMENT_M = 0.05
 TURN_FORWARD_COMMAND_M_S = 0.12
 TURN_FORWARD_WARMUP_S = 0.5
+TURN_YAW_RATE_WINDOW_S = 0.4
 
 MODE_STAND = "STAND_DEFAULT"
 MODE_LOCOMOTION = "LOCOMOTION_DEFAULT"
@@ -1974,6 +1975,77 @@ def classify_turn_planar_motion(
     }
 
 
+class SustainedYawRateWindow:
+    """Measure net heading rate over a simulator-time window, retaining raw twist peaks separately."""
+
+    def __init__(self, window_s: float = TURN_YAW_RATE_WINDOW_S) -> None:
+        if not math.isfinite(window_s) or window_s <= 0.0:
+            raise ValueError("yaw-rate window must be finite and positive")
+        self.window_s = window_s
+        self.samples: list[tuple[float, float]] = []
+        self.max_abs_window_rate_rad_s = 0.0
+        self.max_abs_raw_twist_rad_s = 0.0
+
+    def update(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        pose = snapshot.get("pose")
+        if not isinstance(pose, Mapping):
+            return {"status": "UNAVAILABLE", "reason": "pose_missing"}
+        try:
+            yaw = float(pose["yaw"])
+            if "stamp_sec" in pose and "stamp_nanosec" in pose:
+                timestamp = float(pose["stamp_sec"]) + float(pose["stamp_nanosec"]) * 1e-9
+                time_basis = "simulator_odometry_stamp"
+            else:
+                timestamp = float(snapshot["sample_monotonic_s"])
+                time_basis = "host_monotonic_fallback"
+        except (KeyError, TypeError, ValueError):
+            return {"status": "UNAVAILABLE", "reason": "yaw_or_timestamp_missing"}
+        if not math.isfinite(yaw) or not math.isfinite(timestamp):
+            return {"status": "UNAVAILABLE", "reason": "nonfinite_yaw_or_timestamp"}
+
+        raw_twist = pose.get("wz")
+        if isinstance(raw_twist, (int, float)) and math.isfinite(float(raw_twist)):
+            self.max_abs_raw_twist_rad_s = max(self.max_abs_raw_twist_rad_s, abs(float(raw_twist)))
+
+        if self.samples and timestamp <= self.samples[-1][0]:
+            self.samples.clear()
+            self.samples.append((timestamp, yaw))
+            return {
+                "status": "TIME_RESET",
+                "time_basis": time_basis,
+                "window_s": self.window_s,
+                "coverage_s": 0.0,
+                "raw_twist_wz_rad_s": raw_twist,
+            }
+        self.samples.append((timestamp, yaw))
+        cutoff = timestamp - self.window_s
+        while len(self.samples) > 2 and self.samples[1][0] <= cutoff:
+            self.samples.pop(0)
+        start_time, start_yaw = self.samples[0]
+        coverage = timestamp - start_time
+        if coverage < self.window_s - 0.01:
+            return {
+                "status": "WARMING_UP",
+                "time_basis": time_basis,
+                "window_s": self.window_s,
+                "coverage_s": max(0.0, coverage),
+                "raw_twist_wz_rad_s": raw_twist,
+            }
+        yaw_delta = math.atan2(math.sin(yaw - start_yaw), math.cos(yaw - start_yaw))
+        rate = yaw_delta / coverage
+        self.max_abs_window_rate_rad_s = max(self.max_abs_window_rate_rad_s, abs(rate))
+        return {
+            "status": "MEASURED",
+            "time_basis": time_basis,
+            "window_s": self.window_s,
+            "coverage_s": coverage,
+            "yaw_delta_rad": yaw_delta,
+            "signed_net_yaw_rate_rad_s": rate,
+            "absolute_net_yaw_rate_rad_s": abs(rate),
+            "raw_twist_wz_rad_s": raw_twist,
+        }
+
+
 def run_angular_turn_window(
     *, sample: Callable[[], Mapping[str, Any]],
     publish_turn: Callable[[float, float], None], publish_zero: Callable[[], None],
@@ -2011,7 +2083,8 @@ def run_angular_turn_window(
         "ramp_duration_s_each_end": TURN_RAMP_S,
         "publish_hz": PUBLISH_HZ,
         "angular_command_limit_rad_s": TURN_COMMAND_RAD_S,
-        "max_observed_yaw_rate_rad_s": TURN_MAX_OBSERVED_YAW_RATE_RAD_S,
+        "max_sustained_net_yaw_rate_rad_s": TURN_MAX_SUSTAINED_YAW_RATE_RAD_S,
+        "yaw_rate_window_s": TURN_YAW_RATE_WINDOW_S,
         "max_observed_planar_speed_m_s": max_observed_planar_speed_m_s,
         "source_timeout_ms": SOURCE_TIMEOUT_MS,
         "registration": dict(registration),
@@ -2052,6 +2125,7 @@ def run_angular_turn_window(
     command_lock = threading.RLock()
     stop_requested = threading.Event()
     tracker = ActivationTracker()
+    yaw_rate_monitor = SustainedYawRateWindow(TURN_YAW_RATE_WINDOW_S)
     pulse_fault: str | None = None
     post_stop_fault: str | None = None
     initial: Mapping[str, Any] | None = None
@@ -2069,6 +2143,21 @@ def run_angular_turn_window(
     stop_result: dict[str, Any] = {}
     zero_stop: ZeroStopWindow
 
+    def annotate_yaw_rate(snapshot: Mapping[str, Any]) -> tuple[dict[str, Any], str | None]:
+        row = dict(snapshot)
+        measurement = yaw_rate_monitor.update(row)
+        row["turn_yaw_rate_window"] = measurement
+        if measurement.get("status") == "TIME_RESET":
+            return row, "yaw_odometry_time_discontinuity"
+        if measurement.get("status") == "UNAVAILABLE":
+            return row, "yaw_measurement_unavailable"
+        if (
+            measurement.get("status") == "MEASURED"
+            and float(measurement["absolute_net_yaw_rate_rad_s"]) > TURN_MAX_SUSTAINED_YAW_RATE_RAD_S
+        ):
+            return row, "sustained_yaw_rate_limit"
+        return row, None
+
     def record(phase: str, snapshot: Mapping[str, Any], fault: str | None = None) -> None:
         row = dict(snapshot)
         row["phase"] = phase
@@ -2081,7 +2170,7 @@ def run_angular_turn_window(
     def poll_during_zero_stop() -> None:
         """Keep ROS services and sensor callbacks flowing throughout zero publication."""
         nonlocal post_stop_fault
-        current = sample()
+        current, yaw_rate_fault = annotate_yaw_rate(sample())
         current_fault = snapshot_fault(
             current, joint_limits, state_timeout_s=state_timeout_s,
             min_root_z=min_root_z, max_tilt_deg=max_tilt_deg,
@@ -2089,12 +2178,8 @@ def run_angular_turn_window(
         )
         if current.get("readback_fault"):
             current_fault = current_fault or "readback_fault:" + str(current.get("readback_fault"))
-        try:
-            yaw_rate = float(current["pose"]["wz"])
-            if not math.isfinite(yaw_rate) or abs(yaw_rate) > TURN_MAX_OBSERVED_YAW_RATE_RAD_S:
-                current_fault = current_fault or "post_stop_yaw_rate_limit"
-        except (KeyError, TypeError, ValueError):
-            current_fault = current_fault or "post_stop_angular_velocity_unavailable"
+        if yaw_rate_fault:
+            current_fault = current_fault or "post_stop_" + yaw_rate_fault
         if current_fault:
             post_stop_fault = post_stop_fault or current_fault
         tracker.observe(current, phase="post-stop")
@@ -2119,7 +2204,7 @@ def run_angular_turn_window(
         zero_stop.run_once()
 
     try:
-        initial = sample()
+        initial, initial_yaw_rate_fault = annotate_yaw_rate(sample())
         preflight_fault = snapshot_fault(
             initial, joint_limits, state_timeout_s=state_timeout_s,
             min_root_z=min_root_z, max_tilt_deg=max_tilt_deg,
@@ -2129,6 +2214,8 @@ def run_angular_turn_window(
             preflight_fault = preflight_fault or "turn_requires_fresh_stable_STAND_preflight"
         if initial.get("readback_fault"):
             preflight_fault = preflight_fault or "readback_fault:" + str(initial.get("readback_fault"))
+        if initial_yaw_rate_fault:
+            preflight_fault = preflight_fault or initial_yaw_rate_fault
         current_source = str(initial.get("common_source_name") or "")
         if current_source not in ("", VELOCITY_SOURCE_NAME):
             preflight_fault = preflight_fault or "conflicting_common_state_input_source"
@@ -2180,7 +2267,7 @@ def run_angular_turn_window(
                     break
                 if stop_requested.is_set() or watchdog.expired:
                     break
-                current = sample()
+                current, yaw_rate_fault = annotate_yaw_rate(sample())
                 elapsed_s = max(0.0, clock() - pulse_start)
                 warmup_active = elapsed_s < forward_warmup_s
                 sample_phase = "turn-forward-warmup" if warmup_active else "turn-activation"
@@ -2191,11 +2278,10 @@ def run_angular_turn_window(
                 )
                 if current.get("readback_fault"):
                     current_fault = current_fault or "readback_fault:" + str(current.get("readback_fault"))
+                if yaw_rate_fault:
+                    current_fault = current_fault or yaw_rate_fault
                 try:
-                    yaw_rate = float(current["pose"]["wz"])
                     current_bounds = current["speed_status"]["angular_bounds"]
-                    if not math.isfinite(yaw_rate) or abs(yaw_rate) > TURN_MAX_OBSERVED_YAW_RATE_RAD_S:
-                        current_fault = current_fault or "observed_yaw_rate_limit"
                     if not float(current_bounds["min_value"]) <= angular_velocity_rad_s <= float(current_bounds["max_value"]):
                         current_fault = current_fault or "live_angular_bound_changed"
                 except (KeyError, TypeError, ValueError):
@@ -2267,7 +2353,7 @@ def run_angular_turn_window(
     stand_deadline = zero_end + zero_until_stand_timeout_s
     next_zero = zero_end
     while clock() < post_end:
-        current = sample()
+        current, yaw_rate_fault = annotate_yaw_rate(sample())
         current_fault = snapshot_fault(
             current, joint_limits, state_timeout_s=state_timeout_s,
             min_root_z=min_root_z, max_tilt_deg=max_tilt_deg,
@@ -2275,12 +2361,8 @@ def run_angular_turn_window(
         )
         if current.get("readback_fault"):
             current_fault = current_fault or "readback_fault:" + str(current.get("readback_fault"))
-        try:
-            yaw_rate = float(current["pose"]["wz"])
-            if not math.isfinite(yaw_rate) or abs(yaw_rate) > TURN_MAX_OBSERVED_YAW_RATE_RAD_S:
-                current_fault = current_fault or "post_stop_yaw_rate_limit"
-        except (KeyError, TypeError, ValueError):
-            current_fault = current_fault or "post_stop_angular_velocity_unavailable"
+        if yaw_rate_fault:
+            current_fault = current_fault or "post_stop_" + yaw_rate_fault
         now = clock()
         if current_fault:
             post_stop_fault = current_fault
@@ -2363,6 +2445,14 @@ def run_angular_turn_window(
         "control_handshake_status": tracker.classify_control_handshake(),
         "control_handshake_evidence": [tracker.samples[index] for index in tracker.handshake_sample_indices],
         "rotation": rotation,
+        "yaw_rate_gate": {
+            "metric": "net unwrapped-to-wrapped yaw displacement over simulator odometry timestamps",
+            "window_s": TURN_YAW_RATE_WINDOW_S,
+            "maximum_sustained_net_yaw_rate_rad_s": TURN_MAX_SUSTAINED_YAW_RATE_RAD_S,
+            "maximum_observed_windowed_yaw_rate_rad_s": yaw_rate_monitor.max_abs_window_rate_rad_s,
+            "maximum_raw_twist_wz_rad_s": yaw_rate_monitor.max_abs_raw_twist_rad_s,
+            "raw_twist_peaks_are_recorded_but_not_used_as_a_single-sample_abort": True,
+        },
         "planar_displacement_during_turn_m": planar_displacement,
         "planar_motion": planar_motion,
         "stand_confirmed_monotonic_s": stand_confirmed_s,
