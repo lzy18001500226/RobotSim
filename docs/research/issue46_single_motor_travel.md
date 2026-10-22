@@ -5,6 +5,104 @@ open/close cycle passed. Full commercial travel, manufacturer passive fidelity
 and full X2 wrist collision validity remain **NOT VERIFIED**. No external-object
 contact, grasp or lift experiment was run in this iteration. PR #86 stays Draft on #84.
 
+## What the source actually specifies
+
+The X2 Ultra OmniPicker manual describes the product as adaptive with **one
+active DOF**. Its public position command is normalized: `0=closed`, `1=fully
+open`; power-up homing first closes the jaws. This defines the motor interface,
+not the angle or motion law of each internal link. The product's “one active
+DOF” statement also does not say that the mechanism has only one total DOF.
+
+The broader OmniPicker product manual lists “120 mm maximum stroke,” adaptive
+gripping and self-locking. That is a product-level stroke figure; the manual
+does not map it to this isolated X2 root angle or to our fixed x/z jaw-section
+measurement. Its open/closed outline drawings describe the external envelope,
+not the aperture at the inner-face ray used below. The separate X1-family product
+manual is a relevant OmniPicker reference, but does not establish X2 v1.4.0
+joint phases or a transmission law. We do not reinterpret 120 mm as a 120 mm
+cylinder clearance or as q_root=-1 travel.
+
+## STEP mechanism evidence and mobility
+
+The pinned AP214 STEP contains 49 product definitions, 16 assemblies, 33 leaf
+products, 100 usage-occurrence records and 93 expanded leaf occurrences. The
+placement-aware FreeCAD import has 94 features (92 solids, including 90 valid
+solids, plus two shell-only objects); the one-object count mismatch remains
+unresolved. Measured candidate geometric spans include outer-link 36 mm,
+middle-link 24 mm, and palm major-axis 33 mm. Their geometric existence alone
+does not prove every joint role or incidence.
+
+STEP lists two D4x24 pins, two D6x35 pins, two outer links, two middle links,
+16 C-E675ZZ bearings, 4 C-E696ZZ bearings, and 8 expanded torsion-spring
+variants. Gear-named products are also present. The STEP has **zero explicit
+kinematic-pair, gear-pair or motion-law entities**. Gear tooth engagement and
+ratio, spring/link incidence, spring rate/preload/damping/stops, and palm phase
+remain unknown. These parts make adaptive compliance plausible; they do not
+define its equations.
+
+The candidate graph is a useful way to see the missing information:
+
+```mermaid
+flowchart LR
+  B[Grounded gripper base]
+  A[Narrow root A: active]
+  N1[Narrow outer link]
+  N2[Narrow middle link]
+  NP[Narrow palm]
+  NL[Narrow loop]
+  W1[Wide root A: official mimic]
+  W2[Wide outer link]
+  W3[Wide middle link]
+  WP[Wide palm]
+  WL[Wide loop]
+  Dn[D narrow pin closure]
+  Dw[D wide pin closure]
+  B -->|A root revolute| N1
+  N1 -->|B candidate revolute| N2
+  N2 -->|C candidate revolute| NP
+  B -->|E candidate revolute| NL
+  NP --- Dn
+  NL --- Dn
+  B -->|wide root mimic| W1
+  W1 -->|B candidate revolute| W2
+  W2 -->|C candidate revolute| W3
+  B -->|E candidate revolute| WL
+  W3 --> Dw
+  WL --> Dw
+  T[Torsion springs / gear-named parts: actual mount and coupling unknown]
+  T -.-> N2
+  T -.-> W3
+```
+
+At the registered source pose, the compiled Candidate B model has `nv=8`:
+four hinge coordinates per side. The two 3-row D connects have rank 2 each; the
+official opposite-root mimic adds rank 1. With only those source-pose constraints,
+rank is **5**, leaving **3 total DOFs**: one root coordinate and one remaining
+passive coordinate on each side. Adding Candidate B's two fixed-tendon relations
+adds two independent ranks: rank **7**, leaving one DOF. Those equations
+`q_root + q_B - q_E = PHASE` are experimental; neither STEP nor vendor documents
+identify them as gear, spring, tendon, or rigid-link relations.
+
+So the useful answer is: the one-motor interface is confirmed, while the actual
+passive response is not. One motor can operate an underactuated adaptive hand;
+the root command does not, on its own, specify all follower angles. A full model
+needs source-defined passive mechanics/contact behavior or measured follower
+poses over the stroke. Deleting the residual DOFs to make rank `nv-1` would
+silently replace that unknown physical behavior with the Candidate B hypothesis.
+
+For reference, the manufacturer's X2 manual also says the powered gripper homes
+closed at startup, and that the official normalized command is 0–1. The official
+X2 root angle and our CAD coordinate are separate calibrations: q_CAD=0 is the
+registered STEP pose and maps to q_root=-0.13412598906686654. Therefore neither
+that one STEP pose nor the official [-1,0] root limits identify the full-closed
+or fully-open q_CAD endpoints.
+
+Manufacturer references inspected:
+
+- [X2 Ultra OmniPicker manual v0.8.1](https://x2-aimdk.agibot.com/zh-cn/v0.8.1/_downloads/9179a383c97b0f37b1f0fbf51ed2cb35/omni_picker_introduction_for_x2.pdf)
+- [AimDK X2 end-effector command interface](https://x2-aimdk.agibot.com/zh-cn/latest/Interface/control_mod/endeffector.html)
+- [Agibot OmniPicker product manual page](https://www.agibot.com.cn/DOCS/PM/X1)
+
 ## Assets and representation
 
 The [official-URDF overlay](issue46_official_urdf_pipeline.md) still owns the

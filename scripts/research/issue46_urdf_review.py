@@ -5,6 +5,7 @@ import json
 import math
 import threading
 import time
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -38,12 +39,16 @@ def main():
     if args.single_motor:
         import issue46_single_motor_travel as travel
         if model.nu!=1:raise ValueError('single motor model unexpectedly has extra actuators')
-        initial=travel.targets(law,0.)[0]
+        # Start at the last completed physics-tested pose. The registered STEP
+        # pose q_CAD=0 has inherited collision-proxy contacts and trips the gate.
+        source_ratio=0.0
+        initial=travel.targets(law,qlo)[0]
     else:
         initial=law.targets(source_ratio)
     for name, value in initial.items():
         data.qpos[addrs[name]] = value
     mujoco.mj_forward(model, data)
+    surface_inspector = travel.SourceSurfaces(model, ET.parse(args.model_run/'X2-Ultra_omnipicker_CAD_EXPERIMENTAL.urdf').getroot()) if args.single_motor else None
     driven=['right_claw_joint'] if args.single_motor else p.ACTUATED
     aids = {n: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, 'servo_'+n) for n in driven}
     lock = threading.Lock()
@@ -52,22 +57,26 @@ def main():
              'gravity': model.opt.gravity.tolist(), 'safety_stop': None,'actuator_count':model.nu,
              'mode':'ONE_ROOT_PASSIVE_EXPERIMENTAL' if args.single_motor else 'SEVEN_SERVO_REFERENCE_ONLY',
              'q_CAD_command_range':[qlo,qhi],'root_bias_compensation':bool(physical.get('root_bias_compensation',False))}
-    page = '''<!doctype html><meta charset="utf-8"><title>URDF → MuJoCo review</title>
+    page = '''<!doctype html><meta charset="utf-8"><title>OmniPicker single-root MuJoCo review</title>
 <style>body{font:18px system-ui;background:#18222b;color:#e9f0f5;max-width:850px;margin:40px auto}input{width:100%}pre{white-space:pre-wrap;font:14px monospace}strong{color:#ffcb68}</style>
 <h1>官方 URDF + CAD 修正 → MuJoCo</h1>
 <p><strong>SIMULATION_ONLY / UNVERIFIED_EXPERIMENTAL</strong></p>
 <p>在独立 MuJoCo 3D 窗口中查看。重力开启，原网格和官方根关节限位保留。</p>
-<p>0 = 根关节限位端（仍有间隙，不能称为完全闭合）；1 = 当前候选最大张开。</p>
+<p>单滑块对应一个根电机。详细页面状态区实时列出所有关节角、约束力、D点和表面开度。</p>
 <input id="opening" type="range" min="0" max="1" step="0.001"><p id="value"></p>
-<p>缓慢跟随滑块；D 间隙 >1mm、穿透 >2mm、速度 >25 或根限位误差 >0.001rad 时停止。</p><pre id="status"></pre>
+<p>0–1 仅代表本次有界实验行程，不是厂家完整行程；D间隙、碰撞穿透、速度及官方根限位超限会停止。</p><pre id="status"></pre>
 <script>let initialized=false;let s=document.querySelector('#opening');
 s.oninput=()=>{document.querySelector('#value').textContent=s.value;fetch('/set?opening='+s.value)};
 setInterval(async()=>{let r=await fetch('/status');let v=await r.json();if(!initialized){s.value=v.command;initialized=true}document.querySelector('#status').textContent=JSON.stringify(v,null,2)},300);</script>'''
     if args.single_motor:
         page=page.replace('官方 URDF + CAD 修正 → MuJoCo','单根电机 + 被动连杆 → MuJoCo')
-        page=page.replace('0 = 根关节限位端（仍有间隙，不能称为完全闭合）；1 = 当前候选最大张开。',
-                          '0 = 本次已验证闭端，1 = 已验证开端。参考夹面截面开度约 19.5–61.1 mm，并非完整闭合或厂商全行程。仅根电机接受控制，六个下游关节无伺服。')
+        page=page.replace('0–1 仅代表本次有界实验行程，不是厂家完整行程；D间隙、碰撞穿透、速度及官方根限位超限会停止。',
+                          '0=已实测范围内最闭位置（仍有约19.45mm截面间隙）；1=稳定实测最大开口。不是厂家0/1全行程。审阅器从这段已通过物理测试的安全姿态启动。')
         page=page.replace('根限位误差 >0.001rad','根限位误差 >0.00001rad')
+        page=page.replace('缓慢跟随滑块；D 间隙 >1mm、穿透 >2mm、速度 >25 或根限位误差 >0.00001rad 时停止。',
+                          '缓慢跟随滑块。状态栏按原始 STL 内表面给出 x=0,z=115 mm 截面间距，并列出各关节角、世界轴向/D点位置、约束力与接触。D间隙>1mm、穿透>2mm、速度>25rad/s或根限位误差>1e-5rad时停止。')
+        page=page.replace('<p>0–1 仅代表本次有界实验行程，不是厂家完整行程；D间隙、碰撞穿透、速度及官方根限位超限会停止。</p>',
+                          '<p>0 = 本次实测范围内最闭位置（q_CAD=-0.075，参考截面约19.45 mm间隙）；1 = 稳定验证的最大开口命令（q_CAD=+0.20，参考截面约61.23 mm）。这不是厂家全闭/全开行程。</p>')
         page=page.replace('<input id="opening"', '<p><a style="color:#85c9ff" href="/video" target="_blank">播放真实单电机物理开合录像</a></p><input id="opening"')
 
     class Handler(BaseHTTPRequestHandler):
@@ -80,8 +89,41 @@ setInterval(async()=>{let r=await fetch('/status');let v=await r.json();if(!init
             if parsed.path == '/':
                 payload, kind = page.encode(), 'text/html; charset=utf-8'
             elif parsed.path == '/status':
+                joint_states={}
+                for j in range(model.njnt):
+                    name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_JOINT,j)
+                    bid=int(model.jnt_bodyid[j]); R=data.xmat[bid].reshape(3,3)
+                    joint_states[name]={'angle_rad':float(data.qpos[model.jnt_qposadr[j]]) if model.jnt_type[j] in (mujoco.mjtJoint.mjJNT_HINGE,mujoco.mjtJoint.mjJNT_SLIDE) else None,
+                                        'origin_world_m':(data.xpos[bid]+R@model.jnt_pos[j]).tolist(),
+                                        'axis_world':(R@model.jnt_axis[j]).tolist(),'is_actuated':name in driven}
+                equality_forces={}
+                constraint_state_ready=len(data.efc_id)==len(data.efc_type)
+                for e in range(model.neq):
+                    eid=int(e); ename=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_EQUALITY,eid)
+                    if not constraint_state_ready:
+                        equality_forces[ename]=None
+                    else:
+                        mask=(np.asarray(data.efc_type)==int(mujoco.mjtConstraint.mjCNSTR_EQUALITY))&(np.asarray(data.efc_id)==eid)
+                        equality_forces[ename]=float(np.max(np.abs(data.efc_force[mask]))) if np.any(mask) else 0.
+                contacts=[]
+                for c in data.contact:
+                    contacts.append({'geom1':mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(c.geom1)),
+                                     'geom2':mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,int(c.geom2)),
+                                     'distance_mm':float(c.dist)*1000.})
+                measured_gap=None
+                if args.single_motor:
+                    measured_gap,surface_rows=surface_inspector.aperture(data)
+                else: surface_rows=[]
                 with lock:
-                    payload = json.dumps(state).encode()
+                    current=dict(state)
+                if args.single_motor:
+                    current.update({'measured_reference_aperture_mm':measured_gap,'aperture_section_xz_m':[0.,.115],
+                                    'aperture_surface_rows':surface_rows,'passive_coupling_residuals_rad':travel.coupled_residuals(model,data),
+                                    'joint_angles_and_world_axes':joint_states,'equality_force_magnitudes_mixed_units':equality_forces,
+                                    'constraint_state_ready':constraint_state_ready,'contacts':contacts,
+                                    'position_coordinates':'angles are actual MJCF joint qpos in radians; axis/origins are world-frame'})
+                else:current.update({'joint_angles_and_world_axes':joint_states,'equality_force_magnitudes_mixed_units':equality_forces,'contacts':contacts})
+                payload=json.dumps(current).encode()
                 kind = 'application/json'
             elif parsed.path == '/video' and args.single_motor and (args.model_run/'single_motor_review.mp4').is_file():
                 payload=(args.model_run/'single_motor_review.mp4').read_bytes()
