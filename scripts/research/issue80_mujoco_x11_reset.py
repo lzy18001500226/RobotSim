@@ -174,6 +174,18 @@ class X11:
             ctypes.POINTER(ctypes.c_uint),
         ]
         self.lib.XQueryTree.restype = ctypes.c_int
+        self.lib.XQueryPointer.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_ulong),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        self.lib.XQueryPointer.restype = ctypes.c_int
         self.lib.XGetWindowAttributes.argtypes = [
             ctypes.c_void_p,
             ctypes.c_ulong,
@@ -211,6 +223,17 @@ class X11:
         self.lib.XGetClassHint.restype = ctypes.c_int
         self.lib.XFree.argtypes = [ctypes.c_void_p]
         self.lib.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        self.lib.XTranslateCoordinates.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        self.lib.XTranslateCoordinates.restype = ctypes.c_int
         self.lib.XSendEvent.argtypes = [
             ctypes.c_void_p,
             ctypes.c_ulong,
@@ -243,6 +266,21 @@ class X11:
             ctypes.c_ulong,
         ]
         self.xtst.XTestFakeKeyEvent.restype = ctypes.c_int
+        self.xtst.XTestFakeMotionEvent.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_ulong,
+        ]
+        self.xtst.XTestFakeMotionEvent.restype = ctypes.c_int
+        self.xtst.XTestFakeButtonEvent.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_int,
+            ctypes.c_ulong,
+        ]
+        self.xtst.XTestFakeButtonEvent.restype = ctypes.c_int
         self.lib.XGetImage.argtypes = [
             ctypes.c_void_p,
             ctypes.c_ulong,
@@ -534,6 +572,127 @@ class X11:
             "xsync_after_each_request": True,
         }
 
+    def focus_window_with_neutral_click(
+        self,
+        window: int,
+        expected_pid: int,
+        expected_title: str,
+        timeout_s: float = 0.5,
+    ) -> dict[str, Any]:
+        """Try one neutral click in the verified viewer, then verify actual X focus."""
+        identity_before = self._target_identity(expected_pid, expected_title, window)
+        if identity_before is None:
+            return {
+                "status": "FOCUS_NOT_CONFIRMED",
+                "reason": "exact process/title/window/viewability match lost before pointer focus",
+                "xtest_pointer_events_sent": 0,
+                "xtest_button_events_sent": 0,
+            }
+        width, height = int(identity_before["width"]), int(identity_before["height"])
+        if width < 32 or height < 32:
+            return {
+                "status": "FOCUS_NOT_CONFIRMED",
+                "reason": "verified viewer geometry is too small for a neutral focus click",
+                "xtest_pointer_events_sent": 0,
+                "xtest_button_events_sent": 0,
+            }
+        # Use a point inset from the bottom-right edge of the MuJoCo viewport;
+        # a press/release focuses/selects only and never drags or changes qpos.
+        local_x, local_y = width - 16, height - 16
+        root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+        translated = int(self.lib.XTranslateCoordinates(
+            self.display, window, self.root, local_x, local_y,
+            ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child),
+        ))
+        if not translated:
+            return {
+                "status": "FOCUS_NOT_CONFIRMED",
+                "reason": "could not translate the neutral viewer point to root coordinates",
+                "xtest_pointer_events_sent": 0,
+                "xtest_button_events_sent": 0,
+            }
+        move_return = int(self.xtst.XTestFakeMotionEvent(
+            self.display, 0, root_x.value, root_y.value, CURRENT_TIME,
+        ))
+        self.lib.XFlush(self.display)
+        self.lib.XSync(self.display, 0)
+        identity_before_click = self._target_identity(expected_pid, expected_title, window)
+        if identity_before_click is None:
+            return {
+                "status": "FOCUS_NOT_CONFIRMED",
+                "reason": "exact process/title/window/viewability match lost before pointer click",
+                "local_point": [local_x, local_y],
+                "root_point": [root_x.value, root_y.value],
+                "xtest_pointer_events_sent": int(bool(move_return)),
+                "xtest_button_events_sent": 0,
+            }
+        root_return, child_return = ctypes.c_ulong(), ctypes.c_ulong()
+        root_x_return, root_y_return = ctypes.c_int(), ctypes.c_int()
+        win_x_return, win_y_return = ctypes.c_int(), ctypes.c_int()
+        mask_return = ctypes.c_uint()
+        pointer_inside = bool(self.lib.XQueryPointer(
+            self.display,
+            window,
+            ctypes.byref(root_return),
+            ctypes.byref(child_return),
+            ctypes.byref(root_x_return),
+            ctypes.byref(root_y_return),
+            ctypes.byref(win_x_return),
+            ctypes.byref(win_y_return),
+            ctypes.byref(mask_return),
+        ))
+        pointer_verified = bool(
+            move_return
+            and pointer_inside
+            and 0 <= win_x_return.value < width
+            and 0 <= win_y_return.value < height
+        )
+        pointer_verification = {
+            "status": "POINTER_VERIFIED_INSIDE_TARGET" if pointer_verified else "POINTER_NOT_VERIFIED",
+            "query_return": int(pointer_inside),
+            "root_point": [root_x_return.value, root_y_return.value],
+            "window_point": [win_x_return.value, win_y_return.value],
+            "child_window_id": int(child_return.value),
+            "mask": int(mask_return.value),
+        }
+        if not pointer_verified:
+            return {
+                "status": "FOCUS_NOT_CONFIRMED",
+                "reason": "XQueryPointer did not verify the pointer inside the exact target window; no click sent",
+                "local_point": [local_x, local_y],
+                "root_point": [root_x.value, root_y.value],
+                "pointer_verification": pointer_verification,
+                "xtest_pointer_events_sent": int(bool(move_return)),
+                "xtest_button_events_sent": 0,
+            }
+        press_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 1, CURRENT_TIME))
+        release_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 0, CURRENT_TIME))
+        self.lib.XFlush(self.display)
+        self.lib.XSync(self.display, 0)
+        focus_after = self._wait_for_input_focus(window, timeout_s)
+        identity_after = self._target_identity(expected_pid, expected_title, window)
+        return {
+            "status": (
+                "FOCUSED"
+                if identity_after is not None and focus_after == window and press_return and release_return
+                else "FOCUS_NOT_CONFIRMED"
+            ),
+            "target_window_id": window,
+            "identity_before": identity_before,
+            "identity_before_click": identity_before_click,
+            "identity_after": identity_after,
+            "local_point": [local_x, local_y],
+            "root_point": [root_x.value, root_y.value],
+            "focus_after": focus_after,
+            "pointer_verification": pointer_verification,
+            "xtest_pointer_return": move_return,
+            "xtest_button_press_return": press_return,
+            "xtest_button_release_return": release_return,
+            "xtest_pointer_events_sent": 1 if move_return else 0,
+            "xtest_button_events_sent": int(bool(press_return)) + int(bool(release_return)),
+            "return_values_are_focus_proof": False,
+        }
+
     def send_backspace_once(
         self,
         window: int,
@@ -564,6 +723,15 @@ class X11:
         if activation["status"] != "FOCUSED":
             direct_focus = self.focus_window_direct(window, timeout_s=direct_timeout_s)
 
+        pointer_focus = {"status": "NOT_NEEDED", "target_window_id": window}
+        identity_ready = self._target_identity(expected_pid, expected_title, window)
+        self.lib.XSync(self.display, 0)
+        focus_after = self._input_focus()
+        if identity_ready is not None and focus_after != window:
+            pointer_focus = self.focus_window_with_neutral_click(
+                window, expected_pid, expected_title, timeout_s=direct_timeout_s,
+            )
+
         # Recheck identity and focus after all activation requests, immediately
         # before synthesizing a key. EWMH/XTest return values are not proof of
         # focus; only the exact XID returned by XGetInputFocus is accepted.
@@ -591,6 +759,7 @@ class X11:
                 "identity_before_dispatch": identity_ready,
                 "ewmh_activation": activation,
                 "direct_focus": direct_focus,
+                "pointer_focus": pointer_focus,
                 "final_focus_reassertion": final_focus_reassertion,
                 "focus_before": focus_before,
                 "focus_after": focus_after,
@@ -630,6 +799,7 @@ class X11:
             "identity_before_dispatch": identity_ready,
             "ewmh_activation": activation,
             "direct_focus": direct_focus,
+            "pointer_focus": pointer_focus,
             "final_focus_reassertion": final_focus_reassertion,
             "focus_before": focus_before,
             "focus_verified_target": focus_after,

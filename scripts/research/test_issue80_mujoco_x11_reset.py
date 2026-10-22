@@ -13,6 +13,7 @@ class FakeXlib:
         self.focus = 1  # X PointerRoot; deliberately not the target XID.
         self.accept_direct_focus = accept_direct_focus
         self.calls: list[tuple[object, ...]] = []
+        self.pointer_root = (0, 0)
 
     def XInternAtom(self, _display: int, _name: bytes, _only_if_exists: int) -> int:
         return 0xABC
@@ -22,6 +23,35 @@ class FakeXlib:
         ctypes.cast(revert_ptr, ctypes.POINTER(ctypes.c_int))[0] = 2
         self.calls.append(("get-focus", self.focus))
         return 1
+
+    def XTranslateCoordinates(
+        self, _display: int, _source: int, _target: int, src_x: int, src_y: int,
+        dest_x_ptr: object, dest_y_ptr: object, child_ptr: object,
+    ) -> int:
+        ctypes.cast(dest_x_ptr, ctypes.POINTER(ctypes.c_int))[0] = src_x + 50
+        ctypes.cast(dest_y_ptr, ctypes.POINTER(ctypes.c_int))[0] = src_y + 70
+        ctypes.cast(child_ptr, ctypes.POINTER(ctypes.c_ulong))[0] = 0
+        self.calls.append(("translate", src_x, src_y))
+        return 1
+
+    def XQueryPointer(
+        self, _display: int, _window: int, root_ptr: object, child_ptr: object,
+        root_x_ptr: object, root_y_ptr: object, win_x_ptr: object, win_y_ptr: object,
+        mask_ptr: object,
+    ) -> int:
+        root_x, root_y = self.pointer_root
+        for ptr, value, ctype in (
+            (root_ptr, 0x1000, ctypes.c_ulong),
+            (child_ptr, 0, ctypes.c_ulong),
+            (root_x_ptr, root_x, ctypes.c_int),
+            (root_y_ptr, root_y, ctypes.c_int),
+            (win_x_ptr, root_x - 50, ctypes.c_int),
+            (win_y_ptr, root_y - 70, ctypes.c_int),
+            (mask_ptr, 0, ctypes.c_uint),
+        ):
+            ctypes.cast(ptr, ctypes.POINTER(ctype))[0] = value
+        self.calls.append(("query-pointer", root_x, root_y))
+        return int(50 <= root_x < 1756 and 70 <= root_y < 1136)
 
     def XSendEvent(self, _display: int, _root: int, _propagate: int, _mask: int, _event: object) -> int:
         self.calls.append(("ewmh-send",))
@@ -54,26 +84,51 @@ class FakeXlib:
 
 
 class FakeXTest:
-    def __init__(self):
+    def __init__(self, on_button=None, on_motion=None):
         self.events: list[tuple[int, int]] = []
+        self.pointer_events: list[tuple[object, ...]] = []
+        self.on_button = on_button
+        self.on_motion = on_motion
 
     def XTestFakeKeyEvent(self, _display: int, keycode: int, pressed: int, _time: int) -> int:
         self.events.append((keycode, pressed))
         return 1
 
+    def XTestFakeMotionEvent(self, _display: int, screen: int, x: int, y: int, _time: int) -> int:
+        self.pointer_events.append(("motion", screen, x, y))
+        if self.on_motion:
+            self.on_motion(x, y)
+        return 1
 
-def make_x11(*, accept_direct_focus: bool, window: int = 0x5678) -> X11:
+    def XTestFakeButtonEvent(self, _display: int, button: int, pressed: int, _time: int) -> int:
+        self.pointer_events.append(("button", button, pressed))
+        if self.on_button:
+            self.on_button(button, pressed)
+        return 1
+
+
+def make_x11(
+    *, accept_direct_focus: bool, accept_pointer_focus: bool = False, window: int = 0x5678,
+) -> X11:
     x11 = X11.__new__(X11)
     x11.display = 0x1234
     x11.root = 0x1000
     x11.lib = FakeXlib(accept_direct_focus=accept_direct_focus)
-    x11.xtst = FakeXTest()
+    x11.xtst = FakeXTest(
+        on_button=(
+            lambda button, pressed: setattr(x11.lib, "focus", window)
+            if accept_pointer_focus and button == 1 and pressed else None
+        ),
+        on_motion=lambda x, y: setattr(x11.lib, "pointer_root", (x, y)),
+    )
     x11.list_windows = lambda: [
         {
             "window_id": window,
             "pid": 4321,
             "title": "MuJoCo : X2 simulator",
             "viewable": True,
+            "width": 1706,
+            "height": 1066,
         }
     ]
     return x11
@@ -136,6 +191,7 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
         self.assertIn("no key sent", result["reason"])
         self.assertEqual(result["xtest_key_events_sent"], 0)
         self.assertEqual(x11.xtst.events, [])
+        self.assertEqual(result["pointer_focus"]["status"], "FOCUS_NOT_CONFIRMED")
 
     def test_transient_focus_loss_is_reasserted_but_still_verified(self) -> None:
         x11 = make_x11(accept_direct_focus=True)
@@ -155,7 +211,39 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
         self.assertEqual(result["final_focus_reassertion"]["status"], "FOCUSED")
         self.assertEqual(result["focus_verified_target"], 0x5678)
         self.assertEqual(x11.xtst.events, [(22, 1), (22, 0)])
-        self.assertEqual(count[0], 3)
+        self.assertGreater(count[0], 3)
+
+    def test_verified_neutral_viewer_click_can_establish_focus_before_key(self) -> None:
+        x11 = make_x11(accept_direct_focus=False, accept_pointer_focus=True)
+        result = x11.send_backspace_once(
+            0x5678,
+            expected_pid=4321,
+            expected_title="MuJoCo : X2 simulator",
+            ewmh_timeout_s=0.0,
+            direct_timeout_s=0.0,
+        )
+        self.assertEqual(result["status"], "KEY_DISPATCHED")
+        self.assertEqual(result["pointer_focus"]["status"], "FOCUSED")
+        self.assertEqual(result["focus_verified_target"], 0x5678)
+        self.assertEqual(x11.xtst.events, [(22, 1), (22, 0)])
+        self.assertEqual(x11.xtst.pointer_events[-2:], [("button", 1, 1), ("button", 1, 0)])
+
+    def test_pointer_click_is_not_sent_after_window_identity_changes(self) -> None:
+        x11 = make_x11(accept_direct_focus=False)
+        matching = x11.list_windows()[0]
+        count = [0]
+        def identities():
+            count[0] += 1
+            return [matching] if count[0] <= 2 else []
+        x11.list_windows = identities
+        result = x11.send_backspace_once(
+            0x5678, expected_pid=4321, expected_title="MuJoCo : X2 simulator",
+            ewmh_timeout_s=0.0, direct_timeout_s=0.0,
+        )
+        self.assertEqual(result["status"], "RESET_NOT_DELIVERED")
+        self.assertEqual(result["xtest_key_events_sent"], 0)
+        self.assertFalse(any(event[0] == "button" for event in x11.xtst.pointer_events))
+        self.assertEqual(x11.xtst.events, [])
 
     def test_identity_mismatch_blocks_focus_and_key_dispatch(self) -> None:
         x11 = make_x11(accept_direct_focus=True)
@@ -177,8 +265,11 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
     def test_identity_is_rechecked_immediately_before_key_dispatch(self) -> None:
         x11 = make_x11(accept_direct_focus=True)
         matching_window = x11.list_windows()[0]
-        observed = iter(([matching_window], []))
-        x11.list_windows = lambda: next(observed)
+        identity_checks = [0]
+        def disappear_before_dispatch():
+            identity_checks[0] += 1
+            return [matching_window] if identity_checks[0] == 1 else []
+        x11.list_windows = disappear_before_dispatch
 
         result = x11.send_backspace_once(
             0x5678,
