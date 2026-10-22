@@ -132,6 +132,109 @@ class ResearchScriptStagingTests(unittest.TestCase):
         activation["nonzero_publish_calls_returned"] = 0
         self.assertEqual(classify_first_motion_outcome(activation), "VELOCITY_COMMAND_NOT_EXECUTED")
 
+    def test_windows_activation_is_attempted_only_after_verified_x11_failure_sent_no_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            identity = {
+                "window_id": 0x1234, "pid": 4321, "title": "MuJoCo : X2",
+                "width": 800, "height": 600, "viewable": True,
+            }
+            first = {
+                "window": identity,
+                "event": {
+                    "status": "RESET_NOT_DELIVERED",
+                    "identity_before_dispatch": identity,
+                    "xtest_key_events_sent": 0,
+                },
+            }
+            second = {
+                "window": identity,
+                "event": {
+                    "status": "KEY_DISPATCHED",
+                    "identity_before_dispatch": identity,
+                    "xtest_key_events_sent": 2,
+                },
+            }
+            calls = []
+            payloads = iter((first, second))
+            runner.run = lambda name, command, **kwargs: (
+                calls.append(name) or subprocess.CompletedProcess(command, 0, json.dumps(next(payloads)), "")
+            )
+            focus_calls = []
+            runner.activate_verified_windows_foreground = lambda **kwargs: (
+                focus_calls.append(kwargs) or {"status": "FOREGROUND_VERIFIED", "key_events_sent": 0}
+            )
+
+            runner.dispatch_reset(4321, "MuJoCo : X2", 0x1234)
+
+            self.assertEqual(
+                calls,
+                ["x11_backspace_dispatch_attempt1", "x11_backspace_dispatch_attempt2_after_windows_focus"],
+            )
+            self.assertEqual(len(focus_calls), 1)
+            self.assertEqual(runner.reset_dispatch_payload["event"]["status"], "KEY_DISPATCHED")
+            self.assertEqual(runner.reset_dispatch_payload["reset_delivery_attempt_count"], 2)
+            self.assertEqual(json.loads((Path(temp_dir) / "reset_dispatch_event.json").read_text())["event"]["status"], "KEY_DISPATCHED")
+
+    def test_unverified_windows_foreground_result_sends_no_second_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            identity = {
+                "window_id": 0x1234, "pid": 4321, "title": "MuJoCo : X2",
+                "width": 800, "height": 600, "viewable": True,
+            }
+            first = {
+                "window": identity,
+                "event": {
+                    "status": "RESET_NOT_DELIVERED",
+                    "identity_before_dispatch": identity,
+                    "xtest_key_events_sent": 0,
+                },
+            }
+            calls = []
+            runner.run = lambda name, command, **kwargs: (
+                calls.append(name) or subprocess.CompletedProcess(command, 0, json.dumps(first), "")
+            )
+            runner.activate_verified_windows_foreground = lambda **kwargs: {
+                "status": "WINDOW_MATCH_NOT_UNIQUE", "key_events_sent": 0,
+            }
+
+            with self.assertRaises(RuntimeError):
+                runner.dispatch_reset(4321, "MuJoCo : X2", 0x1234)
+
+            self.assertEqual(calls, ["x11_backspace_dispatch_attempt1"])
+            final = json.loads((Path(temp_dir) / "reset_dispatch_event.json").read_text())
+            self.assertEqual(final["event"]["xtest_key_events_sent"], 0)
+            self.assertEqual(final["windows_foreground_activation"]["status"], "WINDOW_MATCH_NOT_UNIQUE")
+
+    def test_windows_foreground_is_not_attempted_after_a_key_was_sent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            identity = {
+                "window_id": 0x1234, "pid": 4321, "title": "MuJoCo : X2",
+                "width": 800, "height": 600, "viewable": True,
+            }
+            first = {
+                "window": identity,
+                "event": {
+                    "status": "RESET_NOT_DELIVERED",
+                    "identity_before_dispatch": identity,
+                    "xtest_key_events_sent": 2,
+                },
+            }
+            calls = []
+            runner.run = lambda name, command, **kwargs: (
+                calls.append(name) or subprocess.CompletedProcess(command, 0, json.dumps(first), "")
+            )
+            runner.activate_verified_windows_foreground = lambda **kwargs: self.fail("must not re-focus after a key was sent")
+
+            with self.assertRaises(RuntimeError):
+                runner.dispatch_reset(4321, "MuJoCo : X2", 0x1234)
+
+            self.assertEqual(calls, ["x11_backspace_dispatch_attempt1"])
+            final = json.loads((Path(temp_dir) / "reset_dispatch_event.json").read_text())
+            self.assertEqual(final["event"]["xtest_key_events_sent"], 2)
+
     def test_source_joint_velocity_abort_overrides_unverified_stop_classification(self) -> None:
         activation = {
             "nonzero_publish_calls_returned": 54,

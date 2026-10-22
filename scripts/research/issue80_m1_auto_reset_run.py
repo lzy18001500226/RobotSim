@@ -26,6 +26,7 @@ from issue80_m1_first_motion import TURN_COMMAND_RAD_S, TURN_PULSE_S
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
 RUNTIME = REPO / "simulation/mujoco/raicom2026"
 X11_HELPER = Path(__file__).with_name("issue80_mujoco_x11_reset.py")
+WINDOWS_FOCUS_HELPER = Path(__file__).with_name("issue80_mujoco_windows_focus.ps1")
 ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
@@ -746,6 +747,7 @@ class BoundedRun:
         sources = (
             (Path(__file__), Path(__file__).name),
             (X11_HELPER, X11_HELPER.name),
+            (WINDOWS_FOCUS_HELPER, WINDOWS_FOCUS_HELPER.name),
             (ANALYZER, ANALYZER.name),
             (M1_RUNNER, M1_RUNNER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
@@ -1202,39 +1204,123 @@ class BoundedRun:
 
     def dispatch_reset(self, pid: int, title: str, window_id: int) -> None:
         event_path = self.evidence / "reset_dispatch_event.json"
+        first_attempt_path = self.evidence / "reset_dispatch_event_x11_attempt1.json"
+        second_attempt_path = self.evidence / "reset_dispatch_event_x11_attempt2.json"
+
+        def send_one_verified_x11_key(step_name: str, output_path: Path) -> dict[str, Any]:
+            command = [
+                sys.executable, str(X11_HELPER), "send-reset",
+                "--expected-pid", str(pid), "--expected-title", title,
+                "--window-id", str(window_id),
+                "--dispatch-event-json", str(output_path),
+            ]
+            try:
+                completed = self.run(step_name, command, timeout_s=5.0, check=False)
+            except RunDeadline as exc:
+                if not output_path.exists():
+                    raise
+                payload = json.loads(output_path.read_text(encoding="utf-8"))
+                payload["helper_completion"] = f"TIMED_OUT_AFTER_EVENT_RECORD: {exc}"
+                return payload
+            try:
+                return json.loads(completed.stdout)
+            except json.JSONDecodeError as exc:
+                if output_path.exists():
+                    payload = json.loads(output_path.read_text(encoding="utf-8"))
+                    payload["helper_completion"] = "NO_COMPLETE_RESULT_JSON"
+                    return payload
+                raise RuntimeError(f"X11 helper did not return JSON: {completed.stdout[-500:]}") from exc
+
+        first = send_one_verified_x11_key("x11_backspace_dispatch_attempt1", first_attempt_path)
+        first_event = first.get("event", {})
+        final_payload = first
+        if (
+            first_event.get("status") == "RESET_NOT_DELIVERED"
+            and int(first_event.get("xtest_key_events_sent", -1)) == 0
+        ):
+            identity = first_event.get("identity_before_dispatch") or first_event.get("identity_before")
+            identity_verified = (
+                isinstance(identity, Mapping)
+                and identity.get("window_id") == window_id
+                and identity.get("pid") == pid
+                and identity.get("title") == title
+                and identity.get("viewable") is True
+            )
+            if identity_verified:
+                windows_focus = self.activate_verified_windows_foreground(
+                    title=title,
+                    pid=pid,
+                    window_id=window_id,
+                    width=int(identity.get("width", 0)),
+                    height=int(identity.get("height", 0)),
+                )
+                first["windows_foreground_activation"] = windows_focus
+                if windows_focus.get("status") == "FOREGROUND_VERIFIED":
+                    second = send_one_verified_x11_key(
+                        "x11_backspace_dispatch_attempt2_after_windows_focus",
+                        second_attempt_path,
+                    )
+                    second["first_x11_focus_attempt"] = first
+                    second["windows_foreground_activation"] = windows_focus
+                    final_payload = second
+        final_payload["reset_delivery_attempt_count"] = 2 if final_payload is not first else 1
+        if event_path.exists():
+            raise RuntimeError("canonical reset event already exists; refusing to overwrite it")
+        with event_path.open("x", encoding="utf-8") as stream:
+            json.dump(final_payload, stream, indent=2)
+            stream.write("\n")
+        self.reset_dispatch_payload = final_payload
+        if final_payload.get("event", {}).get("status") != "KEY_DISPATCHED":
+            self.reset_classification = "RESET_NOT_DELIVERED"
+            raise RuntimeError(f"X11 Backspace was not safely dispatched: {final_payload}")
+
+    def activate_verified_windows_foreground(
+        self, *, title: str, pid: int, window_id: int, width: int, height: int,
+    ) -> dict[str, Any]:
+        """Ask Windows to foreground one unique title match; X11 must still prove focus."""
+        helper_copy = self.evidence / WINDOWS_FOCUS_HELPER.name
+        if helper_copy.is_symlink() or not helper_copy.is_file():
+            return {"status": "WINDOWS_HELPER_NOT_STAGED", "key_events_sent": 0}
+        path_result = self.run(
+            "windows_foreground_helper_path",
+            ["wslpath", "-w", str(helper_copy)],
+            timeout_s=3.0,
+            check=False,
+        )
+        windows_script = path_result.stdout.strip()
+        if path_result.returncode != 0 or not windows_script:
+            return {
+                "status": "WINDOWS_HELPER_PATH_UNAVAILABLE",
+                "returncode": path_result.returncode,
+                "stdout": path_result.stdout[-1000:],
+                "stderr": path_result.stderr[-1000:],
+                "key_events_sent": 0,
+            }
         command = [
-            sys.executable, str(X11_HELPER), "send-reset",
-            "--expected-pid", str(pid), "--expected-title", title,
-            "--window-id", str(window_id),
-            "--dispatch-event-json", str(event_path),
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+            "-ExecutionPolicy", "Bypass", "-File", windows_script,
+            "-ExpectedTitle", title,
+            "-ExpectedX11Pid", str(pid),
+            "-ExpectedX11WindowId", str(window_id),
+            "-ExpectedWidth", str(width),
+            "-ExpectedHeight", str(height),
+            "-Mode", "Activate",
         ]
-        try:
-            result = self.run("x11_backspace_dispatch", command, timeout_s=5.0, check=False)
-        except RunDeadline as exc:
-            # A dispatched key event is persisted before this timeout check.
-            # Continue only when that exact event record exists; screenshots
-            # are intentionally outside this key-delivery operation.
-            if not event_path.exists():
-                raise
-            event_record = json.loads(event_path.read_text(encoding="utf-8"))
-            event_record["helper_completion"] = f"TIMED_OUT_AFTER_DISPATCH: {exc}"
-            self.reset_dispatch_payload = event_record
-            if event_record.get("event", {}).get("status") != "KEY_DISPATCHED":
-                self.reset_classification = "RESET_NOT_DELIVERED"
-                raise RuntimeError(f"X11 helper did not dispatch BackSpace: {event_record}") from exc
-            return
+        result = self.run("windows_foreground_activation", command, timeout_s=5.0, check=False)
         try:
             payload = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            if event_path.exists():
-                payload = json.loads(event_path.read_text(encoding="utf-8"))
-                payload["helper_completion"] = "NO_COMPLETE_RESULT_JSON"
-            else:
-                raise RuntimeError(f"X11 helper did not return JSON: {result.stdout[-500:]}") from exc
-        self.reset_dispatch_payload = payload
-        if result.returncode != 0 or payload.get("event", {}).get("status") != "KEY_DISPATCHED":
-            self.reset_classification = "RESET_NOT_DELIVERED"
-            raise RuntimeError(f"X11 Backspace was not dispatched: {payload}")
+        except json.JSONDecodeError:
+            payload = {
+                "status": "WINDOWS_FOCUS_RESULT_INVALID",
+                "stdout": result.stdout[-1000:],
+                "stderr": result.stderr[-1000:],
+            }
+        payload["powershell_returncode"] = result.returncode
+        payload["x11_identity_context"] = {
+            "pid": pid, "window_id": window_id, "title": title,
+        }
+        payload["key_events_sent"] = 0
+        return payload
 
     def finalize_reset_dispatch(self, pid: int, title: str, window_id: int) -> None:
         """Attach image evidence only after the continuous telemetry window ends."""
