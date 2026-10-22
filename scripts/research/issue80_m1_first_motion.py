@@ -1976,7 +1976,7 @@ def classify_turn_planar_motion(
 
 
 class SustainedYawRateWindow:
-    """Measure net heading rate over a simulator-time window, retaining raw twist peaks separately."""
+    """Measure net heading rate on monotonic receive time and retain source-stamp anomalies."""
 
     def __init__(self, window_s: float = TURN_YAW_RATE_WINDOW_S) -> None:
         if not math.isfinite(window_s) or window_s <= 0.0:
@@ -1985,6 +1985,12 @@ class SustainedYawRateWindow:
         self.samples: list[tuple[float, float]] = []
         self.max_abs_window_rate_rad_s = 0.0
         self.max_abs_raw_twist_rad_s = 0.0
+        self.last_source_stamp_s: float | None = None
+        self.source_stamp_sample_count = 0
+        self.source_stamp_regression_count = 0
+        self.source_stamp_duplicate_count = 0
+        self.first_source_stamp_regression: dict[str, Any] | None = None
+        self.first_source_stamp_duplicate: dict[str, Any] | None = None
 
     def update(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
         pose = snapshot.get("pose")
@@ -1992,57 +1998,96 @@ class SustainedYawRateWindow:
             return {"status": "UNAVAILABLE", "reason": "pose_missing"}
         try:
             yaw = float(pose["yaw"])
-            if "stamp_sec" in pose and "stamp_nanosec" in pose:
-                timestamp = float(pose["stamp_sec"]) + float(pose["stamp_nanosec"]) * 1e-9
-                time_basis = "simulator_odometry_stamp"
-            else:
-                timestamp = float(snapshot["sample_monotonic_s"])
-                time_basis = "host_monotonic_fallback"
+            receive_time = float(snapshot["sample_monotonic_s"])
         except (KeyError, TypeError, ValueError):
             return {"status": "UNAVAILABLE", "reason": "yaw_or_timestamp_missing"}
-        if not math.isfinite(yaw) or not math.isfinite(timestamp):
-            return {"status": "UNAVAILABLE", "reason": "nonfinite_yaw_or_timestamp"}
+        if not math.isfinite(yaw) or not math.isfinite(receive_time):
+            return {"status": "UNAVAILABLE", "reason": "nonfinite_yaw_or_receive_time"}
+
+        source_stamp_s = None
+        if "stamp_sec" in pose and "stamp_nanosec" in pose:
+            try:
+                source_stamp_s = float(pose["stamp_sec"]) + float(pose["stamp_nanosec"]) * 1e-9
+            except (TypeError, ValueError):
+                source_stamp_s = None
+            if source_stamp_s is not None and math.isfinite(source_stamp_s):
+                self.source_stamp_sample_count += 1
+                if self.last_source_stamp_s is not None:
+                    delta = source_stamp_s - self.last_source_stamp_s
+                    if delta < -1e-9:
+                        self.source_stamp_regression_count += 1
+                        if self.first_source_stamp_regression is None:
+                            self.first_source_stamp_regression = {
+                                "previous_stamp_s": self.last_source_stamp_s,
+                                "current_stamp_s": source_stamp_s,
+                                "receive_monotonic_s": receive_time,
+                            }
+                    elif delta <= 1e-9:
+                        self.source_stamp_duplicate_count += 1
+                        if self.first_source_stamp_duplicate is None:
+                            self.first_source_stamp_duplicate = {
+                                "previous_stamp_s": self.last_source_stamp_s,
+                                "current_stamp_s": source_stamp_s,
+                                "receive_monotonic_s": receive_time,
+                            }
+                self.last_source_stamp_s = source_stamp_s
 
         raw_twist = pose.get("wz")
         if isinstance(raw_twist, (int, float)) and math.isfinite(float(raw_twist)):
             self.max_abs_raw_twist_rad_s = max(self.max_abs_raw_twist_rad_s, abs(float(raw_twist)))
 
-        if self.samples and timestamp <= self.samples[-1][0]:
-            self.samples.clear()
-            self.samples.append((timestamp, yaw))
-            return {
-                "status": "TIME_RESET",
-                "time_basis": time_basis,
-                "window_s": self.window_s,
-                "coverage_s": 0.0,
-                "raw_twist_wz_rad_s": raw_twist,
-            }
-        self.samples.append((timestamp, yaw))
-        cutoff = timestamp - self.window_s
+        if self.samples:
+            timestamp_delta = receive_time - self.samples[-1][0]
+            if timestamp_delta < -1e-9:
+                self.samples.clear()
+                self.samples.append((receive_time, yaw))
+                return {
+                    "status": "HOST_MONOTONIC_RESET",
+                    "time_basis": "host_monotonic_receive_time",
+                    "window_s": self.window_s,
+                    "coverage_s": 0.0,
+                    "raw_twist_wz_rad_s": raw_twist,
+                    "source_stamp_s": source_stamp_s,
+                }
+            if timestamp_delta <= 1e-9:
+                return {
+                    "status": "DUPLICATE_SAMPLE",
+                    "time_basis": "host_monotonic_receive_time",
+                    "window_s": self.window_s,
+                    "coverage_s": max(0.0, receive_time - self.samples[0][0]),
+                    "raw_twist_wz_rad_s": raw_twist,
+                    "source_stamp_s": source_stamp_s,
+                }
+        self.samples.append((receive_time, yaw))
+        cutoff = receive_time - self.window_s
         while len(self.samples) > 2 and self.samples[1][0] <= cutoff:
             self.samples.pop(0)
         start_time, start_yaw = self.samples[0]
-        coverage = timestamp - start_time
+        coverage = receive_time - start_time
         if coverage < self.window_s - 0.01:
             return {
                 "status": "WARMING_UP",
-                "time_basis": time_basis,
+                "time_basis": "host_monotonic_receive_time",
                 "window_s": self.window_s,
                 "coverage_s": max(0.0, coverage),
                 "raw_twist_wz_rad_s": raw_twist,
+                "source_stamp_s": source_stamp_s,
             }
         yaw_delta = math.atan2(math.sin(yaw - start_yaw), math.cos(yaw - start_yaw))
         rate = yaw_delta / coverage
         self.max_abs_window_rate_rad_s = max(self.max_abs_window_rate_rad_s, abs(rate))
         return {
             "status": "MEASURED",
-            "time_basis": time_basis,
+            "time_basis": "host_monotonic_receive_time",
             "window_s": self.window_s,
             "coverage_s": coverage,
             "yaw_delta_rad": yaw_delta,
             "signed_net_yaw_rate_rad_s": rate,
             "absolute_net_yaw_rate_rad_s": abs(rate),
             "raw_twist_wz_rad_s": raw_twist,
+            "source_stamp_s": source_stamp_s,
+            "source_stamp_regression_count": self.source_stamp_regression_count,
+            "source_stamp_duplicate_count": self.source_stamp_duplicate_count,
         }
 
 
@@ -2147,8 +2192,8 @@ def run_angular_turn_window(
         row = dict(snapshot)
         measurement = yaw_rate_monitor.update(row)
         row["turn_yaw_rate_window"] = measurement
-        if measurement.get("status") == "TIME_RESET":
-            return row, "yaw_odometry_time_discontinuity"
+        if measurement.get("status") == "HOST_MONOTONIC_RESET":
+            return row, "yaw_host_monotonic_discontinuity"
         if measurement.get("status") == "UNAVAILABLE":
             return row, "yaw_measurement_unavailable"
         if (
@@ -2446,12 +2491,26 @@ def run_angular_turn_window(
         "control_handshake_evidence": [tracker.samples[index] for index in tracker.handshake_sample_indices],
         "rotation": rotation,
         "yaw_rate_gate": {
-            "metric": "net unwrapped-to-wrapped yaw displacement over simulator odometry timestamps",
+            "metric": "net wrapped yaw displacement over host-monotonic receive time",
             "window_s": TURN_YAW_RATE_WINDOW_S,
             "maximum_sustained_net_yaw_rate_rad_s": TURN_MAX_SUSTAINED_YAW_RATE_RAD_S,
             "maximum_observed_windowed_yaw_rate_rad_s": yaw_rate_monitor.max_abs_window_rate_rad_s,
             "maximum_raw_twist_wz_rad_s": yaw_rate_monitor.max_abs_raw_twist_rad_s,
             "raw_twist_peaks_are_recorded_but_not_used_as_a_single-sample_abort": True,
+            "source_odometry_stamp_integrity": {
+                "status": (
+                    "UNAVAILABLE" if yaw_rate_monitor.source_stamp_sample_count == 0
+                    else "NONMONOTONIC"
+                    if yaw_rate_monitor.source_stamp_regression_count or yaw_rate_monitor.source_stamp_duplicate_count
+                    else "MONOTONIC"
+                ),
+                "sample_count": yaw_rate_monitor.source_stamp_sample_count,
+                "regression_count": yaw_rate_monitor.source_stamp_regression_count,
+                "duplicate_count": yaw_rate_monitor.source_stamp_duplicate_count,
+                "first_regression": yaw_rate_monitor.first_source_stamp_regression,
+                "first_duplicate": yaw_rate_monitor.first_source_stamp_duplicate,
+                "source_stamps_are_not_used_for_the_local_physical_rate_gate": True,
+            },
         },
         "planar_displacement_during_turn_m": planar_displacement,
         "planar_motion": planar_motion,

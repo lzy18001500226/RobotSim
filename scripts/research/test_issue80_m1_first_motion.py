@@ -2368,6 +2368,28 @@ class BoundedTurningProfileTests(unittest.TestCase):
             TURN_MAX_SUSTAINED_YAW_RATE_RAD_S,
         )
 
+    def test_source_stamp_regression_is_recorded_while_host_clock_remains_authoritative(self):
+        monitor = SustainedYawRateWindow(TURN_YAW_RATE_WINDOW_S)
+
+        def snapshot(receive_time, stamp, yaw):
+            sec = int(stamp)
+            nanosec = round((stamp - sec) * 1_000_000_000)
+            return {
+                "sample_monotonic_s": receive_time,
+                "pose": {"stamp_sec": sec, "stamp_nanosec": nanosec, "yaw": yaw},
+            }
+
+        monitor.update(snapshot(0.0, 10.0, 0.0))
+        duplicate = monitor.update(snapshot(0.0, 10.0, 0.5))
+        self.assertEqual(duplicate["status"], "DUPLICATE_SAMPLE")
+        measured = monitor.update(snapshot(0.4, 9.5, 0.1))
+        self.assertEqual(measured["status"], "MEASURED")
+        self.assertAlmostEqual(measured["absolute_net_yaw_rate_rad_s"], 0.25, places=6)
+        self.assertEqual(monitor.source_stamp_regression_count, 1)
+
+        backwards = monitor.update(snapshot(0.3, 9.6, 0.0))
+        self.assertEqual(backwards["status"], "HOST_MONOTONIC_RESET")
+
     def test_turn_ramp_is_symmetric_signed_and_never_exceeds_point_zero_seven_rad_s(self):
         left = [smooth_turn_velocity(0.07, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
         right = [smooth_turn_velocity(-0.07, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
