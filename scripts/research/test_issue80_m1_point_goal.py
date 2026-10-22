@@ -74,6 +74,24 @@ def valid_profile(**overrides) -> argparse.Namespace:
 
 
 class PointGoalPrerequisiteTests(unittest.TestCase):
+    def test_runtime_manifest_matches_heading_policy_and_requested_stop_observation(self) -> None:
+        heading = runner.run65_point_goal_profile_metadata(
+            valid_profile(heading_change_rad=-0.10, extra_stop_observation=7.0)
+        )
+        self.assertEqual(heading["final_yaw_tolerance_rad"], 0.17)
+        self.assertEqual(heading["post_stop_observation_s"], 7.0)
+        self.assertIsNone(heading["angular_taper_start_predicted_error_m"])
+        self.assertIsNone(heading["angular_taper_end_predicted_error_m"])
+        self.assertIn("target-yaw tracking", heading["heading_policy"])
+        self.assertIn("disabled", heading["angular_taper_policy"])
+
+        point = runner.run65_point_goal_profile_metadata(valid_profile())
+        self.assertEqual(point["final_yaw_tolerance_rad"], 0.17)
+        self.assertEqual(point["post_stop_observation_s"], 5.0)
+        self.assertEqual(point["angular_taper_start_predicted_error_m"], 0.25)
+        self.assertEqual(point["angular_taper_end_predicted_error_m"], 0.05)
+        self.assertIn("Run73 position-bearing", point["heading_policy"])
+
     def test_cli_point_goal_flag_uses_the_unified_execution_field(self) -> None:
         parser = argparse.ArgumentParser()
         runner.add_run65_point_goal_arguments(parser)

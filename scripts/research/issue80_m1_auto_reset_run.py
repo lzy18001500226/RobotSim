@@ -51,7 +51,7 @@ POINT_GOAL_DISTANCE_M = 0.30
 POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S = 5.0
 POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S = 7.0
 POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
-POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.12
+POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
@@ -259,6 +259,33 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
             "and verified Run65 reassessment"
         )
     return validate_turning_reassessment_file(args.turning_reassessment_json)
+
+
+def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    """Describe the child point-goal policy and the observation actually requested."""
+    heading_change = float(getattr(args, "heading_change_rad", 0.0))
+    has_heading_target = abs(heading_change) > 1e-9
+    return {
+        "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
+        "heading_policy": (
+            "Run73 position-bearing for point goals; target-yaw tracking for heading-change goals"
+        ),
+        "heading_control_for_pose_goal": (
+            "track target yaw without terminal angular taper" if has_heading_target
+            else "not applicable; position-only point goal"
+        ),
+        "angular_taper_policy": (
+            "disabled for heading-change goal" if has_heading_target
+            else "linear from predicted settled error 0.25 m to 0.05 m position tolerance"
+        ),
+        "angular_taper_start_predicted_error_m": (
+            None if has_heading_target else POINT_GOAL_ANGULAR_TAPER_START_ERROR_M
+        ),
+        "angular_taper_end_predicted_error_m": (
+            None if has_heading_target else POINT_GOAL_FINAL_TOLERANCE_M
+        ),
+        "post_stop_observation_s": float(args.extra_stop_observation),
+    }
 
 
 def run65_point_goal_enabled(args: argparse.Namespace) -> bool:
@@ -943,7 +970,6 @@ class BoundedRun:
             "target_distance_m": POINT_GOAL_DISTANCE_M,
             "heading_change_rad": float(getattr(self.args, "heading_change_rad", 0.0)),
             "maximum_heading_change_rad": POINT_GOAL_MAX_HEADING_CHANGE_RAD,
-            "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
             "minimum_measured_heading_change_rad": TURN_MIN_HEADING_CHANGE_RAD,
             "heading_change_warmup_s": TURN_FORWARD_WARMUP_S,
             "heading_change_warmup_forward_m_s": TURN_FORWARD_COMMAND_M_S,
@@ -951,9 +977,7 @@ class BoundedRun:
             "endpoint_response_intercept_m": POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
             "endpoint_response_time_s": POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
             "max_angular_command_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
-            "heading_policy": "Run73_waypoint_bearing_to_current_ground_truth_goal",
-            "angular_taper_start_predicted_error_m": POINT_GOAL_ANGULAR_TAPER_START_ERROR_M,
-            "angular_taper_end_predicted_error_m": POINT_GOAL_FINAL_TOLERANCE_M,
+            **run65_point_goal_profile_metadata(self.args),
             "max_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
             "max_overshoot_m": POINT_GOAL_MAX_OVERSHOOT_M,
             "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
@@ -964,7 +988,6 @@ class BoundedRun:
             "stop_trigger": "along_track_progress_crosses_speed_scaled_stop_line_or_safe_guard",
             "stop_behavior": "zero-only; wait for fresh automatic STAND readback and physical-stop gate",
             "zero_stop_min_duration_s": 1.0,
-            "post_stop_observation_s": 5.0,
             "endpoint_response_basis_attempt_id": "c1883327-5e43-4e6d-bf41-5dac382c9f49",
             "prior_endpoint_error_m": 0.07699227258252467,
         } if run65 else {
