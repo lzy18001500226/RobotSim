@@ -339,6 +339,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
         startup_speed_m_s=None,
         startup_transition_displacement_m=None,
         startup_transition_timeout_s=0.0,
+        extra_post_stop_observe_s=0.0,
+        extra_post_stop_observe_limit_s=5.0,
         max_observed_planar_speed_m_s=None,
         zero_until_stand_timeout_s=0.0,
         after_zero_stop=None,
@@ -378,6 +380,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
             startup_speed_m_s=startup_speed_m_s,
             startup_transition_displacement_m=startup_transition_displacement_m,
             startup_transition_timeout_s=startup_transition_timeout_s,
+            extra_post_stop_observe_s=extra_post_stop_observe_s,
+            extra_post_stop_observe_limit_s=extra_post_stop_observe_limit_s,
             shutdown_event=shutdown_event,
             state_timeout_s=0.5,
             min_root_z=0.52,
@@ -392,6 +396,35 @@ class FirstMotionSafetyTests(unittest.TestCase):
             sleep=clock.sleep,
             timer_factory=timer_factory,
         )
+
+    def test_extended_post_stop_observation_requires_explicit_bounded_allowance(self) -> None:
+        sample = self.snapshot
+        publish_calls = []
+        publish = lambda value: publish_calls.append(value)
+        blocked = self.run_protocol(
+            sample, publish, registration={"success": False}, extra_post_stop_observe_s=7.0,
+        )
+        self.assertEqual(blocked["fault"], "extra_stop_observation_outside_bounded_budget")
+        self.assertEqual(blocked["nonzero_publish_calls_returned"], 0)
+        self.assertTrue(all(value == 0.0 for value in publish_calls))
+
+        publish_calls.clear()
+        allowed = self.run_protocol(
+            sample, publish, registration={"success": False},
+            extra_post_stop_observe_s=7.0, extra_post_stop_observe_limit_s=7.0,
+        )
+        self.assertEqual(allowed["fault"], "source_registration_rejected")
+        self.assertEqual(allowed["nonzero_publish_calls_returned"], 0)
+        self.assertTrue(all(value == 0.0 for value in publish_calls))
+
+        publish_calls.clear()
+        unbounded = self.run_protocol(
+            sample, publish, registration={"success": False},
+            extra_post_stop_observe_s=7.0, extra_post_stop_observe_limit_s=7.1,
+        )
+        self.assertEqual(unbounded["fault"], "extra_stop_observation_limit_outside_bounded_budget")
+        self.assertEqual(unbounded["nonzero_publish_calls_returned"], 0)
+        self.assertTrue(all(value == 0.0 for value in publish_calls))
 
     def test_only_source_readback_gap_is_tolerated_for_physical_observation(self):
         sample = self.snapshot(

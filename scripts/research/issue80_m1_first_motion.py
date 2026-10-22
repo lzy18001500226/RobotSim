@@ -35,6 +35,7 @@ COMMAND_PUBLISHER_MESSAGE_TYPE = "McLocomotionVelocity"
 ZERO_STOP_MIN_S = 1.0
 ZERO_STOP_MIN_MESSAGES = math.ceil(SOURCE_TIMEOUT_MS * PUBLISH_HZ / 1000.0)
 POST_STOP_OBSERVE_S = 2.5
+MAX_EXTRA_POST_STOP_OBSERVE_S = 7.0
 MODE_SOURCE_READBACK_SKEW_MAX_S = 0.2  # the configured 5 Hz readback polling interval
 BASELINE_WINDOW_S = 1.0
 BASELINE_WINDOW_COUNT = 3
@@ -3222,6 +3223,7 @@ def run_first_motion_window(
     startup_transition_displacement_m: float | None = None,
     startup_transition_timeout_s: float = 0.0,
     extra_post_stop_observe_s: float = 0.0,
+    extra_post_stop_observe_limit_s: float = 5.0,
     after_zero_stop: Callable[[], Mapping[str, Any]] | None = None,
     during_zero_callback: Callable[[], None] | None = None,
     shutdown_event: threading.Event | None = None,
@@ -3294,7 +3296,15 @@ def run_first_motion_window(
         return result
 
     pulse_fault: str | None = None
-    if not math.isfinite(extra_post_stop_observe_s) or not 0.0 <= extra_post_stop_observe_s <= 5.0:
+    if (
+        not math.isfinite(extra_post_stop_observe_limit_s)
+        or not 0.0 <= extra_post_stop_observe_limit_s <= MAX_EXTRA_POST_STOP_OBSERVE_S
+    ):
+        pulse_fault = "extra_stop_observation_limit_outside_bounded_budget"
+    elif (
+        not math.isfinite(extra_post_stop_observe_s)
+        or not 0.0 <= extra_post_stop_observe_s <= extra_post_stop_observe_limit_s
+    ):
         pulse_fault = "extra_stop_observation_outside_bounded_budget"
     elif (
         not math.isfinite(zero_until_stand_timeout_s)
@@ -4118,6 +4128,7 @@ def run_first_motion_window(
     result["fault"] = pulse_fault or post_stop_fault
     result["post_stop_observation_s"] = POST_STOP_OBSERVE_S
     result["extra_post_stop_observation_s"] = extra_post_stop_observe_s
+    result["extra_post_stop_observation_limit_s"] = extra_post_stop_observe_limit_s
     result["zero_stop_min_messages"] = ZERO_STOP_MIN_MESSAGES
     result["post_stop_sample_count"] = post_stop_samples
     result["post_stop_fault"] = post_stop_fault
