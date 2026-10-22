@@ -39,6 +39,7 @@ from issue80_m1_first_motion import (
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
     run_first_motion_window, snapshot_fault,
+    summarize_stationary_physical_state,
     validate_local_sim_publishers, validate_first_motion_authorization,
     validate_runtime_scope,
 )
@@ -244,6 +245,9 @@ class FocusedM1Diagnostic(Node):
             "vx": float(odom.twist.twist.linear.x),
             "vy": float(odom.twist.twist.linear.y),
             "vz": float(odom.twist.twist.linear.z),
+            "frame_id": str(odom.header.frame_id),
+            "child_frame_id": str(odom.child_frame_id),
+            "twist_frame_id": str(odom.child_frame_id),
             "stamp_sec": int(odom.header.stamp.sec),
             "stamp_nanosec": int(odom.header.stamp.nanosec),
         }
@@ -1004,6 +1008,7 @@ class FocusedM1Diagnostic(Node):
             "start_monotonic_s": baseline_start_s,
             "end_monotonic_s": samples[-1]["sample_monotonic_s"],
             "commands_sent": 0,
+            "physical_state_summary": summarize_stationary_physical_state(samples),
         })
         return baseline
 
@@ -1052,7 +1057,7 @@ class FocusedM1Diagnostic(Node):
         result: dict[str, Any] = {
             "schema": "robotsim.issue80.m1.first-motion.v2",
             "simulation_only": True,
-            "acceptance_scope": "single first-motion diagnostic only; not a locomotion or navigation pass",
+            "acceptance_scope": "SIMULATION_ONLY derived-configuration locomotion and physical-stop validation; not manufacturer-original acceptance, turning, or point-goal navigation",
             "attempt_id": self.args.attempt_id,
             "maintainer_authorized": bool(self.args.maintainer_authorized),
             "reset_gate_verified_by_parent": bool(self.args.reset_gate_verified),
@@ -1126,6 +1131,10 @@ class FocusedM1Diagnostic(Node):
                     [window["forward_displacement_m"] for window in stationary_baseline["windows"]]
                     if stationary_baseline else None
                 ),
+                baseline_state_summary=(
+                    stationary_baseline.get("physical_state_summary")
+                    if stationary_baseline else None
+                ),
                 authorized=True,
                 forward_command_m_s=self.args.forward_speed,
                 pulse_duration_s=self.args.pulse_duration,
@@ -1152,6 +1161,8 @@ class FocusedM1Diagnostic(Node):
             )
             self.pulse_result = pulse
             result["activation"] = pulse
+            result["legacy_baseline_stop_gate"] = pulse.get("legacy_baseline_stop_gate")
+            result["physical_stop_gate"] = pulse.get("physical_stop_gate")
             result["nonzero_publish_calls_returned"] = pulse["nonzero_publish_calls_returned"]
             result["zero_publish_calls_returned"] = self.zero_publish_calls_returned
             result["mc_velocity_receipt_confirmed"] = False
@@ -1162,7 +1173,12 @@ class FocusedM1Diagnostic(Node):
             result["final_odometry"] = self._pose()
             result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
             result["status"] = (
-                "PASS" if pulse["status"] == "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED"
+                "PASS"
+                if pulse.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED"
+                and (
+                    pulse.get("physical_stop_gate", {}).get("status") == "PASS"
+                    or pulse.get("legacy_baseline_stop_gate", {}).get("status") == "WITHIN_BASELINE_ENVELOPE"
+                )
                 else "BLOCKED"
             )
         except Exception as exc:
@@ -1181,6 +1197,10 @@ class FocusedM1Diagnostic(Node):
                         joint_limits=self.joint_limits,
                         baseline_forward_displacements_m=(
                             [window["forward_displacement_m"] for window in stationary_baseline["windows"]]
+                            if stationary_baseline else None
+                        ),
+                        baseline_state_summary=(
+                            stationary_baseline.get("physical_state_summary")
                             if stationary_baseline else None
                         ),
                         authorized=True,

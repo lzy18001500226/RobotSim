@@ -41,6 +41,28 @@ BASELINE_WINDOW_COUNT = 3
 BASELINE_DURATION_S = BASELINE_WINDOW_S * BASELINE_WINDOW_COUNT
 BASELINE_SAMPLE_PERIOD_S = 1.0 / PUBLISH_HZ
 
+# A second, physics-based stop check. Keep the empirical legacy envelope above
+# unchanged; this gate evaluates a final 2 s MuJoCo-state hold after MC readback.
+PHYSICAL_STOP_WINDOW_S = 2.0
+PHYSICAL_STOP_MIN_WINDOW_S = 1.90
+PHYSICAL_STOP_MIN_SAMPLES = 20
+PHYSICAL_STOP_MAX_SAMPLE_GAP_S = 0.15
+PHYSICAL_STOP_MAX_STATE_AGE_S = 0.5
+PHYSICAL_STOP_MAX_PLANAR_SPEED_M_S = 0.005
+PHYSICAL_STOP_MAX_VERTICAL_SPEED_M_S = 0.005
+PHYSICAL_STOP_MAX_PLANAR_DRIFT_M = 0.005
+PHYSICAL_STOP_MAX_PLANAR_PATH_M = 0.010
+PHYSICAL_STOP_MAX_YAW_DRIFT_RAD = math.radians(2.0)
+PHYSICAL_STOP_MAX_YAW_RATE_RAD_S = math.radians(1.0)
+PHYSICAL_STOP_MAX_HEIGHT_RANGE_M = 0.005
+PHYSICAL_STOP_MAX_TILT_RAD = math.radians(15.0)  # unchanged M1 fall gate
+PHYSICAL_STOP_MAX_ROLL_PITCH_RANGE_RAD = math.radians(2.0)
+PHYSICAL_STOP_MAX_JOINT_SPEED_RAD_S = 0.05
+PHYSICAL_STOP_MAX_JOINT_RANGE_RAD = 0.02
+PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD = 0.02
+PHYSICAL_STOP_TARGET_STABILITY_WINDOW_S = 1.0
+PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD = 0.01
+
 MODE_STAND = "STAND_DEFAULT"
 MODE_LOCOMOTION = "LOCOMOTION_DEFAULT"
 ALLOWED_MODES = frozenset((MODE_STAND, MODE_LOCOMOTION))
@@ -1351,6 +1373,482 @@ def measure_post_stop_forward_tail(
     return result
 
 
+def _unwrap_yaw(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    result = [values[0]]
+    for value in values[1:]:
+        delta = (value - result[-1] + math.pi) % (2.0 * math.pi) - math.pi
+        result.append(result[-1] + delta)
+    return result
+
+
+def _least_squares_slope(times: list[float], values: list[float]) -> float | None:
+    if len(times) != len(values) or len(times) < 2:
+        return None
+    mean_t = sum(times) / len(times)
+    mean_v = sum(values) / len(values)
+    denominator = sum((value - mean_t) ** 2 for value in times)
+    if denominator <= 0.0:
+        return None
+    return sum((t - mean_t) * (v - mean_v) for t, v in zip(times, values)) / denominator
+
+
+def _physical_window_metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize one time-aligned window without treating mode readback as physics."""
+    if len(rows) < 2:
+        raise ValueError("physical-state window requires at least two samples")
+    ordered = sorted(rows, key=lambda row: float(row["sample_monotonic_s"]))
+    times = [float(row["sample_monotonic_s"]) for row in ordered]
+    if not all(math.isfinite(value) for value in times):
+        raise ValueError("physical-state window has invalid monotonic timestamps")
+    poses = [row.get("pose") for row in ordered]
+    required_pose_fields = ("x", "y", "z", "roll", "pitch", "yaw", "vx", "vy", "vz")
+    if any(not isinstance(pose, Mapping) for pose in poses):
+        raise ValueError("physical-state window has no complete odometry pose")
+    numeric_poses: list[dict[str, float]] = []
+    for pose in poses:
+        parsed = {name: float(pose[name]) for name in required_pose_fields}
+        if not all(math.isfinite(value) for value in parsed.values()):
+            raise ValueError("physical-state window contains nonfinite odometry")
+        numeric_poses.append(parsed)
+    x0, y0 = numeric_poses[0]["x"], numeric_poses[0]["y"]
+    planar_excursions = [math.hypot(pose["x"] - x0, pose["y"] - y0) for pose in numeric_poses]
+    planar_path = sum(
+        math.hypot(later["x"] - earlier["x"], later["y"] - earlier["y"])
+        for earlier, later in zip(numeric_poses, numeric_poses[1:])
+    )
+    yaws = _unwrap_yaw([pose["yaw"] for pose in numeric_poses])
+    yaw_rate = _least_squares_slope(times, yaws)
+
+    joint_samples: dict[str, list[tuple[float, float, int]]] = {}
+    command_samples: dict[str, list[float]] = {}
+    for row in ordered:
+        joints = row.get("leg_states")
+        if not isinstance(joints, list) or not joints:
+            raise ValueError("physical-state window is missing measured leg joints")
+        for joint in joints:
+            name = str(joint["name"])
+            position, velocity = float(joint["position"]), float(joint["velocity"])
+            error_code = int(joint.get("error_code", 0))
+            if not math.isfinite(position) or not math.isfinite(velocity):
+                raise ValueError("physical-state window contains nonfinite joint state")
+            joint_samples.setdefault(name, []).append((position, velocity, error_code))
+        command = row.get("mc_leg_command")
+        command_joints = command.get("joints") if isinstance(command, Mapping) else None
+        if not isinstance(command_joints, list) or not command_joints:
+            raise ValueError("physical-state window is missing MC leg-command targets")
+        for joint in command_joints:
+            name = str(joint["name"])
+            position = float(joint["position"])
+            if not math.isfinite(position):
+                raise ValueError("physical-state window contains nonfinite MC leg target")
+            command_samples.setdefault(name, []).append(position)
+    expected_names = set(joint_samples)
+    if not expected_names or any(len(values) != len(ordered) for values in joint_samples.values()):
+        raise ValueError("measured leg-joint coverage changes inside stop window")
+    if set(command_samples) != expected_names or any(
+        len(values) != len(ordered) for values in command_samples.values()
+    ):
+        raise ValueError("MC leg-command coverage does not match measured leg-joint coverage")
+
+    ages: list[float] = []
+    age_coverage = True
+    for row in ordered:
+        state_ages = row.get("state_age_s")
+        if not isinstance(state_ages, Mapping):
+            age_coverage = False
+            continue
+        for key in ("odom", "imu", "common", "leg_state", "leg_command", "get_mode"):
+            value = state_ages.get(key)
+            if value is None:
+                age_coverage = False
+                continue
+            age = float(value)
+            if not math.isfinite(age) or age < 0.0:
+                age_coverage = False
+            else:
+                ages.append(age)
+
+    frame_pairs = {
+        (str(pose.get("frame_id", "")), str(pose.get("child_frame_id", "")))
+        for pose in poses if isinstance(pose, Mapping)
+    }
+    frame_pair_available = bool(frame_pairs) and all(all(pair) for pair in frame_pairs)
+    errors = [
+        str(row.get("safety_fault")) for row in ordered
+        if row.get("safety_fault") or row.get("safety_check") == "FAIL"
+    ]
+    return {
+        "window_start_monotonic_s": times[0],
+        "window_end_monotonic_s": times[-1],
+        "duration_s": times[-1] - times[0],
+        "sample_count": len(ordered),
+        "max_sample_gap_s": max(later - earlier for earlier, later in zip(times, times[1:])),
+        "max_state_age_s": max(ages) if ages else None,
+        "state_age_coverage_complete": age_coverage,
+        "frame_pairs": [list(pair) for pair in sorted(frame_pairs)],
+        "frame_pair_available": frame_pair_available,
+        "frame_pair_consistent": len(frame_pairs) == 1 if frame_pair_available else None,
+        "max_planar_speed_m_s": max(math.hypot(pose["vx"], pose["vy"]) for pose in numeric_poses),
+        "max_abs_vertical_speed_m_s": max(abs(pose["vz"]) for pose in numeric_poses),
+        "planar_endpoint_drift_m": math.hypot(
+            numeric_poses[-1]["x"] - x0, numeric_poses[-1]["y"] - y0
+        ),
+        "max_planar_excursion_m": max(planar_excursions),
+        "planar_path_length_m": planar_path,
+        "yaw_drift_rad": yaws[-1] - yaws[0],
+        "max_abs_yaw_excursion_rad": max(abs(value - yaws[0]) for value in yaws),
+        "yaw_rate_fit_rad_s": yaw_rate,
+        "z_range_m": max(pose["z"] for pose in numeric_poses) - min(pose["z"] for pose in numeric_poses),
+        "max_abs_tilt_rad": max(math.hypot(pose["roll"], pose["pitch"]) for pose in numeric_poses),
+        "roll_range_rad": max(pose["roll"] for pose in numeric_poses) - min(pose["roll"] for pose in numeric_poses),
+        "pitch_range_rad": max(pose["pitch"] for pose in numeric_poses) - min(pose["pitch"] for pose in numeric_poses),
+        "max_abs_joint_velocity_rad_s": max(
+            abs(velocity) for values in joint_samples.values() for _, velocity, _ in values
+        ),
+        "max_joint_position_range_rad": max(
+            max(position for position, _, _ in values) - min(position for position, _, _ in values)
+            for values in joint_samples.values()
+        ),
+        "max_joint_command_range_rad": max(
+            max(values) - min(values) for values in command_samples.values()
+        ),
+        "joint_error_codes": sorted({
+            error for values in joint_samples.values() for _, _, error in values
+        }),
+        "safety_faults": errors,
+        "mode_desc_values": sorted({str(row.get("get_mode_desc")) for row in ordered}),
+        "common_mode_desc_values": sorted({str(row.get("common_mode_desc")) for row in ordered}),
+        "fsm_state_values": sorted({row.get("fsm_state") for row in ordered}, key=str),
+        "body_status_values": sorted({row.get("body_status") for row in ordered}, key=str),
+        "get_mode_header_codes": sorted({row.get("get_mode_header_code") for row in ordered}, key=str),
+        "get_mode_status_values": sorted({row.get("get_mode_status_value") for row in ordered}, key=str),
+        "common_mode_status_values": sorted({row.get("common_mode_status_value") for row in ordered}, key=str),
+        "readback_faults": sorted({str(row.get("readback_fault")) for row in ordered if row.get("readback_fault")}),
+    }
+
+
+def summarize_stationary_physical_state(samples: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Record per-second simulator-state noise to justify the separate physics gate."""
+    if len(samples) < BASELINE_WINDOW_COUNT + 1:
+        raise ValueError("stationary physical-state baseline is incomplete")
+    rows = sorted(samples, key=lambda row: float(row["sample_monotonic_s"]))
+    start = float(rows[0]["sample_monotonic_s"])
+    summaries = []
+    for index in range(BASELINE_WINDOW_COUNT):
+        begin = start + index * BASELINE_WINDOW_S
+        end = begin + BASELINE_WINDOW_S
+        window = [row for row in rows if begin <= float(row["sample_monotonic_s"]) <= end]
+        if len(window) < 2 or float(window[-1]["sample_monotonic_s"]) - float(window[0]["sample_monotonic_s"]) < 0.9:
+            raise ValueError("stationary physical-state baseline lacks a complete one-second window")
+        summary = _physical_window_metrics(window)
+        if summary["duration_s"] > 1.1:
+            raise ValueError("stationary physical-state baseline window exceeds bounded duration")
+        summaries.append(summary)
+    numeric_keys = (
+        "max_planar_speed_m_s", "max_abs_vertical_speed_m_s", "planar_endpoint_drift_m",
+        "planar_path_length_m", "max_abs_yaw_excursion_rad", "yaw_rate_fit_rad_s",
+        "z_range_m", "max_abs_joint_velocity_rad_s", "max_joint_position_range_rad",
+        "max_joint_command_range_rad",
+    )
+    return {
+        "method": "three no-command one-second windows from simulator odometry and leg state/command telemetry",
+        "window_count": len(summaries),
+        "window_duration_s": BASELINE_WINDOW_S,
+        "body_status": rows[0].get("body_status"),
+        "windows": summaries,
+        "maxima": {key: max(float(window[key]) for window in summaries) for key in numeric_keys},
+        "window_indices": list(range(BASELINE_WINDOW_COUNT)),
+        "limitations": [
+            "MuJoCo foot contact forces and tangential slip are not exported by the installed simulator interface.",
+            "Pose/twist are read from the simulator-owned /aima/hal/odom/state stream; the vendor binary does not expose a second raw-qpos telemetry channel.",
+        ],
+    }
+
+
+def _physical_stop_violations(
+    metrics: Mapping[str, Any], *, baseline_body_status: Any = None,
+) -> list[str]:
+    violations: list[str] = []
+    if metrics.get("duration_s", 0.0) < PHYSICAL_STOP_MIN_WINDOW_S:
+        violations.append("stable_window_too_short")
+    if metrics.get("sample_count", 0) < PHYSICAL_STOP_MIN_SAMPLES:
+        violations.append("too_few_state_samples")
+    if metrics.get("max_sample_gap_s", math.inf) > PHYSICAL_STOP_MAX_SAMPLE_GAP_S:
+        violations.append("state_sample_gap_exceeded")
+    if not metrics.get("state_age_coverage_complete") or metrics.get("max_state_age_s") is None:
+        violations.append("state_freshness_unverified")
+    elif metrics["max_state_age_s"] > PHYSICAL_STOP_MAX_STATE_AGE_S:
+        violations.append("state_stale")
+    if metrics.get("safety_faults"):
+        violations.append("existing_safety_gate_fault")
+    if metrics.get("readback_faults"):
+        violations.append("readback_fault")
+    if metrics.get("mode_desc_values") != [MODE_STAND]:
+        violations.append("get_mc_action_not_stand_throughout_window")
+    if metrics.get("common_mode_desc_values") != [MODE_STAND]:
+        violations.append("common_state_not_stand_throughout_window")
+    if metrics.get("fsm_state_values") != [MC_FSM_STABLE]:
+        violations.append("raw_fsm_not_stable_throughout_window")
+    if baseline_body_status is not None and metrics.get("body_status_values") != [baseline_body_status]:
+        violations.append("raw_body_status_changed_from_standing_baseline")
+    if metrics.get("get_mode_header_codes") != [0]:
+        violations.append("get_mc_action_readback_failed")
+    if metrics.get("get_mode_status_values") != [100] or metrics.get("common_mode_status_values") != [100]:
+        violations.append("mode_status_not_idle_throughout_window")
+    if metrics.get("joint_error_codes") != [0]:
+        violations.append("joint_error_code_present")
+    limits = (
+        ("max_planar_speed_m_s", PHYSICAL_STOP_MAX_PLANAR_SPEED_M_S, "planar_speed_exceeded"),
+        ("max_abs_vertical_speed_m_s", PHYSICAL_STOP_MAX_VERTICAL_SPEED_M_S, "vertical_speed_exceeded"),
+        ("planar_endpoint_drift_m", PHYSICAL_STOP_MAX_PLANAR_DRIFT_M, "planar_endpoint_drift_exceeded"),
+        ("max_planar_excursion_m", PHYSICAL_STOP_MAX_PLANAR_DRIFT_M, "planar_excursion_exceeded"),
+        ("planar_path_length_m", PHYSICAL_STOP_MAX_PLANAR_PATH_M, "planar_path_exceeded"),
+        ("max_abs_yaw_excursion_rad", PHYSICAL_STOP_MAX_YAW_DRIFT_RAD, "heading_excursion_exceeded"),
+        ("yaw_rate_fit_rad_s", PHYSICAL_STOP_MAX_YAW_RATE_RAD_S, "heading_rate_exceeded"),
+        ("z_range_m", PHYSICAL_STOP_MAX_HEIGHT_RANGE_M, "root_height_variation_exceeded"),
+        ("max_abs_tilt_rad", PHYSICAL_STOP_MAX_TILT_RAD, "existing_tilt_gate_exceeded"),
+        ("roll_range_rad", PHYSICAL_STOP_MAX_ROLL_PITCH_RANGE_RAD, "roll_variation_exceeded"),
+        ("pitch_range_rad", PHYSICAL_STOP_MAX_ROLL_PITCH_RANGE_RAD, "pitch_variation_exceeded"),
+        ("max_abs_joint_velocity_rad_s", PHYSICAL_STOP_MAX_JOINT_SPEED_RAD_S, "joint_velocity_not_settled"),
+        ("max_joint_position_range_rad", PHYSICAL_STOP_MAX_JOINT_RANGE_RAD, "joint_position_not_settled"),
+        ("max_joint_command_range_rad", PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD, "joint_target_not_settled"),
+    )
+    for key, limit, fault in limits:
+        value = metrics.get(key)
+        if value is None or not math.isfinite(float(value)) or abs(float(value)) > limit:
+            violations.append(fault)
+    if metrics.get("frame_pair_consistent") is False:
+        violations.append("odometry_frame_pair_changed_or_missing")
+    return violations
+
+
+def _first_stable_joint_target_window(
+    samples: list[Mapping[str, Any]], *, after_monotonic_s: float,
+) -> dict[str, Any]:
+    rows = sorted(
+        (row for row in samples if float(row.get("sample_monotonic_s", -math.inf)) >= after_monotonic_s),
+        key=lambda row: float(row["sample_monotonic_s"]),
+    )
+    for start_index, start in enumerate(rows):
+        start_time = float(start["sample_monotonic_s"])
+        window = [
+            row for row in rows[start_index:]
+            if float(row["sample_monotonic_s"]) <= start_time + PHYSICAL_STOP_TARGET_STABILITY_WINDOW_S
+        ]
+        if len(window) < 2 or float(window[-1]["sample_monotonic_s"]) - start_time < 0.95:
+            continue
+        try:
+            maps = [
+                {str(joint["name"]): float(joint["position"])
+                 for joint in row["mc_leg_command"]["joints"]}
+                for row in window
+            ]
+            if not maps[0] or any(set(values) != set(maps[0]) for values in maps):
+                continue
+            max_range = max(
+                max(values[name] for values in maps) - min(values[name] for values in maps)
+                for name in maps[0]
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        max_gap = max(
+            float(later["sample_monotonic_s"]) - float(earlier["sample_monotonic_s"])
+            for earlier, later in zip(window, window[1:])
+        )
+        if max_gap <= PHYSICAL_STOP_MAX_SAMPLE_GAP_S and max_range <= PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD:
+            return {
+                "status": "OBSERVED",
+                "start_monotonic_s": start_time,
+                "end_monotonic_s": float(window[-1]["sample_monotonic_s"]),
+                "delay_from_zero_start_s": start_time - after_monotonic_s,
+                "duration_s": float(window[-1]["sample_monotonic_s"]) - start_time,
+                "sample_count": len(window),
+                "max_per_joint_target_range_rad": max_range,
+                "threshold_rad": PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD,
+                "window_s": PHYSICAL_STOP_TARGET_STABILITY_WINDOW_S,
+            }
+    return {
+        "status": "NOT_OBSERVED",
+        "threshold_rad": PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD,
+        "window_s": PHYSICAL_STOP_TARGET_STABILITY_WINDOW_S,
+    }
+
+
+def evaluate_physical_stop_gate(
+    samples: list[Mapping[str, Any]], *, zero_start_monotonic_s: float,
+    stand_confirmed_monotonic_s: float | None,
+    baseline_state_summary: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Require a fresh, two-second MuJoCo-state hold after MC reports STAND.
+
+    The final observed two-second window is the acceptance window. The legacy
+    one-second empirical forward-drift gate remains a separate result and is
+    neither weakened nor substituted here.
+    """
+    criteria = {
+        "window_s": PHYSICAL_STOP_WINDOW_S,
+        "minimum_observed_window_s": PHYSICAL_STOP_MIN_WINDOW_S,
+        "minimum_state_samples": PHYSICAL_STOP_MIN_SAMPLES,
+        "max_sample_gap_s": PHYSICAL_STOP_MAX_SAMPLE_GAP_S,
+        "max_state_age_s": PHYSICAL_STOP_MAX_STATE_AGE_S,
+        "max_planar_speed_m_s": PHYSICAL_STOP_MAX_PLANAR_SPEED_M_S,
+        "max_vertical_speed_m_s": PHYSICAL_STOP_MAX_VERTICAL_SPEED_M_S,
+        "max_planar_endpoint_and_peak_excursion_m": PHYSICAL_STOP_MAX_PLANAR_DRIFT_M,
+        "max_planar_path_m": PHYSICAL_STOP_MAX_PLANAR_PATH_M,
+        "max_yaw_excursion_deg": math.degrees(PHYSICAL_STOP_MAX_YAW_DRIFT_RAD),
+        "max_yaw_fit_rate_deg_s": math.degrees(PHYSICAL_STOP_MAX_YAW_RATE_RAD_S),
+        "max_root_height_range_m": PHYSICAL_STOP_MAX_HEIGHT_RANGE_M,
+        "max_tilt_deg": math.degrees(PHYSICAL_STOP_MAX_TILT_RAD),
+        "max_roll_pitch_range_deg": math.degrees(PHYSICAL_STOP_MAX_ROLL_PITCH_RANGE_RAD),
+        "max_leg_joint_speed_rad_s": PHYSICAL_STOP_MAX_JOINT_SPEED_RAD_S,
+        "max_leg_joint_position_range_rad": PHYSICAL_STOP_MAX_JOINT_RANGE_RAD,
+        "max_leg_target_range_rad": PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD,
+    }
+    zero_time = float(zero_start_monotonic_s)
+    result: dict[str, Any] = {
+        "status": "NOT_PASSED",
+        "name": "PHYSICAL_STOP_GATE",
+        "zero_start_monotonic_s": zero_time,
+        "stand_confirmed_monotonic_s": stand_confirmed_monotonic_s,
+        "stand_readback_delay_s": (
+            float(stand_confirmed_monotonic_s) - zero_time
+            if stand_confirmed_monotonic_s is not None else None
+        ),
+        "criteria": criteria,
+        "criteria_rationale": {
+            "xy_position": "5 mm is 4.2% of the offline point-goal adapter's 0.12 m position tolerance; same-run stationary one-second XY endpoint noise is also reported below.",
+            "planar_velocity": "5 mm/s limits additional travel to 10 mm over the 2 s hold, 8.3% of the same point-goal tolerance.",
+            "heading": "2 deg excursion is 29% of the offline adapter's 0.12 rad yaw tolerance; the 1 deg/s fit bound constrains drift over the complete hold.",
+            "joint_and_pose": "Limits are independent physical-settling acceptance bounds, calibrated against the same-run no-command noise; existing fall, joint-position, and joint-velocity safety checks remain active and unchanged.",
+            "sampling": "MuJoCo odometry is configured at 500 Hz; this observer samples around 17-50 Hz. The 2 s window and 20-sample minimum span many simulator updates and reject stale/gapped telemetry.",
+            "navigation_reference": "The 0.12 m / 0.12 rad values are defaults in the proposal-only Issue 80 point-goal adapter, not an integrated or manufacturer acceptance contract.",
+        },
+        "baseline_state_summary": dict(baseline_state_summary or {}),
+        "joint_target_stability_after_zero": _first_stable_joint_target_window(
+            samples, after_monotonic_s=zero_time,
+        ),
+        "legacy_baseline_stop_gate": "unchanged; see post_stop_forward_tail.status",
+        "mc_zero_receipt_ack": False,
+        "mc_stop_ack": False,
+        "acknowledgement_interpretation": "No installed per-command MC receipt/stop acknowledgement is exposed; this gate uses observed simulator physics and does not fabricate an ACK.",
+        "foot_contact_force_or_slip_telemetry": "not exported by the installed simulator ROS interface; see the separate offline collision-geometry replay and its limitations.",
+    }
+    if stand_confirmed_monotonic_s is None or not math.isfinite(float(stand_confirmed_monotonic_s)):
+        result["reason"] = "stable_STAND_FSM_readback_not_confirmed"
+        return result
+
+    post_rows = sorted(
+        (row for row in samples if row.get("phase") == "post-stop"
+         and isinstance(row.get("pose"), Mapping)),
+        key=lambda row: float(row.get("sample_monotonic_s", -math.inf)),
+    )
+    after_stand = [
+        row for row in post_rows
+        if float(row.get("sample_monotonic_s", -math.inf)) >= float(stand_confirmed_monotonic_s)
+    ]
+    if not after_stand:
+        result["reason"] = "no_post_readback_physics_samples"
+        return result
+    end_time = float(after_stand[-1]["sample_monotonic_s"])
+    final_start = end_time - PHYSICAL_STOP_WINDOW_S
+    final_window = [
+        row for row in after_stand
+        if final_start <= float(row["sample_monotonic_s"]) <= end_time
+    ]
+    try:
+        final_metrics = _physical_window_metrics(final_window)
+    except (KeyError, TypeError, ValueError) as exc:
+        result["reason"] = f"final_physical_window_invalid:{type(exc).__name__}:{exc}"
+        result["final_window"] = {
+            "start_monotonic_s": final_start,
+            "end_monotonic_s": end_time,
+            "sample_count": len(final_window),
+        }
+        return result
+    baseline_body_status = (
+        baseline_state_summary.get("body_status")
+        if isinstance(baseline_state_summary, Mapping) else None
+    )
+    final_violations = _physical_stop_violations(
+        final_metrics, baseline_body_status=baseline_body_status,
+    )
+    result["final_window"] = final_metrics
+    result["final_window_violations"] = final_violations
+
+    first_passing: dict[str, Any] | None = None
+    first_passing_violations: list[str] = []
+    for start_index, start_row in enumerate(after_stand):
+        start = float(start_row["sample_monotonic_s"])
+        candidate = [
+            row for row in after_stand[start_index:]
+            if float(row["sample_monotonic_s"]) <= start + PHYSICAL_STOP_WINDOW_S
+        ]
+        try:
+            metrics = _physical_window_metrics(candidate)
+        except (KeyError, TypeError, ValueError):
+            continue
+        violations = _physical_stop_violations(metrics, baseline_body_status=baseline_body_status)
+        if not violations:
+            first_passing = metrics
+            break
+        if not first_passing_violations:
+            first_passing_violations = violations
+    result["first_qualifying_window"] = first_passing
+    result["first_qualifying_window_start_delay_from_zero_s"] = (
+        first_passing["window_start_monotonic_s"] - zero_time
+        if first_passing else None
+    )
+    result["physical_stop_latency_to_final_hold_start_s"] = final_metrics["window_start_monotonic_s"] - zero_time
+    result["physical_stop_latency_to_final_hold_end_s"] = final_metrics["window_end_monotonic_s"] - zero_time
+
+    anchor_row = next(
+        (row for row in reversed(samples)
+         if row.get("phase") in ("activation", "pulse-deadline-observation")
+         and isinstance(row.get("pose"), Mapping)
+         and float(row.get("sample_monotonic_s", math.inf)) <= zero_time),
+        None,
+    )
+    if anchor_row is not None:
+        anchor = anchor_row["pose"]
+        trajectory = [
+            row for row in samples
+            if isinstance(row.get("pose"), Mapping)
+            and float(row.get("sample_monotonic_s", -math.inf)) >= float(anchor_row["sample_monotonic_s"])
+            and float(row.get("sample_monotonic_s", math.inf)) <= final_metrics["window_start_monotonic_s"]
+        ]
+        points = [(float(row["pose"]["x"]), float(row["pose"]["y"])) for row in trajectory]
+        path = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:]))
+        excursions = [math.hypot(x - float(anchor["x"]), y - float(anchor["y"])) for x, y in points]
+        forward = [
+            forward_projected_displacement(anchor, row["pose"])
+            for row in trajectory
+        ]
+        result["braking_travel_from_last_in_pulse_pose"] = {
+            "anchor_monotonic_s": anchor_row["sample_monotonic_s"],
+            "final_hold_start_monotonic_s": final_metrics["window_start_monotonic_s"],
+            "elapsed_s": final_metrics["window_start_monotonic_s"] - float(anchor_row["sample_monotonic_s"]),
+            "planar_path_length_m": path,
+            "net_planar_displacement_m": math.hypot(
+                points[-1][0] - points[0][0], points[-1][1] - points[0][1],
+            ) if points else None,
+            "max_planar_excursion_m": max(excursions) if excursions else None,
+            "forward_projection_min_m": min(forward) if forward else None,
+            "forward_projection_max_m": max(forward) if forward else None,
+            "interpretation": "Braking/settling travel before the final physical hold; separate from residual drift measured inside final_window.",
+        }
+    else:
+        result["braking_travel_from_last_in_pulse_pose"] = {"status": "ANCHOR_UNAVAILABLE"}
+
+    result["status"] = "PASS" if not final_violations else "FAIL"
+    if final_violations:
+        result["reason"] = "final_two_second_physical_hold_outside_criteria"
+    else:
+        result["reason"] = "fresh_stand_readback_and_final_two_second_physical_hold_passed"
+    return result
+
+
 def stand_mode_readback_confirmed(snapshot: Mapping[str, Any]) -> bool:
     """Require both applied-mode readbacks and stable FSM before ending zero hold."""
     return (
@@ -1581,6 +2079,7 @@ def run_first_motion_window(
     joint_limits: Mapping[str, Mapping[str, float]],
     baseline_forward_displacements_m: list[float] | None,
     authorized: bool,
+    baseline_state_summary: Mapping[str, Any] | None = None,
     forward_command_m_s: float = FORWARD_COMMAND_M_S,
     pulse_duration_s: float = PULSE_LIMIT_S,
     max_pulse_duration_s: float = PULSE_LIMIT_S,
@@ -2236,6 +2735,21 @@ def run_first_motion_window(
     }
     result["post_stop_forward_tail"] = measure_post_stop_forward_tail(
         result["samples"], baseline_noise_bound_m
+    )
+    result["legacy_baseline_stop_gate"] = {
+        "status": result["post_stop_forward_tail"].get("status", "NOT_RUN"),
+        "criterion": "unchanged empirical same-run maximum absolute forward displacement over three one-second stationary windows",
+        "tail_window": dict(result["post_stop_forward_tail"]),
+        "interpretation": "A separate legacy result; it is not relaxed, replaced, or silently reclassified by PHYSICAL_STOP_GATE.",
+    }
+    result["physical_stop_gate"] = evaluate_physical_stop_gate(
+        result["samples"],
+        zero_start_monotonic_s=float(stop_result.get("start_monotonic_s", pulse_end or clock())),
+        stand_confirmed_monotonic_s=(
+            stop_transition_confirmation.get("confirmed_monotonic_s")
+            if zero_until_stand_timeout_s > 0.0 else None
+        ),
+        baseline_state_summary=baseline_state_summary,
     )
     result["mc_receipt_confirmed_for_zero_calls"] = False
     result["watchdog"] = {

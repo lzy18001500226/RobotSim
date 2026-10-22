@@ -26,6 +26,7 @@ from issue80_m1_first_motion import (
     MC_FSM_SAFE,
     MC_FSM_STABLE,
     measure_post_stop_forward_tail,
+    evaluate_physical_stop_gate,
     verify_mc_fsm_runtime_contract,
     MC_FSM_RUNTIME_LIBRARY_SHA256,
     FORWARD_COMMAND_M_S,
@@ -2193,6 +2194,139 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         self.assertLessEqual(result["zero_stop"]["loop_duration_s"], 1.35)
         self.assertFalse(result["zero_stop"]["mc_receipt_confirmed"])
         self.assertFalse(result["zero_stop"]["mc_stop_confirmed"])
+
+
+class PhysicalStopGateTests(unittest.TestCase):
+    JOINTS = ("left_knee_joint", "right_knee_joint")
+
+    def _sample(self, t: float, *, x: float | None = None) -> dict:
+        return {
+            "phase": "post-stop",
+            "sample_monotonic_s": t,
+            "sample_wall_utc": "2026-10-22T00:00:00+00:00",
+            "pose": {
+                "x": 0.001 * (t - 5.0) if x is None else x,
+                "y": 0.0,
+                "z": 0.65,
+                "roll": 0.0,
+                "pitch": 0.0,
+                "yaw": 0.0,
+                "vx": 0.001,
+                "vy": 0.0,
+                "vz": 0.0,
+                "frame_id": "odom",
+                "child_frame_id": "pelvis",
+            },
+            "state_age_s": {
+                "odom": 0.01,
+                "imu": 0.01,
+                "common": 0.01,
+                "leg_state": 0.01,
+                "leg_command": 0.01,
+                "get_mode": 0.01,
+            },
+            "get_mode_desc": "STAND_DEFAULT",
+            "get_mode_header_code": 0,
+            "get_mode_status_value": 100,
+            "common_mode_desc": "STAND_DEFAULT",
+            "common_mode_status_value": 100,
+            "fsm_state": 4,
+            "body_status": 1,
+            "readback_fault": None,
+            "safety_check": "PASS",
+            "safety_fault": None,
+            "leg_states": [
+                {"name": name, "position": 0.5, "velocity": 0.001, "error_code": 0}
+                for name in self.JOINTS
+            ],
+            "mc_leg_command": {
+                "received_monotonic_s": t,
+                "joints": [
+                    {"name": name, "position": 0.5, "velocity": 0.0}
+                    for name in self.JOINTS
+                ],
+            },
+        }
+
+    def _fixture(self):
+        rows = [{
+            "phase": "activation",
+            "sample_monotonic_s": 4.99,
+            "pose": {
+                "x": 0.0, "y": 0.0, "z": 0.65,
+                "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+            },
+        }]
+        rows.extend(self._sample(t / 20.0) for t in range(101, 161))
+        return rows
+
+    def test_physical_gate_can_pass_without_reclassifying_legacy_baseline_failure(self):
+        rows = self._fixture()
+        legacy = measure_post_stop_forward_tail(rows, 0.00005)
+        physical = evaluate_physical_stop_gate(
+            rows,
+            zero_start_monotonic_s=5.0,
+            stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(legacy["status"], "ABOVE_BASELINE_ENVELOPE")
+        self.assertEqual(physical["status"], "PASS")
+        self.assertFalse(physical["mc_stop_ack"])
+        self.assertEqual(physical["legacy_baseline_stop_gate"], "unchanged; see post_stop_forward_tail.status")
+
+    def test_physical_gate_fails_unsafe_mode_freshness_and_motion(self):
+        cases = (
+            ("get_mode_desc", "LOCOMOTION_DEFAULT", "get_mc_action_not_stand_throughout_window"),
+            ("fsm_state", 5, "raw_fsm_not_stable_throughout_window"),
+            ("body_status", 2, "raw_body_status_changed_from_standing_baseline"),
+        )
+        for field, value, expected in cases:
+            with self.subTest(field=field):
+                rows = self._fixture()
+                for row in rows:
+                    if row.get("phase") == "post-stop" and row["sample_monotonic_s"] >= 6.0:
+                        row[field] = value
+                result = evaluate_physical_stop_gate(
+                    rows, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+                    baseline_state_summary={"body_status": 1},
+                )
+                self.assertEqual(result["status"], "FAIL")
+                self.assertIn(expected, result["final_window_violations"])
+
+        rows = self._fixture()
+        for row in rows:
+            if row.get("phase") == "post-stop" and row["sample_monotonic_s"] >= 6.0:
+                row["pose"]["vx"] = 0.02
+                row["state_age_s"]["odom"] = 0.6
+        result = evaluate_physical_stop_gate(
+            rows, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("planar_speed_exceeded", result["final_window_violations"])
+        self.assertIn("state_stale", result["final_window_violations"])
+
+    def test_physical_gate_requires_joint_settling_and_a_complete_final_hold(self):
+        rows = self._fixture()
+        for row in rows:
+            if row.get("phase") == "post-stop" and row["sample_monotonic_s"] >= 6.0:
+                row["leg_states"][0]["velocity"] = 0.1
+                row["mc_leg_command"]["joints"][0]["position"] += 0.1 * (row["sample_monotonic_s"] - 6.0)
+        result = evaluate_physical_stop_gate(
+            rows, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("joint_velocity_not_settled", result["final_window_violations"])
+        self.assertIn("joint_target_not_settled", result["final_window_violations"])
+
+        short = [row for row in rows if row.get("phase") == "post-stop" and row["sample_monotonic_s"] <= 6.3]
+        result = evaluate_physical_stop_gate(
+            short, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("stable_window_too_short", result["final_window_violations"])
 
 
 if __name__ == "__main__":

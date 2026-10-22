@@ -140,7 +140,7 @@ def decode_m1_child_result(serialized: str) -> dict[str, Any]:
 
 
 def classify_first_motion_outcome(activation: Mapping[str, Any] | None) -> str:
-    """Keep measured motion distinct from an unverified post-stop gate."""
+    """Require measured motion and one explicitly recorded physical stop gate."""
     if not isinstance(activation, Mapping):
         return "VELOCITY_COMMAND_NOT_EXECUTED"
     if int(activation.get("nonzero_publish_calls_returned", 0) or 0) <= 0:
@@ -148,6 +148,12 @@ def classify_first_motion_outcome(activation: Mapping[str, Any] | None) -> str:
     activation_fault = str(activation.get("fault") or "").lower()
     if any(marker in activation_fault for marker in M1_SAFETY_FAULT_MARKERS):
         return "FIRST_PHYSICAL_WALKING_FAIL"
+    if (
+        activation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED"
+        and isinstance(activation.get("physical_stop_gate"), Mapping)
+        and activation["physical_stop_gate"].get("status") == "PASS"
+    ):
+        return "FIRST_PHYSICAL_WALKING_PASS"
     if activation.get("status") == "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED":
         return "FIRST_PHYSICAL_WALKING_PASS"
     if activation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED":

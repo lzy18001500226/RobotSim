@@ -101,11 +101,21 @@ class ResearchScriptStagingTests(unittest.TestCase):
             "physical_motion_status": "PHYSICAL_MOTION_CONFIRMED",
             "status": "PHYSICAL_MOTION_CONFIRMED_POSTSTOP_UNVERIFIED",
             "post_stop_forward_tail": {"status": "ABOVE_BASELINE_ENVELOPE"},
+            "legacy_baseline_stop_gate": {"status": "ABOVE_BASELINE_ENVELOPE"},
+            "physical_stop_gate": {"status": "FAIL"},
         }
         self.assertEqual(
             classify_first_motion_outcome(activation),
             "FIRST_PHYSICAL_WALKING_MOTION_CONFIRMED_STOP_UNVERIFIED",
         )
+        activation["physical_stop_gate"] = {"status": "PASS"}
+        self.assertEqual(
+            classify_first_motion_outcome(activation),
+            "FIRST_PHYSICAL_WALKING_PASS",
+            "the independent physics gate may pass while the preserved legacy baseline still fails",
+        )
+        self.assertEqual(activation["legacy_baseline_stop_gate"]["status"], "ABOVE_BASELINE_ENVELOPE")
+        activation["physical_stop_gate"] = {"status": "FAIL"}
         activation["status"] = "PHYSICAL_MOTION_AND_POSTSTOP_STATIONARY_OBSERVED"
         self.assertEqual(classify_first_motion_outcome(activation), "FIRST_PHYSICAL_WALKING_PASS")
         activation["nonzero_publish_calls_returned"] = 0
