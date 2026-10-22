@@ -50,7 +50,7 @@ POINT_GOAL_DISTANCE_M = 0.30
 POINT_GOAL_TERMINAL_COMMAND_M_S = 0.112
 POINT_GOAL_DECEL_START_DISTANCE_M = 0.12
 POINT_GOAL_DECEL_DURATION_S = 1.0
-POINT_GOAL_STOP_COMPENSATION_M = 0.10
+POINT_GOAL_STOP_COMPENSATION_M = 0.06
 POINT_GOAL_STOP_TRIGGER_M = 0.04
 TOPIC_PROBES = (
     "/aima/hal/odom/state",
@@ -931,7 +931,9 @@ class BoundedRun:
             "stop_behavior": "zero-only; wait for fresh automatic STAND readback and physical-stop gate",
             "zero_stop_min_duration_s": 1.0,
             "post_stop_observation_s": 5.0,
-            "stop_compensation_basis_attempt_id": "ceadcc39-350d-4318-ab91-2ae2d66f9c2f",
+            "stop_compensation_adjustment_basis_attempt_id": "c1883327-5e43-4e6d-bf41-5dac382c9f49",
+            "braking_distance_basis_attempt_id": "ceadcc39-350d-4318-ab91-2ae2d66f9c2f",
+            "prior_endpoint_error_m": 0.07699227258252467,
         } if run65 else {
             "shape": "motion-triggered-startup-then-cruise"
             if getattr(self.args, "startup_speed", None) is not None

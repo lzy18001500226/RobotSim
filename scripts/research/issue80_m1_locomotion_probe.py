@@ -40,7 +40,8 @@ from issue80_m1_first_motion import (
     joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
-    build_forward_point_goal, proximity_smoothstep_speed, run_first_motion_window, snapshot_fault,
+    build_forward_point_goal, proximity_smoothstep_speed, run_first_motion_window,
+    snapshot_fault, stale_readback_keys,
     stand_mode_readback_confirmed,
     summarize_stationary_physical_state,
     validate_local_sim_publishers, validate_first_motion_authorization,
@@ -51,7 +52,7 @@ from issue80_m1_mode_logic import classify_set_mc_action_response
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
 MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0
 POINT_GOAL_DISTANCE_M = 0.30
-POINT_GOAL_STOP_COMPENSATION_M = 0.10
+POINT_GOAL_STOP_COMPENSATION_M = 0.06
 POINT_GOAL_STOP_TRIGGER_M = 0.04
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 POINT_GOAL_COMMAND_M_S = 0.14
@@ -1069,8 +1070,17 @@ class FocusedM1Diagnostic(Node):
                 self._poll_async_readbacks()
 
     def sample_for_first_motion(self) -> dict[str, Any]:
+        started = time.monotonic()
         self._spin_for(0.005)
         snapshot = self._first_motion_snapshot()
+        stale = stale_readback_keys(snapshot, float(self.args.state_timeout))
+        refresh_deadline = time.monotonic() + 0.12
+        while stale and not snapshot.get("readback_fault") and time.monotonic() < refresh_deadline:
+            self._spin_for(0.01)
+            snapshot = self._first_motion_snapshot()
+            stale = stale_readback_keys(snapshot, float(self.args.state_timeout))
+        snapshot["readback_refresh_wait_s"] = time.monotonic() - started
+        snapshot["readback_refresh_stale_keys"] = list(stale)
         if self.async_readback_fault:
             snapshot["get_mode_header_code"] = -1
             snapshot["get_source_header_code"] = -1
@@ -1342,11 +1352,14 @@ class FocusedM1Diagnostic(Node):
             "final_distance_to_goal_m": final_distance,
             "final_distance_to_compensated_stop_target_m": final_stop_target_distance,
             "measured_stop_compensation_basis": {
-                "source_attempt_id": "ceadcc39-350d-4318-ab91-2ae2d66f9c2f",
+                "braking_distance_source_attempt_id": "ceadcc39-350d-4318-ab91-2ae2d66f9c2f",
                 "observed_backward_forward_projection_m": -0.0589638706430671,
                 "command_end_speed_m_s": 0.112,
                 "physical_stop_gate_status": "PASS",
-                "status": "SIMULATION_ONLY_DERIVED_FROM_PRIOR_PHYSICAL_STOP_PASS",
+                "endpoint_adjustment_source_attempt_id": "c1883327-5e43-4e6d-bf41-5dac382c9f49",
+                "prior_final_goal_error_m": 0.07699227258252467,
+                "compensation_adjustment_m": -0.04,
+                "status": "SIMULATION_ONLY_BOUNDED_ADJUSTMENT_FROM_MEASURED_BRAKING_AND_GOAL_ERROR",
             },
             "postwalk_stand_action": (
                 "NOT_REQUESTED_ZERO_ONLY_STOP; wait for measured automatic transition and physical stop gate"

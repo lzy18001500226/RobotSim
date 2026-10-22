@@ -666,6 +666,29 @@ def proximity_smoothstep_speed(
     return speed, start, phase
 
 
+def stale_readback_keys(snapshot: Mapping[str, Any], max_age_s: float) -> tuple[str, ...]:
+    """List stale or absent asynchronous MC readbacks without relaxing their age limit."""
+    try:
+        max_age = float(max_age_s)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("readback maximum age must be numeric") from exc
+    if not math.isfinite(max_age) or max_age < 0.0:
+        raise ValueError("readback maximum age must be finite and nonnegative")
+    ages = snapshot.get("state_age_s")
+    if not isinstance(ages, Mapping):
+        return ("get_mode", "get_source")
+    stale: list[str] = []
+    for key in ("get_mode", "get_source"):
+        age = ages.get(key)
+        if (
+            not isinstance(age, (int, float))
+            or not math.isfinite(float(age))
+            or not 0.0 <= float(age) <= max_age
+        ):
+            stale.append(key)
+    return tuple(stale)
+
+
 def derive_stationary_odom_baseline(samples: list[Mapping[str, Any]]) -> dict[str, Any]:
     """Build three 1-second forward-drift windows from the no-command baseline.
 

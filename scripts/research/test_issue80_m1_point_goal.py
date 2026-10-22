@@ -13,7 +13,9 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as runner
-from issue80_m1_first_motion import build_forward_point_goal, proximity_smoothstep_speed
+from issue80_m1_first_motion import (
+    build_forward_point_goal, proximity_smoothstep_speed, stale_readback_keys,
+)
 
 
 def valid_reassessment() -> dict:
@@ -219,6 +221,21 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         )
         self.assertAlmostEqual(speed, 0.112)
         self.assertEqual(phase, "terminal_speed")
+
+    def test_readback_refresh_does_not_change_the_existing_freshness_threshold(self) -> None:
+        self.assertEqual(
+            stale_readback_keys(
+                {"state_age_s": {"get_mode": 0.499, "get_source": 0.5}}, 0.5,
+            ),
+            (),
+        )
+        self.assertEqual(
+            stale_readback_keys(
+                {"state_age_s": {"get_mode": 1.178, "get_source": 0.1}}, 0.5,
+            ),
+            ("get_mode",),
+        )
+        self.assertEqual(stale_readback_keys({}, 0.5), ("get_mode", "get_source"))
 
     def passing_result(self) -> dict:
         return {
