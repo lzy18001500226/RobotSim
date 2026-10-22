@@ -1161,7 +1161,7 @@ class BoundedRun:
 
     def wait_for_immediate_reset_pose(self) -> dict[str, Any]:
         event = (self.reset_dispatch_payload or {}).get("event", {})
-        if event.get("status") != "KEY_DISPATCHED" or not event.get("dispatch_monotonic_ns"):
+        if event.get("status") not in {"KEY_DISPATCHED", "RESET_BUTTON_CLICKED"} or not event.get("dispatch_monotonic_ns"):
             raise RuntimeError("verified Reset dispatch timestamp is missing")
         dispatch_ns = int(event["dispatch_monotonic_ns"])
         trace = self.evidence / "reset_state_trace.jsonl"
@@ -1454,6 +1454,7 @@ class BoundedRun:
         raise RuntimeError("no visible X11 window with exact aima-sim-app PID was found")
 
     def dispatch_reset(self, pid: int, title: str, window_id: int) -> None:
+        """Legacy verified BackSpace path retained for comparison; not used by execute()."""
         event_path = self.evidence / "reset_dispatch_event.json"
         first_attempt_path = self.evidence / "reset_dispatch_event_x11_attempt1.json"
 
@@ -1573,6 +1574,52 @@ class BoundedRun:
         if final_payload.get("event", {}).get("status") != "KEY_DISPATCHED":
             self.reset_classification = "RESET_NOT_DELIVERED"
             raise RuntimeError(f"Reset input was not safely dispatched: {final_payload}")
+
+    def dispatch_native_reset_button(self, pid: int, title: str, window_id: int) -> None:
+        """Use the verified MuJoCo Simulation/Reset UI control, not keyboard focus."""
+        event_path = self.evidence / "reset_dispatch_event.json"
+        attempt_path = self.evidence / "reset_dispatch_event_native_button.json"
+        command = [
+            sys.executable, str(X11_HELPER), "click-native-reset",
+            "--expected-pid", str(pid), "--expected-title", title,
+            "--window-id", str(window_id),
+            "--dispatch-event-json", str(attempt_path),
+        ]
+        try:
+            completed = self.run(
+                "x11_click_native_simulation_reset",
+                command,
+                timeout_s=5.0,
+                check=False,
+            )
+        except RunDeadline as exc:
+            if not attempt_path.exists():
+                raise
+            payload = json.loads(attempt_path.read_text(encoding="utf-8"))
+            payload["helper_completion"] = f"TIMED_OUT_AFTER_NATIVE_BUTTON_EVENT_RECORD: {exc}"
+        else:
+            try:
+                payload = json.loads(completed.stdout)
+            except json.JSONDecodeError as exc:
+                if not attempt_path.exists():
+                    raise RuntimeError(
+                        f"native MuJoCo Reset helper did not return JSON: {completed.stdout[-500:]}"
+                    ) from exc
+                payload = json.loads(attempt_path.read_text(encoding="utf-8"))
+                payload["helper_completion"] = "NO_COMPLETE_NATIVE_BUTTON_RESULT_JSON"
+        event = payload.get("event", {})
+        event["dispatch_transport"] = "XTEST_MOUSE_CLICK_TO_VERIFIED_MUJOCO_NATIVE_RESET_BUTTON"
+        payload["reset_delivery_attempt_count"] = int(event.get("status") == "RESET_BUTTON_CLICKED")
+        payload["reset_input_path_attempt_count"] = 1
+        if event_path.exists():
+            raise RuntimeError("canonical reset event already exists; refusing to overwrite it")
+        with event_path.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.write("\n")
+        self.reset_dispatch_payload = payload
+        if event.get("status") != "RESET_BUTTON_CLICKED":
+            self.reset_classification = "RESET_NOT_DELIVERED"
+            raise RuntimeError(f"native MuJoCo Reset button click was not verified: {payload}")
 
     def inspect_x11_target_identity(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
         """Recheck the exact X11 process/window identity without changing focus or sending input."""
@@ -2104,7 +2151,7 @@ class BoundedRun:
             pid, title, window_id = self.inspect_window()
             self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
             self.start_observer()
-            self.dispatch_reset(pid, title, window_id)
+            self.dispatch_native_reset_button(pid, title, window_id)
             result["reset_immediate_posture"] = self.wait_for_immediate_reset_pose()
             # The pre-armed node sends the source-supported PD -> JD -> SD
             # handoff; SD is gated on fresh upright telemetry and MC STAND state.

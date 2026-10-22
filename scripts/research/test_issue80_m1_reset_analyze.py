@@ -90,6 +90,14 @@ class ResetAnalysisTests(unittest.TestCase):
         self.assertEqual(result["stable_window_s"], 2.5)
         self.assertGreater(result["first_full_stand_ready_wall_monotonic_ns"], result["first_upright_wall_monotonic_ns"])
 
+    def test_native_reset_button_dispatch_uses_the_same_telemetry_acceptance_gate(self) -> None:
+        result = self.run_analysis(
+            make_trace(stop_ns=4_000_000_000),
+            dispatch_status="RESET_BUTTON_CLICKED",
+        )
+        self.assertEqual(result["classification"], "AUTO_RESET_PASS")
+        self.assertEqual(result["input_dispatch"]["status"], "RESET_BUTTON_CLICKED")
+
     def test_upright_reset_followed_by_fall_is_not_pass(self) -> None:
         result = self.run_analysis(make_trace(stop_ns=4_000_000_000, fall_after_ns=2_000_000_000))
         self.assertEqual(result["classification"], "RESET_APPLIED_THEN_FELL")

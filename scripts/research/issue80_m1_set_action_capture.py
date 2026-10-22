@@ -661,8 +661,8 @@ def main() -> int:
                     dispatch_ns = int(event.get("dispatch_monotonic_ns", 0))
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     continue
-                if event.get("status") != "KEY_DISPATCHED" or dispatch_ns <= 0:
-                    self.error = "Reset event file did not contain a verified KEY_DISPATCHED event"
+                if event.get("status") not in {"KEY_DISPATCHED", "RESET_BUTTON_CLICKED"} or dispatch_ns <= 0:
+                    self.error = "Reset event file did not contain a verified simulator Reset input event"
                     return None
                 self.reset_dispatch = payload
                 self.reset_ns = dispatch_ns

@@ -50,12 +50,12 @@ def joint_difference(first: dict[str, float], second: dict[str, float]) -> dict[
 def classify(trace_path: Path, dispatch_path: Path) -> dict[str, Any]:
     dispatch_doc = json.loads(dispatch_path.read_text(encoding="utf-8"))
     event = dispatch_doc.get("event", {})
-    if event.get("status") != "KEY_DISPATCHED":
+    if event.get("status") not in {"KEY_DISPATCHED", "RESET_BUTTON_CLICKED"}:
         return {
             "schema": "robotsim.issue80.reset-analysis.v1",
             "classification": "RESET_NOT_DELIVERED",
             "input_dispatch": event,
-            "reason": "X11 helper did not confirm a focused one-shot BackSpace dispatch.",
+            "reason": "Simulator Reset input was not verified as dispatched.",
         }
     event_mono = int(event["dispatch_monotonic_ns"])
     event_wall = event["dispatch_wall_utc"]

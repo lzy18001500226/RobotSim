@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as reset_runner
@@ -15,6 +16,47 @@ from issue80_m1_auto_reset_run import BoundedRun, first_post_action_fall
 
 
 class ResetBeforeSdOrderingTests(unittest.TestCase):
+    def test_runner_dispatches_native_reset_button_without_keyboard_or_windows_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BoundedRun(argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="test-container",
+                attempt_id="native-reset-test",
+                max_runtime_s=30.0,
+            ))
+            event = {
+                "schema": "robotsim.issue80.reset-dispatch-event.v1",
+                "window": {
+                    "window_id": 99, "pid": 7, "title": "MuJoCo : test", "viewable": True,
+                },
+                "event": {
+                    "status": "RESET_BUTTON_CLICKED",
+                    "dispatch_monotonic_ns": 123,
+                    "dispatch_wall_utc": "test",
+                    "key_events_sent": 0,
+                    "mouse_button_events_sent": 2,
+                },
+            }
+            commands: list[list[str]] = []
+
+            def fake_run(_name: str, command: list[str], **_kwargs):
+                commands.append(command)
+                return SimpleNamespace(stdout=json.dumps(event))
+
+            runner.run = fake_run
+            runner.activate_verified_windows_foreground = lambda **_kwargs: self.fail(
+                "native Reset dispatch must not fall back to Windows foreground activation"
+            )
+            runner.dispatch_native_reset_button(7, "MuJoCo : test", 99)
+            persisted = json.loads((Path(temp_dir) / "reset_dispatch_event.json").read_text())
+
+        self.assertEqual(len(commands), 1)
+        self.assertIn("click-native-reset", commands[0])
+        self.assertNotIn("send-reset", commands[0])
+        self.assertEqual(persisted["event"]["status"], "RESET_BUTTON_CLICKED")
+        self.assertEqual(persisted["reset_delivery_attempt_count"], 1)
+        self.assertEqual(persisted["reset_input_path_attempt_count"], 1)
+
     def test_parent_and_prearmed_observer_share_bounded_late_reset_window(self) -> None:
         self.assertEqual(reset_runner.RESET_STARTUP_OBSERVATION_TIMEOUT_S, 4.0)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -74,6 +116,10 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
             def dispatch_reset(self, pid: int, title: str, window_id: int) -> None:
                 events.append("reset_once")
                 self.reset_dispatch_payload = {"event": {"status": "KEY_DISPATCHED", "dispatch_monotonic_ns": 1}}
+
+            def dispatch_native_reset_button(self, pid: int, title: str, window_id: int) -> None:
+                events.append("reset_once")
+                self.reset_dispatch_payload = {"event": {"status": "RESET_BUTTON_CLICKED", "dispatch_monotonic_ns": 1}}
 
             def wait_for_immediate_reset_pose(self) -> dict[str, str]:
                 events.append("fresh_post_reset_pose")

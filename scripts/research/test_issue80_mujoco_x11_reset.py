@@ -1,4 +1,4 @@
-"""Offline safety tests for process-verified X11 Reset focus and key dispatch."""
+"""Offline safety tests for process-verified native MuJoCo Reset input paths."""
 
 from __future__ import annotations
 
@@ -192,6 +192,47 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
         self.assertEqual(result["xtest_key_events_sent"], 0)
         self.assertEqual(x11.xtst.events, [])
         self.assertEqual(result["pointer_focus"]["status"], "FOCUS_NOT_CONFIRMED")
+
+    def test_native_reset_button_click_needs_verified_pointer_and_not_keyboard_focus(self) -> None:
+        x11 = make_x11(accept_direct_focus=False)
+
+        result = x11.click_native_reset_button_once(
+            0x5678,
+            expected_pid=4321,
+            expected_title="MuJoCo : X2 simulator",
+        )
+
+        self.assertEqual(result["status"], "RESET_BUTTON_CLICKED")
+        self.assertEqual(result["input_path"], "MUJOCO_NATIVE_SIMULATION_RESET_BUTTON")
+        self.assertEqual(result["pointer_verification"]["local_point"], [68, 456])
+        self.assertEqual(x11.xtst.events, [])
+        self.assertEqual(
+            [event for event in x11.xtst.pointer_events if event[0] == "button"],
+            [("button", 1, 1), ("button", 1, 0)],
+        )
+        self.assertEqual(result["key_events_sent"], 0)
+
+    def test_native_reset_button_refuses_uncalibrated_window_geometry(self) -> None:
+        x11 = make_x11(accept_direct_focus=False)
+        x11.list_windows = lambda: [{
+            "window_id": 0x5678,
+            "pid": 4321,
+            "title": "MuJoCo : X2 simulator",
+            "viewable": True,
+            "width": 1280,
+            "height": 720,
+        }]
+
+        result = x11.click_native_reset_button_once(
+            0x5678,
+            expected_pid=4321,
+            expected_title="MuJoCo : X2 simulator",
+        )
+
+        self.assertEqual(result["status"], "RESET_NOT_DELIVERED")
+        self.assertIn("calibrated native Reset button layout", result["reason"])
+        self.assertEqual(x11.xtst.pointer_events, [])
+        self.assertEqual(x11.xtst.events, [])
 
     def test_transient_focus_loss_is_reasserted_but_still_verified(self) -> None:
         x11 = make_x11(accept_direct_focus=True)

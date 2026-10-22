@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot, process-verified Backspace dispatch for the running MuJoCo X11 window."""
+"""Process-verified native MuJoCo Reset button and guarded Backspace input helpers."""
 
 from __future__ import annotations
 
@@ -26,6 +26,10 @@ ALL_PLANES = ctypes.c_ulong(-1).value
 CLIENT_MESSAGE = 33
 SUBSTRUCTURE_NOTIFY_MASK = 1 << 19
 SUBSTRUCTURE_REDIRECT_MASK = 1 << 20
+# Calibrated from the pinned MuJoCo 3.3.6 GUI screenshot at 1706x1066. The
+# direct native Reset button avoids WSLg's unreliable keyboard focus path.
+NATIVE_RESET_WINDOW_SIZE = (1706, 1066)
+NATIVE_RESET_BUTTON_POINT = (68, 456)
 
 
 class XClientMessageData(ctypes.Union):
@@ -693,6 +697,175 @@ class X11:
             "return_values_are_focus_proof": False,
         }
 
+    def click_native_reset_button_once(
+        self,
+        window: int,
+        expected_pid: int,
+        expected_title: str,
+    ) -> dict[str, Any]:
+        """Click the visible MuJoCo Simulation/Reset control in the verified X2 viewer.
+
+        WSLg may deny X input focus while still routing a verified pointer click
+        to the exact client window. This path sends no key and is accepted only
+        for the calibrated GUI dimensions and the documented Reset button
+        point; state change must still be verified from simulator telemetry.
+        """
+        identity_before = self._target_identity(expected_pid, expected_title, window)
+        if identity_before is None:
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "exact process/title/window/viewability match lost before native Reset click",
+                "target_window_id": window,
+                "expected_pid": expected_pid,
+                "expected_title": expected_title,
+                "mouse_button_events_sent": 0,
+                "key_events_sent": 0,
+            }
+        width, height = int(identity_before["width"]), int(identity_before["height"])
+        if (width, height) != NATIVE_RESET_WINDOW_SIZE:
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "MuJoCo window size does not match the calibrated native Reset button layout",
+                "target_window_id": window,
+                "observed_window_size": [width, height],
+                "required_window_size": list(NATIVE_RESET_WINDOW_SIZE),
+                "mouse_button_events_sent": 0,
+                "key_events_sent": 0,
+            }
+        local_x, local_y = NATIVE_RESET_BUTTON_POINT
+        root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+        translated = int(self.lib.XTranslateCoordinates(
+            self.display, window, self.root, local_x, local_y,
+            ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child),
+        ))
+        if not translated:
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "could not translate the native Reset button point to root coordinates",
+                "local_point": [local_x, local_y],
+                "mouse_button_events_sent": 0,
+                "key_events_sent": 0,
+            }
+        move_return = int(self.xtst.XTestFakeMotionEvent(
+            self.display, 0, root_x.value, root_y.value, CURRENT_TIME,
+        ))
+        self.lib.XFlush(self.display)
+        self.lib.XSync(self.display, 0)
+        identity_before_click = self._target_identity(expected_pid, expected_title, window)
+        root_return, child_return = ctypes.c_ulong(), ctypes.c_ulong()
+        root_x_return, root_y_return = ctypes.c_int(), ctypes.c_int()
+        win_x_return, win_y_return = ctypes.c_int(), ctypes.c_int()
+        mask_return = ctypes.c_uint()
+        pointer_inside = bool(self.lib.XQueryPointer(
+            self.display,
+            window,
+            ctypes.byref(root_return),
+            ctypes.byref(child_return),
+            ctypes.byref(root_x_return),
+            ctypes.byref(root_y_return),
+            ctypes.byref(win_x_return),
+            ctypes.byref(win_y_return),
+            ctypes.byref(mask_return),
+        ))
+        pointer_verified = bool(
+            identity_before_click is not None
+            and move_return
+            and pointer_inside
+            and (win_x_return.value, win_y_return.value) == NATIVE_RESET_BUTTON_POINT
+        )
+        pointer_record = {
+            "status": "POINTER_VERIFIED_ON_RESET_BUTTON" if pointer_verified else "POINTER_NOT_VERIFIED",
+            "query_return": int(pointer_inside),
+            "local_point": [win_x_return.value, win_y_return.value],
+            "expected_button_point": [local_x, local_y],
+            "root_point": [root_x_return.value, root_y_return.value],
+            "child_window_id": int(child_return.value),
+            "mask": int(mask_return.value),
+        }
+        if not pointer_verified:
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "exact target identity or pointer-at-native-Reset verification failed; no click sent",
+                "target_window_id": window,
+                "identity_before": identity_before,
+                "identity_before_click": identity_before_click,
+                "pointer_verification": pointer_record,
+                "xtest_pointer_events_sent": int(bool(move_return)),
+                "mouse_button_events_sent": 0,
+                "key_events_sent": 0,
+            }
+        identity_before_dispatch = self._target_identity(expected_pid, expected_title, window)
+        self.lib.XSync(self.display, 0)
+        root_return, child_return = ctypes.c_ulong(), ctypes.c_ulong()
+        root_x_return, root_y_return = ctypes.c_int(), ctypes.c_int()
+        win_x_return, win_y_return = ctypes.c_int(), ctypes.c_int()
+        mask_return = ctypes.c_uint()
+        pointer_still_on_button = bool(self.lib.XQueryPointer(
+            self.display,
+            window,
+            ctypes.byref(root_return),
+            ctypes.byref(child_return),
+            ctypes.byref(root_x_return),
+            ctypes.byref(root_y_return),
+            ctypes.byref(win_x_return),
+            ctypes.byref(win_y_return),
+            ctypes.byref(mask_return),
+        )) and (win_x_return.value, win_y_return.value) == NATIVE_RESET_BUTTON_POINT
+        if identity_before_dispatch is None or not pointer_still_on_button:
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "exact target identity or pointer-on-button check changed before native Reset click; no click sent",
+                "target_window_id": window,
+                "identity_before": identity_before,
+                "identity_before_click": identity_before_click,
+                "identity_before_dispatch": identity_before_dispatch,
+                "pointer_verification": pointer_record,
+                "xtest_pointer_events_sent": 1,
+                "mouse_button_events_sent": 0,
+                "key_events_sent": 0,
+            }
+        dispatch_utc = datetime.now(timezone.utc).isoformat()
+        dispatch_monotonic_ns = time.monotonic_ns()
+        press_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 1, CURRENT_TIME))
+        release_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 0, CURRENT_TIME))
+        self.lib.XFlush(self.display)
+        self.lib.XSync(self.display, 0)
+        time.sleep(0.05)
+        if not press_return or not release_return:
+            return {
+                "status": "RESET_NOT_DELIVERED",
+                "reason": "XTest rejected native Reset button press/release",
+                "target_window_id": window,
+                "identity_before": identity_before,
+                "identity_before_click": identity_before_click,
+                "pointer_verification": pointer_record,
+                "xtest_button_press_return": press_return,
+                "xtest_button_release_return": release_return,
+                "mouse_button_events_sent": int(bool(press_return)) + int(bool(release_return)),
+                "key_events_sent": 0,
+            }
+        return {
+            "status": "RESET_BUTTON_CLICKED",
+            "input_path": "MUJOCO_NATIVE_SIMULATION_RESET_BUTTON",
+            "control_label": "Simulation / Reset",
+            "target_window_id": window,
+            "expected_pid": expected_pid,
+            "expected_title": expected_title,
+            "identity_before": identity_before,
+            "identity_before_click": identity_before_click,
+            "identity_before_dispatch": identity_before_dispatch,
+            "window_size": [width, height],
+            "pointer_verification": pointer_record,
+            "dispatch_wall_utc": dispatch_utc,
+            "dispatch_monotonic_ns": dispatch_monotonic_ns,
+            "xtest_pointer_events_sent": 1,
+            "xtest_button_press_return": press_return,
+            "xtest_button_release_return": release_return,
+            "mouse_button_events_sent": 2,
+            "key_events_sent": 0,
+            "classification": "NATIVE_RESET_BUTTON_INPUT_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_ROS_TRACE",
+        }
+
     def send_backspace_once(
         self,
         window: int,
@@ -834,6 +1007,14 @@ def main() -> int:
         type=Path,
         help="persist the verified key event immediately, before slow post-event screenshot capture",
     )
+    native_reset_parser = sub.add_parser(
+        "click-native-reset",
+        help="click the calibrated MuJoCo Simulation/Reset control in one verified window",
+    )
+    native_reset_parser.add_argument("--expected-pid", type=int, required=True)
+    native_reset_parser.add_argument("--expected-title", required=True)
+    native_reset_parser.add_argument("--window-id", type=int, required=True)
+    native_reset_parser.add_argument("--dispatch-event-json", type=Path, required=True)
     args = parser.parse_args()
     x11 = None
     try:
@@ -870,6 +1051,32 @@ def main() -> int:
             print(json.dumps({"status": "RESET_NOT_DELIVERED", "reason": "exact process/title/window/viewability match required", "expected_pid": args.expected_pid, "expected_title": args.expected_title, "expected_window_id": args.window_id, "matches": matches}, indent=2))
             return 2
         window = matches[0]
+        if args.command == "click-native-reset":
+            event = x11.click_native_reset_button_once(
+                args.window_id,
+                expected_pid=args.expected_pid,
+                expected_title=args.expected_title,
+            )
+            event_record = {
+                "schema": "robotsim.issue80.reset-dispatch-event.v1",
+                "window": window,
+                "before_image": {"status": "CAPTURED_BY_PARENT"},
+                "event": event,
+                "classification": event.get(
+                    "classification",
+                    "NATIVE_RESET_BUTTON_NOT_DISPATCHED_NO_STATE_CHANGE_CLAIM",
+                ),
+                "reset_delivery_attempt_count": int(event.get("status") == "RESET_BUTTON_CLICKED"),
+                "reset_input_path_attempt_count": 1,
+            }
+            args.dispatch_event_json.parent.mkdir(parents=True, exist_ok=True)
+            with args.dispatch_event_json.open("x", encoding="utf-8") as stream:
+                json.dump(event_record, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            print(json.dumps(event_record, indent=2))
+            return 0 if event.get("status") == "RESET_BUTTON_CLICKED" else 2
         before = x11.capture_png(args.window_id, args.before_png) if args.before_png else {"status": "NOT_REQUESTED"}
         event = x11.send_backspace_once(
             args.window_id,

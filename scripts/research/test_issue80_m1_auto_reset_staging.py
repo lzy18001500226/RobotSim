@@ -702,6 +702,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             runner.capture_reset_image = lambda *args: {"status": "NOT_CAPTURED"}
             runner.start_observer = lambda: None
             runner.dispatch_reset = lambda *args: None
+            runner.dispatch_native_reset_button = lambda *args: None
             reset_result = {"classification": "AUTO_RESET_PASS"}
 
             def classify_reset(*args):
