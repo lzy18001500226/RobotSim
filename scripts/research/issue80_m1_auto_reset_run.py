@@ -1205,7 +1205,6 @@ class BoundedRun:
     def dispatch_reset(self, pid: int, title: str, window_id: int) -> None:
         event_path = self.evidence / "reset_dispatch_event.json"
         first_attempt_path = self.evidence / "reset_dispatch_event_x11_attempt1.json"
-        second_attempt_path = self.evidence / "reset_dispatch_event_x11_attempt2.json"
 
         def send_one_verified_x11_key(step_name: str, output_path: Path) -> dict[str, Any]:
             command = [
@@ -1253,17 +1252,67 @@ class BoundedRun:
                     window_id=window_id,
                     width=int(identity.get("width", 0)),
                     height=int(identity.get("height", 0)),
+                    mode="Activate",
                 )
-                first["windows_foreground_activation"] = windows_focus
                 if windows_focus.get("status") == "FOREGROUND_VERIFIED":
-                    second = send_one_verified_x11_key(
-                        "x11_backspace_dispatch_attempt2_after_windows_focus",
-                        second_attempt_path,
-                    )
-                    second["first_x11_focus_attempt"] = first
-                    second["windows_foreground_activation"] = windows_focus
-                    final_payload = second
-        final_payload["reset_delivery_attempt_count"] = 2 if final_payload is not first else 1
+                    x11_identity = self.inspect_x11_target_identity(pid, title, window_id)
+                    if x11_identity.get("status") == "IDENTITY_VERIFIED":
+                        windows_key = self.activate_verified_windows_foreground(
+                            title=title,
+                            pid=pid,
+                            window_id=window_id,
+                            width=int(identity.get("width", 0)),
+                            height=int(identity.get("height", 0)),
+                            mode="SendReset",
+                        )
+                        if (
+                            windows_key.get("status") == "WIN32_KEY_EVENTS_INSERTED"
+                            and int(windows_key.get("key_events_sent", 0)) == 2
+                        ):
+                            target_identity = x11_identity["window"]
+                            dispatch_wall = datetime.now(timezone.utc).isoformat()
+                            final_payload = {
+                                "schema": "robotsim.issue80.reset-dispatch-event.v1",
+                                "window": target_identity,
+                                "event": {
+                                    "status": "KEY_DISPATCHED",
+                                    "key": "BackSpace",
+                                    "virtual_key": 0x08,
+                                    "dispatch_transport": "WIN32_SENDINPUT_TO_VERIFIED_WSLG_RAIL_FOREGROUND",
+                                    "target_window_id": window_id,
+                                    "expected_pid": pid,
+                                    "expected_title": title,
+                                    "identity_before_dispatch": target_identity,
+                                    "xtest_key_events_sent": 0,
+                                    "windows_key_events_inserted": 2,
+                                    "dispatch_wall_utc": dispatch_wall,
+                                    "dispatch_monotonic_ns": time.monotonic_ns(),
+                                    "wall_utc": datetime.now(timezone.utc).isoformat(),
+                                },
+                                "classification": "WIN32_KEY_DISPATCH_ONLY_STATE_CHANGE_MUST_BE_VERIFIED_BY_ROS_TRACE",
+                                "initial_x11_focus_attempt": first,
+                                "windows_foreground_activation": windows_focus,
+                                "x11_identity_recheck_after_windows_focus": x11_identity,
+                                "windows_key_dispatch": windows_key,
+                            }
+                        else:
+                            first["windows_foreground_activation"] = windows_focus
+                            first["x11_identity_recheck_after_windows_focus"] = x11_identity
+                            first["windows_key_dispatch"] = windows_key
+                            if int(windows_key.get("key_events_sent", 0)) > 0:
+                                first["classification"] = "PARTIAL_WIN32_KEY_SEQUENCE_STOP_NO_RETRY"
+                            final_payload = first
+                    else:
+                        first["windows_foreground_activation"] = windows_focus
+                        first["x11_identity_recheck_after_windows_focus"] = x11_identity
+                        final_payload = first
+                else:
+                    first["windows_foreground_activation"] = windows_focus
+                    final_payload = first
+        final_payload["reset_delivery_attempt_count"] = (
+            1 if final_payload.get("event", {}).get("status") == "KEY_DISPATCHED" else 0
+        )
+        final_payload["reset_input_path_attempt_count"] = 2 if final_payload is not first else 1
         if event_path.exists():
             raise RuntimeError("canonical reset event already exists; refusing to overwrite it")
         with event_path.open("x", encoding="utf-8") as stream:
@@ -1272,12 +1321,55 @@ class BoundedRun:
         self.reset_dispatch_payload = final_payload
         if final_payload.get("event", {}).get("status") != "KEY_DISPATCHED":
             self.reset_classification = "RESET_NOT_DELIVERED"
-            raise RuntimeError(f"X11 Backspace was not safely dispatched: {final_payload}")
+            raise RuntimeError(f"Reset input was not safely dispatched: {final_payload}")
+
+    def inspect_x11_target_identity(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
+        """Recheck the exact X11 process/window identity without changing focus or sending input."""
+        result = self.run(
+            "x11_identity_recheck_after_windows_focus",
+            [sys.executable, str(X11_HELPER), "inspect", "--expected-pid", str(pid)],
+            timeout_s=3.0,
+            check=False,
+        )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            payload = {"status": "INVALID_JSON", "stdout": result.stdout[-1000:]}
+        matches = [
+            window for window in payload.get("windows", [])
+            if isinstance(window, Mapping)
+            and window.get("pid") == pid
+            and window.get("window_id") == window_id
+            and window.get("title") == title
+            and window.get("viewable") is True
+        ]
+        verified = result.returncode == 0 and len(matches) == 1
+        evidence = {
+            "schema": "robotsim.issue80.x11-target-recheck.v1",
+            "status": "IDENTITY_VERIFIED" if verified else "IDENTITY_NOT_VERIFIED",
+            "expected": {"pid": pid, "window_id": window_id, "title": title},
+            "window": matches[0] if verified else None,
+            "matching_windows": matches,
+            "inspect": payload,
+            "returncode": result.returncode,
+            "input_sent": False,
+            "focus_changed": False,
+        }
+        path = self.evidence / "reset_x11_identity_recheck.json"
+        if path.exists():
+            raise RuntimeError("X11 target identity recheck evidence already exists")
+        with path.open("x", encoding="utf-8") as stream:
+            json.dump(evidence, stream, indent=2)
+            stream.write("\n")
+        return evidence
 
     def activate_verified_windows_foreground(
         self, *, title: str, pid: int, window_id: int, width: int, height: int,
+        mode: str = "Activate",
     ) -> dict[str, Any]:
-        """Ask Windows to foreground one unique title match; X11 must still prove focus."""
+        """Inspect, foreground, or send one reset key through a verified WSLg RAIL window."""
+        if mode not in {"Activate", "SendReset"}:
+            return {"status": "UNSUPPORTED_WINDOWS_HELPER_MODE", "key_events_sent": 0, "mode": mode}
         helper_copy = self.evidence / WINDOWS_FOCUS_HELPER.name
         if helper_copy.is_symlink() or not helper_copy.is_file():
             return {"status": "WINDOWS_HELPER_NOT_STAGED", "key_events_sent": 0}
@@ -1304,9 +1396,10 @@ class BoundedRun:
             "-ExpectedX11WindowId", str(window_id),
             "-ExpectedWidth", str(width),
             "-ExpectedHeight", str(height),
-            "-Mode", "Activate",
+            "-Mode", mode,
         ]
-        result = self.run("windows_foreground_activation", command, timeout_s=5.0, check=False)
+        step_name = "windows_foreground_activation" if mode == "Activate" else "windows_verified_reset_key_dispatch"
+        result = self.run(step_name, command, timeout_s=5.0, check=False)
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -1319,7 +1412,7 @@ class BoundedRun:
         payload["x11_identity_context"] = {
             "pid": pid, "window_id": window_id, "title": title,
         }
-        payload["key_events_sent"] = 0
+        payload["key_events_sent"] = int(payload.get("key_events_sent", 0) or 0)
         return payload
 
     def finalize_reset_dispatch(self, pid: int, title: str, window_id: int) -> None:

@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $true)][long]$ExpectedX11WindowId,
     [Parameter(Mandatory = $true)][int]$ExpectedWidth,
     [Parameter(Mandatory = $true)][int]$ExpectedHeight,
-    [ValidateSet("Inspect", "Activate")][string]$Mode = "Inspect"
+    [ValidateSet("Inspect", "Activate", "SendReset")][string]$Mode = "Inspect"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +14,37 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct RobotSimX2KeyboardInput {
+    public ushort wVk;
+    public ushort wScan;
+    public uint dwFlags;
+    public uint time;
+    public IntPtr dwExtraInfo;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct RobotSimX2MouseInput {
+    public int dx;
+    public int dy;
+    public uint mouseData;
+    public uint dwFlags;
+    public uint time;
+    public IntPtr dwExtraInfo;
+}
+
+[StructLayout(LayoutKind.Explicit)]
+public struct RobotSimX2InputUnion {
+    [FieldOffset(0)] public RobotSimX2MouseInput mi;
+    [FieldOffset(0)] public RobotSimX2KeyboardInput ki;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+public struct RobotSimX2Input {
+    public uint type;
+    public RobotSimX2InputUnion data;
+}
 
 public static class RobotSimX2WindowsFocus {
     public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
@@ -30,6 +61,50 @@ public static class RobotSimX2WindowsFocus {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", SetLastError=true)]
+    public static extern uint SendInput(uint count, RobotSimX2Input[] inputs, int size);
+
+    public static Dictionary<string, object> SendBackspaceToForeground(long expectedForegroundHwnd) {
+        long before = GetForegroundWindow().ToInt64();
+        var result = new Dictionary<string, object> {
+            {"status", "FOREGROUND_CHANGED_NO_KEY"},
+            {"foreground_hwnd_before_input", before},
+            {"expected_foreground_hwnd", expectedForegroundHwnd},
+            {"key", "BACKSPACE"}, {"virtual_key", 0x08},
+            {"key_events_sent", 0}, {"key_up_recovery_events_sent", 0},
+            {"classification", "INPUT_INSERTION_IS_NOT_RESET_CONFIRMATION"}
+        };
+        if (before != expectedForegroundHwnd) return result;
+
+        var inputs = new RobotSimX2Input[2];
+        inputs[0].type = 1;
+        inputs[0].data.ki = new RobotSimX2KeyboardInput { wVk = 0x08 };
+        inputs[1].type = 1;
+        inputs[1].data.ki = new RobotSimX2KeyboardInput { wVk = 0x08, dwFlags = 0x0002 };
+        int inputSize = Marshal.SizeOf(typeof(RobotSimX2Input));
+        uint sent = SendInput(2, inputs, inputSize);
+        int sendLastError = Marshal.GetLastWin32Error();
+        long after = GetForegroundWindow().ToInt64();
+        uint recovery = 0;
+        int recoveryLastError = 0;
+        if (sent == 1 && after == expectedForegroundHwnd) {
+            var keyUp = new RobotSimX2Input[1];
+            keyUp[0].type = 1;
+            keyUp[0].data.ki = new RobotSimX2KeyboardInput { wVk = 0x08, dwFlags = 0x0002 };
+            recovery = SendInput(1, keyUp, inputSize);
+            recoveryLastError = Marshal.GetLastWin32Error();
+        }
+        result["status"] = sent == 2 ? "KEY_EVENTS_INSERTED" : "KEY_SEQUENCE_PARTIAL_OR_REJECTED";
+        result["foreground_hwnd_after_input"] = after;
+        result["send_input_return_count"] = sent;
+        result["key_up_recovery_events_sent"] = recovery;
+        result["key_events_sent"] = sent + recovery;
+        result["input_size_bytes"] = inputSize;
+        result["last_error"] = sendLastError;
+        result["key_up_recovery_last_error"] = recoveryLastError;
+        result["dispatch_utc"] = DateTimeOffset.UtcNow.ToString("o");
+        return result;
+    }
 
     public static List<Dictionary<string, object>> VisibleWindows() {
         var items = new List<Dictionary<string, object>>();
@@ -150,7 +225,7 @@ $result = [ordered]@{
     set_foreground_window_return = $null
     status = "WINDOW_MATCH_NOT_UNIQUE"
     key_events_sent = 0
-    activation_scope = "SetForegroundWindow only; no Windows keys or mouse events are synthesized"
+    input_scope = "SendInput is permitted only in SendReset mode after unique WSLg RAIL identity and foreground revalidation; no mouse events are synthesized"
 }
 if ($windowMatches.Count -eq 1) {
     $matchedWindow = $windowMatches[0]
@@ -196,6 +271,20 @@ if ($windowMatches.Count -eq 1) {
         $result.status = "FOREGROUND_VERIFIED"
     } else {
         $result.status = "FOREGROUND_NOT_VERIFIED"
+    }
+    if ($Mode -eq "SendReset") {
+        if ($result.status -eq "FOREGROUND_VERIFIED") {
+            $dispatch = [RobotSimX2WindowsFocus]::SendBackspaceToForeground($activationTarget.ToInt64())
+            $result.windows_input = $dispatch
+            $result.key_events_sent = $dispatch.key_events_sent
+            $result.status = if ($dispatch.status -eq "KEY_EVENTS_INSERTED") {
+                "WIN32_KEY_EVENTS_INSERTED"
+            } else {
+                "WIN32_KEY_DISPATCH_NOT_CONFIRMED"
+            }
+        } else {
+            $result.status = "FOREGROUND_NOT_VERIFIED_NO_KEY"
+        }
     }
 }
 $json = $result | ConvertTo-Json -Depth 8 -Compress
