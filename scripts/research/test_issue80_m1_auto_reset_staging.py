@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,6 +22,21 @@ from issue80_m1_auto_reset_run import (
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_turning_probe_registers_one_turning_diagnostic_option(self):
+        probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
+        tree = ast.parse(probe.read_text(encoding="utf-8"), filename=str(probe))
+        registrations = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--turning-diagnostic"
+        ]
+
+        self.assertEqual(len(registrations), 1)
+
     def test_turning_result_stays_simulation_only_and_does_not_claim_manufacturer_acceptance(self):
         self.assertEqual(
             classify_run38_diagnostic_outcome("SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS"),

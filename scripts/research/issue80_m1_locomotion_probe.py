@@ -1456,7 +1456,6 @@ def main() -> int:
     first.add_argument("--zero-until-stand-timeout-s", type=float, default=0.0)
     first.add_argument("--zero-only-stop", action="store_true")
     first.add_argument("--turning-diagnostic", action="store_true")
-    first.add_argument("--turning-diagnostic", action="store_true")
     args = parser.parse_args()
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)
