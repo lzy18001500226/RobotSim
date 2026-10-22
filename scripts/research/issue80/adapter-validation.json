@@ -1,0 +1,76 @@
+{
+  "schema_version": "robotsim.issue80.navigation-adapter-validation.v2",
+  "branch": "research/issue80-offline-pointgoal-20261020",
+  "scope": "standalone ROS 2 adapter and point-goal controller; no physical navigation",
+  "host_offline_results": {
+    "controller_tests": {"discovered": 11, "passed": 11, "failed": 0},
+    "adapter_field_tests": {"discovered": 10, "passed": 9, "failed": 0, "skipped": 1},
+    "adapter_ros_graph_host": "SKIPPED_NO_HOST_ROS_RUNTIME_OR_ISOLATION_OPT_IN",
+    "python_compile": "PASS",
+    "package_xml": "PASS"
+  },
+  "humble_container_results": {
+    "image": "robotsim:humble-raicom-runtime-20261019",
+    "image_id": "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31",
+    "colcon_build": "PASS",
+    "actual_generated_message_test": "PASS",
+    "isolated_ros_graph_pytest": {"discovered": 11, "passed": 11, "failed": 0, "skipped": 0},
+    "graph_cases": [
+      "Odometry subscription and PoseStamped goal reception",
+      "bounded Twist proposal publication",
+      "wrong goal frame rejection",
+      "wrong Odometry frame stop",
+      "repeated Odometry timestamp stop",
+      "unsafe base height stop",
+      "unsafe roll stop",
+      "Empty cancellation stop",
+      "stale received Odometry stop",
+      "goal timeout stop",
+      "repeated zero Twist after cancellation",
+      "ROS remaps to /cmd_vel and /aima/mc/locomotion/velocity rejected before publisher creation",
+      "no MC velocity publisher or service endpoint"
+    ],
+    "container_network": "none",
+    "ros_domain_id": 194,
+    "ros_localhost_only": true,
+    "temporary_container_removed": true
+  },
+  "environment": {
+    "platform": "WSL Ubuntu 22.04 host plus isolated ROS 2 Humble container",
+    "host_ros2_installed": false,
+    "host_colcon_installed": false,
+    "container_python": "3.10.12",
+    "container_has_ament_python": true,
+    "live_mc_connected": false,
+    "mujoco_or_physical_navigation_run": false
+  },
+  "recorded_fixture": {
+    "post_reset_upright": {
+      "source_run_id": "x2-nav-m1-20261019T125515Z",
+      "source_filename": "post-reset-odom.yaml",
+      "source_sha256": "dc5a8579719c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc"
+    },
+    "pre_reset_fallen": {
+      "source_run_id": "x2-nav-m1-corrected-gate-20261019T153421Z",
+      "source_filename": "pre_reset_odom.yaml",
+      "source_sha256": "5d6636f9769c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc"
+    }
+  },
+  "safety_boundary": "Twist output remains isolated at /robotsim/navigation/cmd_vel_proposal and refuses ROS remapping to known live velocity topics",
+  "timestamp_semantics": {
+    "odometry_stamp": "nonzero and strictly increasing for accepted samples",
+    "odometry_freshness": "local monotonic receipt age",
+    "cross_clock_age_comparison": "not performed; ROS/simulation clock mapping is not established",
+    "goal_stamp": "builtin Time fields validated only; not used for freshness or transform lookup"
+  },
+  "qos": {
+    "odometry_subscription": "KEEP_LAST depth 1, BEST_EFFORT, VOLATILE",
+    "proposal_publisher": "KEEP_LAST depth 1, RELIABLE, VOLATILE",
+    "goal_cancel": "reliable volatile depth 10",
+    "live_mc_negotiation": "not tested; isolated graph only"
+  },
+  "docker_reproducibility": {
+    "expected_image_id": "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31",
+    "pull_policy": "never; local image required and ID checked before run"
+  }
+}

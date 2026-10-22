@@ -1,0 +1,26 @@
+{
+  "schema_version": "robotsim.issue80.recorded-odom-fixture.v1",
+  "contract": "nav_msgs/msg/Odometry fields: header.stamp/frame_id, child_frame_id, pose.pose.position/orientation",
+  "samples": [
+    {
+      "id": "post_reset_upright",
+      "source_run_id": "x2-nav-m1-20261019T125515Z",
+      "source_filename": "post-reset-odom.yaml",
+      "source_sha256": "dc5a8579719c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc",
+      "header": {"sec": 1792415045, "nanosec": 913225689, "frame_id": "odom"},
+      "child_frame_id": "base_link",
+      "position": {"x": 0.03796346860551017, "y": -0.012169275873905844, "z": 0.6528940388607606},
+      "orientation_xyzw": [0.00017877229148407717, 0.030880826579443903, -0.02373455339742466, 0.9992412189082592]
+    },
+    {
+      "id": "pre_reset_fallen",
+      "source_run_id": "x2-nav-m1-corrected-gate-20261019T153421Z",
+      "source_filename": "pre_reset_odom.yaml",
+      "source_sha256": "5d6636f9769c706b098e3193e903c50cd439314c8adb790cf85fecc0466760dc",
+      "header": {"sec": 1792425246, "nanosec": 863915923, "frame_id": "odom"},
+      "child_frame_id": "base_link",
+      "position": {"x": -0.1541723447618507, "y": 0.09622548908924106, "z": 0.08220700883212963},
+      "orientation_xyzw": [0.01885295762070987, -0.7234126973217495, -0.07830315743140917, 0.6857020131798454]
+    }
+  ]
+}
