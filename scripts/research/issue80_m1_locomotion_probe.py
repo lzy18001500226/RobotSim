@@ -34,13 +34,15 @@ from issue80_m1_first_motion import (
     MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, MAX_AUTHORIZED_PULSE_S, verify_mc_fsm_runtime_contract,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S,
-    TURN_PULSE_S, ZERO_STOP_MIN_MESSAGES, SustainedYawRateWindow, run_angular_turn_window,
+    TURN_MIN_HEADING_CHANGE_RAD, TURN_PULSE_S, ZERO_STOP_MIN_MESSAGES,
+    SustainedYawRateWindow, run_angular_turn_window,
     capture_dds_qos_override_environment, derive_stationary_odom_baseline,
     float64_multi_array_snapshot, load_leg_joint_limits, load_mc_input_source_timeouts,
     joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
-    build_forward_point_goal, point_goal_command_from_bearing_error,
+    build_forward_point_goal, classify_heading_goal_measurement,
+    point_goal_command_from_bearing_error,
     point_goal_angular_taper_factor, point_goal_forward_speed_m_s,
     point_goal_heading_error_rad,
     point_goal_stop_reason,
@@ -75,6 +77,10 @@ POINT_GOAL_HEADING_GAIN = 0.8
 POINT_GOAL_ANGULAR_TAPER_START_ERROR_M = 0.25
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
+POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
+# The pinned community Task1 pose-goal example uses a 0.17 rad default yaw
+# tolerance; this is an intermediate SIMULATION_ONLY heading-goal criterion.
+POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
 # Bounded two-run SIMULATION_ONLY fit: Run69 and Run73 endpoint shifts versus
 # measured forward speed. It is only a stop predictor for this fixture, not a
 # general or vendor FoundationWalk braking model.
@@ -1157,6 +1163,7 @@ class FocusedM1Diagnostic(Node):
         registration: Mapping[str, Any],
         set_action: Mapping[str, Any],
         stationary_baseline: Mapping[str, Any],
+        heading_change_rad: float = 0.0,
     ) -> dict[str, Any]:
         """Drive one short odom-frame point goal from MuJoCo ground truth with MC safety gates."""
         preflight = self.sample_for_first_motion()
@@ -1184,12 +1191,22 @@ class FocusedM1Diagnostic(Node):
             }
         try:
             start_yaw = float(start_pose["yaw"])
+            heading_change_rad = float(heading_change_rad)
+            if (
+                not math.isfinite(heading_change_rad)
+                or abs(heading_change_rad) > POINT_GOAL_MAX_HEADING_CHANGE_RAD
+            ):
+                raise ValueError(
+                    f"heading change exceeds +/-{POINT_GOAL_MAX_HEADING_CHANGE_RAD:.3f} rad"
+                )
             goal = build_forward_point_goal(
                 start_pose,
                 distance_m=POINT_GOAL_DISTANCE_M,
+                heading_change_rad=heading_change_rad,
             )
         except (KeyError, TypeError, ValueError) as exc:
             return {"status": "BLOCKED", "fault": f"point_goal_target:{type(exc).__name__}:{exc}"}
+        path_yaw = float(goal["yaw"])
         latest: dict[str, Any] = {"snapshot": dict(preflight)}
         activation_tracker = ActivationTracker(expected_source=self.source)
         odom_stamp_monitor = SustainedYawRateWindow()
@@ -1216,13 +1233,13 @@ class FocusedM1Diagnostic(Node):
                 raise ValueError("point_goal_frame_pair_changed")
             x0, y0 = float(start_pose["x"]), float(start_pose["y"])
             x, y = float(pose["x"]), float(pose["y"])
-            heading_x, heading_y = math.cos(start_yaw), math.sin(start_yaw)
+            heading_x, heading_y = math.cos(path_yaw), math.sin(path_yaw)
             dx, dy = goal["x"] - x, goal["y"] - y
             distance = math.hypot(dx, dy)
             progress = (x - x0) * heading_x + (y - y0) * heading_y
             lateral = -(x - x0) * heading_y + (y - y0) * heading_x
             measured_forward_speed = point_goal_forward_speed_m_s(
-                pose, start_yaw_rad=start_yaw,
+                pose, start_yaw_rad=path_yaw,
             )
             stop_advance = speed_scaled_point_goal_stop_advance_m(
                 measured_forward_speed,
@@ -1428,6 +1445,36 @@ class FocusedM1Diagnostic(Node):
             float(final_metrics["distance_to_dynamic_stop_target_m"])
             if isinstance(final_metrics, Mapping) else None
         )
+        final_pose = final_metrics.get("pose") if isinstance(final_metrics, Mapping) else None
+        final_yaw = (
+            float(final_pose["yaw"])
+            if isinstance(final_pose, Mapping) and final_pose.get("yaw") is not None else None
+        )
+        heading_measurement = (
+            classify_heading_goal_measurement(
+                start_yaw_rad=start_yaw,
+                final_yaw_rad=final_yaw,
+                target_yaw_rad=path_yaw,
+                requested_heading_change_rad=heading_change_rad,
+                minimum_measured_change_rad=TURN_MIN_HEADING_CHANGE_RAD,
+                final_yaw_tolerance_rad=POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
+            ) if final_yaw is not None else None
+        )
+        final_yaw_change = (
+            heading_measurement["measured_heading_change_rad"]
+            if heading_measurement else None
+        )
+        final_yaw_error = (
+            heading_measurement["final_yaw_error_rad"] if heading_measurement else None
+        )
+        measured_heading_change_gate = (
+            heading_measurement["measured_heading_change_in_requested_direction"]
+            if heading_measurement else abs(heading_change_rad) <= 1e-9
+        )
+        final_yaw_tolerance_gate = (
+            heading_measurement["final_yaw_within_tolerance"]
+            if heading_measurement else abs(heading_change_rad) <= 1e-9
+        )
         physical_stop = activation.get("physical_stop_gate", {})
         zero_stop = activation.get("zero_stop", {})
         acceptance_gates = {
@@ -1456,6 +1503,8 @@ class FocusedM1Diagnostic(Node):
             "no_controller_or_post_stop_fault": (
                 activation.get("fault") is None and activation.get("post_stop_fault") is None
             ),
+            "measured_heading_change_in_requested_direction": measured_heading_change_gate,
+            "final_yaw_within_pose_goal_tolerance": final_yaw_tolerance_gate,
         }
         goal_pass = (
             all(acceptance_gates.values())
@@ -1468,6 +1517,13 @@ class FocusedM1Diagnostic(Node):
             "goal_frame": "odom",
             "start_pose": dict(start_pose),
             "target_pose": goal,
+            "requested_heading_change_rad": heading_change_rad,
+            "final_yaw_rad": final_yaw,
+            "final_heading_change_rad": final_yaw_change,
+            "final_yaw_error_rad": final_yaw_error,
+            "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
+            "minimum_measured_heading_change_rad": TURN_MIN_HEADING_CHANGE_RAD,
+            "heading_goal_measurement": heading_measurement,
             "dynamic_stop_target_pose_at_trigger": (
                 state.get("metrics_at_trigger", {}).get("dynamic_stop_target_pose")
                 if isinstance(state.get("metrics_at_trigger"), Mapping) else None
@@ -1481,7 +1537,13 @@ class FocusedM1Diagnostic(Node):
             "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
             "forward_command_m_s": POINT_GOAL_COMMAND_M_S,
             "maximum_active_command_s": POINT_GOAL_MAX_DURATION_S,
-            "command_profile": "0.14 m/s straight forward input; use the already validated 0.12 m/s forward-arc speed whenever heading correction is active. Hold the measured start heading with a bounded lateral-error correction, capped within +/-0.075 rad/s; both forward speeds remain above the measured FoundationWalk deadzone. Stop when the speed-scaled stop line is crossed or the predicted settled endpoint enters the 50 mm goal tolerance; hard stop at 50 mm overshoot/lateral error; existing watchdog and zero-stop procedure",
+            "command_profile": (
+                "0.14 m/s forward input with Run73 waypoint-bearing feedback to the ground-truth point/yaw goal, "
+                "optional bounded path-yaw offset, +/-0.075 rad/s angular cap, and linear terminal angular "
+                "taper from 0.25 m predicted-settled error to the existing 0.05 m position tolerance; "
+                "stop on the speed-scaled line or predicted-settled endpoint, with unchanged 50 mm lateral/overshoot "
+                "guards and watchdog/zero-stop procedure"
+            ),
             "goal_triggered": state.get("goal_triggered"),
             "target_crossing_detected": state.get("target_crossing_detected"),
             "final_distance_to_goal_m": final_distance,
@@ -1525,6 +1587,10 @@ class FocusedM1Diagnostic(Node):
                 "NOT_REQUESTED_ZERO_ONLY_STOP; wait for measured automatic transition and physical stop gate"
             ),
             "command_profile_parameters": {
+                "requested_heading_change_rad": heading_change_rad,
+                "maximum_heading_change_rad": POINT_GOAL_MAX_HEADING_CHANGE_RAD,
+                "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
+                "minimum_measured_heading_change_rad": TURN_MIN_HEADING_CHANGE_RAD,
                 "cruise_speed_m_s": POINT_GOAL_COMMAND_M_S,
                 "steering_forward_speed_m_s": POINT_GOAL_STEERING_COMMAND_M_S,
                 "minimum_command_speed_m_s": POINT_GOAL_STEERING_COMMAND_M_S,
@@ -1718,6 +1784,7 @@ class FocusedM1Diagnostic(Node):
                     registration=registration,
                     set_action=set_action,
                     stationary_baseline=stationary_baseline or {},
+                    heading_change_rad=float(getattr(self.args, "heading_change_rad", 0.0)),
                 )
                 activation = point_goal.get("activation")
                 result["point_goal_diagnostic"] = point_goal

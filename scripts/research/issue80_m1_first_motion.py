@@ -630,6 +630,53 @@ def point_goal_heading_error_rad(
     return math.atan2(math.sin(bearing - current_yaw), math.cos(bearing - current_yaw))
 
 
+def classify_heading_goal_measurement(
+    *,
+    start_yaw_rad: float,
+    final_yaw_rad: float,
+    target_yaw_rad: float,
+    requested_heading_change_rad: float,
+    minimum_measured_change_rad: float,
+    final_yaw_tolerance_rad: float,
+) -> dict[str, Any]:
+    """Classify measured final yaw against a bounded odom-frame pose goal."""
+    values = (
+        start_yaw_rad, final_yaw_rad, target_yaw_rad, requested_heading_change_rad,
+        minimum_measured_change_rad, final_yaw_tolerance_rad,
+    )
+    try:
+        start, final, target, requested, minimum, tolerance = tuple(
+            float(value) for value in values
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("heading-goal values must be numeric") from exc
+    if not all(math.isfinite(value) for value in (start, final, target, requested, minimum, tolerance)):
+        raise ValueError("heading-goal values must be finite")
+    if minimum < 0.0 or tolerance <= 0.0:
+        raise ValueError("heading-goal acceptance tolerances are invalid")
+
+    measured_change = math.atan2(math.sin(final - start), math.cos(final - start))
+    final_yaw_error = math.atan2(math.sin(target - final), math.cos(target - final))
+    required = abs(requested) > 1e-9
+    measured_in_direction = (
+        not required
+        or (abs(measured_change) >= minimum and measured_change * requested > 0.0)
+    )
+    final_yaw_within_tolerance = not required or abs(final_yaw_error) <= tolerance
+    return {
+        "required": required,
+        "requested_heading_change_rad": requested,
+        "measured_heading_change_rad": measured_change,
+        "target_yaw_rad": target,
+        "final_yaw_error_rad": final_yaw_error,
+        "minimum_measured_change_rad": minimum,
+        "final_yaw_tolerance_rad": tolerance,
+        "measured_heading_change_in_requested_direction": measured_in_direction,
+        "final_yaw_within_tolerance": final_yaw_within_tolerance,
+        "status": "PASS" if measured_in_direction and final_yaw_within_tolerance else "FAIL",
+    }
+
+
 def point_goal_command_from_bearing_error(
     heading_error_rad: float,
     *,
@@ -690,25 +737,29 @@ def point_goal_angular_taper_factor(
 
 
 def build_forward_point_goal(
-    start_pose: Mapping[str, Any], *, distance_m: float,
+    start_pose: Mapping[str, Any], *, distance_m: float, heading_change_rad: float = 0.0,
 ) -> dict[str, Any]:
-    """Build the requested odom-frame goal from one measured start pose."""
+    """Build an odom-frame point/yaw target from one measured start pose."""
     if start_pose.get("frame_id") != "odom" or start_pose.get("child_frame_id") != "base_link":
         raise ValueError("point-goal start pose must be odom -> base_link")
     try:
         x, y, yaw = (float(start_pose[key]) for key in ("x", "y", "yaw"))
         distance = float(distance_m)
+        heading_change = float(heading_change_rad)
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("point-goal inputs must contain numeric pose and distance") from exc
-    if not all(math.isfinite(value) for value in (x, y, yaw, distance)):
+    if not all(math.isfinite(value) for value in (x, y, yaw, distance, heading_change)):
         raise ValueError("point-goal inputs must be finite")
     if distance <= 0.0:
         raise ValueError("point-goal distance must be positive")
-    heading_x, heading_y = math.cos(yaw), math.sin(yaw)
+    path_yaw = math.atan2(math.sin(yaw + heading_change), math.cos(yaw + heading_change))
+    heading_x, heading_y = math.cos(path_yaw), math.sin(path_yaw)
     goal = {
         "frame_id": "odom",
         "x": x + distance * heading_x,
         "y": y + distance * heading_y,
+        "yaw": path_yaw,
+        "heading_change_rad": heading_change,
     }
     return goal
 

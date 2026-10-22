@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as runner
 from issue80_m1_first_motion import (
-    build_forward_point_goal, point_goal_command_from_bearing_error,
+    build_forward_point_goal, classify_heading_goal_measurement,
+    point_goal_command_from_bearing_error,
     point_goal_angular_taper_factor, point_goal_forward_speed_m_s,
     point_goal_heading_error_rad,
     point_goal_stop_reason, speed_scaled_point_goal_stop_advance_m,
@@ -65,6 +66,7 @@ def valid_profile(**overrides) -> argparse.Namespace:
         "startup_transition_displacement": None,
         "startup_transition_timeout_s": 0.0,
         "turning_reassessment_json": "/reviews/run65/result.json",
+        "heading_change_rad": 0.0,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -76,10 +78,14 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
         runner.add_run65_point_goal_arguments(parser)
         disabled = parser.parse_args([])
         enabled = parser.parse_args(["--run65-ground-truth-point-goal"])
+        heading_change = parser.parse_args([
+            "--run65-ground-truth-point-goal", "--heading-change-rad", "0.20",
+        ])
         self.assertTrue(hasattr(enabled, "run65_ground_truth_point_goal"))
         self.assertFalse(hasattr(enabled, "run65_point_goal_diagnostic"))
         self.assertFalse(runner.run65_point_goal_enabled(disabled))
         self.assertTrue(runner.run65_point_goal_enabled(enabled))
+        self.assertAlmostEqual(heading_change.heading_change_rad, 0.20)
         self.assertFalse(runner.run65_point_goal_enabled(
             argparse.Namespace(run65_point_goal_diagnostic=True)
         ))
@@ -155,6 +161,10 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
         with patch.object(runner, "validate_turning_reassessment_file", return_value=expected) as verify:
             self.assertEqual(runner.validate_run65_point_goal_profile(valid_profile()), expected)
             verify.assert_called_once_with("/reviews/run65/result.json")
+            self.assertEqual(
+                runner.validate_run65_point_goal_profile(valid_profile(heading_change_rad=0.20)),
+                expected,
+            )
 
         for override in (
             {"maintainer_authorized_first_motion": False},
@@ -165,6 +175,8 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
             {"ramp_duration_s": 0.1},
             {"capture_mc_rl_debug": False},
             {"turning_reassessment_json": None},
+            {"heading_change_rad": 0.201},
+            {"heading_change_rad": float("nan")},
         ):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 runner.validate_run65_point_goal_profile(valid_profile(**override))
@@ -184,6 +196,41 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         self.assertAlmostEqual(goal["y"], -0.1, places=12)
         with self.assertRaisesRegex(ValueError, "odom -> base_link"):
             build_forward_point_goal({**start, "frame_id": "map"}, distance_m=0.30)
+
+    def test_heading_change_goal_is_a_bounded_odom_pose(self) -> None:
+        start = {
+            "x": 1.0, "y": -2.0, "yaw": 0.4,
+            "frame_id": "odom", "child_frame_id": "base_link",
+        }
+        goal = build_forward_point_goal(start, distance_m=0.30, heading_change_rad=0.20)
+        self.assertAlmostEqual(goal["yaw"], 0.60)
+        self.assertAlmostEqual(goal["x"], 1.0 + 0.30 * math.cos(0.60))
+        self.assertAlmostEqual(goal["y"], -2.0 + 0.30 * math.sin(0.60))
+        self.assertAlmostEqual(goal["heading_change_rad"], 0.20)
+
+    def test_heading_goal_requires_measured_change_direction_and_target_yaw(self) -> None:
+        passed = classify_heading_goal_measurement(
+            start_yaw_rad=0.5,
+            final_yaw_rad=0.67,
+            target_yaw_rad=0.70,
+            requested_heading_change_rad=0.20,
+            minimum_measured_change_rad=math.radians(5.0),
+            final_yaw_tolerance_rad=0.17,
+        )
+        self.assertEqual(passed["status"], "PASS")
+        self.assertTrue(passed["measured_heading_change_in_requested_direction"])
+        self.assertTrue(passed["final_yaw_within_tolerance"])
+
+        wrong_direction = classify_heading_goal_measurement(
+            start_yaw_rad=0.5,
+            final_yaw_rad=0.40,
+            target_yaw_rad=0.70,
+            requested_heading_change_rad=0.20,
+            minimum_measured_change_rad=math.radians(5.0),
+            final_yaw_tolerance_rad=0.17,
+        )
+        self.assertEqual(wrong_direction["status"], "FAIL")
+        self.assertFalse(wrong_direction["measured_heading_change_in_requested_direction"])
 
     def test_stop_advance_scales_with_measured_speed_and_respects_existing_envelope(self) -> None:
         response_intercept = 0.00347654

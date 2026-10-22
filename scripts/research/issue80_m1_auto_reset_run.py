@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from issue80_m1_first_motion import (
-    TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S, TURN_PULSE_S,
+    TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S,
+    TURN_MIN_HEADING_CHANGE_RAD, TURN_PULSE_S,
     ZERO_STOP_MIN_MESSAGES,
 )
 
@@ -47,6 +48,8 @@ RESET_STARTUP_OBSERVATION_TIMEOUT_S = 4.0
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 POINT_GOAL_FORWARD_COMMAND_M_S = 0.14
 POINT_GOAL_DISTANCE_M = 0.30
+POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
+POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.12
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
@@ -229,6 +232,11 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
     """Enforce the single reviewed point-goal profile before any runtime starts."""
     if not getattr(args, "maintainer_authorized_first_motion", False):
         raise ValueError("point-goal diagnostic requires first-motion authorization")
+    heading_change = float(getattr(args, "heading_change_rad", 0.0))
+    if not math.isfinite(heading_change) or abs(heading_change) > POINT_GOAL_MAX_HEADING_CHANGE_RAD:
+        raise ValueError(
+            f"goal heading change must be within +/-{POINT_GOAL_MAX_HEADING_CHANGE_RAD:.3f} rad"
+        )
     if (
         not getattr(args, "capture_mc_rl_debug", False)
         or abs(float(args.extra_stop_observation) - 5.0) > 1e-9
@@ -243,7 +251,8 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
     ):
         raise ValueError(
             "point-goal uses the 0.14 m/s forward command, 10-second hard cap, "
-            "5-second post-stop observation, McRLDebug capture, and verified Run65 reassessment"
+            "5-second post-stop observation, optional bounded heading change, McRLDebug capture, "
+            "and verified Run65 reassessment"
         )
     return validate_turning_reassessment_file(args.turning_reassessment_json)
 
@@ -259,8 +268,8 @@ def add_run65_point_goal_arguments(parser: argparse.ArgumentParser) -> None:
         dest="run65_ground_truth_point_goal",
         action="store_true",
         help=(
-            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with along-track/lateral "
-            "ground-truth feedback and a speed-scaled Run69 endpoint correction, verified Run65 "
+            "run one SIMULATION_ONLY 0.30 m odom-frame point/yaw goal with along-track/lateral "
+            "ground-truth feedback, optional heading-change offset, and a speed-scaled Run69 endpoint correction, verified Run65 "
             "turn/stop prerequisite, 0.14 m/s forward / 0.075 rad/s turn envelope, and 10-second "
             "hard command cap"
         ),
@@ -269,6 +278,15 @@ def add_run65_point_goal_arguments(parser: argparse.ArgumentParser) -> None:
         "--turning-reassessment-json",
         default=None,
         help="governed Run65 forward-arc reassessment result.json required before point-goal runtime",
+    )
+    parser.add_argument(
+        "--heading-change-rad",
+        type=float,
+        default=0.0,
+        help=(
+            "bounded target path/yaw offset from the measured start heading, within +/-0.20 rad; "
+            "zero runs a straight goal"
+        ),
     )
 
 
@@ -919,6 +937,10 @@ class BoundedRun:
         } if run53 else {
             "shape": "ground-truth-point-goal",
             "target_distance_m": POINT_GOAL_DISTANCE_M,
+            "heading_change_rad": float(getattr(self.args, "heading_change_rad", 0.0)),
+            "maximum_heading_change_rad": POINT_GOAL_MAX_HEADING_CHANGE_RAD,
+            "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
+            "minimum_measured_heading_change_rad": TURN_MIN_HEADING_CHANGE_RAD,
             "stop_model": "speed_scaled_endpoint_response",
             "endpoint_response_intercept_m": POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
             "endpoint_response_time_s": POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
