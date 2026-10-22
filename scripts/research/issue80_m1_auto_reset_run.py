@@ -2102,7 +2102,7 @@ def main() -> int:
         "--run53-turning-diagnostic",
         action="store_true",
         help=(
-            "reuse the verified SIMULATION_ONLY FoundationWalk overlay for one bounded 0.14 rad/s "
+            "reuse the verified SIMULATION_ONLY FoundationWalk overlay for one bounded 0.07 rad/s "
             "left/right yaw-only turn pair with the unchanged physical stop gates"
         ),
     )
@@ -2151,7 +2151,7 @@ def main() -> int:
                 or args.startup_transition_timeout_s != 0.0
             ):
                 parser.error(
-                    "Run53 uses the fixed two-second ±0.14 rad/s turn pair, 5-second observation, "
+                    "Run53 uses the fixed two-second ±0.07 rad/s turn pair, 5-second observation, "
                     "McRLDebug capture, and no startup/forward-ramp profile"
                 )
         else:

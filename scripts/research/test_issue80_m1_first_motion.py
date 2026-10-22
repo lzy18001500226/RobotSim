@@ -2333,18 +2333,18 @@ class PhysicalStopGateTests(unittest.TestCase):
 
 
 class BoundedTurningProfileTests(unittest.TestCase):
-    def test_turn_ramp_is_symmetric_signed_and_never_exceeds_point_one_four_rad_s(self):
-        left = [smooth_turn_velocity(0.14, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
-        right = [smooth_turn_velocity(-0.14, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
+    def test_turn_ramp_is_symmetric_signed_and_never_exceeds_point_zero_seven_rad_s(self):
+        left = [smooth_turn_velocity(0.07, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
+        right = [smooth_turn_velocity(-0.07, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
         self.assertEqual(left[0], 0.0)
         self.assertEqual(left[-1], 0.0)
         self.assertEqual(right, [-value for value in left])
-        self.assertLessEqual(max(map(abs, left)), 0.14)
-        self.assertEqual(left[2], 0.14)
+        self.assertLessEqual(max(map(abs, left)), 0.07)
+        self.assertEqual(left[2], 0.07)
 
     def test_turn_profile_rejects_command_or_duration_above_the_fixed_cap(self):
         with self.assertRaises(ValueError):
-            smooth_turn_velocity(0.14001, 0.5, 2.0)
+            smooth_turn_velocity(0.07001, 0.5, 2.0)
         with self.assertRaises(ValueError):
             smooth_turn_velocity(-0.1, 0.5, 2.001)
 
@@ -2393,7 +2393,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             },
             speed_status={
                 "speed_mode": 1,
-                "angular_bounds": {"min_value": -0.05, "max_value": 0.05},
+                "angular_bounds": {"min_value": -0.04, "max_value": 0.04},
             },
             leg_states=[
                 {"name": "left_hip_pitch_joint", "position": 0.0, "velocity": 0.0, "error_code": 0}
@@ -2422,7 +2422,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             baseline_forward_displacements_m=[0.0, 0.0, 0.0],
             baseline_state_summary={"body_status": 1, "maxima": {"max_abs_yaw_excursion_rad": 0.001}},
             authorized=True,
-            angular_velocity_rad_s=0.1,
+            angular_velocity_rad_s=0.05,
             pulse_duration_s=2.0,
             extra_post_stop_observe_s=0.0,
             clock=clock.now,
@@ -2433,6 +2433,76 @@ class BoundedTurningProfileTests(unittest.TestCase):
         self.assertEqual(turn_commands, [])
         self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], 49)
         self.assertFalse(result["mc_stop_ack"])
+
+    def test_turn_zero_stop_keeps_ros_readbacks_fresh_during_zero_stream(self):
+        clock = FakeClock()
+        base = FirstMotionSafetyTests().snapshot(
+            get_mode_status_value=100,
+            common_mode_status_value=100,
+            pose={
+                "x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0,
+                "pitch": 0.0, "yaw": 0.0, "vx": 0.0, "vy": 0.0,
+                "vz": 0.0, "wz": 0.0, "frame_id": "odom", "child_frame_id": "base_link",
+            },
+            speed_status={
+                "speed_mode": 1,
+                "angular_bounds": {"min_value": -1.0, "max_value": 1.0},
+            },
+            leg_states=[
+                {"name": "left_hip_pitch_joint", "position": 0.0, "velocity": 0.0, "error_code": 0}
+            ],
+            mc_leg_command={
+                "joints": [{"name": "left_hip_pitch_joint", "position": 0.0}]
+            },
+        )
+        zero_commands = []
+        post_stop_samples = []
+
+        def sample():
+            now = clock.now()
+            # Model the bounded executor work required to service the async
+            # GetMcAction/GetCurrentInputSource futures during zero publication.
+            with clock.lock:
+                clock.value += 0.005
+            row = dict(base)
+            row["sample_monotonic_s"] = now
+            row["readback_monotonic_s"] = {"get_mode": now, "get_source": now}
+            row["state_age_s"] = {key: 0.0 for key in base["state_age_s"]}
+            row["mc_leg_command"] = {"joints": [{"name": "left_hip_pitch_joint", "position": 0.0}]}
+            return row
+
+        def record_sample(phase, snapshot):
+            if phase == "post-stop":
+                post_stop_samples.append(snapshot)
+
+        result = run_angular_turn_window(
+            sample=sample,
+            publish_turn=lambda _: None,
+            publish_zero=lambda: zero_commands.append(clock.now()),
+            registration={"success": True, "selected_action": "ADD"},
+            set_action={"accepted_by_service": True},
+            joint_limits=LIMITS,
+            baseline_forward_displacements_m=[0.0, 0.0, 0.0],
+            baseline_state_summary={"body_status": 1, "maxima": {"max_abs_yaw_excursion_rad": 0.001}},
+            authorized=True,
+            angular_velocity_rad_s=0.07,
+            pulse_duration_s=2.0,
+            extra_post_stop_observe_s=0.0,
+            clock=clock.now,
+            sleep=clock.sleep,
+            on_sample=record_sample,
+        )
+
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], ZERO_STOP_MIN_MESSAGES)
+        self.assertEqual(result["zero_stop"]["during_zero_callback_errors"], [])
+        self.assertEqual(
+            result["zero_stop"]["during_zero_callback_count"],
+            result["zero_stop"]["zero_publish_calls_returned"],
+        )
+        self.assertGreaterEqual(result["zero_stop"]["publish_call_return_span_s"], ZERO_STOP_MIN_S)
+        self.assertLessEqual(result["zero_stop"]["max_gap_between_publish_call_returns_s"], 0.020001)
+        self.assertTrue(post_stop_samples)
+        self.assertTrue(all(s["state_age_s"]["get_mode"] == 0.0 for s in post_stop_samples))
 
 
 if __name__ == "__main__":

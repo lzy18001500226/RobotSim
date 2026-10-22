@@ -62,7 +62,10 @@ PHYSICAL_STOP_MAX_JOINT_RANGE_RAD = 0.02
 PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD = 0.02
 PHYSICAL_STOP_TARGET_STABILITY_WINDOW_S = 1.0
 PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD = 0.01
-TURN_COMMAND_RAD_S = 0.14
+# Run58's 0.14 rad/s request produced an observed -0.824 rad/s yaw transient
+# before measurable commanded-direction rotation. Keep the measured 0.28 rad/s
+# abort gate unchanged and halve the diagnostic input for the next bounded test.
+TURN_COMMAND_RAD_S = 0.07
 TURN_PULSE_S = 2.0
 TURN_RAMP_S = 0.25
 TURN_MAX_OBSERVED_YAW_RATE_RAD_S = 0.28
@@ -1246,6 +1249,7 @@ class ZeroStopWindow:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         command_lock: Any | None = None,
+        during_zero_callback: Callable[[], None] | None = None,
     ) -> None:
         if timeout_s < ZERO_STOP_MIN_S:
             raise ValueError("zero stop must cover one full 1000 ms source timeout")
@@ -1257,6 +1261,7 @@ class ZeroStopWindow:
         self.clock = clock
         self.sleep = sleep
         self.command_lock = command_lock or threading.RLock()
+        self.during_zero_callback = during_zero_callback
         self._start_lock = threading.Lock()
         self._started = threading.Event()
         self._done = threading.Event()
@@ -1268,6 +1273,8 @@ class ZeroStopWindow:
             "loop_duration_s": 0.0,
             "zero_publish_calls_started": 0,
             "zero_publish_calls_returned": 0,
+            "during_zero_callback_count": 0,
+            "during_zero_callback_errors": [],
             "publish_call_return_times_s": [],
             "publish_call_return_span_s": 0.0,
             "max_gap_between_publish_call_returns_s": None,
@@ -1296,6 +1303,7 @@ class ZeroStopWindow:
         self.result["start_monotonic_s"] = start
         deadline = start + self.timeout_s
         hard_deadline = deadline + 5.0 * self.period_s
+        next_publish = start
         try:
             # A wall-time burst alone can finish with the first/last returned
             # calls less than one source timeout apart under ROS scheduling
@@ -1319,9 +1327,24 @@ class ZeroStopWindow:
                     self.result["publish_call_return_times_s"].append(self.clock() - start)
                 except Exception as exc:
                     self.result["publish_exceptions"].append(f"{type(exc).__name__}: {exc}")
-                remaining = hard_deadline - self.clock()
+                if self.during_zero_callback is not None:
+                    try:
+                        self.during_zero_callback()
+                        self.result["during_zero_callback_count"] += 1
+                    except Exception as exc:
+                        self.result["during_zero_callback_errors"].append(
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                    next_publish += self.period_s
+                    now = self.clock()
+                    if next_publish < now:
+                        next_publish = now + self.period_s
+                    remaining = min(next_publish, hard_deadline) - now
+                else:
+                    remaining = hard_deadline - self.clock()
+                    remaining = min(self.period_s, remaining)
                 if remaining > 0.0:
-                    self.sleep(min(self.period_s, remaining))
+                    self.sleep(remaining)
         finally:
             end = self.clock()
             self.result["end_monotonic_s"] = end
@@ -1929,7 +1952,7 @@ def run_angular_turn_window(
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run one 0.14 rad/s yaw pulse with bounded zero stop and physical settling check."""
+    """Run one 0.07 rad/s yaw pulse with bounded zero stop and physical settling check."""
     result: dict[str, Any] = {
         "status": "NOT_RUN",
         "command_kind": "YAW_ONLY_TURN",
@@ -1956,7 +1979,7 @@ def run_angular_turn_window(
         result["status"] = "NOT_AUTHORIZED"
         return result
     if not math.isfinite(angular_velocity_rad_s) or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S:
-        validation_fault = "turn_command_outside_fixed_0p10_rad_s_cap"
+        validation_fault = "turn_command_outside_fixed_0p07_rad_s_cap"
     elif not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= TURN_PULSE_S:
         validation_fault = "turn_duration_outside_fixed_2_second_cap"
     elif not math.isfinite(max_observed_planar_speed_m_s) or not 0.0 < max_observed_planar_speed_m_s <= 0.2:
@@ -1991,15 +2014,7 @@ def run_angular_turn_window(
     zero_extension_last: float | None = None
     stand_confirmed_s: float | None = None
     stop_result: dict[str, Any] = {}
-    zero_stop = ZeroStopWindow(
-        publish_zero,
-        timeout_s=max(ZERO_STOP_MIN_S, SOURCE_TIMEOUT_MS / 1000.0) + 1.0 / PUBLISH_HZ,
-        publish_hz=PUBLISH_HZ,
-        clock=clock,
-        sleep=sleep,
-        command_lock=command_lock,
-    )
-    watchdog: ProcessLocalTimerWatchdog | None = None
+    zero_stop: ZeroStopWindow
 
     def record(phase: str, snapshot: Mapping[str, Any], fault: str | None = None) -> None:
         row = dict(snapshot)
@@ -2009,6 +2024,39 @@ def run_angular_turn_window(
         samples.append(row)
         if on_sample:
             on_sample(phase, row)
+
+    def poll_during_zero_stop() -> None:
+        """Keep ROS services and sensor callbacks flowing throughout zero publication."""
+        nonlocal post_stop_fault
+        current = sample()
+        current_fault = snapshot_fault(
+            current, joint_limits, state_timeout_s=state_timeout_s,
+            min_root_z=min_root_z, max_tilt_deg=max_tilt_deg,
+            max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
+        )
+        if current.get("readback_fault"):
+            current_fault = current_fault or "readback_fault:" + str(current.get("readback_fault"))
+        try:
+            yaw_rate = float(current["pose"]["wz"])
+            if not math.isfinite(yaw_rate) or abs(yaw_rate) > TURN_MAX_OBSERVED_YAW_RATE_RAD_S:
+                current_fault = current_fault or "post_stop_yaw_rate_limit"
+        except (KeyError, TypeError, ValueError):
+            current_fault = current_fault or "post_stop_angular_velocity_unavailable"
+        if current_fault:
+            post_stop_fault = post_stop_fault or current_fault
+        tracker.observe(current, phase="post-stop")
+        record("post-stop", current, current_fault)
+
+    zero_stop = ZeroStopWindow(
+        publish_zero,
+        timeout_s=max(ZERO_STOP_MIN_S, SOURCE_TIMEOUT_MS / 1000.0) + 1.0 / PUBLISH_HZ,
+        publish_hz=PUBLISH_HZ,
+        clock=clock,
+        sleep=sleep,
+        command_lock=command_lock,
+        during_zero_callback=poll_during_zero_stop,
+    )
+    watchdog: ProcessLocalTimerWatchdog | None = None
 
     def watchdog_stop() -> None:
         nonlocal pulse_fault
@@ -2162,6 +2210,7 @@ def run_angular_turn_window(
                 publish_zero, timeout_s=ZERO_STOP_MIN_S + 1.0 / PUBLISH_HZ,
                 publish_hz=PUBLISH_HZ, clock=clock, sleep=sleep,
                 command_lock=command_lock,
+                during_zero_callback=poll_during_zero_stop,
             ).run_once()
             break
         tracker.observe(current, phase="post-stop")
@@ -2252,6 +2301,8 @@ def run_angular_turn_window(
         result["status"] = "ABORTED"
     elif stop_result.get("publish_exceptions"):
         result["status"] = "ZERO_STOP_PUBLISH_EXCEPTION"
+    elif stop_result.get("during_zero_callback_errors"):
+        result["status"] = "ZERO_STOP_TELEMETRY_PUMP_ERROR"
     elif stop_result.get("zero_publish_calls_returned", 0) < ZERO_STOP_MIN_MESSAGES:
         result["status"] = "ZERO_STOP_CALL_COUNT_TOO_LOW"
     elif not tracker.control_handshake_confirmed:
@@ -2309,7 +2360,7 @@ def smooth_turn_velocity(angular_velocity_rad_s: float, elapsed_s: float, durati
         or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S
         or not 0.0 < duration_s <= TURN_PULSE_S
     ):
-        raise ValueError("turn command must be within the fixed 0.14 rad/s, 2.0 s profile")
+        raise ValueError("turn command must be within the fixed 0.07 rad/s, 2.0 s profile")
     ramp = min(TURN_RAMP_S, duration_s / 2.0)
     if elapsed_s < 0.0 or elapsed_s >= duration_s:
         return 0.0
