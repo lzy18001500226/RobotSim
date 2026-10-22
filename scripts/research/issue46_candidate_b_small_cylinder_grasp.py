@@ -67,6 +67,15 @@ def object_normal_world(contact_frame: np.ndarray, object_is_geom2: bool) -> np.
     return (1.0 if object_is_geom2 else -1.0) * frame[0]
 
 
+def contact_force_threshold_pass(contact: dict) -> bool:
+    narrow = contact["jaw_sides"]["narrow"]
+    wide = contact["jaw_sides"]["wide"]
+    dot = contact["jaw_normal_opposition_dot"]
+    return (narrow["normal_force_N"] >= CONTACT_FORCE_FLOOR_N and
+            wide["normal_force_N"] >= CONTACT_FORCE_FLOOR_N and
+            dot is not None and dot <= -0.5)
+
+
 def cylinder_surface_triangles(center: np.ndarray, radius: float, height: float,
                                segments: int = 256) -> np.ndarray:
     if segments < 32:
@@ -453,10 +462,10 @@ def run_physics(output: Path, model: mujoco.MjModel, object_center: np.ndarray,
     max_root_torque = max_fixture_force = 0.0
     step = 0
     stop_reason = None
-    final_state_write_audit = {"object_qpos_writes_after_first_mj_step": 0,
-                               "passive_joint_qpos_writes_after_first_mj_step": 0,
-                               "object_freejoint": True, "object_attachment": False,
-                               "weld_or_mocap_carry": False}
+    state_write_audit = {"object_qpos_writes_after_first_mj_step": 0,
+                         "passive_joint_qpos_writes_after_first_mj_step": 0,
+                         "object_freejoint": True, "object_attachment": False,
+                         "weld_or_mocap_carry": False}
 
     def step_once(stage: str, cad: float, fixture_target: float,
                   bilateral_duration: float) -> tuple[dict, str | None]:
@@ -516,7 +525,7 @@ def run_physics(output: Path, model: mujoco.MjModel, object_center: np.ndarray,
                "wide_contact_count": contact["jaw_sides"]["wide"]["contact_count"],
                "narrow_contact_geoms": contact["jaw_sides"]["narrow"]["contact_geoms"],
                "wide_contact_geoms": contact["jaw_sides"]["wide"]["contact_geoms"],
-               "bilateral_contact": _contact_force_threshold_pass(contact),
+               "bilateral_contact": contact_force_threshold_pass(contact),
                "bilateral_contact_duration_s": bilateral_duration,
                "D_gap_mm": dgap*1000.0, "coupling_residual_rad": coupling,
                "root_limit_error_rad": limit_error, "max_gripper_joint_speed_rad_s": speed,
