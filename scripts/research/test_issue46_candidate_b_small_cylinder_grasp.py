@@ -7,6 +7,10 @@ import issue46_candidate_b_small_cylinder_grasp as experiment
 
 
 class SmallCylinderGraspMathTests(unittest.TestCase):
+    def test_contact_hold_threshold_is_explicit_and_bounded(self):
+        self.assertEqual(experiment.BILATERAL_HOLD_S, 0.5)
+        self.assertGreater(experiment.CONTACT_FORCE_FLOOR_N, 0.0)
+
     def test_solid_cylinder_mass_and_inertia(self):
         props = experiment.cylinder_properties(0.025, 0.210, 1000.0)
         radius, height = 0.0125, 0.210

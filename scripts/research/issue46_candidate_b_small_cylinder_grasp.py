@@ -33,6 +33,7 @@ SETTLE_S, CLOSE_S, HOLD_S = 0.5, 3.5, 0.75
 UNLOAD_MM, UNLOAD_S, UNLOAD_HOLD_S = 0.5, 0.5, 0.2
 LIFT_MM, LIFT_S, LIFT_HOLD_S = 5.0, 1.0, 0.5
 CONTACT_FORCE_FLOOR_N = 0.01
+BILATERAL_HOLD_S = 0.5
 MAX_ROOT_LIMIT_ERROR_RAD, MAX_D_GAP_MM = 1e-5, 1.0
 MAX_COUPLING_RAD, MAX_JOINT_SPEED_RAD_S = 0.01, 25.0
 MAX_PENETRATION_MM, MAX_PRELIFT_DRIFT_MM = 2.0, 5.0
@@ -652,6 +653,10 @@ def run_physics(output: Path, model: mujoco.MjModel, object_center: np.ndarray,
                                   "samples": len(tail)})
             if not lift_pass:
                 stop_reason = "FIVE_MM_PHYSICAL_LIFT_GATE_NOT_MET"
+    except Exception as exc:
+        stop_reason = f"RUNNER_SOFTWARE_EXCEPTION_AFTER_{step}_STEPS:{type(exc).__name__}:{exc}"
+        phase_results.append({"phase": "RUNNER_SOFTWARE_EXCEPTION", "status": "FAILED",
+                              "physics_steps_at_exception": step, "message": str(exc)})
     finally:
         renderer.close()
 
