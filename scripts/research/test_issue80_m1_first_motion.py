@@ -69,6 +69,7 @@ from issue80_m1_first_motion import (
     load_verified_mc_velocity_subscriber_provenance,
     mc_subscriber_history_depth_evidence,
     run_first_motion_window,
+    readback_refresh_needed,
     snapshot_fault,
     source_readback_gap,
     validate_first_motion_authorization,
@@ -399,6 +400,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
         )
         sample["state_age_s"]["get_source"] = 0.9
         self.assertIsNotNone(source_readback_gap(sample, state_timeout_s=0.5))
+        self.assertTrue(readback_refresh_needed(sample, 0.5))
+        self.assertFalse(readback_refresh_needed(self.snapshot(), 0.5))
         self.assertTrue(snapshot_fault(
             sample, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
         ))

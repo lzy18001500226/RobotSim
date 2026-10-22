@@ -785,6 +785,11 @@ def stale_readback_keys(snapshot: Mapping[str, Any], max_age_s: float) -> tuple[
     return tuple(stale)
 
 
+def readback_refresh_needed(snapshot: Mapping[str, Any], max_age_s: float) -> bool:
+    """Request another bounded ROS service spin after stale or transient readbacks."""
+    return bool(stale_readback_keys(snapshot, max_age_s) or snapshot.get("readback_fault"))
+
+
 def derive_stationary_odom_baseline(samples: list[Mapping[str, Any]]) -> dict[str, Any]:
     """Build three 1-second forward-drift windows from the no-command baseline.
 

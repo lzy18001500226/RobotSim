@@ -44,6 +44,7 @@ from issue80_m1_first_motion import (
     point_goal_forward_speed_m_s, point_goal_heading_error_rad,
     point_goal_stop_reason,
     speed_scaled_point_goal_stop_advance_m, run_first_motion_window,
+    readback_refresh_needed,
     snapshot_fault, stale_readback_keys,
     stand_mode_readback_confirmed,
     summarize_stationary_physical_state,
@@ -1112,13 +1113,21 @@ class FocusedM1Diagnostic(Node):
         self._spin_for(0.005)
         snapshot = self._first_motion_snapshot()
         stale = stale_readback_keys(snapshot, float(self.args.state_timeout))
+        refresh_faults: list[dict[str, Any]] = []
         refresh_deadline = time.monotonic() + 0.12
-        while stale and not snapshot.get("readback_fault") and time.monotonic() < refresh_deadline:
+        while readback_refresh_needed(snapshot, float(self.args.state_timeout)) and time.monotonic() < refresh_deadline:
+            if snapshot.get("readback_fault"):
+                refresh_faults.append({
+                    "sample_monotonic_s": float(snapshot.get("sample_monotonic_s", time.monotonic())),
+                    "readback_fault": str(snapshot["readback_fault"]),
+                    "stale_keys": list(stale),
+                })
             self._spin_for(0.01)
             snapshot = self._first_motion_snapshot()
             stale = stale_readback_keys(snapshot, float(self.args.state_timeout))
         snapshot["readback_refresh_wait_s"] = time.monotonic() - started
         snapshot["readback_refresh_stale_keys"] = list(stale)
+        snapshot["readback_refresh_faults_seen"] = refresh_faults
         return snapshot
 
     def _trace_first_motion_sample(self, phase: str, snapshot: dict[str, Any]) -> None:
