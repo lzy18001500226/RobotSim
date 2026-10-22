@@ -40,7 +40,8 @@ from issue80_m1_first_motion import (
     joint_command_array_snapshot,
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
-    build_forward_point_goal, point_goal_forward_speed_m_s, point_goal_stop_reason,
+    build_forward_point_goal, point_goal_forward_speed_m_s, point_goal_heading_error_rad,
+    point_goal_stop_reason,
     speed_scaled_point_goal_stop_advance_m, run_first_motion_window,
     snapshot_fault, stale_readback_keys,
     stand_mode_readback_confirmed,
@@ -60,13 +61,15 @@ POINT_GOAL_MAX_DURATION_S = 10.0
 POINT_GOAL_MAX_PLANAR_SPEED_M_S = 0.2
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 POINT_GOAL_HEADING_GAIN = 0.8
+POINT_GOAL_LATERAL_HEADING_GAIN = 0.5
+POINT_GOAL_MAX_LATERAL_HEADING_CORRECTION_RAD = 0.04
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
-# Run69: at zero command, base-frame forward speed projected onto the initial
-# heading was 0.158156 m/s; final settled
-# progress was 0.017967 m behind the zero-start anchor. Their ratio is a
-# one-run SIMULATION_ONLY endpoint-response estimate, not a vendor parameter.
-POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.1136033
+# Bounded two-run SIMULATION_ONLY fit: Run69 and Run73 endpoint shifts versus
+# measured forward speed. It is only a stop predictor for this fixture, not a
+# general or vendor FoundationWalk braking model.
+POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
+POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
@@ -1182,6 +1185,7 @@ class FocusedM1Diagnostic(Node):
             )
             stop_advance = speed_scaled_point_goal_stop_advance_m(
                 measured_forward_speed,
+                endpoint_response_intercept_m=POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
                 endpoint_response_time_s=POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
                 maximum_forward_speed_m_s=POINT_GOAL_MAX_PLANAR_SPEED_M_S,
             )
@@ -1194,9 +1198,15 @@ class FocusedM1Diagnostic(Node):
             stop_dx = stop_target["x"] - x
             stop_dy = stop_target["y"] - y
             stop_distance = math.hypot(stop_dx, stop_dy)
-            bearing = math.atan2(dy, dx)
+            predicted_settled_error = math.hypot(stop_progress - progress, lateral)
             yaw = float(pose["yaw"])
-            heading_error = math.atan2(math.sin(bearing - yaw), math.cos(bearing - yaw))
+            heading_error = point_goal_heading_error_rad(
+                current_yaw_rad=yaw,
+                start_yaw_rad=start_yaw,
+                lateral_error_m=lateral,
+                lateral_gain_rad_per_m=POINT_GOAL_LATERAL_HEADING_GAIN,
+                max_lateral_heading_correction_rad=POINT_GOAL_MAX_LATERAL_HEADING_CORRECTION_RAD,
+            )
             return {
                 "distance_to_goal_m": distance,
                 "distance_to_dynamic_stop_target_m": stop_distance,
@@ -1206,6 +1216,8 @@ class FocusedM1Diagnostic(Node):
                 "measured_forward_speed_m_s": measured_forward_speed,
                 "speed_scaled_stop_advance_m": stop_advance,
                 "dynamic_stop_progress_m": stop_progress,
+                "predicted_settled_goal_error_m": predicted_settled_error,
+                "predicted_settled_goal_error_m": predicted_settled_error,
                 "target_crossing_detected": progress >= POINT_GOAL_DISTANCE_M,
                 "dynamic_stop_line_crossed": progress >= stop_progress,
                 "dynamic_stop_target_pose": stop_target,
@@ -1308,16 +1320,23 @@ class FocusedM1Diagnostic(Node):
                 lateral_error_m=float(point_metrics["lateral_error_m"]),
                 goal_distance_m=POINT_GOAL_DISTANCE_M,
                 dynamic_stop_progress_m=float(point_metrics["dynamic_stop_progress_m"]),
+                final_tolerance_m=POINT_GOAL_FINAL_TOLERANCE_M,
                 maximum_lateral_error_m=POINT_GOAL_MAX_LATERAL_ERROR_M,
                 maximum_overshoot_m=POINT_GOAL_MAX_OVERSHOOT_M,
             )
-            if stop_reason is not None and stop_reason != "speed_scaled_stop_line_crossed":
+            if stop_reason is not None and stop_reason not in {
+                "speed_scaled_stop_line_crossed",
+                "goal_approach_predicted_settle_within_tolerance",
+            }:
                 state["fault"] = f"point_goal_{stop_reason}"
                 state["stop_reason"] = stop_reason
                 return True
-            if stop_reason == "speed_scaled_stop_line_crossed":
+            if stop_reason in {
+                "speed_scaled_stop_line_crossed",
+                "goal_approach_predicted_settle_within_tolerance",
+            }:
                 state["goal_triggered"] = True
-                state["stop_reason"] = "speed_scaled_stop_line_crossed"
+                state["stop_reason"] = stop_reason
                 state["stop_advance_at_trigger_m"] = point_metrics["speed_scaled_stop_advance_m"]
                 state["measured_forward_speed_at_trigger_m_s"] = point_metrics["measured_forward_speed_m_s"]
                 state["stop_progress_at_trigger_m"] = point_metrics["dynamic_stop_progress_m"]
@@ -1351,7 +1370,7 @@ class FocusedM1Diagnostic(Node):
             max_observed_planar_speed_m_s=0.2,
             zero_until_stand_timeout_s=3.5,
             termination_condition=goal_reached,
-            termination_condition_name="ground_truth_speed_scaled_stop_line_crossing_or_bounded_early_stop",
+            termination_condition_name="ground_truth_predicted_goal_approach_or_speed_scaled_stop_line",
         )
         final_metrics = state.get("last_metrics")
         final_distance = (
@@ -1365,7 +1384,7 @@ class FocusedM1Diagnostic(Node):
         physical_stop = activation.get("physical_stop_gate", {})
         zero_stop = activation.get("zero_stop", {})
         acceptance_gates = {
-            "speed_scaled_stop_line_crossed": state.get("goal_triggered") is True,
+            "goal_approach_or_stop_line_triggered": state.get("goal_triggered") is True,
             "final_distance_within_50mm": (
                 final_distance is not None and final_distance <= POINT_GOAL_FINAL_TOLERANCE_M
             ),
@@ -1415,7 +1434,7 @@ class FocusedM1Diagnostic(Node):
             "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
             "forward_command_m_s": POINT_GOAL_COMMAND_M_S,
             "maximum_active_command_s": POINT_GOAL_MAX_DURATION_S,
-            "command_profile": "0.14 m/s straight forward input; use the already validated 0.12 m/s forward-arc speed whenever heading correction is active, with angular input capped at +/-0.075 rad/s; both forward speeds remain above the measured FoundationWalk deadzone. Stop immediately when measured along-track progress crosses the speed-scaled endpoint target; hard stop at 50 mm overshoot/lateral error; existing watchdog and zero-stop procedure",
+            "command_profile": "0.14 m/s straight forward input; use the already validated 0.12 m/s forward-arc speed whenever heading correction is active. Hold the measured start heading with a bounded lateral-error correction, capped within +/-0.075 rad/s; both forward speeds remain above the measured FoundationWalk deadzone. Stop when the speed-scaled stop line is crossed or the predicted settled endpoint enters the 50 mm goal tolerance; hard stop at 50 mm overshoot/lateral error; existing watchdog and zero-stop procedure",
             "goal_triggered": state.get("goal_triggered"),
             "target_crossing_detected": state.get("target_crossing_detected"),
             "final_distance_to_goal_m": final_distance,
@@ -1429,18 +1448,31 @@ class FocusedM1Diagnostic(Node):
             ),
             "final_distance_to_dynamic_stop_target_m": final_stop_target_distance,
             "speed_scaled_stop_model": {
-                "formula": "stop_advance_m = max(0, measured_forward_speed_m_s) * endpoint_response_time_s",
+                "formula": "stop_advance_m = endpoint_response_intercept_m + max(0, measured_forward_speed_m_s) * endpoint_response_time_s",
+                "endpoint_response_intercept_m": POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
                 "endpoint_response_time_s": POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
                 "maximum_forward_speed_m_s": POINT_GOAL_MAX_PLANAR_SPEED_M_S,
                 "maximum_derived_stop_advance_m": (
-                    POINT_GOAL_ENDPOINT_RESPONSE_TIME_S * POINT_GOAL_MAX_PLANAR_SPEED_M_S
+                    POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M
+                    + POINT_GOAL_ENDPOINT_RESPONSE_TIME_S * POINT_GOAL_MAX_PLANAR_SPEED_M_S
                 ),
-                "source_attempt_id": "c1883327-5e43-4e6d-bf41-5dac382c9f49",
-                "source_zero_start_progress_m": 0.392358095533107,
-                "source_final_settled_progress_m": 0.37439102569838006,
-                "source_signed_endpoint_delta_m": -0.01796706983472694,
-                "source_measured_forward_speed_m_s": 0.15815622063915188,
-                "limitation": "single SIMULATION_ONLY endpoint observation used only to scale the next bounded stop target by live measured speed; final position and physical stop gates remain authoritative",
+                "calibration_observations": [
+                    {
+                        "attempt_id": "c1883327-5e43-4e6d-bf41-5dac382c9f49",
+                        "zero_start_progress_m": 0.392358095533107,
+                        "final_settled_progress_m": 0.37439102569838006,
+                        "signed_endpoint_delta_m": -0.01796706983472694,
+                        "measured_forward_speed_m_s": 0.15815622063915188,
+                    },
+                    {
+                        "attempt_id": "6c3a6c00-9afb-4eea-92d7-da560dc9e036",
+                        "zero_start_progress_m": 0.26712099449260185,
+                        "final_settled_progress_m": 0.26294316303228604,
+                        "signed_endpoint_delta_m": -0.004177831460315806,
+                        "measured_forward_speed_m_s": 0.007654207147844275,
+                    },
+                ],
+                "limitation": "two SIMULATION_ONLY endpoint observations define an experiment-specific linear fit; early-stop behavior remains unverified after the one authorized 10-second trial; final position and physical stop gates remain authoritative",
             },
             "postwalk_stand_action": (
                 "NOT_REQUESTED_ZERO_ONLY_STOP; wait for measured automatic transition and physical stop gate"
@@ -1448,9 +1480,12 @@ class FocusedM1Diagnostic(Node):
             "command_profile_parameters": {
                 "cruise_speed_m_s": POINT_GOAL_COMMAND_M_S,
                 "steering_forward_speed_m_s": POINT_GOAL_STEERING_COMMAND_M_S,
-                "minimum_command_speed_m_s": 0.112,
+                "minimum_command_speed_m_s": POINT_GOAL_STEERING_COMMAND_M_S,
+                "measured_effective_forward_deadzone_m_s": 0.111,
                 "maximum_angular_velocity_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                 "heading_gain": POINT_GOAL_HEADING_GAIN,
+                "lateral_heading_gain_rad_per_m": POINT_GOAL_LATERAL_HEADING_GAIN,
+                "maximum_lateral_heading_correction_rad": POINT_GOAL_MAX_LATERAL_HEADING_CORRECTION_RAD,
                 "maximum_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
                 "maximum_overshoot_m": POINT_GOAL_MAX_OVERSHOOT_M,
             },

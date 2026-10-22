@@ -612,6 +612,39 @@ def point_goal_forward_speed_m_s(pose: Mapping[str, Any], *, start_yaw_rad: floa
     raise ValueError(f"unsupported point-goal twist frame: {twist_frame!r}")
 
 
+def point_goal_heading_error_rad(
+    *,
+    current_yaw_rad: float,
+    start_yaw_rad: float,
+    lateral_error_m: float,
+    lateral_gain_rad_per_m: float = 0.5,
+    max_lateral_heading_correction_rad: float = 0.04,
+) -> float:
+    """Hold the initial travel heading with a small cross-track correction.
+
+    The target heading is anchored to the measured start pose; it does not
+    rotate toward a waypoint that may be behind the robot after crossing.
+    """
+    values = (
+        current_yaw_rad,
+        start_yaw_rad,
+        lateral_error_m,
+        lateral_gain_rad_per_m,
+        max_lateral_heading_correction_rad,
+    )
+    try:
+        current_yaw, start_yaw, lateral, gain, max_correction = tuple(float(v) for v in values)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("point-goal heading inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (current_yaw, start_yaw, lateral, gain, max_correction)):
+        raise ValueError("point-goal heading inputs must be finite")
+    if gain < 0.0 or max_correction <= 0.0:
+        raise ValueError("point-goal lateral heading correction bounds are invalid")
+    correction = max(-max_correction, min(max_correction, -gain * lateral))
+    desired_yaw = start_yaw + correction
+    return math.atan2(math.sin(desired_yaw - current_yaw), math.cos(desired_yaw - current_yaw))
+
+
 def build_forward_point_goal(
     start_pose: Mapping[str, Any], *, distance_m: float,
 ) -> dict[str, Any]:
@@ -639,27 +672,32 @@ def build_forward_point_goal(
 def speed_scaled_point_goal_stop_advance_m(
     measured_forward_speed_m_s: float,
     *,
+    endpoint_response_intercept_m: float,
     endpoint_response_time_s: float,
     maximum_forward_speed_m_s: float = 0.2,
 ) -> float:
-    """Estimate a bounded stop advance from measured speed and one observed endpoint response.
+    """Estimate a bounded stop advance from measured speed and observed endpoint response.
 
-    This is an experiment-specific kinematic correction, not a general braking
+    The affine calibration is experiment-specific, not a general braking
     model. The speed cap must remain the existing validated motion envelope.
     """
     try:
         speed = float(measured_forward_speed_m_s)
+        response_intercept = float(endpoint_response_intercept_m)
         response_time = float(endpoint_response_time_s)
         maximum_speed = float(maximum_forward_speed_m_s)
     except (TypeError, ValueError) as exc:
         raise ValueError("point-goal stop inputs must be numeric") from exc
-    if not all(math.isfinite(value) for value in (speed, response_time, maximum_speed)):
+    if not all(math.isfinite(value) for value in (speed, response_intercept, response_time, maximum_speed)):
         raise ValueError("point-goal stop inputs must be finite")
-    if response_time < 0.0 or maximum_speed <= 0.0:
+    if response_intercept < 0.0 or response_time < 0.0 or maximum_speed <= 0.0:
         raise ValueError("point-goal response time and speed envelope are invalid")
     if abs(speed) > maximum_speed:
         raise ValueError("measured forward speed exceeds the existing point-goal envelope")
-    return max(0.0, speed) * response_time
+    maximum_advance = response_intercept + maximum_speed * response_time
+    if maximum_advance > 0.05:
+        raise ValueError("derived point-goal stop advance exceeds the existing 50 mm tolerance")
+    return response_intercept + max(0.0, speed) * response_time
 
 
 def point_goal_stop_reason(
@@ -668,6 +706,7 @@ def point_goal_stop_reason(
     lateral_error_m: float,
     goal_distance_m: float,
     dynamic_stop_progress_m: float,
+    final_tolerance_m: float,
     maximum_lateral_error_m: float,
     maximum_overshoot_m: float,
 ) -> str | None:
@@ -677,6 +716,7 @@ def point_goal_stop_reason(
         lateral_error_m,
         goal_distance_m,
         dynamic_stop_progress_m,
+        final_tolerance_m,
         maximum_lateral_error_m,
         maximum_overshoot_m,
     )
@@ -686,8 +726,11 @@ def point_goal_stop_reason(
         raise ValueError("point-goal stop decision inputs must be numeric") from exc
     if not all(math.isfinite(value) for value in numbers):
         raise ValueError("point-goal stop decision inputs must be finite")
-    progress, lateral, goal, stop_progress, lateral_limit, overshoot_limit = numbers
-    if goal <= 0.0 or lateral_limit <= 0.0 or overshoot_limit < 0.0:
+    progress, lateral, goal, stop_progress, final_tolerance, lateral_limit, overshoot_limit = numbers
+    if (
+        goal <= 0.0 or stop_progress < goal or final_tolerance <= 0.0
+        or lateral_limit <= 0.0 or overshoot_limit < 0.0
+    ):
         raise ValueError("point-goal stop decision limits are invalid")
     if abs(lateral) > lateral_limit:
         return "lateral_error_limit"
@@ -695,6 +738,9 @@ def point_goal_stop_reason(
         return "hard_overshoot_guard"
     if progress >= stop_progress:
         return "speed_scaled_stop_line_crossed"
+    predicted_settled_error = math.hypot(stop_progress - progress, lateral)
+    if predicted_settled_error <= final_tolerance:
+        return "goal_approach_predicted_settle_within_tolerance"
     return None
 
 

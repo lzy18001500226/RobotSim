@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as runner
 from issue80_m1_first_motion import (
-    build_forward_point_goal, point_goal_forward_speed_m_s,
+    build_forward_point_goal, point_goal_forward_speed_m_s, point_goal_heading_error_rad,
     point_goal_stop_reason, speed_scaled_point_goal_stop_advance_m,
     stale_readback_keys,
 )
@@ -184,26 +184,47 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             build_forward_point_goal({**start, "frame_id": "map"}, distance_m=0.30)
 
     def test_stop_advance_scales_with_measured_speed_and_respects_existing_envelope(self) -> None:
-        response_time = 0.1136033
+        response_intercept = 0.00347654
+        response_time = 0.09162162
         measured_run69_speed = 0.15815622063915188
         advance = speed_scaled_point_goal_stop_advance_m(
             measured_run69_speed,
+            endpoint_response_intercept_m=response_intercept,
             endpoint_response_time_s=response_time,
             maximum_forward_speed_m_s=0.2,
         )
         self.assertAlmostEqual(advance, 0.017967, places=5)
+        self.assertAlmostEqual(
+            speed_scaled_point_goal_stop_advance_m(
+                0.007654207147844275,
+                endpoint_response_intercept_m=response_intercept,
+                endpoint_response_time_s=response_time,
+            ),
+            0.004178,
+            places=5,
+        )
         self.assertLessEqual(
             speed_scaled_point_goal_stop_advance_m(
-                0.2, endpoint_response_time_s=response_time,
+                0.2,
+                endpoint_response_intercept_m=response_intercept,
+                endpoint_response_time_s=response_time,
             ),
             0.05,
         )
         self.assertEqual(
-            speed_scaled_point_goal_stop_advance_m(-0.1, endpoint_response_time_s=response_time),
-            0.0,
+            speed_scaled_point_goal_stop_advance_m(
+                -0.1,
+                endpoint_response_intercept_m=response_intercept,
+                endpoint_response_time_s=response_time,
+            ),
+            response_intercept,
         )
         with self.assertRaisesRegex(ValueError, "existing point-goal envelope"):
-            speed_scaled_point_goal_stop_advance_m(0.2001, endpoint_response_time_s=response_time)
+            speed_scaled_point_goal_stop_advance_m(
+                0.2001,
+                endpoint_response_intercept_m=response_intercept,
+                endpoint_response_time_s=response_time,
+            )
 
     def test_measured_speed_projection_respects_declared_twist_frame(self) -> None:
         body_frame = {
@@ -225,6 +246,32 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             point_goal_forward_speed_m_s(world_frame, start_yaw_rad=math.pi / 2), 0.16,
         )
 
+    def test_point_goal_heading_holds_start_orientation_and_uses_bounded_lateral_correction(self) -> None:
+        self.assertAlmostEqual(
+            point_goal_heading_error_rad(
+                current_yaw_rad=0.60,
+                start_yaw_rad=0.50,
+                lateral_error_m=0.0,
+            ),
+            -0.10,
+        )
+        self.assertAlmostEqual(
+            point_goal_heading_error_rad(
+                current_yaw_rad=0.50,
+                start_yaw_rad=0.50,
+                lateral_error_m=0.02,
+            ),
+            -0.01,
+        )
+        self.assertAlmostEqual(
+            point_goal_heading_error_rad(
+                current_yaw_rad=0.50,
+                start_yaw_rad=0.50,
+                lateral_error_m=-1.0,
+            ),
+            0.04,
+        )
+
     def test_goal_controller_stops_on_dynamic_crossing_and_bounded_guards(self) -> None:
         common = {
             "goal_distance_m": 0.30,
@@ -232,26 +279,45 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             "maximum_lateral_error_m": 0.05,
             "maximum_overshoot_m": 0.05,
         }
-        self.assertIsNone(point_goal_stop_reason(
+        self.assertEqual(point_goal_stop_reason(
             along_track_progress_m=0.317,
             lateral_error_m=0.01,
+            final_tolerance_m=0.05,
             **common,
-        ))
+        ), "goal_approach_predicted_settle_within_tolerance")
         self.assertEqual(point_goal_stop_reason(
             along_track_progress_m=0.319,
             lateral_error_m=0.01,
+            final_tolerance_m=0.05,
             **common,
         ), "speed_scaled_stop_line_crossed")
         self.assertEqual(point_goal_stop_reason(
+            along_track_progress_m=0.263,
+            lateral_error_m=0.0069,
+            dynamic_stop_progress_m=0.30418,
+            final_tolerance_m=0.05,
+            goal_distance_m=0.30,
+            maximum_lateral_error_m=0.05,
+            maximum_overshoot_m=0.05,
+        ), "goal_approach_predicted_settle_within_tolerance")
+        self.assertEqual(point_goal_stop_reason(
             along_track_progress_m=0.20,
             lateral_error_m=0.051,
+            final_tolerance_m=0.05,
             **common,
         ), "lateral_error_limit")
         self.assertEqual(point_goal_stop_reason(
             along_track_progress_m=0.351,
             lateral_error_m=0.01,
+            final_tolerance_m=0.05,
             **common,
         ), "hard_overshoot_guard")
+        self.assertIsNone(point_goal_stop_reason(
+            along_track_progress_m=0.24,
+            lateral_error_m=0.01,
+            final_tolerance_m=0.05,
+            **common,
+        ))
 
     def test_readback_refresh_does_not_change_the_existing_freshness_threshold(self) -> None:
         self.assertEqual(
@@ -275,7 +341,7 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             "target_crossing_detected": True,
             "final_distance_to_goal_m": 0.04,
             "acceptance_gates": {
-                "speed_scaled_stop_line_crossed": True,
+                "goal_approach_or_stop_line_triggered": True,
                 "final_distance_within_50mm": True,
                 "lateral_error_within_50mm": True,
                 "no_more_than_50mm_along_track_overshoot": True,
