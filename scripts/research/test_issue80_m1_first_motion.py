@@ -318,6 +318,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         ramp_start_speed_m_s=None,
         ramp_duration_s=0.0,
         deceleration_duration_s=0.0,
+        deceleration_end_speed_m_s=0.0,
         startup_speed_m_s=None,
         startup_transition_displacement_m=None,
         startup_transition_timeout_s=0.0,
@@ -353,6 +354,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             ramp_start_speed_m_s=ramp_start_speed_m_s,
             ramp_duration_s=ramp_duration_s,
             deceleration_duration_s=deceleration_duration_s,
+            deceleration_end_speed_m_s=deceleration_end_speed_m_s,
             startup_speed_m_s=startup_speed_m_s,
             startup_transition_displacement_m=startup_transition_displacement_m,
             startup_transition_timeout_s=startup_transition_timeout_s,
@@ -589,6 +591,16 @@ class FirstMotionSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "in \(0, 1\] seconds"):
             smoothstep_deceleration_velocity(0.14, 0.5, 1.01)
 
+    def test_smoothstep_deceleration_can_preserve_a_positive_minimum_command(self):
+        values = [
+            smoothstep_deceleration_velocity(0.14, t, 1.0, 0.112)
+            for t in (0.0, 0.25, 0.5, 0.75, 1.0, 1.1)
+        ]
+        self.assertEqual(values[0], 0.14)
+        self.assertAlmostEqual(values[2], 0.126)
+        self.assertEqual(values[4:], [0.112, 0.112])
+        self.assertTrue(all(0.112 <= right <= left <= 0.14 for left, right in zip(values, values[1:])))
+
     def test_run_window_decelerates_only_in_final_second_then_uses_zero_stop(self):
         clock = FakeClock()
         commands = []
@@ -613,7 +625,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertEqual(result["velocity_profile"]["deceleration_start_s"], 1.0)
         self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
 
-    def test_bounded_pulse_uses_final_second_for_smooth_deceleration_then_zero_stop(self):
+    def test_bounded_pulse_can_decelerate_to_threshold_margin(self):
         clock = FakeClock()
         commands = []
         result = self.run_protocol(
@@ -625,6 +637,7 @@ class FirstMotionSafetyTests(unittest.TestCase):
             pulse_duration_s=2.0,
             max_pulse_duration_s=2.0,
             deceleration_duration_s=1.0,
+            deceleration_end_speed_m_s=0.112,
         )
         pulse = [(t, value) for t, value in commands if value > 0.0]
         self.assertEqual(len(pulse), 100)
@@ -632,9 +645,11 @@ class FirstMotionSafetyTests(unittest.TestCase):
         decelerating = [value for _, value in pulse[50:]]
         self.assertTrue(all(right <= left for left, right in zip(decelerating, decelerating[1:])))
         self.assertGreater(decelerating[0], 0.13)
-        self.assertLess(decelerating[-1], 0.001)
+        self.assertGreaterEqual(min(decelerating), 0.112)
+        self.assertAlmostEqual(decelerating[-1], 0.112, places=4)
         self.assertEqual(result["velocity_profile"]["shape"], "constant-then-smoothstep-deceleration")
         self.assertEqual(result["velocity_profile"]["deceleration_start_s"], 1.0)
+        self.assertEqual(result["velocity_profile"]["end_speed_m_s"], 0.112)
         self.assertGreaterEqual(result["zero_stop"]["loop_duration_s"], 1.0)
 
     def test_motion_triggered_startup_uses_cruise_only_after_measured_displacement(self):

@@ -1382,18 +1382,19 @@ def smoothstep_velocity(
 
 def smoothstep_deceleration_velocity(
     start_m_s: float, elapsed_s: float, deceleration_duration_s: float,
+    end_m_s: float = 0.0,
 ) -> float:
-    """C1-continuous one-second-bounded reduction of a positive command to zero."""
-    values = (start_m_s, elapsed_s, deceleration_duration_s)
+    """C1-continuous one-second-bounded reduction of a positive command to end speed."""
+    values = (start_m_s, elapsed_s, deceleration_duration_s, end_m_s)
     if not all(math.isfinite(float(value)) for value in values):
         raise ValueError("deceleration values must be finite")
-    if not 0.0 < start_m_s <= FORWARD_COMMAND_M_S:
+    if not 0.0 <= end_m_s < start_m_s <= FORWARD_COMMAND_M_S:
         raise ValueError("deceleration start must be positive and under the command cap")
     if not 0.0 < deceleration_duration_s <= 1.0:
         raise ValueError("deceleration duration must be in (0, 1] seconds")
     progress = max(0.0, min(1.0, elapsed_s / deceleration_duration_s))
     blend = progress * progress * (3.0 - 2.0 * progress)
-    return start_m_s * (1.0 - blend)
+    return end_m_s + (start_m_s - end_m_s) * (1.0 - blend)
 
 
 def startup_then_cruise_velocity(
@@ -1586,6 +1587,7 @@ def run_first_motion_window(
     ramp_start_speed_m_s: float | None = None,
     ramp_duration_s: float = 0.0,
     deceleration_duration_s: float = 0.0,
+    deceleration_end_speed_m_s: float = 0.0,
     startup_speed_m_s: float | None = None,
     startup_transition_displacement_m: float | None = None,
     startup_transition_timeout_s: float = 0.0,
@@ -1625,7 +1627,12 @@ def run_first_motion_window(
                 pulse_duration_s - deceleration_duration_s
                 if deceleration_duration_s > 0.0 else None
             ),
-            "end_speed_m_s": 0.0 if deceleration_duration_s > 0.0 else None,
+            "end_speed_m_s": (
+                deceleration_end_speed_m_s if deceleration_duration_s > 0.0 else None
+            ),
+            "deceleration_end_speed_m_s": (
+                deceleration_end_speed_m_s if deceleration_duration_s > 0.0 else None
+            ),
             "startup_speed_m_s": startup_speed_m_s,
             "cruise_speed_m_s": forward_command_m_s if startup_speed_m_s is not None else None,
             "transition_displacement_m": startup_transition_displacement_m,
@@ -1680,6 +1687,12 @@ def run_first_motion_window(
         or not 0.0 <= deceleration_duration_s <= min(1.0, pulse_duration_s)
     ):
         pulse_fault = "velocity_deceleration_duration_outside_one_second_bound"
+    elif (
+        not math.isfinite(deceleration_end_speed_m_s)
+        or not 0.0 <= deceleration_end_speed_m_s < forward_command_m_s
+        or (deceleration_duration_s == 0.0 and deceleration_end_speed_m_s != 0.0)
+    ):
+        pulse_fault = "velocity_deceleration_end_speed_invalid"
     elif deceleration_duration_s > 0.0 and (
         ramp_duration_s > 0.0 or startup_speed_m_s is not None
     ):
@@ -1902,6 +1915,7 @@ def run_first_motion_window(
                                     forward_command_m_s,
                                     command_offset - (pulse_duration_s - deceleration_duration_s),
                                     deceleration_duration_s,
+                                    deceleration_end_speed_m_s,
                                 )
                             elif startup_speed_m_s is not None:
                                 if startup_origin_pose is None:
