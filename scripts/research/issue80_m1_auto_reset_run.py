@@ -43,15 +43,14 @@ IMAGE = "robotsim:humble-raicom-runtime-20261019"
 IMAGE_DIGEST = "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31"
 RESET_OBSERVER_DURATION_S = 8.0
 RESET_OBSERVER_COMPLETION_MARGIN_S = 3.0
-POST_RESET_UPRIGHT_TIMEOUT_S = 2.0
+RESET_STARTUP_OBSERVATION_TIMEOUT_S = 4.0
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 POINT_GOAL_FORWARD_COMMAND_M_S = 0.14
 POINT_GOAL_DISTANCE_M = 0.30
-POINT_GOAL_TERMINAL_COMMAND_M_S = 0.112
-POINT_GOAL_DECEL_START_DISTANCE_M = 0.12
-POINT_GOAL_DECEL_DURATION_S = 1.0
-POINT_GOAL_STOP_COMPENSATION_M = 0.06
-POINT_GOAL_STOP_TRIGGER_M = 0.04
+POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.1136033
+POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
+POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
+POINT_GOAL_MAX_OVERSHOOT_M = 0.05
 TOPIC_PROBES = (
     "/aima/hal/odom/state",
     "/aima/hal/imu/torso/state",
@@ -241,7 +240,7 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
         or not getattr(args, "turning_reassessment_json", None)
     ):
         raise ValueError(
-            "point-goal uses the fixed 0.14 m/s, 10-second, no-ramp profile, "
+            "point-goal uses the 0.14 m/s forward command, 10-second hard cap, "
             "5-second post-stop observation, McRLDebug capture, and verified Run65 reassessment"
         )
     return validate_turning_reassessment_file(args.turning_reassessment_json)
@@ -258,9 +257,10 @@ def add_run65_point_goal_arguments(parser: argparse.ArgumentParser) -> None:
         dest="run65_ground_truth_point_goal",
         action="store_true",
         help=(
-            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with a Run52-derived terminal "
-            "stop compensation, verified Run65 turn/stop prerequisite, 0.14 m/s cap, 10-second "
-            "command cap, and unchanged physical-stop gates"
+            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with along-track/lateral "
+            "ground-truth feedback and a speed-scaled Run69 endpoint correction, verified Run65 "
+            "turn/stop prerequisite, 0.14 m/s forward / 0.075 rad/s turn envelope, and 10-second "
+            "hard command cap"
         ),
     )
     parser.add_argument(
@@ -917,22 +917,21 @@ class BoundedRun:
         } if run53 else {
             "shape": "ground-truth-point-goal",
             "target_distance_m": POINT_GOAL_DISTANCE_M,
-            "stop_compensation_m": POINT_GOAL_STOP_COMPENSATION_M,
-            "stop_target_distance_m": POINT_GOAL_DISTANCE_M + POINT_GOAL_STOP_COMPENSATION_M,
-            "stop_trigger_radius_m": POINT_GOAL_STOP_TRIGGER_M,
+            "stop_model": "speed_scaled_endpoint_response",
+            "endpoint_response_time_s": POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
+            "max_angular_command_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+            "max_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
+            "max_overshoot_m": POINT_GOAL_MAX_OVERSHOOT_M,
             "final_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
             "forward_velocity_m_s": POINT_GOAL_FORWARD_COMMAND_M_S,
-            "terminal_velocity_m_s": POINT_GOAL_TERMINAL_COMMAND_M_S,
-            "deceleration_start_distance_m": POINT_GOAL_DECEL_START_DISTANCE_M,
-            "deceleration_duration_s": POINT_GOAL_DECEL_DURATION_S,
-            "angular_velocity_rad_s": 0.0,
+            "angular_control": "ground_truth_heading_feedback_within_validated_run65_envelope",
             "active_command_limit_s": 10.0,
             "maximum_planar_speed_m_s": 0.2,
+            "stop_trigger": "along_track_progress_crosses_speed_scaled_stop_line_or_safe_guard",
             "stop_behavior": "zero-only; wait for fresh automatic STAND readback and physical-stop gate",
             "zero_stop_min_duration_s": 1.0,
             "post_stop_observation_s": 5.0,
-            "stop_compensation_adjustment_basis_attempt_id": "c1883327-5e43-4e6d-bf41-5dac382c9f49",
-            "braking_distance_basis_attempt_id": "ceadcc39-350d-4318-ab91-2ae2d66f9c2f",
+            "endpoint_response_basis_attempt_id": "c1883327-5e43-4e6d-bf41-5dac382c9f49",
             "prior_endpoint_error_m": 0.07699227258252467,
         } if run65 else {
             "shape": "motion-triggered-startup-then-cruise"
@@ -1167,69 +1166,83 @@ class BoundedRun:
         dispatch_ns = int(event["dispatch_monotonic_ns"])
         trace = self.evidence / "reset_state_trace.jsonl"
         required = {"odom", "imu", "common", "leg_state", "leg_command"}
-        deadline = min(self.deadline, time.monotonic() + POST_RESET_UPRIGHT_TIMEOUT_S)
+        # Run70 proved the key event can be processed after a 2.216 s GUI
+        # delay. Keep the physical upright/freshness gate unchanged; this is
+        # only a bounded window for reset delivery and state publication.
+        deadline = min(self.deadline, time.monotonic() + RESET_STARTUP_OBSERVATION_TIMEOUT_S)
         last = {"status": "POST_RESET_TRACE_NOT_AVAILABLE", "dispatch_monotonic_ns": dispatch_ns}
-        while time.monotonic() < deadline:
-            latest: dict[str, dict[str, Any]] = {}
-            upright: list[dict[str, Any]] = []
-            if trace.exists():
-                for line in trace.read_text(encoding="utf-8").splitlines():
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if row.get("event") != "state" or int(row.get("wall_monotonic_ns", 0)) <= dispatch_ns:
-                        continue
-                    key = row.get("topic_key")
-                    if key in required:
-                        latest[key] = row
-                    if key == "odom":
-                        data = row.get("data", {})
+        latest: dict[str, dict[str, Any]] = {}
+        upright_tail: list[dict[str, Any]] = []
+        if not trace.exists():
+            while time.monotonic() < deadline and not trace.exists():
+                time.sleep(0.02)
+        if trace.exists():
+            with trace.open("r", encoding="utf-8") as trace_file:
+                while time.monotonic() < deadline:
+                    for line in trace_file:
                         try:
-                            ok = float(data["z"]) >= 0.52 and max(abs(float(data["roll_deg"])), abs(float(data["pitch_deg"]))) < 15.0
-                        except (KeyError, TypeError, ValueError):
-                            ok = False
-                        if ok:
-                            upright.append(row)
-                        else:
-                            upright.clear()
-                now_ns = time.monotonic_ns()
-                ages = {key: (now_ns - int(row["wall_monotonic_ns"])) / 1e9 for key, row in latest.items()}
-                fresh = required.issubset(latest) and all(0.0 <= ages[key] <= 0.5 for key in required)
-                last = {
-                    "status": "POST_RESET_UPRIGHT_NOT_YET_CONFIRMED",
-                    "dispatch_monotonic_ns": dispatch_ns,
-                    "state_ages_s": ages,
-                    "fresh_all_required_topics": fresh,
-                    "consecutive_upright_odom_samples": len(upright),
-                    "latest_odom": latest.get("odom"),
-                    "latest_raw_common_state": latest.get("common"),
-                }
-                if fresh and len(upright) >= 3:
-                    last.update({
-                        "status": "POST_RESET_UPRIGHT_OBSERVED",
-                        "wall_utc": datetime.now(timezone.utc).isoformat(),
-                        "dispatch_to_upright_ms": (int(upright[-3]["wall_monotonic_ns"]) - dispatch_ns) / 1e6,
-                        "pose": upright[-1].get("data"),
-                        "raw_common_state": latest.get("common", {}).get("data"),
-                        "imu": latest.get("imu", {}).get("data"),
-                        "leg_state": latest.get("leg_state", {}).get("data"),
-                        "leg_command": latest.get("leg_command", {}).get("data"),
-                    })
-                    self.immediate_reset_pose = last
-                    with (self.evidence / "reset_immediate_posture.json").open("x", encoding="utf-8") as f:
-                        json.dump(last, f, indent=2)
-                        f.write("\n")
-                    return last
-            time.sleep(0.02)
+                            row = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if row.get("event") != "state" or int(row.get("wall_monotonic_ns", 0)) <= dispatch_ns:
+                            continue
+                        key = row.get("topic_key")
+                        if key in required:
+                            latest[key] = row
+                        if key == "odom":
+                            data = row.get("data", {})
+                            try:
+                                ok = float(data["z"]) >= 0.52 and max(abs(float(data["roll_deg"])), abs(float(data["pitch_deg"]))) < 15.0
+                            except (KeyError, TypeError, ValueError):
+                                ok = False
+                            if ok:
+                                upright_tail.append(row)
+                                upright_tail = upright_tail[-3:]
+                            else:
+                                upright_tail.clear()
+                    now_ns = time.monotonic_ns()
+                    ages = {key: (now_ns - int(row["wall_monotonic_ns"])) / 1e9 for key, row in latest.items()}
+                    fresh = required.issubset(latest) and all(0.0 <= ages[key] <= 0.5 for key in required)
+                    last = {
+                        "status": "POST_RESET_UPRIGHT_NOT_YET_CONFIRMED",
+                        "dispatch_monotonic_ns": dispatch_ns,
+                        "startup_observation_timeout_s": RESET_STARTUP_OBSERVATION_TIMEOUT_S,
+                        "state_ages_s": ages,
+                        "fresh_all_required_topics": fresh,
+                        "consecutive_upright_odom_samples": len(upright_tail),
+                        "latest_odom": latest.get("odom"),
+                        "latest_raw_common_state": latest.get("common"),
+                    }
+                    if fresh and len(upright_tail) >= 3:
+                        last.update({
+                            "status": "POST_RESET_UPRIGHT_OBSERVED",
+                            "wall_utc": datetime.now(timezone.utc).isoformat(),
+                            "dispatch_to_upright_ms": (int(upright_tail[0]["wall_monotonic_ns"]) - dispatch_ns) / 1e6,
+                            "pose": upright_tail[-1].get("data"),
+                            "raw_common_state": latest.get("common", {}).get("data"),
+                            "imu": latest.get("imu", {}).get("data"),
+                            "leg_state": latest.get("leg_state", {}).get("data"),
+                            "leg_command": latest.get("leg_command", {}).get("data"),
+                            "physical_gate": {"minimum_root_z_m": 0.52, "maximum_abs_roll_pitch_deg_exclusive": 15.0},
+                            "consecutive_upright_odom_required": 3,
+                        })
+                        self.immediate_reset_pose = last
+                        with (self.evidence / "reset_immediate_posture.json").open("x", encoding="utf-8") as f:
+                            json.dump(last, f, indent=2)
+                            f.write("\n")
+                        return last
+                    time.sleep(0.02)
         last["status"] = "POST_RESET_UPRIGHT_TIMEOUT"
-        last["timeout_s"] = POST_RESET_UPRIGHT_TIMEOUT_S
+        last["timeout_s"] = RESET_STARTUP_OBSERVATION_TIMEOUT_S
         self.immediate_reset_pose = last
         self.outcome_classification = "STANDING_CONTROL_NOT_READY"
         with (self.evidence / "reset_immediate_posture.json").open("x", encoding="utf-8") as f:
             json.dump(last, f, indent=2)
             f.write("\n")
-        raise RuntimeError("Reset did not produce a fresh upright pose within 2 s; SD was not sent")
+        raise RuntimeError(
+            "Reset did not produce a fresh upright pose within the bounded "
+            f"{RESET_STARTUP_OBSERVATION_TIMEOUT_S:.1f} s startup observation; SD was not sent"
+        )
 
     def request_sd_and_verify(self) -> dict[str, Any]:
         # The ROS node, all state subscriptions, and both MC service clients
@@ -1346,7 +1359,7 @@ class BoundedRun:
             "--action STAND_DEFAULT --source node.set_mc_action "
             "--output-dir /workspace/evidence "
             "--reset-event-file /workspace/evidence/reset_dispatch_event.json "
-            "--ready-timeout-s 3 --reset-wait-timeout-s 30 --upright-timeout-s 2 "
+            f"--ready-timeout-s 3 --reset-wait-timeout-s 30 --upright-timeout-s {RESET_STARTUP_OBSERVATION_TIMEOUT_S:g} "
             "--joint-stand-timeout-s 4 --set-timeout-s 2 --get-timeout-s 0.75 "
             f"--duration-s {RESET_OBSERVER_DURATION_S:.1f} "
             "> /workspace/evidence/takeover-capture-console.log 2>&1",

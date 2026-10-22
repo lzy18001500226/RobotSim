@@ -328,7 +328,7 @@ def main() -> int:
     parser.add_argument("--get-timeout-s", type=float, default=0.75)
     parser.add_argument("--ready-timeout-s", type=float, default=3.0)
     parser.add_argument("--reset-wait-timeout-s", type=float, default=30.0)
-    parser.add_argument("--upright-timeout-s", type=float, default=2.0)
+    parser.add_argument("--upright-timeout-s", type=float, default=4.0)
     parser.add_argument("--joint-stand-timeout-s", type=float, default=4.0)
     parser.add_argument("--duration-s", type=float, default=8.0)
     args = parser.parse_args()

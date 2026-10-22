@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -14,7 +15,9 @@ from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as runner
 from issue80_m1_first_motion import (
-    build_forward_point_goal, proximity_smoothstep_speed, stale_readback_keys,
+    build_forward_point_goal, point_goal_forward_speed_m_s,
+    point_goal_stop_reason, speed_scaled_point_goal_stop_advance_m,
+    stale_readback_keys,
 )
 
 
@@ -166,7 +169,7 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
 
 
 class PointGoalAcceptanceTests(unittest.TestCase):
-    def test_stop_target_offsets_the_final_goal_along_measured_heading(self) -> None:
+    def test_goal_uses_measured_heading_without_a_fixed_stop_waypoint(self) -> None:
         start = {
             "x": 1.2,
             "y": -0.4,
@@ -174,53 +177,81 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             "frame_id": "odom",
             "child_frame_id": "base_link",
         }
-        goal, stop_target = build_forward_point_goal(
-            start, distance_m=0.30, stop_compensation_m=0.08,
-        )
+        goal = build_forward_point_goal(start, distance_m=0.30)
         self.assertAlmostEqual(goal["x"], 1.2, places=12)
         self.assertAlmostEqual(goal["y"], -0.1, places=12)
-        self.assertAlmostEqual(stop_target["x"], 1.2, places=12)
-        self.assertAlmostEqual(stop_target["y"], -0.02, places=12)
         with self.assertRaisesRegex(ValueError, "odom -> base_link"):
             build_forward_point_goal({**start, "frame_id": "map"}, distance_m=0.30)
 
-    def test_point_goal_terminal_speed_profile_is_bounded_and_smooth(self) -> None:
-        speed, start, phase = proximity_smoothstep_speed(
-            0.13, 10.0, None,
-            deceleration_start_distance_m=0.12,
-            initial_speed_m_s=0.14,
-            terminal_speed_m_s=0.112,
-            deceleration_duration_s=1.0,
+    def test_stop_advance_scales_with_measured_speed_and_respects_existing_envelope(self) -> None:
+        response_time = 0.1136033
+        measured_run69_speed = 0.15815622063915188
+        advance = speed_scaled_point_goal_stop_advance_m(
+            measured_run69_speed,
+            endpoint_response_time_s=response_time,
+            maximum_forward_speed_m_s=0.2,
         )
-        self.assertEqual((speed, start, phase), (0.14, None, "cruise"))
-        speed, start, phase = proximity_smoothstep_speed(
-            0.11, 10.0, None,
-            deceleration_start_distance_m=0.12,
-            initial_speed_m_s=0.14,
-            terminal_speed_m_s=0.112,
-            deceleration_duration_s=1.0,
+        self.assertAlmostEqual(advance, 0.017967, places=5)
+        self.assertLessEqual(
+            speed_scaled_point_goal_stop_advance_m(
+                0.2, endpoint_response_time_s=response_time,
+            ),
+            0.05,
         )
-        self.assertAlmostEqual(speed, 0.14)
-        self.assertEqual(start, 10.0)
-        self.assertEqual(phase, "decelerating")
-        speed, start, phase = proximity_smoothstep_speed(
-            0.05, 10.5, start,
-            deceleration_start_distance_m=0.12,
-            initial_speed_m_s=0.14,
-            terminal_speed_m_s=0.112,
-            deceleration_duration_s=1.0,
+        self.assertEqual(
+            speed_scaled_point_goal_stop_advance_m(-0.1, endpoint_response_time_s=response_time),
+            0.0,
         )
-        self.assertAlmostEqual(speed, 0.126)
-        self.assertEqual(phase, "decelerating")
-        speed, start, phase = proximity_smoothstep_speed(
-            0.01, 11.0, start,
-            deceleration_start_distance_m=0.12,
-            initial_speed_m_s=0.14,
-            terminal_speed_m_s=0.112,
-            deceleration_duration_s=1.0,
+        with self.assertRaisesRegex(ValueError, "existing point-goal envelope"):
+            speed_scaled_point_goal_stop_advance_m(0.2001, endpoint_response_time_s=response_time)
+
+    def test_measured_speed_projection_respects_declared_twist_frame(self) -> None:
+        body_frame = {
+            "vx": 0.16, "vy": 0.0, "yaw": 0.0, "twist_frame_id": "base_link",
+        }
+        self.assertAlmostEqual(
+            point_goal_forward_speed_m_s(body_frame, start_yaw_rad=0.0), 0.16,
         )
-        self.assertAlmostEqual(speed, 0.112)
-        self.assertEqual(phase, "terminal_speed")
+        rotated_body = {
+            "vx": 0.16, "vy": 0.0, "yaw": math.pi / 2, "twist_frame_id": "base_link",
+        }
+        self.assertAlmostEqual(
+            point_goal_forward_speed_m_s(rotated_body, start_yaw_rad=0.0), 0.0, places=12,
+        )
+        world_frame = {
+            "vx": 0.0, "vy": 0.16, "yaw": math.pi / 2, "twist_frame_id": "odom",
+        }
+        self.assertAlmostEqual(
+            point_goal_forward_speed_m_s(world_frame, start_yaw_rad=math.pi / 2), 0.16,
+        )
+
+    def test_goal_controller_stops_on_dynamic_crossing_and_bounded_guards(self) -> None:
+        common = {
+            "goal_distance_m": 0.30,
+            "dynamic_stop_progress_m": 0.318,
+            "maximum_lateral_error_m": 0.05,
+            "maximum_overshoot_m": 0.05,
+        }
+        self.assertIsNone(point_goal_stop_reason(
+            along_track_progress_m=0.317,
+            lateral_error_m=0.01,
+            **common,
+        ))
+        self.assertEqual(point_goal_stop_reason(
+            along_track_progress_m=0.319,
+            lateral_error_m=0.01,
+            **common,
+        ), "speed_scaled_stop_line_crossed")
+        self.assertEqual(point_goal_stop_reason(
+            along_track_progress_m=0.20,
+            lateral_error_m=0.051,
+            **common,
+        ), "lateral_error_limit")
+        self.assertEqual(point_goal_stop_reason(
+            along_track_progress_m=0.351,
+            lateral_error_m=0.01,
+            **common,
+        ), "hard_overshoot_guard")
 
     def test_readback_refresh_does_not_change_the_existing_freshness_threshold(self) -> None:
         self.assertEqual(
@@ -241,10 +272,13 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         return {
             "status": "PASS",
             "goal_triggered": True,
+            "target_crossing_detected": True,
             "final_distance_to_goal_m": 0.04,
             "acceptance_gates": {
-                "goal_triggered_inside_stop_radius": True,
+                "speed_scaled_stop_line_crossed": True,
                 "final_distance_within_50mm": True,
+                "lateral_error_within_50mm": True,
+                "no_more_than_50mm_along_track_overshoot": True,
                 "termination_condition_triggered_stop": True,
                 "measured_physical_motion": True,
                 "same_sample_source_locomotion_handshake": True,

@@ -593,77 +593,109 @@ def forward_projected_displacement(start_pose: Mapping[str, Any], end_pose: Mapp
     return dx * math.cos(yaw0) + dy * math.sin(yaw0)
 
 
+def point_goal_forward_speed_m_s(pose: Mapping[str, Any], *, start_yaw_rad: float) -> float:
+    """Project odometry twist into the goal's along-track axis with its declared frame."""
+    try:
+        vx, vy = float(pose["vx"]), float(pose["vy"])
+        yaw = float(pose["yaw"])
+        start_yaw = float(start_yaw_rad)
+        twist_frame = str(pose["twist_frame_id"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("point-goal speed requires vx, vy, yaw, and twist_frame_id") from exc
+    if not all(math.isfinite(value) for value in (vx, vy, yaw, start_yaw)):
+        raise ValueError("point-goal speed pose values must be finite")
+    if twist_frame == "base_link":
+        relative_yaw = yaw - start_yaw
+        return vx * math.cos(relative_yaw) - vy * math.sin(relative_yaw)
+    if twist_frame in ("odom", "map", "world"):
+        return vx * math.cos(start_yaw) + vy * math.sin(start_yaw)
+    raise ValueError(f"unsupported point-goal twist frame: {twist_frame!r}")
+
+
 def build_forward_point_goal(
-    start_pose: Mapping[str, Any], *, distance_m: float, stop_compensation_m: float = 0.0,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Build an odom-frame target and a forward stop waypoint from one measured start pose."""
+    start_pose: Mapping[str, Any], *, distance_m: float,
+) -> dict[str, Any]:
+    """Build the requested odom-frame goal from one measured start pose."""
     if start_pose.get("frame_id") != "odom" or start_pose.get("child_frame_id") != "base_link":
         raise ValueError("point-goal start pose must be odom -> base_link")
     try:
         x, y, yaw = (float(start_pose[key]) for key in ("x", "y", "yaw"))
         distance = float(distance_m)
-        compensation = float(stop_compensation_m)
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("point-goal inputs must contain numeric pose, distance, and stop compensation") from exc
-    if not all(math.isfinite(value) for value in (x, y, yaw, distance, compensation)):
+        raise ValueError("point-goal inputs must contain numeric pose and distance") from exc
+    if not all(math.isfinite(value) for value in (x, y, yaw, distance)):
         raise ValueError("point-goal inputs must be finite")
-    if distance <= 0.0 or compensation < 0.0:
-        raise ValueError("point-goal distance must be positive and stop compensation nonnegative")
+    if distance <= 0.0:
+        raise ValueError("point-goal distance must be positive")
     heading_x, heading_y = math.cos(yaw), math.sin(yaw)
     goal = {
         "frame_id": "odom",
         "x": x + distance * heading_x,
         "y": y + distance * heading_y,
     }
-    stop_target = {
-        "frame_id": "odom",
-        "x": goal["x"] + compensation * heading_x,
-        "y": goal["y"] + compensation * heading_y,
-    }
-    return goal, stop_target
+    return goal
 
 
-def proximity_smoothstep_speed(
-    distance_to_target_m: float,
-    now_s: float,
-    deceleration_start_s: float | None,
+def speed_scaled_point_goal_stop_advance_m(
+    measured_forward_speed_m_s: float,
     *,
-    deceleration_start_distance_m: float,
-    initial_speed_m_s: float,
-    terminal_speed_m_s: float,
-    deceleration_duration_s: float,
-) -> tuple[float, float | None, str]:
-    """Reduce a bounded forward command smoothly near a target using monotonic sample time."""
+    endpoint_response_time_s: float,
+    maximum_forward_speed_m_s: float = 0.2,
+) -> float:
+    """Estimate a bounded stop advance from measured speed and one observed endpoint response.
+
+    This is an experiment-specific kinematic correction, not a general braking
+    model. The speed cap must remain the existing validated motion envelope.
+    """
+    try:
+        speed = float(measured_forward_speed_m_s)
+        response_time = float(endpoint_response_time_s)
+        maximum_speed = float(maximum_forward_speed_m_s)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("point-goal stop inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (speed, response_time, maximum_speed)):
+        raise ValueError("point-goal stop inputs must be finite")
+    if response_time < 0.0 or maximum_speed <= 0.0:
+        raise ValueError("point-goal response time and speed envelope are invalid")
+    if abs(speed) > maximum_speed:
+        raise ValueError("measured forward speed exceeds the existing point-goal envelope")
+    return max(0.0, speed) * response_time
+
+
+def point_goal_stop_reason(
+    *,
+    along_track_progress_m: float,
+    lateral_error_m: float,
+    goal_distance_m: float,
+    dynamic_stop_progress_m: float,
+    maximum_lateral_error_m: float,
+    maximum_overshoot_m: float,
+) -> str | None:
+    """Stop on a crossed speed-scaled line or a bounded lateral/overshoot guard."""
     values = (
-        distance_to_target_m,
-        now_s,
-        deceleration_start_distance_m,
-        initial_speed_m_s,
-        terminal_speed_m_s,
-        deceleration_duration_s,
+        along_track_progress_m,
+        lateral_error_m,
+        goal_distance_m,
+        dynamic_stop_progress_m,
+        maximum_lateral_error_m,
+        maximum_overshoot_m,
     )
-    if not all(math.isfinite(float(value)) for value in values):
-        raise ValueError("point-goal speed schedule requires finite values")
-    distance = float(distance_to_target_m)
-    now = float(now_s)
-    threshold = float(deceleration_start_distance_m)
-    initial = float(initial_speed_m_s)
-    terminal = float(terminal_speed_m_s)
-    duration = float(deceleration_duration_s)
-    if distance < 0.0 or threshold <= 0.0 or duration <= 0.0:
-        raise ValueError("point-goal distance, deceleration threshold, or duration is invalid")
-    if initial <= 0.0 or terminal <= 0.0 or terminal > initial:
-        raise ValueError("terminal forward speed must be positive and no faster than the initial speed")
-    if deceleration_start_s is None and distance > threshold:
-        return initial, None, "cruise"
-    start = now if deceleration_start_s is None else float(deceleration_start_s)
-    if not math.isfinite(start):
-        raise ValueError("deceleration start time must be finite")
-    progress = min(1.0, max(0.0, (now - start) / duration))
-    smooth = progress * progress * (3.0 - 2.0 * progress)
-    speed = initial + (terminal - initial) * smooth
-    phase = "decelerating" if progress < 1.0 else "terminal_speed"
-    return speed, start, phase
+    try:
+        numbers = tuple(float(value) for value in values)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("point-goal stop decision inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in numbers):
+        raise ValueError("point-goal stop decision inputs must be finite")
+    progress, lateral, goal, stop_progress, lateral_limit, overshoot_limit = numbers
+    if goal <= 0.0 or lateral_limit <= 0.0 or overshoot_limit < 0.0:
+        raise ValueError("point-goal stop decision limits are invalid")
+    if abs(lateral) > lateral_limit:
+        return "lateral_error_limit"
+    if progress > goal + overshoot_limit:
+        return "hard_overshoot_guard"
+    if progress >= stop_progress:
+        return "speed_scaled_stop_line_crossed"
+    return None
 
 
 def stale_readback_keys(snapshot: Mapping[str, Any], max_age_s: float) -> tuple[str, ...]:

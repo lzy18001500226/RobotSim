@@ -8,11 +8,36 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import issue80_m1_auto_reset_run as reset_runner
 from issue80_m1_auto_reset_run import BoundedRun, first_post_action_fall
 
 
 class ResetBeforeSdOrderingTests(unittest.TestCase):
+    def test_parent_and_prearmed_observer_share_bounded_late_reset_window(self) -> None:
+        self.assertEqual(reset_runner.RESET_STARTUP_OBSERVATION_TIMEOUT_S, 4.0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BoundedRun(argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="test-container",
+                attempt_id="observer-window-test",
+                max_runtime_s=30.0,
+            ))
+            (Path(temp_dir) / "reset_watch_ready.json").write_text(json.dumps({
+                "status": "READY",
+                "fresh_topics": ["odom", "imu", "common", "leg_state", "leg_command"],
+                "set_mc_action_service_ready": True,
+                "get_mc_action_service_ready": True,
+                "pre_reset_get_mc_action": {"action_desc": "PASSIVE_DEFAULT", "action_status_value": 100},
+            }), encoding="utf-8")
+            captured: list[str] = []
+            runner.docker_exec = lambda _label, command, **_kwargs: captured.append(command)
+            runner.start_observer()
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("--upright-timeout-s 4", captured[0])
+
     def make_runner(
         self,
         events: list[str],
@@ -130,6 +155,67 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertEqual(snapshot.get("status"), "POST_RESET_UPRIGHT_OBSERVED", snapshot)
         self.assertEqual(snapshot["raw_common_state"], {"fsm_state": 6, "body_status": 2})
         self.assertGreaterEqual(snapshot["dispatch_to_upright_ms"], 0.0)
+
+    def test_late_reset_event_is_observed_without_relaxing_the_pose_gate(self) -> None:
+        self.assertGreaterEqual(reset_runner.RESET_STARTUP_OBSERVATION_TIMEOUT_S, 2.216)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BoundedRun(argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="test-container",
+                maintainer_authorized_first_motion=True,
+                attempt_id="late-reset-test",
+                max_runtime_s=30.0,
+            ))
+            base_ns = 10_000_000_000
+            dispatch_ns = base_ns
+            runner.reset_dispatch_payload = {
+                "event": {"status": "KEY_DISPATCHED", "dispatch_monotonic_ns": dispatch_ns}
+            }
+            trace = Path(temp_dir) / "reset_state_trace.jsonl"
+            trace.write_text(json.dumps({
+                "event": "state", "topic_key": "odom",
+                "wall_monotonic_ns": dispatch_ns - 1,
+                "wall_utc": "before-dispatch",
+                "data": {"z": 0.076, "roll_deg": 0.0, "pitch_deg": -88.0},
+            }) + "\n", encoding="utf-8")
+            clock = {"seconds": 0.0, "written": False}
+
+            def fake_sleep(seconds: float) -> None:
+                clock["seconds"] += seconds
+                if clock["seconds"] >= 2.216 and not clock["written"]:
+                    rows = []
+                    for i in range(3):
+                        rows.append({
+                            "event": "state", "topic_key": "odom",
+                            "wall_monotonic_ns": base_ns + int((2.22 + i * 0.02) * 1e9),
+                            "wall_utc": f"late-upright-{i}",
+                            "data": {"z": 0.676, "roll_deg": 0.0, "pitch_deg": 0.0},
+                        })
+                    for key in ("imu", "common", "leg_state", "leg_command"):
+                        rows.append({
+                            "event": "state", "topic_key": key,
+                            "wall_monotonic_ns": base_ns + int(2.26 * 1e9),
+                            "wall_utc": f"late-{key}",
+                            "data": {"fsm_state": 6, "body_status": 1} if key == "common" else {},
+                        })
+                    with trace.open("a", encoding="utf-8") as stream:
+                        stream.writelines(json.dumps(row) + "\n" for row in rows)
+                    clock["written"] = True
+
+            with (
+                patch.object(reset_runner.time, "monotonic", side_effect=lambda: clock["seconds"]),
+                patch.object(reset_runner.time, "monotonic_ns", side_effect=lambda: base_ns + int(clock["seconds"] * 1e9)),
+                patch.object(reset_runner.time, "sleep", side_effect=fake_sleep),
+            ):
+                result = runner.wait_for_immediate_reset_pose()
+
+        self.assertEqual(result["status"], "POST_RESET_UPRIGHT_OBSERVED")
+        self.assertGreaterEqual(result["dispatch_to_upright_ms"], 2220.0)
+        self.assertEqual(result["physical_gate"], {
+            "minimum_root_z_m": 0.52,
+            "maximum_abs_roll_pitch_deg_exclusive": 15.0,
+        })
+        self.assertEqual(result["consecutive_upright_odom_required"], 3)
 
     def test_post_sd_fall_detector_ignores_pre_action_pose_and_stops_on_first_fall(self) -> None:
         rows = [
