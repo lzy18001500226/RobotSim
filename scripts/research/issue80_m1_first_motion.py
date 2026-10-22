@@ -62,21 +62,18 @@ PHYSICAL_STOP_MAX_JOINT_RANGE_RAD = 0.02
 PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD = 0.02
 PHYSICAL_STOP_TARGET_STABILITY_WINDOW_S = 1.0
 PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD = 0.01
-# Run58's 0.14 rad/s request produced an observed -0.824 rad/s yaw transient
-# before measurable commanded-direction rotation. Keep the measured 0.28 rad/s
-# abort gate unchanged and halve the diagnostic input for the next bounded test.
-TURN_COMMAND_RAD_S = 0.07
-# Run63 produced 0.03685 rad over a 2 s turn at this command. Extending each
-# arc to 4.75 s projects just over the 5 degree heading gate while two
-# 0.25 s warmups plus two arcs remain at the 10 s per-run active-command cap.
-TURN_PULSE_S = 4.75
+# Run64's left arc measured 0.0911 rad at 0.07 rad/s for 4.75 s. A 0.075
+# rad/s, 4.5 s arc preserves the measured heading while a 0.5 s warmup gives
+# both directions time to confirm source/mode; each side remains 5 s total.
+TURN_COMMAND_RAD_S = 0.075
+TURN_PULSE_S = 4.5
 TURN_RAMP_S = 0.25
 TURN_MAX_SUSTAINED_YAW_RATE_RAD_S = 0.28
 TURN_MIN_HEADING_CHANGE_RAD = math.radians(5.0)
 TURN_MAX_PLANAR_DISPLACEMENT_M = 0.05
 TURN_FORWARD_COMMAND_M_S = 0.12
 # Run63 confirmed same-sample source+LOCOMOTION at 0.201 s; retain 50 ms margin.
-TURN_FORWARD_WARMUP_S = 0.25
+TURN_FORWARD_WARMUP_S = 0.5
 TURN_MAX_COMMAND_WINDOW_S = 5.0
 TURN_YAW_RATE_WINDOW_S = 0.4
 
@@ -2153,9 +2150,9 @@ def run_angular_turn_window(
     elif not math.isfinite(forward_warmup_s) or not 0.0 <= forward_warmup_s <= 1.0:
         validation_fault = "turn_forward_warmup_outside_fixed_0_to_1_second_cap"
     elif not math.isfinite(angular_velocity_rad_s) or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S:
-        validation_fault = "turn_command_outside_fixed_0p07_rad_s_cap"
+        validation_fault = "turn_command_outside_fixed_0p075_rad_s_cap"
     elif not math.isfinite(pulse_duration_s) or not 0.0 < pulse_duration_s <= TURN_PULSE_S:
-        validation_fault = "turn_duration_outside_fixed_4p75_second_cap"
+        validation_fault = "turn_duration_outside_fixed_4p5_second_cap"
     elif forward_warmup_s + pulse_duration_s > TURN_MAX_COMMAND_WINDOW_S:
         validation_fault = "turn_command_window_exceeds_fixed_5_second_per_direction_cap"
     elif not math.isfinite(max_observed_planar_speed_m_s) or not 0.0 < max_observed_planar_speed_m_s <= 0.2:
@@ -2606,7 +2603,7 @@ def smooth_turn_velocity(angular_velocity_rad_s: float, elapsed_s: float, durati
         or not 0.0 < abs(angular_velocity_rad_s) <= TURN_COMMAND_RAD_S
         or not 0.0 < duration_s <= TURN_PULSE_S
     ):
-        raise ValueError("turn command must be within the fixed 0.07 rad/s, 4.75 s profile")
+        raise ValueError("turn command must be within the fixed 0.075 rad/s, 4.5 s profile")
     ramp = min(TURN_RAMP_S, duration_s / 2.0)
     if elapsed_s < 0.0 or elapsed_s >= duration_s:
         return 0.0

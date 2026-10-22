@@ -2392,26 +2392,23 @@ class BoundedTurningProfileTests(unittest.TestCase):
         backwards = monitor.update(snapshot(0.3, 9.6, 0.0))
         self.assertEqual(backwards["status"], "HOST_MONOTONIC_RESET")
 
-    def test_turn_ramp_is_symmetric_signed_and_never_exceeds_point_zero_seven_rad_s(self):
-        left = [smooth_turn_velocity(0.07, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
-        right = [smooth_turn_velocity(-0.07, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
+    def test_turn_ramp_is_symmetric_signed_and_never_exceeds_point_zero_seventyfive_rad_s(self):
+        left = [smooth_turn_velocity(0.075, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
+        right = [smooth_turn_velocity(-0.075, t, 2.0) for t in (0.0, 0.125, 0.25, 1.0, 1.75, 1.875, 2.0)]
         self.assertEqual(left[0], 0.0)
         self.assertEqual(left[-1], 0.0)
         self.assertEqual(right, [-value for value in left])
-        self.assertLessEqual(max(map(abs, left)), 0.07)
-        self.assertEqual(left[2], 0.07)
+        self.assertLessEqual(max(map(abs, left)), 0.075)
+        self.assertEqual(left[2], 0.075)
 
     def test_turn_profile_rejects_command_or_duration_above_the_fixed_cap(self):
         with self.assertRaises(ValueError):
-            smooth_turn_velocity(0.07001, 0.5, 2.0)
+            smooth_turn_velocity(0.07501, 0.5, 2.0)
         with self.assertRaises(ValueError):
             smooth_turn_velocity(-0.1, 0.5, TURN_PULSE_S + 0.001)
 
     def test_left_right_turn_pair_stays_at_or_below_ten_active_seconds(self):
-        self.assertLessEqual(
-            2.0 * (TURN_FORWARD_WARMUP_S + TURN_PULSE_S),
-            10.0,
-        )
+        self.assertLessEqual(2.0 * (TURN_FORWARD_WARMUP_S + TURN_PULSE_S), 10.0)
         self.assertEqual(TURN_FORWARD_WARMUP_S + TURN_PULSE_S, TURN_MAX_COMMAND_WINDOW_S)
 
     def test_turn_direction_requires_heading_change_beyond_stationary_noise(self):
@@ -2540,7 +2537,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             baseline_forward_displacements_m=[0.0, 0.0, 0.0],
             baseline_state_summary={"body_status": 1, "maxima": {"max_abs_yaw_excursion_rad": 0.001}},
             authorized=True,
-            angular_velocity_rad_s=0.07,
+            angular_velocity_rad_s=0.075,
             forward_velocity_m_s=0.12,
             pulse_duration_s=2.0,
             extra_post_stop_observe_s=0.0,
@@ -2605,7 +2602,7 @@ class BoundedTurningProfileTests(unittest.TestCase):
             baseline_forward_displacements_m=[0.0, 0.0, 0.0],
             baseline_state_summary={"body_status": 1, "maxima": {"max_abs_yaw_excursion_rad": 0.001}},
             authorized=True,
-            angular_velocity_rad_s=0.07,
+            angular_velocity_rad_s=0.075,
             forward_velocity_m_s=TURN_FORWARD_COMMAND_M_S,
             forward_warmup_s=TURN_FORWARD_WARMUP_S,
             pulse_duration_s=2.0,
