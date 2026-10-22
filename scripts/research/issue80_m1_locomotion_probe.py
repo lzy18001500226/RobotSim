@@ -41,7 +41,8 @@ from issue80_m1_first_motion import (
     VerifiedMcRuntimeIdentity, load_verified_mc_runtime_identity,
     load_verified_mc_velocity_subscriber_provenance, mc_subscriber_history_depth_evidence,
     build_forward_point_goal, point_goal_command_from_bearing_error,
-    point_goal_forward_speed_m_s, point_goal_heading_error_rad,
+    point_goal_angular_taper_factor, point_goal_forward_speed_m_s,
+    point_goal_heading_error_rad,
     point_goal_stop_reason,
     speed_scaled_point_goal_stop_advance_m, run_first_motion_window,
     readback_refresh_needed,
@@ -67,6 +68,7 @@ POINT_GOAL_MAX_DURATION_S = 10.0
 POINT_GOAL_MAX_PLANAR_SPEED_M_S = 0.2
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 POINT_GOAL_HEADING_GAIN = 0.8
+POINT_GOAL_ANGULAR_TAPER_START_ERROR_M = 0.15
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
 # Bounded two-run SIMULATION_ONLY fit: Run69 and Run73 endpoint shifts versus
@@ -1311,6 +1313,12 @@ class FocusedM1Diagnostic(Node):
                 heading_gain=POINT_GOAL_HEADING_GAIN,
                 maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
             )
+            angular_taper_factor = point_goal_angular_taper_factor(
+                float(point_metrics["predicted_settled_goal_error_m"]),
+                taper_start_error_m=POINT_GOAL_ANGULAR_TAPER_START_ERROR_M,
+                final_tolerance_m=POINT_GOAL_FINAL_TOLERANCE_M,
+            )
+            angular *= angular_taper_factor
             speed_status = snapshot.get("speed_status")
             if not isinstance(speed_status, Mapping):
                 raise RuntimeError("point_goal_live_speed_bounds_missing")
@@ -1336,6 +1344,8 @@ class FocusedM1Diagnostic(Node):
                 "dynamic_stop_progress_m": point_metrics["dynamic_stop_progress_m"],
                 "dynamic_stop_line_crossed": point_metrics["dynamic_stop_line_crossed"],
                 "heading_error_rad": error,
+                "predicted_settled_goal_error_m": point_metrics["predicted_settled_goal_error_m"],
+                "angular_taper_factor": angular_taper_factor,
                 "control_handshake_confirmed": activation_tracker.control_handshake_confirmed,
             })
 
@@ -1518,6 +1528,8 @@ class FocusedM1Diagnostic(Node):
                 "maximum_angular_velocity_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                 "heading_gain": POINT_GOAL_HEADING_GAIN,
                 "heading_policy": "Run73_waypoint_bearing_to_current_ground_truth_goal",
+                "angular_taper_start_predicted_error_m": POINT_GOAL_ANGULAR_TAPER_START_ERROR_M,
+                "angular_taper_end_predicted_error_m": POINT_GOAL_FINAL_TOLERANCE_M,
                 "maximum_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
                 "maximum_overshoot_m": POINT_GOAL_MAX_OVERSHOOT_M,
             },

@@ -663,6 +663,32 @@ def point_goal_command_from_bearing_error(
     return forward, angular
 
 
+def point_goal_angular_taper_factor(
+    predicted_settled_error_m: float,
+    *,
+    taper_start_error_m: float = 0.15,
+    final_tolerance_m: float = 0.05,
+) -> float:
+    """Fade angular input over the terminal approach when final yaw is unconstrained."""
+    try:
+        error, taper_start, tolerance = tuple(
+            float(value) for value in (
+                predicted_settled_error_m, taper_start_error_m, final_tolerance_m,
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("point-goal angular taper inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (error, taper_start, tolerance)):
+        raise ValueError("point-goal angular taper inputs must be finite")
+    if tolerance <= 0.0 or taper_start <= tolerance:
+        raise ValueError("point-goal angular taper must begin outside the final tolerance")
+    if error >= taper_start:
+        return 1.0
+    if error <= tolerance:
+        return 0.0
+    return (error - tolerance) / (taper_start - tolerance)
+
+
 def build_forward_point_goal(
     start_pose: Mapping[str, Any], *, distance_m: float,
 ) -> dict[str, Any]:

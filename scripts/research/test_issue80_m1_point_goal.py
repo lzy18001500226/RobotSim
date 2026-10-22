@@ -16,7 +16,8 @@ from unittest.mock import patch
 import issue80_m1_auto_reset_run as runner
 from issue80_m1_first_motion import (
     build_forward_point_goal, point_goal_command_from_bearing_error,
-    point_goal_forward_speed_m_s, point_goal_heading_error_rad,
+    point_goal_angular_taper_factor, point_goal_forward_speed_m_s,
+    point_goal_heading_error_rad,
     point_goal_stop_reason, speed_scaled_point_goal_stop_advance_m,
     stale_readback_keys,
 )
@@ -290,6 +291,15 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         forward, angular = point_goal_command_from_bearing_error(0.08)
         self.assertEqual(forward, 0.14)
         self.assertAlmostEqual(angular, 0.064, places=12)
+
+    def test_terminal_angular_taper_uses_predicted_endpoint_without_changing_acceptance(self) -> None:
+        self.assertEqual(point_goal_angular_taper_factor(0.20), 1.0)
+        self.assertEqual(point_goal_angular_taper_factor(0.15), 1.0)
+        self.assertAlmostEqual(point_goal_angular_taper_factor(0.10), 0.5)
+        self.assertEqual(point_goal_angular_taper_factor(0.05), 0.0)
+        self.assertEqual(point_goal_angular_taper_factor(0.04), 0.0)
+        with self.assertRaisesRegex(ValueError, "begin outside"):
+            point_goal_angular_taper_factor(0.1, taper_start_error_m=0.05, final_tolerance_m=0.05)
 
     def test_run73_recorded_waypoint_bearing_command_is_reproduced(self) -> None:
         # Run73 sample near progress=109.7 mm; recorded command was
