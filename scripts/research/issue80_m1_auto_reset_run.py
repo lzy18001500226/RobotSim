@@ -2105,9 +2105,9 @@ def main() -> int:
         "--run53-turning-diagnostic",
         action="store_true",
         help=(
-            "reuse the verified SIMULATION_ONLY FoundationWalk overlay for one bounded "
-            "0.5 s forward warmup, then 0.12 m/s forward and +/-0.07 rad/s left/right arc pair "
-            "with unchanged physical safety gates"
+            "reuse the verified SIMULATION_ONLY FoundationWalk overlay for one bounded pair: "
+            "0.25 s forward warmup plus 4.75 s at 0.12 m/s forward and +/-0.07 rad/s, "
+            "capped at 10 s total active commands with unchanged physical safety gates"
         ),
     )
     args=parser.parse_args()
@@ -2155,8 +2155,8 @@ def main() -> int:
                 or args.startup_transition_timeout_s != 0.0
             ):
                 parser.error(
-                    "Run53 uses a fixed 0.5-second forward warmup followed by the two-second "
-                    "±0.07 rad/s forward-arc turn pair, 5-second observation, and McRLDebug capture"
+                    "Run53 uses a fixed 0.25-second forward warmup followed by 4.75-second "
+                    "±0.07 rad/s forward-arc turns, 5-second observation, and McRLDebug capture"
                 )
         else:
             if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic:

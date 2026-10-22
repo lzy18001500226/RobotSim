@@ -40,6 +40,8 @@ from issue80_m1_first_motion import (
     classify_turn_planar_motion,
     TURN_FORWARD_COMMAND_M_S,
     TURN_FORWARD_WARMUP_S,
+    TURN_MAX_COMMAND_WINDOW_S,
+    TURN_PULSE_S,
     TURN_MAX_SUSTAINED_YAW_RATE_RAD_S,
     TURN_YAW_RATE_WINDOW_S,
     SustainedYawRateWindow,
@@ -2403,7 +2405,14 @@ class BoundedTurningProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             smooth_turn_velocity(0.07001, 0.5, 2.0)
         with self.assertRaises(ValueError):
-            smooth_turn_velocity(-0.1, 0.5, 2.001)
+            smooth_turn_velocity(-0.1, 0.5, TURN_PULSE_S + 0.001)
+
+    def test_left_right_turn_pair_stays_at_or_below_ten_active_seconds(self):
+        self.assertLessEqual(
+            2.0 * (TURN_FORWARD_WARMUP_S + TURN_PULSE_S),
+            10.0,
+        )
+        self.assertEqual(TURN_FORWARD_WARMUP_S + TURN_PULSE_S, TURN_MAX_COMMAND_WINDOW_S)
 
     def test_turn_direction_requires_heading_change_beyond_stationary_noise(self):
         left = classify_turning_rotation(
