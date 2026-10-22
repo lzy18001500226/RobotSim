@@ -941,6 +941,8 @@ class BoundedRun:
             "maximum_heading_change_rad": POINT_GOAL_MAX_HEADING_CHANGE_RAD,
             "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
             "minimum_measured_heading_change_rad": TURN_MIN_HEADING_CHANGE_RAD,
+            "heading_change_warmup_s": TURN_FORWARD_WARMUP_S,
+            "heading_change_warmup_forward_m_s": TURN_FORWARD_COMMAND_M_S,
             "stop_model": "speed_scaled_endpoint_response",
             "endpoint_response_intercept_m": POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
             "endpoint_response_time_s": POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,

@@ -685,8 +685,10 @@ def point_goal_command_from_bearing_error(
     heading_gain: float = 0.8,
     maximum_angular_rad_s: float = 0.075,
     steering_threshold_rad: float = 0.005,
+    turn_warmup_active: bool = False,
+    warmup_forward_m_s: float = TURN_FORWARD_COMMAND_M_S,
 ) -> tuple[float, float]:
-    """Apply the bounded point-goal speed profile and heading response."""
+    """Apply the bounded point-goal speed profile and optional measured turn warmup."""
     values = (
         heading_error_rad,
         cruise_forward_m_s,
@@ -694,17 +696,21 @@ def point_goal_command_from_bearing_error(
         heading_gain,
         maximum_angular_rad_s,
         steering_threshold_rad,
+        warmup_forward_m_s,
     )
     try:
-        error, cruise, steering, gain, maximum_angular, threshold = tuple(
+        error, cruise, steering, gain, maximum_angular, threshold, warmup_forward = tuple(
             float(value) for value in values
         )
     except (TypeError, ValueError) as exc:
         raise ValueError("point-goal command inputs must be numeric") from exc
-    if not all(math.isfinite(value) for value in (error, cruise, steering, gain, maximum_angular, threshold)):
+    if not all(math.isfinite(value) for value in (error, cruise, steering, gain, maximum_angular, threshold, warmup_forward)):
         raise ValueError("point-goal command inputs must be finite")
-    if cruise <= 0.0 or steering <= 0.0 or gain < 0.0 or maximum_angular <= 0.0 or threshold < 0.0:
+    if (cruise <= 0.0 or steering <= 0.0 or gain < 0.0 or maximum_angular <= 0.0
+            or threshold < 0.0 or warmup_forward <= 0.0 or warmup_forward > FORWARD_COMMAND_M_S):
         raise ValueError("point-goal command bounds are invalid")
+    if turn_warmup_active:
+        return warmup_forward, 0.0
     forward = steering if abs(error) > threshold else cruise
     angular = max(-maximum_angular, min(maximum_angular, gain * error))
     return forward, angular

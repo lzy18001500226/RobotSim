@@ -339,6 +339,16 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         self.assertEqual(forward, 0.14)
         self.assertAlmostEqual(angular, 0.064, places=12)
 
+    def test_heading_change_starts_with_validated_forward_warmup_before_turning(self) -> None:
+        self.assertEqual(
+            point_goal_command_from_bearing_error(0.20, turn_warmup_active=True),
+            (0.12, 0.0),
+        )
+        self.assertEqual(
+            point_goal_command_from_bearing_error(0.20, turn_warmup_active=False),
+            (0.14, 0.075),
+        )
+
     def test_terminal_angular_taper_uses_predicted_endpoint_without_changing_acceptance(self) -> None:
         self.assertEqual(point_goal_angular_taper_factor(0.30), 1.0)
         self.assertEqual(point_goal_angular_taper_factor(0.25), 1.0)

@@ -81,6 +81,8 @@ POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
 # The pinned community Task1 pose-goal example uses a 0.17 rad default yaw
 # tolerance; this is an intermediate SIMULATION_ONLY heading-goal criterion.
 POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
+POINT_GOAL_HEADING_CHANGE_WARMUP_S = TURN_FORWARD_WARMUP_S
+POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S = TURN_FORWARD_COMMAND_M_S
 # Bounded two-run SIMULATION_ONLY fit: Run69 and Run73 endpoint shifts versus
 # measured forward speed. It is only a stop predictor for this fixture, not a
 # general or vendor FoundationWalk braking model.
@@ -1222,6 +1224,7 @@ class FocusedM1Diagnostic(Node):
             "metrics_at_trigger": None,
             "fault": None,
             "last_metrics": None,
+            "activation_started_monotonic_s": None,
         }
         command_trace: list[dict[str, Any]] = []
 
@@ -1287,6 +1290,10 @@ class FocusedM1Diagnostic(Node):
         def on_goal_sample(phase: str, snapshot: Mapping[str, Any]) -> None:
             current = dict(snapshot)
             latest["snapshot"] = current
+            if phase == "activation" and state["activation_started_monotonic_s"] is None:
+                state["activation_started_monotonic_s"] = float(
+                    current.get("sample_monotonic_s", time.monotonic())
+                )
             activation_tracker.observe(current, phase="activation" if phase == "activation" else phase)
             stamp_rate = odom_stamp_monitor.update(current)
             try:
@@ -1324,6 +1331,15 @@ class FocusedM1Diagnostic(Node):
             point_metrics = metrics(snapshot)
             error = float(point_metrics["heading_error_rad"])
             sample_monotonic_s = float(snapshot["sample_monotonic_s"])
+            activation_started = state.get("activation_started_monotonic_s")
+            activation_elapsed = (
+                max(0.0, sample_monotonic_s - float(activation_started))
+                if activation_started is not None else 0.0
+            )
+            heading_warmup_active = (
+                abs(heading_change_rad) > 1e-9
+                and activation_elapsed < POINT_GOAL_HEADING_CHANGE_WARMUP_S
+            )
             # Keep forward input above the measured FoundationWalk deadzone.
             # Heading/lateral correction uses only the already validated
             # Run65 angular envelope; it does not turn after the stop line.
@@ -1333,6 +1349,8 @@ class FocusedM1Diagnostic(Node):
                 steering_forward_m_s=POINT_GOAL_STEERING_COMMAND_M_S,
                 heading_gain=POINT_GOAL_HEADING_GAIN,
                 maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                turn_warmup_active=heading_warmup_active,
+                warmup_forward_m_s=POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S,
             )
             angular_taper_factor = point_goal_angular_taper_factor(
                 float(point_metrics["predicted_settled_goal_error_m"]),
@@ -1365,6 +1383,8 @@ class FocusedM1Diagnostic(Node):
                 "dynamic_stop_progress_m": point_metrics["dynamic_stop_progress_m"],
                 "dynamic_stop_line_crossed": point_metrics["dynamic_stop_line_crossed"],
                 "heading_error_rad": error,
+                "activation_elapsed_s": activation_elapsed,
+                "heading_turn_warmup_active": heading_warmup_active,
                 "predicted_settled_goal_error_m": point_metrics["predicted_settled_goal_error_m"],
                 "angular_taper_factor": angular_taper_factor,
                 "control_handshake_confirmed": activation_tracker.control_handshake_confirmed,
@@ -1538,7 +1558,8 @@ class FocusedM1Diagnostic(Node):
             "forward_command_m_s": POINT_GOAL_COMMAND_M_S,
             "maximum_active_command_s": POINT_GOAL_MAX_DURATION_S,
             "command_profile": (
-                "0.14 m/s forward input with Run73 waypoint-bearing feedback to the ground-truth point/yaw goal, "
+                "0.12 m/s forward warmup for the validated Run65 0.5 s turn-start interval, then 0.14 m/s forward input "
+                "with Run73 waypoint-bearing feedback to the ground-truth point/yaw goal, "
                 "optional bounded path-yaw offset, +/-0.075 rad/s angular cap, and linear terminal angular "
                 "taper from 0.25 m predicted-settled error to the existing 0.05 m position tolerance; "
                 "stop on the speed-scaled line or predicted-settled endpoint, with unchanged 50 mm lateral/overshoot "
@@ -1591,6 +1612,8 @@ class FocusedM1Diagnostic(Node):
                 "maximum_heading_change_rad": POINT_GOAL_MAX_HEADING_CHANGE_RAD,
                 "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
                 "minimum_measured_heading_change_rad": TURN_MIN_HEADING_CHANGE_RAD,
+                "heading_change_warmup_s": POINT_GOAL_HEADING_CHANGE_WARMUP_S,
+                "heading_change_warmup_forward_m_s": POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S,
                 "cruise_speed_m_s": POINT_GOAL_COMMAND_M_S,
                 "steering_forward_speed_m_s": POINT_GOAL_STEERING_COMMAND_M_S,
                 "minimum_command_speed_m_s": POINT_GOAL_STEERING_COMMAND_M_S,
