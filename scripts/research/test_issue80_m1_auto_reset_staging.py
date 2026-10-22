@@ -176,6 +176,18 @@ class ResearchScriptStagingTests(unittest.TestCase):
             self.assertEqual(runner.reset_dispatch_payload["reset_delivery_attempt_count"], 2)
             self.assertEqual(json.loads((Path(temp_dir) / "reset_dispatch_event.json").read_text())["event"]["status"], "KEY_DISPATCHED")
 
+    def test_windows_focus_mapping_requires_observed_wslg_rail_identity(self):
+        helper = Path(__file__).with_name("issue80_mujoco_windows_focus.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('$expectedWslgTitle = "[WARN:COPY MODE] $ExpectedTitle (Ubuntu-22.04)"', helper)
+        self.assertIn('$_.class_name -ceq "RAIL_WINDOW"', helper)
+        self.assertIn('$_.process_name -ieq "msrdc"', helper)
+        self.assertIn("$windowMatches.Count -eq 1", helper)
+        self.assertIn("$currentWindow.pid -eq $matchedWindow.pid", helper)
+        self.assertIn("$currentChild.pid -eq $matchedWindow.pid", helper)
+        self.assertIn("SetForegroundWindow", helper)
+        self.assertNotIn("SendInput", helper)
+
     def test_unverified_windows_foreground_result_sends_no_second_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = self.make_runner(Path(temp_dir))

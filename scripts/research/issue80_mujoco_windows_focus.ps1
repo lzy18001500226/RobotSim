@@ -113,14 +113,16 @@ foreach ($parentWindow in $topLevelWindows) {
     }
 }
 $expectedAspect = if ($ExpectedHeight -gt 0) { [double]$ExpectedWidth / $ExpectedHeight } else { 0.0 }
+$expectedWslgTitle = "[WARN:COPY MODE] $ExpectedTitle (Ubuntu-22.04)"
 $windowMatches = @($allVisible | Where-Object {
-    $_.title -ceq $ExpectedTitle -and
+    $_.title -ceq $expectedWslgTitle -and
+    $_.class_name -ceq "RAIL_WINDOW" -and
+    $_.process_name -ieq "msrdc" -and
     $_.width -gt 200 -and $_.height -gt 200 -and
     $expectedAspect -gt 0 -and
     [Math]::Abs(([double]$_.width / $_.height) - $expectedAspect) -lt 0.08
 })
 $foregroundBefore = [RobotSimX2WindowsFocus]::GetForegroundWindow().ToInt64()
-$foregroundInfo = @($allVisible | Where-Object { $_.hwnd -eq $foregroundBefore }) | Select-Object -First 1
 $relatedWindows = @($allVisible | Where-Object {
     $_.title -match "(?i)MuJoCo|Remote Desktop" -or
     $_.process_name -match "(?i)^(msrdc|mstsc|wslg|wslhost)$"
@@ -137,8 +139,13 @@ $result = [ordered]@{
     }
     matching_visible_windows = $windowMatches
     related_wslg_windows = $relatedWindows
+    expected_wslg_mapping = [ordered]@{
+        title = $expectedWslgTitle
+        class_name = "RAIL_WINDOW"
+        process_name = "msrdc"
+        aspect_ratio_tolerance = 0.08
+    }
     foreground_hwnd_before = $foregroundBefore
-    foreground_window_before = $foregroundInfo
     foreground_hwnd_after = $null
     set_foreground_window_return = $null
     status = "WINDOW_MATCH_NOT_UNIQUE"
@@ -162,11 +169,23 @@ if ($windowMatches.Count -eq 1) {
     $result.foreground_hwnd_after = $foreground
     $stillPresent = $false
     foreach ($currentWindow in [RobotSimX2WindowsFocus]::VisibleWindows()) {
-        if ($currentWindow.hwnd -eq $matchedWindow.hwnd -and $currentWindow.title -ceq $ExpectedTitle) {
+        if (
+            $currentWindow.hwnd -eq $matchedWindow.hwnd -and
+            $currentWindow.pid -eq $matchedWindow.pid -and
+            $currentWindow.title -ceq $expectedWslgTitle -and
+            $currentWindow.class_name -ceq "RAIL_WINDOW" -and
+            $currentWindow.process_name -ieq "msrdc"
+        ) {
             $stillPresent = $true
         }
         foreach ($currentChild in [RobotSimX2WindowsFocus]::VisibleChildWindows([IntPtr]([long]$currentWindow.hwnd))) {
-            if ($currentChild.hwnd -eq $matchedWindow.hwnd -and $currentChild.title -ceq $ExpectedTitle) {
+            if (
+                $currentChild.hwnd -eq $matchedWindow.hwnd -and
+                $currentChild.pid -eq $matchedWindow.pid -and
+                $currentChild.title -ceq $expectedWslgTitle -and
+                $currentChild.class_name -ceq "RAIL_WINDOW" -and
+                $currentChild.process_name -ieq "msrdc"
+            ) {
                 $stillPresent = $true
             }
         }
