@@ -63,6 +63,19 @@ def valid_profile(**overrides) -> argparse.Namespace:
 
 
 class PointGoalPrerequisiteTests(unittest.TestCase):
+    def test_cli_point_goal_flag_uses_the_unified_execution_field(self) -> None:
+        parser = argparse.ArgumentParser()
+        runner.add_run65_point_goal_arguments(parser)
+        disabled = parser.parse_args([])
+        enabled = parser.parse_args(["--run65-ground-truth-point-goal"])
+        self.assertTrue(hasattr(enabled, "run65_ground_truth_point_goal"))
+        self.assertFalse(hasattr(enabled, "run65_point_goal_diagnostic"))
+        self.assertFalse(runner.run65_point_goal_enabled(disabled))
+        self.assertTrue(runner.run65_point_goal_enabled(enabled))
+        self.assertFalse(runner.run65_point_goal_enabled(
+            argparse.Namespace(run65_point_goal_diagnostic=True)
+        ))
+
     def test_reassessment_requires_both_turns_and_all_independent_gates(self) -> None:
         evidence = valid_reassessment()
         verified = runner.validate_turning_reassessment_evidence(

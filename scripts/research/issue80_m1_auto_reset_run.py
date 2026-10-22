@@ -240,6 +240,28 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
     return validate_turning_reassessment_file(args.turning_reassessment_json)
 
 
+def run65_point_goal_enabled(args: argparse.Namespace) -> bool:
+    """Return the single argparse destination used by every Run65 execution stage."""
+    return bool(getattr(args, "run65_ground_truth_point_goal", False))
+
+
+def add_run65_point_goal_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--run65-ground-truth-point-goal",
+        dest="run65_ground_truth_point_goal",
+        action="store_true",
+        help=(
+            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with the verified Run65 turn/stop "
+            "prerequisite, 0.12 m/s cap, 10-second command cap, and unchanged physical-stop gates"
+        ),
+    )
+    parser.add_argument(
+        "--turning-reassessment-json",
+        default=None,
+        help="governed Run65 forward-arc reassessment result.json required before point-goal runtime",
+    )
+
+
 def classify_point_goal_result(point_goal: Mapping[str, Any] | None) -> str:
     """Classify only a completed ground-truth goal plus the child's guarded stop gates as pass."""
     if not isinstance(point_goal, Mapping):
@@ -793,7 +815,7 @@ class BoundedRun:
         run49 = bool(getattr(self.args, "run49_smoothstop_diagnostic", False))
         run50 = bool(getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False))
         run53 = bool(getattr(self.args, "run53_turning_diagnostic", False))
-        run65 = bool(getattr(self.args, "run65_point_goal_diagnostic", False))
+        run65 = run65_point_goal_enabled(self.args)
         selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65))
         if selected_variants == 0:
             return
@@ -1730,7 +1752,7 @@ class BoundedRun:
             or getattr(self.args, "run49_smoothstop_diagnostic", False)
             or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
             or getattr(self.args, "run53_turning_diagnostic", False)
-            or getattr(self.args, "run65_point_goal_diagnostic", False)
+            or run65_point_goal_enabled(self.args)
         ):
             command[-1] += " --max-observed-planar-speed-m-s 0.2"
         if (
@@ -1743,7 +1765,7 @@ class BoundedRun:
             or getattr(self.args, "run49_smoothstop_diagnostic", False)
             or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
             or getattr(self.args, "run53_turning_diagnostic", False)
-            or getattr(self.args, "run65_point_goal_diagnostic", False)
+            or run65_point_goal_enabled(self.args)
         ):
             command[-1] += " --zero-until-stand-timeout-s 3.5"
         if (
@@ -1763,7 +1785,7 @@ class BoundedRun:
             command[-1] += " --deceleration-duration-s 1.0 --deceleration-end-speed-m-s 0.112"
         if getattr(self.args, "run53_turning_diagnostic", False):
             command[-1] += " --turning-diagnostic"
-        if getattr(self.args, "run65_point_goal_diagnostic", False):
+        if run65_point_goal_enabled(self.args):
             command[-1] += " --point-goal-diagnostic"
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
@@ -2100,7 +2122,7 @@ class BoundedRun:
                     else "BLOCKED"
                 )
                 return result
-            if getattr(self.args, "run65_point_goal_diagnostic", False):
+            if run65_point_goal_enabled(self.args):
                 point_goal = m1.get("point_goal_diagnostic")
                 result["point_goal_diagnostic"] = point_goal
                 self.outcome_classification = classify_point_goal_result(
@@ -2324,19 +2346,7 @@ def main() -> int:
             "capped at 10 s total active commands with unchanged physical safety gates"
         ),
     )
-    parser.add_argument(
-        "--run65-ground-truth-point-goal",
-        action="store_true",
-        help=(
-            "run one SIMULATION_ONLY 0.30 m odom-frame point goal with the verified Run65 turn/stop "
-            "prerequisite, 0.12 m/s cap, 10-second command cap, and unchanged physical-stop gates"
-        ),
-    )
-    parser.add_argument(
-        "--turning-reassessment-json",
-        default=None,
-        help="governed Run65 forward-arc reassessment result.json required before point-goal runtime",
-    )
+    add_run65_point_goal_arguments(parser)
     args=parser.parse_args()
     if not 0.0 <= args.extra_stop_observation <= 5.0:
         parser.error("extra zero-only observation must remain within 0..5 seconds")
