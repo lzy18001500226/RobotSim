@@ -1,8 +1,9 @@
 # Issue #46 / PR #91 — Full-X2 PR90 grasp milestone
 
-Updated: 2026-10-23 18:52 UTC
+Updated: 2026-10-23 18:55 UTC
 Branch: codex/issue46-manipulation-integration-20261023
 Baseline source HEAD before this audit: 97a1e8a0ca5fa19a34415a2d370a06b5663d77b8
+Current PR #91 audit HEAD (local and origin): 91aeb2465c3e76bfa9f5ce189af2a68637d4905d
 PR #91: OPEN / Draft. Issue #46: OPEN.
 
 ## Gate status
