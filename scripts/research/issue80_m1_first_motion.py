@@ -2546,6 +2546,7 @@ def run_angular_turn_window(
     forward_velocity_m_s: float = 0.0,
     forward_warmup_s: float = 0.0,
     pulse_duration_s: float = TURN_PULSE_S,
+    pre_deadline_zero_margin_s: float = 0.0,
     max_observed_planar_speed_m_s: float = 0.2,
     zero_until_stand_timeout_s: float = 3.5,
     extra_post_stop_observe_s: float = 5.0,
@@ -2572,6 +2573,7 @@ def run_angular_turn_window(
         "lateral_velocity_m_s": 0.0,
         "pulse_duration_s": pulse_duration_s,
         "total_command_duration_s": forward_warmup_s + pulse_duration_s,
+        "pre_deadline_zero_margin_s": pre_deadline_zero_margin_s,
         "max_turn_displacement_m": max_turn_displacement_m,
         "turn_stop_reserve_m": turn_stop_reserve_m,
         "turn_stop_trigger_displacement_m": (
@@ -2606,6 +2608,12 @@ def run_angular_turn_window(
         validation_fault = "turn_duration_outside_fixed_4p5_second_cap"
     elif forward_warmup_s + pulse_duration_s > TURN_MAX_COMMAND_WINDOW_S:
         validation_fault = "turn_command_window_exceeds_fixed_5_second_per_direction_cap"
+    elif (
+        not math.isfinite(pre_deadline_zero_margin_s)
+        or not 0.0 <= pre_deadline_zero_margin_s <= 0.1
+        or pre_deadline_zero_margin_s >= forward_warmup_s + pulse_duration_s
+    ):
+        validation_fault = "pre_deadline_zero_margin_outside_small_bounded_range"
     elif not math.isfinite(max_observed_planar_speed_m_s) or not 0.0 < max_observed_planar_speed_m_s <= 0.2:
         validation_fault = "planar_speed_guard_outside_existing_0p2_m_s_cap"
     elif not math.isfinite(zero_until_stand_timeout_s) or not 0.0 < zero_until_stand_timeout_s <= 3.5:
@@ -2709,9 +2717,15 @@ def run_angular_turn_window(
     watchdog: ProcessLocalTimerWatchdog | None = None
 
     def watchdog_stop() -> None:
-        nonlocal pulse_fault
-        if pulse_start is not None and clock() < pulse_start + forward_warmup_s + pulse_duration_s - 0.01:
+        nonlocal active_stop_reason, pulse_fault
+        scheduled_deadline = (
+            pulse_start + forward_warmup_s + pulse_duration_s - pre_deadline_zero_margin_s
+            if pulse_start is not None else None
+        )
+        if scheduled_deadline is not None and clock() < scheduled_deadline - 0.01:
             pulse_fault = pulse_fault or "independent_watchdog_timeout"
+        elif scheduled_deadline is not None:
+            active_stop_reason = "pre_deadline_zero_margin" if pre_deadline_zero_margin_s > 0.0 else "hard_deadline_watchdog"
         stop_requested.set()
         zero_stop.run_once()
 
@@ -2764,15 +2778,16 @@ def run_angular_turn_window(
             tracker.observe(initial, phase="pre-activation")
             record("turn-preflight", initial)
             pulse_start = clock()
-            deadline = pulse_start + forward_warmup_s + pulse_duration_s
+            hard_deadline = pulse_start + forward_warmup_s + pulse_duration_s
+            command_deadline = hard_deadline - pre_deadline_zero_margin_s
             next_publish = pulse_start
             watchdog = ProcessLocalTimerWatchdog(
-                forward_warmup_s + pulse_duration_s,
+                forward_warmup_s + pulse_duration_s - pre_deadline_zero_margin_s,
                 watchdog_stop,
                 timer_factory=timer_factory,
             )
             watchdog.start()
-            while clock() < deadline:
+            while clock() < command_deadline:
                 if shutdown_event is not None and shutdown_event.is_set():
                     pulse_fault = "operator_shutdown"
                     stop_requested.set()
@@ -2868,7 +2883,14 @@ def run_angular_turn_window(
                     pulse_fault = "operator_shutdown"
                     stop_requested.set()
                     break
-                if now >= deadline or stop_requested.is_set() or watchdog.expired:
+                if now >= command_deadline:
+                    active_stop_reason = (
+                        "pre_deadline_zero_margin"
+                        if pre_deadline_zero_margin_s > 0.0 else "hard_command_deadline"
+                    )
+                    pulse_end = clock()
+                    break
+                if stop_requested.is_set() or watchdog.expired:
                     break
                 if now >= next_publish:
                     turn_elapsed_s = max(0.0, clock() - pulse_start - forward_warmup_s)
@@ -2877,7 +2899,7 @@ def run_angular_turn_window(
                         else smooth_turn_velocity(angular_velocity_rad_s, turn_elapsed_s, pulse_duration_s)
                     )
                     with command_lock:
-                        if stop_requested.is_set() or clock() >= deadline:
+                        if stop_requested.is_set() or clock() >= command_deadline:
                             break
                         nonzero_command = forward_velocity_m_s != 0.0 or command != 0.0
                         if nonzero_command:
@@ -2885,8 +2907,8 @@ def run_angular_turn_window(
                         publish_turn(forward_velocity_m_s, command)
                         if nonzero_command:
                             nonzero_publish_calls_returned += 1
-                            if clock() > deadline:
-                                pulse_fault = pulse_fault or "nonzero_turn_publish_returned_after_hard_deadline"
+                            if clock() > command_deadline:
+                                pulse_fault = pulse_fault or "nonzero_turn_publish_returned_after_scheduled_zero_deadline"
                                 stop_requested.set()
                     if stop_requested.is_set():
                         break
@@ -2894,10 +2916,16 @@ def run_angular_turn_window(
                     if next_publish < now:
                         next_publish = now + 1.0 / PUBLISH_HZ
                 last_active = current
-                remaining = deadline - clock()
+                remaining = command_deadline - clock()
                 if remaining > 0.0:
                     sleep(min(0.005, remaining))
-            pulse_end = clock()
+            if pulse_end is None:
+                pulse_end = clock()
+                if active_stop_reason is None and pulse_end >= command_deadline:
+                    active_stop_reason = (
+                        "pre_deadline_zero_margin"
+                        if pre_deadline_zero_margin_s > 0.0 else "hard_command_deadline"
+                    )
     except Exception as exc:
         pulse_fault = pulse_fault or f"exception:{type(exc).__name__}:{exc}"
         stop_requested.set()

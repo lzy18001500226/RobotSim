@@ -2253,6 +2253,7 @@ class FocusedM1Diagnostic(Node):
             forward_velocity_m_s=TURN_FORWARD_COMMAND_M_S,
             forward_warmup_s=TURN_FORWARD_WARMUP_S,
             pulse_duration_s=TURN_PULSE_S,
+            pre_deadline_zero_margin_s=0.02,
             max_observed_planar_speed_m_s=0.2,
             zero_until_stand_timeout_s=3.5,
             extra_post_stop_observe_s=5.0,
@@ -2303,6 +2304,9 @@ class FocusedM1Diagnostic(Node):
                 peak_total_displacement = max(peak_total_displacement, displacement)
         rotation = turn.get("rotation", {})
         stop = turn.get("physical_stop_gate", {})
+        zero_stop = turn.get("zero_stop", {})
+        hard_deadline = float(turn.get("pulse_start_monotonic_s", 0.0)) + 5.0
+        zero_start = float(zero_stop.get("start_monotonic_s", float("inf")))
         yaw_pass = (
             isinstance(rotation, Mapping)
             and rotation.get("status") == "TURN_DIRECTION_PASS"
@@ -2318,6 +2322,7 @@ class FocusedM1Diagnostic(Node):
             "all_runtime_safety_samples_clear": safety_clear,
             "total_turn_and_settling_displacement_le_0p25m": peak_total_displacement <= 0.25,
             "active_duration_le_5s": float(turn.get("pulse_actual_duration_s", 0.0)) <= 5.0,
+            "zero_stream_started_by_hard_deadline": zero_start <= hard_deadline,
             "physical_stop_gate": stop.get("status") == "PASS",
             "zero_window_minimum_met": int(turn.get("zero_stop", {}).get("zero_publish_calls_returned", 0)) >= ZERO_STOP_MIN_MESSAGES,
         }
@@ -2326,6 +2331,8 @@ class FocusedM1Diagnostic(Node):
             "gates": gates,
             "turn_origin": dict(origin_row["pose"]) if origin_row else None,
             "maximum_total_turn_origin_displacement_m": peak_total_displacement,
+            "hard_deadline_monotonic_s": hard_deadline,
+            "zero_stream_start_monotonic_s": zero_start,
             "legacy_planar_motion_status": turn.get("planar_motion", {}).get("status"),
             "legacy_planar_gate_is_reported_separately": True,
         }
@@ -2996,6 +3003,7 @@ class FocusedM1Diagnostic(Node):
                 forward_velocity_m_s=turn_plan.forward_m_s,
                 forward_warmup_s=TURN_FORWARD_WARMUP_S,
                 pulse_duration_s=min(TURN_PULSE_S, turn_plan.maximum_duration_s - TURN_FORWARD_WARMUP_S),
+                pre_deadline_zero_margin_s=0.02,
                 max_observed_planar_speed_m_s=0.2,
                 zero_until_stand_timeout_s=3.5,
                 extra_post_stop_observe_s=5.0,

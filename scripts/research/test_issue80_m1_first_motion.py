@@ -3006,6 +3006,70 @@ class BoundedTurningProfileTests(unittest.TestCase):
         self.assertGreaterEqual(len(turn_commands), 1)
         self.assertGreaterEqual(len(zero_commands), ZERO_STOP_MIN_MESSAGES)
 
+    def test_turn_pre_deadline_margin_starts_zero_before_hard_window(self):
+        clock = FakeClock()
+        base = FirstMotionSafetyTests().snapshot(
+            get_mode_status_value=100,
+            common_mode_status_value=100,
+            pose={
+                "x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0,
+                "pitch": 0.0, "yaw": 0.0, "vx": 0.0, "vy": 0.0,
+                "vz": 0.0, "wz": 0.0, "frame_id": "odom", "child_frame_id": "base_link",
+            },
+            speed_status={
+                "speed_mode": 1,
+                "angular_bounds": {"min_value": -0.075, "max_value": 0.075},
+                "forward_bounds": {"min_value": -0.2, "max_value": 0.2},
+            },
+            leg_states=[
+                {"name": "left_hip_pitch_joint", "position": 0.0, "velocity": 0.0, "error_code": 0}
+            ],
+            mc_leg_command={"joints": [{"name": "left_hip_pitch_joint", "position": 0.0}]},
+        )
+        zero_started = {"time": None}
+        zero_commands = []
+
+        def sample():
+            now = clock.now()
+            row = dict(base)
+            row["sample_monotonic_s"] = now
+            row["readback_monotonic_s"] = {"get_mode": now, "get_source": now}
+            row["state_age_s"] = {key: 0.0 for key in base["state_age_s"]}
+            row["mc_leg_command"] = {"joints": [{"name": "left_hip_pitch_joint", "position": 0.0}]}
+            return row
+
+        def publish_zero():
+            if zero_started["time"] is None:
+                zero_started["time"] = clock.now()
+            zero_commands.append(clock.now())
+
+        result = run_angular_turn_window(
+            sample=sample,
+            publish_turn=lambda _forward, _angular: None,
+            publish_zero=publish_zero,
+            registration={"success": True, "selected_action": "ADD"},
+            set_action={"accepted_by_service": True},
+            joint_limits=LIMITS,
+            baseline_forward_displacements_m=[0.0, 0.0, 0.0],
+            baseline_state_summary={"body_status": 1, "maxima": {"max_abs_yaw_excursion_rad": 0.001}},
+            authorized=True,
+            angular_velocity_rad_s=-0.075,
+            forward_velocity_m_s=0.12,
+            forward_warmup_s=0.0,
+            pulse_duration_s=2.0,
+            pre_deadline_zero_margin_s=0.02,
+            extra_post_stop_observe_s=0.0,
+            clock=clock.now,
+            sleep=clock.sleep,
+            timer_factory=FakeTimer,
+        )
+
+        self.assertEqual(result["active_stop_reason"], "pre_deadline_zero_margin")
+        self.assertAlmostEqual(result["pre_deadline_zero_margin_s"], 0.02)
+        self.assertLessEqual(result["pulse_actual_duration_s"], 1.98 + 1e-9)
+        self.assertLessEqual(zero_started["time"], result["pulse_start_monotonic_s"] + 1.98 + 1e-9)
+        self.assertGreaterEqual(len(zero_commands), ZERO_STOP_MIN_MESSAGES)
+
     def test_forward_arc_planar_envelope_preserves_lateral_drift_limit(self):
         start = {"x": 0.0, "y": 0.0, "yaw": 0.0}
         expected_arc = classify_turn_planar_motion(
