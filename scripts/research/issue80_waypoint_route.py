@@ -207,6 +207,8 @@ class MotionFeedback:
     standing_gate_pass: bool = False
     source_mode_handshake_pass: bool = False
     safety_gates_pass: bool = False
+    initial_activation_authorized: bool = False
+    stand_readback_pass: bool = False
     reason: str = ""
 
 
@@ -387,7 +389,7 @@ def _startup_gates_pass(feedback: MotionFeedback) -> bool:
     return (
         feedback.reset_gate_pass
         and feedback.standing_gate_pass
-        and feedback.source_mode_handshake_pass
+        and (feedback.source_mode_handshake_pass or feedback.initial_activation_authorized)
         and feedback.safety_gates_pass
     )
 
@@ -646,7 +648,25 @@ class WaypointRouteExecutor:
         if not math.isfinite(now_steady_s) or (self._last_now_s is not None and now_steady_s < self._last_now_s):
             return self._abort("MONOTONIC_CLOCK_REGRESSION")
         self._last_now_s = now_steady_s
-        if not feedback.safety_gates_pass or not feedback.source_mode_handshake_pass:
+        stop_evidence = feedback.physical_stop_evidence
+        stopped_in_stand = bool(
+            feedback.stand_readback_pass is True
+            and stop_evidence is not None
+            and stop_evidence.status is PhysicalStopStatus.PASS
+            and stop_evidence.generation == self._generation
+            and stop_evidence.sample_count >= 20
+            and math.isfinite(stop_evidence.window_start_steady_s)
+            and math.isfinite(stop_evidence.window_end_steady_s)
+            and math.isfinite(stop_evidence.maximum_sample_gap_s)
+            and math.isfinite(stop_evidence.maximum_state_age_s)
+            and stop_evidence.window_end_steady_s - stop_evidence.window_start_steady_s >= 1.9
+            and stop_evidence.maximum_sample_gap_s <= 0.15
+            and stop_evidence.maximum_state_age_s <= 0.5
+            and 0.0 <= now_steady_s - stop_evidence.window_end_steady_s <= 0.5
+        )
+        if not feedback.safety_gates_pass or (
+            not feedback.source_mode_handshake_pass and not stopped_in_stand
+        ):
             return self._abort("SAFETY_OR_SOURCE_MODE_HANDSHAKE_LOST")
         pose, error = self._validated_pose(now_steady_s)
         if error:

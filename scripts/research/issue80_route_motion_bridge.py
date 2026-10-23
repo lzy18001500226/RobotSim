@@ -34,6 +34,7 @@ MAX_FORWARD_M_S = 0.14
 MIN_EFFECTIVE_FORWARD_M_S = 0.12
 MAX_ANGULAR_RAD_S = 0.075
 MAX_INCREMENTAL_WINDOW_S = 1.0
+MAX_ROUTE_ACTION_WINDOW_S = 5.0
 MAX_POSE_AGE_S = 0.20
 MAX_TRANSFORM_AGE_S = 0.50
 ALLOWED_MODE_READBACKS = frozenset(("STAND_DEFAULT", "LOCOMOTION_DEFAULT"))
@@ -79,6 +80,7 @@ class RuntimeReadiness:
     expected_ros_domain_id: int
     mode_desc: str
     selected_source: str
+    measured_displacement_guard_verified: bool = False
     source_name: str = VELOCITY_SOURCE_NAME
     action_source_name: str = ACTION_SOURCE_NAME
     command_topic: str = COMMAND_PUBLISHER_TOPIC
@@ -149,8 +151,8 @@ class RouteMotionBridge:
     ) -> None:
         if route_frame_id not in ("odom", "map"):
             raise ValueError("route frame must be odom or map")
-        if not math.isfinite(incremental_window_s) or not 0.0 < incremental_window_s <= MAX_INCREMENTAL_WINDOW_S:
-            raise ValueError("incremental window must be in (0, 1.0] seconds")
+        if not math.isfinite(incremental_window_s) or not 0.0 < incremental_window_s <= MAX_ROUTE_ACTION_WINDOW_S:
+            raise ValueError("incremental window must be in (0, 5.0] seconds")
         self.route_frame_id = route_frame_id
         self.incremental_window_s = incremental_window_s
         self._next_window_id = 1
@@ -268,6 +270,12 @@ class RouteMotionBridge:
                     reason=f"{turn_direction.lower()} turn lacks its own evidence-backed stopping-distance reserve",
                     physical_stop_gate_required=True, status="BLOCKED_ZERO_ONLY",
                 )
+            if readiness.measured_displacement_guard_verified is not True:
+                return self.zero_window(
+                    directive, now_steady_s=now_steady_s,
+                    reason="moving turn requires a verified per-sample measured-displacement stop guard",
+                    physical_stop_gate_required=True, status="BLOCKED_ZERO_ONLY",
+                )
         else:
             if not _finite_number(directive.goal_x_m) or not _finite_number(directive.goal_y_m):
                 return self.zero_window(
@@ -363,8 +371,9 @@ class RouteMotionBridge:
                 physical_stop_gate_required=True, status="WINDOW_BUDGET_EXHAUSTED_ZERO_ONLY",
             )
         maximum_duration = min(self.incremental_window_s, remaining_window)
-        if math.isfinite(remaining_displacement):
-            maximum_duration = min(maximum_duration, remaining_displacement / directive.max_forward_m_s)
+        # Moving turns rely on the consuming M1 runner's continuously sampled
+        # displacement cutoff; the proposal must not turn a measured guard into
+        # a timer estimate derived from commanded speed.
         if maximum_duration <= 1e-6:
             return self.zero_window(
                 directive, now_steady_s=now_steady_s,

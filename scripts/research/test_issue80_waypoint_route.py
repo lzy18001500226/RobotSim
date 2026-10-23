@@ -225,6 +225,24 @@ class RouteConfigTests(unittest.TestCase):
             self.assertEqual(directive.reason, "RESET_STANDING_SOURCE_MODE_OR_SAFETY_GATE_NOT_READY")
             self.assertFalse(any(d.kind is DirectiveKind.FOLLOW_WAYPOINT for d in motion.directives))
 
+    def test_first_route_action_allows_only_explicitly_authorized_activation_handshake(self) -> None:
+        route = verified_rectangle_route()
+        runner = WaypointRouteExecutor(
+            route, make_pose_provider(), FakeSafetyProvider(), FakeMotionAdapter()
+        )
+        directive = runner.start(0.0, startup_feedback(
+            source_mode_handshake_pass=False,
+            initial_activation_authorized=True,
+        ))
+        self.assertEqual(runner.state, RouteState.RUNNING)
+        self.assertEqual(directive.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        next_directive = runner.tick(0.1, startup_feedback(
+            source_mode_handshake_pass=False,
+            initial_activation_authorized=True,
+        ))
+        self.assertEqual(next_directive.kind, DirectiveKind.STOP_AND_ABORT)
+        self.assertEqual(next_directive.reason, "SAFETY_OR_SOURCE_MODE_HANDSHAKE_LOST")
+
 
 class RouteExecutionTests(unittest.TestCase):
     def test_synthetic_rectangle_advances_only_on_pose_and_physical_stop_evidence(self) -> None:
@@ -370,6 +388,28 @@ class RouteExecutionTests(unittest.TestCase):
         self.assertEqual(directive.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
         self.assertEqual(runner.active_step.waypoint_id, "B")
         self.assertEqual(runner.phase.value, "STOP")
+
+    def test_physical_stop_and_stand_readback_allow_route_rearm_without_active_source(self) -> None:
+        route = one_docking_route()
+        pose = make_pose_provider()
+        runner = WaypointRouteExecutor(route, pose, FakeSafetyProvider(), FakeMotionAdapter())
+        runner.start(0.0, startup_feedback())
+        pose.update(x=1.0, y=0.0, yaw=0.2, now=1.0, stamp=2_000_000_000)
+        directive = runner.tick(1.0, startup_feedback(status=MotionStatus.ARRIVED))
+        self.assertEqual(directive.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
+        pose.update(x=1.0, y=0.0, yaw=0.2, now=3.1, stamp=3_000_000_000)
+        wait = runner.tick(3.1, MotionFeedback(
+            status=MotionStatus.ACTIVE,
+            physical_stop_evidence=stop_evidence(1.0),
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=False,
+            safety_gates_pass=True,
+            stand_readback_pass=True,
+        ))
+        self.assertNotEqual(runner.state, RouteState.ABORTED)
+        self.assertEqual(wait.kind, DirectiveKind.WAIT)
+        self.assertEqual(runner.state, RouteState.WAITING_FOR_DOCKING)
 
     def test_stop_evidence_must_be_new_fresh_and_cover_the_gate_window(self) -> None:
         route = verified_rectangle_route()

@@ -2507,6 +2507,34 @@ class SustainedYawRateWindow:
         }
 
 
+def _maximum_turn_origin_displacement(
+    samples: list[Mapping[str, Any]],
+    turn_start_snapshot: Mapping[str, Any] | None,
+    turn_start_monotonic_s: float | None,
+) -> float | None:
+    """Return the largest observed planar radius through active and stop samples."""
+    origin = turn_start_snapshot.get("pose") if isinstance(turn_start_snapshot, Mapping) else None
+    if not isinstance(origin, Mapping) or turn_start_monotonic_s is None:
+        return None
+    maximum = 0.0
+    for row in samples:
+        if row.get("phase") not in {"turn-activation", "post-stop"}:
+            continue
+        try:
+            sample_time = float(row["sample_monotonic_s"])
+            pose = row["pose"]
+            if sample_time < turn_start_monotonic_s or not isinstance(pose, Mapping):
+                continue
+            distance = math.hypot(
+                float(pose["x"]) - float(origin["x"]),
+                float(pose["y"]) - float(origin["y"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        maximum = max(maximum, distance)
+    return maximum
+
+
 def run_angular_turn_window(
     *, sample: Callable[[], Mapping[str, Any]],
     publish_turn: Callable[[float, float], None], publish_zero: Callable[[], None],
@@ -2524,6 +2552,9 @@ def run_angular_turn_window(
     state_timeout_s: float = 0.5,
     min_root_z: float = 0.52,
     max_tilt_deg: float = 15.0,
+    max_turn_displacement_m: float | None = None,
+    turn_stop_reserve_m: float = 0.0,
+    termination_condition: Callable[[Mapping[str, Any]], str | None] | None = None,
     shutdown_event: threading.Event | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
@@ -2541,6 +2572,12 @@ def run_angular_turn_window(
         "lateral_velocity_m_s": 0.0,
         "pulse_duration_s": pulse_duration_s,
         "total_command_duration_s": forward_warmup_s + pulse_duration_s,
+        "max_turn_displacement_m": max_turn_displacement_m,
+        "turn_stop_reserve_m": turn_stop_reserve_m,
+        "turn_stop_trigger_displacement_m": (
+            max_turn_displacement_m - turn_stop_reserve_m
+            if max_turn_displacement_m is not None else None
+        ),
         "ramp_duration_s_each_end": TURN_RAMP_S,
         "publish_hz": PUBLISH_HZ,
         "angular_command_limit_rad_s": TURN_COMMAND_RAD_S,
@@ -2579,6 +2616,16 @@ def run_angular_turn_window(
         validation_fault = "source_registration_rejected"
     elif set_action.get("accepted_by_service") is not True:
         validation_fault = "set_mc_action_rejected"
+    if not validation_fault and max_turn_displacement_m is not None:
+        if (
+            not math.isfinite(max_turn_displacement_m)
+            or max_turn_displacement_m <= 0.0
+            or not math.isfinite(turn_stop_reserve_m)
+            or not 0.0 <= turn_stop_reserve_m < max_turn_displacement_m
+        ):
+            validation_fault = "turn_displacement_budget_or_stop_reserve_invalid"
+    elif not validation_fault and turn_stop_reserve_m != 0.0:
+        validation_fault = "turn_stop_reserve_requires_a_displacement_budget"
     if validation_fault:
         result["status"] = "ABORTED"
         result["fault"] = validation_fault
@@ -2591,6 +2638,8 @@ def run_angular_turn_window(
     yaw_rate_monitor = SustainedYawRateWindow(TURN_YAW_RATE_WINDOW_S)
     pulse_fault: str | None = None
     post_stop_fault: str | None = None
+    active_stop_reason: str | None = None
+    maximum_turn_displacement_observed_m = 0.0
     initial: Mapping[str, Any] | None = None
     last_active: Mapping[str, Any] | None = None
     pulse_start: float | None = None
@@ -2755,7 +2804,6 @@ def run_angular_turn_window(
                     stop_requested.set()
                     break
                 tracker.observe(current, phase="activation")
-                record(sample_phase, current)
                 if not warmup_active and turn_start_snapshot is None:
                     if forward_warmup_s > 0.0 and not tracker.control_handshake_confirmed:
                         pulse_fault = "turn_control_handshake_not_confirmed_after_forward_warmup"
@@ -2764,6 +2812,57 @@ def run_angular_turn_window(
                         break
                     turn_start_snapshot = current
                     turn_start_monotonic_s = float(current.get("sample_monotonic_s", clock()))
+                current = dict(current)
+                if not warmup_active and turn_start_snapshot is not None and max_turn_displacement_m is not None:
+                    turn_origin = turn_start_snapshot.get("pose")
+                    current_pose = current.get("pose")
+                    if not isinstance(turn_origin, Mapping) or not isinstance(current_pose, Mapping):
+                        pulse_fault = "turn_displacement_guard_pose_unavailable"
+                        record(sample_phase, current, pulse_fault)
+                        stop_requested.set()
+                        break
+                    try:
+                        turn_displacement = math.hypot(
+                            float(current_pose["x"]) - float(turn_origin["x"]),
+                            float(current_pose["y"]) - float(turn_origin["y"]),
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        pulse_fault = f"turn_displacement_guard_pose_invalid:{exc}"
+                        record(sample_phase, current, pulse_fault)
+                        stop_requested.set()
+                        break
+                    maximum_turn_displacement_observed_m = max(
+                        maximum_turn_displacement_observed_m, turn_displacement
+                    )
+                    current["turn_origin_displacement_m"] = turn_displacement
+                    current["turn_stop_trigger_displacement_m"] = (
+                        max_turn_displacement_m - turn_stop_reserve_m
+                    )
+                    if turn_displacement >= max_turn_displacement_m - turn_stop_reserve_m:
+                        active_stop_reason = "measured_turn_displacement_budget_reached"
+                        current["controlled_stop_reason"] = active_stop_reason
+                        last_active = current
+                        record(sample_phase, current)
+                        stop_requested.set()
+                        pulse_end = clock()
+                        break
+                if termination_condition is not None:
+                    try:
+                        termination_reason = termination_condition(current)
+                    except Exception as exc:
+                        pulse_fault = f"turn_termination_condition_exception:{type(exc).__name__}:{exc}"
+                        record(sample_phase, current, pulse_fault)
+                        stop_requested.set()
+                        break
+                    if termination_reason:
+                        active_stop_reason = str(termination_reason)
+                        current["controlled_stop_reason"] = active_stop_reason
+                        last_active = current
+                        record(sample_phase, current)
+                        stop_requested.set()
+                        pulse_end = clock()
+                        break
+                record(sample_phase, current)
                 now = clock()
                 if shutdown_event is not None and shutdown_event.is_set():
                     pulse_fault = "operator_shutdown"
@@ -2904,6 +3003,21 @@ def run_angular_turn_window(
         "pulse_actual_duration_s": max(0.0, pulse_end - pulse_start)
         if pulse_start is not None and pulse_end is not None else 0.0,
         "turn_start_monotonic_s": turn_start_monotonic_s,
+        "active_stop_reason": active_stop_reason or "bounded_command_window_elapsed",
+        "turn_displacement_guard": {
+            "maximum_turn_displacement_m": max_turn_displacement_m,
+            "stop_reserve_m": turn_stop_reserve_m,
+            "trigger_displacement_m": (
+                max_turn_displacement_m - turn_stop_reserve_m
+                if max_turn_displacement_m is not None else None
+            ),
+            "maximum_observed_turn_displacement_m": maximum_turn_displacement_observed_m,
+            "maximum_total_displacement_including_stop_m": _maximum_turn_origin_displacement(
+                samples, turn_start_snapshot, turn_start_monotonic_s,
+            ),
+            "controlled_stop_triggered": active_stop_reason == "measured_turn_displacement_budget_reached",
+            "evidence_basis": "measured planar displacement from the first post-warmup turn pose; the stop reserve remains available for zero-command deceleration",
+        },
         "nonzero_publish_attempts": nonzero_publish_attempts,
         "nonzero_publish_calls_returned": nonzero_publish_calls_returned,
         "control_handshake_confirmed": tracker.control_handshake_confirmed,

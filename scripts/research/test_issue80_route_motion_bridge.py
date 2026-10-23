@@ -56,6 +56,7 @@ def readiness(**overrides) -> RuntimeReadiness:
         turn_stop_margin_m=None,
         turn_stop_margin_direction="",
         turn_stop_margin_evidence_id="",
+        measured_displacement_guard_verified=False,
         transport_isolated=True,
         publisher_identity_verified=True,
         mc_subscriber_identity_verified=True,
@@ -331,6 +332,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
             turn_stop_margin_m=0.005,
             turn_stop_margin_direction="RIGHT",
             turn_stop_margin_evidence_id="run65-right-stop-trace",
+            measured_displacement_guard_verified=True,
         )
         first = bridge.plan_next(turn_directive(), make_pose(), turn_ready, now_steady_s=10.0)
         self.assertEqual(first.status, "PROPOSAL_ONLY")
@@ -345,6 +347,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
             turn_stop_margin_m=0.005,
             turn_stop_margin_direction="RIGHT",
             turn_stop_margin_evidence_id="run65-right-stop-trace",
+            measured_displacement_guard_verified=True,
             source_mode_handshake_pass=True, mode_desc="LOCOMOTION_DEFAULT",
             selected_source=VELOCITY_SOURCE_NAME,
         )
@@ -365,6 +368,32 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual(plan.status, "BLOCKED_ZERO_ONLY")
         self.assertIn("stopping-distance", plan.reason)
 
+    def test_turn_needs_runtime_measured_displacement_guard_and_explicit_five_second_cap(self) -> None:
+        qualified = readiness(
+            bounded_moving_turn_qualified=True,
+            qualified_turn_directions=("RIGHT",),
+            turn_stop_margin_m=0.05,
+            turn_stop_margin_direction="RIGHT",
+            turn_stop_margin_evidence_id="run65-right-stop-envelope",
+        )
+        blocked = RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.0).plan_next(
+            turn_directive(), make_pose(), qualified, now_steady_s=10.0,
+        )
+        self.assertEqual(blocked.status, "BLOCKED_ZERO_ONLY")
+        self.assertIn("measured-displacement", blocked.reason)
+
+        guarded = replace(qualified, measured_displacement_guard_verified=True)
+        bridge = RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.0)
+        plan = bridge.plan_next(turn_directive(), make_pose(), guarded, now_steady_s=10.0)
+        self.assertEqual(plan.status, "PROPOSAL_ONLY")
+        self.assertEqual(plan.maximum_duration_s, 5.0)
+        self.assertTrue(plan.measured_displacement_guard_required)
+
+    def test_route_action_window_remains_one_second_by_default(self) -> None:
+        self.assertEqual(RouteMotionBridge(route_frame_id="odom").incremental_window_s, 1.0)
+        with self.assertRaises(ValueError):
+            RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.001)
+
     def test_right_turn_evidence_does_not_qualify_left_turn(self) -> None:
         bridge = RouteMotionBridge(route_frame_id="odom")
         right_only = readiness(
@@ -373,6 +402,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
             turn_stop_margin_m=0.005,
             turn_stop_margin_direction="RIGHT",
             turn_stop_margin_evidence_id="run65-right-stop-trace",
+            measured_displacement_guard_verified=True,
         )
         left = bridge.plan_next(
             turn_directive(goal_yaw_rad=0.30),
@@ -390,6 +420,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
             turn_stop_margin_m=0.005,
             turn_stop_margin_direction="RIGHT",
             turn_stop_margin_evidence_id="run65-right-stop-trace",
+            measured_displacement_guard_verified=True,
         )
         for change in (
             {"goal_yaw_rad": float("nan")},
@@ -417,6 +448,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
                 turn_stop_margin_m=0.005,
                 turn_stop_margin_direction="RIGHT",
                 turn_stop_margin_evidence_id="run65-right-stop-trace",
+                measured_displacement_guard_verified=True,
             ),
             now_steady_s=10.0,
         )

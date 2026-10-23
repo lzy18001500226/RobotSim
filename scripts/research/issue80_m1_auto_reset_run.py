@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,12 +44,20 @@ M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 POSE_GOAL_CONTROLLER = Path(__file__).with_name("issue80_coordinated_pose_goal.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 M1_FIRST_MOTION_LOGIC = Path(__file__).with_name("issue80_m1_first_motion.py")
+WAYPOINT_ROUTE = Path(__file__).with_name("issue80_waypoint_route.py")
+ROUTE_MOTION_BRIDGE = Path(__file__).with_name("issue80_route_motion_bridge.py")
 SET_ACTION_CAPTURE = Path(__file__).with_name("issue80_m1_set_action_capture.py")
 MC_RL_DEBUG_CAPTURE = Path(__file__).with_name("issue80_mc_rl_debug_capture.py")
 SIM_LAUNCH = Path(__file__).with_name("issue80_launch_sim.sh")
 MC_LAUNCH = Path(__file__).with_name("issue80_launch_mc.sh")
 IMAGE = "robotsim:humble-raicom-runtime-20261019"
 IMAGE_DIGEST = "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31"
+ROUTE_SCENE_RELATIVE = Path("sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/scene.xml")
+ROUTE_X2_RELATIVE = Path("sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/x2.xml")
+ROUTE_SCENE_SHA256 = "7fceb3e1357be29b72344db2f571d7e5655a7d1b1db4ea2571556aee28bb1b63"
+ROUTE_X2_SHA256 = "3ff43f05beb57412a804ba9fe05cd9adcdfce78e9ce73a95a71ac58ad20d91a3"
+ROUTE_QPOS0_FOOTPRINT_BOUND_M = 0.41565748847422734
+ROUTE_LOCAL_CLEAR_RADIUS_M = 2.0
 RESET_OBSERVER_DURATION_S = 8.0
 RESET_OBSERVER_COMPLETION_MARGIN_S = 3.0
 RESET_STARTUP_OBSERVATION_TIMEOUT_S = 4.0
@@ -133,6 +142,103 @@ def validate_reserved_evidence_directory(path: str | os.PathLike[str]) -> Path:
     }:
         raise ValueError("evidence directory reservation marker does not match its path")
     return location.native_path
+
+
+def inspect_route_workcell_geometry(runtime_root: Path) -> dict[str, Any]:
+    """Fail closed unless the pinned route scene is the verified open-floor workcell."""
+    scene_path = runtime_root / ROUTE_SCENE_RELATIVE
+    x2_path = runtime_root / ROUTE_X2_RELATIVE
+    for name, path, expected in (
+        ("scene", scene_path, ROUTE_SCENE_SHA256),
+        ("x2_model", x2_path, ROUTE_X2_SHA256),
+    ):
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"route workcell {name} is missing or not a regular file")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != expected:
+            raise ValueError(f"route workcell {name} identity changed: expected {expected}, got {digest}")
+    root = ET.parse(scene_path).getroot()
+    includes = [item.get("file") for item in root.findall("include")]
+    world = root.find("worldbody")
+    if world is None or includes != ["x2.xml"]:
+        raise ValueError("route scene no longer consists of the pinned X2 include and world body")
+    direct_geoms = [item for item in world if item.tag == "geom"]
+    direct_bodies = [item for item in world if item.tag == "body"]
+    if (
+        len(direct_geoms) != 1
+        or direct_bodies
+        or direct_geoms[0].get("name") != "floor"
+        or direct_geoms[0].get("type") != "plane"
+    ):
+        raise ValueError("route scene has an unreviewed world collision geom or finite obstacle")
+    floor = direct_geoms[0]
+    return {
+        "schema": "robotsim.issue80.route-workcell-geometry-preflight.v1",
+        "status": "PASS",
+        "classification": "STATIC_OPEN_FLOOR_SCENE; runtime route movement remains separately gated",
+        "scene_path": str(scene_path),
+        "scene_sha256": ROUTE_SCENE_SHA256,
+        "x2_model_path": str(x2_path),
+        "x2_model_sha256": ROUTE_X2_SHA256,
+        "active_world_collision_geoms": [{
+            "name": floor.get("name"),
+            "type": floor.get("type"),
+            "size": floor.get("size"),
+            "contype": floor.get("contype", "1"),
+            "conaffinity": floor.get("conaffinity", "1"),
+        }],
+        "active_world_obstacles": [],
+        "planar_floor": "infinite MuJoCo plane; no finite table edge or world boundary",
+        "verified_local_clear_radius_m": ROUTE_LOCAL_CLEAR_RADIUS_M,
+        "robot_collision_footprint_radial_upper_bound_m": ROUTE_QPOS0_FOOTPRINT_BOUND_M,
+        "footprint_method": "compiled geom world centers plus geom_rbound at model qpos0 using host MuJoCo 3.3.6; conservative static reference, not dynamic swept-footprint telemetry",
+        "route_corridor_margin_m": 0.10,
+        "limitations": [
+            "The simulator ROS interface does not publish collision contacts or foot forces; runtime posture, joint, pose, and stop gates remain mandatory.",
+            "The 2 m local clearance is a bounded local work area in an otherwise infinite plane, not a mapped or obstacle-aware workspace claim.",
+        ],
+    }
+
+
+def validate_right_turn_qualification_file(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Require a governed, simulation-only right-turn and physical-stop PASS."""
+    evidence_path = Path(path)
+    if evidence_path.name != "m1_first_motion_result.json" or evidence_path.is_symlink():
+        raise ValueError("route prerequisite must be a regular m1_first_motion_result.json")
+    validate_reserved_evidence_directory(evidence_path.parent)
+    if not str(evidence_path.resolve()).startswith(str(REPO / "reviews/issue-80") + os.sep):
+        raise ValueError("right-turn prerequisite must be inside the governed Issue 80 evidence root")
+    result = json.loads(evidence_path.read_text(encoding="utf-8"))
+    right = result.get("right_turn_qualification")
+    if not isinstance(right, Mapping) or right.get("status") != "PASS":
+        raise ValueError("right-turn prerequisite did not pass its wrapper acceptance")
+    turn = right.get("turn")
+    if not isinstance(turn, Mapping):
+        raise ValueError("right-turn prerequisite lacks the measured turn result")
+    acceptance = turn.get("right_arc_acceptance")
+    rotation = turn.get("rotation")
+    physical_stop = turn.get("physical_stop_gate")
+    if (
+        not isinstance(acceptance, Mapping)
+        or acceptance.get("status") != "PASS"
+        or not isinstance(rotation, Mapping)
+        or rotation.get("status") != "TURN_DIRECTION_PASS"
+        or float(rotation.get("signed_yaw_delta_rad", 0.0)) > -TURN_MIN_HEADING_CHANGE_RAD
+        or not isinstance(physical_stop, Mapping)
+        or physical_stop.get("status") != "PASS"
+        or float(acceptance.get("maximum_total_turn_origin_displacement_m", float("inf"))) > 0.25
+    ):
+        raise ValueError("right-turn prerequisite lacks measured yaw, displacement, or physical-stop evidence")
+    return {
+        "source_path": str(evidence_path),
+        "sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        "attempt_id": str(result.get("attempt_id", "")),
+        "classification": right.get("classification"),
+        "signed_yaw_delta_rad": rotation.get("signed_yaw_delta_rad"),
+        "maximum_total_displacement_m": acceptance.get("maximum_total_turn_origin_displacement_m"),
+        "physical_stop_gate": physical_stop.get("status"),
+        "status": "PASS",
+    }
 
 
 def validate_turning_reassessment_file(path: str | os.PathLike[str]) -> dict[str, Any]:
@@ -402,6 +508,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run45_ten_second_gait_diagnostic", "run46_startup_cruise_threshold_diagnostic",
         "run48_low_cruise_baseline_diagnostic", "run49_smoothstop_diagnostic",
         "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
+        "run65_right_turn_qualification", "run65_route_integration",
     )
     if any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += " --max-observed-planar-speed-m-s 0.2"
@@ -410,7 +517,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run44_threshold_margin_diagnostic", "run45_ten_second_gait_diagnostic",
         "run46_startup_cruise_threshold_diagnostic", "run48_low_cruise_baseline_diagnostic",
         "run49_smoothstop_diagnostic", "run50_threshold_respecting_smoothstop_diagnostic",
-        "run53_turning_diagnostic",
+        "run53_turning_diagnostic", "run65_right_turn_qualification",
+        "run65_route_integration",
     )
     if any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
@@ -419,6 +527,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run45_ten_second_gait_diagnostic", "run46_startup_cruise_threshold_diagnostic",
         "run48_low_cruise_baseline_diagnostic", "run49_smoothstop_diagnostic",
         "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
+        "run65_right_turn_qualification", "run65_route_integration",
     )
     if any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
@@ -428,6 +537,13 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         command[-1] += " --deceleration-duration-s 1.0 --deceleration-end-speed-m-s 0.112"
     if getattr(args, "run53_turning_diagnostic", False):
         command[-1] += " --turning-diagnostic"
+    if getattr(args, "run65_right_turn_qualification", False):
+        command[-1] += " --right-turn-qualification"
+    if getattr(args, "run65_route_integration", False):
+        command[-1] += (
+            " --route-integration --route-turn-qualification-evidence "
+            "/workspace/evidence/route_turn_qualification_evidence.json"
+        )
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -830,6 +946,10 @@ def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
         "SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS",
         "SIMULATION_ONLY_DIAGNOSTIC_TURNING_FAIL",
         "SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED",
+        "SIMULATION_ONLY_RIGHT_TURN_AND_STOP_PASS",
+        "SIMULATION_ONLY_RIGHT_TURN_AND_STOP_BLOCKED",
+        "SIMULATION_ONLY_SHORT_ROUTE_TRANSIT_AND_RIGHT_TURN_PASS",
+        "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION_BLOCKED",
         "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_PASS",
         "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_FAIL",
         "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_BLOCKED",
@@ -1033,8 +1153,11 @@ class BoundedRun:
         run49 = bool(getattr(self.args, "run49_smoothstop_diagnostic", False))
         run50 = bool(getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False))
         run53 = bool(getattr(self.args, "run53_turning_diagnostic", False))
-        run65 = run65_point_goal_enabled(self.args)
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65))
+        run65_point_goal = run65_point_goal_enabled(self.args)
+        run65_right_turn = bool(getattr(self.args, "run65_right_turn_qualification", False))
+        run65_route = bool(getattr(self.args, "run65_route_integration", False))
+        run65_overlay = run65_point_goal or run65_right_turn or run65_route
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -1092,7 +1215,7 @@ class BoundedRun:
             raise RuntimeError(f"Run38 action-setting mapping verification failed: {exc}") from exc
         source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
         source_bytes = source.read_bytes()
-        if run41 or run42 or run43 or run44 or run45 or run46 or run48 or run49 or run50 or run53 or run65:
+        if run41 or run42 or run43 or run44 or run45 or run46 or run48 or run49 or run50 or run53 or run65_overlay:
             overlay_bytes, manifest = build_run41_foundationwalk_min_run_overlay(source_bytes)
             overlay_name = "foundationwalk_knee019_minrun010.yaml"
         else:
@@ -1113,7 +1236,8 @@ class BoundedRun:
         })
         manifest["command_speed_m_s"] = (
             TURN_FORWARD_COMMAND_M_S if run53
-            else POINT_GOAL_FORWARD_COMMAND_M_S if run65
+            else POINT_GOAL_FORWARD_COMMAND_M_S if run65_point_goal
+            else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route)
             else float(self.args.forward_speed)
         )
         manifest["command_profile"] = ({
@@ -1149,7 +1273,7 @@ class BoundedRun:
             "zero_stop_min_duration_s": 1.0,
             "endpoint_response_basis_attempt_id": "c1883327-5e43-4e6d-bf41-5dac382c9f49",
             "prior_endpoint_error_m": 0.07699227258252467,
-        } if run65 else {
+        } if run65_point_goal else {
             "shape": "motion-triggered-startup-then-cruise"
             if getattr(self.args, "startup_speed", None) is not None
             else "constant-then-smoothstep-deceleration"
@@ -1167,6 +1291,30 @@ class BoundedRun:
             if getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
             else 0.0 if getattr(self.args, "run49_smoothstop_diagnostic", False) else None,
         })
+        if run65_right_turn:
+            manifest["command_profile"] = {
+                "shape": "one-bounded-right-moving-arc",
+                "forward_velocity_m_s": TURN_FORWARD_COMMAND_M_S,
+                "forward_warmup_s": TURN_FORWARD_WARMUP_S,
+                "angular_velocity_rad_s": -TURN_COMMAND_RAD_S,
+                "maximum_active_window_s": TURN_FORWARD_WARMUP_S + TURN_PULSE_S,
+                "maximum_turn_displacement_m": 0.25,
+                "empirical_zero-stop_reserve_m": 0.05,
+                "displacement-trigger_m": 0.20,
+                "stop_behavior": "zero-only; wait for fresh automatic STAND readback and physical-stop gate",
+            }
+        if run65_route:
+            manifest["command_profile"] = {
+                "shape": "waypoint-transit-plus-bounded-right-corner",
+                "transit_forward_m_s": TURN_FORWARD_COMMAND_M_S,
+                "right_turn_forward_m_s": TURN_FORWARD_COMMAND_M_S,
+                "right_turn_angular_rad_s": -TURN_COMMAND_RAD_S,
+                "maximum_turn_displacement_m": 0.25,
+                "empirical_zero-stop_reserve_m": 0.05,
+                "displacement-trigger_m": 0.20,
+                "each_M1_action_window_cap_s": 5.0,
+                "second_transit": "OPTIONAL_NOT_EXECUTED_IN_THIS_SHORT_ROUTE_TRIAL",
+            }
         manifest_path = self.evidence / "foundationwalk_config_overlay_manifest.json"
         with manifest_path.open("x", encoding="utf-8") as stream:
             json.dump(manifest, stream, indent=2)
@@ -1206,6 +1354,8 @@ class BoundedRun:
             (POSE_GOAL_CONTROLLER, POSE_GOAL_CONTROLLER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
+            (WAYPOINT_ROUTE, WAYPOINT_ROUTE.name),
+            (ROUTE_MOTION_BRIDGE, ROUTE_MOTION_BRIDGE.name),
             (SET_ACTION_CAPTURE, SET_ACTION_CAPTURE.name),
             (MC_RL_DEBUG_CAPTURE, MC_RL_DEBUG_CAPTURE.name),
             (SIM_LAUNCH, "launch_sim.sh"),
@@ -1234,6 +1384,27 @@ class BoundedRun:
         with manifest.open("x", encoding="utf-8") as stream:
             json.dump({"schema": "robotsim.issue80.staged-research-scripts.v1", "scripts": records}, stream, indent=2)
             stream.write("\n")
+
+    def stage_route_turn_qualification_evidence(self) -> dict[str, Any]:
+        """Copy the separately governed passing right-turn result into this route run."""
+        source = Path(self.args.route_turn_evidence)
+        verified = validate_right_turn_qualification_file(source)
+        target = self.evidence / "route_turn_qualification_evidence.json"
+        payload = source.read_bytes()
+        with target.open("xb") as stream:
+            stream.write(payload)
+        staged = {
+            **verified,
+            "staged_path": str(target),
+            "staged_sha256": hashlib.sha256(payload).hexdigest(),
+            "bytes_identical": hashlib.sha256(payload).hexdigest() == verified["sha256"],
+        }
+        if not staged["bytes_identical"]:
+            raise RuntimeError("staged right-turn qualification evidence changed during copy")
+        with (self.evidence / "route_turn_qualification_evidence_manifest.json").open("x", encoding="utf-8") as stream:
+            json.dump(staged, stream, indent=2)
+            stream.write("\n")
+        return staged
 
     def start_container(self) -> None:
         cmd = [
@@ -2301,6 +2472,15 @@ class BoundedRun:
             result["fault"] = "explicit maintainer standing-takeover or first-motion authorization is required before runtime"
             return result
         try:
+            if getattr(self.args, "run65_right_turn_qualification", False) or getattr(self.args, "run65_route_integration", False):
+                workcell = inspect_route_workcell_geometry(RUNTIME)
+                geometry_path = self.evidence / "workcell_geometry_preflight.json"
+                with geometry_path.open("x", encoding="utf-8") as stream:
+                    json.dump(workcell, stream, indent=2)
+                    stream.write("\n")
+                result["workcell_geometry_preflight"] = workcell
+            if getattr(self.args, "run65_route_integration", False):
+                result["route_turn_qualification_evidence"] = self.stage_route_turn_qualification_evidence()
             self.prepare_foundationwalk_diagnostic_overlay()
             self.prepare_mc_rl_debug_overlay()
             self.stage_research_scripts()
@@ -2360,6 +2540,29 @@ class BoundedRun:
                     "PASS" if self.outcome_classification == "SIMULATION_ONLY_DIAGNOSTIC_TURNING_PASS"
                     else "BLOCKED"
                 )
+                return result
+            if getattr(self.args, "run65_right_turn_qualification", False):
+                right_turn = m1.get("right_turn_qualification")
+                result["right_turn_qualification"] = right_turn
+                status = right_turn.get("status") if isinstance(right_turn, Mapping) else None
+                self.outcome_classification = (
+                    "SIMULATION_ONLY_RIGHT_TURN_AND_STOP_PASS"
+                    if status == "PASS"
+                    else "SIMULATION_ONLY_RIGHT_TURN_AND_STOP_BLOCKED"
+                )
+                result["outcome_classification"] = self.outcome_classification
+                result["status"] = "PASS" if status == "PASS" else "BLOCKED"
+                return result
+            if getattr(self.args, "run65_route_integration", False):
+                route = m1.get("route_integration")
+                result["route_integration"] = route
+                route_pass = isinstance(route, Mapping) and route.get("status") == "PASS"
+                self.outcome_classification = (
+                    "SIMULATION_ONLY_SHORT_ROUTE_TRANSIT_AND_RIGHT_TURN_PASS"
+                    if route_pass else "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION_BLOCKED"
+                )
+                result["outcome_classification"] = self.outcome_classification
+                result["status"] = "PASS" if route_pass else "BLOCKED"
                 return result
             if run65_point_goal_enabled(self.args):
                 point_goal = m1.get("point_goal_diagnostic")
@@ -2585,6 +2788,25 @@ def main() -> int:
             "capped at 10 s total active commands with unchanged physical safety gates"
         ),
     )
+    parser.add_argument(
+        "--run65-right-turn-qualification",
+        action="store_true",
+        help=(
+            "reuse the existing Run65 SIMULATION_ONLY FoundationWalk config for one "
+            "0.12 m/s, -0.075 rad/s right arc, capped at 5 seconds and stopped at "
+            "0.20 m measured turn-origin displacement to reserve 0.05 m for settling"
+        ),
+    )
+    parser.add_argument(
+        "--run65-route-integration",
+        action="store_true",
+        help="execute one short measured waypoint transit and evidence-qualified bounded right corner through M1",
+    )
+    parser.add_argument(
+        "--route-turn-evidence",
+        default=None,
+        help="governed m1_first_motion_result.json from the passing right-turn qualification run",
+    )
     add_run65_point_goal_arguments(parser)
     args=parser.parse_args()
     extra_observation_limit = (
@@ -2619,6 +2841,8 @@ def main() -> int:
         args.run49_smoothstop_diagnostic,
         args.run50_threshold_respecting_smoothstop_diagnostic,
         args.run53_turning_diagnostic,
+        args.run65_right_turn_qualification,
+        args.run65_route_integration,
         args.run65_ground_truth_point_goal,
     )
     if sum(diagnostic_variants) > 1:
@@ -2646,6 +2870,40 @@ def main() -> int:
                 parser.error(
                     "Run53 uses a fixed 0.5-second forward warmup followed by 4.5-second "
                     "±0.075 rad/s forward-arc turns, 5-second observation, and McRLDebug capture"
+                )
+        elif args.run65_right_turn_qualification:
+            if (
+                abs(args.extra_stop_observation - 5.0) > 1e-9
+                or args.pulse_duration != 1.0
+                or abs(args.forward_speed - 0.2) > 1e-9
+                or args.ramp_duration_s != 0.0
+                or args.ramp_start_speed is not None
+                or args.startup_speed is not None
+                or args.startup_transition_displacement is not None
+                or args.startup_transition_timeout_s != 0.0
+            ):
+                parser.error(
+                    "right-turn qualification uses the fixed 0.5 s warmup plus 4.5 s "
+                    "0.12 m/s and -0.075 rad/s arc, 5 s post-stop observation, "
+                    "and the measured 0.20 m trigger with 0.05 m stop reserve"
+                )
+        elif args.run65_route_integration:
+            try:
+                validate_right_turn_qualification_file(args.route_turn_evidence)
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                parser.error(f"route right-turn prerequisite failed before runtime: {exc}")
+            if (
+                abs(args.extra_stop_observation - 5.0) > 1e-9
+                or args.pulse_duration != 1.0
+                or abs(args.forward_speed - 0.2) > 1e-9
+                or args.ramp_duration_s != 0.0
+                or args.ramp_start_speed is not None
+                or args.startup_speed is not None
+                or args.startup_transition_displacement is not None
+                or args.startup_transition_timeout_s != 0.0
+            ):
+                parser.error(
+                    "route integration requires the fixed 5-second zero-stop observation and default generic pulse fields"
                 )
         else:
             if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic:

@@ -19,7 +19,7 @@ from issue80_m1_auto_reset_run import (
     POSE_GOAL_CONTROLLER,
     SET_ACTION_CAPTURE, SIM_LAUNCH,
     assess_container_absence, build_m1_child_command, classify_first_motion_outcome, classify_run38_diagnostic_outcome,
-    decode_m1_child_result,
+    decode_m1_child_result, inspect_route_workcell_geometry,
 )
 
 
@@ -62,7 +62,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(option("--heading-change-rad"), "-0.1")
         self.assertEqual(option("--final-yaw-tolerance-rad"), "0.17")
         self.assertEqual(option("--heading-control-policy"), "coordinated-pose")
-        self.assertEqual(option("--heading-goal-stop-advance-m"), "0.0")
+        self.assertEqual(option("--heading-goal-stop-advance-m"), "0.025")
         self.assertEqual(option("--heading-goal-predicted-stop-tolerance-m"), "0.005")
         self.assertNotIn("--heading-yaw-rate-prediction-horizon-s", child_argv)
         self.assertIn("--point-goal-diagnostic", child_argv)
@@ -92,6 +92,70 @@ class ResearchScriptStagingTests(unittest.TestCase):
         ]
 
         self.assertEqual(len(registrations), 1)
+
+    def test_right_turn_and_route_modes_use_the_existing_m1_child_path(self):
+        args = argparse.Namespace(
+            extra_stop_observation=5.0,
+            pulse_duration=1.0,
+            forward_speed=0.2,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="offline-route-mode",
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+            run65_right_turn_qualification=True,
+            run65_route_integration=False,
+        )
+        turn_command = shlex.split(build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1])
+        self.assertIn("--right-turn-qualification", turn_command)
+        self.assertIn("--zero-only-stop", turn_command)
+        self.assertIn("--max-observed-planar-speed-m-s", turn_command)
+        self.assertNotIn("--point-goal-diagnostic", turn_command)
+
+        args.run65_right_turn_qualification = False
+        args.run65_route_integration = True
+        route_command = shlex.split(build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1])
+        self.assertIn("--route-integration", route_command)
+        evidence_index = route_command.index("--route-turn-qualification-evidence")
+        self.assertEqual(route_command[evidence_index + 1], "/workspace/evidence/route_turn_qualification_evidence.json")
+        self.assertIn("--zero-only-stop", route_command)
+        self.assertNotIn("--right-turn-qualification", route_command)
+
+    def test_route_workcell_preflight_accepts_only_pinned_infinite_floor_scene(self):
+        from issue80_m1_auto_reset_run import ROUTE_SCENE_RELATIVE, ROUTE_X2_RELATIVE
+
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp)
+            scene = runtime / ROUTE_SCENE_RELATIVE
+            x2 = runtime / ROUTE_X2_RELATIVE
+            scene.parent.mkdir(parents=True)
+            x2.write_text("<mujoco model='fixture'/>", encoding="utf-8")
+            scene.write_text(
+                "<mujoco model='fixture'><include file='x2.xml'/><worldbody>"
+                "<geom name='floor' type='plane' size='0 0 0.05'/>"
+                "</worldbody></mujoco>",
+                encoding="utf-8",
+            )
+            with patch("issue80_m1_auto_reset_run.ROUTE_SCENE_SHA256", hashlib.sha256(scene.read_bytes()).hexdigest()), \
+                 patch("issue80_m1_auto_reset_run.ROUTE_X2_SHA256", hashlib.sha256(x2.read_bytes()).hexdigest()):
+                result = inspect_route_workcell_geometry(runtime)
+            self.assertEqual(result["status"], "PASS")
+            self.assertEqual(result["active_world_obstacles"], [])
+
+            scene.write_text(
+                "<mujoco model='fixture'><include file='x2.xml'/><worldbody>"
+                "<geom name='floor' type='plane' size='0 0 0.05'/>"
+                "<geom name='wall' type='box' size='1 1 1'/>"
+                "</worldbody></mujoco>",
+                encoding="utf-8",
+            )
+            with patch("issue80_m1_auto_reset_run.ROUTE_SCENE_SHA256", hashlib.sha256(scene.read_bytes()).hexdigest()), \
+                 patch("issue80_m1_auto_reset_run.ROUTE_X2_SHA256", hashlib.sha256(x2.read_bytes()).hexdigest()):
+                with self.assertRaisesRegex(ValueError, "unreviewed world collision geom"):
+                    inspect_route_workcell_geometry(runtime)
 
     def test_turning_result_stays_simulation_only_and_does_not_claim_manufacturer_acceptance(self):
         self.assertEqual(

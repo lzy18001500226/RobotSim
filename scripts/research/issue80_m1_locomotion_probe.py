@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -33,6 +34,7 @@ from issue80_m1_first_motion import (
     COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
     MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, MAX_AUTHORIZED_PULSE_S,
     MAX_EXTRA_POST_STOP_OBSERVE_S, PHYSICAL_STOP_MAX_YAW_RATE_RAD_S, verify_mc_fsm_runtime_contract,
+    MODE_SOURCE_READBACK_SKEW_MAX_S,
     SOURCE_PRIORITY, SOURCE_TIMEOUT_MS, VELOCITY_SOURCE_NAME, classify_source_registration,
     TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S,
     TURN_MIN_HEADING_CHANGE_RAD, TURN_PULSE_S, ZERO_STOP_MIN_MESSAGES,
@@ -89,6 +91,12 @@ from issue80_coordinated_pose_goal import (
     terminal_yaw_rate_command,
 )
 from issue80_m1_mode_logic import classify_set_mc_action_response
+from issue80_waypoint_route import (
+    DirectiveKind, MotionFeedback, MotionStatus, PhysicalStopEvidence,
+    PhysicalStopStatus, PoseEstimate, Profile, RouteSpec, RouteStep,
+    SafetyObservation, StopBehavior, WaypointRouteExecutor, YawPolicy,
+)
+from issue80_route_motion_bridge import RouteMotionBridge, RuntimeReadiness
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
 MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0
@@ -2220,6 +2228,903 @@ class FocusedM1Diagnostic(Node):
             ],
         }
 
+    def run_right_turn_qualification(
+        self,
+        *,
+        registration: Mapping[str, Any],
+        set_action: Mapping[str, Any],
+        stationary_baseline: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        baseline_displacements = [
+            float(window["forward_displacement_m"])
+            for window in stationary_baseline.get("windows", [])
+        ]
+        turn = run_angular_turn_window(
+            sample=self.sample_for_first_motion,
+            publish_turn=lambda forward, angular: self._publish(forward, 0.0, angular),
+            publish_zero=lambda: self._publish(0.0, 0.0, 0.0),
+            registration=registration,
+            set_action=set_action,
+            joint_limits=self.joint_limits,
+            baseline_forward_displacements_m=baseline_displacements,
+            baseline_state_summary=stationary_baseline.get("physical_state_summary"),
+            authorized=True,
+            angular_velocity_rad_s=-TURN_COMMAND_RAD_S,
+            forward_velocity_m_s=TURN_FORWARD_COMMAND_M_S,
+            forward_warmup_s=TURN_FORWARD_WARMUP_S,
+            pulse_duration_s=TURN_PULSE_S,
+            max_observed_planar_speed_m_s=0.2,
+            zero_until_stand_timeout_s=3.5,
+            extra_post_stop_observe_s=5.0,
+            state_timeout_s=self.args.state_timeout,
+            min_root_z=self.args.min_root_z,
+            max_tilt_deg=self.args.max_tilt_deg,
+            max_turn_displacement_m=0.25,
+            turn_stop_reserve_m=0.05,
+            shutdown_event=self.interrupted,
+            on_sample=lambda phase, snapshot: self._trace_first_motion_sample(
+                f"route-right-turn-{phase}", snapshot,
+            ),
+        )
+        turn["direction"] = "right"
+        turn["classification"] = "SIMULATION_ONLY_DERIVED_FOUNDATIONWALK_RIGHT_ARC"
+        turn["turn_displacement_stop_reserve_source"] = {
+            "run65_right_turn_max_additional_radial_displacement_after_zero_m": 0.04777158907978671,
+            "selected_reserve_m": 0.05,
+            "cap_m": 0.25,
+            "active_command_trigger_m": 0.20,
+        }
+        turn["status_scope"] = "one bounded right-moving arc and measured physical stop; not a 90-degree corner"
+        turn_start_s = float(turn.get("turn_start_monotonic_s") or 0.0)
+        trace_rows = turn.get("samples", [])
+        active_rows = [
+            row for row in trace_rows
+            if row.get("phase") == "turn-activation"
+            and float(row.get("sample_monotonic_s", -1.0)) >= turn_start_s
+            and isinstance(row.get("pose"), Mapping)
+        ]
+        origin_row = min(active_rows, key=lambda row: float(row["sample_monotonic_s"])) if active_rows else None
+        peak_total_displacement = 0.0
+        if origin_row is not None:
+            origin_pose = origin_row["pose"]
+            for row in trace_rows:
+                if row.get("phase") not in {"turn-activation", "post-stop"}:
+                    continue
+                pose = row.get("pose")
+                if not isinstance(pose, Mapping):
+                    continue
+                try:
+                    displacement = math.hypot(
+                        float(pose["x"]) - float(origin_pose["x"]),
+                        float(pose["y"]) - float(origin_pose["y"]),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                peak_total_displacement = max(peak_total_displacement, displacement)
+        rotation = turn.get("rotation", {})
+        stop = turn.get("physical_stop_gate", {})
+        yaw_pass = (
+            isinstance(rotation, Mapping)
+            and rotation.get("status") == "TURN_DIRECTION_PASS"
+            and float(rotation.get("signed_yaw_delta_rad", 0.0)) <= -TURN_MIN_HEADING_CHANGE_RAD
+        )
+        safety_rows = [row for row in trace_rows if row.get("phase") in {"turn-preflight", "turn-forward-warmup", "turn-activation", "post-stop"}]
+        safety_clear = not turn.get("fault") and not turn.get("post_stop_fault") and all(
+            row.get("safety_fault") is None for row in safety_rows
+        )
+        gates = {
+            "control_handshake": turn.get("control_handshake_confirmed") is True,
+            "signed_right_yaw_at_least_0p087_rad": yaw_pass,
+            "all_runtime_safety_samples_clear": safety_clear,
+            "total_turn_and_settling_displacement_le_0p25m": peak_total_displacement <= 0.25,
+            "active_duration_le_5s": float(turn.get("pulse_actual_duration_s", 0.0)) <= 5.0,
+            "physical_stop_gate": stop.get("status") == "PASS",
+            "zero_window_minimum_met": int(turn.get("zero_stop", {}).get("zero_publish_calls_returned", 0)) >= ZERO_STOP_MIN_MESSAGES,
+        }
+        turn["right_arc_acceptance"] = {
+            "status": "PASS" if all(gates.values()) else "FAIL",
+            "gates": gates,
+            "turn_origin": dict(origin_row["pose"]) if origin_row else None,
+            "maximum_total_turn_origin_displacement_m": peak_total_displacement,
+            "legacy_planar_motion_status": turn.get("planar_motion", {}).get("status"),
+            "legacy_planar_gate_is_reported_separately": True,
+        }
+        return {
+            "status": "PASS" if turn["right_arc_acceptance"]["status"] == "PASS" else "BLOCKED",
+            "classification": "SIMULATION_ONLY_DERIVED_FOUNDATIONWALK_RIGHT_TURN_QUALIFICATION",
+            "direction": "RIGHT",
+            "forward_velocity_m_s": TURN_FORWARD_COMMAND_M_S,
+            "angular_command_rad_s": -TURN_COMMAND_RAD_S,
+            "maximum_active_window_s": TURN_FORWARD_WARMUP_S + TURN_PULSE_S,
+            "turn": turn,
+            "limitations": [
+                "The 50 mm reserve is rounded up from Run65's measured 47.772 mm maximum post-zero radial drift; it is an empirical single-run bound, not a statistical guarantee.",
+                "Passing qualifies only this short right-moving arc and its measured stop, not a 90-degree route corner.",
+                "The installed interface provides simulator odometry and joint state but no foot contact force or MC stop acknowledgement.",
+            ],
+        }
+
+    def run_short_route_integration(
+        self,
+        *,
+        registration: Mapping[str, Any],
+        set_action: Mapping[str, Any],
+        stationary_baseline: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Execute one transit and one route-manager/bridge right turn through M1."""
+        result: dict[str, Any] = {
+            "classification": "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION",
+            "status": "NOT_RUN",
+            "route_attempt_id": self.args.attempt_id,
+            "segments": [],
+            "second_transit": "NOT_RUN_OPTIONAL_AFTER_CORNER",
+            "fault": None,
+        }
+        evidence_root = Path(self.args.output_dir)
+        workcell_path = evidence_root / "workcell_geometry_preflight.json"
+        try:
+            if workcell_path.is_symlink() or not workcell_path.is_file():
+                raise ValueError("host workcell geometry preflight is missing")
+            workcell = json.loads(workcell_path.read_text(encoding="utf-8"))
+            if workcell.get("status") != "PASS":
+                raise ValueError("host workcell geometry preflight did not pass")
+            turn_provenance = validate_route_turn_qualification_evidence(
+                self.args.route_turn_qualification_evidence
+            )
+            result["workcell_geometry_preflight"] = workcell
+            result["qualified_right_turn_evidence"] = turn_provenance
+        except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
+            result["status"] = "BLOCKED"
+            result["fault"] = f"route_preflight:{type(exc).__name__}:{exc}"
+            return result
+
+        def pose_from_snapshot(snapshot: Mapping[str, Any]) -> PoseEstimate:
+            pose = snapshot.get("pose")
+            ages = snapshot.get("state_age_s")
+            if not isinstance(pose, Mapping) or not isinstance(ages, Mapping):
+                raise ValueError("route pose or state-age telemetry is unavailable")
+            frame_id = str(pose.get("frame_id", ""))
+            child_frame_id = str(pose.get("child_frame_id", ""))
+            if frame_id != "odom" or child_frame_id != "base_link":
+                raise ValueError(f"route requires odom->base_link, received {frame_id}->{child_frame_id}")
+            stamp_ns = int(pose["stamp_sec"]) * 1_000_000_000 + int(pose["stamp_nanosec"])
+            age = ages.get("odom")
+            if age is None or not math.isfinite(float(age)):
+                raise ValueError("route odometry receive age is unavailable")
+            return PoseEstimate(
+                frame_id="odom",
+                child_frame_id="base_link",
+                x_m=float(pose["x"]),
+                y_m=float(pose["y"]),
+                yaw_rad=float(pose["yaw"]),
+                stamp_ns=stamp_ns,
+                received_steady_s=float(snapshot["sample_monotonic_s"]),
+                generation=str(self.args.attempt_id),
+                source="MUJOCO_GROUND_TRUTH",
+                position_std_m=0.0,
+                yaw_std_rad=0.0,
+                transform_chain=("odom->base_link",),
+                transform_age_s=float(age),
+            )
+
+        class LivePoseProvider:
+            def __init__(self) -> None:
+                self.pose: PoseEstimate | None = None
+
+            def update(self, snapshot: Mapping[str, Any]) -> PoseEstimate:
+                self.pose = pose_from_snapshot(snapshot)
+                return self.pose
+
+            def latest_pose(self, target_frame: str, now_steady_s: float) -> PoseEstimate | None:
+                return self.pose if target_frame == "odom" else None
+
+        class LiveSafetyProvider:
+            def __init__(self) -> None:
+                self.received_s = 0.0
+                self.segment_id = ""
+                self.robot_safe = False
+                self.reason = "no runtime observation"
+
+            def update(self, snapshot: Mapping[str, Any], segment_id: str) -> None:
+                self.received_s = float(snapshot.get("sample_monotonic_s", time.monotonic()))
+                self.segment_id = segment_id
+                fault = snapshot_fault(
+                    snapshot,
+                    self.joint_limits,
+                    state_timeout_s=self.state_timeout_s,
+                    min_root_z=self.min_root_z,
+                    max_tilt_deg=self.max_tilt_deg,
+                    max_observed_planar_speed_m_s=0.2,
+                )
+                self.robot_safe = fault is None
+                self.reason = fault or "pinned open-floor scene has no obstacle geoms inside the local corridor"
+
+            def latest_observation(self, segment_id: str, frame_id: str, now_steady_s: float) -> SafetyObservation | None:
+                if frame_id != "odom" or segment_id != self.segment_id:
+                    return None
+                return SafetyObservation(
+                    segment_id=segment_id,
+                    frame_id=frame_id,
+                    received_steady_s=self.received_s,
+                    clear=True,
+                    robot_safe=self.robot_safe,
+                    minimum_obstacle_clearance_m=float(workcell["verified_local_clear_radius_m"]),
+                    reason=self.reason,
+                )
+
+        class RouteMotionAdapter:
+            def __init__(self) -> None:
+                self.latest = None
+                self.events: list[dict[str, Any]] = []
+                self.zero_requested_at_s: float | None = None
+
+            def dispatch(self, directive) -> None:
+                self.latest = directive
+                self.events.append({
+                    "kind": directive.kind.value,
+                    "segment_id": directive.segment_id,
+                    "reason": directive.reason,
+                    "steady_s": time.monotonic(),
+                })
+
+            def request_zero_and_stop(self, reason: str, requested_steady_s: float) -> float:
+                actual_request = max(float(requested_steady_s), time.monotonic())
+                self.zero_requested_at_s = actual_request
+                self.events.append({
+                    "kind": "M1_ZERO_STOP_REQUEST",
+                    "reason": reason,
+                    "steady_s": actual_request,
+                })
+                return actual_request
+
+        try:
+            initial = self.sample_for_first_motion()
+            initial_fault = snapshot_fault(
+                initial,
+                self.joint_limits,
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+                max_observed_planar_speed_m_s=0.2,
+            )
+            if initial_fault or not stand_mode_readback_confirmed(initial):
+                raise ValueError(f"route requires fresh stable STAND preflight: {initial_fault or 'STAND_READBACK_MISSING'}")
+            start_pose = pose_from_snapshot(initial)
+            footprint = float(workcell["robot_collision_footprint_radial_upper_bound_m"])
+            clear_radius = float(workcell["verified_local_clear_radius_m"])
+            if clear_radius <= footprint + 0.10:
+                raise ValueError("verified local clear region does not contain the robot footprint and margin")
+            corridor_half_width = footprint + 0.10 + 0.05
+            ideal_turn_lateral_m = (TURN_FORWARD_COMMAND_M_S / TURN_COMMAND_RAD_S) * (
+                1.0 - math.cos(TURN_COMMAND_RAD_S * TURN_PULSE_S)
+            )
+            turn_corridor_half_width = footprint + 0.10 + ideal_turn_lateral_m + 0.05
+            transit_x = start_pose.x_m + 0.30 * math.cos(start_pose.yaw_rad)
+            transit_y = start_pose.y_m + 0.30 * math.sin(start_pose.yaw_rad)
+            corner_yaw = math.atan2(
+                math.sin(start_pose.yaw_rad - 0.15),
+                math.cos(start_pose.yaw_rad - 0.15),
+            )
+            next_x = transit_x + 0.30 * math.cos(corner_yaw)
+            next_y = transit_y + 0.30 * math.sin(corner_yaw)
+
+            def local_to_world(
+                center_x_m: float,
+                center_y_m: float,
+                heading_rad: float,
+                along_m: float,
+                lateral_m: float,
+            ) -> tuple[float, float]:
+                return (
+                    center_x_m + along_m * math.cos(heading_rad) - lateral_m * math.sin(heading_rad),
+                    center_y_m + along_m * math.sin(heading_rad) + lateral_m * math.cos(heading_rad),
+                )
+
+            corridor = tuple(local_to_world(start_pose.x_m, start_pose.y_m, start_pose.yaw_rad, along, lateral) for along, lateral in (
+                (-0.75, -corridor_half_width),
+                (1.25, -corridor_half_width),
+                (1.25, corridor_half_width),
+                (-0.75, corridor_half_width),
+            ))
+            turn_corridor = tuple(local_to_world(transit_x, transit_y, start_pose.yaw_rad, along, lateral) for along, lateral in (
+                (-0.75, -turn_corridor_half_width),
+                (0.80, -turn_corridor_half_width),
+                (0.80, turn_corridor_half_width),
+                (-0.20, turn_corridor_half_width),
+            ))
+            post_turn_corridor = tuple(local_to_world(transit_x, transit_y, corner_yaw, along, lateral) for along, lateral in (
+                (-0.75, -corridor_half_width),
+                (1.25, -corridor_half_width),
+                (1.25, corridor_half_width),
+                (-0.75, corridor_half_width),
+            ))
+
+            def route_step(
+                waypoint_id: str,
+                x: float,
+                y: float,
+                profile: Profile,
+                position_tolerance: float,
+                yaw_policy: YawPolicy,
+                yaw_tolerance: float | None,
+                *,
+                step_corridor: tuple[tuple[float, float], ...],
+                corner_corridor: tuple[tuple[float, float], ...] | None = None,
+            ) -> RouteStep:
+                return RouteStep(
+                    waypoint_id=waypoint_id,
+                    x_m=x,
+                    y_m=y,
+                    profile=profile,
+                    position_tolerance_m=position_tolerance,
+                    yaw_policy=yaw_policy,
+                    yaw_rad=None,
+                    yaw_tolerance_rad=yaw_tolerance,
+                    max_position_std_m=0.01,
+                    max_yaw_std_rad=0.05,
+                    stop_behavior=StopBehavior.VERIFY_PHYSICAL_STOP,
+                    segment_timeout_s=20.0,
+                    recovery_limit=0,
+                    corridor_polygon=step_corridor,
+                    turn_corridor_polygon=corner_corridor,
+                    minimum_obstacle_clearance_m=float(workcell["verified_local_clear_radius_m"]),
+                    target_forward_m_s=0.12,
+                    max_forward_m_s=0.12,
+                    max_angular_rad_s=TURN_COMMAND_RAD_S,
+                    max_command_window_s=5.0,
+                    turn_strategy="BOUNDED_MOVING_TURN" if corner_corridor is not None else None,
+                    maximum_turn_displacement_m=0.25 if corner_corridor is not None else None,
+                )
+
+            route = RouteSpec(
+                route_id=f"issue80-short-route-{self.args.attempt_id}",
+                frame_id="odom",
+                workspace_verified=True,
+                bounded_moving_turn_qualified=True,
+                zero_forward_turn_qualified=False,
+                start_x_m=start_pose.x_m,
+                start_y_m=start_pose.y_m,
+                start_yaw_rad=start_pose.yaw_rad,
+                start_position_tolerance_m=0.02,
+                start_yaw_tolerance_rad=0.02,
+                robot_footprint_radius_m=footprint,
+                corridor_boundary_margin_m=0.10,
+                max_pose_age_s=0.20,
+                max_transform_age_s=0.50,
+                max_safety_age_s=0.50,
+                max_position_std_m=0.01,
+                max_yaw_std_rad=0.05,
+                steps=(
+                    route_step("TRANSIT-TO-CORNER", transit_x, transit_y, Profile.TRANSIT, 0.15, YawPolicy.IGNORE, None, step_corridor=corridor),
+                    route_step("RIGHT-CORNER", transit_x, transit_y, Profile.CORNER, 0.20, YawPolicy.NEXT_SEGMENT, 0.03,
+                               step_corridor=corridor, corner_corridor=turn_corridor),
+                    route_step("TRANSIT-AFTER-RIGHT-CORNER", next_x, next_y, Profile.TRANSIT, 0.20, YawPolicy.IGNORE, None,
+                               step_corridor=post_turn_corridor),
+                ),
+            )
+            route.validate()
+            pose_provider = LivePoseProvider()
+            safety_provider = LiveSafetyProvider()
+            safety_provider.joint_limits = self.joint_limits
+            safety_provider.state_timeout_s = self.args.state_timeout
+            safety_provider.min_root_z = self.args.min_root_z
+            safety_provider.max_tilt_deg = self.args.max_tilt_deg
+            pose_provider.update(initial)
+            safety_provider.update(initial, route.steps[0].waypoint_id)
+            route_motion = RouteMotionAdapter()
+            executor = WaypointRouteExecutor(route, pose_provider, safety_provider, route_motion)
+            route_feedback = MotionFeedback(
+                status=MotionStatus.ACTIVE,
+                reset_gate_pass=True,
+                standing_gate_pass=True,
+                source_mode_handshake_pass=False,
+                safety_gates_pass=True,
+                initial_activation_authorized=True,
+            )
+            current_directive = executor.start(float(initial["sample_monotonic_s"]), route_feedback)
+            if current_directive.kind is not DirectiveKind.FOLLOW_WAYPOINT:
+                raise ValueError(f"route manager refused initial transit: {current_directive.reason}")
+
+            scope = self.scope_evidence or {}
+            local_identity = scope.get("publisher_local_identity", {})
+            publishers = scope.get("velocity_publishers", [])
+            subscribers = scope.get("velocity_subscribers", [])
+            expected_domain = int(os.environ.get("ROS_DOMAIN_ID", "-1"))
+            turn_evidence_id = str(turn_provenance["sha256"])
+
+            def same_sample_handshake(snapshot: Mapping[str, Any]) -> bool:
+                times = snapshot.get("readback_monotonic_s")
+                sample_time = float(snapshot.get("sample_monotonic_s", -1.0))
+                if not isinstance(times, Mapping):
+                    return False
+                try:
+                    mode_time = float(times["get_mode"])
+                    source_time = float(times["get_source"])
+                except (KeyError, TypeError, ValueError):
+                    return False
+                return (
+                    0.0 <= sample_time - mode_time <= float(self.args.state_timeout)
+                    and 0.0 <= sample_time - source_time <= float(self.args.state_timeout)
+                    and abs(mode_time - source_time) <= MODE_SOURCE_READBACK_SKEW_MAX_S
+                    and snapshot.get("get_mode_header_code") == 0
+                    and snapshot.get("get_mode_status_value") == 100
+                    and snapshot.get("get_mode_desc") == MODE_LOCOMOTION
+                    and snapshot.get("common_mode_desc") == MODE_LOCOMOTION
+                    and snapshot.get("common_mode_status_value") == 100
+                    and snapshot.get("get_source_header_code") == 0
+                    and snapshot.get("get_source_name") == self.source
+                    and snapshot.get("common_source_name") == self.source
+                )
+
+            def readiness_from_snapshot(
+                snapshot: Mapping[str, Any], *, measured_turn_guard: bool = False
+            ) -> RuntimeReadiness:
+                fault = snapshot_fault(
+                    snapshot,
+                    self.joint_limits,
+                    state_timeout_s=self.args.state_timeout,
+                    min_root_z=self.args.min_root_z,
+                    max_tilt_deg=self.args.max_tilt_deg,
+                    max_observed_planar_speed_m_s=0.2,
+                )
+                return RuntimeReadiness(
+                    observed_steady_s=float(snapshot.get("sample_monotonic_s", time.monotonic())),
+                    reset_gate_pass=True,
+                    standing_gate_pass=True,
+                    safety_gates_pass=fault is None,
+                    source_registration_pass=registration.get("success") is True,
+                    action_source_setup_pass=set_action.get("accepted_by_service") is True,
+                    source_mode_handshake_pass=same_sample_handshake(snapshot),
+                    telemetry_fresh=not bool(stale_readback_keys(snapshot, float(self.args.state_timeout))),
+                    workspace_clearance_verified=workcell.get("status") == "PASS",
+                    corridor_clear=True,
+                    swept_path_clear=True,
+                    bounded_moving_turn_qualified=True,
+                    qualified_turn_directions=("RIGHT",),
+                    turn_stop_margin_m=0.05,
+                    turn_stop_margin_direction="RIGHT",
+                    turn_stop_margin_evidence_id=turn_evidence_id,
+                    transport_isolated=(scope.get("status") == "PASS" and scope.get("docker_network_mode") == "bridge"),
+                    publisher_identity_verified=(
+                        len(publishers) == 1
+                        and local_identity.get("is_owned_publisher") is True
+                        and local_identity.get("node_topic_publisher_count") == 1
+                    ),
+                    mc_subscriber_identity_verified=(len(subscribers) == 1 and bool(scope.get("verified_mc_runtime_identity"))),
+                    qos_compatible=scope.get("status") == "PASS",
+                    velocity_publisher_count=len(publishers),
+                    mc_velocity_subscriber_count=len(subscribers),
+                    ros_domain_id=int(scope.get("ros_domain_id", -1)),
+                    expected_ros_domain_id=expected_domain,
+                    mode_desc=str(snapshot.get("common_mode_desc") or snapshot.get("get_mode_desc") or ""),
+                    selected_source=str(snapshot.get("common_source_name") or snapshot.get("get_source_name") or ""),
+                    measured_displacement_guard_verified=measured_turn_guard,
+                )
+
+            bridge = RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.0)
+            initial_readiness = readiness_from_snapshot(initial)
+            transit_plan = bridge.plan_next(
+                current_directive, start_pose, initial_readiness,
+                now_steady_s=float(initial["sample_monotonic_s"]),
+            )
+            if transit_plan.status != "PROPOSAL_ONLY" or transit_plan.forward_m_s <= 0.0:
+                raise ValueError(f"route bridge refused transit proposal: {transit_plan.status}: {transit_plan.reason}")
+            if abs(transit_plan.angular_rad_s) > 0.002:
+                raise ValueError("straight route transit requires an angular command unsupported by its fixed-forward M1 segment")
+            result["route_spec"] = {
+                "route_id": route.route_id,
+                "frame_id": route.frame_id,
+                "start_anchor": {"x_m": route.start_x_m, "y_m": route.start_y_m, "yaw_rad": route.start_yaw_rad},
+                "steps": [
+                    {"waypoint_id": step.waypoint_id, "profile": step.profile.value, "x_m": step.x_m,
+                     "y_m": step.y_m, "position_tolerance_m": step.position_tolerance_m,
+                     "yaw_tolerance_rad": step.yaw_tolerance_rad,
+                     "maximum_turn_displacement_m": step.maximum_turn_displacement_m}
+                    for step in route.steps
+                ],
+                "corridor_half_width_m": corridor_half_width,
+                "turn_corridor_half_width_m": turn_corridor_half_width,
+                "expected_ideal_turn_lateral_m": ideal_turn_lateral_m,
+                "corridor_longitudinal_limits_m": [-0.75, 1.25],
+                "maximum_centerline_lateral_error_m": 0.05,
+                "robot_footprint_radial_upper_bound_m": footprint,
+                "boundary_margin_m": route.corridor_boundary_margin_m,
+                "pose_uncertainty_note": "installed simulator ground-truth odometry publishes no covariance; route uses zero covariance only as the deterministic ground-truth contract, not as an estimated localization confidence",
+            }
+            result["route_motion_bridge"] = {
+                "transit_window": dict(transit_plan.__dict__),
+                "turn_margin_source": turn_provenance,
+                "turn_displacement_guard": {
+                    "maximum_m": 0.25,
+                    "stop_reserve_m": 0.05,
+                    "active_trigger_m": 0.20,
+                    "runtime_guard": "per-sample helper cutoff from measured turn-origin pose",
+                },
+            }
+
+            route_fault: str | None = None
+            route_stop_reason: str | None = None
+            route_events: list[dict[str, Any]] = []
+
+            def transit_termination(snapshot: Mapping[str, Any]) -> bool:
+                nonlocal route_fault, route_stop_reason
+                fault = snapshot_fault(
+                    snapshot,
+                    self.joint_limits,
+                    state_timeout_s=self.args.state_timeout,
+                    min_root_z=self.args.min_root_z,
+                    max_tilt_deg=self.args.max_tilt_deg,
+                    max_observed_planar_speed_m_s=0.2,
+                )
+                if fault:
+                    route_fault = "transit_safety:" + fault
+                    return True
+                if not same_sample_handshake(snapshot):
+                    return False
+                try:
+                    pose_provider.update(snapshot)
+                except (KeyError, TypeError, ValueError) as exc:
+                    route_fault = f"transit_pose:{type(exc).__name__}:{exc}"
+                    return True
+                active = executor.active_step
+                if active is None:
+                    return True
+                safety_provider.update(snapshot, active.waypoint_id)
+                pose = pose_provider.pose
+                assert pose is not None
+                distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
+                feedback = MotionFeedback(
+                    status=MotionStatus.ARRIVED if distance <= active.position_tolerance_m else MotionStatus.ACTIVE,
+                    reset_gate_pass=True,
+                    standing_gate_pass=True,
+                    source_mode_handshake_pass=True,
+                    safety_gates_pass=True,
+                )
+                directive = executor.tick(float(snapshot["sample_monotonic_s"]), feedback)
+                if not route_events or route_events[-1]["kind"] != directive.kind.value:
+                    route_events.append({"kind": directive.kind.value, "reason": directive.reason,
+                                         "sample_monotonic_s": snapshot.get("sample_monotonic_s")})
+                if directive.kind is DirectiveKind.REQUEST_PHYSICAL_STOP:
+                    route_stop_reason = directive.reason
+                    return True
+                if directive.kind is DirectiveKind.STOP_AND_ABORT:
+                    route_fault = directive.reason
+                    return True
+                return False
+
+            baseline_displacements = [
+                float(window["forward_displacement_m"])
+                for window in (stationary_baseline or {}).get("windows", [])
+            ]
+            transit = run_first_motion_window(
+                sample=self.sample_for_first_motion,
+                publish=self._publish,
+                registration=registration,
+                set_action=set_action,
+                joint_limits=self.joint_limits,
+                baseline_forward_displacements_m=baseline_displacements,
+                baseline_state_summary=(stationary_baseline or {}).get("physical_state_summary"),
+                authorized=True,
+                forward_command_m_s=transit_plan.forward_m_s,
+                pulse_duration_s=transit_plan.maximum_duration_s,
+                max_pulse_duration_s=transit_plan.maximum_duration_s,
+                extra_post_stop_observe_s=5.0,
+                after_zero_stop=self.request_postwalk_stand_once,
+                shutdown_event=self.interrupted,
+                on_sample=lambda phase, snapshot: self._trace_first_motion_sample(
+                    f"route-transit-{phase}", snapshot,
+                ),
+                termination_condition=transit_termination,
+                termination_condition_name="route_waypoint_and_physical_stop",
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+                max_observed_planar_speed_m_s=0.2,
+                zero_until_stand_timeout_s=3.5,
+            )
+            result["segments"].append({"segment_id": "TRANSIT-TO-CORNER", "plan": dict(transit_plan.__dict__),
+                                       "result": transit})
+            result["route_events"] = route_events
+            actual_transit_window_s = float(transit.get("pulse_actual_duration_s", 0.0))
+            if actual_transit_window_s > 0.0:
+                bridge.complete_window(transit_plan.window_id, actual_elapsed_s=actual_transit_window_s)
+            transit_gate = transit.get("physical_stop_gate") or {}
+            if (
+                route_fault
+                or route_stop_reason is None
+                or transit.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
+                or transit_gate.get("status") != "PASS"
+            ):
+                result["status"] = "BLOCKED"
+                result["fault"] = route_fault or route_stop_reason or transit.get("fault") or "transit_waypoint_or_physical_stop_not_passed"
+                return result
+
+            def stop_mapping(gate: Mapping[str, Any]) -> dict[str, Any]:
+                final_window = gate.get("final_window", {})
+                return {
+                    "status": gate.get("status"),
+                    "window_start_steady_s": final_window.get("window_start_monotonic_s"),
+                    "window_end_steady_s": final_window.get("window_end_monotonic_s"),
+                    "sample_count": final_window.get("sample_count"),
+                    "maximum_sample_gap_s": final_window.get("max_sample_gap_s"),
+                    "maximum_state_age_s": final_window.get("max_state_age_s"),
+                    "generation": str(self.args.attempt_id),
+                }
+
+            transit_evidence = stop_mapping(transit_gate)
+            transit_zero_start = float(transit_gate.get("zero_start_monotonic_s", 0.0))
+            zero_plan = bridge.zero_window(
+                route_motion.latest,
+                now_steady_s=time.monotonic(),
+                reason="M1 transit ended and its physical-stop gate is being revalidated before the corner",
+                physical_stop_gate_required=True,
+            )
+            transit_stop_rearmed = bridge.confirm_physical_stop(
+                transit_evidence,
+                zero_request_started_s=transit_zero_start,
+                now_steady_s=time.monotonic(),
+                expected_generation=str(self.args.attempt_id),
+            )
+            route_after_transit = self.sample_for_first_motion()
+            route_pose = pose_provider.update(route_after_transit)
+            safety_provider.update(route_after_transit, executor.active_step.waypoint_id)
+            stop_feedback = MotionFeedback(
+                status=MotionStatus.ACTIVE,
+                physical_stop_evidence=PhysicalStopEvidence(
+                    status=PhysicalStopStatus.PASS,
+                    window_start_steady_s=float(transit_evidence["window_start_steady_s"]),
+                    window_end_steady_s=float(transit_evidence["window_end_steady_s"]),
+                    sample_count=int(transit_evidence["sample_count"]),
+                    maximum_sample_gap_s=float(transit_evidence["maximum_sample_gap_s"]),
+                    maximum_state_age_s=float(transit_evidence["maximum_state_age_s"]),
+                    generation=str(self.args.attempt_id),
+                ),
+                reset_gate_pass=True,
+                standing_gate_pass=True,
+                source_mode_handshake_pass=False,
+                safety_gates_pass=True,
+                stand_readback_pass=stand_mode_readback_confirmed(route_after_transit),
+            )
+            after_transit = executor.tick(float(route_after_transit["sample_monotonic_s"]), stop_feedback)
+            if after_transit.kind is DirectiveKind.STOP_AND_ABORT:
+                raise ValueError(f"route rejected transit stop evidence: {after_transit.reason}")
+            route_after_transit = self.sample_for_first_motion()
+            pose_provider.update(route_after_transit)
+            safety_provider.update(route_after_transit, executor.active_step.waypoint_id)
+            to_turn = executor.tick(
+                float(route_after_transit["sample_monotonic_s"]),
+                MotionFeedback(
+                    status=MotionStatus.ARRIVED,
+                    physical_stop_evidence=stop_feedback.physical_stop_evidence,
+                    reset_gate_pass=True,
+                    standing_gate_pass=True,
+                    source_mode_handshake_pass=False,
+                    safety_gates_pass=True,
+                    stand_readback_pass=stand_mode_readback_confirmed(route_after_transit),
+                ),
+            )
+            if not transit_stop_rearmed or to_turn.kind is not DirectiveKind.BOUNDED_MOVING_TURN:
+                result["status"] = "BLOCKED"
+                result["fault"] = "route_did_not_rearm_on_measured_stop_or_emit_bounded_turn"
+                result["bridge_zero_rearm"] = {"plan": dict(zero_plan.__dict__), "passed": transit_stop_rearmed}
+                return result
+            result["bridge_zero_rearm"] = {"plan": dict(zero_plan.__dict__), "passed": True}
+
+            turn_preflight = route_after_transit
+            turn_readiness = readiness_from_snapshot(turn_preflight, measured_turn_guard=True)
+            turn_plan = bridge.plan_next(
+                to_turn,
+                pose_provider.pose,
+                turn_readiness,
+                now_steady_s=float(turn_preflight["sample_monotonic_s"]),
+            )
+            if turn_plan.status != "PROPOSAL_ONLY":
+                result["status"] = "BLOCKED"
+                result["fault"] = f"route_bridge_refused_turn:{turn_plan.status}:{turn_plan.reason}"
+                result["route_events"] = route_events
+                return result
+            route_turn_stop_reason: str | None = None
+            route_turn_origin = pose_provider.pose
+
+            def turn_termination(snapshot: Mapping[str, Any]) -> str | None:
+                nonlocal route_fault, route_turn_stop_reason
+                fault = snapshot_fault(
+                    snapshot,
+                    self.joint_limits,
+                    state_timeout_s=self.args.state_timeout,
+                    min_root_z=self.args.min_root_z,
+                    max_tilt_deg=self.args.max_tilt_deg,
+                    max_observed_planar_speed_m_s=0.2,
+                )
+                if fault:
+                    route_fault = "turn_safety:" + fault
+                    return route_fault
+                try:
+                    pose_provider.update(snapshot)
+                except (KeyError, TypeError, ValueError) as exc:
+                    route_fault = f"turn_pose:{type(exc).__name__}:{exc}"
+                    return route_fault
+                pose = pose_provider.pose
+                if route_turn_origin is not None and pose is not None:
+                    measured_from_route_origin = math.hypot(
+                        pose.x_m - route_turn_origin.x_m,
+                        pose.y_m - route_turn_origin.y_m,
+                    )
+                    if measured_from_route_origin >= 0.20:
+                        return "measured_route_turn_stop_reserve_trigger"
+                if not same_sample_handshake(snapshot):
+                    return None
+                active = executor.active_step
+                if active is None:
+                    route_fault = "route_corner_missing_active_step"
+                    return route_fault
+                safety_provider.update(snapshot, active.waypoint_id)
+                assert pose is not None
+                yaw_error = math.atan2(
+                    math.sin(float(to_turn.goal_yaw_rad) - pose.yaw_rad),
+                    math.cos(float(to_turn.goal_yaw_rad) - pose.yaw_rad),
+                )
+                feedback = MotionFeedback(
+                    status=MotionStatus.ARRIVED if abs(yaw_error) <= float(to_turn.yaw_tolerance_rad) else MotionStatus.ACTIVE,
+                    reset_gate_pass=True,
+                    standing_gate_pass=True,
+                    source_mode_handshake_pass=True,
+                    safety_gates_pass=True,
+                )
+                directive = executor.tick(float(snapshot["sample_monotonic_s"]), feedback)
+                if directive.kind is DirectiveKind.REQUEST_PHYSICAL_STOP:
+                    route_turn_stop_reason = directive.reason
+                    route_events.append({"kind": directive.kind.value, "reason": directive.reason,
+                                         "sample_monotonic_s": snapshot.get("sample_monotonic_s")})
+                    return "ROUTE_CORNER_YAW_REACHED"
+                if directive.kind is DirectiveKind.STOP_AND_ABORT:
+                    route_fault = directive.reason
+                    return route_fault
+                return None
+
+            turn = run_angular_turn_window(
+                sample=self.sample_for_first_motion,
+                publish_turn=lambda forward, angular: self._publish(forward, 0.0, angular),
+                publish_zero=lambda: self._publish(0.0, 0.0, 0.0),
+                registration=registration,
+                set_action=set_action,
+                joint_limits=self.joint_limits,
+                baseline_forward_displacements_m=baseline_displacements,
+                baseline_state_summary=(stationary_baseline or {}).get("physical_state_summary"),
+                authorized=True,
+                angular_velocity_rad_s=turn_plan.angular_rad_s,
+                forward_velocity_m_s=turn_plan.forward_m_s,
+                forward_warmup_s=TURN_FORWARD_WARMUP_S,
+                pulse_duration_s=min(TURN_PULSE_S, turn_plan.maximum_duration_s - TURN_FORWARD_WARMUP_S),
+                max_observed_planar_speed_m_s=0.2,
+                zero_until_stand_timeout_s=3.5,
+                extra_post_stop_observe_s=5.0,
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+                max_turn_displacement_m=0.25,
+                turn_stop_reserve_m=0.05,
+                termination_condition=turn_termination,
+                shutdown_event=self.interrupted,
+                on_sample=lambda phase, snapshot: self._trace_first_motion_sample(
+                    f"route-right-corner-{phase}", snapshot,
+                ),
+            )
+            turn["route_plan"] = dict(turn_plan.__dict__)
+            turn["route_stop_reason"] = route_turn_stop_reason
+            result["segments"].append({"segment_id": "RIGHT-CORNER", "plan": dict(turn_plan.__dict__), "result": turn})
+            actual_turn_window_s = float(turn.get("pulse_actual_duration_s", 0.0))
+            if actual_turn_window_s > 0.0:
+                bridge.complete_window(turn_plan.window_id, actual_elapsed_s=actual_turn_window_s)
+            turn_gate = turn.get("physical_stop_gate") or {}
+            turn_rotation = turn.get("rotation") or {}
+            turn_guard = turn.get("turn_displacement_guard") or {}
+            route_turn_yaw_pass = (
+                turn_rotation.get("status") == "TURN_DIRECTION_PASS"
+                and float(turn_rotation.get("signed_yaw_delta_rad", 0.0)) <= -TURN_MIN_HEADING_CHANGE_RAD
+            )
+            route_turn_displacement_pass = (
+                turn_guard.get("maximum_total_displacement_including_stop_m") is not None
+                and float(turn_guard["maximum_total_displacement_including_stop_m"]) <= 0.25
+            )
+            if (
+                route_fault
+                or route_turn_stop_reason is None
+                or turn_gate.get("status") != "PASS"
+                or not turn.get("control_handshake_confirmed")
+                or not route_turn_yaw_pass
+                or not route_turn_displacement_pass
+                or turn.get("fault")
+                or turn.get("post_stop_fault")
+            ):
+                result["status"] = "BLOCKED"
+                result["fault"] = route_fault or route_turn_stop_reason or turn.get("fault") or "route_corner_yaw_displacement_or_physical_stop_not_passed"
+                result["route_events"] = route_events
+                result["route_turn_gates"] = {
+                    "route_yaw_target_reached": route_turn_stop_reason == "ROUTE_CORNER_YAW_REACHED",
+                    "rightward_yaw_at_least_0p087_rad": route_turn_yaw_pass,
+                    "total_displacement_le_0p25m_including_stop": route_turn_displacement_pass,
+                    "physical_stop_gate": turn_gate.get("status"),
+                    "control_handshake": turn.get("control_handshake_confirmed"),
+                    "turn_helper_fault": turn.get("fault"),
+                    "post_stop_fault": turn.get("post_stop_fault"),
+                }
+                return result
+
+            turn_evidence = stop_mapping(turn_gate)
+            turn_zero_start = float(turn_gate.get("zero_start_monotonic_s", 0.0))
+            turn_zero_plan = bridge.zero_window(
+                route_motion.latest,
+                now_steady_s=time.monotonic(),
+                reason="route corner target was reached; measured physical-stop gate is being revalidated",
+                physical_stop_gate_required=True,
+            )
+            turn_stop_rearmed = bridge.confirm_physical_stop(
+                turn_evidence,
+                zero_request_started_s=turn_zero_start,
+                now_steady_s=time.monotonic(),
+                expected_generation=str(self.args.attempt_id),
+            )
+            final_snapshot = self.sample_for_first_motion()
+            pose_provider.update(final_snapshot)
+            safety_provider.update(final_snapshot, executor.active_step.waypoint_id)
+            final_evidence = PhysicalStopEvidence(
+                status=PhysicalStopStatus.PASS,
+                window_start_steady_s=float(turn_evidence["window_start_steady_s"]),
+                window_end_steady_s=float(turn_evidence["window_end_steady_s"]),
+                sample_count=int(turn_evidence["sample_count"]),
+                maximum_sample_gap_s=float(turn_evidence["maximum_sample_gap_s"]),
+                maximum_state_age_s=float(turn_evidence["maximum_state_age_s"]),
+                generation=str(self.args.attempt_id),
+            )
+            next_segment = executor.tick(
+                float(final_snapshot["sample_monotonic_s"]),
+                MotionFeedback(
+                    status=MotionStatus.ACTIVE,
+                    physical_stop_evidence=final_evidence,
+                    reset_gate_pass=True,
+                    standing_gate_pass=True,
+                    source_mode_handshake_pass=False,
+                    safety_gates_pass=True,
+                    stand_readback_pass=stand_mode_readback_confirmed(final_snapshot),
+                ),
+            )
+            if not turn_stop_rearmed or executor.step_index != 2:
+                result["status"] = "BLOCKED"
+                result["fault"] = "route_corner_stop_or_step_transition_failed"
+                result["route_events"] = route_events
+                return result
+            result.update({
+                "status": "PASS",
+                "classification": "SIMULATION_ONLY_SHORT_ROUTE_TRANSIT_AND_RIGHT_TURN_PASS",
+                "route_state_after_corner": executor.state.value,
+                "next_route_directive": next_segment.kind.value,
+                "next_route_step": executor.active_step.waypoint_id if executor.active_step else None,
+                "route_events": route_events + route_motion.events,
+                "final_odometry": self._pose(),
+                "physical_stop_gate": turn_gate,
+                "route_turn_gates": {
+                    "route_yaw_target_reached": True,
+                    "rightward_yaw_at_least_0p087_rad": route_turn_yaw_pass,
+                    "signed_yaw_delta_rad": turn_rotation.get("signed_yaw_delta_rad"),
+                    "total_displacement_le_0p25m_including_stop": route_turn_displacement_pass,
+                    "maximum_total_displacement_including_stop_m": turn_guard.get("maximum_total_displacement_including_stop_m"),
+                    "physical_stop_gate": turn_gate.get("status"),
+                    "control_handshake": turn.get("control_handshake_confirmed"),
+                },
+                "limitations": [
+                    "This pass is one short measured transit and bounded right corner only; the optional second transit is NOT RUN.",
+                    "The route corridor is static open-floor clearance from the pinned scene, not a LiDAR/map-based obstacle guarantee.",
+                    "This does not establish a closed L route, rectangle, return, docking, Nav2, or real-hardware behavior.",
+                ],
+            })
+            return result
+        except Exception as exc:
+            result["status"] = "BLOCKED"
+            result["fault"] = f"{type(exc).__name__}: {exc}"
+            result["route_events"] = locals().get("route_events", [])
+            return result
+
     def execute(self) -> dict[str, Any]:
         stationary_baseline: dict[str, Any] | None = None
         result: dict[str, Any] = {
@@ -2228,9 +3133,13 @@ class FocusedM1Diagnostic(Node):
             "acceptance_scope": (
                 "SIMULATION_ONLY direct MuJoCo ground-truth point-goal; not Nav2, localization, LiDAR, or manufacturer-original acceptance"
                 if getattr(self.args, "point_goal_diagnostic", False)
+                else "SIMULATION_ONLY waypoint route manager + route bridge to M1 transit and right-turn; not a full route or Nav2 acceptance"
+                if getattr(self.args, "route_integration", False)
                 else "SIMULATION_ONLY derived-configuration left/right turning and physical-stop validation; "
                 "not manufacturer-original acceptance or point-goal navigation"
                 if getattr(self.args, "turning_diagnostic", False)
+                else "SIMULATION_ONLY derived-configuration right-turn and physical-stop qualification; not a 90-degree corner or manufacturer-original acceptance"
+                if getattr(self.args, "right_turn_qualification", False)
                 else "SIMULATION_ONLY derived-configuration locomotion and physical-stop validation; not manufacturer-original acceptance, turning, or point-goal navigation"
             ),
             "attempt_id": self.args.attempt_id,
@@ -2275,6 +3184,15 @@ class FocusedM1Diagnostic(Node):
             result["forward_warmup_s"] = TURN_FORWARD_WARMUP_S
             result["pulse_limit_s"] = TURN_PULSE_S
             result["total_turn_command_window_s"] = TURN_FORWARD_WARMUP_S + TURN_PULSE_S
+        if getattr(self.args, "right_turn_qualification", False):
+            result["forward_command_m_s"] = TURN_FORWARD_COMMAND_M_S
+            result["forward_warmup_s"] = TURN_FORWARD_WARMUP_S
+            result["pulse_limit_s"] = TURN_PULSE_S
+            result["total_turn_command_window_s"] = TURN_FORWARD_WARMUP_S + TURN_PULSE_S
+        if getattr(self.args, "route_integration", False):
+            result["forward_command_m_s"] = POINT_GOAL_COMMAND_M_S
+            result["pulse_limit_s"] = 5.0
+            result["route_action_window_limit_s"] = 5.0
         try:
             result["transport_scope"] = self.check_transport_scope()
             self.wait_for_standing()
@@ -2328,6 +3246,55 @@ class FocusedM1Diagnostic(Node):
                 result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
                 result["fault"] = point_goal.get("controller_fault")
                 result["status"] = "PASS" if point_goal.get("status") == "PASS" else "BLOCKED"
+                return result
+
+            if getattr(self.args, "route_integration", False):
+                route_result = self.run_short_route_integration(
+                    registration=registration,
+                    set_action=set_action,
+                    stationary_baseline=stationary_baseline or {},
+                )
+                self.pulse_result = route_result
+                result["route_integration"] = route_result
+                result["nonzero_publish_calls_returned"] = int(self.nonzero_publish_calls_returned)
+                result["zero_publish_calls_returned"] = int(self.zero_publish_calls_returned)
+                result["mc_velocity_receipt_confirmed"] = False
+                result["mc_stop_confirmed"] = False
+                result["get_mc_action_final"] = self.read_mode("final_route_post_stop")
+                result["get_current_input_source_final"] = self.read_input_source("final_route_post_stop")
+                result["final_common_state"] = _json_safe(self.latest.get("common"))
+                result["final_odometry"] = self._pose()
+                result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
+                result["fault"] = route_result.get("fault")
+                result["status"] = "PASS" if route_result.get("status") == "PASS" else "BLOCKED"
+                return result
+
+            if getattr(self.args, "right_turn_qualification", False):
+                right_turn = self.run_right_turn_qualification(
+                    registration=registration,
+                    set_action=set_action,
+                    stationary_baseline=stationary_baseline or {},
+                )
+                self.pulse_result = right_turn.get("turn")
+                result["right_turn_qualification"] = right_turn
+                result["activation"] = right_turn.get("turn")
+                turn = right_turn.get("turn")
+                result["nonzero_publish_calls_returned"] = (
+                    int(turn.get("nonzero_publish_calls_returned", 0) or 0)
+                    if isinstance(turn, Mapping) else 0
+                )
+                result["zero_publish_calls_returned"] = int(self.zero_publish_calls_returned)
+                result["mc_velocity_receipt_confirmed"] = False
+                result["mc_stop_confirmed"] = False
+                result["physical_stop_gate"] = turn.get("physical_stop_gate") if isinstance(turn, Mapping) else None
+                result["legacy_baseline_stop_gate"] = turn.get("legacy_baseline_stop_gate") if isinstance(turn, Mapping) else None
+                result["get_mc_action_final"] = self.read_mode("final_right_turn_post_stop")
+                result["get_current_input_source_final"] = self.read_input_source("final_right_turn_post_stop")
+                result["final_common_state"] = _json_safe(self.latest.get("common"))
+                result["final_odometry"] = self._pose()
+                result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
+                result["fault"] = turn.get("fault") if isinstance(turn, Mapping) else "right_turn_result_missing"
+                result["status"] = "PASS" if right_turn.get("status") == "PASS" else "BLOCKED"
                 return result
 
             if getattr(self.args, "turning_diagnostic", False):
@@ -2541,11 +3508,63 @@ def _focused_diagnostic_command(args: argparse.Namespace) -> int:
             rclpy.shutdown()
 
 
+def validate_route_turn_qualification_evidence(path: str | None) -> dict[str, Any]:
+    """Require the prior bounded right arc and its independent physical stop to pass."""
+    if not path:
+        raise ValueError("route integration requires the completed right-turn qualification evidence")
+    evidence_path = Path(path)
+    if evidence_path.is_symlink() or not evidence_path.is_file():
+        raise ValueError("right-turn qualification evidence must be a regular file")
+    try:
+        result = json.loads(evidence_path.read_text(encoding="utf-8"))
+        right = result["right_turn_qualification"]
+        turn = right["turn"]
+        acceptance = turn["right_arc_acceptance"]
+        rotation = turn["rotation"]
+        stop = turn["physical_stop_gate"]
+        measured_yaw = float(rotation["signed_yaw_delta_rad"])
+        maximum_displacement = float(acceptance["maximum_total_turn_origin_displacement_m"])
+        active_duration = float(turn["pulse_actual_duration_s"])
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"right-turn qualification evidence is incomplete: {type(exc).__name__}: {exc}") from exc
+    if (
+        result.get("simulation_only") is not True
+        or right.get("status") != "PASS"
+        or acceptance.get("status") != "PASS"
+        or rotation.get("status") != "TURN_DIRECTION_PASS"
+        or measured_yaw > -TURN_MIN_HEADING_CHANGE_RAD
+        or stop.get("status") != "PASS"
+        or maximum_displacement > 0.25
+        or active_duration > 5.0
+    ):
+        raise ValueError("prior right-turn evidence did not pass direction, displacement, 5 s, and physical-stop gates")
+    return {
+        "path": str(evidence_path),
+        "sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+        "attempt_id": str(result.get("attempt_id", "")),
+        "signed_yaw_delta_rad": measured_yaw,
+        "maximum_total_displacement_m": maximum_displacement,
+        "active_duration_s": active_duration,
+        "physical_stop_gate": stop.get("status"),
+    }
+
+
 def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     """Validate the complete child CLI profile without initializing ROS or the simulator."""
-    if args.turning_diagnostic and args.point_goal_diagnostic:
-        raise ValueError("select only one of turning or point-goal diagnostics")
+    selected_motion_modes = sum((
+        args.turning_diagnostic,
+        args.point_goal_diagnostic,
+        getattr(args, "right_turn_qualification", False),
+        getattr(args, "route_integration", False),
+    ))
+    if selected_motion_modes > 1:
+        raise ValueError("select only one of turning, right-turn, or point-goal diagnostics")
     profile: dict[str, Any] = {"point_goal": False}
+    if getattr(args, "route_integration", False):
+        profile["route_integration"] = True
+        profile["route_turn_qualification_evidence"] = validate_route_turn_qualification_evidence(
+            args.route_turn_qualification_evidence
+        )
     if args.point_goal_diagnostic:
         heading_change = float(args.heading_change_rad)
         if not math.isfinite(heading_change) or abs(heading_change) > POINT_GOAL_MAX_HEADING_CHANGE_RAD:
@@ -2715,6 +3734,9 @@ def main() -> int:
     first.add_argument("--zero-until-stand-timeout-s", type=float, default=0.0)
     first.add_argument("--zero-only-stop", action="store_true")
     first.add_argument("--turning-diagnostic", action="store_true")
+    first.add_argument("--right-turn-qualification", action="store_true")
+    first.add_argument("--route-integration", action="store_true")
+    first.add_argument("--route-turn-qualification-evidence", default=None)
     first.add_argument("--point-goal-diagnostic", action="store_true")
     first.add_argument("--heading-change-rad", type=float, default=0.0)
     first.add_argument("--final-yaw-tolerance-rad", type=float, default=None)
