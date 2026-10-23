@@ -22,12 +22,18 @@ from issue80_m1_first_motion import (
     PUBLISH_HZ,
     SOURCE_PRIORITY,
     SOURCE_TIMEOUT_MS,
+    TURN_COMMAND_RAD_S,
+    TURN_FORWARD_COMMAND_M_S,
+    TURN_PULSE_S,
     VELOCITY_SOURCE_NAME,
     ZERO_STOP_MIN_MESSAGES,
     ZERO_STOP_MIN_S,
     point_goal_command_from_bearing_error,
 )
-from issue80_waypoint_route import DirectiveKind, PoseEstimate, RouteDirective
+from issue80_waypoint_route import (
+    DirectiveKind, PoseEstimate, Profile, RouteDirective, RouteSpec, RouteStep,
+    StopBehavior, YawPolicy,
+)
 
 
 MAX_FORWARD_M_S = 0.14
@@ -124,6 +130,156 @@ class RouteActionWindow:
 
 class RouteMotionBridgeError(ValueError):
     """Invalid or out-of-order action-window lifecycle."""
+
+
+def build_short_right_corner_route(
+    *,
+    route_id: str,
+    start_pose: PoseEstimate,
+    robot_footprint_radius_m: float,
+    local_clear_radius_m: float,
+    right_turn_qualified: bool,
+) -> RouteSpec:
+    """Build the bounded transit/corner/continuation geometry from a measured start.
+
+    The corner corridor includes the authored forward-arc envelope plus the
+    existing 50 mm unintended-drift allowance. Runtime still has to enforce the
+    separate turn-origin displacement cutoff and all measured safety gates.
+    """
+    if (
+        not route_id
+        or start_pose.frame_id != "odom"
+        or start_pose.child_frame_id != "base_link"
+        or not all(_finite_number(value) for value in (
+            start_pose.x_m, start_pose.y_m, start_pose.yaw_rad,
+            robot_footprint_radius_m, local_clear_radius_m,
+        ))
+        or robot_footprint_radius_m <= 0.0
+        or local_clear_radius_m <= robot_footprint_radius_m + 0.10
+    ):
+        raise ValueError("measured start pose or verified open-floor clearance is invalid")
+
+    transit_distance_m = 0.30
+    right_turn_delta_rad = -0.15
+    boundary_margin_m = 0.10
+    maximum_turn_displacement_m = 0.25
+    lateral_half_width_m = robot_footprint_radius_m + boundary_margin_m + 0.05
+    turn_angle_magnitude = abs(right_turn_delta_rad)
+    turn_lateral_envelope_m = (
+        TURN_FORWARD_COMMAND_M_S / TURN_COMMAND_RAD_S
+        * (1.0 - math.cos(TURN_COMMAND_RAD_S * TURN_PULSE_S))
+    )
+    turn_lateral_half_width_m = (
+        robot_footprint_radius_m + boundary_margin_m + turn_lateral_envelope_m + 0.05
+    )
+    maximum_local_radius = math.hypot(1.25, turn_lateral_half_width_m)
+    if maximum_local_radius >= local_clear_radius_m:
+        raise ValueError("verified open-floor region does not contain the swept route corridor")
+
+    corner_yaw = math.atan2(
+        math.sin(start_pose.yaw_rad - turn_angle_magnitude),
+        math.cos(start_pose.yaw_rad - turn_angle_magnitude),
+    )
+    transit_x = start_pose.x_m + transit_distance_m * math.cos(start_pose.yaw_rad)
+    transit_y = start_pose.y_m + transit_distance_m * math.sin(start_pose.yaw_rad)
+    next_x = transit_x + transit_distance_m * math.cos(corner_yaw)
+    next_y = transit_y + transit_distance_m * math.sin(corner_yaw)
+
+    def corridor(
+        center_x_m: float,
+        center_y_m: float,
+        heading_rad: float,
+        lateral_half_width: float,
+    ) -> tuple[tuple[float, float], ...]:
+        def point(along_m: float, lateral_m: float) -> tuple[float, float]:
+            return (
+                center_x_m + along_m * math.cos(heading_rad) - lateral_m * math.sin(heading_rad),
+                center_y_m + along_m * math.sin(heading_rad) + lateral_m * math.cos(heading_rad),
+            )
+
+        return tuple(point(along, lateral) for along, lateral in (
+            (-0.75, -lateral_half_width),
+            (1.25, -lateral_half_width),
+            (1.25, lateral_half_width),
+            (-0.75, lateral_half_width),
+        ))
+
+    approach_corridor = corridor(
+        start_pose.x_m, start_pose.y_m, start_pose.yaw_rad, lateral_half_width_m
+    )
+    turn_corridor = corridor(
+        transit_x, transit_y, start_pose.yaw_rad, turn_lateral_half_width_m
+    )
+    continuation_corridor = corridor(
+        transit_x, transit_y, corner_yaw, lateral_half_width_m
+    )
+
+    def step(
+        waypoint_id: str,
+        x_m: float,
+        y_m: float,
+        profile: Profile,
+        position_tolerance_m: float,
+        yaw_policy: YawPolicy,
+        yaw_tolerance_rad: float | None,
+        polygon: tuple[tuple[float, float], ...],
+        *,
+        is_corner: bool = False,
+    ) -> RouteStep:
+        return RouteStep(
+            waypoint_id=waypoint_id,
+            x_m=x_m,
+            y_m=y_m,
+            profile=profile,
+            position_tolerance_m=position_tolerance_m,
+            yaw_policy=yaw_policy,
+            yaw_rad=None,
+            yaw_tolerance_rad=yaw_tolerance_rad,
+            max_position_std_m=0.01,
+            max_yaw_std_rad=0.05,
+            stop_behavior=StopBehavior.VERIFY_PHYSICAL_STOP,
+            segment_timeout_s=20.0,
+            recovery_limit=0,
+            corridor_polygon=polygon,
+            turn_corridor_polygon=turn_corridor if is_corner else None,
+            minimum_obstacle_clearance_m=local_clear_radius_m,
+            target_forward_m_s=0.12,
+            max_forward_m_s=0.12,
+            max_angular_rad_s=MAX_ANGULAR_RAD_S,
+            max_command_window_s=5.0,
+            turn_strategy="BOUNDED_MOVING_TURN" if is_corner else None,
+            maximum_turn_displacement_m=maximum_turn_displacement_m if is_corner else None,
+        )
+
+    route = RouteSpec(
+        route_id=route_id,
+        frame_id="odom",
+        workspace_verified=True,
+        bounded_moving_turn_qualified=right_turn_qualified,
+        zero_forward_turn_qualified=False,
+        start_x_m=start_pose.x_m,
+        start_y_m=start_pose.y_m,
+        start_yaw_rad=start_pose.yaw_rad,
+        start_position_tolerance_m=0.02,
+        start_yaw_tolerance_rad=0.02,
+        robot_footprint_radius_m=robot_footprint_radius_m,
+        corridor_boundary_margin_m=boundary_margin_m,
+        max_pose_age_s=0.20,
+        max_transform_age_s=0.50,
+        max_safety_age_s=0.50,
+        max_position_std_m=0.01,
+        max_yaw_std_rad=0.05,
+        steps=(
+            step("TRANSIT-TO-CORNER", transit_x, transit_y, Profile.TRANSIT, 0.15,
+                 YawPolicy.IGNORE, None, approach_corridor),
+            step("RIGHT-CORNER", transit_x, transit_y, Profile.CORNER, 0.20,
+                 YawPolicy.NEXT_SEGMENT, 0.03, approach_corridor, is_corner=True),
+            step("TRANSIT-AFTER-RIGHT-CORNER", next_x, next_y, Profile.TRANSIT, 0.20,
+                 YawPolicy.IGNORE, None, continuation_corridor),
+        ),
+    )
+    route.validate()
+    return route
 
 
 def _wrap_angle(value: float) -> float:

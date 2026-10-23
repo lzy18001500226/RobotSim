@@ -93,10 +93,11 @@ from issue80_coordinated_pose_goal import (
 from issue80_m1_mode_logic import classify_set_mc_action_response
 from issue80_waypoint_route import (
     DirectiveKind, MotionFeedback, MotionStatus, PhysicalStopEvidence,
-    PhysicalStopStatus, PoseEstimate, Profile, RouteSpec, RouteStep,
-    SafetyObservation, StopBehavior, WaypointRouteExecutor, YawPolicy,
+    PhysicalStopStatus, PoseEstimate, SafetyObservation, WaypointRouteExecutor,
 )
-from issue80_route_motion_bridge import RouteMotionBridge, RuntimeReadiness
+from issue80_route_motion_bridge import (
+    RouteMotionBridge, RuntimeReadiness, build_short_right_corner_route,
+)
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
 MC_VELOCITY_ENDPOINT_DISCOVERY_TIMEOUT_S = 5.0
@@ -2499,117 +2500,21 @@ class FocusedM1Diagnostic(Node):
             start_pose = pose_from_snapshot(initial)
             footprint = float(workcell["robot_collision_footprint_radial_upper_bound_m"])
             clear_radius = float(workcell["verified_local_clear_radius_m"])
-            if clear_radius <= footprint + 0.10:
-                raise ValueError("verified local clear region does not contain the robot footprint and margin")
+            route = build_short_right_corner_route(
+                route_id=f"issue80-short-route-{self.args.attempt_id}",
+                start_pose=start_pose,
+                robot_footprint_radius_m=footprint,
+                local_clear_radius_m=clear_radius,
+                right_turn_qualified=True,
+            )
+            transit_x, transit_y = route.steps[0].x_m, route.steps[0].y_m
+            next_x, next_y = route.steps[2].x_m, route.steps[2].y_m
+            corner_yaw = math.atan2(next_y - transit_y, next_x - transit_x)
             corridor_half_width = footprint + 0.10 + 0.05
             ideal_turn_lateral_m = (TURN_FORWARD_COMMAND_M_S / TURN_COMMAND_RAD_S) * (
                 1.0 - math.cos(TURN_COMMAND_RAD_S * TURN_PULSE_S)
             )
             turn_corridor_half_width = footprint + 0.10 + ideal_turn_lateral_m + 0.05
-            transit_x = start_pose.x_m + 0.30 * math.cos(start_pose.yaw_rad)
-            transit_y = start_pose.y_m + 0.30 * math.sin(start_pose.yaw_rad)
-            corner_yaw = math.atan2(
-                math.sin(start_pose.yaw_rad - 0.15),
-                math.cos(start_pose.yaw_rad - 0.15),
-            )
-            next_x = transit_x + 0.30 * math.cos(corner_yaw)
-            next_y = transit_y + 0.30 * math.sin(corner_yaw)
-
-            def local_to_world(
-                center_x_m: float,
-                center_y_m: float,
-                heading_rad: float,
-                along_m: float,
-                lateral_m: float,
-            ) -> tuple[float, float]:
-                return (
-                    center_x_m + along_m * math.cos(heading_rad) - lateral_m * math.sin(heading_rad),
-                    center_y_m + along_m * math.sin(heading_rad) + lateral_m * math.cos(heading_rad),
-                )
-
-            corridor = tuple(local_to_world(start_pose.x_m, start_pose.y_m, start_pose.yaw_rad, along, lateral) for along, lateral in (
-                (-0.75, -corridor_half_width),
-                (1.25, -corridor_half_width),
-                (1.25, corridor_half_width),
-                (-0.75, corridor_half_width),
-            ))
-            turn_corridor = tuple(local_to_world(transit_x, transit_y, start_pose.yaw_rad, along, lateral) for along, lateral in (
-                (-0.75, -turn_corridor_half_width),
-                (0.80, -turn_corridor_half_width),
-                (0.80, turn_corridor_half_width),
-                (-0.20, turn_corridor_half_width),
-            ))
-            post_turn_corridor = tuple(local_to_world(transit_x, transit_y, corner_yaw, along, lateral) for along, lateral in (
-                (-0.75, -corridor_half_width),
-                (1.25, -corridor_half_width),
-                (1.25, corridor_half_width),
-                (-0.75, corridor_half_width),
-            ))
-
-            def route_step(
-                waypoint_id: str,
-                x: float,
-                y: float,
-                profile: Profile,
-                position_tolerance: float,
-                yaw_policy: YawPolicy,
-                yaw_tolerance: float | None,
-                *,
-                step_corridor: tuple[tuple[float, float], ...],
-                corner_corridor: tuple[tuple[float, float], ...] | None = None,
-            ) -> RouteStep:
-                return RouteStep(
-                    waypoint_id=waypoint_id,
-                    x_m=x,
-                    y_m=y,
-                    profile=profile,
-                    position_tolerance_m=position_tolerance,
-                    yaw_policy=yaw_policy,
-                    yaw_rad=None,
-                    yaw_tolerance_rad=yaw_tolerance,
-                    max_position_std_m=0.01,
-                    max_yaw_std_rad=0.05,
-                    stop_behavior=StopBehavior.VERIFY_PHYSICAL_STOP,
-                    segment_timeout_s=20.0,
-                    recovery_limit=0,
-                    corridor_polygon=step_corridor,
-                    turn_corridor_polygon=corner_corridor,
-                    minimum_obstacle_clearance_m=float(workcell["verified_local_clear_radius_m"]),
-                    target_forward_m_s=0.12,
-                    max_forward_m_s=0.12,
-                    max_angular_rad_s=TURN_COMMAND_RAD_S,
-                    max_command_window_s=5.0,
-                    turn_strategy="BOUNDED_MOVING_TURN" if corner_corridor is not None else None,
-                    maximum_turn_displacement_m=0.25 if corner_corridor is not None else None,
-                )
-
-            route = RouteSpec(
-                route_id=f"issue80-short-route-{self.args.attempt_id}",
-                frame_id="odom",
-                workspace_verified=True,
-                bounded_moving_turn_qualified=True,
-                zero_forward_turn_qualified=False,
-                start_x_m=start_pose.x_m,
-                start_y_m=start_pose.y_m,
-                start_yaw_rad=start_pose.yaw_rad,
-                start_position_tolerance_m=0.02,
-                start_yaw_tolerance_rad=0.02,
-                robot_footprint_radius_m=footprint,
-                corridor_boundary_margin_m=0.10,
-                max_pose_age_s=0.20,
-                max_transform_age_s=0.50,
-                max_safety_age_s=0.50,
-                max_position_std_m=0.01,
-                max_yaw_std_rad=0.05,
-                steps=(
-                    route_step("TRANSIT-TO-CORNER", transit_x, transit_y, Profile.TRANSIT, 0.15, YawPolicy.IGNORE, None, step_corridor=corridor),
-                    route_step("RIGHT-CORNER", transit_x, transit_y, Profile.CORNER, 0.20, YawPolicy.NEXT_SEGMENT, 0.03,
-                               step_corridor=corridor, corner_corridor=turn_corridor),
-                    route_step("TRANSIT-AFTER-RIGHT-CORNER", next_x, next_y, Profile.TRANSIT, 0.20, YawPolicy.IGNORE, None,
-                               step_corridor=post_turn_corridor),
-                ),
-            )
-            route.validate()
             pose_provider = LivePoseProvider()
             safety_provider = LiveSafetyProvider()
             safety_provider.joint_limits = self.joint_limits
@@ -2733,6 +2638,7 @@ class FocusedM1Diagnostic(Node):
                 "turn_corridor_half_width_m": turn_corridor_half_width,
                 "expected_ideal_turn_lateral_m": ideal_turn_lateral_m,
                 "corridor_longitudinal_limits_m": [-0.75, 1.25],
+                "turn_corridor_longitudinal_limits_m": [-0.75, 1.25],
                 "maximum_centerline_lateral_error_m": 0.05,
                 "robot_footprint_radial_upper_bound_m": footprint,
                 "boundary_margin_m": route.corridor_boundary_margin_m,
