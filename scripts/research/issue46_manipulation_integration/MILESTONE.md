@@ -1,6 +1,6 @@
 # Issue #46 / PR #91 — Full-X2 PR90 grasp milestone
 
-Updated: 2026-10-23 18:37 UTC
+Updated: 2026-10-23 18:52 UTC
 Branch: codex/issue46-manipulation-integration-20261023
 Baseline source HEAD before this audit: 97a1e8a0ca5fa19a34415a2d370a06b5663d77b8
 PR #91: OPEN / Draft. Issue #46: OPEN.
@@ -55,11 +55,24 @@ The 2 mm swept gate also conservatively marked the otherwise near-clear top-down
 - Decision: BLOCKED_STATIC_GATES; 31 candidate records were checked, none was authorized. It did not load or step MuJoCo. The maximum trial budget remains 30 simulated seconds / 30,000 steps, with source position/velocity/actuator limits, contact persistence, table unloading, slip and nonfinite-state stops unchanged.
 - Regression checks: the fail-closed gate has 4 focused tests; the existing manipulation integration suite has 28 tests. These check authorization logic only and are not physical validation.
 
+## X2 Ultra versus Ultra Plus source identity
+
+- Read-only source comparison: run b4d3b187-50bc-4668-8f21-b70cbe0860d7 at /home/lzy18001500226/projects/RobotSim/reviews/issue-46/pr90-x2-ultra-variant-audit-20261023T184520Z/.
+- The currently accepted X2 Ultra source pin remains the objective target. The local Ultra Plus IK URDF is a distinct robot description: 14 of 14 shared arm joints differ in at least one origin/limit field; it contains no collision/visual mesh elements. Its mount delta alone cannot be tested on the current full-X2 body as a source-faithful correction.
+- Verdict: NOT_DIRECTLY_INTERCHANGEABLE. No variant mount or arm geometry was changed.
+
+## Dynamic contact instrumentation prepared
+
+- Added pr90_contact_trace.py as a read-only frame collector for a future authorized runner. It records geom/body pair identities, active-contact flags, contact dimension and friction coefficients, contact-frame force, force-on-object with the equal-and-opposite geom sign, per-role hand/table support, object pose/velocity, and relative tangential slip.
+- Force/frame convention was checked against the official MuJoCo computation/API docs and upstream issue #1314: frame normal points geom0 to geom1; mj_contactForce reports the contact-frame force on contact.geom[1] (the second geom); invert it for contact.geom[0], with equal/opposite forces on the pair. The collector stores both the raw force and signed world force on the bottle.
+- The module only reads MjModel/MjData after a caller step. It was not run on a physical trial; no dynamics ran in this goal turn.
+- Contact-math tests: 4/4 pass in the pinned MuJoCo 3.3.6 environment. The general manipulation test suite: 29 tests, 28 pass and the optional NumPy contact-trace module is skipped on the system Python that lacks NumPy. The four contact-trace tests pass in the pinned environment.
+
 ## Source reuse audit / fallback
 
 Existing local references do not provide a drop-in, physically validated PR90 bottle grasp:
 
-- reference/AgiBot-Community/raicom2026-agibot-X2 at a97761820b398b6cab12b632ce9f313c394eeb7e contains an IK-only x2_ultra_plus_omnipicker_omnipicker.urdf. It uses the same single claw driver / wide1 mimic (-1 ratio), and its narrow/wide secondary and loop joints are fixed. The simplified URDF has no visual/collision meshes. Its Ultra Plus wrist mount is z=-0.046 m, versus the pinned X2 Ultra mount z=-0.062 m; wrist-roll ranges also differ. This is a distinct source-model variant, not proof that the current X2 mount is wrong and not a contact model.
+- reference/AgiBot-Community/raicom2026-agibot-X2 at a97761820b398b6cab12b632ce9f313c394eeb7e contains an IK-only x2_ultra_plus_omnipicker_omnipicker.urdf (SHA-256 9a0ef40bd9c19d301fdaeb0a78eb167e736ecb8a2c86f7bf3260ad94f6187ff5). It uses the same single claw driver / wide1 mimic (-1 ratio), and its narrow/wide secondary and loop joints are fixed. The simplified URDF has no visual/collision elements or mesh references. The separate source audit found 63 joints versus 60 in pinned X2 Ultra, 14/14 common arm joints with differing frame or limit fields, and root robot names x2t2.5 versus X2-Ultra. Its right OmniPicker root mount is z=-0.046 m versus pinned X2 Ultra z=-0.062 m. It is not directly interchangeable and cannot validate the current robot or serve as a contact model.
 - reference/AgiBot/raicom2026-x2-mujoco-scene at 62095bbdda86d6e95e00749fa64ab742e6e915ee provides the competition MuJoCo scene and object scenes; its original x2.xml has no OmniPicker claw joints.
 - reference/fofarup/Raicom2026-X2-Sim at ddbd3fd926846160424ff7fb74daba42b9d2ff5f adds a simulation-only palm and two box slide-finger geoms, an equality relation, and a private command relay. This changes end-effector geometry and is not the frozen PR90 gripper. Its arm/approach/close/lift sequence is a planning reference only; repository text/code alone is not independent load-bearing evidence for PR90.
 - Existing AGILINK/STEP analysis in reviews/issue-46/omnipicker-mechanism-reconstruction-20261023T055242Z/REPORT.md found matching joint frames but unresolved gears, springs, loop laws, and physical couplings. The old G2-to-MuJoCo conversion failed static closure and is not a newly discovered solution.
@@ -73,6 +86,9 @@ Recommended next human decision: confirm whether the physical robot and acceptan
     cd /home/lzy18001500226/robotsim-issue46-manipulation-integration-local02-20261023
     env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/audit_pr90_bounded_24_candidate_search.py
     env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/refine_pr90_lateral_offsets.py
+    env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/audit_x2_variant_compatibility.py
+    env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/audit_x2_variant_compatibility.py
+    env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python -m unittest scripts.research.issue46_manipulation_integration.tests.test_pr90_contact_trace -v
     env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/pr90_trial_gate.py --static-result /home/lzy18001500226/projects/RobotSim/reviews/issue-46/pr90-full-x2-bounded-24-static-20261023T180937Z/result.json --static-result /home/lzy18001500226/projects/RobotSim/reviews/issue-46/pr90-full-x2-lateral-7-refine-static-20261023T181534Z/result.json
 
 Generated evidence remains external under the paths listed above. All three manifests were verified; Windows UNC access was checked for the lateral refinement and trial-gate directories. PR #91 remains OPEN/Draft; Issue #46 remains OPEN.
