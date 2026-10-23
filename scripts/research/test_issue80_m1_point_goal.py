@@ -400,11 +400,13 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             current_yaw_rad=-0.05,
             measured_yaw_rate_rad_s=-0.05,
             target_yaw_rad=-0.05,
-            prediction_horizon_s=2.0,
+            prediction_horizon_s=1.0,
         )
         self.assertAlmostEqual(instantaneous, 0.0, places=12)
-        self.assertAlmostEqual(predicted, 0.1, places=12)
-        self.assertEqual(point_goal_command_from_bearing_error(predicted), (0.14, 0.075))
+        self.assertAlmostEqual(predicted, 0.05, places=12)
+        forward, angular = point_goal_command_from_bearing_error(predicted)
+        self.assertAlmostEqual(forward, 0.14, places=12)
+        self.assertAlmostEqual(angular, 0.04, places=12)
         with self.assertRaisesRegex(ValueError, "finite and horizon nonnegative"):
             predicted_pose_yaw_error_rad(
                 current_yaw_rad=0.0,
