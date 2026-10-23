@@ -1,6 +1,6 @@
 # Issue #46 / PR #91 — Full-X2 PR90 grasp milestone
 
-Updated: 2026-10-23 18:55 UTC
+Updated: 2026-10-23 19:00 UTC
 Branch: codex/issue46-manipulation-integration-20261023
 Baseline source HEAD before this audit: 97a1e8a0ca5fa19a34415a2d370a06b5663d77b8
 Contact metrics and source-variant audit implementation commit: 91aeb2465c3e76bfa9f5ce189af2a68637d4905d
@@ -66,7 +66,8 @@ The 2 mm swept gate also conservatively marked the otherwise near-clear top-down
 
 - Added pr90_contact_trace.py as a read-only frame collector for a future authorized runner. It records geom/body pair identities, active-contact flags, contact dimension and friction coefficients, contact-frame force, force-on-object with the equal-and-opposite geom sign, per-role hand/table support, object pose/velocity, and relative tangential slip.
 - Force/frame convention was checked against the official MuJoCo computation/API docs and upstream issue #1314: frame normal points geom0 to geom1; mj_contactForce reports the contact-frame force on contact.geom[1] (the second geom); invert it for contact.geom[0], with equal/opposite forces on the pair. The collector stores both the raw force and signed world force on the bottle.
-- The module only reads MjModel/MjData after a caller step. It was not run on a physical trial; no dynamics ran in this goal turn.
+- The module only reads caller-provided MjModel/MjData. It was not used on a dynamic frame; no dynamics ran in this goal turn.
+- Static API smoke: run b198014a-50ce-497e-8d6a-5b9e62fc4989 at /home/lzy18001500226/projects/RobotSim/reviews/issue-46/pr90-contact-trace-api-smoke-20261023T190032Z/; 0 physics steps, 1 mj_forward, 35 active contact records. The packet stores pair identities and distances only; force values from this penetrated static frame are deliberately omitted and not interpreted as support.
 - Contact-math tests: 4/4 pass in the pinned MuJoCo 3.3.6 environment. The general manipulation test suite: 29 tests, 28 pass and the optional NumPy contact-trace module is skipped on the system Python that lacks NumPy. The four contact-trace tests pass in the pinned environment.
 
 ## Source reuse audit / fallback
@@ -79,7 +80,7 @@ Existing local references do not provide a drop-in, physically validated PR90 bo
 - Existing AGILINK/STEP analysis in reviews/issue-46/omnipicker-mechanism-reconstruction-20261023T055242Z/REPORT.md found matching joint frames but unresolved gears, springs, loop laws, and physical couplings. The old G2-to-MuJoCo conversion failed static closure and is not a newly discovered solution.
 - The previously audited AgiBot-Community grasp demo provides ROS/AimDK planning and command sequencing, but its bundled URDF is simplified IK data without collision geometry and it is not a MuJoCo contact backend.
 
-Recommended next human decision: confirm whether the physical robot and acceptance target are the X2 Ultra or X2 Ultra Plus variant, then explicitly authorize either (a) a separate static test of the source-identified Ultra Plus wrist mount with its matching robot model, or (b) continued use of the current pinned X2 Ultra mount with a source-supported installation/contact specification. No source model or mount has been changed here.
+The objective remains the pinned X2 Ultra. The Ultra Plus IK file is not directly interchangeable. The next physical-grasp step requires manufacturer/maintainer-supported X2 Ultra contact/installation data or separate approval to evaluate a different end-effector model. No source model or mount has been changed here.
 
 
 ## Reproduction
@@ -90,6 +91,7 @@ Recommended next human decision: confirm whether the physical robot and acceptan
     env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/audit_x2_variant_compatibility.py
     env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/audit_x2_variant_compatibility.py
     env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python -m unittest scripts.research.issue46_manipulation_integration.tests.test_pr90_contact_trace -v
+    env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/smoke_pr90_contact_trace_api.py
     env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/pr90_trial_gate.py --static-result /home/lzy18001500226/projects/RobotSim/reviews/issue-46/pr90-full-x2-bounded-24-static-20261023T180937Z/result.json --static-result /home/lzy18001500226/projects/RobotSim/reviews/issue-46/pr90-full-x2-lateral-7-refine-static-20261023T181534Z/result.json
 
 Generated evidence remains external under the paths listed above. All three manifests were verified; Windows UNC access was checked for the lateral refinement and trial-gate directories. PR #91 remains OPEN/Draft; Issue #46 remains OPEN.
