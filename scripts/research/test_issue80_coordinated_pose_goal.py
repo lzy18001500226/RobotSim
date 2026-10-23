@@ -12,7 +12,9 @@ from issue80_coordinated_pose_goal import (
     TERMINAL_POSE_CONTROL,
     ZERO_STOP,
     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+    POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD,
     POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD,
+    POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
     POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD,
     PoseGoalPhaseController,
     active_locomotion_readback_confirmed,
@@ -23,6 +25,7 @@ from issue80_coordinated_pose_goal import (
     pose_goal_approach_path_reference,
     pose_goal_approach_target,
     pose_path_reference,
+    pose_path_tracking_yaw_rate_command,
     sampled_pose_path_feasibility,
     pose_path_target_with_yaw_compensation,
     pure_pursuit_yaw_rate,
@@ -146,24 +149,27 @@ class PosePathTests(unittest.TestCase):
         }
         path = build_warmup_aware_pose_goal_path(
             start, stop, target_yaw, 0.05,
+            terminal_pre_stop_yaw_bias_rad=0.10,
             warmup_duration_s=0.5,
             warmup_forward_m_s=0.12,
-            curve_forward_m_s=0.13,
+            curve_forward_m_s=0.12,
             maximum_angular_rad_s=0.075,
             maximum_endpoint_offset_m=0.05,
             angular_utilization_limit=0.95,
         )
         gate = path["feasibility"]
         self.assertAlmostEqual(path["warmup_distance_m"], 0.06, places=12)
-        self.assertAlmostEqual(path["curve_chord_length_m"], 0.275, places=12)
+        self.assertAlmostEqual(path["curve_chord_length_m"], 0.254, places=12)
         self.assertLess(path["endpoint_position_offset_m"], 0.05)
+        self.assertGreater(path["curve_forward_m_s"], 0.111)
         self.assertLess(gate["maximum_lateral_error_to_requested_stop_line_m"], 0.05)
         self.assertLessEqual(gate["maximum_ideal_or_warmup_transition_raw_angular_rate_rad_s"], 0.075 * 0.95)
         self.assertFalse(gate["warmup_transition_saturation_required"])
         self.assertLess(gate["terminal_entry_position_error_m"], 0.05)
         self.assertLess(gate["terminal_entry_lateral_error_m"], 0.05)
         self.assertTrue(gate["terminal_residual_and_dwell_fit"])
-        self.assertLess(gate["terminal_entry_residual_to_pre_stop_target_rad"], 0.02)
+        self.assertLess(gate["terminal_entry_residual_to_pre_stop_target_rad"], 0.07)
+        self.assertAlmostEqual(gate["terminal_pre_stop_yaw_bias_rad"], 0.10)
 
         warmup_reference = pose_goal_approach_path_reference(
             start, path, path["warmup_distance_m"] / path["total_path_length_m"],
@@ -188,6 +194,41 @@ class PosePathTests(unittest.TestCase):
         self.assertLessEqual(abs(left["command_yaw_rate_rad_s"]), 0.075)
         self.assertLessEqual(abs(right["command_yaw_rate_rad_s"]), 0.075)
 
+    def test_path_tracking_prioritizes_tangent_and_curvature_without_cross_track_sign_flip(self) -> None:
+        on_path = pose_path_tracking_yaw_rate_command(
+            current_yaw_rad=0.0,
+            path_tangent_yaw_rad=0.0,
+            measured_yaw_rate_rad_s=0.0,
+            path_curvature_per_m=-0.5,
+            forward_command_m_s=0.13,
+            maximum_angular_rad_s=0.075,
+        )
+        self.assertAlmostEqual(on_path["curvature_feedforward_rad_s"], -0.065)
+        self.assertEqual(on_path["heading_rate_feedback_rad_s"], 0.0)
+        self.assertAlmostEqual(on_path["command_yaw_rate_rad_s"], -0.065)
+
+        wrong_heading = pose_path_tracking_yaw_rate_command(
+            current_yaw_rad=0.10,
+            path_tangent_yaw_rad=-0.05,
+            measured_yaw_rate_rad_s=0.0,
+            path_curvature_per_m=-0.5,
+            forward_command_m_s=0.13,
+            maximum_angular_rad_s=0.075,
+        )
+        self.assertLess(wrong_heading["command_yaw_rate_rad_s"], 0.0)
+        self.assertEqual(wrong_heading["command_yaw_rate_rad_s"], -0.075)
+        self.assertTrue(wrong_heading["command_saturated"])
+
+        measured_turning_away = pose_path_tracking_yaw_rate_command(
+            current_yaw_rad=-0.05,
+            path_tangent_yaw_rad=-0.05,
+            measured_yaw_rate_rad_s=0.08,
+            path_curvature_per_m=-0.5,
+            forward_command_m_s=0.13,
+            maximum_angular_rad_s=0.075,
+        )
+        self.assertLess(measured_turning_away["command_yaw_rate_rad_s"], -0.065)
+
 
 class TerminalYawControlTests(unittest.TestCase):
     def test_empirical_drift_envelope_keeps_internal_target_inside_final_gate(self) -> None:
@@ -200,6 +241,28 @@ class TerminalYawControlTests(unittest.TestCase):
         self.assertAlmostEqual(bias, 0.05)
         self.assertLess(worst_predicted_final_error, final_tolerance)
         self.assertAlmostEqual(final_tolerance - worst_predicted_final_error, 0.0213100865, places=6)
+
+    def test_terminal_bias_respects_requested_turn_direction_only_for_run95_drift(self) -> None:
+        requested_change = -0.10
+        minimum_change = math.radians(5.0)
+        worst_internal_error = POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD
+        run95_final_change = (
+            requested_change
+            - POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD
+            + POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD
+            + worst_internal_error
+        )
+        self.assertAlmostEqual(POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD, 0.10)
+        self.assertLessEqual(run95_final_change, -minimum_change)
+        self.assertAlmostEqual(-minimum_change - run95_final_change, 0.0041199, places=4)
+
+        high_drift_final_change = (
+            requested_change
+            - POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD
+            + max(POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD)
+            + worst_internal_error
+        )
+        self.assertGreater(high_drift_final_change, -minimum_change)
 
     def test_post_stop_drift_compensation_is_signed_and_wrap_safe(self) -> None:
         self.assertAlmostEqual(

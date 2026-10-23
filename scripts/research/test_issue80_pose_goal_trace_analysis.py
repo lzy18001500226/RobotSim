@@ -104,6 +104,7 @@ class SavedPoseReplayTests(unittest.TestCase):
             "lookahead_x_m": 0.25,
             "lookahead_y_m": -0.01,
             "approach_path_endpoint_yaw_rad": -0.10,
+            "yaw_rate_feedback_rad_s": 0.0,
             "angular_velocity_rad_s": 0.0,
         }
         command["angular_velocity_rad_s"] = pure_pursuit_yaw_rate(

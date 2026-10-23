@@ -84,8 +84,10 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
         self.assertIn("coordinated-pose", heading["heading_policy"])
         self.assertIn("yaw-only terminal", heading["pose_goal_terminal_control"])
         self.assertEqual(heading["pose_goal_post_stop_yaw_drift_compensation_rad"], 0.05)
+        self.assertEqual(heading["pose_goal_terminal_pre_stop_yaw_bias_rad"], 0.10)
+        self.assertAlmostEqual(heading["pose_goal_terminal_direction_margin_rad"], 0.0041, places=4)
         self.assertEqual(heading["pose_goal_terminal_setpoint_tolerance_rad"], 0.01)
-        self.assertIn("0.05 rad pre-stop bias", heading["pose_goal_approach_path_terminal_heading_policy"])
+        self.assertIn("0.05 rad approach-path bias", heading["pose_goal_approach_path_terminal_heading_policy"])
         self.assertIn("disabled", heading["angular_taper_policy"])
 
         point = runner.run65_point_goal_profile_metadata(valid_profile())

@@ -23,17 +23,25 @@ POSE_GOAL_TERMINAL_HEADING_GAIN = 0.8
 POSE_GOAL_TERMINAL_RATE_DAMPING = 1.0
 POSE_GOAL_APPROACH_WARMUP_S = 0.5
 POSE_GOAL_WARMUP_FORWARD_M_S = 0.12
-POSE_GOAL_CURVE_FORWARD_M_S = 0.13
+POSE_GOAL_CURVE_FORWARD_M_S = 0.12
 POSE_GOAL_CURVE_ANGULAR_UTILIZATION = 0.95
 POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M = 0.05
-# Runs93/94, which used the coordinated pose controller, measured +0.1695 and
-# +0.1887 rad from the first zero command to the settled pose. A 0.05 rad
-# pre-stop bias leaves at least 0.031 rad inside the unchanged 0.17 rad final
-# yaw tolerance for those two observations. This is an empirical design point,
-# not a calibrated or guaranteed settling model; the actual final gate remains
-# authoritative.
+# Runs93/94/95 measured +0.1695, +0.1887, and +0.0986 rad from first zero to
+# settled pose. This 0.05 rad bias is only the path endpoint bias that keeps the
+# approach curve inside the position/angular envelope; the terminal target has
+# a separate direction-aware bias below. Drift remains empirical, not a
+# calibrated or guaranteed settling model; the actual final gate is authoritative.
 POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD = 0.05
-POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD = (0.16952762228006262, 0.1886899134656192)
+# Second-attempt hypothesis: with Run95's +0.0986 rad drift, a -0.10 rad
+# requested turn and the existing 5-degree minimum-direction gate, 0.10 rad is
+# the smallest 0.01-rad-setpoint-safe terminal bias with a small margin.
+POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD = 0.10
+POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD = 0.09861381357287352
+POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD = (
+    0.09861381357287352,
+    0.16952762228006262,
+    0.1886899134656192,
+)
 POSE_GOAL_PRESTOP_YAW_MARGIN_RAD = 0.03
 POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD = 0.01
 POSE_SAFETY_STOP_REASONS = {
@@ -193,6 +201,54 @@ def terminal_yaw_rate_command(
         "raw_yaw_rate_command_rad_s": raw,
         "command_yaw_rate_rad_s": command,
         "within_yaw_and_rate_gates": settled,
+    }
+
+
+def pose_path_tracking_yaw_rate_command(
+    *,
+    current_yaw_rad: float,
+    path_tangent_yaw_rad: float,
+    measured_yaw_rate_rad_s: float,
+    path_curvature_per_m: float,
+    forward_command_m_s: float,
+    maximum_angular_rad_s: float,
+    heading_gain: float = POSE_GOAL_TERMINAL_HEADING_GAIN,
+    yaw_rate_damping: float = POSE_GOAL_TERMINAL_RATE_DAMPING,
+) -> dict[str, float | bool]:
+    """Track path heading with curvature feedforward and measured-rate damping.
+
+    This heading-goal policy deliberately does not convert cross-track error
+    into an opposing turn. The independent lateral guard remains authoritative
+    and stops the run if the planned approach is not tracked within bounds.
+    """
+    values = (
+        current_yaw_rad, path_tangent_yaw_rad, measured_yaw_rate_rad_s,
+        path_curvature_per_m, forward_command_m_s, maximum_angular_rad_s,
+        heading_gain, yaw_rate_damping,
+    )
+    try:
+        current_yaw, path_yaw, measured_rate, curvature, forward, limit, kp, kd = (
+            float(value) for value in values
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("path-tracking inputs must be numeric") from exc
+    if not _finite(*values):
+        raise ValueError("path-tracking inputs must be finite")
+    if forward < 0.0 or limit <= 0.0 or kp <= 0.0 or kd < 0.0:
+        raise ValueError("path-tracking speed, limit, or gains are invalid")
+    error = _wrap(path_yaw - current_yaw)
+    feedforward = forward * curvature
+    feedback = kp * error - kd * measured_rate
+    raw = feedforward + feedback
+    command = max(-limit, min(limit, raw))
+    return {
+        "path_yaw_error_rad": error,
+        "measured_yaw_rate_rad_s": measured_rate,
+        "curvature_feedforward_rad_s": feedforward,
+        "heading_rate_feedback_rad_s": feedback,
+        "raw_yaw_rate_command_rad_s": raw,
+        "command_yaw_rate_rad_s": command,
+        "command_saturated": abs(raw) > limit,
     }
 
 
@@ -507,6 +563,7 @@ def build_warmup_aware_pose_goal_path(
     requested_target_yaw_rad: float,
     pre_stop_yaw_bias_rad: float,
     *,
+    terminal_pre_stop_yaw_bias_rad: float | None = None,
     warmup_duration_s: float,
     warmup_forward_m_s: float,
     curve_forward_m_s: float,
@@ -528,6 +585,7 @@ def build_warmup_aware_pose_goal_path(
         x_stop, y_stop = (float(stop_pose[key]) for key in ("x", "y"))
         target_yaw = float(requested_target_yaw_rad)
         bias = float(pre_stop_yaw_bias_rad)
+        terminal_bias = bias if terminal_pre_stop_yaw_bias_rad is None else float(terminal_pre_stop_yaw_bias_rad)
         warmup_s = float(warmup_duration_s)
         warmup_speed = float(warmup_forward_m_s)
         curve_speed = float(curve_forward_m_s)
@@ -540,7 +598,7 @@ def build_warmup_aware_pose_goal_path(
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("warmup-aware path inputs must be numeric") from exc
     if not _finite(
-        x0, y0, start_yaw, x_stop, y_stop, target_yaw, bias, warmup_s,
+        x0, y0, start_yaw, x_stop, y_stop, target_yaw, bias, terminal_bias, warmup_s,
         warmup_speed, curve_speed, angular_limit, endpoint_limit,
         utilization_limit, lookahead, max_extension,
     ):
@@ -568,6 +626,7 @@ def build_warmup_aware_pose_goal_path(
         "yaw": start_yaw,
     }
     terminal_yaw = compensated_terminal_yaw_target_rad(target_yaw, bias)
+    terminal_target_yaw = compensated_terminal_yaw_target_rad(target_yaw, terminal_bias)
     yaw_delta = _wrap(terminal_yaw - start_yaw)
     curve_chord_yaw = _wrap(start_yaw + 0.5 * yaw_delta)
     base_curve_chord = max(stop_distance - warmup_distance, 1e-6)
@@ -596,7 +655,7 @@ def build_warmup_aware_pose_goal_path(
             lookahead_fraction=lookahead,
             sample_count=count,
         )
-        if curve_geometry["maximum_sampled_pure_pursuit_raw_rate_rad_s"] > angular_limit * utilization_limit + 1e-12:
+        if curve_geometry["required_angular_rate_at_forward_command_rad_s"] > angular_limit * utilization_limit + 1e-12:
             continue
 
         curve_length = float(curve_geometry["path_length_m"])
@@ -623,25 +682,23 @@ def build_warmup_aware_pose_goal_path(
             "requested_stop_pose": {"frame_id": stop_pose.get("frame_id"), "x": x_stop, "y": y_stop},
             "requested_stop_yaw_rad": target_yaw,
             "pre_stop_yaw_bias_rad": bias,
+            "terminal_pre_stop_yaw_bias_rad": terminal_bias,
+            "terminal_target_yaw_rad": terminal_target_yaw,
             "endpoint_position_offset_m": endpoint_offset,
             "curve_geometry": curve_geometry,
         }
         warmup_fraction = min(1.0, warmup_distance / total_length)
         raw_rates = [0.0]
         transition_current = pose_goal_approach_path_reference(start_pose, path_model, warmup_fraction)
-        transition_carrot = pose_goal_approach_path_reference(
-            start_pose, path_model, min(1.0, warmup_fraction + lookahead),
-        )
-        transition = pure_pursuit_yaw_rate(
-            current_x_m=transition_current["x_m"],
-            current_y_m=transition_current["y_m"],
+        transition = pose_path_tracking_yaw_rate_command(
             current_yaw_rad=start_yaw,
-            carrot_x_m=transition_carrot["x_m"],
-            carrot_y_m=transition_carrot["y_m"],
+            path_tangent_yaw_rad=transition_current["tangent_yaw_rad"],
+            measured_yaw_rate_rad_s=0.0,
+            path_curvature_per_m=transition_current["curvature_per_m"],
             forward_command_m_s=curve_speed,
             maximum_angular_rad_s=angular_limit,
         )
-        raw_rates.append(abs(float(transition["raw_yaw_rate_rad_s"])))
+        raw_rates.append(abs(float(transition["raw_yaw_rate_command_rad_s"])))
         max_fraction = max(0.0, 1.0 - lookahead)
         reference_fractions = [
             warmup_fraction + (max_fraction - warmup_fraction) * index / (count - 1)
@@ -656,19 +713,15 @@ def build_warmup_aware_pose_goal_path(
             )
         for fraction in reference_fractions:
             current = pose_goal_approach_path_reference(start_pose, path_model, fraction)
-            carrot = pose_goal_approach_path_reference(
-                start_pose, path_model, min(1.0, fraction + lookahead),
-            )
-            command = pure_pursuit_yaw_rate(
-                current_x_m=current["x_m"],
-                current_y_m=current["y_m"],
+            command = pose_path_tracking_yaw_rate_command(
                 current_yaw_rad=current["tangent_yaw_rad"],
-                carrot_x_m=carrot["x_m"],
-                carrot_y_m=carrot["y_m"],
+                path_tangent_yaw_rad=current["tangent_yaw_rad"],
+                measured_yaw_rate_rad_s=0.0,
+                path_curvature_per_m=current["curvature_per_m"],
                 forward_command_m_s=curve_speed,
                 maximum_angular_rad_s=angular_limit,
             )
-            raw_rates.append(abs(float(command["raw_yaw_rate_rad_s"])))
+            raw_rates.append(abs(float(command["raw_yaw_rate_command_rad_s"])))
         maximum_raw_rate = max(raw_rates)
         if maximum_raw_rate > angular_limit * utilization_limit + 1e-12:
             continue
@@ -684,7 +737,7 @@ def build_warmup_aware_pose_goal_path(
             stop_dx * (stop_reference["y_m"] - y0)
             - stop_dy * (stop_reference["x_m"] - x0)
         ) / stop_distance
-        terminal_residual = abs(_wrap(terminal_yaw - stop_reference["tangent_yaw_rad"]))
+        terminal_residual = abs(_wrap(terminal_target_yaw - stop_reference["tangent_yaw_rad"]))
         curve_elapsed_to_stop = max(0.0, stop_fraction * total_length - warmup_distance) / curve_speed
         path_model["feasibility"] = {
             "classification": "KINEMATIC_WARMUP_ALIGNED_PATH_NOT_DYNAMICS_VALIDATION",
@@ -699,8 +752,8 @@ def build_warmup_aware_pose_goal_path(
             "angular_command_limit_rad_s": angular_limit,
             "angular_rate_utilization_limit": utilization_limit,
             "maximum_command_margin_rad_s": angular_limit - maximum_raw_rate,
-            "warmup_transition_raw_rate_rad_s": abs(float(transition["raw_yaw_rate_rad_s"])),
-            "warmup_transition_saturation_required": abs(float(transition["raw_yaw_rate_rad_s"])) > angular_limit,
+            "warmup_transition_raw_rate_rad_s": abs(float(transition["raw_yaw_rate_command_rad_s"])),
+            "warmup_transition_saturation_required": abs(float(transition["raw_yaw_rate_command_rad_s"])) > angular_limit,
             "minimum_yaw_correction_time_at_command_cap_s": abs(yaw_delta) / angular_limit,
             "curve_time_after_warmup_s": curve_length / curve_speed,
             "nominal_total_approach_time_s": warmup_s + curve_length / curve_speed,
@@ -709,6 +762,8 @@ def build_warmup_aware_pose_goal_path(
             "terminal_entry_position_error_m": terminal_entry_position_error,
             "terminal_entry_lateral_error_m": terminal_entry_lateral,
             "terminal_entry_reference_yaw_rad": stop_reference["tangent_yaw_rad"],
+            "terminal_target_yaw_rad": terminal_target_yaw,
+            "terminal_pre_stop_yaw_bias_rad": terminal_bias,
             "terminal_entry_residual_to_pre_stop_target_rad": terminal_residual,
             "terminal_entry_residual_time_at_command_cap_s": terminal_residual / angular_limit,
             "terminal_ready_dwell_s": POSE_GOAL_TERMINAL_READY_DWELL_S,

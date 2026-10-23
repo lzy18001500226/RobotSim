@@ -21,11 +21,14 @@ from issue80_coordinated_pose_goal import (
     POSE_GOAL_CURVE_ANGULAR_UTILIZATION,
     POSE_GOAL_CURVE_FORWARD_M_S,
     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+    POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
     POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M,
     POSE_GOAL_WARMUP_FORWARD_M_S,
     fresh_yaw_rate_feedback,
     build_warmup_aware_pose_goal_path,
     pose_goal_approach_path_reference,
+    pose_path_reference,
+    pose_path_tracking_yaw_rate_command,
     pure_pursuit_yaw_rate,
     terminal_yaw_rate_command,
 )
@@ -41,6 +44,7 @@ DEFAULT_RUNS = {
     "run92": "stage-b-pose-goal-run92-20261023T044647Z-b56aed69",
     "run93": "stage-b-pose-goal-run93-20261023T045959Z-dc70febe",
     "run94": "stage-b-pose-goal-run94-20261023T052722Z-25204271",
+    "run95": "stage-b-pose-goal-run95-20261023T075541Z-ee98c557",
 }
 
 
@@ -551,6 +555,7 @@ def _counterfactual_pose_replay(
         POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD
         if abs(_number(pg.get("requested_heading_change_rad")) or 0.0) > 1e-9 else 0.0
     )
+    heading_goal_candidate = drift_compensation > 0.0
     saved_approach_endpoint_yaw = next((
         _number(row.get("approach_path_endpoint_yaw_rad")) for row in command_trace
         if _number(row.get("approach_path_endpoint_yaw_rad")) is not None
@@ -572,31 +577,38 @@ def _counterfactual_pose_replay(
         }
     else:
         saved_stop_pose["yaw"] = target_yaw
-    candidate_reference_stop = {**stop_pose, "yaw": target_yaw}
-    candidate_path = build_warmup_aware_pose_goal_path(
-        start_pose,
-        candidate_reference_stop,
-        target_yaw,
-        drift_compensation,
-        warmup_duration_s=POSE_GOAL_APPROACH_WARMUP_S,
-        warmup_forward_m_s=POSE_GOAL_WARMUP_FORWARD_M_S,
-        curve_forward_m_s=POSE_GOAL_CURVE_FORWARD_M_S,
-        maximum_angular_rad_s=0.075,
-        maximum_endpoint_offset_m=POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M,
-        angular_utilization_limit=POSE_GOAL_CURVE_ANGULAR_UTILIZATION,
-        lookahead_fraction=POSE_GOAL_LOOKAHEAD_FRACTION,
-    )
-    candidate_endpoint = candidate_path["curve_endpoint_pose"]
-    candidate_path_geometry = {
-        **candidate_path["feasibility"],
-        "warmup_distance_m": candidate_path["warmup_distance_m"],
-        "curve_chord_length_m": candidate_path["curve_chord_length_m"],
-        "curve_path_length_m": candidate_path["curve_path_length_m"],
-        "total_path_length_m": candidate_path["total_path_length_m"],
-        "projected_stop_progress_m": candidate_path["projected_stop_progress_m"],
-        "curve_forward_command_m_s": candidate_path["curve_forward_m_s"],
-        "pre_stop_yaw_bias_rad": candidate_path["pre_stop_yaw_bias_rad"],
-    }
+    if heading_goal_candidate:
+        candidate_reference_stop = {**stop_pose, "yaw": target_yaw}
+        candidate_path = build_warmup_aware_pose_goal_path(
+            start_pose,
+            candidate_reference_stop,
+            target_yaw,
+            drift_compensation,
+            terminal_pre_stop_yaw_bias_rad=POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
+            warmup_duration_s=POSE_GOAL_APPROACH_WARMUP_S,
+            warmup_forward_m_s=POSE_GOAL_WARMUP_FORWARD_M_S,
+            curve_forward_m_s=POSE_GOAL_CURVE_FORWARD_M_S,
+            maximum_angular_rad_s=0.075,
+            maximum_endpoint_offset_m=POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M,
+            angular_utilization_limit=POSE_GOAL_CURVE_ANGULAR_UTILIZATION,
+            lookahead_fraction=POSE_GOAL_LOOKAHEAD_FRACTION,
+        )
+        candidate_endpoint = candidate_path["curve_endpoint_pose"]
+        candidate_path_geometry = {
+            **candidate_path["feasibility"],
+            "warmup_distance_m": candidate_path["warmup_distance_m"],
+            "curve_chord_length_m": candidate_path["curve_chord_length_m"],
+            "curve_path_length_m": candidate_path["curve_path_length_m"],
+            "total_path_length_m": candidate_path["total_path_length_m"],
+            "projected_stop_progress_m": candidate_path["projected_stop_progress_m"],
+            "curve_forward_command_m_s": candidate_path["curve_forward_m_s"],
+            "pre_stop_yaw_bias_rad": candidate_path["pre_stop_yaw_bias_rad"],
+        }
+    else:
+        stop_pose["yaw"] = target_yaw
+        candidate_path = None
+        candidate_endpoint = stop_pose
+        candidate_path_geometry = {"status": "NOT_APPLICABLE_POSITION_ONLY"}
     if prediction_horizon is not None:
         legacy_policy_kind = "PREDICTED_TARGET_YAW"
     elif recorded_heading_reference == "coordinated_hermite_path":
@@ -628,12 +640,18 @@ def _counterfactual_pose_replay(
             stale_or_missing += 1
             continue
         progress = _number(command.get("along_track_progress_m")) or 0.0
-        stop_progress = _number(candidate_path.get("projected_stop_progress_m")) or 0.335
+        stop_progress = (
+            _number(candidate_path.get("projected_stop_progress_m")) if candidate_path is not None else None
+        ) or (_number(pg.get("dynamic_stop_progress_at_trigger_m")) or 0.335)
         fraction = max(0.0, min(1.0, progress / max(stop_progress, 1e-6)))
         carrot_fraction = min(1.0, fraction + POSE_GOAL_LOOKAHEAD_FRACTION)
-        reference = pose_goal_approach_path_reference(start_pose, candidate_path, fraction)
-        carrot = pose_goal_approach_path_reference(start_pose, candidate_path, carrot_fraction)
-        warmup = float(command.get("activation_elapsed_s") or 0.0) < 0.5
+        if candidate_path is not None:
+            reference = pose_goal_approach_path_reference(start_pose, candidate_path, fraction)
+            carrot = pose_goal_approach_path_reference(start_pose, candidate_path, carrot_fraction)
+        else:
+            reference = pose_path_reference(start_pose, stop_pose, fraction)
+            carrot = pose_path_reference(start_pose, stop_pose, carrot_fraction)
+        warmup = float(command.get("activation_elapsed_s") or 0.0) < POSE_GOAL_APPROACH_WARMUP_S
         forward = POSE_GOAL_WARMUP_FORWARD_M_S if warmup else POSE_GOAL_CURVE_FORWARD_M_S
         legacy_rate = _number(command.get("yaw_rate_feedback_rad_s"))
         legacy_horizon = _number(command.get("yaw_prediction_horizon_s")) or prediction_horizon
@@ -703,19 +721,27 @@ def _counterfactual_pose_replay(
                     if taper is None:
                         taper = 1.0
                     legacy_angular *= taper
-        if warmup:
+        path_tracking = None
+        if not heading_goal_candidate:
+            angular = float(legacy_angular or 0.0)
+        elif warmup:
             angular = 0.0
         else:
             try:
-                angular = pure_pursuit_yaw_rate(
-                    current_x_m=float(pose["x"]),
-                    current_y_m=float(pose["y"]),
+                yaw_rate = _number(command.get("yaw_rate_feedback_rad_s"))
+                if yaw_rate is None:
+                    yaw_rate, rate_coverage = _yaw_rate_at(state_rows, timestamp)
+                    if rate_coverage < 0.38:
+                        raise ValueError("candidate replay yaw-rate feedback unavailable")
+                path_tracking = pose_path_tracking_yaw_rate_command(
                     current_yaw_rad=float(pose["yaw"]),
-                    carrot_x_m=carrot["x_m"],
-                    carrot_y_m=carrot["y_m"],
+                    path_tangent_yaw_rad=float(reference["tangent_yaw_rad"]),
+                    measured_yaw_rate_rad_s=float(yaw_rate),
+                    path_curvature_per_m=float(reference["curvature_per_m"]),
                     forward_command_m_s=forward,
                     maximum_angular_rad_s=0.075,
-                )["command_yaw_rate_rad_s"]
+                )
+                angular = float(path_tracking["command_yaw_rate_rad_s"])
             except (KeyError, TypeError, ValueError):
                 stale_or_missing += 1
                 continue
@@ -734,6 +760,18 @@ def _counterfactual_pose_replay(
             "legacy_prediction_horizon_s": legacy_horizon,
             "coordinated_curve_angular_command_rad_s": angular,
             "coordinated_curve_forward_command_m_s": forward,
+            "coordinated_path_curvature_feedforward_rad_s": (
+                float(path_tracking["curvature_feedforward_rad_s"]) if path_tracking else 0.0
+            ),
+            "coordinated_path_heading_feedback_rad_s": (
+                float(path_tracking["heading_rate_feedback_rad_s"]) if path_tracking else 0.0
+            ),
+            "coordinated_path_raw_angular_command_rad_s": (
+                float(path_tracking["raw_yaw_rate_command_rad_s"]) if path_tracking else 0.0
+            ),
+            "coordinated_path_command_saturated": (
+                bool(path_tracking["command_saturated"]) if path_tracking else False
+            ),
             "coordinated_path_endpoint_yaw_rad": candidate_endpoint["yaw"],
             "saved_path_endpoint_yaw_rad": saved_stop_pose["yaw"],
             "target_yaw_error_rad": math.atan2(
@@ -795,9 +833,13 @@ def _counterfactual_pose_replay(
         if feedback is None:
             yaw_rate_missing += 1
             continue
+        terminal_target_yaw = math.atan2(
+            math.sin(target_yaw - POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD),
+            math.cos(target_yaw - POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD),
+        )
         terminal = terminal_yaw_rate_command(
             current_yaw_rad=float(pose["yaw"]),
-            target_yaw_rad=target_yaw,
+            target_yaw_rad=terminal_target_yaw,
             measured_yaw_rate_rad_s=feedback["signed_yaw_rate_rad_s"],
             maximum_angular_rad_s=0.075,
         )
@@ -809,6 +851,7 @@ def _counterfactual_pose_replay(
             "actual_angular_velocity_command_rad_s": 0.0,
             "counterfactual_angular_velocity_command_rad_s": terminal["command_yaw_rate_rad_s"],
             "yaw_error_rad": terminal["yaw_error_rad"],
+            "terminal_target_yaw_rad": terminal_target_yaw,
             "measured_world_yaw_rate_fit_rad_s": feedback["signed_yaw_rate_rad_s"],
             "measured_body_wz_rad_s": pose.get("wz"),
             "mode_desc": snapshot.get("get_mode_desc"),
@@ -831,7 +874,9 @@ def _counterfactual_pose_replay(
         "coordinated_path_endpoint_yaw_rad": candidate_endpoint["yaw"],
         "coordinated_path_terminal_drift_compensation_rad": drift_compensation,
         "candidate_path_geometry": candidate_path_geometry,
-        "candidate_endpoint_position_offset_m": candidate_path.get("endpoint_position_offset_m", 0.0),
+        "candidate_endpoint_position_offset_m": (
+            candidate_path.get("endpoint_position_offset_m", 0.0) if candidate_path is not None else 0.0
+        ),
         "approach_sample_count": len(controller_rows),
         "approach_samples_missing_state_or_path": stale_or_missing,
         "legacy_missing_rate_or_horizon_samples": legacy_feedback_missing,
@@ -1303,7 +1348,7 @@ def main() -> int:
     result = {
         "schema": "robotsim.issue80.pose-goal-offline-analysis.v1",
         "classification": "OFFLINE_TRACE_ANALYSIS_NOT_DYNAMICS_VALIDATION",
-        "analysis_scope": ["run86", "run88", "run89", "run90", "run91", "run92", "run93", "run94"],
+        "analysis_scope": ["run86", "run88", "run89", "run90", "run91", "run92", "run93", "run94", "run95"],
         "runs": summaries,
         "limitations": [
             "Velocity publish callback return is not an MC per-message receipt acknowledgement.",

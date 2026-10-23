@@ -75,6 +75,8 @@ from issue80_coordinated_pose_goal import (
     POSE_GOAL_TERMINAL_READY_DWELL_S,
     POSE_GOAL_PRESTOP_YAW_MARGIN_RAD,
     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+    POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
+    POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD,
     POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD,
     POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD,
     active_locomotion_readback_confirmed,
@@ -82,7 +84,7 @@ from issue80_coordinated_pose_goal import (
     compensated_terminal_yaw_target_rad,
     fresh_yaw_rate_feedback,
     pose_goal_approach_path_reference,
-    pure_pursuit_yaw_rate,
+    pose_path_tracking_yaw_rate_command,
     terminal_yaw_rate_command,
 )
 from issue80_m1_mode_logic import classify_set_mc_action_response
@@ -1272,6 +1274,7 @@ class FocusedM1Diagnostic(Node):
                     stop_pose,
                     path_yaw,
                     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+                    terminal_pre_stop_yaw_bias_rad=POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
                     warmup_duration_s=POINT_GOAL_HEADING_CHANGE_WARMUP_S,
                     warmup_forward_m_s=POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S,
                     curve_forward_m_s=POINT_GOAL_POSE_CURVE_COMMAND_M_S,
@@ -1485,7 +1488,7 @@ class FocusedM1Diagnostic(Node):
             pose_phase = pose_controller.phase if pose_controller is not None else "POSITION_ONLY"
             path_reference = None
             carrot_reference = None
-            pure_pursuit = None
+            path_tracking = None
             approach_yaw_target = None
             heading_warmup_active = (
                 has_heading_target
@@ -1501,7 +1504,7 @@ class FocusedM1Diagnostic(Node):
             if has_heading_target and pose_phase == TERMINAL_POSE_CONTROL:
                 terminal_yaw_target = compensated_terminal_yaw_target_rad(
                     path_yaw,
-                    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+                    POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
                 )
                 terminal_control = terminal_yaw_rate_command(
                     current_yaw_rad=float(pose["yaw"]),
@@ -1554,17 +1557,16 @@ class FocusedM1Diagnostic(Node):
                         math.cos(path_reference["tangent_yaw_rad"] - float(pose["yaw"])),
                     )
                 else:
-                    pure_pursuit = pure_pursuit_yaw_rate(
-                        current_x_m=float(pose["x"]),
-                        current_y_m=float(pose["y"]),
+                    path_tracking = pose_path_tracking_yaw_rate_command(
                         current_yaw_rad=float(pose["yaw"]),
-                        carrot_x_m=carrot_reference["x_m"],
-                        carrot_y_m=carrot_reference["y_m"],
+                        path_tangent_yaw_rad=float(path_reference["tangent_yaw_rad"]),
+                        measured_yaw_rate_rad_s=float(rate_feedback["signed_yaw_rate_rad_s"]),
+                        path_curvature_per_m=float(path_reference["curvature_per_m"]),
                         forward_command_m_s=forward_command,
                         maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                     )
-                    angular = float(pure_pursuit["command_yaw_rate_rad_s"])
-                    control_heading_error = float(pure_pursuit["bearing_error_rad"])
+                    angular = float(path_tracking["command_yaw_rate_rad_s"])
+                    control_heading_error = float(path_tracking["path_yaw_error_rad"])
             else:
                 control_heading_error = float(point_metrics["heading_error_rad"])
                 forward_command, angular = point_goal_command_from_bearing_error(
@@ -1621,6 +1623,18 @@ class FocusedM1Diagnostic(Node):
                 "yaw_rate_feedback_age_s": rate_feedback["age_s"] if rate_feedback is not None else None,
                 "path_reference_yaw_rad": path_reference["tangent_yaw_rad"] if path_reference else None,
                 "path_reference_curvature_per_m": path_reference["curvature_per_m"] if path_reference else None,
+                "path_curvature_feedforward_rad_s": (
+                    float(path_tracking["curvature_feedforward_rad_s"]) if path_tracking else None
+                ),
+                "path_heading_feedback_rad_s": (
+                    float(path_tracking["heading_rate_feedback_rad_s"]) if path_tracking else None
+                ),
+                "path_raw_yaw_rate_command_rad_s": (
+                    float(path_tracking["raw_yaw_rate_command_rad_s"]) if path_tracking else None
+                ),
+                "path_yaw_rate_command_saturated": (
+                    bool(path_tracking["command_saturated"]) if path_tracking else None
+                ),
                 "path_progress_fraction": path_reference["progress_fraction"] if path_reference else None,
                 "lookahead_x_m": carrot_reference["x_m"] if carrot_reference else None,
                 "lookahead_y_m": carrot_reference["y_m"] if carrot_reference else None,
@@ -1682,7 +1696,7 @@ class FocusedM1Diagnostic(Node):
                 )
                 terminal_yaw_target = compensated_terminal_yaw_target_rad(
                     path_yaw,
-                    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+                    POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
                 )
                 terminal_setpoint_error = math.atan2(
                     math.sin(terminal_yaw_target - float(pose["yaw"])),
@@ -2000,7 +2014,8 @@ class FocusedM1Diagnostic(Node):
                 "heading_gain": POINT_GOAL_HEADING_GAIN,
                 "post_stop_observation_s": self.args.extra_stop_observation,
                 "heading_control_for_pose_goal": (
-                    "coordinated cubic-Hermite position/yaw approach with bounded forward-zero terminal yaw-rate control"
+                    "warmup-aligned cubic-Hermite approach using curvature feedforward plus measured yaw/yaw-rate feedback; "
+                    "cross-track remains a hard safety guard; terminal yaw/rate control uses the existing forward-zero phase"
                     if has_heading_target else "not applicable; position-only goal"
                 ),
                 "heading_policy": "Run73_position_bearing_for_point_goals; coordinated-pose controller for heading-change goals",
@@ -2021,9 +2036,10 @@ class FocusedM1Diagnostic(Node):
                     if has_heading_target else None
                 ),
                 "pose_goal_approach_path": (
-                    "straight segment matching the 0.5 s zero-angular warmup, then a sampled cubic Hermite turn; "
+                    "straight segment matching the 0.5 s zero-angular warmup, then a sampled cubic Hermite turn tracked by curvature feedforward plus measured path-yaw/yaw-rate feedback; "
+                    "cross-track is a hard guard and does not add opposing angular steering; "
                     "curve chord is extended in 1 mm increments only until sampled ideal angular demand fits 95% of the 0.075 rad/s cap, "
-                    "with endpoint and lateral errors constrained by the existing 50 mm gates; 20% path lookahead"
+                    "with endpoint and lateral errors constrained by the existing 50 mm gates; the 20% path carrot is logged for diagnosis only"
                     if has_heading_target else None
                 ),
                 "pose_goal_warmup_distance_m": (
@@ -2044,6 +2060,23 @@ class FocusedM1Diagnostic(Node):
                 "pose_goal_post_stop_yaw_drift_compensation_rad": (
                     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD if has_heading_target else None
                 ),
+                "pose_goal_terminal_pre_stop_yaw_bias_rad": (
+                    POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD if has_heading_target else None
+                ),
+                "pose_goal_terminal_bias_drift_basis_attempt_ids": (
+                    ["ee98c557-ef2d-4db8-b1c9-15aa811bafce"] if has_heading_target else None
+                ),
+                "pose_goal_terminal_bias_drift_observation_rad": (
+                    POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD if has_heading_target else None
+                ),
+                "pose_goal_terminal_direction_margin_rad": (
+                    abs(heading_change_rad)
+                    + POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD
+                    - POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD
+                    - POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD
+                    - TURN_MIN_HEADING_CHANGE_RAD
+                    if has_heading_target else None
+                ),
                 "pose_goal_observed_post_stop_yaw_drift_rad": (
                     list(POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD)
                     if has_heading_target else None
@@ -2055,11 +2088,11 @@ class FocusedM1Diagnostic(Node):
                     POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD if has_heading_target else None
                 ),
                 "pose_goal_approach_path_terminal_heading_policy": (
-                    "Run93/Run94 empirical drift envelope; 0.05 rad pre-stop bias leaves 0.03 rad margin against the 0.17 rad final gate for those observations; not a calibrated model"
+                    "approach endpoint uses 0.05 rad bias to keep its curve feasible; terminal target uses a separate 0.10 rad bias derived from Run95 drift and the 5-degree minimum requested-turn gate; not calibrated across Runs93/94"
                     if has_heading_target else None
                 ),
                 "pose_goal_post_stop_drift_basis_attempt_ids": (
-                    ["dc70febe-9822-4f77-94da-e3d7a6f193f0", "25204271-4d8c-48d4-9718-0d71ad821174"]
+                    ["dc70febe-9822-4f77-94da-e3d7a6f193f0", "25204271-4d8c-48d4-9718-0d71ad821174", "ee98c557-ef2d-4db8-b1c9-15aa811bafce"]
                     if has_heading_target else None
                 ),
                 "pose_goal_post_stop_yaw_drift_observations_rad": (
@@ -2583,6 +2616,20 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             "pose_goal_post_stop_yaw_drift_compensation_rad": (
                 POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD if has_heading_target else None
             ),
+            "pose_goal_terminal_pre_stop_yaw_bias_rad": (
+                POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD if has_heading_target else None
+            ),
+            "pose_goal_terminal_bias_drift_observation_rad": (
+                POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD if has_heading_target else None
+            ),
+            "pose_goal_terminal_direction_margin_rad": (
+                abs(heading_change)
+                + POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD
+                - POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD
+                - POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD
+                - TURN_MIN_HEADING_CHANGE_RAD
+                if has_heading_target else None
+            ),
             "pose_goal_observed_post_stop_yaw_drift_rad": (
                 list(POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD)
                 if has_heading_target else None
@@ -2594,7 +2641,8 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD if has_heading_target else None
             ),
             "pose_goal_approach_path_policy": (
-                "0.5 s straight segment matching the zero-angular warmup, then bounded cubic-Hermite turn; "
+                "0.5 s straight segment matching the zero-angular warmup, then bounded cubic-Hermite turn tracked by curvature feedforward and measured path-yaw/yaw-rate feedback; "
+                "lateral error is a hard guard, not an opposing angular correction; "
                 "minimal curve-chord extension in 1 mm increments to satisfy the 95% angular-rate headroom and 50 mm gates"
                 if has_heading_target else None
             ),
@@ -2608,7 +2656,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M if has_heading_target else None
             ),
             "pose_goal_approach_path_terminal_heading_policy": (
-                "Run93/Run94 empirical drift envelope; 0.05 rad pre-stop bias leaves 0.03 rad margin against the 0.17 rad final gate for those observations; not a calibrated model"
+                "approach endpoint uses 0.05 rad bias to keep its curve feasible; terminal target uses a separate 0.10 rad bias derived from Run95 drift and the 5-degree minimum requested-turn gate; not calibrated across Runs93/94"
                 if has_heading_target else None
             ),
             "extra_stop_observation_s": float(args.extra_stop_observation),
