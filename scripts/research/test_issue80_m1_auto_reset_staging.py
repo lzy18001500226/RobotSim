@@ -61,6 +61,8 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(option("--heading-change-rad"), "-0.1")
         self.assertEqual(option("--final-yaw-tolerance-rad"), "0.17")
         self.assertEqual(option("--heading-control-policy"), "target-yaw")
+        self.assertEqual(option("--heading-goal-stop-advance-m"), "0.035")
+        self.assertEqual(option("--heading-goal-predicted-stop-tolerance-m"), "0.005")
         self.assertIn("--point-goal-diagnostic", child_argv)
         self.assertIn("--zero-only-stop", child_argv)
         self.assertEqual(option("--max-observed-planar-speed-m-s"), "0.2")
@@ -72,6 +74,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
         straight_argv = shlex.split(straight_shell.rsplit(" && ", 1)[1])
         self.assertEqual(straight_argv[straight_argv.index("--heading-control-policy") + 1], "position-bearing")
         self.assertEqual(straight_argv[straight_argv.index("--extra-stop-observation") + 1], "5.0")
+        self.assertNotIn("--heading-goal-stop-advance-m", straight_argv)
 
     def test_turning_probe_registers_one_turning_diagnostic_option(self):
         probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py")

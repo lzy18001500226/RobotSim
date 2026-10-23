@@ -52,6 +52,8 @@ POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S = 5.0
 POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S = 7.0
 POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
 POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
+POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.035
+POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
@@ -290,6 +292,16 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
             None if has_heading_target else POINT_GOAL_FINAL_TOLERANCE_M
         ),
         "post_stop_observation_s": float(args.extra_stop_observation),
+        "stop_model": (
+            "run88_measured_reverse_recovery_margin" if has_heading_target
+            else "speed_scaled_endpoint_response"
+        ),
+        "heading_goal_stop_advance_m": (
+            POINT_GOAL_HEADING_STOP_ADVANCE_M if has_heading_target else None
+        ),
+        "heading_goal_predicted_stop_tolerance_m": (
+            POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M if has_heading_target else None
+        ),
     }
 
 
@@ -368,6 +380,13 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             + " --heading-control-policy "
             + run65_child_heading_policy(args)
         )
+        if run65_child_heading_policy(args) == "target-yaw":
+            command[-1] += (
+                " --heading-goal-stop-advance-m "
+                + str(POINT_GOAL_HEADING_STOP_ADVANCE_M)
+                + " --heading-goal-predicted-stop-tolerance-m "
+                + str(POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M)
+            )
     return command
 
 

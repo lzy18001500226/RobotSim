@@ -92,6 +92,12 @@ POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S = TURN_FORWARD_COMMAND_M_S
 # general or vendor FoundationWalk braking model.
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
+# Run88 measured a -65.99 mm net path-axis displacement from zero publication
+# through settling. Add only 35 mm before stopping (15 mm inside the unchanged
+# +50 mm overshoot guard) and require the controller to reach that line instead
+# of firing the broad 50 mm predicted-endpoint trigger early.
+POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.035
+POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
 INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
@@ -1174,6 +1180,8 @@ class FocusedM1Diagnostic(Node):
         """Drive one short odom-frame point goal from MuJoCo ground truth with MC safety gates."""
         heading_control_policy = self.args.heading_control_policy
         final_yaw_tolerance_rad = float(self.args.final_yaw_tolerance_rad)
+        heading_goal_stop_advance_m = self.args.heading_goal_stop_advance_m
+        heading_goal_predicted_stop_tolerance_m = self.args.heading_goal_predicted_stop_tolerance_m
         preflight = self.sample_for_first_motion()
         preflight_fault = snapshot_fault(
             preflight,
@@ -1250,12 +1258,17 @@ class FocusedM1Diagnostic(Node):
             measured_forward_speed = point_goal_forward_speed_m_s(
                 pose, start_yaw_rad=path_yaw,
             )
-            stop_advance = speed_scaled_point_goal_stop_advance_m(
-                measured_forward_speed,
-                endpoint_response_intercept_m=POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
-                endpoint_response_time_s=POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
-                maximum_forward_speed_m_s=POINT_GOAL_MAX_PLANAR_SPEED_M_S,
-            )
+            if heading_control_policy == "target-yaw":
+                stop_advance = float(heading_goal_stop_advance_m)
+                stop_model = "run88_measured_reverse_recovery_margin"
+            else:
+                stop_advance = speed_scaled_point_goal_stop_advance_m(
+                    measured_forward_speed,
+                    endpoint_response_intercept_m=POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
+                    endpoint_response_time_s=POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
+                    maximum_forward_speed_m_s=POINT_GOAL_MAX_PLANAR_SPEED_M_S,
+                )
+                stop_model = "speed_scaled_endpoint_response"
             stop_progress = POINT_GOAL_DISTANCE_M + stop_advance
             stop_target = {
                 "frame_id": "odom",
@@ -1284,6 +1297,7 @@ class FocusedM1Diagnostic(Node):
                 "measured_forward_speed_m_s": measured_forward_speed,
                 "speed_scaled_stop_advance_m": stop_advance,
                 "dynamic_stop_progress_m": stop_progress,
+                "stop_model": stop_model,
                 "predicted_settled_goal_error_m": predicted_settled_error,
                 "predicted_settled_goal_error_m": predicted_settled_error,
                 "target_crossing_detected": progress >= POINT_GOAL_DISTANCE_M,
@@ -1425,6 +1439,11 @@ class FocusedM1Diagnostic(Node):
                 goal_distance_m=POINT_GOAL_DISTANCE_M,
                 dynamic_stop_progress_m=float(point_metrics["dynamic_stop_progress_m"]),
                 final_tolerance_m=POINT_GOAL_FINAL_TOLERANCE_M,
+                predicted_settled_tolerance_m=(
+                    float(heading_goal_predicted_stop_tolerance_m)
+                    if heading_control_policy == "target-yaw"
+                    else POINT_GOAL_FINAL_TOLERANCE_M
+                ),
                 maximum_lateral_error_m=POINT_GOAL_MAX_LATERAL_ERROR_M,
                 maximum_overshoot_m=POINT_GOAL_MAX_OVERSHOOT_M,
             )
@@ -1629,6 +1648,17 @@ class FocusedM1Diagnostic(Node):
                 ],
                 "limitation": "two SIMULATION_ONLY endpoint observations define an experiment-specific linear fit; early-stop behavior remains unverified after the one authorized 10-second trial; final position and physical stop gates remain authoritative",
             },
+            "heading_goal_stop_model": {
+                "policy": "run88_measured_reverse_recovery_margin",
+                "stop_line_progress_m": POINT_GOAL_DISTANCE_M + float(heading_goal_stop_advance_m),
+                "forward_advance_from_goal_m": heading_goal_stop_advance_m,
+                "predicted_early_stop_tolerance_m": heading_goal_predicted_stop_tolerance_m,
+                "basis_attempt_id": "7705a962-1601-43dc-9c69-a70354d9ce4c",
+                "measured_zero_to_settled_path_axis_displacement_m": -0.06598979752750032,
+                "overshoot_guard_m": POINT_GOAL_MAX_OVERSHOOT_M,
+                "margin_to_overshoot_guard_m": POINT_GOAL_MAX_OVERSHOOT_M - float(heading_goal_stop_advance_m),
+                "classification": "SIMULATION_ONLY_DERIVED_SINGLE_HEADING_GOAL_OBSERVATION",
+            } if heading_control_policy == "target-yaw" else None,
             "postwalk_stand_action": (
                 "NOT_REQUESTED_ZERO_ONLY_STOP; wait for measured automatic transition and physical stop gate"
             ),
@@ -1648,6 +1678,14 @@ class FocusedM1Diagnostic(Node):
                 "post_stop_observation_s": self.args.extra_stop_observation,
                 "heading_control_for_pose_goal": "track target yaw without terminal angular taper",
                 "heading_policy": "Run73_position_bearing_for_point_goals; target-yaw tracking for heading-change goals",
+                "heading_goal_stop_line_progress_m": (
+                    POINT_GOAL_DISTANCE_M + float(heading_goal_stop_advance_m)
+                    if heading_control_policy == "target-yaw" else None
+                ),
+                "heading_goal_predicted_early_stop_tolerance_m": (
+                    float(heading_goal_predicted_stop_tolerance_m)
+                    if heading_control_policy == "target-yaw" else None
+                ),
                 "angular_taper_start_predicted_error_m": POINT_GOAL_ANGULAR_TAPER_START_ERROR_M,
                 "angular_taper_end_predicted_error_m": POINT_GOAL_FINAL_TOLERANCE_M,
                 "maximum_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
@@ -2099,6 +2137,21 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 f"final yaw tolerance must be explicitly propagated as "
                 f"{POINT_GOAL_FINAL_YAW_TOLERANCE_RAD:.3f} rad"
             )
+        if has_heading_target:
+            if (
+                args.heading_goal_stop_advance_m is None
+                or not math.isfinite(float(args.heading_goal_stop_advance_m))
+                or abs(float(args.heading_goal_stop_advance_m) - POINT_GOAL_HEADING_STOP_ADVANCE_M) > 1e-9
+                or args.heading_goal_predicted_stop_tolerance_m is None
+                or not math.isfinite(float(args.heading_goal_predicted_stop_tolerance_m))
+                or abs(float(args.heading_goal_predicted_stop_tolerance_m) - POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M) > 1e-9
+            ):
+                raise ValueError("heading-goal stop advance and predictor tolerance must be explicitly propagated")
+        elif (
+            args.heading_goal_stop_advance_m is not None
+            or args.heading_goal_predicted_stop_tolerance_m is not None
+        ):
+            raise ValueError("heading-goal stop parameters are valid only with target-yaw policy")
         if (
             args.forward_speed != POINT_GOAL_COMMAND_M_S
             or args.pulse_duration != POINT_GOAL_MAX_DURATION_S
@@ -2122,6 +2175,8 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             "requested_heading_change_rad": heading_change,
             "final_yaw_tolerance_rad": float(tolerance),
             "heading_control_policy": args.heading_control_policy,
+            "heading_goal_stop_advance_m": args.heading_goal_stop_advance_m,
+            "heading_goal_predicted_stop_tolerance_m": args.heading_goal_predicted_stop_tolerance_m,
             "extra_stop_observation_s": float(args.extra_stop_observation),
             "max_extra_stop_observation_s": expected_extra_observation,
             "active_command_limit_s": POINT_GOAL_MAX_DURATION_S,
@@ -2180,6 +2235,8 @@ def main() -> int:
     first.add_argument(
         "--heading-control-policy", choices=("position-bearing", "target-yaw"), default=None,
     )
+    first.add_argument("--heading-goal-stop-advance-m", type=float, default=None)
+    first.add_argument("--heading-goal-predicted-stop-tolerance-m", type=float, default=None)
     first.add_argument("--validate-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:

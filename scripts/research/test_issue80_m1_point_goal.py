@@ -477,6 +477,31 @@ class PointGoalAcceptanceTests(unittest.TestCase):
             **common,
         ))
 
+    def test_heading_goal_can_delay_predicted_stop_without_changing_position_acceptance(self) -> None:
+        values = {
+            "along_track_progress_m": 0.290,
+            "lateral_error_m": 0.0,
+            "goal_distance_m": 0.30,
+            "dynamic_stop_progress_m": 0.335,
+            "final_tolerance_m": 0.05,
+            "maximum_lateral_error_m": 0.05,
+            "maximum_overshoot_m": 0.05,
+        }
+        self.assertEqual(
+            point_goal_stop_reason(**values),
+            "goal_approach_predicted_settle_within_tolerance",
+        )
+        self.assertIsNone(
+            point_goal_stop_reason(**values, predicted_settled_tolerance_m=0.005)
+        )
+        self.assertEqual(
+            point_goal_stop_reason(
+                **dict(values, along_track_progress_m=0.335),
+                predicted_settled_tolerance_m=0.005,
+            ),
+            "speed_scaled_stop_line_crossed",
+        )
+
     def test_readback_refresh_does_not_change_the_existing_freshness_threshold(self) -> None:
         self.assertEqual(
             stale_readback_keys(

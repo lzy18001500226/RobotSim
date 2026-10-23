@@ -850,10 +850,11 @@ def point_goal_stop_reason(
     goal_distance_m: float,
     dynamic_stop_progress_m: float,
     final_tolerance_m: float,
+    predicted_settled_tolerance_m: float | None = None,
     maximum_lateral_error_m: float,
     maximum_overshoot_m: float,
 ) -> str | None:
-    """Stop on a crossed speed-scaled line or a bounded lateral/overshoot guard."""
+    """Stop on a crossed line or prediction, retaining separate safety tolerances."""
     values = (
         along_track_progress_m,
         lateral_error_m,
@@ -870,8 +871,13 @@ def point_goal_stop_reason(
     if not all(math.isfinite(value) for value in numbers):
         raise ValueError("point-goal stop decision inputs must be finite")
     progress, lateral, goal, stop_progress, final_tolerance, lateral_limit, overshoot_limit = numbers
+    prediction_tolerance = (
+        final_tolerance if predicted_settled_tolerance_m is None
+        else float(predicted_settled_tolerance_m)
+    )
     if (
         goal <= 0.0 or stop_progress < goal or final_tolerance <= 0.0
+        or not math.isfinite(prediction_tolerance) or prediction_tolerance <= 0.0
         or lateral_limit <= 0.0 or overshoot_limit < 0.0
     ):
         raise ValueError("point-goal stop decision limits are invalid")
@@ -882,7 +888,7 @@ def point_goal_stop_reason(
     if progress >= stop_progress:
         return "speed_scaled_stop_line_crossed"
     predicted_settled_error = math.hypot(stop_progress - progress, lateral)
-    if predicted_settled_error <= final_tolerance:
+    if predicted_settled_error <= prediction_tolerance:
         return "goal_approach_predicted_settle_within_tolerance"
     return None
 
