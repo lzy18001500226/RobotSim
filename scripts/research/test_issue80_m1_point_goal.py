@@ -20,6 +20,7 @@ from issue80_m1_first_motion import (
     point_goal_angular_taper_factor, point_goal_forward_speed_m_s,
     point_goal_heading_error_rad, point_goal_pose_angular_taper_factor,
     point_goal_pose_heading_error_rad,
+    predicted_pose_yaw_error_rad,
     point_goal_stop_reason, speed_scaled_point_goal_stop_advance_m,
     stale_readback_keys,
 )
@@ -387,6 +388,30 @@ class PointGoalAcceptanceTests(unittest.TestCase):
     def test_heading_target_retains_terminal_angular_authority(self) -> None:
         self.assertEqual(point_goal_pose_angular_taper_factor(0.05, has_heading_target=True), 1.0)
         self.assertEqual(point_goal_pose_angular_taper_factor(0.05, has_heading_target=False), 0.0)
+
+    def test_yaw_rate_prediction_brakes_a_lagging_turn_before_target_crossing(self) -> None:
+        instantaneous = point_goal_pose_heading_error_rad(
+            current_yaw_rad=-0.05,
+            goal_dx_m=1.0,
+            goal_dy_m=0.0,
+            target_yaw_rad=-0.05,
+        )
+        predicted = predicted_pose_yaw_error_rad(
+            current_yaw_rad=-0.05,
+            measured_yaw_rate_rad_s=-0.05,
+            target_yaw_rad=-0.05,
+            prediction_horizon_s=2.0,
+        )
+        self.assertAlmostEqual(instantaneous, 0.0, places=12)
+        self.assertAlmostEqual(predicted, 0.1, places=12)
+        self.assertEqual(point_goal_command_from_bearing_error(predicted), (0.14, 0.075))
+        with self.assertRaisesRegex(ValueError, "finite and horizon nonnegative"):
+            predicted_pose_yaw_error_rad(
+                current_yaw_rad=0.0,
+                measured_yaw_rate_rad_s=0.0,
+                target_yaw_rad=0.0,
+                prediction_horizon_s=-0.1,
+            )
 
     def test_heading_change_starts_with_validated_forward_warmup_before_turning(self) -> None:
         self.assertEqual(

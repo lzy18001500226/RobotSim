@@ -54,6 +54,7 @@ POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
 POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
 POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.035
 POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
+POINT_GOAL_HEADING_RATE_PREDICTION_HORIZON_S = 2.0
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
@@ -302,6 +303,9 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
         "heading_goal_predicted_stop_tolerance_m": (
             POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M if has_heading_target else None
         ),
+        "heading_yaw_rate_prediction_horizon_s": (
+            POINT_GOAL_HEADING_RATE_PREDICTION_HORIZON_S if has_heading_target else None
+        ),
     }
 
 
@@ -386,6 +390,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 + str(POINT_GOAL_HEADING_STOP_ADVANCE_M)
                 + " --heading-goal-predicted-stop-tolerance-m "
                 + str(POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M)
+                + " --heading-yaw-rate-prediction-horizon-s "
+                + str(POINT_GOAL_HEADING_RATE_PREDICTION_HORIZON_S)
             )
     return command
 

@@ -46,6 +46,7 @@ from issue80_m1_first_motion import (
     point_goal_command_from_bearing_error,
     point_goal_forward_speed_m_s,
     point_goal_heading_error_rad, point_goal_pose_angular_taper_factor,
+    predicted_pose_yaw_error_rad,
     point_goal_pose_heading_error_rad,
     point_goal_stop_reason,
     speed_scaled_point_goal_stop_advance_m, run_first_motion_window,
@@ -98,6 +99,8 @@ POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 # of firing the broad 50 mm predicted-endpoint trigger early.
 POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.035
 POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
+POINT_GOAL_HEADING_RATE_PREDICTION_HORIZON_S = 2.0
+POINT_GOAL_MAX_YAW_RATE_FEEDBACK_AGE_S = 0.15
 INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/SetMcInputSource"
 CURRENT_INPUT_SOURCE_SERVICE = "/aimdk_5Fmsgs/srv/GetCurrentInputSource"
 GET_MC_ACTION_SERVICE = "/aimdk_5Fmsgs/srv/GetMcAction"
@@ -1182,6 +1185,7 @@ class FocusedM1Diagnostic(Node):
         final_yaw_tolerance_rad = float(self.args.final_yaw_tolerance_rad)
         heading_goal_stop_advance_m = self.args.heading_goal_stop_advance_m
         heading_goal_predicted_stop_tolerance_m = self.args.heading_goal_predicted_stop_tolerance_m
+        heading_yaw_rate_prediction_horizon_s = self.args.heading_yaw_rate_prediction_horizon_s
         preflight = self.sample_for_first_motion()
         preflight_fault = snapshot_fault(
             preflight,
@@ -1239,6 +1243,7 @@ class FocusedM1Diagnostic(Node):
             "fault": None,
             "last_metrics": None,
             "activation_started_monotonic_s": None,
+            "yaw_rate_feedback": None,
         }
         command_trace: list[dict[str, Any]] = []
 
@@ -1318,6 +1323,15 @@ class FocusedM1Diagnostic(Node):
                 )
             activation_tracker.observe(current, phase="activation" if phase == "activation" else phase)
             stamp_rate = odom_stamp_monitor.update(current)
+            if stamp_rate.get("status") == "MEASURED":
+                state["yaw_rate_feedback"] = {
+                    "signed_net_yaw_rate_rad_s": float(stamp_rate["signed_net_yaw_rate_rad_s"]),
+                    "sample_monotonic_s": float(current["sample_monotonic_s"]),
+                    "window_s": float(stamp_rate["window_s"]),
+                    "coverage_s": float(stamp_rate["coverage_s"]),
+                }
+            elif stamp_rate.get("status") == "HOST_MONOTONIC_RESET":
+                state["yaw_rate_feedback"] = None
             try:
                 current_metrics = metrics(current)
                 state["last_metrics"] = current_metrics
@@ -1328,6 +1342,7 @@ class FocusedM1Diagnostic(Node):
                     "source_stamp_diagnostic": {
                         "status": stamp_rate.get("status"),
                         "source_stamp_s": stamp_rate.get("source_stamp_s"),
+                        "signed_yaw_rate_rad_s": stamp_rate.get("signed_net_yaw_rate_rad_s"),
                         "regression_count": odom_stamp_monitor.source_stamp_regression_count,
                         "duplicate_count": odom_stamp_monitor.source_stamp_duplicate_count,
                     },
@@ -1356,7 +1371,7 @@ class FocusedM1Diagnostic(Node):
                 raise RuntimeError("point_goal_has_no_current_pose_for_steering")
             position_bearing_error = float(point_metrics["heading_error_rad"])
             has_heading_target = heading_control_policy == "target-yaw"
-            error = point_goal_pose_heading_error_rad(
+            instantaneous_heading_error = point_goal_pose_heading_error_rad(
                 current_yaw_rad=float(pose["yaw"]),
                 goal_dx_m=float(point_metrics["goal_dx_m"]),
                 goal_dy_m=float(point_metrics["goal_dy_m"]),
@@ -1369,9 +1384,27 @@ class FocusedM1Diagnostic(Node):
                 if activation_started is not None else 0.0
             )
             heading_warmup_active = (
-                abs(heading_change_rad) > 1e-9
+                has_heading_target
                 and activation_elapsed < POINT_GOAL_HEADING_CHANGE_WARMUP_S
             )
+            yaw_rate_feedback = state.get("yaw_rate_feedback")
+            yaw_rate_prediction_rad_s = None
+            yaw_rate_feedback_age_s = None
+            if has_heading_target and not heading_warmup_active:
+                if not isinstance(yaw_rate_feedback, Mapping):
+                    raise RuntimeError("heading_goal_yaw_rate_feedback_unavailable")
+                yaw_rate_prediction_rad_s = float(yaw_rate_feedback["signed_net_yaw_rate_rad_s"])
+                yaw_rate_feedback_age_s = sample_monotonic_s - float(yaw_rate_feedback["sample_monotonic_s"])
+                if not 0.0 <= yaw_rate_feedback_age_s <= POINT_GOAL_MAX_YAW_RATE_FEEDBACK_AGE_S:
+                    raise RuntimeError("heading_goal_yaw_rate_feedback_stale")
+                error = predicted_pose_yaw_error_rad(
+                    current_yaw_rad=float(pose["yaw"]),
+                    measured_yaw_rate_rad_s=yaw_rate_prediction_rad_s,
+                    target_yaw_rad=path_yaw,
+                    prediction_horizon_s=float(heading_yaw_rate_prediction_horizon_s),
+                )
+            else:
+                error = instantaneous_heading_error
             # Keep forward input above the measured FoundationWalk deadzone.
             # Heading/lateral correction uses only the already validated
             # Run65 angular envelope; it does not turn after the stop line.
@@ -1416,8 +1449,14 @@ class FocusedM1Diagnostic(Node):
                 "dynamic_stop_progress_m": point_metrics["dynamic_stop_progress_m"],
                 "dynamic_stop_line_crossed": point_metrics["dynamic_stop_line_crossed"],
                 "heading_error_rad": error,
+                "instantaneous_heading_error_rad": instantaneous_heading_error,
                 "position_bearing_error_rad": position_bearing_error,
                 "heading_reference": "target_yaw" if has_heading_target else "Run73_position_bearing",
+                "yaw_rate_feedback_rad_s": yaw_rate_prediction_rad_s,
+                "yaw_rate_feedback_age_s": yaw_rate_feedback_age_s,
+                "yaw_prediction_horizon_s": (
+                    float(heading_yaw_rate_prediction_horizon_s) if has_heading_target else None
+                ),
                 "activation_elapsed_s": activation_elapsed,
                 "heading_turn_warmup_active": heading_warmup_active,
                 "predicted_settled_goal_error_m": point_metrics["predicted_settled_goal_error_m"],
@@ -1684,6 +1723,18 @@ class FocusedM1Diagnostic(Node):
                 ),
                 "heading_goal_predicted_early_stop_tolerance_m": (
                     float(heading_goal_predicted_stop_tolerance_m)
+                    if heading_control_policy == "target-yaw" else None
+                ),
+                "heading_yaw_rate_prediction_horizon_s": (
+                    float(heading_yaw_rate_prediction_horizon_s)
+                    if heading_control_policy == "target-yaw" else None
+                ),
+                "heading_yaw_rate_estimator": (
+                    "0.4 s unwrapped odom yaw regression on monotonic receive timestamps"
+                    if heading_control_policy == "target-yaw" else None
+                ),
+                "heading_yaw_rate_feedback_max_age_s": (
+                    POINT_GOAL_MAX_YAW_RATE_FEEDBACK_AGE_S
                     if heading_control_policy == "target-yaw" else None
                 ),
                 "angular_taper_start_predicted_error_m": POINT_GOAL_ANGULAR_TAPER_START_ERROR_M,
@@ -2145,13 +2196,17 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 or args.heading_goal_predicted_stop_tolerance_m is None
                 or not math.isfinite(float(args.heading_goal_predicted_stop_tolerance_m))
                 or abs(float(args.heading_goal_predicted_stop_tolerance_m) - POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M) > 1e-9
+                or args.heading_yaw_rate_prediction_horizon_s is None
+                or not math.isfinite(float(args.heading_yaw_rate_prediction_horizon_s))
+                or abs(float(args.heading_yaw_rate_prediction_horizon_s) - POINT_GOAL_HEADING_RATE_PREDICTION_HORIZON_S) > 1e-9
             ):
-                raise ValueError("heading-goal stop advance and predictor tolerance must be explicitly propagated")
+                raise ValueError("heading-goal stop and yaw-rate prediction parameters must be explicitly propagated")
         elif (
             args.heading_goal_stop_advance_m is not None
             or args.heading_goal_predicted_stop_tolerance_m is not None
+            or args.heading_yaw_rate_prediction_horizon_s is not None
         ):
-            raise ValueError("heading-goal stop parameters are valid only with target-yaw policy")
+            raise ValueError("heading-goal stop and yaw-rate prediction parameters require target-yaw policy")
         if (
             args.forward_speed != POINT_GOAL_COMMAND_M_S
             or args.pulse_duration != POINT_GOAL_MAX_DURATION_S
@@ -2177,6 +2232,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             "heading_control_policy": args.heading_control_policy,
             "heading_goal_stop_advance_m": args.heading_goal_stop_advance_m,
             "heading_goal_predicted_stop_tolerance_m": args.heading_goal_predicted_stop_tolerance_m,
+            "heading_yaw_rate_prediction_horizon_s": args.heading_yaw_rate_prediction_horizon_s,
             "extra_stop_observation_s": float(args.extra_stop_observation),
             "max_extra_stop_observation_s": expected_extra_observation,
             "active_command_limit_s": POINT_GOAL_MAX_DURATION_S,
@@ -2237,6 +2293,7 @@ def main() -> int:
     )
     first.add_argument("--heading-goal-stop-advance-m", type=float, default=None)
     first.add_argument("--heading-goal-predicted-stop-tolerance-m", type=float, default=None)
+    first.add_argument("--heading-yaw-rate-prediction-horizon-s", type=float, default=None)
     first.add_argument("--validate-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:

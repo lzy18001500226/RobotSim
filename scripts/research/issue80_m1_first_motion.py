@@ -655,6 +655,25 @@ def point_goal_pose_heading_error_rad(
     return math.atan2(math.sin(target_yaw - current_yaw), math.cos(target_yaw - current_yaw))
 
 
+def predicted_pose_yaw_error_rad(
+    *,
+    current_yaw_rad: float,
+    measured_yaw_rate_rad_s: float,
+    target_yaw_rad: float,
+    prediction_horizon_s: float,
+) -> float:
+    """Predict wrapped yaw error over a bounded measured-rate horizon."""
+    values = (current_yaw_rad, measured_yaw_rate_rad_s, target_yaw_rad, prediction_horizon_s)
+    try:
+        yaw, rate, target, horizon = tuple(float(value) for value in values)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("predicted yaw inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (yaw, rate, target, horizon)) or horizon < 0.0:
+        raise ValueError("predicted yaw inputs must be finite and horizon nonnegative")
+    predicted_yaw = yaw + rate * horizon
+    return math.atan2(math.sin(target - predicted_yaw), math.cos(target - predicted_yaw))
+
+
 def classify_heading_goal_measurement(
     *,
     start_yaw_rad: float,
