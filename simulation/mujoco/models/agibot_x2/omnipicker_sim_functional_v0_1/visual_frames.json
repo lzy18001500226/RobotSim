@@ -1,0 +1,21 @@
+{
+  "schema_version": "robotsim.x2-omnipicker-source-visual-frames.v1",
+  "derived_urdf_sha256": "977c9cf45abbba34898d24f8de9258280e9dadcb1d95237ef13560317cb6097d",
+  "purpose": "Reconstruct the raw original STL visual-surface frame used by the frozen PR #90 aperture measurements. These frame offsets are RobotSim derived-model metadata, not vendor URDF values.",
+  "frames": {
+    "narrow": {
+      "link": "R_hand_narrow3_Link",
+      "mesh": "narrow3_Link.stl",
+      "mesh_sha256": "0fb55604e97d18c9545567e082e071746a968f624a0aa31ece3a0cc4fc1217b0",
+      "origin_xyz_m": [0.0, 0.0, 0.0],
+      "origin_rpy_rad": [0.0, 0.0, 0.0735393791763881]
+    },
+    "wide": {
+      "link": "R_hand_wide3_Link",
+      "mesh": "wide3_Link.stl",
+      "mesh_sha256": "a06d0c7e16ddd06e28a8e75c5a27c2e5fa025c00b79d973983f389cd08a380fb",
+      "origin_xyz_m": [0.0, 0.0, 0.0],
+      "origin_rpy_rad": [0.0, 0.0, -0.07353823908103618]
+    }
+  }
+}
