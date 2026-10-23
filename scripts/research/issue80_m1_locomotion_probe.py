@@ -68,7 +68,10 @@ from issue80_coordinated_pose_goal import (
     POSE_GOAL_TERMINAL_MIN_ANGULAR_RAD_S,
     POSE_GOAL_TERMINAL_RATE_DAMPING,
     POSE_GOAL_TERMINAL_READY_DWELL_S,
+    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+    POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD,
     active_locomotion_readback_confirmed,
+    compensated_terminal_yaw_target_rad,
     fresh_yaw_rate_feedback,
     pose_path_reference,
     pure_pursuit_yaw_rate,
@@ -1255,6 +1258,7 @@ class FocusedM1Diagnostic(Node):
                 maximum_lateral_error_m=POINT_GOAL_MAX_LATERAL_ERROR_M,
                 maximum_overshoot_m=POINT_GOAL_MAX_OVERSHOOT_M,
                 final_yaw_tolerance_rad=final_yaw_tolerance_rad,
+                terminal_yaw_setpoint_tolerance_rad=POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD,
             ) if has_heading_target else None
         )
         goal_trace: list[dict[str, Any]] = []
@@ -1442,12 +1446,16 @@ class FocusedM1Diagnostic(Node):
                 final_tolerance_m=POINT_GOAL_FINAL_TOLERANCE_M,
             )
             if has_heading_target and pose_phase == TERMINAL_POSE_CONTROL:
+                terminal_yaw_target = compensated_terminal_yaw_target_rad(
+                    path_yaw,
+                    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+                )
                 terminal_control = terminal_yaw_rate_command(
                     current_yaw_rad=float(pose["yaw"]),
-                    target_yaw_rad=path_yaw,
+                    target_yaw_rad=terminal_yaw_target,
                     measured_yaw_rate_rad_s=float(rate_feedback["signed_yaw_rate_rad_s"]),
                     maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
-                    final_yaw_tolerance_rad=final_yaw_tolerance_rad,
+                    final_yaw_tolerance_rad=POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD,
                 )
                 forward_command = 0.0
                 angular = float(terminal_control["command_yaw_rate_rad_s"])
@@ -1532,6 +1540,13 @@ class FocusedM1Diagnostic(Node):
                 "heading_reference": "coordinated_hermite_path" if has_heading_target else "Run73_position_bearing",
                 "control_phase": pose_phase,
                 "target_yaw_error_rad": target_yaw_error if has_heading_target else None,
+                "terminal_yaw_target_rad": (
+                    terminal_yaw_target if has_heading_target and pose_phase == TERMINAL_POSE_CONTROL else None
+                ),
+                "terminal_yaw_setpoint_error_rad": (
+                    float(terminal_control["yaw_error_rad"])
+                    if has_heading_target and pose_phase == TERMINAL_POSE_CONTROL else None
+                ),
                 "yaw_rate_feedback_rad_s": (
                     float(rate_feedback["signed_yaw_rate_rad_s"])
                     if rate_feedback is not None else None
@@ -1583,6 +1598,14 @@ class FocusedM1Diagnostic(Node):
                     math.sin(path_yaw - float(pose["yaw"])),
                     math.cos(path_yaw - float(pose["yaw"])),
                 )
+                terminal_yaw_target = compensated_terminal_yaw_target_rad(
+                    path_yaw,
+                    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+                )
+                terminal_setpoint_error = math.atan2(
+                    math.sin(terminal_yaw_target - float(pose["yaw"])),
+                    math.cos(terminal_yaw_target - float(pose["yaw"])),
+                )
                 feedback = state.get("yaw_rate_feedback")
                 measured_yaw_rate = None
                 terminal_entry = (
@@ -1618,6 +1641,7 @@ class FocusedM1Diagnostic(Node):
                     along_track_progress_m=progress,
                     yaw_error_rad=target_yaw_error,
                     measured_yaw_rate_rad_s=measured_yaw_rate,
+                    terminal_setpoint_error_rad=terminal_setpoint_error,
                 )
                 history = state["pose_goal_phase_history"]
                 if not history or history[-1]["phase"] != decision["phase"]:
@@ -1917,6 +1941,20 @@ class FocusedM1Diagnostic(Node):
                 "pose_goal_terminal_heading_gain": POSE_GOAL_TERMINAL_HEADING_GAIN if has_heading_target else None,
                 "pose_goal_terminal_yaw_rate_damping": POSE_GOAL_TERMINAL_RATE_DAMPING if has_heading_target else None,
                 "pose_goal_terminal_min_effective_angular_rad_s": POSE_GOAL_TERMINAL_MIN_ANGULAR_RAD_S if has_heading_target else None,
+                "pose_goal_post_stop_yaw_drift_compensation_rad": (
+                    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD if has_heading_target else None
+                ),
+                "pose_goal_terminal_setpoint_tolerance_rad": (
+                    POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD if has_heading_target else None
+                ),
+                "pose_goal_post_stop_drift_basis_attempt_ids": (
+                    ["b56aed69-193d-4f9a-a083-dbd9f6b6b4c3", "dc70febe-9822-4f77-94da-e3d7a6f193f0"]
+                    if has_heading_target else None
+                ),
+                "pose_goal_post_stop_yaw_drift_observations_rad": (
+                    [0.08272697884476092, 0.16952762228006262]
+                    if has_heading_target else None
+                ),
                 "pose_goal_lookahead_fraction": POINT_GOAL_POSE_LOOKAHEAD_FRACTION if has_heading_target else None,
                 "pose_goal_terminal_publisher_rotation_effectiveness": "UNVERIFIED_UNTIL_THIS_RUNTIME_ATTEMPT" if has_heading_target else None,
                 "angular_taper_start_predicted_error_m": POINT_GOAL_ANGULAR_TAPER_START_ERROR_M,
@@ -2425,6 +2463,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             "pose_goal_terminal_forward_speed_m_s": 0.0 if has_heading_target else None,
             "pose_goal_terminal_yaw_rate_limit_rad_s": (
                 PHYSICAL_STOP_MAX_YAW_RATE_RAD_S if has_heading_target else None
+            ),
+            "pose_goal_post_stop_yaw_drift_compensation_rad": (
+                POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD if has_heading_target else None
+            ),
+            "pose_goal_terminal_setpoint_tolerance_rad": (
+                POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD if has_heading_target else None
             ),
             "extra_stop_observation_s": float(args.extra_stop_observation),
             "max_extra_stop_observation_s": expected_extra_observation,

@@ -55,6 +55,10 @@ POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
 POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
 POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.0
 POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
+POINT_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD = 0.16
+POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD = 0.01
+POINT_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD = 0.16
+POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD = 0.01
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
@@ -304,8 +308,21 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
             POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M if has_heading_target else None
         ),
         "pose_goal_terminal_control": (
-            "yaw-only terminal: 0.0 m/s forward, <=0.075 rad/s angular, <=3 s, target error + measured-rate damping; dwell 0.4 s"
+            "yaw-only terminal: 0.0 m/s forward, <=0.075 rad/s angular, measured post-stop drift compensation, "
+            "<=3 s, 0.4 s dwell; final-goal tolerance remains 0.17 rad"
             if has_heading_target else None
+        ),
+        "pose_goal_post_stop_yaw_drift_compensation_rad": (
+            POINT_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD if has_heading_target else None
+        ),
+        "pose_goal_terminal_setpoint_tolerance_rad": (
+            POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD if has_heading_target else None
+        ),
+        "pose_goal_post_stop_yaw_drift_compensation_rad": (
+            POINT_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD if has_heading_target else None
+        ),
+        "pose_goal_terminal_setpoint_tolerance_rad": (
+            POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD if has_heading_target else None
         ),
     }
 

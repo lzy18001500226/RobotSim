@@ -21,6 +21,10 @@ POSE_GOAL_TERMINAL_READY_DWELL_S = 0.4
 POSE_GOAL_TERMINAL_MIN_ANGULAR_RAD_S = 0.03
 POSE_GOAL_TERMINAL_HEADING_GAIN = 0.8
 POSE_GOAL_TERMINAL_RATE_DAMPING = 1.0
+# Run92/93 zero-to-settled yaw drift was +0.0827/+0.1695 rad; retain a
+# simulation-only pre-stop bias inside the unchanged 0.17 rad final tolerance.
+POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD = 0.16
+POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD = 0.01
 POSE_SAFETY_STOP_REASONS = {
     "lateral_error_limit",
     "hard_overshoot_guard",
@@ -204,6 +208,20 @@ def fresh_yaw_rate_feedback(
     return {"signed_yaw_rate_rad_s": rate, "age_s": age}
 
 
+def compensated_terminal_yaw_target_rad(
+    requested_target_yaw_rad: float,
+    measured_post_stop_yaw_drift_rad: float,
+) -> float:
+    """Bias the pre-stop setpoint against the measured signed post-stop drift."""
+    try:
+        target, drift = float(requested_target_yaw_rad), float(measured_post_stop_yaw_drift_rad)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("terminal yaw target and drift must be numeric") from exc
+    if not _finite(target, drift):
+        raise ValueError("terminal yaw target and drift must be finite")
+    return _wrap(target - drift)
+
+
 def active_locomotion_readback_confirmed(
     snapshot: Mapping[str, Any],
     *,
@@ -232,6 +250,7 @@ class PoseGoalPhaseController:
     maximum_overshoot_m: float = 0.05
     final_yaw_tolerance_rad: float = 0.17
     stable_yaw_rate_limit_rad_s: float = math.radians(1.0)
+    terminal_yaw_setpoint_tolerance_rad: float | None = None
     terminal_ready_dwell_s: float = POSE_GOAL_TERMINAL_READY_DWELL_S
     terminal_timeout_s: float = POSE_GOAL_TERMINAL_CONTROL_MAX_S
     phase: str = APPROACH
@@ -251,12 +270,17 @@ class PoseGoalPhaseController:
         along_track_progress_m: float,
         yaw_error_rad: float,
         measured_yaw_rate_rad_s: float | None,
+        terminal_setpoint_error_rad: float | None = None,
     ) -> dict[str, Any]:
         values = (
             monotonic_s, distance_to_goal_m, lateral_error_m, along_track_progress_m, yaw_error_rad,
         )
         if not _finite(*values):
             self.failure_reason = "pose_goal_nonfinite_state"
+            self.phase = FAILED
+            return self._decision(complete=True)
+        if terminal_setpoint_error_rad is not None and not math.isfinite(float(terminal_setpoint_error_rad)):
+            self.failure_reason = "pose_goal_nonfinite_terminal_setpoint_error"
             self.phase = FAILED
             return self._decision(complete=True)
 
@@ -300,8 +324,21 @@ class PoseGoalPhaseController:
                 self.phase = FAILED
                 return self._decision(complete=True)
 
+            terminal_setpoint_tolerance = (
+                self.final_yaw_tolerance_rad
+                if self.terminal_yaw_setpoint_tolerance_rad is None
+                else float(self.terminal_yaw_setpoint_tolerance_rad)
+            )
+            if not math.isfinite(terminal_setpoint_tolerance) or terminal_setpoint_tolerance <= 0.0:
+                self.failure_reason = "pose_goal_invalid_terminal_setpoint_tolerance"
+                self.phase = FAILED
+                return self._decision(complete=True)
             yaw_ready = (
                 abs(yaw_error_rad) <= self.final_yaw_tolerance_rad
+                and abs(
+                    yaw_error_rad if terminal_setpoint_error_rad is None
+                    else float(terminal_setpoint_error_rad)
+                ) <= terminal_setpoint_tolerance
                 and abs(float(measured_yaw_rate_rad_s)) <= self.stable_yaw_rate_limit_rad_s
             )
             if yaw_ready:

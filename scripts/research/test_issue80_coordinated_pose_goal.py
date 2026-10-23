@@ -13,6 +13,7 @@ from issue80_coordinated_pose_goal import (
     ZERO_STOP,
     PoseGoalPhaseController,
     active_locomotion_readback_confirmed,
+    compensated_terminal_yaw_target_rad,
     fresh_yaw_rate_feedback,
     pose_path_reference,
     pure_pursuit_yaw_rate,
@@ -75,6 +76,14 @@ class PosePathTests(unittest.TestCase):
 
 
 class TerminalYawControlTests(unittest.TestCase):
+    def test_post_stop_drift_compensation_is_signed_and_wrap_safe(self) -> None:
+        self.assertAlmostEqual(
+            compensated_terminal_yaw_target_rad(-0.05, 0.16),
+            -0.21,
+        )
+        wrapped = compensated_terminal_yaw_target_rad(math.pi - 0.05, 0.16)
+        self.assertAlmostEqual(wrapped, math.atan2(math.sin(math.pi - 0.21), math.cos(math.pi - 0.21)))
+
     def test_terminal_entry_requires_confirmed_same_sample_mode_and_source(self) -> None:
         snapshot = {
             "get_mode_header_code": 0,
@@ -239,6 +248,59 @@ class PoseGoalPhaseTests(unittest.TestCase):
         self.assertEqual(complete["phase"], ZERO_STOP)
         self.assertTrue(complete["complete"])
         self.assertTrue(complete["terminal_pose_ready"])
+
+    def test_compensated_setpoint_must_settle_without_weakening_final_goal_gate(self) -> None:
+        entered = self.update(
+            monotonic_s=1.0,
+            position_stop_reason="speed_scaled_stop_line_crossed",
+            distance_to_goal_m=0.03,
+            along_track_progress_m=0.30,
+            yaw_error_rad=0.15,
+            measured_yaw_rate_rad_s=0.0,
+            terminal_setpoint_error_rad=0.15,
+        )
+        self.assertEqual(entered["phase"], TERMINAL_POSE_CONTROL)
+
+        at_compensated_target = self.update(
+            monotonic_s=1.1,
+            distance_to_goal_m=0.03,
+            along_track_progress_m=0.30,
+            yaw_error_rad=0.15,
+            measured_yaw_rate_rad_s=0.01,
+            terminal_setpoint_error_rad=0.005,
+        )
+        self.assertFalse(at_compensated_target["complete"])
+        self.assertEqual(at_compensated_target["phase"], TERMINAL_POSE_CONTROL)
+
+        outside_final_goal = self.update(
+            monotonic_s=1.2,
+            distance_to_goal_m=0.03,
+            along_track_progress_m=0.30,
+            yaw_error_rad=0.171,
+            measured_yaw_rate_rad_s=0.01,
+            terminal_setpoint_error_rad=0.005,
+        )
+        self.assertFalse(outside_final_goal["complete"])
+
+        first_ready = self.update(
+            monotonic_s=1.61,
+            distance_to_goal_m=0.03,
+            along_track_progress_m=0.30,
+            yaw_error_rad=0.15,
+            measured_yaw_rate_rad_s=0.01,
+            terminal_setpoint_error_rad=0.005,
+        )
+        self.assertFalse(first_ready["complete"])
+        ready = self.update(
+            monotonic_s=2.02,
+            distance_to_goal_m=0.03,
+            along_track_progress_m=0.30,
+            yaw_error_rad=0.15,
+            measured_yaw_rate_rad_s=0.01,
+            terminal_setpoint_error_rad=0.005,
+        )
+        self.assertEqual(ready["phase"], ZERO_STOP)
+        self.assertTrue(ready["terminal_pose_ready"])
 
     def test_stale_rate_position_escape_and_terminal_timeout_fail_closed(self) -> None:
         self.update(
