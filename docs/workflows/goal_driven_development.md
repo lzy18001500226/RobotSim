@@ -52,6 +52,10 @@ Completion is evidence-based. Apply the minimum levels and status definitions in
 
 The Goal's thread scope matters: it helps continue one task, but does not automatically discover or switch to other independent repository tasks. Use manually curated GitHub Issues if a durable backlog becomes useful. Do not build a supervisor or queue merely to imitate an issue tracker.
 
+### Upstream research before an external blocker
+
+For debugging or integration Goals, before marking a problem `BLOCKED_HUMAN` or asking for a manufacturer/engineer, follow the [official-source-first rule](../../AGENTS.md#mandatory-official-source-first-troubleshooting). Proactively consult the relevant official manual, release-specific startup procedure, and example code when access is available; reproduce the smallest supported comparison, and distinguish documentation evidence from actual runtime proof. Keep the human/safety gates intact. For X2 MC/MuJoCo integration start with [the X2 source index](../skills/agibot_x2.md). A tool/network outage or incompatible release should be reported precisely rather than represented as an intrinsic vendor limitation.
+
 ## Pause, resume, clear, and review gates
 
 Where the current Codex client exposes pause, resume, or clear/end controls, RobotSim applies these meanings. Verify the exact control and label in the current client; product mechanics may change:
