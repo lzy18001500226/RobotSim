@@ -1,0 +1,43 @@
+{
+  "schema_version": "robotsim.issue80.workstation-docking-targets.v1",
+  "frame_id": "map",
+  "status": "UNCONFIGURED_NO_WORKCELL_MAP",
+  "targets": [
+    {
+      "id": "PICKUP_STATION",
+      "configured": false,
+      "pose": null,
+      "position_tolerance_m": 0.08,
+      "yaw_tolerance_rad": 0.10,
+      "segment_timeout_s": 120.0,
+      "max_corrections": 2,
+      "required_handoff_gates": [
+        "fresh_map_to_odom_and_odom_to_base_link",
+        "measured_physical_stop_pass",
+        "fresh_object_pose_relative_to_base_link",
+        "source_limited_arm_ik_reachable",
+        "manipulator_ready"
+      ]
+    },
+    {
+      "id": "PLACEMENT_STATION",
+      "configured": false,
+      "pose": null,
+      "position_tolerance_m": 0.08,
+      "yaw_tolerance_rad": 0.10,
+      "segment_timeout_s": 120.0,
+      "max_corrections": 2,
+      "required_handoff_gates": [
+        "fresh_map_to_odom_and_odom_to_base_link",
+        "measured_physical_stop_pass",
+        "fresh_placement_target_pose_relative_to_base_link",
+        "source_limited_arm_ik_reachable",
+        "manipulator_ready"
+      ]
+    }
+  ],
+  "notes": [
+    "No workstation coordinates were inferred because the mapped workcell and arm reachability evidence were not provided.",
+    "A target with configured=false is intentionally not executable."
+  ]
+}
