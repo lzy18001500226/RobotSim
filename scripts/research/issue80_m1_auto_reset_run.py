@@ -26,6 +26,12 @@ from issue80_m1_first_motion import (
     TURN_MIN_HEADING_CHANGE_RAD, TURN_PULSE_S,
     ZERO_STOP_MIN_MESSAGES,
 )
+from issue80_coordinated_pose_goal import (
+    POSE_GOAL_APPROACH_WARMUP_S,
+    POSE_GOAL_CURVE_FORWARD_M_S,
+    POSE_GOAL_HEADING_STOP_ADVANCE_M,
+    POSE_GOAL_WARMUP_FORWARD_M_S,
+)
 
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
@@ -53,15 +59,16 @@ POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S = 5.0
 POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S = 7.0
 POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
 POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
-POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.0
+POINT_GOAL_HEADING_STOP_ADVANCE_M = POSE_GOAL_HEADING_STOP_ADVANCE_M
 POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
 POINT_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD = 0.05
-POINT_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD = 0.10
-POINT_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD = 0.09861381357287352
+POINT_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD = 0.115
+POINT_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD = 0.11341906640050358
 POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD = 0.01
 POINT_GOAL_PRESTOP_YAW_MARGIN_RAD = 0.03
 POINT_GOAL_POST_STOP_DRIFT_OBSERVATIONS_RAD = (
     0.09861381357287352,
+    0.11341906640050358,
     0.16952762228006262,
     0.1886899134656192,
 )
@@ -314,7 +321,7 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
             POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M if has_heading_target else None
         ),
         "pose_goal_terminal_control": (
-            "yaw-only terminal: 0.0 m/s forward, <=0.075 rad/s angular, separate 0.10 rad Run95-conditioned terminal bias, "
+            "yaw-only terminal: 0.0 m/s forward, <=0.075 rad/s angular, separate 0.115 rad Run96-conditioned terminal bias, "
             "<=3 s, 0.4 s dwell; final-goal tolerance remains 0.17 rad"
             if has_heading_target else None
         ),
@@ -325,19 +332,19 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
             POINT_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD if has_heading_target else None
         ),
         "pose_goal_terminal_bias_drift_observation_rad": (
-            POINT_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD if has_heading_target else None
+            POINT_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD if has_heading_target else None
         ),
         "pose_goal_terminal_direction_margin_rad": (
             abs(heading_change)
             + POINT_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD
-            - POINT_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD
+            - POINT_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD
             - POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD
             - TURN_MIN_HEADING_CHANGE_RAD
             if has_heading_target else None
         ),
-        "pose_goal_warmup_duration_s": (0.5 if has_heading_target else None),
-        "pose_goal_warmup_forward_m_s": (0.12 if has_heading_target else None),
-        "pose_goal_curve_forward_command_m_s": (0.12 if has_heading_target else None),
+        "pose_goal_warmup_duration_s": (POSE_GOAL_APPROACH_WARMUP_S if has_heading_target else None),
+        "pose_goal_warmup_forward_m_s": (POSE_GOAL_WARMUP_FORWARD_M_S if has_heading_target else None),
+        "pose_goal_curve_forward_command_m_s": (POSE_GOAL_CURVE_FORWARD_M_S if has_heading_target else None),
         "pose_goal_curve_angular_rate_utilization_limit": (0.95 if has_heading_target else None),
         "pose_goal_observed_post_stop_yaw_drift_rad": (
             list(POINT_GOAL_POST_STOP_DRIFT_OBSERVATIONS_RAD) if has_heading_target else None
@@ -349,7 +356,7 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
             POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD if has_heading_target else None
         ),
         "pose_goal_approach_path_terminal_heading_policy": (
-            "0.05 rad approach-path bias preserves curve feasibility; 0.10 rad terminal bias is conditioned on Run95 drift and the 5-degree direction gate; not calibrated across Runs93/94"
+            "0.05 rad approach-path bias preserves curve feasibility; 0.115 rad terminal bias is conditioned on Run96 drift and the 5-degree direction gate; not calibrated across Runs93/95"
             if has_heading_target else None
         ),
     }

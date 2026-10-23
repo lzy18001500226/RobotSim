@@ -23,22 +23,24 @@ POSE_GOAL_TERMINAL_HEADING_GAIN = 0.8
 POSE_GOAL_TERMINAL_RATE_DAMPING = 1.0
 POSE_GOAL_APPROACH_WARMUP_S = 0.5
 POSE_GOAL_WARMUP_FORWARD_M_S = 0.12
-POSE_GOAL_CURVE_FORWARD_M_S = 0.12
+POSE_GOAL_CURVE_FORWARD_M_S = 0.13
+POSE_GOAL_HEADING_STOP_ADVANCE_M = 0.025
 POSE_GOAL_CURVE_ANGULAR_UTILIZATION = 0.95
 POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M = 0.05
-# Runs93/94/95 measured +0.1695, +0.1887, and +0.0986 rad from first zero to
+# Runs93/94/95/96 measured +0.1695, +0.1887, +0.0986, and +0.1134 rad from zero to
 # settled pose. This 0.05 rad bias is only the path endpoint bias that keeps the
 # approach curve inside the position/angular envelope; the terminal target has
 # a separate direction-aware bias below. Drift remains empirical, not a
 # calibrated or guaranteed settling model; the actual final gate is authoritative.
 POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD = 0.05
-# Second-attempt hypothesis: with Run95's +0.0986 rad drift, a -0.10 rad
-# requested turn and the existing 5-degree minimum-direction gate, 0.10 rad is
-# the smallest 0.01-rad-setpoint-safe terminal bias with a small margin.
-POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD = 0.10
-POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD = 0.09861381357287352
+# Post-Run96 offline-only hypothesis: with its +0.113419 rad drift, a -0.10 rad
+# requested turn and the existing 5-degree minimum-direction gate, 0.115 rad
+# is the smallest 0.01-rad-setpoint-safe terminal bias with a small margin.
+POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD = 0.115
+POSE_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD = 0.11341906640050358
 POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD = (
     0.09861381357287352,
+    0.11341906640050358,
     0.16952762228006262,
     0.1886899134656192,
 )
@@ -563,6 +565,7 @@ def build_warmup_aware_pose_goal_path(
     requested_target_yaw_rad: float,
     pre_stop_yaw_bias_rad: float,
     *,
+    acceptance_pose: Mapping[str, Any] | None = None,
     terminal_pre_stop_yaw_bias_rad: float | None = None,
     warmup_duration_s: float,
     warmup_forward_m_s: float,
@@ -619,6 +622,13 @@ def build_warmup_aware_pose_goal_path(
     if stop_distance <= warmup_distance + 1e-6:
         raise ValueError("stop target is too close for the configured warmup segment")
     stop_unit = (stop_dx / stop_distance, stop_dy / stop_distance)
+    acceptance = acceptance_pose if acceptance_pose is not None else stop_pose
+    try:
+        x_acceptance, y_acceptance = float(acceptance["x"]), float(acceptance["y"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("acceptance pose must contain numeric x/y") from exc
+    if acceptance.get("frame_id", start_pose.get("frame_id")) != start_pose.get("frame_id"):
+        raise ValueError("acceptance pose must use the same odom frame")
     curve_start = {
         "frame_id": start_pose.get("frame_id"),
         "x": x0 + warmup_distance * math.cos(start_yaw),
@@ -641,8 +651,12 @@ def build_warmup_aware_pose_goal_path(
             "yaw": terminal_yaw,
         }
         endpoint_offset = math.hypot(curve_endpoint["x"] - x_stop, curve_endpoint["y"] - y_stop)
+        acceptance_position_error = math.hypot(
+            curve_endpoint["x"] - x_acceptance,
+            curve_endpoint["y"] - y_acceptance,
+        )
         last_endpoint_offset = endpoint_offset
-        if endpoint_offset > endpoint_limit + 1e-12:
+        if endpoint_offset > endpoint_limit + 1e-12 or acceptance_position_error > endpoint_limit + 1e-12:
             if step > 0:
                 break
             continue
@@ -680,6 +694,7 @@ def build_warmup_aware_pose_goal_path(
             "total_path_length_m": total_length,
             "projected_stop_progress_m": projected_stop_progress,
             "requested_stop_pose": {"frame_id": stop_pose.get("frame_id"), "x": x_stop, "y": y_stop},
+            "acceptance_pose": {"frame_id": acceptance.get("frame_id", start_pose.get("frame_id")), "x": x_acceptance, "y": y_acceptance},
             "requested_stop_yaw_rad": target_yaw,
             "pre_stop_yaw_bias_rad": bias,
             "terminal_pre_stop_yaw_bias_rad": terminal_bias,
@@ -733,6 +748,10 @@ def build_warmup_aware_pose_goal_path(
             stop_reference["x_m"] - x_stop,
             stop_reference["y_m"] - y_stop,
         )
+        terminal_entry_goal_error = math.hypot(
+            stop_reference["x_m"] - x_acceptance,
+            stop_reference["y_m"] - y_acceptance,
+        )
         terminal_entry_lateral = abs(
             stop_dx * (stop_reference["y_m"] - y0)
             - stop_dy * (stop_reference["x_m"] - x0)
@@ -745,6 +764,7 @@ def build_warmup_aware_pose_goal_path(
             "search_step_m": 0.001,
             "curve_extension_from_minimum_m": curve_chord - base_curve_chord,
             "endpoint_position_error_m": endpoint_offset,
+            "endpoint_error_to_acceptance_goal_m": acceptance_position_error,
             "maximum_lateral_error_to_requested_stop_line_m": max(lateral_deviations, default=0.0),
             "maximum_curvature_per_m": curve_geometry["maximum_absolute_curvature_per_m"],
             "required_angular_rate_at_curve_forward_command_rad_s": curve_geometry["required_angular_rate_at_forward_command_rad_s"],
@@ -760,6 +780,7 @@ def build_warmup_aware_pose_goal_path(
             "nominal_terminal_entry_time_s": warmup_s + curve_elapsed_to_stop,
             "terminal_entry_progress_fraction": stop_fraction,
             "terminal_entry_position_error_m": terminal_entry_position_error,
+            "terminal_entry_error_to_acceptance_goal_m": terminal_entry_goal_error,
             "terminal_entry_lateral_error_m": terminal_entry_lateral,
             "terminal_entry_reference_yaw_rad": stop_reference["tangent_yaw_rad"],
             "terminal_target_yaw_rad": terminal_target_yaw,

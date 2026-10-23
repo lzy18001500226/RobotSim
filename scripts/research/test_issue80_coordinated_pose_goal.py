@@ -12,7 +12,7 @@ from issue80_coordinated_pose_goal import (
     TERMINAL_POSE_CONTROL,
     ZERO_STOP,
     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
-    POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD,
+    POSE_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD,
     POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD,
     POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
     POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD,
@@ -178,6 +178,37 @@ class PosePathTests(unittest.TestCase):
         self.assertAlmostEqual(warmup_reference["tangent_yaw_rad"], start["yaw"], places=12)
         self.assertAlmostEqual(endpoint_reference["tangent_yaw_rad"], path["curve_endpoint_pose"]["yaw"], places=12)
 
+    def test_run96_stop_advance_tracks_measured_settling_drift_within_position_gates(self) -> None:
+        start = {"frame_id": "odom", "x": 0.0183720733169952, "y": 0.003391006556233643, "yaw": 0.053050859283639784}
+        target_yaw = -0.04694914071636022
+        goal = {
+            "frame_id": "odom",
+            "x": start["x"] + 0.30 * math.cos(target_yaw),
+            "y": start["y"] + 0.30 * math.sin(target_yaw),
+        }
+        stop = {
+            "frame_id": "odom",
+            "x": goal["x"] + 0.025 * math.cos(target_yaw),
+            "y": goal["y"] + 0.025 * math.sin(target_yaw),
+        }
+        path = build_warmup_aware_pose_goal_path(
+            start, stop, target_yaw, 0.05,
+            acceptance_pose=goal,
+            terminal_pre_stop_yaw_bias_rad=0.115,
+            warmup_duration_s=0.5,
+            warmup_forward_m_s=0.12,
+            curve_forward_m_s=0.13,
+            maximum_angular_rad_s=0.075,
+            maximum_endpoint_offset_m=0.05,
+            angular_utilization_limit=0.95,
+        )
+        gates = path["feasibility"]
+        self.assertAlmostEqual(path["projected_stop_progress_m"] - 0.30, 0.0346143, places=5)
+        self.assertLess(gates["endpoint_error_to_acceptance_goal_m"], 0.05)
+        self.assertLess(gates["terminal_entry_error_to_acceptance_goal_m"], 0.05)
+        self.assertLess(gates["maximum_lateral_error_to_requested_stop_line_m"], 0.05)
+        self.assertAlmostEqual(gates["terminal_pre_stop_yaw_bias_rad"], 0.115)
+
     def test_pure_pursuit_command_sign_and_cap_for_both_turn_directions(self) -> None:
         left = pure_pursuit_yaw_rate(
             current_x_m=0.0, current_y_m=0.0, current_yaw_rad=0.0,
@@ -242,19 +273,19 @@ class TerminalYawControlTests(unittest.TestCase):
         self.assertLess(worst_predicted_final_error, final_tolerance)
         self.assertAlmostEqual(final_tolerance - worst_predicted_final_error, 0.0213100865, places=6)
 
-    def test_terminal_bias_respects_requested_turn_direction_only_for_run95_drift(self) -> None:
+    def test_terminal_bias_respects_requested_turn_direction_only_for_run96_drift(self) -> None:
         requested_change = -0.10
         minimum_change = math.radians(5.0)
         worst_internal_error = POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD
-        run95_final_change = (
+        run96_final_change = (
             requested_change
             - POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD
-            + POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD
+            + POSE_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD
             + worst_internal_error
         )
-        self.assertAlmostEqual(POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD, 0.10)
-        self.assertLessEqual(run95_final_change, -minimum_change)
-        self.assertAlmostEqual(-minimum_change - run95_final_change, 0.0041199, places=4)
+        self.assertAlmostEqual(POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD, 0.115)
+        self.assertLessEqual(run96_final_change, -minimum_change)
+        self.assertAlmostEqual(-minimum_change - run96_final_change, 0.0043146, places=4)
 
         high_drift_final_change = (
             requested_change

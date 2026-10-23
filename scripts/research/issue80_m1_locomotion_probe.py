@@ -65,6 +65,7 @@ from issue80_coordinated_pose_goal import (
     POSE_GOAL_APPROACH_WARMUP_S,
     POSE_GOAL_CURVE_ANGULAR_UTILIZATION,
     POSE_GOAL_CURVE_FORWARD_M_S,
+    POSE_GOAL_HEADING_STOP_ADVANCE_M,
     POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M,
     POSE_GOAL_WARMUP_FORWARD_M_S,
     POSE_GOAL_LOOKAHEAD_FRACTION,
@@ -76,7 +77,7 @@ from issue80_coordinated_pose_goal import (
     POSE_GOAL_PRESTOP_YAW_MARGIN_RAD,
     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
     POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
-    POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD,
+    POSE_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD,
     POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD,
     POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD,
     active_locomotion_readback_confirmed,
@@ -128,7 +129,7 @@ POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 # speed, then crossed the unchanged 50 mm position gate before the 0.4 s pose
 # dwell. Begin terminal control at the goal line to preserve the existing
 # positional margin while the measured yaw response settles.
-POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.0
+POINT_GOAL_HEADING_STOP_ADVANCE_M = POSE_GOAL_HEADING_STOP_ADVANCE_M
 POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
 POINT_GOAL_MAX_YAW_RATE_FEEDBACK_AGE_S = 0.15
 POINT_GOAL_POSE_LOOKAHEAD_FRACTION = POSE_GOAL_LOOKAHEAD_FRACTION
@@ -1274,6 +1275,7 @@ class FocusedM1Diagnostic(Node):
                     stop_pose,
                     path_yaw,
                     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+                    acceptance_pose=goal,
                     terminal_pre_stop_yaw_bias_rad=POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
                     warmup_duration_s=POINT_GOAL_HEADING_CHANGE_WARMUP_S,
                     warmup_forward_m_s=POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S,
@@ -1288,6 +1290,8 @@ class FocusedM1Diagnostic(Node):
                     pose_goal_path_feasibility["endpoint_position_error_m"] > POINT_GOAL_FINAL_TOLERANCE_M
                     or pose_goal_path_feasibility["maximum_lateral_error_to_requested_stop_line_m"]
                     > POINT_GOAL_MAX_LATERAL_ERROR_M
+                    or pose_goal_path_feasibility["terminal_entry_error_to_acceptance_goal_m"]
+                    > POINT_GOAL_FINAL_TOLERANCE_M
                     or not pose_goal_path_feasibility["terminal_residual_and_dwell_fit"]
                 ):
                     return {
@@ -2067,12 +2071,12 @@ class FocusedM1Diagnostic(Node):
                     ["ee98c557-ef2d-4db8-b1c9-15aa811bafce"] if has_heading_target else None
                 ),
                 "pose_goal_terminal_bias_drift_observation_rad": (
-                    POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD if has_heading_target else None
+                    POSE_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD if has_heading_target else None
                 ),
                 "pose_goal_terminal_direction_margin_rad": (
                     abs(heading_change_rad)
                     + POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD
-                    - POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD
+                    - POSE_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD
                     - POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD
                     - TURN_MIN_HEADING_CHANGE_RAD
                     if has_heading_target else None
@@ -2088,7 +2092,7 @@ class FocusedM1Diagnostic(Node):
                     POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD if has_heading_target else None
                 ),
                 "pose_goal_approach_path_terminal_heading_policy": (
-                    "approach endpoint uses 0.05 rad bias to keep its curve feasible; terminal target uses a separate 0.10 rad bias derived from Run95 drift and the 5-degree minimum requested-turn gate; not calibrated across Runs93/94"
+                    "approach endpoint uses 0.05 rad bias to keep its curve feasible; terminal target uses a separate 0.115 rad bias derived from Run96 drift and the 5-degree minimum requested-turn gate; not calibrated across Runs93/95"
                     if has_heading_target else None
                 ),
                 "pose_goal_post_stop_drift_basis_attempt_ids": (
@@ -2620,12 +2624,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD if has_heading_target else None
             ),
             "pose_goal_terminal_bias_drift_observation_rad": (
-                POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD if has_heading_target else None
+                POSE_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD if has_heading_target else None
             ),
             "pose_goal_terminal_direction_margin_rad": (
                 abs(heading_change)
                 + POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD
-                - POSE_GOAL_RUN95_POST_STOP_YAW_DRIFT_RAD
+                - POSE_GOAL_RUN96_POST_STOP_YAW_DRIFT_RAD
                 - POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD
                 - TURN_MIN_HEADING_CHANGE_RAD
                 if has_heading_target else None
@@ -2656,7 +2660,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M if has_heading_target else None
             ),
             "pose_goal_approach_path_terminal_heading_policy": (
-                "approach endpoint uses 0.05 rad bias to keep its curve feasible; terminal target uses a separate 0.10 rad bias derived from Run95 drift and the 5-degree minimum requested-turn gate; not calibrated across Runs93/94"
+                "approach endpoint uses 0.05 rad bias to keep its curve feasible; terminal target uses a separate 0.115 rad bias derived from Run96 drift and the 5-degree minimum requested-turn gate; not calibrated across Runs93/95"
                 if has_heading_target else None
             ),
             "extra_stop_observation_s": float(args.extra_stop_observation),

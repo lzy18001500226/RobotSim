@@ -84,8 +84,10 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
         self.assertIn("coordinated-pose", heading["heading_policy"])
         self.assertIn("yaw-only terminal", heading["pose_goal_terminal_control"])
         self.assertEqual(heading["pose_goal_post_stop_yaw_drift_compensation_rad"], 0.05)
-        self.assertEqual(heading["pose_goal_terminal_pre_stop_yaw_bias_rad"], 0.10)
-        self.assertAlmostEqual(heading["pose_goal_terminal_direction_margin_rad"], 0.0041, places=4)
+        self.assertEqual(heading["pose_goal_terminal_pre_stop_yaw_bias_rad"], 0.115)
+        self.assertAlmostEqual(heading["pose_goal_terminal_direction_margin_rad"], 0.004315, places=4)
+        self.assertEqual(heading["heading_goal_stop_advance_m"], 0.025)
+        self.assertEqual(heading["pose_goal_curve_forward_command_m_s"], 0.13)
         self.assertEqual(heading["pose_goal_terminal_setpoint_tolerance_rad"], 0.01)
         self.assertIn("0.05 rad approach-path bias", heading["pose_goal_approach_path_terminal_heading_policy"])
         self.assertIn("disabled", heading["angular_taper_policy"])
@@ -96,6 +98,18 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
         self.assertEqual(point["angular_taper_start_predicted_error_m"], 0.25)
         self.assertEqual(point["angular_taper_end_predicted_error_m"], 0.05)
         self.assertIn("Run73 position-bearing", point["heading_policy"])
+
+    def test_heading_profile_child_command_propagates_shared_stop_advance(self) -> None:
+        args = valid_profile(
+            heading_change_rad=-0.10,
+            extra_stop_observation=7.0,
+            pulse_duration=10.0,
+            run65_ground_truth_point_goal=True,
+            attempt_id="profile-propagation-test",
+        )
+        command = runner.build_m1_child_command(args, "offline-validation-only")[-1]
+        self.assertIn("--heading-goal-stop-advance-m 0.025", command)
+        self.assertEqual(runner.POINT_GOAL_HEADING_STOP_ADVANCE_M, 0.025)
 
     def test_cli_point_goal_flag_uses_the_unified_execution_field(self) -> None:
         parser = argparse.ArgumentParser()

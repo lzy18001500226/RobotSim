@@ -584,6 +584,7 @@ def _counterfactual_pose_replay(
             candidate_reference_stop,
             target_yaw,
             drift_compensation,
+            acceptance_pose=target_pose,
             terminal_pre_stop_yaw_bias_rad=POSE_GOAL_TERMINAL_PRESTOP_YAW_BIAS_RAD,
             warmup_duration_s=POSE_GOAL_APPROACH_WARMUP_S,
             warmup_forward_m_s=POSE_GOAL_WARMUP_FORWARD_M_S,
