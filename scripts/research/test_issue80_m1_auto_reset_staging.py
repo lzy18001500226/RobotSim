@@ -16,6 +16,7 @@ from pathlib import Path
 
 from issue80_m1_auto_reset_run import (
     BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, MC_RL_DEBUG_CAPTURE,
+    POSE_GOAL_CONTROLLER,
     SET_ACTION_CAPTURE, SIM_LAUNCH,
     assess_container_absence, build_m1_child_command, classify_first_motion_outcome, classify_run38_diagnostic_outcome,
     decode_m1_child_result,
@@ -60,10 +61,10 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(option("--extra-stop-observation"), "7.0")
         self.assertEqual(option("--heading-change-rad"), "-0.1")
         self.assertEqual(option("--final-yaw-tolerance-rad"), "0.17")
-        self.assertEqual(option("--heading-control-policy"), "target-yaw")
+        self.assertEqual(option("--heading-control-policy"), "coordinated-pose")
         self.assertEqual(option("--heading-goal-stop-advance-m"), "0.035")
         self.assertEqual(option("--heading-goal-predicted-stop-tolerance-m"), "0.005")
-        self.assertEqual(option("--heading-yaw-rate-prediction-horizon-s"), "1.0")
+        self.assertNotIn("--heading-yaw-rate-prediction-horizon-s", child_argv)
         self.assertIn("--point-goal-diagnostic", child_argv)
         self.assertIn("--zero-only-stop", child_argv)
         self.assertEqual(option("--max-observed-planar-speed-m-s"), "0.2")
@@ -447,6 +448,18 @@ class ResearchScriptStagingTests(unittest.TestCase):
             manifest = json.loads((evidence / "staged_research_scripts.json").read_text())
             record = next(row for row in manifest["scripts"] if row["name"] == M1_FIRST_MOTION_LOGIC.name)
             self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
+
+    def test_stages_coordinated_pose_goal_controller_and_records_its_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.stage_research_scripts()
+            staged = evidence / POSE_GOAL_CONTROLLER.name
+            self.assertEqual(staged.read_bytes(), POSE_GOAL_CONTROLLER.read_bytes())
+            manifest = json.loads((evidence / "staged_research_scripts.json").read_text())
+            record = next(row for row in manifest["scripts"] if row["name"] == POSE_GOAL_CONTROLLER.name)
+            self.assertEqual(record["sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
+            self.assertEqual(record["disposition"], "COPIED")
 
     def test_stages_mc_rl_debug_capture_sidecar_and_records_its_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

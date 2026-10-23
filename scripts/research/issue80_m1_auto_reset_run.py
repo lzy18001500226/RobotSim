@@ -34,6 +34,7 @@ X11_HELPER = Path(__file__).with_name("issue80_mujoco_x11_reset.py")
 WINDOWS_FOCUS_HELPER = Path(__file__).with_name("issue80_mujoco_windows_focus.ps1")
 ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
+POSE_GOAL_CONTROLLER = Path(__file__).with_name("issue80_coordinated_pose_goal.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 M1_FIRST_MOTION_LOGIC = Path(__file__).with_name("issue80_m1_first_motion.py")
 SET_ACTION_CAPTURE = Path(__file__).with_name("issue80_m1_set_action_capture.py")
@@ -54,7 +55,6 @@ POINT_GOAL_MAX_HEADING_CHANGE_RAD = 0.20
 POINT_GOAL_FINAL_YAW_TOLERANCE_RAD = 0.17
 POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.035
 POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
-POINT_GOAL_HEADING_RATE_PREDICTION_HORIZON_S = 1.0
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
@@ -276,14 +276,14 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
     return {
         "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
         "heading_policy": (
-            "Run73 position-bearing for point goals; target-yaw tracking for heading-change goals"
+            "Run73 position-bearing for point goals; coordinated-pose path and terminal yaw control for heading-change goals"
         ),
         "heading_control_for_pose_goal": (
-            "track target yaw without terminal angular taper" if has_heading_target
+            "cubic-Hermite start-to-goal path, then bounded forward-zero yaw-only terminal rate control" if has_heading_target
             else "not applicable; position-only point goal"
         ),
         "angular_taper_policy": (
-            "disabled for heading-change goal" if has_heading_target
+            "disabled for coordinated pose goals; path curvature supplies approach heading" if has_heading_target
             else "linear from predicted settled error 0.25 m to 0.05 m position tolerance"
         ),
         "angular_taper_start_predicted_error_m": (
@@ -303,8 +303,9 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
         "heading_goal_predicted_stop_tolerance_m": (
             POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M if has_heading_target else None
         ),
-        "heading_yaw_rate_prediction_horizon_s": (
-            POINT_GOAL_HEADING_RATE_PREDICTION_HORIZON_S if has_heading_target else None
+        "pose_goal_terminal_control": (
+            "yaw-only terminal: 0.0 m/s forward, <=0.075 rad/s angular, <=3 s, target error + measured-rate damping; dwell 0.4 s"
+            if has_heading_target else None
         ),
     }
 
@@ -312,7 +313,7 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
 def run65_child_heading_policy(args: argparse.Namespace) -> str:
     """Select the exact child controller branch for the requested goal type."""
     return (
-        "target-yaw"
+        "coordinated-pose"
         if abs(float(getattr(args, "heading_change_rad", 0.0))) > 1e-9
         else "position-bearing"
     )
@@ -384,14 +385,12 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             + " --heading-control-policy "
             + run65_child_heading_policy(args)
         )
-        if run65_child_heading_policy(args) == "target-yaw":
+        if run65_child_heading_policy(args) == "coordinated-pose":
             command[-1] += (
                 " --heading-goal-stop-advance-m "
                 + str(POINT_GOAL_HEADING_STOP_ADVANCE_M)
                 + " --heading-goal-predicted-stop-tolerance-m "
                 + str(POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M)
-                + " --heading-yaw-rate-prediction-horizon-s "
-                + str(POINT_GOAL_HEADING_RATE_PREDICTION_HORIZON_S)
             )
     return command
 
@@ -1152,6 +1151,7 @@ class BoundedRun:
             (WINDOWS_FOCUS_HELPER, WINDOWS_FOCUS_HELPER.name),
             (ANALYZER, ANALYZER.name),
             (M1_RUNNER, M1_RUNNER.name),
+            (POSE_GOAL_CONTROLLER, POSE_GOAL_CONTROLLER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
             (SET_ACTION_CAPTURE, SET_ACTION_CAPTURE.name),

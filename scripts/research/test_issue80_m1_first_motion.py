@@ -2598,6 +2598,21 @@ class PhysicalStopGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("stable_window_too_short", result["final_window_violations"])
 
+    def test_physical_gate_preserves_the_exact_run91_joint_target_range_limit(self):
+        rows = self._fixture()
+        for row in rows:
+            if row.get("phase") != "post-stop" or row["sample_monotonic_s"] < 6.0:
+                continue
+            elapsed = min(1.0, max(0.0, (row["sample_monotonic_s"] - 6.0) / 2.0))
+            row["mc_leg_command"]["joints"][0]["position"] += 0.0201174392 * elapsed
+        result = evaluate_physical_stop_gate(
+            rows, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("joint_target_not_settled", result["final_window_violations"])
+        self.assertEqual(result["criteria"]["max_leg_target_range_rad"], 0.02)
+
     def test_recovered_source_readback_requires_a_new_complete_two_second_hold(self):
         rows = self._fixture()
         rows.extend(self._sample(t / 20.0) for t in range(161, 166))

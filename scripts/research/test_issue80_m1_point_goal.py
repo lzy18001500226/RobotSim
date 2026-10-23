@@ -19,8 +19,6 @@ from issue80_m1_first_motion import (
     point_goal_command_from_bearing_error,
     point_goal_angular_taper_factor, point_goal_forward_speed_m_s,
     point_goal_heading_error_rad, point_goal_pose_angular_taper_factor,
-    point_goal_pose_heading_error_rad,
-    predicted_pose_yaw_error_rad,
     point_goal_stop_reason, speed_scaled_point_goal_stop_advance_m,
     stale_readback_keys,
 )
@@ -83,7 +81,8 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
         self.assertEqual(heading["post_stop_observation_s"], 7.0)
         self.assertIsNone(heading["angular_taper_start_predicted_error_m"])
         self.assertIsNone(heading["angular_taper_end_predicted_error_m"])
-        self.assertIn("target-yaw tracking", heading["heading_policy"])
+        self.assertIn("coordinated-pose", heading["heading_policy"])
+        self.assertIn("yaw-only terminal", heading["pose_goal_terminal_control"])
         self.assertIn("disabled", heading["angular_taper_policy"])
 
         point = runner.run65_point_goal_profile_metadata(valid_profile())
@@ -367,53 +366,9 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         self.assertEqual(forward, 0.14)
         self.assertAlmostEqual(angular, 0.064, places=12)
 
-    def test_heading_change_goal_tracks_requested_yaw_not_endpoint_bearing(self) -> None:
-        error = point_goal_pose_heading_error_rad(
-            current_yaw_rad=0.05,
-            goal_dx_m=1.0,
-            goal_dy_m=0.2,
-            target_yaw_rad=-0.05,
-        )
-        self.assertAlmostEqual(error, -0.1, places=12)
-        self.assertGreater(
-            point_goal_heading_error_rad(
-                current_yaw_rad=0.05,
-                goal_dx_m=1.0,
-                goal_dy_m=0.2,
-            ),
-            0.0,
-        )
-        self.assertEqual(point_goal_command_from_bearing_error(error), (0.14, -0.075))
-
     def test_heading_target_retains_terminal_angular_authority(self) -> None:
         self.assertEqual(point_goal_pose_angular_taper_factor(0.05, has_heading_target=True), 1.0)
         self.assertEqual(point_goal_pose_angular_taper_factor(0.05, has_heading_target=False), 0.0)
-
-    def test_yaw_rate_prediction_brakes_a_lagging_turn_before_target_crossing(self) -> None:
-        instantaneous = point_goal_pose_heading_error_rad(
-            current_yaw_rad=-0.05,
-            goal_dx_m=1.0,
-            goal_dy_m=0.0,
-            target_yaw_rad=-0.05,
-        )
-        predicted = predicted_pose_yaw_error_rad(
-            current_yaw_rad=-0.05,
-            measured_yaw_rate_rad_s=-0.05,
-            target_yaw_rad=-0.05,
-            prediction_horizon_s=1.0,
-        )
-        self.assertAlmostEqual(instantaneous, 0.0, places=12)
-        self.assertAlmostEqual(predicted, 0.05, places=12)
-        forward, angular = point_goal_command_from_bearing_error(predicted)
-        self.assertAlmostEqual(forward, 0.14, places=12)
-        self.assertAlmostEqual(angular, 0.04, places=12)
-        with self.assertRaisesRegex(ValueError, "finite and horizon nonnegative"):
-            predicted_pose_yaw_error_rad(
-                current_yaw_rad=0.0,
-                measured_yaw_rate_rad_s=0.0,
-                target_yaw_rad=0.0,
-                prediction_horizon_s=-0.1,
-            )
 
     def test_heading_change_starts_with_validated_forward_warmup_before_turning(self) -> None:
         self.assertEqual(
@@ -558,6 +513,7 @@ class PointGoalAcceptanceTests(unittest.TestCase):
                 "termination_condition_triggered_stop": True,
                 "measured_physical_motion": True,
                 "same_sample_source_locomotion_handshake": True,
+                "terminal_pose_ready_before_zero": True,
                 "independent_physical_stop_gate": True,
                 "zero_stop_stream_minimum": True,
             },
@@ -595,6 +551,12 @@ class PointGoalAcceptanceTests(unittest.TestCase):
         )
         failed_gate = self.passing_result()
         failed_gate["activation"]["zero_stop"]["zero_publish_calls_returned"] = 49
+        self.assertEqual(
+            runner.classify_point_goal_result(failed_gate),
+            "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_BLOCKED",
+        )
+        failed_gate = self.passing_result()
+        failed_gate["acceptance_gates"]["terminal_pose_ready_before_zero"] = False
         self.assertEqual(
             runner.classify_point_goal_result(failed_gate),
             "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_BLOCKED",
