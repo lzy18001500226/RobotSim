@@ -62,7 +62,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(option("--heading-change-rad"), "-0.1")
         self.assertEqual(option("--final-yaw-tolerance-rad"), "0.17")
         self.assertEqual(option("--heading-control-policy"), "coordinated-pose")
-        self.assertEqual(option("--heading-goal-stop-advance-m"), "0.035")
+        self.assertEqual(option("--heading-goal-stop-advance-m"), "0.0")
         self.assertEqual(option("--heading-goal-predicted-stop-tolerance-m"), "0.005")
         self.assertNotIn("--heading-yaw-rate-prediction-horizon-s", child_argv)
         self.assertIn("--point-goal-diagnostic", child_argv)

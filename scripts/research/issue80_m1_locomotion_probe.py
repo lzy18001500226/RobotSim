@@ -110,11 +110,11 @@ POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S = TURN_FORWARD_COMMAND_M_S
 # general or vendor FoundationWalk braking model.
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
-# Run88 measured a -65.99 mm net path-axis displacement from zero publication
-# through settling. Add only 35 mm before stopping (15 mm inside the unchanged
-# +50 mm overshoot guard) and require the controller to reach that line instead
-# of firing the broad 50 mm predicted-endpoint trigger early.
-POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.035
+# Run92 entered terminal control at 43.4 mm goal error with 84 mm/s forward
+# speed, then crossed the unchanged 50 mm position gate before the 0.4 s pose
+# dwell. Begin terminal control at the goal line to preserve the existing
+# positional margin while the measured yaw response settles.
+POINT_GOAL_HEADING_STOP_ADVANCE_M = 0.0
 POINT_GOAL_HEADING_PREDICTED_STOP_TOLERANCE_M = 0.005
 POINT_GOAL_MAX_YAW_RATE_FEEDBACK_AGE_S = 0.15
 POINT_GOAL_POSE_LOOKAHEAD_FRACTION = POSE_GOAL_LOOKAHEAD_FRACTION
@@ -1296,7 +1296,7 @@ class FocusedM1Diagnostic(Node):
             )
             if has_heading_target:
                 stop_advance = float(heading_goal_stop_advance_m)
-                stop_model = "run88_measured_reverse_recovery_margin_for_coordinated_pose"
+                stop_model = "run92_measured_terminal_entry_position_margin"
             else:
                 stop_advance = speed_scaled_point_goal_stop_advance_m(
                     measured_forward_speed,
@@ -1857,15 +1857,19 @@ class FocusedM1Diagnostic(Node):
                 "limitation": "two SIMULATION_ONLY endpoint observations define an experiment-specific linear fit; early-stop behavior remains unverified after the one authorized 10-second trial; final position and physical stop gates remain authoritative",
             },
             "heading_goal_stop_model": {
-                "policy": "run88_measured_reverse_recovery_margin",
+                "policy": "run92_measured_terminal_entry_position_margin",
                 "stop_line_progress_m": POINT_GOAL_DISTANCE_M + float(heading_goal_stop_advance_m),
                 "forward_advance_from_goal_m": heading_goal_stop_advance_m,
                 "predicted_early_stop_tolerance_m": heading_goal_predicted_stop_tolerance_m,
-                "basis_attempt_id": "7705a962-1601-43dc-9c69-a70354d9ce4c",
-                "measured_zero_to_settled_path_axis_displacement_m": -0.06598979752750032,
+                "basis_attempt_id": "b56aed69-193d-4f9a-a083-dbd9f6b6b4c3",
+                "measured_terminal_entry_position_error_m": 0.04340987581979005,
+                "measured_forward_speed_at_terminal_entry_m_s": 0.084330597482439,
+                "measured_terminal_position_guard_time_s": 0.309839665,
+                "measured_zero_to_settled_lateral_displacement_m": 0.04194785987483458,
+                "measured_zero_to_settled_path_length_m": 0.10288167474263706,
                 "overshoot_guard_m": POINT_GOAL_MAX_OVERSHOOT_M,
                 "margin_to_overshoot_guard_m": POINT_GOAL_MAX_OVERSHOOT_M - float(heading_goal_stop_advance_m),
-                "classification": "SIMULATION_ONLY_DERIVED_SINGLE_HEADING_GOAL_OBSERVATION",
+                "classification": "SIMULATION_ONLY_DERIVED_RUN92_FAILURE_MEASUREMENT",
             } if has_heading_target else None,
             "postwalk_stand_action": (
                 "STAND_DEFAULT requested after the bounded zero stream; require measured readback and physical stop gate"
