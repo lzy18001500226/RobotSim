@@ -84,6 +84,9 @@ class GripperContract:
     command_max: float
     open_value: float
     close_value: float
+    joint_names: tuple[str, ...]
+    commanded_joint_names: tuple[str, ...]
+    derived_joint_constraints: Mapping[str, str]
     source_joint_limits_rad: Mapping[str, tuple[float, float]]
     open_joint_positions_rad: Mapping[str, float]
     close_profile_open_to_close: tuple[JointCommandProfile, ...]
@@ -110,12 +113,23 @@ class GripperContract:
             raise FeasibilityError("opposing pad groups named narrow and wide are required")
         if not all(self.pad_geoms_by_side.values()) or not self.linkage_geom_names:
             raise FeasibilityError("pad and linkage collision geometry names are required")
-        if not self.source_joint_limits_rad:
-            raise FeasibilityError("source joint limit map is required")
+        names = set(self.joint_names)
+        commanded = set(self.commanded_joint_names)
+        derived = set(self.derived_joint_constraints)
+        if not names or len(names) != len(self.joint_names):
+            raise FeasibilityError("gripper joint_names must be nonempty and unique")
+        if not commanded or len(commanded) != len(self.commanded_joint_names) or not commanded <= names:
+            raise FeasibilityError("commanded joint inventory is invalid")
+        if (not derived <= names or commanded & derived or commanded | derived != names
+                or any(not value for value in self.derived_joint_constraints.values())):
+            raise FeasibilityError("every non-commanded joint must name its mimic/equality/loop constraint")
+        if not commanded <= set(self.source_joint_limits_rad) or not set(self.source_joint_limits_rad) <= names:
+            raise FeasibilityError("each commanded joint needs a source range; other declared ranges must belong to this gripper")
         all_geoms = self.all_collision_geom_names
         if len(all_geoms) != len(set(all_geoms)):
             raise FeasibilityError("gripper collision geom groups must not overlap or duplicate names")
-        _validate_complete_joint_map(self.open_joint_positions_rad, self.source_joint_limits_rad, "open")
+        _validate_complete_joint_map(self.open_joint_positions_rad, self.joint_names,
+                                     self.source_joint_limits_rad, derived, "open")
         if len(self.close_profile_open_to_close) < 2:
             raise FeasibilityError("closure profile must include open and close endpoints")
         profile = self.close_profile_open_to_close
@@ -130,7 +144,8 @@ class GripperContract:
         for sample in profile:
             if not math.isfinite(sample.command_value) or not self.command_min <= sample.command_value <= self.command_max:
                 raise FeasibilityError("closure command outside supplied range")
-            _validate_complete_joint_map(sample.joint_positions_rad, self.source_joint_limits_rad, "closure")
+            _validate_complete_joint_map(sample.joint_positions_rad, self.joint_names,
+                                         self.source_joint_limits_rad, derived, "closure")
         progress = [(x.command_value-self.open_value)/direction for x in profile]
         if progress[0] != 0.0 or progress[-1] != 1.0 or any(b <= a for a, b in zip(progress, progress[1:])):
             raise FeasibilityError("closure commands must progress monotonically from open to close")
@@ -141,10 +156,15 @@ class GripperContract:
             self.linkage_geom_names) + tuple(self.other_gripper_geom_names)
 
 
-def _validate_complete_joint_map(values: Mapping[str, float], limits: Mapping[str, tuple[float, float]], label: str) -> None:
-    if set(values) != set(limits):
-        raise FeasibilityError(f"{label} joint map must provide every and only supplied gripper joint")
+def _validate_complete_joint_map(values: Mapping[str, float], joint_names: tuple[str, ...],
+                                 limits: Mapping[str, tuple[float, float]], derived: set[str], label: str) -> None:
+    if set(values) != set(joint_names):
+        raise FeasibilityError(f"{label} joint map must provide every and only named gripper joint")
     for name, value in values.items():
+        if name not in limits:
+            if name not in derived or not math.isfinite(float(value)):
+                raise FeasibilityError(f"joint {name} lacks a source range and a declared derived constraint")
+            continue
         lo, hi = limits[name]
         if not all(math.isfinite(float(v)) for v in (lo, hi, value)) or lo >= hi:
             raise FeasibilityError(f"invalid source joint range/value for {name}")

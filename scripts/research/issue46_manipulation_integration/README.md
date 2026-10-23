@@ -8,7 +8,7 @@ This directory is a **research-only, transport-neutral** prototype. It contains 
 - `validate_ik_waypoints()` checks ordered joint names, source limits/margins, IK residuals, progress, and optional per-sample joint steps. It validates an IK witness; it does not prove dynamic arm tracking.
 - `evaluate_gripper_feasibility()` requires a fresh object pose, a complete model-identified collision-pair inventory at each path sample, and all enabled gripper/object pair checks during closure. It rejects missing/incomplete geometry, collision/clearance failures, unavailable bilateral pad reach, out-of-range joints, wrong object-local contact band, unverified open/close range, and linkage-first interference. Contact-band checks project recorded pad contact points onto the supplied object-local axis; they are not caller-supplied booleans.
 - `PASS_STATIC_GEOMETRY` means only a complete static geometry witness passed the supplied thresholds. It says nothing about contact force, friction, stable hold, table unloading, lifting, transfer, release, placement, or settle.
-- Passive/follower values in `JointCommandProfile` describe evaluated kinematic state only. They do not authorize direct follower actuation or qpos writes. The contract requires a range-evidence reference and explicit static-range verification status.
+- Passive/follower values in `JointCommandProfile` describe evaluated kinematic state only. They do not authorize direct follower actuation or qpos writes. `GripperContract` separates commanded joints from derived joints and records the constraint name for each derived joint; derived coordinates need not have independent actuator limits. The contract requires a range-evidence reference and explicit static-range verification status.
 
 ## Pose, time, and frame contract
 
@@ -46,6 +46,34 @@ env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin
 ```
 
 The audit verifies the source evidence manifest and hashes, compiles the saved MJCF to check model identity and joint limits, validates the stored IK target sequence, and reconciles its collision CSV. It invokes no `mj_forward`, `mj_step`, `mj_step1`, or `mj_step2`; it changes no model file and no qpos. A new unique evidence directory is created under canonical `reviews/issue-46/` with `REPORT.md`, `result.json`, `REPRODUCE.md`, and `artifact_paths.json`.
+
+## PR #90 gripper in the full-X2 static preflight
+
+The maintainer-reported isolated unloaded dynamic validation for PR #90 used MuJoCo 3.3.6 for 17,500 steps, completed 2% HOLD -> 100% OPEN -> HOLD -> 2% CLOSE -> HOLD, and measured a 90.999 mm open five-section minimum, 12.831 mm closed-side minimum, and 0.015576 rad maximum root tracking error against the unchanged 0.02 rad limit. This establishes isolated unloaded opening/closing only.
+
+The full-X2 bottle feasibility audit is separate and remains BLOCKED_STATIC:
+
+- Exact PR #90 head facdaa0d6e5f8152168d2e812d864b660eac9f96 and isolated MJCF SHA 32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45 were used read-only.
+- The old full-X2 model SHA is 0eadbaf8dff1968c5cab2d9892c140107368d0bc66b835d67df1da79037bad01. The generated static overlay SHA is fad9ae69ba99f1c8e5efd00f78a9571e9ccc04f48c7a10513ae711187718c302. Only the two q2 equalities changed.
+- PR #90 and old/new full-X2 collision proxy inventories have identical 137 collision-mesh hash records. The official right wrist mount and 32-actuator full-body model are preserved.
+- The 70 mm by 230 mm, 0.550 kg upright cylinder's top-down path is blocked at the first hover sample by R_hand_wide_loop_Link__wide_loop_Link_coacd_02 against test_cylinder_collision at -1.051 mm. The sampled path minimum is -8.315 mm.
+- An existing side/oblique full-X2 route is also blocked by narrow1-to-wide3 self-clearance of 0 mm.
+- With the gripper fully open at the selected grasp pose, linkage-loop clearance is -8.299 mm and other-gripper clearance is -2.729 mm. No bilateral pad proximity lies within the 10 mm mid-body band; the loop is already intersecting before closure. A closed-end narrow3/wide3 collision reaches 1.752 mm penetration.
+- A bounded five-variant static IK screen also failed to find a clear path: +20 mm contact height and +15 degree wrist yaw had source-valid IK but collided; -20 mm contact height, -15 degree yaw, and a 50 mm higher hover did not produce an IK witness under the source limits and bounded solver. This is not a proof that no other pose exists.
+- Physics steps remain zero for both full-X2 static screens. GRASP, LIFT, TRANSFER, RELEASE, PLACE, and SETTLE remain NOT RUN.
+
+Full-X2 evidence:
+
+- Main audit: /home/lzy18001500226/projects/RobotSim/reviews/issue-46/pr90-quartic-full-x2-static-20261023T144705Z/
+- Bounded pose screen: /home/lzy18001500226/projects/RobotSim/reviews/issue-46/pr90-bounded-pose-static-20261023T143942Z/
+
+Reproduction commands:
+
+    cd /home/lzy18001500226/robotsim-issue46-manipulation-integration-local02-20261023
+    env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/audit_pr90_full_x2_static.py
+    env PYTHONDONTWRITEBYTECODE=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46_manipulation_integration/audit_pr90_bounded_pose_variants.py
+
+These are static IK and geometry checks using mj_forward and collision-distance queries. No bottle-grasp dynamics were launched. PR #90 and PR #91 remain separate, open Draft review branches; Issue #46 remains open.
 
 ## Resume conditions
 

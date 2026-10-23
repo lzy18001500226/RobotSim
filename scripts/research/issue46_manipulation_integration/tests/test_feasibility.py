@@ -15,7 +15,7 @@ def make_case(*, linkage_first=False, blocked_approach=False, pad_reachable=True
     obj = ObjectGeometry("bottle-1", "cylinder", (0.070, 0.230), "bottle_link",
                          ("bottle_collision",), 0.55)
     band = ContactBand("bottle_link", (0, 0, 1), -0.04, 0.04)
-    limits = {"root_joint": (-1.0, 0.0), "follower_joint": (-1.0, 1.0)}
+    limits = {"root_joint": (-1.0, 0.0)}
     profiles = (
         JointCommandProfile(0, 0.0, {"root_joint": 0.0, "follower_joint": 0.0}),
         JointCommandProfile(1, -0.5, {"root_joint": -0.5, "follower_joint": 0.5}),
@@ -23,6 +23,7 @@ def make_case(*, linkage_first=False, blocked_approach=False, pad_reachable=True
     )
     gripper = GripperContract(
         "candidate-b-static@sha", "root_joint", -1.0, 0.0, 0.0, -1.0,
+        ("root_joint", "follower_joint"), ("root_joint",), {"follower_joint": "mimic-equality"},
         limits, profiles[0].joint_positions_rad, profiles, "candidate-b-kinematic-range.json", True,
         {"narrow": ("narrow_pad",), "wide": ("wide_pad",)},
         ("link_loop",),
