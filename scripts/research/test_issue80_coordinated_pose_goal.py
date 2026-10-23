@@ -16,6 +16,7 @@ from issue80_coordinated_pose_goal import (
     compensated_terminal_yaw_target_rad,
     fresh_yaw_rate_feedback,
     pose_path_reference,
+    pose_path_target_with_yaw_compensation,
     pure_pursuit_yaw_rate,
     terminal_yaw_rate_command,
 )
@@ -57,6 +58,16 @@ class PosePathTests(unittest.TestCase):
         self.assertLess(negative["curvature_per_m"], 0.0)
         self.assertGreater(positive["curvature_per_m"], 0.0)
         self.assertAlmostEqual(negative["curvature_per_m"], -positive["curvature_per_m"], places=10)
+
+    def test_approach_path_endpoint_uses_drift_compensated_yaw_but_keeps_position(self) -> None:
+        start, goal = self.make_goal(-0.10)
+        compensated = pose_path_target_with_yaw_compensation(goal, 0.16)
+        endpoint = pose_path_reference(start, compensated, 1.0)
+        self.assertAlmostEqual(compensated["x"], goal["x"], places=12)
+        self.assertAlmostEqual(compensated["y"], goal["y"], places=12)
+        expected = math.atan2(math.sin(goal["yaw"] - 0.16), math.cos(goal["yaw"] - 0.16))
+        self.assertAlmostEqual(compensated["yaw"], expected, places=12)
+        self.assertAlmostEqual(endpoint["tangent_yaw_rad"], expected, places=12)
 
     def test_pure_pursuit_command_sign_and_cap_for_both_turn_directions(self) -> None:
         left = pure_pursuit_yaw_rate(

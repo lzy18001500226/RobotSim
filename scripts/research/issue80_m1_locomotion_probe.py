@@ -74,6 +74,7 @@ from issue80_coordinated_pose_goal import (
     compensated_terminal_yaw_target_rad,
     fresh_yaw_rate_feedback,
     pose_path_reference,
+    pose_path_target_with_yaw_compensation,
     pure_pursuit_yaw_rate,
     terminal_yaw_rate_command,
 )
@@ -1434,6 +1435,7 @@ class FocusedM1Diagnostic(Node):
             path_reference = None
             carrot_reference = None
             pure_pursuit = None
+            approach_yaw_target = None
             heading_warmup_active = (
                 has_heading_target
                 and pose_phase == APPROACH
@@ -1462,7 +1464,11 @@ class FocusedM1Diagnostic(Node):
                 state["pose_goal_terminal_control_samples"] += 1
                 control_heading_error = float(terminal_control["yaw_error_rad"])
             elif has_heading_target:
-                path_target_pose = dict(goal)
+                path_target_pose = pose_path_target_with_yaw_compensation(
+                    goal,
+                    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+                )
+                approach_yaw_target = float(path_target_pose["yaw"])
                 dynamic_stop_pose = point_metrics["dynamic_stop_target_pose"]
                 path_target_pose["x"] = float(dynamic_stop_pose["x"])
                 path_target_pose["y"] = float(dynamic_stop_pose["y"])
@@ -1547,6 +1553,7 @@ class FocusedM1Diagnostic(Node):
                     float(terminal_control["yaw_error_rad"])
                     if has_heading_target and pose_phase == TERMINAL_POSE_CONTROL else None
                 ),
+                "approach_path_endpoint_yaw_rad": approach_yaw_target,
                 "yaw_rate_feedback_rad_s": (
                     float(rate_feedback["signed_yaw_rate_rad_s"])
                     if rate_feedback is not None else None
@@ -1946,6 +1953,10 @@ class FocusedM1Diagnostic(Node):
                 ),
                 "pose_goal_terminal_setpoint_tolerance_rad": (
                     POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD if has_heading_target else None
+                ),
+                "pose_goal_approach_path_terminal_heading_policy": (
+                    "requested goal yaw minus measured post-stop yaw drift compensation"
+                    if has_heading_target else None
                 ),
                 "pose_goal_post_stop_drift_basis_attempt_ids": (
                     ["b56aed69-193d-4f9a-a083-dbd9f6b6b4c3", "dc70febe-9822-4f77-94da-e3d7a6f193f0"]
@@ -2469,6 +2480,10 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "pose_goal_terminal_setpoint_tolerance_rad": (
                 POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD if has_heading_target else None
+            ),
+            "pose_goal_approach_path_terminal_heading_policy": (
+                "requested goal yaw minus measured post-stop yaw drift compensation"
+                if has_heading_target else None
             ),
             "extra_stop_observation_s": float(args.extra_stop_observation),
             "max_extra_stop_observation_s": expected_extra_observation,

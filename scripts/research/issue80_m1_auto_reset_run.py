@@ -318,11 +318,9 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
         "pose_goal_terminal_setpoint_tolerance_rad": (
             POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD if has_heading_target else None
         ),
-        "pose_goal_post_stop_yaw_drift_compensation_rad": (
-            POINT_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD if has_heading_target else None
-        ),
-        "pose_goal_terminal_setpoint_tolerance_rad": (
-            POINT_GOAL_TERMINAL_SETPOINT_TOLERANCE_RAD if has_heading_target else None
+        "pose_goal_approach_path_terminal_heading_policy": (
+            "requested goal yaw minus measured post-stop yaw drift compensation"
+            if has_heading_target else None
         ),
     }
 

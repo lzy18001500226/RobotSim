@@ -17,8 +17,10 @@ from typing import Any, Mapping
 
 from issue80_coordinated_pose_goal import (
     POSE_GOAL_LOOKAHEAD_FRACTION,
+    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
     fresh_yaw_rate_feedback,
     pose_path_reference,
+    pose_path_target_with_yaw_compensation,
     pure_pursuit_yaw_rate,
     terminal_yaw_rate_command,
 )
@@ -31,6 +33,9 @@ DEFAULT_RUNS = {
     "run89": "stage-b-heading-goal-run89-20261023-20261023T012443Z",
     "run90": "stage-b-heading-goal-run90-20261023T0150Z-f68457f3",
     "run91": "stage-b-heading-goal-run91-20261023T0204Z-b00f4a02",
+    "run92": "stage-b-pose-goal-run92-20261023T044647Z-b56aed69",
+    "run93": "stage-b-pose-goal-run93-20261023T045959Z-dc70febe",
+    "run94": "stage-b-pose-goal-run94-20261023T052722Z-25204271",
 }
 
 
@@ -411,8 +416,7 @@ def _counterfactual_pose_replay(
     target_pose = pg.get("target_pose", {})
     target_yaw = _number(target_pose.get("yaw"))
     stop_pose = dict(pg.get("dynamic_stop_target_pose_at_trigger") or target_pose)
-    if target_yaw is not None:
-        stop_pose["yaw"] = target_yaw
+    saved_stop_pose = dict(stop_pose)
     if not isinstance(start_pose, Mapping) or not isinstance(stop_pose, Mapping) or target_yaw is None:
         return {"status": "NOT_RUN_MISSING_POSE", "classification": "OFFLINE_COMMAND_REPLAY_NOT_DYNAMICS"}, [], []
 
@@ -420,9 +424,44 @@ def _counterfactual_pose_replay(
     if not isinstance(profile, Mapping):
         profile = {}
     heading_policy = str(profile.get("heading_policy", ""))
+    recorded_heading_reference = next((
+        str(row.get("heading_reference")) for row in command_trace
+        if row.get("heading_reference") is not None
+    ), "")
     prediction_horizon = _number(profile.get("heading_yaw_rate_prediction_horizon_s"))
+    drift_compensation = (
+        POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD
+        if abs(_number(pg.get("requested_heading_change_rad")) or 0.0) > 1e-9 else 0.0
+    )
+    saved_approach_endpoint_yaw = next((
+        _number(row.get("approach_path_endpoint_yaw_rad")) for row in command_trace
+        if _number(row.get("approach_path_endpoint_yaw_rad")) is not None
+    ), None)
+    saved_approach_drift_compensation = (
+        math.atan2(
+            math.sin(target_yaw - saved_approach_endpoint_yaw),
+            math.cos(target_yaw - saved_approach_endpoint_yaw),
+        )
+        if saved_approach_endpoint_yaw is not None else 0.0
+    )
+    if saved_approach_drift_compensation > 0.0:
+        saved_stop_pose = pose_path_target_with_yaw_compensation(
+            {**saved_stop_pose, "yaw": target_yaw},
+            saved_approach_drift_compensation,
+        )
+    else:
+        saved_stop_pose["yaw"] = target_yaw
+    if drift_compensation > 0.0:
+        stop_pose = pose_path_target_with_yaw_compensation(
+            {**stop_pose, "yaw": target_yaw},
+            drift_compensation,
+        )
+    else:
+        stop_pose["yaw"] = target_yaw
     if prediction_horizon is not None:
         legacy_policy_kind = "PREDICTED_TARGET_YAW"
+    elif recorded_heading_reference == "coordinated_hermite_path":
+        legacy_policy_kind = "COORDINATED_POSE_HERMITE"
     elif "target-yaw" in heading_policy.lower():
         legacy_policy_kind = "DIRECT_TARGET_YAW"
     else:
@@ -463,7 +502,29 @@ def _counterfactual_pose_replay(
             legacy_error = _number(command.get("instantaneous_heading_error_rad"))
             legacy_angular = 0.0
         else:
-            if legacy_policy_kind == "RUN73_POSITION_BEARING":
+            if legacy_policy_kind == "COORDINATED_POSE_HERMITE":
+                saved_carrot_x = _number(command.get("lookahead_x_m"))
+                saved_carrot_y = _number(command.get("lookahead_y_m"))
+                saved_forward = _number(command.get("forward_velocity_m_s"))
+                if saved_carrot_x is None or saved_carrot_y is None or saved_forward is None:
+                    legacy_error = None
+                    legacy_angular = None
+                    legacy_feedback_missing += 1
+                else:
+                    legacy_error = math.atan2(
+                        saved_carrot_y - float(pose["y"]),
+                        saved_carrot_x - float(pose["x"]),
+                    )
+                    legacy_angular = pure_pursuit_yaw_rate(
+                        current_x_m=float(pose["x"]),
+                        current_y_m=float(pose["y"]),
+                        current_yaw_rad=float(pose["yaw"]),
+                        carrot_x_m=saved_carrot_x,
+                        carrot_y_m=saved_carrot_y,
+                        forward_command_m_s=saved_forward,
+                        maximum_angular_rad_s=0.075,
+                    )["command_yaw_rate_rad_s"]
+            elif legacy_policy_kind == "RUN73_POSITION_BEARING":
                 dx = float(target_pose["x"]) - float(pose["x"])
                 dy = float(target_pose["y"]) - float(pose["y"])
                 bearing = math.atan2(dy, dx)
@@ -490,7 +551,11 @@ def _counterfactual_pose_replay(
                         math.sin(target_yaw - (float(pose["yaw"]) + legacy_rate * legacy_horizon)),
                         math.cos(target_yaw - (float(pose["yaw"]) + legacy_rate * legacy_horizon)),
                     )
-            if legacy_policy_kind != "PREDICTED_TARGET_YAW" or legacy_rate is not None:
+            if (
+                legacy_error is not None
+                and legacy_policy_kind != "COORDINATED_POSE_HERMITE"
+                and (legacy_policy_kind != "PREDICTED_TARGET_YAW" or legacy_rate is not None)
+            ):
                 gain = _number(profile.get("heading_gain")) or 0.8
                 angular_limit = _number(profile.get("maximum_angular_velocity_rad_s")) or 0.075
                 legacy_angular = max(-angular_limit, min(angular_limit, gain * float(legacy_error)))
@@ -530,6 +595,8 @@ def _counterfactual_pose_replay(
             "legacy_prediction_horizon_s": legacy_horizon,
             "coordinated_curve_angular_command_rad_s": angular,
             "coordinated_curve_forward_command_m_s": forward,
+            "coordinated_path_endpoint_yaw_rad": stop_pose["yaw"],
+            "saved_path_endpoint_yaw_rad": saved_stop_pose["yaw"],
             "target_yaw_error_rad": math.atan2(
                 math.sin(target_yaw - float(pose["yaw"])),
                 math.cos(target_yaw - float(pose["yaw"])),
@@ -620,6 +687,10 @@ def _counterfactual_pose_replay(
         "status": "REPLAYED" if controller_rows else "NOT_RUN_NO_ACTIVATION_COMMANDS",
         "classification": "COUNTERFACTUAL_SAVED_POSE_COMMAND_REPLAY_NOT_DYNAMICS_VALIDATION",
         "legacy_policy_kind": legacy_policy_kind,
+        "saved_approach_drift_compensation_rad": saved_approach_drift_compensation,
+        "saved_path_endpoint_yaw_rad": saved_stop_pose["yaw"],
+        "coordinated_path_endpoint_yaw_rad": stop_pose["yaw"],
+        "coordinated_path_terminal_drift_compensation_rad": drift_compensation,
         "approach_sample_count": len(controller_rows),
         "approach_samples_missing_state_or_path": stale_or_missing,
         "legacy_missing_rate_or_horizon_samples": legacy_feedback_missing,
@@ -1089,7 +1160,7 @@ def main() -> int:
     result = {
         "schema": "robotsim.issue80.pose-goal-offline-analysis.v1",
         "classification": "OFFLINE_TRACE_ANALYSIS_NOT_DYNAMICS_VALIDATION",
-        "analysis_scope": ["run86", "run88", "run89", "run90", "run91"],
+        "analysis_scope": ["run86", "run88", "run89", "run90", "run91", "run92", "run93", "run94"],
         "runs": summaries,
         "limitations": [
             "Velocity publish callback return is not an MC per-message receipt acknowledgement.",

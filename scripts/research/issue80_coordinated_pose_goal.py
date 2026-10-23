@@ -222,6 +222,22 @@ def compensated_terminal_yaw_target_rad(
     return _wrap(target - drift)
 
 
+def pose_path_target_with_yaw_compensation(
+    goal_pose: Mapping[str, Any],
+    measured_post_stop_yaw_drift_rad: float,
+) -> dict[str, Any]:
+    """Keep the goal position but bias the approach path's endpoint tangent."""
+    if not isinstance(goal_pose, Mapping):
+        raise ValueError("pose path goal must be a mapping")
+    result = dict(goal_pose)
+    if "yaw" not in result:
+        raise ValueError("pose path goal is missing yaw")
+    result["yaw"] = compensated_terminal_yaw_target_rad(
+        result["yaw"], measured_post_stop_yaw_drift_rad,
+    )
+    return result
+
+
 def active_locomotion_readback_confirmed(
     snapshot: Mapping[str, Any],
     *,
