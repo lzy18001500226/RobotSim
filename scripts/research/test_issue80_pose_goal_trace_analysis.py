@@ -7,10 +7,27 @@ import math
 import unittest
 
 from issue80_coordinated_pose_goal import pure_pursuit_yaw_rate
-from issue80_pose_goal_trace_analysis import _counterfactual_pose_replay
+from issue80_pose_goal_trace_analysis import _counterfactual_pose_replay, _phase_motion_response
 
 
 class SavedPoseReplayTests(unittest.TestCase):
+    def test_phase_response_uses_world_yaw_and_actual_command_integral(self) -> None:
+        events = [
+            {"event": "velocity_command", "phase": "point-goal-activation", "command_kind": "turning_activation", "wall_monotonic_sec": 1.0, "forward_velocity_m_s": 0.0, "angular_velocity_rad_s": 0.05},
+            {"event": "velocity_command", "phase": "point-goal-activation", "command_kind": "turning_activation", "wall_monotonic_sec": 2.0, "forward_velocity_m_s": 0.0, "angular_velocity_rad_s": 0.05},
+        ]
+        states = [
+            {"event": "state_sample", "snapshot": {"sample_monotonic_s": 1.0, "pose": {"yaw": 0.0, "vx": 0.0, "wz": 0.04}}},
+            {"event": "state_sample", "snapshot": {"sample_monotonic_s": 1.5, "pose": {"yaw": 0.04, "vx": 0.0, "wz": 0.05}}},
+            {"event": "state_sample", "snapshot": {"sample_monotonic_s": 2.0, "pose": {"yaw": 0.10, "vx": 0.0, "wz": 0.06}}},
+        ]
+        result = _phase_motion_response(events, states)["point-goal-activation|turning_activation"]
+        self.assertAlmostEqual(result["commanded_angular_integral_rad"], 0.05)
+        self.assertAlmostEqual(result["measured_world_yaw_delta_rad"], 0.10)
+        self.assertAlmostEqual(result["measured_world_yaw_rate_fit_rad_s"], 0.10)
+        self.assertAlmostEqual(result["yaw_response_to_command_integral_ratio"], 2.0)
+        self.assertTrue(result["same_sign_as_command_integral"])
+
     def test_replay_uses_the_policy_recorded_for_each_historical_run(self) -> None:
         target_yaw = -0.10
         target = {
@@ -103,7 +120,7 @@ class SavedPoseReplayTests(unittest.TestCase):
             "dynamic_stop_progress_at_trigger_m": 0.30,
             "command_profile_parameters": {
                 "heading_policy": "Run73 position-bearing for point goals; coordinated-pose path and terminal yaw control for heading-change goals",
-                "pose_goal_post_stop_yaw_drift_compensation_rad": 0.16,
+                "pose_goal_post_stop_yaw_drift_compensation_rad": 0.05,
             },
         }
         state_rows = [{"phase": "activation", "snapshot": {"sample_monotonic_s": 10.2, "pose": pose}}]
@@ -115,9 +132,15 @@ class SavedPoseReplayTests(unittest.TestCase):
         self.assertEqual(summary["legacy_policy_kind"], "COORDINATED_POSE_HERMITE")
         self.assertAlmostEqual(summary["legacy_replay_max_abs_command_error_rad_s"], 0.0)
         self.assertAlmostEqual(summary["saved_approach_drift_compensation_rad"], 0.0)
-        self.assertAlmostEqual(summary["coordinated_path_terminal_drift_compensation_rad"], 0.16)
+        self.assertAlmostEqual(summary["coordinated_path_terminal_drift_compensation_rad"], 0.05)
         self.assertAlmostEqual(summary["saved_path_endpoint_yaw_rad"], -0.10)
-        self.assertAlmostEqual(summary["coordinated_path_endpoint_yaw_rad"], -0.26)
+        self.assertAlmostEqual(summary["coordinated_path_endpoint_yaw_rad"], -0.15)
+        self.assertLess(summary["candidate_endpoint_position_offset_m"], 0.05)
+        self.assertLess(
+            summary["candidate_path_geometry"]["maximum_ideal_or_warmup_transition_raw_angular_rate_rad_s"],
+            0.075,
+        )
+        self.assertTrue(summary["candidate_path_geometry"]["terminal_residual_and_dwell_fit"])
         self.assertLessEqual(abs(rows[0]["coordinated_curve_angular_command_rad_s"]), 0.075)
 
     def test_replays_legacy_and_coordinated_commands_and_marks_missing_terminal_samples(self) -> None:
@@ -155,7 +178,7 @@ class SavedPoseReplayTests(unittest.TestCase):
                 "heading_yaw_rate_prediction_horizon_s": 1.0,
                 "heading_gain": 0.8,
                 "maximum_angular_velocity_rad_s": 0.075,
-                "pose_goal_post_stop_yaw_drift_compensation_rad": 0.16,
+                "pose_goal_post_stop_yaw_drift_compensation_rad": 0.05,
             },
         }
         state_rows = [{"phase": "activation", "snapshot": {"sample_monotonic_s": 10.2, "pose": pose}}]
@@ -171,8 +194,8 @@ class SavedPoseReplayTests(unittest.TestCase):
 
         self.assertEqual(summary["classification"], "COUNTERFACTUAL_SAVED_POSE_COMMAND_REPLAY_NOT_DYNAMICS_VALIDATION")
         self.assertEqual(summary["legacy_policy_kind"], "PREDICTED_TARGET_YAW")
-        self.assertAlmostEqual(summary["coordinated_path_terminal_drift_compensation_rad"], 0.16)
-        self.assertAlmostEqual(summary["coordinated_path_endpoint_yaw_rad"], -0.26)
+        self.assertAlmostEqual(summary["coordinated_path_terminal_drift_compensation_rad"], 0.05)
+        self.assertAlmostEqual(summary["coordinated_path_endpoint_yaw_rad"], -0.15)
         self.assertEqual(len(approach_rows), 1)
         self.assertAlmostEqual(
             approach_rows[0]["legacy_policy_replayed_angular_command_rad_s"],
@@ -180,7 +203,7 @@ class SavedPoseReplayTests(unittest.TestCase):
         )
         self.assertAlmostEqual(summary["legacy_replay_max_abs_command_error_rad_s"], 0.0)
         self.assertIsNotNone(approach_rows[0]["coordinated_curve_angular_command_rad_s"])
-        self.assertAlmostEqual(approach_rows[0]["coordinated_path_endpoint_yaw_rad"], -0.26)
+        self.assertAlmostEqual(approach_rows[0]["coordinated_path_endpoint_yaw_rad"], -0.15)
         self.assertEqual(summary["zero_to_stand_saved_state_sample_count"], 0)
         self.assertEqual(
             summary["terminal_replay_status"],

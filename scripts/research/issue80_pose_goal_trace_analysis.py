@@ -17,10 +17,15 @@ from typing import Any, Mapping
 
 from issue80_coordinated_pose_goal import (
     POSE_GOAL_LOOKAHEAD_FRACTION,
+    POSE_GOAL_APPROACH_WARMUP_S,
+    POSE_GOAL_CURVE_ANGULAR_UTILIZATION,
+    POSE_GOAL_CURVE_FORWARD_M_S,
     POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+    POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M,
+    POSE_GOAL_WARMUP_FORWARD_M_S,
     fresh_yaw_rate_feedback,
-    pose_path_reference,
-    pose_path_target_with_yaw_compensation,
+    build_warmup_aware_pose_goal_path,
+    pose_goal_approach_path_reference,
     pure_pursuit_yaw_rate,
     terminal_yaw_rate_command,
 )
@@ -210,6 +215,119 @@ def _event_stats(events: list[dict[str, Any]]) -> dict[str, Any]:
             "not per-message command receipt acknowledgement"
         ),
     }
+
+
+def _phase_motion_response(
+    events: list[dict[str, Any]],
+    state_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Align command integrals with measured world-yaw response by command phase."""
+    yaw_samples: list[tuple[float, float]] = []
+    for row in state_rows:
+        snapshot = row.get("snapshot", {})
+        pose = snapshot.get("pose", {}) if isinstance(snapshot, Mapping) else {}
+        timestamp = _number(snapshot.get("sample_monotonic_s")) if isinstance(snapshot, Mapping) else None
+        yaw = _number(pose.get("yaw")) if isinstance(pose, Mapping) else None
+        if timestamp is not None and yaw is not None:
+            yaw_samples.append((timestamp, yaw))
+    yaw_samples.sort()
+    unwrapped: list[tuple[float, float]] = []
+    for timestamp, yaw in yaw_samples:
+        if not unwrapped:
+            unwrapped.append((timestamp, yaw))
+        else:
+            unwrapped.append((timestamp, unwrapped[-1][1] + (wrapped_delta(yaw, unwrapped[-1][1]) or 0.0)))
+
+    def interpolate_yaw(timestamp: float) -> float | None:
+        if not unwrapped or timestamp < unwrapped[0][0] or timestamp > unwrapped[-1][0]:
+            return None
+        index = bisect.bisect_left([sample[0] for sample in unwrapped], timestamp)
+        if index == 0:
+            return unwrapped[0][1]
+        if index >= len(unwrapped):
+            return unwrapped[-1][1]
+        left_t, left_yaw = unwrapped[index - 1]
+        right_t, right_yaw = unwrapped[index]
+        if right_t <= left_t:
+            return left_yaw
+        return left_yaw + (right_yaw - left_yaw) * ((timestamp - left_t) / (right_t - left_t))
+
+    commands = [row for row in events if row.get("event") == "velocity_command"]
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for command in commands:
+        grouped.setdefault((str(command.get("phase")), str(command.get("command_kind"))), []).append(command)
+    result: dict[str, Any] = {}
+    for (phase, kind), rows in sorted(grouped.items()):
+        timed = [
+            (float(row["wall_monotonic_sec"]), row)
+            for row in rows if _number(row.get("wall_monotonic_sec")) is not None
+        ]
+        if not timed:
+            continue
+        start_t, end_t = timed[0][0], timed[-1][0]
+        forwards = [_number(row.get("forward_velocity_m_s")) or 0.0 for _, row in timed]
+        angular = [_number(row.get("angular_velocity_rad_s")) or 0.0 for _, row in timed]
+        integral = sum(
+            0.5 * (angular[index] + angular[index + 1]) * (timed[index + 1][0] - timed[index][0])
+            for index in range(len(timed) - 1)
+        )
+        yaw_start, yaw_end = interpolate_yaw(start_t), interpolate_yaw(end_t)
+        response = wrapped_delta(yaw_end, yaw_start) if yaw_start is not None and yaw_end is not None else None
+        segment_states = []
+        for row in state_rows:
+            snapshot = row.get("snapshot", {})
+            timestamp = _number(snapshot.get("sample_monotonic_s")) if isinstance(snapshot, Mapping) else None
+            pose = snapshot.get("pose", {}) if isinstance(snapshot, Mapping) else {}
+            yaw = _number(pose.get("yaw")) if isinstance(pose, Mapping) else None
+            if timestamp is None or yaw is None or not start_t <= timestamp <= end_t:
+                continue
+            if len(segment_states) == 0:
+                segment_states.append((timestamp, yaw))
+            else:
+                segment_states.append((timestamp, segment_states[-1][1] + (wrapped_delta(yaw, segment_states[-1][1]) or 0.0)))
+        body_vx = [
+            float(snapshot["pose"]["vx"])
+            for row in state_rows
+            if isinstance((snapshot := row.get("snapshot")), Mapping)
+            and isinstance(snapshot.get("pose"), Mapping)
+            and _number(snapshot.get("sample_monotonic_s")) is not None
+            and start_t <= float(snapshot["sample_monotonic_s"]) <= end_t
+            and _number(snapshot["pose"].get("vx")) is not None
+        ]
+        body_wz = [
+            float(snapshot["pose"]["wz"])
+            for row in state_rows
+            if isinstance((snapshot := row.get("snapshot")), Mapping)
+            and isinstance(snapshot.get("pose"), Mapping)
+            and _number(snapshot.get("sample_monotonic_s")) is not None
+            and start_t <= float(snapshot["sample_monotonic_s"]) <= end_t
+            and _number(snapshot["pose"].get("wz")) is not None
+        ]
+        duration = max(0.0, end_t - start_t)
+        result[f"{phase}|{kind}"] = {
+            "command_count": len(timed),
+            "start_monotonic_s": start_t,
+            "end_monotonic_s": end_t,
+            "duration_s": duration,
+            "commanded_forward_min_m_s": min(forwards),
+            "commanded_forward_max_m_s": max(forwards),
+            "commanded_angular_integral_rad": integral,
+            "measured_world_yaw_start_rad": yaw_start,
+            "measured_world_yaw_end_rad": yaw_end,
+            "measured_world_yaw_delta_rad": response,
+            "measured_world_yaw_rate_fit_rad_s": _linear_slope(segment_states),
+            "measured_body_vx_m_s_median": statistics.median(body_vx) if body_vx else None,
+            "measured_body_wz_rad_s_median": statistics.median(body_wz) if body_wz else None,
+            "yaw_response_to_command_integral_ratio": (
+                response / integral if response is not None and abs(integral) > 1e-9 else None
+            ),
+            "same_sign_as_command_integral": (
+                math.copysign(1.0, response) == math.copysign(1.0, integral)
+                if response is not None and abs(response) > 1e-9 and abs(integral) > 1e-9 else None
+            ),
+            "interpretation": "measured outcome aligned to local published commands; not a per-message MC receipt acknowledgement",
+        }
+    return result
 
 
 def _mc_output_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -445,19 +563,40 @@ def _counterfactual_pose_replay(
         if saved_approach_endpoint_yaw is not None else 0.0
     )
     if saved_approach_drift_compensation > 0.0:
-        saved_stop_pose = pose_path_target_with_yaw_compensation(
-            {**saved_stop_pose, "yaw": target_yaw},
-            saved_approach_drift_compensation,
-        )
+        saved_stop_pose = {
+            **saved_stop_pose,
+            "yaw": math.atan2(
+                math.sin(target_yaw - saved_approach_drift_compensation),
+                math.cos(target_yaw - saved_approach_drift_compensation),
+            ),
+        }
     else:
         saved_stop_pose["yaw"] = target_yaw
-    if drift_compensation > 0.0:
-        stop_pose = pose_path_target_with_yaw_compensation(
-            {**stop_pose, "yaw": target_yaw},
-            drift_compensation,
-        )
-    else:
-        stop_pose["yaw"] = target_yaw
+    candidate_reference_stop = {**stop_pose, "yaw": target_yaw}
+    candidate_path = build_warmup_aware_pose_goal_path(
+        start_pose,
+        candidate_reference_stop,
+        target_yaw,
+        drift_compensation,
+        warmup_duration_s=POSE_GOAL_APPROACH_WARMUP_S,
+        warmup_forward_m_s=POSE_GOAL_WARMUP_FORWARD_M_S,
+        curve_forward_m_s=POSE_GOAL_CURVE_FORWARD_M_S,
+        maximum_angular_rad_s=0.075,
+        maximum_endpoint_offset_m=POSE_GOAL_PATH_ENDPOINT_OFFSET_LIMIT_M,
+        angular_utilization_limit=POSE_GOAL_CURVE_ANGULAR_UTILIZATION,
+        lookahead_fraction=POSE_GOAL_LOOKAHEAD_FRACTION,
+    )
+    candidate_endpoint = candidate_path["curve_endpoint_pose"]
+    candidate_path_geometry = {
+        **candidate_path["feasibility"],
+        "warmup_distance_m": candidate_path["warmup_distance_m"],
+        "curve_chord_length_m": candidate_path["curve_chord_length_m"],
+        "curve_path_length_m": candidate_path["curve_path_length_m"],
+        "total_path_length_m": candidate_path["total_path_length_m"],
+        "projected_stop_progress_m": candidate_path["projected_stop_progress_m"],
+        "curve_forward_command_m_s": candidate_path["curve_forward_m_s"],
+        "pre_stop_yaw_bias_rad": candidate_path["pre_stop_yaw_bias_rad"],
+    }
     if prediction_horizon is not None:
         legacy_policy_kind = "PREDICTED_TARGET_YAW"
     elif recorded_heading_reference == "coordinated_hermite_path":
@@ -489,13 +628,13 @@ def _counterfactual_pose_replay(
             stale_or_missing += 1
             continue
         progress = _number(command.get("along_track_progress_m")) or 0.0
-        stop_progress = _number(pg.get("dynamic_stop_progress_at_trigger_m")) or 0.335
+        stop_progress = _number(candidate_path.get("projected_stop_progress_m")) or 0.335
         fraction = max(0.0, min(1.0, progress / max(stop_progress, 1e-6)))
         carrot_fraction = min(1.0, fraction + POSE_GOAL_LOOKAHEAD_FRACTION)
-        reference = pose_path_reference(start_pose, stop_pose, fraction)
-        carrot = pose_path_reference(start_pose, stop_pose, carrot_fraction)
+        reference = pose_goal_approach_path_reference(start_pose, candidate_path, fraction)
+        carrot = pose_goal_approach_path_reference(start_pose, candidate_path, carrot_fraction)
         warmup = float(command.get("activation_elapsed_s") or 0.0) < 0.5
-        forward = 0.12 if warmup else 0.14
+        forward = POSE_GOAL_WARMUP_FORWARD_M_S if warmup else POSE_GOAL_CURVE_FORWARD_M_S
         legacy_rate = _number(command.get("yaw_rate_feedback_rad_s"))
         legacy_horizon = _number(command.get("yaw_prediction_horizon_s")) or prediction_horizon
         if warmup:
@@ -595,7 +734,7 @@ def _counterfactual_pose_replay(
             "legacy_prediction_horizon_s": legacy_horizon,
             "coordinated_curve_angular_command_rad_s": angular,
             "coordinated_curve_forward_command_m_s": forward,
-            "coordinated_path_endpoint_yaw_rad": stop_pose["yaw"],
+            "coordinated_path_endpoint_yaw_rad": candidate_endpoint["yaw"],
             "saved_path_endpoint_yaw_rad": saved_stop_pose["yaw"],
             "target_yaw_error_rad": math.atan2(
                 math.sin(target_yaw - float(pose["yaw"])),
@@ -689,8 +828,10 @@ def _counterfactual_pose_replay(
         "legacy_policy_kind": legacy_policy_kind,
         "saved_approach_drift_compensation_rad": saved_approach_drift_compensation,
         "saved_path_endpoint_yaw_rad": saved_stop_pose["yaw"],
-        "coordinated_path_endpoint_yaw_rad": stop_pose["yaw"],
+        "coordinated_path_endpoint_yaw_rad": candidate_endpoint["yaw"],
         "coordinated_path_terminal_drift_compensation_rad": drift_compensation,
+        "candidate_path_geometry": candidate_path_geometry,
+        "candidate_endpoint_position_offset_m": candidate_path.get("endpoint_position_offset_m", 0.0),
         "approach_sample_count": len(controller_rows),
         "approach_samples_missing_state_or_path": stale_or_missing,
         "legacy_missing_rate_or_horizon_samples": legacy_feedback_missing,
@@ -1006,10 +1147,12 @@ def _run_summary(review_root: Path, label: str, folder: str) -> tuple[dict[str, 
         },
         "yaw_segments_rad": {
             "start_to_zero": wrapped_delta(yaw_zero, yaw_start),
+            "zero_to_final_settled": wrapped_delta(yaw_final, yaw_zero),
             "zero_to_stand_confirmed": wrapped_delta(yaw_stand, yaw_zero),
             "stand_confirmed_to_final": wrapped_delta(yaw_final, yaw_stand),
             "last_in_pulse_to_final": wrapped_delta(yaw_final, _number(post_odom.get("last_in_pulse_pose", {}).get("yaw"))),
         },
+        "phase_motion_response": _phase_motion_response(trace, state_rows),
         "yaw_rate_fit_rad_s": {
             "activation_start_to_zero": segment_slope(first_command_time, zero_start),
             "last_0p4s_before_zero": segment_slope(

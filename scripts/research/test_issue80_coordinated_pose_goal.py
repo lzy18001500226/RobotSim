@@ -11,11 +11,19 @@ from issue80_coordinated_pose_goal import (
     FAILED,
     TERMINAL_POSE_CONTROL,
     ZERO_STOP,
+    POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD,
+    POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD,
+    POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD,
     PoseGoalPhaseController,
     active_locomotion_readback_confirmed,
+    build_warmup_aware_pose_goal_path,
+    build_warmup_aware_pose_goal_path,
     compensated_terminal_yaw_target_rad,
     fresh_yaw_rate_feedback,
+    pose_goal_approach_path_reference,
+    pose_goal_approach_target,
     pose_path_reference,
+    sampled_pose_path_feasibility,
     pose_path_target_with_yaw_compensation,
     pure_pursuit_yaw_rate,
     terminal_yaw_rate_command,
@@ -69,6 +77,101 @@ class PosePathTests(unittest.TestCase):
         self.assertAlmostEqual(compensated["yaw"], expected, places=12)
         self.assertAlmostEqual(endpoint["tangent_yaw_rad"], expected, places=12)
 
+    def test_balanced_pre_stop_endpoint_is_position_bounded_and_rate_feasible(self) -> None:
+        start = {"x": 0.0, "y": 0.0, "yaw": 0.05, "frame_id": "odom"}
+        target_yaw = -0.05
+        stop = {
+            "x": 0.30 * math.cos(target_yaw),
+            "y": 0.30 * math.sin(target_yaw),
+            "frame_id": "odom",
+        }
+        endpoint = pose_goal_approach_target(start, stop, target_yaw, 0.05)
+        self.assertAlmostEqual(endpoint["yaw"], -0.10, places=12)
+        self.assertAlmostEqual(endpoint["approach_chord_yaw_rad"], -0.025, places=12)
+        self.assertAlmostEqual(endpoint["approach_endpoint_offset_m"], 0.0075, places=4)
+        self.assertLess(endpoint["approach_endpoint_offset_m"], 0.05)
+
+        geometry = sampled_pose_path_feasibility(
+            start,
+            endpoint,
+            reference_line_pose=stop,
+            forward_command_m_s=0.14,
+            maximum_angular_rad_s=0.075,
+            zero_angular_warmup_s=0.5,
+            warmup_forward_m_s=0.12,
+            terminal_yaw_control_budget_s=2.6,
+        )
+        self.assertTrue(geometry["curvature_rate_feasible_at_command"])
+        self.assertTrue(geometry["pure_pursuit_rate_feasible_at_command"])
+        self.assertAlmostEqual(geometry["maximum_absolute_curvature_per_m"], 0.5023, places=3)
+        self.assertAlmostEqual(geometry["required_angular_rate_at_forward_command_rad_s"], 0.0703, places=3)
+        self.assertEqual(geometry["pure_pursuit_saturation_fraction"], 0.0)
+        self.assertLess(geometry["maximum_deviation_from_stop_chord_m"], 0.011)
+        self.assertLess(geometry["maximum_deviation_from_requested_stop_line_m"], 0.011)
+        self.assertAlmostEqual(geometry["minimum_yaw_time_at_angular_cap_s"], 2.0, places=12)
+        self.assertAlmostEqual(geometry["warmup_commanded_distance_m"], 0.06, places=12)
+        self.assertAlmostEqual(geometry["remaining_yaw_correction_after_warmup_rad"], 0.15, places=12)
+        self.assertFalse(geometry["remaining_yaw_feasible_after_warmup"])
+        self.assertTrue(geometry["remaining_yaw_feasible_with_terminal_budget"])
+        self.assertAlmostEqual(geometry["remaining_yaw_time_to_terminal_phase_at_cap_s"], 0.2837, places=3)
+
+    def test_old_full_drift_endpoint_is_infeasible_above_forward_deadzone(self) -> None:
+        start = {"x": 0.0, "y": 0.0, "yaw": 0.05, "frame_id": "odom"}
+        target_yaw = -0.05
+        exact_stop = {
+            "x": 0.30 * math.cos(target_yaw),
+            "y": 0.30 * math.sin(target_yaw),
+            "yaw": target_yaw - 0.16,
+            "frame_id": "odom",
+        }
+        geometry = sampled_pose_path_feasibility(
+            start,
+            exact_stop,
+            forward_command_m_s=0.14,
+            maximum_angular_rad_s=0.075,
+        )
+        self.assertFalse(geometry["curvature_rate_feasible_at_command"])
+        self.assertFalse(geometry["pure_pursuit_rate_feasible_at_command"])
+        self.assertGreater(geometry["required_angular_rate_at_forward_command_rad_s"], 0.20)
+        self.assertLess(geometry["maximum_forward_speed_under_angular_cap_m_s"], 0.111)
+        self.assertGreater(geometry["pure_pursuit_saturation_fraction"], 0.80)
+
+    def test_warmup_aligned_path_has_bounded_position_and_angular_demand(self) -> None:
+        start = {"frame_id": "odom", "x": 0.0183720733169952, "y": 0.003391006556233643, "yaw": 0.053050859283639784}
+        target_yaw = -0.04694914071636022
+        stop = {
+            "frame_id": "odom",
+            "x": start["x"] + 0.30 * math.cos(target_yaw),
+            "y": start["y"] + 0.30 * math.sin(target_yaw),
+        }
+        path = build_warmup_aware_pose_goal_path(
+            start, stop, target_yaw, 0.05,
+            warmup_duration_s=0.5,
+            warmup_forward_m_s=0.12,
+            curve_forward_m_s=0.13,
+            maximum_angular_rad_s=0.075,
+            maximum_endpoint_offset_m=0.05,
+            angular_utilization_limit=0.95,
+        )
+        gate = path["feasibility"]
+        self.assertAlmostEqual(path["warmup_distance_m"], 0.06, places=12)
+        self.assertAlmostEqual(path["curve_chord_length_m"], 0.275, places=12)
+        self.assertLess(path["endpoint_position_offset_m"], 0.05)
+        self.assertLess(gate["maximum_lateral_error_to_requested_stop_line_m"], 0.05)
+        self.assertLessEqual(gate["maximum_ideal_or_warmup_transition_raw_angular_rate_rad_s"], 0.075 * 0.95)
+        self.assertFalse(gate["warmup_transition_saturation_required"])
+        self.assertLess(gate["terminal_entry_position_error_m"], 0.05)
+        self.assertLess(gate["terminal_entry_lateral_error_m"], 0.05)
+        self.assertTrue(gate["terminal_residual_and_dwell_fit"])
+        self.assertLess(gate["terminal_entry_residual_to_pre_stop_target_rad"], 0.02)
+
+        warmup_reference = pose_goal_approach_path_reference(
+            start, path, path["warmup_distance_m"] / path["total_path_length_m"],
+        )
+        endpoint_reference = pose_goal_approach_path_reference(start, path, 1.0)
+        self.assertAlmostEqual(warmup_reference["tangent_yaw_rad"], start["yaw"], places=12)
+        self.assertAlmostEqual(endpoint_reference["tangent_yaw_rad"], path["curve_endpoint_pose"]["yaw"], places=12)
+
     def test_pure_pursuit_command_sign_and_cap_for_both_turn_directions(self) -> None:
         left = pure_pursuit_yaw_rate(
             current_x_m=0.0, current_y_m=0.0, current_yaw_rad=0.0,
@@ -87,6 +190,17 @@ class PosePathTests(unittest.TestCase):
 
 
 class TerminalYawControlTests(unittest.TestCase):
+    def test_empirical_drift_envelope_keeps_internal_target_inside_final_gate(self) -> None:
+        final_tolerance = 0.17
+        bias = POSE_GOAL_POST_STOP_YAW_DRIFT_COMPENSATION_RAD
+        worst_predicted_final_error = max(
+            abs(drift - bias) + POSE_GOAL_TERMINAL_TARGET_TOLERANCE_RAD
+            for drift in POSE_GOAL_RELEVANT_POST_STOP_DRIFT_OBSERVATIONS_RAD
+        )
+        self.assertAlmostEqual(bias, 0.05)
+        self.assertLess(worst_predicted_final_error, final_tolerance)
+        self.assertAlmostEqual(final_tolerance - worst_predicted_final_error, 0.0213100865, places=6)
+
     def test_post_stop_drift_compensation_is_signed_and_wrap_safe(self) -> None:
         self.assertAlmostEqual(
             compensated_terminal_yaw_target_rad(-0.05, 0.16),
