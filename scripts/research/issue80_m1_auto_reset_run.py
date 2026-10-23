@@ -239,11 +239,16 @@ def validate_run65_point_goal_profile(args: argparse.Namespace) -> dict[str, Any
         raise ValueError(
             f"goal heading change must be within +/-{POINT_GOAL_MAX_HEADING_CHANGE_RAD:.3f} rad"
         )
+    max_extra_observation = (
+        POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
+        if abs(heading_change) > 1e-9
+        else POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S
+    )
     if (
         not getattr(args, "capture_mc_rl_debug", False)
         or not POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S
         <= float(args.extra_stop_observation)
-        <= POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
+        <= max_extra_observation
         or abs(float(args.forward_speed) - POINT_GOAL_FORWARD_COMMAND_M_S) > 1e-9
         or abs(float(args.pulse_duration) - 10.0) > 1e-9
         or float(args.ramp_duration_s) != 0.0
@@ -286,6 +291,84 @@ def run65_point_goal_profile_metadata(args: argparse.Namespace) -> dict[str, Any
         ),
         "post_stop_observation_s": float(args.extra_stop_observation),
     }
+
+
+def run65_child_heading_policy(args: argparse.Namespace) -> str:
+    """Select the exact child controller branch for the requested goal type."""
+    return (
+        "target-yaw"
+        if abs(float(getattr(args, "heading_change_rad", 0.0))) > 1e-9
+        else "position-bearing"
+    )
+
+
+def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str]:
+    """Build the exact production Docker exec command for the M1 child runner."""
+    command = [
+        "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", container, "bash", "-lc",
+        "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion --maintainer-authorized --reset-gate-verified"
+        + " --extra-stop-observation " + str(args.extra_stop_observation)
+        + " --pulse-duration " + str(args.pulse_duration)
+        + " --forward-speed " + str(args.forward_speed)
+        + " --ramp-start-speed " + str(getattr(args, "ramp_start_speed", None) or args.forward_speed)
+        + " --ramp-duration-s " + str(getattr(args, "ramp_duration_s", 0.0))
+        + " --attempt-id " + str(args.attempt_id)
+        + " --robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml"
+        + " --mc-sim-config-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
+        + " --state-timeout 0.5 --ready-timeout 4 --max-tilt-deg 15 --min-root-z 0.52"
+        + " --output-dir /workspace/evidence"
+    ]
+    startup_speed = getattr(args, "startup_speed", None)
+    if startup_speed is not None:
+        command[-1] += (
+            " --startup-speed " + str(startup_speed)
+            + " --startup-transition-displacement "
+            + str(getattr(args, "startup_transition_displacement", None))
+            + " --startup-transition-timeout-s "
+            + str(getattr(args, "startup_transition_timeout_s", 0.0))
+        )
+    diagnostic_names = (
+        "run41_min_run_diagnostic", "run42_stop_confirmation_diagnostic",
+        "run43_zero_only_stop_diagnostic", "run44_threshold_margin_diagnostic",
+        "run45_ten_second_gait_diagnostic", "run46_startup_cruise_threshold_diagnostic",
+        "run48_low_cruise_baseline_diagnostic", "run49_smoothstop_diagnostic",
+        "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
+    )
+    if any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
+        command[-1] += " --max-observed-planar-speed-m-s 0.2"
+    stand_timeout_diagnostics = (
+        "run42_stop_confirmation_diagnostic", "run43_zero_only_stop_diagnostic",
+        "run44_threshold_margin_diagnostic", "run45_ten_second_gait_diagnostic",
+        "run46_startup_cruise_threshold_diagnostic", "run48_low_cruise_baseline_diagnostic",
+        "run49_smoothstop_diagnostic", "run50_threshold_respecting_smoothstop_diagnostic",
+        "run53_turning_diagnostic",
+    )
+    if any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
+        command[-1] += " --zero-until-stand-timeout-s 3.5"
+    zero_only_diagnostics = (
+        "run43_zero_only_stop_diagnostic", "run44_threshold_margin_diagnostic",
+        "run45_ten_second_gait_diagnostic", "run46_startup_cruise_threshold_diagnostic",
+        "run48_low_cruise_baseline_diagnostic", "run49_smoothstop_diagnostic",
+        "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
+    )
+    if any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
+        command[-1] += " --zero-only-stop"
+    if getattr(args, "run49_smoothstop_diagnostic", False):
+        command[-1] += " --deceleration-duration-s 1.0"
+    if getattr(args, "run50_threshold_respecting_smoothstop_diagnostic", False):
+        command[-1] += " --deceleration-duration-s 1.0 --deceleration-end-speed-m-s 0.112"
+    if getattr(args, "run53_turning_diagnostic", False):
+        command[-1] += " --turning-diagnostic"
+    if run65_point_goal_enabled(args):
+        command[-1] += (
+            " --point-goal-diagnostic --heading-change-rad "
+            + str(float(getattr(args, "heading_change_rad", 0.0)))
+            + " --final-yaw-tolerance-rad "
+            + str(POINT_GOAL_FINAL_YAW_TOLERANCE_RAD)
+            + " --heading-control-policy "
+            + run65_child_heading_policy(args)
+        )
+    return command
 
 
 def run65_point_goal_enabled(args: argparse.Namespace) -> bool:
@@ -1865,79 +1948,7 @@ class BoundedRun:
             raise RuntimeError("verified bridge isolation is required before M1")
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
-        command = [
-            "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", self.container, "bash", "-lc",
-            "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion --maintainer-authorized --reset-gate-verified"
-            + " --extra-stop-observation " + str(self.args.extra_stop_observation)
-            + " --pulse-duration " + str(self.args.pulse_duration)
-            + " --forward-speed " + str(self.args.forward_speed)
-            + " --ramp-start-speed " + str(getattr(self.args, "ramp_start_speed", None) or self.args.forward_speed)
-            + " --ramp-duration-s " + str(getattr(self.args, "ramp_duration_s", 0.0))
-            + " --attempt-id " + self.args.attempt_id
-            + " --robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml"
-            + " --mc-sim-config-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
-            + " --state-timeout 0.5 --ready-timeout 4 --max-tilt-deg 15 --min-root-z 0.52"
-            + " --output-dir /workspace/evidence"
-        ]
-        startup_speed = getattr(self.args, "startup_speed", None)
-        if startup_speed is not None:
-            command[-1] += (
-                " --startup-speed " + str(startup_speed)
-                + " --startup-transition-displacement "
-                + str(getattr(self.args, "startup_transition_displacement", None))
-                + " --startup-transition-timeout-s "
-                + str(getattr(self.args, "startup_transition_timeout_s", 0.0))
-            )
-        if (
-            getattr(self.args, "run41_min_run_diagnostic", False)
-            or getattr(self.args, "run42_stop_confirmation_diagnostic", False)
-            or getattr(self.args, "run43_zero_only_stop_diagnostic", False)
-            or getattr(self.args, "run44_threshold_margin_diagnostic", False)
-            or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
-            or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
-            or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
-            or getattr(self.args, "run49_smoothstop_diagnostic", False)
-            or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
-            or getattr(self.args, "run53_turning_diagnostic", False)
-            or run65_point_goal_enabled(self.args)
-        ):
-            command[-1] += " --max-observed-planar-speed-m-s 0.2"
-        if (
-            getattr(self.args, "run42_stop_confirmation_diagnostic", False)
-            or getattr(self.args, "run43_zero_only_stop_diagnostic", False)
-            or getattr(self.args, "run44_threshold_margin_diagnostic", False)
-            or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
-            or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
-            or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
-            or getattr(self.args, "run49_smoothstop_diagnostic", False)
-            or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
-            or getattr(self.args, "run53_turning_diagnostic", False)
-            or run65_point_goal_enabled(self.args)
-        ):
-            command[-1] += " --zero-until-stand-timeout-s 3.5"
-        if (
-            getattr(self.args, "run43_zero_only_stop_diagnostic", False)
-            or getattr(self.args, "run44_threshold_margin_diagnostic", False)
-            or getattr(self.args, "run45_ten_second_gait_diagnostic", False)
-            or getattr(self.args, "run46_startup_cruise_threshold_diagnostic", False)
-            or getattr(self.args, "run48_low_cruise_baseline_diagnostic", False)
-            or getattr(self.args, "run49_smoothstop_diagnostic", False)
-            or getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
-            or getattr(self.args, "run53_turning_diagnostic", False)
-            or run65_point_goal_enabled(self.args)
-        ):
-            command[-1] += " --zero-only-stop"
-        if getattr(self.args, "run49_smoothstop_diagnostic", False):
-            command[-1] += " --deceleration-duration-s 1.0"
-        if getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False):
-            command[-1] += " --deceleration-duration-s 1.0 --deceleration-end-speed-m-s 0.112"
-        if getattr(self.args, "run53_turning_diagnostic", False):
-            command[-1] += " --turning-diagnostic"
-        if run65_point_goal_enabled(self.args):
-            command[-1] += (
-                " --point-goal-diagnostic --heading-change-rad "
-                + str(float(getattr(self.args, "heading_change_rad", 0.0)))
-            )
+        command = build_m1_child_command(self.args, self.container)
         result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():

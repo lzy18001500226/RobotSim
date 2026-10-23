@@ -6,6 +6,7 @@ import argparse
 import ast
 import hashlib
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -16,12 +17,62 @@ from pathlib import Path
 from issue80_m1_auto_reset_run import (
     BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, MC_RL_DEBUG_CAPTURE,
     SET_ACTION_CAPTURE, SIM_LAUNCH,
-    assess_container_absence, classify_first_motion_outcome, classify_run38_diagnostic_outcome,
+    assess_container_absence, build_m1_child_command, classify_first_motion_outcome, classify_run38_diagnostic_outcome,
     decode_m1_child_result,
 )
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_parent_child_point_goal_invocation_propagates_runtime_profile(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=7.0,
+            pulse_duration=10.0,
+            forward_speed=0.14,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="offline-validation-attempt",
+            run65_ground_truth_point_goal=True,
+            heading_change_rad=-0.10,
+            startup_speed=None,
+            run41_min_run_diagnostic=False,
+            run42_stop_confirmation_diagnostic=False,
+            run43_zero_only_stop_diagnostic=False,
+            run44_threshold_margin_diagnostic=False,
+            run45_ten_second_gait_diagnostic=False,
+            run46_startup_cruise_threshold_diagnostic=False,
+            run48_low_cruise_baseline_diagnostic=False,
+            run49_smoothstop_diagnostic=False,
+            run50_threshold_respecting_smoothstop_diagnostic=False,
+            run53_turning_diagnostic=False,
+        )
+        command = build_m1_child_command(args, "validation-container")
+        self.assertEqual(command[:5], [
+            "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", "validation-container",
+        ])
+        shell = command[-1]
+        child_argv = shlex.split(shell.rsplit(" && ", 1)[1])
+        self.assertEqual(child_argv[0], "python3")
+        self.assertEqual(child_argv[2], "first-motion")
+
+        def option(name: str) -> str:
+            return child_argv[child_argv.index(name) + 1]
+
+        self.assertEqual(option("--extra-stop-observation"), "7.0")
+        self.assertEqual(option("--heading-change-rad"), "-0.1")
+        self.assertEqual(option("--final-yaw-tolerance-rad"), "0.17")
+        self.assertEqual(option("--heading-control-policy"), "target-yaw")
+        self.assertIn("--point-goal-diagnostic", child_argv)
+        self.assertIn("--zero-only-stop", child_argv)
+        self.assertEqual(option("--max-observed-planar-speed-m-s"), "0.2")
+        self.assertEqual(option("--zero-until-stand-timeout-s"), "3.5")
+
+        args.heading_change_rad = 0.0
+        args.extra_stop_observation = 5.0
+        straight_shell = build_m1_child_command(args, "validation-container")[-1]
+        straight_argv = shlex.split(straight_shell.rsplit(" && ", 1)[1])
+        self.assertEqual(straight_argv[straight_argv.index("--heading-control-policy") + 1], "position-bearing")
+        self.assertEqual(straight_argv[straight_argv.index("--extra-stop-observation") + 1], "5.0")
+
     def test_turning_probe_registers_one_turning_diagnostic_option(self):
         probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
         tree = ast.parse(probe.read_text(encoding="utf-8"), filename=str(probe))

@@ -1172,6 +1172,8 @@ class FocusedM1Diagnostic(Node):
         heading_change_rad: float = 0.0,
     ) -> dict[str, Any]:
         """Drive one short odom-frame point goal from MuJoCo ground truth with MC safety gates."""
+        heading_control_policy = self.args.heading_control_policy
+        final_yaw_tolerance_rad = float(self.args.final_yaw_tolerance_rad)
         preflight = self.sample_for_first_motion()
         preflight_fault = snapshot_fault(
             preflight,
@@ -1339,7 +1341,7 @@ class FocusedM1Diagnostic(Node):
             if not isinstance(pose, Mapping):
                 raise RuntimeError("point_goal_has_no_current_pose_for_steering")
             position_bearing_error = float(point_metrics["heading_error_rad"])
-            has_heading_target = abs(heading_change_rad) > 1e-9
+            has_heading_target = heading_control_policy == "target-yaw"
             error = point_goal_pose_heading_error_rad(
                 current_yaw_rad=float(pose["yaw"]),
                 goal_dx_m=float(point_metrics["goal_dx_m"]),
@@ -1463,7 +1465,10 @@ class FocusedM1Diagnostic(Node):
             pulse_duration_s=POINT_GOAL_MAX_DURATION_S,
             max_pulse_duration_s=POINT_GOAL_MAX_DURATION_S,
             extra_post_stop_observe_s=self.args.extra_stop_observation,
-            extra_post_stop_observe_limit_s=MAX_EXTRA_POST_STOP_OBSERVE_S,
+            extra_post_stop_observe_limit_s=(
+                MAX_EXTRA_POST_STOP_OBSERVE_S
+                if heading_control_policy == "target-yaw" else 5.0
+            ),
             after_zero_stop=self.request_postwalk_stand_once,
             during_zero_callback=lambda: self._spin_for(0.001),
             shutdown_event=self.interrupted,
@@ -1497,7 +1502,7 @@ class FocusedM1Diagnostic(Node):
                 target_yaw_rad=path_yaw,
                 requested_heading_change_rad=heading_change_rad,
                 minimum_measured_change_rad=TURN_MIN_HEADING_CHANGE_RAD,
-                final_yaw_tolerance_rad=POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
+                final_yaw_tolerance_rad=final_yaw_tolerance_rad,
             ) if final_yaw is not None else None
         )
         final_yaw_change = (
@@ -1561,7 +1566,7 @@ class FocusedM1Diagnostic(Node):
             "final_yaw_rad": final_yaw,
             "final_heading_change_rad": final_yaw_change,
             "final_yaw_error_rad": final_yaw_error,
-            "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
+            "final_yaw_tolerance_rad": final_yaw_tolerance_rad,
             "minimum_measured_heading_change_rad": TURN_MIN_HEADING_CHANGE_RAD,
             "heading_goal_measurement": heading_measurement,
             "dynamic_stop_target_pose_at_trigger": (
@@ -1630,7 +1635,7 @@ class FocusedM1Diagnostic(Node):
             "command_profile_parameters": {
                 "requested_heading_change_rad": heading_change_rad,
                 "maximum_heading_change_rad": POINT_GOAL_MAX_HEADING_CHANGE_RAD,
-                "final_yaw_tolerance_rad": POINT_GOAL_FINAL_YAW_TOLERANCE_RAD,
+                "final_yaw_tolerance_rad": final_yaw_tolerance_rad,
                 "minimum_measured_heading_change_rad": TURN_MIN_HEADING_CHANGE_RAD,
                 "heading_change_warmup_s": POINT_GOAL_HEADING_CHANGE_WARMUP_S,
                 "heading_change_warmup_forward_m_s": POINT_GOAL_HEADING_CHANGE_WARMUP_FORWARD_M_S,
@@ -2065,6 +2070,79 @@ def _focused_diagnostic_command(args: argparse.Namespace) -> int:
             rclpy.shutdown()
 
 
+def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
+    """Validate the complete child CLI profile without initializing ROS or the simulator."""
+    if args.turning_diagnostic and args.point_goal_diagnostic:
+        raise ValueError("select only one of turning or point-goal diagnostics")
+    profile: dict[str, Any] = {"point_goal": False}
+    if args.point_goal_diagnostic:
+        heading_change = float(args.heading_change_rad)
+        if not math.isfinite(heading_change) or abs(heading_change) > POINT_GOAL_MAX_HEADING_CHANGE_RAD:
+            raise ValueError("heading offset must be finite and within +/-0.20 rad")
+        has_heading_target = abs(heading_change) > 1e-9
+        expected_policy = "target-yaw" if has_heading_target else "position-bearing"
+        expected_extra_observation = (
+            POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S if has_heading_target
+            else POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S
+        )
+        if args.heading_control_policy != expected_policy:
+            raise ValueError(
+                f"heading-control policy {args.heading_control_policy!r} does not match "
+                f"requested heading {heading_change}: expected {expected_policy!r}"
+            )
+        tolerance = args.final_yaw_tolerance_rad
+        if (
+            tolerance is None or not math.isfinite(float(tolerance))
+            or abs(float(tolerance) - POINT_GOAL_FINAL_YAW_TOLERANCE_RAD) > 1e-9
+        ):
+            raise ValueError(
+                f"final yaw tolerance must be explicitly propagated as "
+                f"{POINT_GOAL_FINAL_YAW_TOLERANCE_RAD:.3f} rad"
+            )
+        if (
+            args.forward_speed != POINT_GOAL_COMMAND_M_S
+            or args.pulse_duration != POINT_GOAL_MAX_DURATION_S
+            or args.ramp_duration_s != 0.0
+            or args.deceleration_duration_s != 0.0
+            or args.startup_speed is not None
+            or args.max_observed_planar_speed_m_s != 0.2
+            or args.zero_until_stand_timeout_s != 3.5
+            or not args.zero_only_stop
+            or not POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S
+            <= args.extra_stop_observation
+            <= expected_extra_observation
+        ):
+            raise ValueError(
+                "point-goal profile must keep the fixed forward/angular envelope, 10 s cap, "
+                "zero-only stop, 0.2 m/s speed guard, 3.5 s STAND wait, and "
+                f"{expected_extra_observation:g} s observation for this goal type"
+            )
+        profile = {
+            "point_goal": True,
+            "requested_heading_change_rad": heading_change,
+            "final_yaw_tolerance_rad": float(tolerance),
+            "heading_control_policy": args.heading_control_policy,
+            "extra_stop_observation_s": float(args.extra_stop_observation),
+            "max_extra_stop_observation_s": expected_extra_observation,
+            "active_command_limit_s": POINT_GOAL_MAX_DURATION_S,
+            "forward_command_m_s": POINT_GOAL_COMMAND_M_S,
+            "angular_command_limit_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+            "max_lateral_error_m": POINT_GOAL_MAX_LATERAL_ERROR_M,
+            "final_position_tolerance_m": POINT_GOAL_FINAL_TOLERANCE_M,
+        }
+    elif args.heading_control_policy is not None or args.final_yaw_tolerance_rad is not None:
+        raise ValueError("heading policy and final yaw tolerance are valid only for point-goal diagnostics")
+
+    if args.max_observed_planar_speed_m_s is not None and (
+        not math.isfinite(args.max_observed_planar_speed_m_s)
+        or not 0.0 < args.max_observed_planar_speed_m_s <= 0.2
+    ):
+        raise ValueError("observed planar speed gate must be positive and no greater than 0.2 m/s")
+    if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 3.5:
+        raise ValueError("zero-until-stand timeout must remain within 0..3.5 seconds")
+    return profile
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2098,36 +2176,32 @@ def main() -> int:
     first.add_argument("--turning-diagnostic", action="store_true")
     first.add_argument("--point-goal-diagnostic", action="store_true")
     first.add_argument("--heading-change-rad", type=float, default=0.0)
+    first.add_argument("--final-yaw-tolerance-rad", type=float, default=None)
+    first.add_argument(
+        "--heading-control-policy", choices=("position-bearing", "target-yaw"), default=None,
+    )
+    first.add_argument("--validate-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.turning_diagnostic and args.point_goal_diagnostic:
-        parser.error("select only one of turning or point-goal diagnostics")
-    if args.point_goal_diagnostic and (
-        args.forward_speed != POINT_GOAL_COMMAND_M_S
-        or args.pulse_duration != POINT_GOAL_MAX_DURATION_S
-        or args.ramp_duration_s != 0.0
-        or args.deceleration_duration_s != 0.0
-        or args.startup_speed is not None
-        or not POINT_GOAL_MIN_EXTRA_STOP_OBSERVATION_S
-        <= args.extra_stop_observation
-        <= POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
-        or args.max_observed_planar_speed_m_s != 0.2
-        or args.zero_until_stand_timeout_s != 3.5
-        or not args.zero_only_stop
-        or not math.isfinite(args.heading_change_rad)
-        or abs(args.heading_change_rad) > POINT_GOAL_MAX_HEADING_CHANGE_RAD
-    ):
-        parser.error(
-            "point-goal diagnostics use 0.14 m/s forward input, a heading offset bounded to 0.20 rad, the validated "
-            "+/-0.075 rad/s heading envelope, a 10-second hard cap, zero-only stop, "
-            "0.2 m/s measured-speed guard, 3.5-second stand window, and 5-7-second observation"
-        )
-    if args.max_observed_planar_speed_m_s is not None and (
-        not math.isfinite(args.max_observed_planar_speed_m_s)
-        or not 0.0 < args.max_observed_planar_speed_m_s <= 0.2
-    ):
-        parser.error("observed planar speed gate must be positive and no greater than 0.2 m/s")
-    if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 3.5:
-        parser.error("zero-until-stand timeout must remain within 0..3.5 seconds")
+    try:
+        profile = validate_first_motion_cli_args(args)
+    except (TypeError, ValueError) as exc:
+        parser.error(str(exc))
+    if args.validate_only:
+        if not args.maintainer_authorized or not args.reset_gate_verified:
+            print("BLOCKED: validation-only invocation must carry the production authorization flags", file=sys.stderr)
+            return 2
+        print(json.dumps({
+            "schema": "robotsim.issue80.m1.cli-validation.v1",
+            "status": "VALIDATED_NO_ROS_NO_RUNTIME",
+            "attempt_id": args.attempt_id,
+            "production_authorization_flags_present": True,
+            "network_isolation": "NOT_EVALUATED; validation container is intentionally --network=none",
+            "reset_and_standing": "NOT_EVALUATED",
+            "ros_initialized": False,
+            "mujoco_or_mc_started": False,
+            "profile": profile,
+        }, indent=2))
+        return 0
     try:
         return _focused_diagnostic_command(args)
     except Exception as exc:

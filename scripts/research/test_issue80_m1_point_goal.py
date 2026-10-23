@@ -186,7 +186,7 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
             )
             self.assertEqual(
                 runner.validate_run65_point_goal_profile(
-                    valid_profile(extra_stop_observation=7.0)
+                    valid_profile(heading_change_rad=-0.10, extra_stop_observation=7.0)
                 ),
                 expected,
             )
@@ -198,6 +198,7 @@ class PointGoalPrerequisiteTests(unittest.TestCase):
             {"pulse_duration": 10.01},
             {"extra_stop_observation": 4.9},
             {"extra_stop_observation": 7.0001},
+            {"heading_change_rad": 0.0, "extra_stop_observation": 7.0},
             {"ramp_duration_s": 0.1},
             {"capture_mc_rl_debug": False},
             {"turning_reassessment_json": None},
