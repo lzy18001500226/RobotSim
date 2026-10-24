@@ -109,6 +109,47 @@ ALLOWED_MODES = frozenset((MODE_STAND, MODE_LOCOMOTION))
 MC_ACTION_STATUSES = frozenset((0, 100, 200))  # IDLE, RUNNING, TRANSITION
 
 
+def common_action_status_diagnostic(value: Any) -> dict[str, Any]:
+    """Classify the CommonState action status without borrowing unrelated enums."""
+    try:
+        raw_value = int(value)
+    except (TypeError, ValueError):
+        raw_value = value
+    names = {0: "IDLE", 100: "RUNNING", 200: "TRANSITION"}
+    if isinstance(raw_value, int) and raw_value in names:
+        return {
+            "classification": names[raw_value],
+            "field": "McCommonState.action_info.status",
+            "raw_value": raw_value,
+            "installed_message_constant_declared": True,
+            "installed_documentation_version_match": None,
+            "motion_rearm_allowed": False,
+        }
+    if raw_value == 300:
+        return {
+            "classification": "UNINTERRUPTIBLE_TRANSITION",
+            "field": "McCommonState.action_info.status",
+            "raw_value": raw_value,
+            "source_semantics": "AimDK_X2_1.1.0 mc_status documentation",
+            "installed_message_constant_declared": False,
+            "installed_documentation_version_match": False,
+            "runtime_behavior_corroborated": True,
+            "corroborating_observation": (
+                "2026-10-24 run emitted 300 during LOCOMOTION-to-STAND; a later CommonState and "
+                "GetMcAction reported STAND_DEFAULT/status 100, FSM 4, body 1"
+            ),
+            "motion_rearm_allowed": False,
+        }
+    return {
+        "classification": "UNKNOWN_RUNTIME_STATUS",
+        "field": "McCommonState.action_info.status",
+        "raw_value": raw_value,
+        "installed_message_constant_declared": False,
+        "installed_documentation_version_match": False,
+        "motion_rearm_allowed": False,
+    }
+
+
 class McFsmStateCode(IntEnum):
     """Wire codes verified in the pinned MC state library, not stale SDK constants."""
 
@@ -1340,6 +1381,7 @@ def snapshot_fault(
     required_forward_mps: float = FORWARD_COMMAND_M_S,
     max_observed_planar_speed_m_s: float | None = None,
     allow_source_readback_gap: bool = False,
+    allow_common_uninterruptible_transition_during_zero_observation: bool = False,
 ) -> str | None:
     if allow_source_readback_gap:
         mode_readback_fault = snapshot.get("get_mode_readback_fault")
@@ -1370,8 +1412,16 @@ def snapshot_fault(
         return "get_mc_action_readback_error"
     if snapshot.get("get_mode_status_value") not in MC_ACTION_STATUSES:
         return "unknown_get_mc_action_status"
-    if snapshot.get("common_mode_status_value") not in MC_ACTION_STATUSES:
-        return "unknown_common_action_status"
+    common_status = snapshot.get("common_mode_status_value")
+    common_status_diagnostic = common_action_status_diagnostic(common_status)
+    if common_status_diagnostic["classification"] == "UNINTERRUPTIBLE_TRANSITION":
+        if not allow_common_uninterruptible_transition_during_zero_observation:
+            return "common_action_uninterruptible_transition_not_allowed_in_this_phase"
+    elif common_status_diagnostic["classification"] == "UNKNOWN_RUNTIME_STATUS":
+        return (
+            "UNKNOWN_RUNTIME_STATUS:McCommonState.action_info.status="
+            f"{common_status_diagnostic['raw_value']!r}"
+        )
 
     fsm = snapshot.get("fsm_state")
     if fsm == MC_FSM_SAFE:
@@ -3773,8 +3823,33 @@ def run_first_motion_window(
     def record_sample(phase: str, snapshot: Mapping[str, Any], fault: str | None) -> None:
         row = dict(snapshot)
         row["phase"] = phase
+        common_status_diagnostic = common_action_status_diagnostic(
+            row.get("common_mode_status_value")
+        )
+        if common_status_diagnostic["classification"] in {
+            "UNINTERRUPTIBLE_TRANSITION", "UNKNOWN_RUNTIME_STATUS",
+        }:
+            row["common_action_status_diagnostic"] = common_status_diagnostic
+            if phase.startswith("post-stop"):
+                row["post_stop_status_policy"] = (
+                    "ZERO_ONLY_OBSERVATION; transition/unknown status never confirms STAND or rearms"
+                )
+                result.setdefault("post_stop_nonterminal_status_observations", []).append({
+                    "sample_monotonic_s": row.get("sample_monotonic_s"),
+                    "raw_value": common_status_diagnostic["raw_value"],
+                    "classification": common_status_diagnostic["classification"],
+                    "motion_rearm_allowed": False,
+                })
         readback_gap = row.get("post_stop_source_readback_gap") if phase == "post-stop" else None
-        row["safety_check"] = "FAIL" if fault else "INCOMPLETE" if readback_gap else "PASS"
+        row["safety_check"] = (
+            "FAIL" if fault else "INCOMPLETE"
+            if readback_gap
+            or common_status_diagnostic["classification"] in {
+                "UNINTERRUPTIBLE_TRANSITION", "UNKNOWN_RUNTIME_STATUS",
+            }
+            or (phase.startswith("post-stop") and not stand_mode_readback_confirmed(row))
+            else "PASS"
+        )
         row["safety_fault"] = fault or (
             f"required service readback unavailable: {readback_gap}" if readback_gap else None
         )
@@ -4170,6 +4245,7 @@ def run_first_motion_window(
                 max_tilt_deg=max_tilt_deg,
                 max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                 allow_source_readback_gap=True,
+                allow_common_uninterruptible_transition_during_zero_observation=True,
             )
             first_source_readback_gap = source_readback_gap(
                 first_post_stop, state_timeout_s=state_timeout_s,
@@ -4268,6 +4344,7 @@ def run_first_motion_window(
                     max_tilt_deg=max_tilt_deg,
                     max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                     allow_source_readback_gap=True,
+                    allow_common_uninterruptible_transition_during_zero_observation=True,
                 )
                 if stop_extension_publish_fault and not current_fault:
                     current_fault = stop_extension_publish_fault

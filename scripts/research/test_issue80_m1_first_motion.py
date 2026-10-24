@@ -63,6 +63,7 @@ from issue80_m1_first_motion import (
     capture_dds_qos_override_environment,
     classify_source_registration,
     classify_physical_motion,
+    common_action_status_diagnostic,
     derive_stationary_odom_baseline,
     load_verified_mc_runtime_identity,
     load_leg_joint_limits,
@@ -72,6 +73,7 @@ from issue80_m1_first_motion import (
     run_first_motion_window,
     readback_refresh_needed,
     snapshot_fault,
+    stand_mode_readback_confirmed,
     source_readback_gap,
     validate_first_motion_authorization,
     validate_local_sim_publishers,
@@ -734,6 +736,180 @@ class FirstMotionSafetyTests(unittest.TestCase):
         )
         self.assertEqual(invalid_cap["fault"], "observed_planar_speed_gate_outside_authorized_cap")
         self.assertEqual(invalid_cap["nonzero_publish_calls_returned"], 0)
+
+    def test_common_status_300_continues_only_bounded_zero_observation_and_never_rearms(self):
+        state = {
+            "get_mode_desc": "STAND_DEFAULT",
+            "common_mode_desc": "STAND_DEFAULT",
+            "get_mode_status_value": 100,
+            "common_mode_status_value": 100,
+            "fsm_state": MC_FSM_STABLE,
+            "body_status": 1,
+            "get_source_name": "",
+            "common_source_name": "",
+        }
+        commands = []
+        stand_requests = []
+
+        def publish(value):
+            commands.append(value)
+            if value > 0.0:
+                state.update(
+                    get_mode_desc="LOCOMOTION_DEFAULT",
+                    common_mode_desc="LOCOMOTION_DEFAULT",
+                    get_mode_status_value=200,
+                    common_mode_status_value=200,
+                    fsm_state=5,
+                    get_source_name=VELOCITY_SOURCE_NAME,
+                    common_source_name=VELOCITY_SOURCE_NAME,
+                )
+            else:
+                state.update(
+                    get_mode_desc="LOCOMOTION_DEFAULT",
+                    common_mode_desc="LOCOMOTION_DEFAULT",
+                    get_mode_status_value=200,
+                    common_mode_status_value=300,
+                    fsm_state=5,
+                    body_status=1,
+                )
+
+        def request_stand_once():
+            stand_requests.append(True)
+            return {"success": True, "response_status_value": 1}
+
+        result = self.run_protocol(
+            lambda: self.snapshot(**state),
+            publish,
+            pulse_duration_s=0.1,
+            max_pulse_duration_s=0.1,
+            zero_until_stand_timeout_s=0.2,
+            after_zero_stop=request_stand_once,
+        )
+
+        self.assertEqual(len(stand_requests), 1)
+        self.assertEqual(result["stop_transition_confirmation"]["status"], "STAND_READBACK_TIMEOUT")
+        self.assertFalse(result["stop_transition_confirmation"]["stand_confirmed"])
+        self.assertGreater(result["post_stop_zero_extension"]["zero_publish_calls_returned"], 1)
+        self.assertTrue(result["post_stop_nonterminal_status_observations"])
+        self.assertTrue(all(
+            row["classification"] == "UNINTERRUPTIBLE_TRANSITION"
+            and row["raw_value"] == 300
+            and row["motion_rearm_allowed"] is False
+            for row in result["post_stop_nonterminal_status_observations"]
+        ))
+        post_stop = [row for row in result["samples"] if row.get("phase") == "post-stop"]
+        self.assertGreater(len(post_stop), 20)
+        self.assertTrue(all(row.get("safety_fault") is None for row in post_stop))
+        self.assertTrue(all(row.get("post_stop_gate_eligible") is False for row in post_stop))
+        self.assertNotEqual(result["physical_stop_gate"]["status"], "PASS")
+        self.assertEqual(result["physical_stop_gate"]["reason"], "stable_STAND_FSM_readback_not_confirmed")
+        self.assertGreater(result["nonzero_publish_calls_returned"], 0)
+        self.assertLessEqual(result["nonzero_command_span_s"], 0.1)
+
+    def test_common_status_300_can_progress_to_confirmed_stand_under_zero_only_observation(self):
+        clock = FakeClock()
+        state = {
+            "get_mode_desc": "STAND_DEFAULT",
+            "common_mode_desc": "STAND_DEFAULT",
+            "get_mode_status_value": 100,
+            "common_mode_status_value": 100,
+            "fsm_state": MC_FSM_STABLE,
+            "body_status": 1,
+            "get_source_name": "",
+            "common_source_name": "",
+        }
+        commands = []
+        stand_requests = []
+        joints = ("left_hip_pitch_joint",)
+        sequence = {"motion_started": False, "zero_started": False}
+
+        def apply_transition_state():
+            if not sequence["zero_started"]:
+                return
+            if clock.now() < 1.20:
+                state.update(
+                    get_mode_desc="LOCOMOTION_DEFAULT",
+                    common_mode_desc="LOCOMOTION_DEFAULT",
+                    get_mode_status_value=200,
+                    common_mode_status_value=300,
+                    fsm_state=5,
+                    body_status=1,
+                    get_source_name=VELOCITY_SOURCE_NAME,
+                    common_source_name=VELOCITY_SOURCE_NAME,
+                )
+            else:
+                state.update(
+                    get_mode_desc="STAND_DEFAULT",
+                    common_mode_desc="STAND_DEFAULT",
+                    get_mode_status_value=100,
+                    common_mode_status_value=100,
+                    fsm_state=MC_FSM_STABLE,
+                    body_status=1,
+                )
+
+        def publish(value):
+            commands.append(value)
+            if value > 0.0:
+                sequence["motion_started"] = True
+                state.update(
+                    get_mode_desc="LOCOMOTION_DEFAULT",
+                    common_mode_desc="LOCOMOTION_DEFAULT",
+                    get_mode_status_value=200,
+                    common_mode_status_value=200,
+                    fsm_state=5,
+                    get_source_name=VELOCITY_SOURCE_NAME,
+                    common_source_name=VELOCITY_SOURCE_NAME,
+                )
+            else:
+                if sequence["motion_started"]:
+                    sequence["zero_started"] = True
+                apply_transition_state()
+
+        def sample():
+            if sequence["zero_started"]:
+                apply_transition_state()
+            row = self.snapshot(**state)
+            row["pose"] = {
+                "x": 0.0, "y": 0.0, "z": 0.65,
+                "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+                "vx": 0.0, "vy": 0.0, "vz": 0.0, "wz": 0.0,
+            }
+            row["leg_states"] = [
+                {"name": name, "position": 0.5, "velocity": 0.0, "error_code": 0}
+                for name in joints
+            ]
+            row["mc_leg_command"] = {
+                "received_monotonic_s": clock.now(),
+                "joints": [
+                    {"name": name, "position": 0.5, "velocity": 0.0}
+                    for name in joints
+                ],
+            }
+            return row
+
+        result = self.run_protocol(
+            sample,
+            publish,
+            fake_clock=clock,
+            pulse_duration_s=0.1,
+            max_pulse_duration_s=0.1,
+            zero_until_stand_timeout_s=3.5,
+            after_zero_stop=lambda: stand_requests.append("one request") or {"success": True},
+        )
+
+        self.assertEqual(stand_requests, ["one request"], repr({
+            "fault": result.get("fault"),
+            "handshake": result.get("control_handshake_status"),
+            "confirmed": result.get("control_handshake_confirmed"),
+            "nonzero": result.get("nonzero_publish_calls_returned"),
+        }))
+        self.assertTrue(result["stop_transition_confirmation"]["stand_confirmed"])
+        self.assertEqual(result["stop_transition_confirmation"]["status"], "STAND_READBACK_CONFIRMED")
+        self.assertGreater(result["post_stop_zero_extension"]["zero_publish_calls_returned"], 0)
+        transitions = result["post_stop_nonterminal_status_observations"]
+        self.assertTrue(transitions)
+        self.assertTrue(all(item["classification"] == "UNINTERRUPTIBLE_TRANSITION" for item in transitions))
+        self.assertLess(result["stop_transition_confirmation"]["confirmed_monotonic_s"], 3.5)
 
     def test_stopping_tail_separates_braking_from_continued_motion(self):
         def row(t, x):
@@ -1892,6 +2068,63 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             unrelated, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0
         ))
 
+    def test_common_action_status_300_has_documented_semantics_but_schema_version_mismatch(self) -> None:
+        diagnostic = common_action_status_diagnostic(300)
+        self.assertEqual(diagnostic["classification"], "UNINTERRUPTIBLE_TRANSITION")
+        self.assertEqual(diagnostic["field"], "McCommonState.action_info.status")
+        self.assertEqual(diagnostic["source_semantics"], "AimDK_X2_1.1.0 mc_status documentation")
+        self.assertFalse(diagnostic["installed_message_constant_declared"])
+        self.assertFalse(diagnostic["installed_documentation_version_match"])
+        self.assertTrue(diagnostic["runtime_behavior_corroborated"])
+        self.assertFalse(diagnostic["motion_rearm_allowed"])
+
+        sample = self.snapshot(common_mode_status_value=300)
+        self.assertEqual(snapshot_fault(
+            sample, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+        ), "common_action_uninterruptible_transition_not_allowed_in_this_phase")
+
+    def test_common_status_300_is_observation_only_after_zero_and_never_confirms_stand(self) -> None:
+        sample = self.snapshot(common_mode_status_value=300)
+        self.assertIsNone(snapshot_fault(
+            sample, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            allow_source_readback_gap=True,
+            allow_common_uninterruptible_transition_during_zero_observation=True,
+        ))
+        self.assertFalse(stand_mode_readback_confirmed(sample))
+
+        wrong_context = dict(sample, get_mode_status_value=300)
+        self.assertEqual(snapshot_fault(
+            wrong_context, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            allow_source_readback_gap=True,
+            allow_common_uninterruptible_transition_during_zero_observation=True,
+        ), "unknown_get_mc_action_status")
+        other_unknown = dict(sample, common_mode_status_value=301)
+        self.assertEqual(snapshot_fault(
+            other_unknown, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            allow_source_readback_gap=True,
+            allow_common_uninterruptible_transition_during_zero_observation=True,
+        ), "UNKNOWN_RUNTIME_STATUS:McCommonState.action_info.status=301")
+
+        unsafe = self.snapshot(
+            common_mode_status_value=300,
+            pose={"x": 0.0, "y": 0.0, "z": 0.40, "roll": 0.0, "pitch": 0.0, "yaw": 0.0},
+        )
+        self.assertEqual(snapshot_fault(
+            unsafe, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            allow_source_readback_gap=True,
+            allow_common_uninterruptible_transition_during_zero_observation=True,
+        ), "fall_root_height")
+
+        transitioned_to_stand = self.snapshot(
+            get_mode_desc=MODE_STAND,
+            common_mode_desc=MODE_STAND,
+            get_mode_status_value=100,
+            common_mode_status_value=100,
+            fsm_state=MC_FSM_STABLE,
+            body_status=1,
+        )
+        self.assertTrue(stand_mode_readback_confirmed(transitioned_to_stand))
+
     def test_activation_evidence_reports_observed_odom_delta(self) -> None:
         tracker = ActivationTracker()
         tracker.observe(self.snapshot(), phase="pre-activation")
@@ -2561,6 +2794,20 @@ class PhysicalStopGateTests(unittest.TestCase):
         self.assertEqual(windows[-1]["window_start_monotonic_s"], result["final_window"]["window_start_monotonic_s"])
         self.assertEqual(result["first_target_stable_window"]["composite_gate"]["status"], "PASS")
         self.assertEqual(result["first_composite_stop_window"]["controller_target_stability_gate"]["threshold_rad"], 0.02)
+
+    def test_uninterruptible_transition_300_cannot_pass_composite_stop_gate(self):
+        rows = self._fixture()
+        for row in rows:
+            if row.get("phase") == "post-stop":
+                row["common_mode_status_value"] = 300
+        result = evaluate_physical_stop_gate(
+            rows,
+            zero_start_monotonic_s=5.0,
+            stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIsNone(result["first_composite_stop_window"])
 
     def test_rolling_windows_show_target_convergence_without_rearming_on_physical_only(self):
         rows = self._fixture()
