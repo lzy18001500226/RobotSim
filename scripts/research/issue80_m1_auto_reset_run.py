@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from issue80_m1_first_motion import (
+    MC_FSM_STABLE, MODE_STAND,
     TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S,
     TURN_MIN_HEADING_CHANGE_RAD, TURN_PULSE_S,
     ZERO_STOP_MIN_MESSAGES,
@@ -75,6 +76,8 @@ ROUTE_QPOS0_FOOTPRINT_BOUND_M = 0.41565748847422734
 ROUTE_LOCAL_CLEAR_RADIUS_M = 2.0
 RESET_OBSERVER_DURATION_S = 8.0
 RESET_OBSERVER_COMPLETION_MARGIN_S = 3.0
+# Covers the existing bounded Reset/upright, JD, and SD handoff before capture.
+RESET_STAND_HANDOFF_MAX_S = 16.0
 RESET_STARTUP_OBSERVATION_TIMEOUT_S = 4.0
 POINT_GOAL_FINAL_TOLERANCE_M = 0.05
 POINT_GOAL_FORWARD_COMMAND_M_S = 0.14
@@ -128,6 +131,50 @@ RUN38_BASE_KNEE_ACTION_SCALE = 0.25
 RUN38_DIAGNOSTIC_KNEE_ACTION_SCALE = 0.19
 RUN41_BASE_MIN_RUN_VELX = 0.5
 RUN41_DIAGNOSTIC_MIN_RUN_VELX = 0.1
+
+
+def standing_baseline_observation_passes(
+    observation: Mapping[str, Any] | None,
+    *,
+    minimum_duration_s: float = RESET_OBSERVER_DURATION_S,
+) -> bool:
+    """Require the full duration after a positive STAND GetMcAction readback."""
+    if not isinstance(observation, Mapping):
+        return False
+    initial_readback = observation.get("initial_stand_mode_readback")
+    final_readback = observation.get("final_stand_mode_readback")
+
+    def confirmed(readback: Any) -> bool:
+        return (
+            isinstance(readback, Mapping)
+            and readback.get("transport_state") == "RESPONSE_RECEIVED"
+            and readback.get("action_desc") == "STAND_DEFAULT"
+            and readback.get("action_status_value") == 100
+        )
+
+    duration = observation.get("observed_duration_s")
+    expected_body_status = observation.get("expected_body_status")
+    common_sample_count = observation.get("common_state_sample_count")
+    return (
+        observation.get("anchor") == "STAND_DEFAULT_GETMC_READBACK"
+        and observation.get("observer_status") == "STAND_DEFAULT_BASELINE_COMPLETE"
+        and observation.get("complete") is True
+        and observation.get("first_unsafe_monotonic_ns") is None
+        and isinstance(duration, (int, float))
+        and not isinstance(duration, bool)
+        and math.isfinite(float(duration))
+        and float(duration) >= float(minimum_duration_s)
+        and confirmed(initial_readback)
+        and confirmed(final_readback)
+        and observation.get("common_mode_desc_values") == [MODE_STAND]
+        and observation.get("common_mode_status_values") == [100]
+        and observation.get("raw_fsm_state_values") == [MC_FSM_STABLE]
+        and expected_body_status is not None
+        and observation.get("raw_body_status_values") == [expected_body_status]
+        and isinstance(common_sample_count, int)
+        and not isinstance(common_sample_count, bool)
+        and common_sample_count >= 20
+    )
 
 
 class RunDeadline(TimeoutError):
@@ -1750,7 +1797,7 @@ class BoundedRun:
         # produced by that persistent process; do not spawn Python/DDS here.
         result_path = self.evidence / "set_action_capture_result.json"
         summary_path = self.evidence / "reset_state_summary.json"
-        deadline = min(self.deadline, time.monotonic() + RESET_OBSERVER_DURATION_S + 2.0)
+        deadline = min(self.deadline, time.monotonic() + RESET_STAND_HANDOFF_MAX_S + 2.0)
         while time.monotonic() < deadline and not result_path.exists():
             if summary_path.exists():
                 break
@@ -2290,6 +2337,10 @@ class BoundedRun:
         else:
             try:self.reset_analysis=json.loads(result.stdout)
             except json.JSONDecodeError:self.reset_analysis={"classification":"ANALYSIS_FAILED","stdout":result.stdout,"stderr":result.stderr}
+        observer_summary = json.loads(summary.read_text(encoding="utf-8"))
+        self.reset_analysis["standing_baseline_observation"] = observer_summary.get(
+            "standing_baseline_observation"
+        )
         self.reset_classification = str(self.reset_analysis.get("classification","ANALYSIS_FAILED"))
         return self.reset_analysis
 
@@ -2623,6 +2674,16 @@ class BoundedRun:
             if standing_only and not first_motion_authorized:
                 # This authorization is limited to the standing takeover gate.
                 # It must not fall through to source registration, LD, or velocity.
+                baseline = reset.get("standing_baseline_observation")
+                result["standing_baseline_observation"] = baseline
+                if getattr(self.args, "require_complete_stand_baseline", False) and not standing_baseline_observation_passes(baseline):
+                    self.outcome_classification = "STAND_BASELINE_OBSERVATION_INCOMPLETE"
+                    result["m1_status"] = "NOT_RUN_STANDING_BASELINE_INCOMPLETE"
+                    result["outcome_classification"] = self.outcome_classification
+                    result["status"] = "BLOCKED"
+                    result["fault"] = "required complete post-readback 8 s STAND_DEFAULT observation did not pass"
+                    result["next_motion_stage"] = "NOT_RUN_REQUIRES_COMPLETE_STANDING_BASELINE"
+                    return result
                 self.outcome_classification = "STANDING_TAKEOVER_PASS"
                 result["m1_status"] = "NOT_RUN_STANDING_ONLY"
                 result["outcome_classification"] = self.outcome_classification
@@ -2816,6 +2877,11 @@ def main() -> int:
         help="explicit human authorization for one simulation-only standing-takeover test; no LD or velocity command",
     )
     parser.add_argument(
+        "--require-complete-stand-baseline",
+        action="store_true",
+        help="fail closed unless 8 s are observed after positive STAND_DEFAULT GetMcAction readback",
+    )
+    parser.add_argument(
         "--capture-mc-rl-debug",
         action="store_true",
         help="start the optional version-matched read-only McRLDebug observer before M1 motion",
@@ -2960,6 +3026,11 @@ def main() -> int:
     )
     add_run65_point_goal_arguments(parser)
     args=parser.parse_args()
+    if args.require_complete_stand_baseline and (
+        not args.maintainer_authorized_standing_takeover
+        or args.maintainer_authorized_first_motion
+    ):
+        parser.error("complete STAND baseline gate is only valid for standing-takeover-only runs")
     extra_observation_limit = (
         POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
         if args.run65_ground_truth_point_goal

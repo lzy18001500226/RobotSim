@@ -35,6 +35,42 @@ REQUIRED_UPRIGHT_ODOM_SAMPLES = 3
 REQUIRED_STAND_COMMON_SAMPLES = 3
 
 
+def standing_observation_window(
+    *,
+    reset_dispatch_monotonic_ns: int,
+    stand_default_confirmed_monotonic_ns: int | None,
+    duration_s: float,
+) -> dict[str, int | str]:
+    """Anchor the baseline window to positive STAND readback when available."""
+    if (
+        isinstance(reset_dispatch_monotonic_ns, bool)
+        or not isinstance(reset_dispatch_monotonic_ns, int)
+        or reset_dispatch_monotonic_ns <= 0
+        or not math.isfinite(float(duration_s))
+        or duration_s <= 0.0
+    ):
+        raise ValueError("standing observation requires a valid Reset timestamp and positive duration")
+    if stand_default_confirmed_monotonic_ns is None:
+        anchor_ns = reset_dispatch_monotonic_ns
+        anchor_name = "RESET_FALLBACK_NO_CONFIRMED_STAND"
+    else:
+        if (
+            isinstance(stand_default_confirmed_monotonic_ns, bool)
+            or not isinstance(stand_default_confirmed_monotonic_ns, int)
+            or stand_default_confirmed_monotonic_ns < reset_dispatch_monotonic_ns
+        ):
+            raise ValueError("STAND_DEFAULT confirmation must follow the Reset event")
+        anchor_ns = stand_default_confirmed_monotonic_ns
+        anchor_name = "STAND_DEFAULT_GETMC_READBACK"
+    duration_ns = int(float(duration_s) * 1e9)
+    return {
+        "anchor": anchor_name,
+        "anchor_monotonic_ns": anchor_ns,
+        "deadline_monotonic_ns": anchor_ns + duration_ns,
+        "duration_ns": duration_ns,
+    }
+
+
 def write_complete_json(path: Path, value: dict[str, Any]) -> None:
     """Publish one complete result atomically, without replacing prior evidence."""
     temporary = path.with_name(f".{path.name}.{os.getpid()}.pending")
@@ -392,6 +428,7 @@ def main() -> int:
             self.first_unsafe_row: dict[str, Any] | None = None
             self.first_effective_after_jd: int | None = None
             self.first_effective_after_sd: int | None = None
+            self.stand_default_confirmed_ns: int | None = None
             self.upright_samples = 0
             self.stand_samples = 0
             self.set_attempted: set[str] = set()
@@ -883,6 +920,7 @@ def main() -> int:
                 "joint_default_get_mc_action_readbacks": [r for r in self.get_records if r.get("wall_monotonic_ns_submitted", 0) > (self.reset_ns or 0) and r.get("action_desc") == "JOINT_DEFAULT"],
                 "joint_to_stand_gate": stand_gate,
                 "stand_default_set_mc_action": sd,
+                "stand_default_mode_confirmed_monotonic_ns": self.stand_default_confirmed_ns,
                 "get_mc_action_readbacks": list(self.get_records),
                 "first_valid_post_reset_state_monotonic_ns": self.first_valid_state_ns,
                 "first_upright_post_reset_monotonic_ns": self.first_upright_ns,
@@ -939,20 +977,82 @@ def main() -> int:
                 self.error = "GetMcAction did not confirm STAND_DEFAULT/status=100 after the single SD request"
                 self._write_final_result("BLOCKED_STAND_DEFAULT_READBACK", block_stage="STAND_DEFAULT_READBACK", error=self.error, pre_reset=pre_reset_mode, upright_gate=upright_gate, stand_gate=stand_gate)
                 return 2
+            self.stand_default_confirmed_ns = int(
+                sd_readback.get("wall_monotonic_ns_returned") or time.monotonic_ns()
+            )
             self._write_final_result("TAKEOVER_SEQUENCE_COMPLETE", pre_reset=pre_reset_mode, upright_gate=upright_gate, stand_gate=stand_gate)
             return 0
 
         def capture(self) -> dict[str, Any]:
             status = "TRACE_CAPTURED"
             start = time.monotonic()
-            # Always continue the read-only trace through the bounded Reset window.
-            # The parent independently stops/cleans the whole container at first fall.
-            while rclpy.ok() and self.reset_ns is not None and time.monotonic_ns() < self.reset_ns + int(args.duration_s * 1e9):
+            observation = None
+            if self.reset_ns is not None:
+                observation = standing_observation_window(
+                    reset_dispatch_monotonic_ns=self.reset_ns,
+                    stand_default_confirmed_monotonic_ns=self.stand_default_confirmed_ns,
+                    duration_s=args.duration_s,
+                )
+            # Count the baseline from the positive STAND readback; the Reset-to-SD
+            # handoff is not part of the requested standing observation window.
+            while (
+                rclpy.ok()
+                and observation is not None
+                and time.monotonic_ns() < int(observation["deadline_monotonic_ns"])
+            ):
+                if self.first_unsafe_ns is not None:
+                    status = "BLOCKED_UNSAFE_STAND_BASELINE"
+                    break
                 self.spin_for(0.005)
             if self.reset_ns is None:
                 status = "BLOCKED_NO_RESET_EVENT"
+            elif self.stand_default_confirmed_ns is None:
+                status = "STAND_DEFAULT_NOT_CONFIRMED"
+            capture_end_ns = time.monotonic_ns()
+            final_mode_readback = (
+                self.mode_readback(args.get_timeout_s)
+                if self.reset_ns is not None and rclpy.ok() else None
+            )
+            final_common_observation = self.latest.get("common")
+            final_common = (final_common_observation or {}).get("data")
+            if observation is not None:
+                anchor_ns = int(observation["anchor_monotonic_ns"])
+                unsafe_ns = self.first_unsafe_ns
+                effective_end_ns = min(capture_end_ns, unsafe_ns) if unsafe_ns is not None else capture_end_ns
+                standing_observation_s = max(0.0, (effective_end_ns - anchor_ns) / 1e9)
+                complete = (
+                    self.stand_default_confirmed_ns is not None
+                    and unsafe_ns is None
+                    and standing_observation_s + 1e-6 >= args.duration_s
+                )
+                if status == "TRACE_CAPTURED":
+                    status = "STAND_DEFAULT_BASELINE_COMPLETE" if complete else "STAND_DEFAULT_BASELINE_INCOMPLETE"
+                standing_observation = {
+                    **observation,
+                    "observed_end_monotonic_ns": effective_end_ns,
+                    "observed_duration_s": standing_observation_s,
+                    "minimum_duration_s": args.duration_s,
+                    "complete": complete,
+                    "first_unsafe_monotonic_ns": unsafe_ns,
+                    "expected_body_status": body_stand_value,
+                    "initial_stand_mode_readback": next(
+                        (row for row in self.get_records if row.get("action_desc") == "STAND_DEFAULT" and row.get("action_status_value") == 100),
+                        None,
+                    ),
+                    "final_stand_mode_readback": final_mode_readback,
+                }
+            else:
+                standing_observation = {
+                    "anchor": "NO_RESET_EVENT",
+                    "observed_end_monotonic_ns": capture_end_ns,
+                    "observed_duration_s": 0.0,
+                    "minimum_duration_s": args.duration_s,
+                    "complete": False,
+                    "first_unsafe_monotonic_ns": self.first_unsafe_ns,
+                }
             self.trace.flush()
             odom_rows = []
+            common_rows = []
             for line in self.trace_path.read_text(encoding="utf-8").splitlines():
                 try:
                     row = json.loads(line)
@@ -960,6 +1060,38 @@ def main() -> int:
                     continue
                 if row.get("event") == "state" and row.get("topic_key") == "odom":
                     odom_rows.append(row)
+                elif row.get("event") == "state" and row.get("topic_key") == "common":
+                    common_rows.append(row)
+            if observation is not None:
+                stand_start_ns = int(observation["anchor_monotonic_ns"])
+                stand_end_ns = int(standing_observation["observed_end_monotonic_ns"])
+                common_window = [
+                    row for row in common_rows
+                    if stand_start_ns <= int(row.get("wall_monotonic_ns", 0)) <= stand_end_ns
+                ]
+                action_descriptions = []
+                action_statuses = []
+                fsm_values = []
+                body_values = []
+                input_sources = []
+                for row in common_window:
+                    common = row.get("data") or {}
+                    action = common.get("action_info") or {}
+                    action_descriptions.append(action.get("action_desc"))
+                    status_value = (action.get("status") or {}).get("value")
+                    action_statuses.append(status_value)
+                    fsm_values.append((common.get("fsm_state") or {}).get("value"))
+                    body_values.append((common.get("body_status") or {}).get("value"))
+                    input_sources.append(common.get("input_source") or {})
+                standing_observation.update({
+                    "common_state_sample_count": len(common_window),
+                    "common_mode_desc_values": sorted({str(value) for value in action_descriptions}),
+                    "common_mode_status_values": sorted({value for value in action_statuses}, key=str),
+                    "raw_fsm_state_values": sorted({value for value in fsm_values}, key=str),
+                    "raw_body_status_values": sorted({value for value in body_values}, key=str),
+                    "input_source_values": input_sources,
+                })
+                standing_observation["observer_status"] = status
             post_odom = [r for r in odom_rows if self.reset_ns is not None and int(r.get("wall_monotonic_ns", 0)) > self.reset_ns]
             z = [float(r.get("data", {}).get("z")) for r in post_odom if isinstance(r.get("data", {}).get("z"), (int, float))]
             jd = self.set_records.get("JOINT_DEFAULT", {})
@@ -981,6 +1113,17 @@ def main() -> int:
                 "observer_status": status,
                 "takeover_status": (self.result or {}).get("status", "NOT_COMPLETED"),
                 "duration_limit_s": args.duration_s,
+                "standing_baseline_observation": standing_observation,
+                "stand_default_mode_confirmed_monotonic_ns": self.stand_default_confirmed_ns,
+                "initial_stand_mode_readback": next(
+                    (row for row in self.get_records if row.get("action_desc") == "STAND_DEFAULT" and row.get("action_status_value") == 100),
+                    None,
+                ),
+                "final_stand_mode_readback": final_mode_readback,
+                "final_common_state_observation": final_common_observation,
+                "final_common_state": final_common,
+                "final_common_input_source": (final_common or {}).get("input_source"),
+                "locomotion_velocity_publisher_created": False,
                 "wall_elapsed_s": time.monotonic() - start,
                 "sample_counts": dict(self.counts),
                 "clock_messages": len(self.clocks),
@@ -1000,6 +1143,8 @@ def main() -> int:
                 "limitations": [
                     "Header timestamps are recorded as fields; elapsed intervals use host monotonic time.",
                     "This observer does not write qpos, joint commands, or contact forces.",
+                    "No locomotion velocity publisher is created by this observer.",
+                    "Input-source monitoring uses live McCommonState telemetry; no undocumented source-registration or command-receipt acknowledgement is inferred.",
                     "The captured ROS graph has no dedicated foot-contact/ground-reaction-force topic.",
                 ],
             }

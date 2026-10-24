@@ -12,7 +12,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import issue80_m1_auto_reset_run as reset_runner
-from issue80_m1_auto_reset_run import BoundedRun, RunDeadline, first_post_action_fall
+from issue80_m1_auto_reset_run import (
+    BoundedRun,
+    RunDeadline,
+    first_post_action_fall,
+    standing_baseline_observation_passes,
+)
 from issue80_mujoco_x11_reset import (
     NATIVE_RESET_BUTTON_PIXEL_POINTS,
     native_reset_button_signature_matches,
@@ -416,6 +421,59 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertEqual(result["outcome_classification"], "STANDING_TAKEOVER_PASS")
         self.assertEqual(result["m1_status"], "NOT_RUN_STANDING_ONLY")
         self.assertEqual(result["next_motion_stage"], "NOT_RUN_REQUIRES_SEPARATE_AUTHORIZATION")
+        self.assertNotIn("first_motion_after_standing_gate", events)
+
+    def test_complete_stand_baseline_requires_confirmed_readbacks_and_full_duration(self) -> None:
+        readback = {
+            "transport_state": "RESPONSE_RECEIVED",
+            "action_desc": "STAND_DEFAULT",
+            "action_status_value": 100,
+        }
+        observation = {
+            "anchor": "STAND_DEFAULT_GETMC_READBACK",
+            "observer_status": "STAND_DEFAULT_BASELINE_COMPLETE",
+            "complete": True,
+            "observed_duration_s": 8.0,
+            "first_unsafe_monotonic_ns": None,
+            "expected_body_status": 1,
+            "common_mode_desc_values": ["STAND_DEFAULT"],
+            "common_mode_status_values": [100],
+            "raw_fsm_state_values": [4],
+            "raw_body_status_values": [1],
+            "common_state_sample_count": 160,
+            "initial_stand_mode_readback": readback,
+            "final_stand_mode_readback": readback,
+        }
+        self.assertTrue(standing_baseline_observation_passes(observation))
+        observation["observed_duration_s"] = 7.999
+        self.assertFalse(standing_baseline_observation_passes(observation))
+        observation["observed_duration_s"] = 8.0
+        observation["anchor"] = "RESET_FALLBACK_NO_CONFIRMED_STAND"
+        self.assertFalse(standing_baseline_observation_passes(observation))
+
+    def test_required_standing_baseline_fails_closed_without_eight_confirmed_seconds(self) -> None:
+        events: list[str] = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(events, temp_dir, standing_only=True)
+            runner.args.maintainer_authorized_first_motion = False
+            runner.args.require_complete_stand_baseline = True
+            def incomplete_reset(_pid, _title, _window_id):
+                runner.reset_classification = "AUTO_RESET_PASS"
+                runner.reset_analysis = {
+                    "classification": "AUTO_RESET_PASS",
+                    "standing_baseline_observation": {
+                        "anchor": "STAND_DEFAULT_GETMC_READBACK",
+                        "complete": False,
+                        "observed_duration_s": 7.9,
+                    },
+                }
+                return runner.reset_analysis
+            runner.wait_and_classify_reset = incomplete_reset
+            result = runner.execute()
+
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertEqual(result["outcome_classification"], "STAND_BASELINE_OBSERVATION_INCOMPLETE")
+        self.assertEqual(result["m1_status"], "NOT_RUN_STANDING_BASELINE_INCOMPLETE")
         self.assertNotIn("first_motion_after_standing_gate", events)
 
 

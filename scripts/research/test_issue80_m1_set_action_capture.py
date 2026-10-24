@@ -16,6 +16,7 @@ from issue80_m1_set_action_capture import (
     command_is_effective,
     installed_body_stand_value,
     set_action_record,
+    standing_observation_window,
     summarize_takeover_timing,
     write_complete_json,
 )
@@ -30,6 +31,25 @@ class FakeMessage:
 
 
 class SetActionCaptureTests(unittest.TestCase):
+    def test_standing_baseline_duration_starts_at_positive_stand_readback(self) -> None:
+        window = standing_observation_window(
+            reset_dispatch_monotonic_ns=1_000_000_000,
+            stand_default_confirmed_monotonic_ns=4_500_000_000,
+            duration_s=8.0,
+        )
+        self.assertEqual(window["anchor"], "STAND_DEFAULT_GETMC_READBACK")
+        self.assertEqual(window["anchor_monotonic_ns"], 4_500_000_000)
+        self.assertEqual(window["deadline_monotonic_ns"], 12_500_000_000)
+
+    def test_unconfirmed_stand_cannot_be_reported_as_an_eight_second_standing_window(self) -> None:
+        window = standing_observation_window(
+            reset_dispatch_monotonic_ns=1_000_000_000,
+            stand_default_confirmed_monotonic_ns=None,
+            duration_s=8.0,
+        )
+        self.assertEqual(window["anchor"], "RESET_FALLBACK_NO_CONFIRMED_STAND")
+        self.assertEqual(window["deadline_monotonic_ns"], 9_000_000_000)
+
     def test_parent_cannot_observe_a_partially_written_result(self) -> None:
         original_dump = json.dump
         with tempfile.TemporaryDirectory() as directory:
