@@ -17,6 +17,8 @@ from issue80_m1_auto_reset_run import (
     RunDeadline,
     first_post_action_fall,
     standing_baseline_observation_passes,
+    standing_warmup_composite_result,
+    validate_stand_convergence_arguments,
 )
 from issue80_mujoco_x11_reset import (
     NATIVE_RESET_BUTTON_PIXEL_POINTS,
@@ -176,6 +178,8 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         posture_ok: bool = True,
         standing_only: bool = False,
         m1_result: dict | None = None,
+        warmup_status: str = "PASS",
+        require_stand_warmup_composite: bool = False,
     ) -> BoundedRun:
         class RecordingRun(BoundedRun):
             def stage_research_scripts(self) -> None:
@@ -240,6 +244,10 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
                     },
                 }
 
+            def evaluate_standing_warmup(self) -> dict[str, str]:
+                events.append("stand_warmup_composite")
+                return {"status": warmup_status}
+
             def cleanup(self) -> None:
                 events.append("cleanup")
 
@@ -250,7 +258,24 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
             maintainer_authorized_standing_takeover=standing_only,
             attempt_id="test-attempt",
             max_runtime_s=30.0,
+            require_stand_warmup_composite=require_stand_warmup_composite,
         ))
+
+    def test_failed_stand_warmup_composite_prevents_m1_child_execution(self) -> None:
+        events: list[str] = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(
+                events, temp_dir, require_stand_warmup_composite=True,
+                warmup_status="FAIL",
+            )
+            runner.args.require_stand_warmup_composite = True
+            result = runner.execute()
+
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertEqual(result["m1_status"], "NOT_RUN_STAND_WARMUP_COMPOSITE_FAILED")
+        self.assertIn("stand_warmup_composite", events)
+        self.assertNotIn("first_motion_after_standing_gate", events)
+        self.assertLess(events.index("stand_warmup_composite"), events.index("cleanup"))
 
     def test_immediate_post_reset_gate_uses_fresh_pose_and_keeps_raw_fsm_body_values(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -455,6 +480,66 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         observation["observed_duration_s"] = 8.0
         observation["anchor"] = "RESET_FALLBACK_NO_CONFIRMED_STAND"
         self.assertFalse(standing_baseline_observation_passes(observation))
+
+    def test_stand_warmup_gate_requires_capture_and_final_physical_and_target_pass(self) -> None:
+        readback = {
+            "transport_state": "RESPONSE_RECEIVED",
+            "action_desc": "STAND_DEFAULT",
+            "action_status_value": 100,
+        }
+        observation = {
+            "anchor": "STAND_DEFAULT_GETMC_READBACK",
+            "observer_status": "STAND_DEFAULT_BASELINE_COMPLETE",
+            "complete": True,
+            "observed_duration_s": 8.0,
+            "first_unsafe_monotonic_ns": None,
+            "expected_body_status": 1,
+            "common_mode_desc_values": ["STAND_DEFAULT"],
+            "common_mode_status_values": [100],
+            "raw_fsm_state_values": [1, 4],
+            "raw_body_status_values": [1],
+            "common_state_sample_count": 80,
+            "initial_stand_mode_readback": readback,
+            "final_stand_mode_readback": readback,
+        }
+        analysis = {
+            "minimum_duration_pass": True,
+            "final_2s_window": {
+                "start_monotonic_s": 8.0,
+                "end_monotonic_s": 10.0,
+                "physical_state_gate": {"status": "PASS"},
+                "controller_target_stability_gate": {
+                    "status": "PASS", "max_target_range_rad": 0.001,
+                },
+            },
+        }
+        result = standing_warmup_composite_result(observation, analysis)
+        self.assertEqual(result["status"], "PASS")
+        analysis["final_2s_window"]["controller_target_stability_gate"]["status"] = "FAIL"
+        self.assertEqual(standing_warmup_composite_result(observation, analysis)["status"], "FAIL")
+
+    def test_extended_b_convergence_observation_is_explicitly_fixed_at_existing_seven_second_cap(self) -> None:
+        args = argparse.Namespace(
+            maintainer_authorized_first_motion=True,
+            run65_waypoint_b_extended_diagnostic=True,
+            require_stand_warmup_composite=True,
+            post_locomotion_convergence_observation_s=7.0,
+            extra_stop_observation=0.0,
+        )
+        profile = validate_stand_convergence_arguments(args)
+        self.assertEqual(profile["status"], "SIMULATION_ONLY_POST_LOCOMOTION_STAND_CONVERGENCE_OBSERVATION")
+        self.assertEqual(profile["extra_stop_observation_s"], 7.0)
+        self.assertEqual(args.extra_stop_observation, 7.0)
+
+        args.post_locomotion_convergence_observation_s = 7.1
+        args.extra_stop_observation = 0.0
+        with self.assertRaisesRegex(ValueError, "fixed at 7 s"):
+            validate_stand_convergence_arguments(args)
+
+        args.post_locomotion_convergence_observation_s = 7.0
+        args.extra_stop_observation = 5.0
+        with self.assertRaisesRegex(ValueError, "do not combine"):
+            validate_stand_convergence_arguments(args)
 
     def test_required_standing_baseline_fails_closed_without_eight_confirmed_seconds(self) -> None:
         events: list[str] = []

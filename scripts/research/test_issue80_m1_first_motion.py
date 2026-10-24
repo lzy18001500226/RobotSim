@@ -58,6 +58,7 @@ from issue80_m1_first_motion import (
     McFsmStateCode,
     ZERO_STOP_MIN_S,
     ZERO_STOP_MIN_MESSAGES,
+    validate_b_post_locomotion_observation,
     VerifiedMcRuntimeIdentity,
     capture_dds_qos_override_environment,
     classify_source_registration,
@@ -2543,6 +2544,67 @@ class PhysicalStopGateTests(unittest.TestCase):
         self.assertEqual(physical["status"], "PASS")
         self.assertFalse(physical["mc_stop_ack"])
         self.assertEqual(physical["legacy_baseline_stop_gate"], "unchanged; see post_stop_forward_tail.status")
+
+    def test_rolling_composite_windows_retain_the_existing_two_second_gate(self):
+        result = evaluate_physical_stop_gate(
+            self._fixture(),
+            zero_start_monotonic_s=5.0,
+            stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "PASS")
+        windows = result["rolling_post_stand_windows"]
+        self.assertEqual(result["rolling_post_stand_window_s"], 2.0)
+        self.assertEqual(result["rolling_post_stand_step_s"], 0.5)
+        self.assertTrue(windows)
+        self.assertEqual(windows[0]["composite_gate"]["status"], "PASS")
+        self.assertEqual(windows[-1]["window_start_monotonic_s"], result["final_window"]["window_start_monotonic_s"])
+        self.assertEqual(result["first_target_stable_window"]["composite_gate"]["status"], "PASS")
+        self.assertEqual(result["first_composite_stop_window"]["controller_target_stability_gate"]["threshold_rad"], 0.02)
+
+    def test_rolling_windows_show_target_convergence_without_rearming_on_physical_only(self):
+        rows = self._fixture()
+        rows.extend(self._sample(t / 20.0) for t in range(161, 201))
+        for row in rows:
+            if row.get("phase") != "post-stop" or row["sample_monotonic_s"] < 6.0:
+                continue
+            t = row["sample_monotonic_s"]
+            target = 0.5 + 0.03 * min(1.0, max(0.0, t - 6.0))
+            next(joint for joint in row["mc_leg_command"]["joints"] if joint["name"] == "right_knee_joint")["position"] = target
+
+        result = evaluate_physical_stop_gate(
+            rows, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["controller_target_stability_gate"]["status"], "PASS")
+        self.assertAlmostEqual(
+            result["first_target_stable_window"]["requested_start_after_zero_s"], 1.5,
+        )
+        self.assertEqual(result["first_composite_stop_window"]["composite_gate"]["status"], "PASS")
+        self.assertEqual(
+            result["first_composite_stop_window"]["controller_target_stability_gate"]["threshold_rad"],
+            0.02,
+        )
+
+    def test_b_convergence_observation_is_a_separately_bounded_seven_second_profile(self):
+        baseline = validate_b_post_locomotion_observation(
+            5.0, extended_b=True, convergence_diagnostic=False,
+        )
+        convergence = validate_b_post_locomotion_observation(
+            7.0, extended_b=True, convergence_diagnostic=True,
+        )
+        self.assertEqual(baseline["extra_zero_observation_s"], 5.0)
+        self.assertEqual(convergence["extra_zero_observation_s"], 7.0)
+        self.assertFalse(convergence["stop_thresholds_changed"])
+        with self.assertRaisesRegex(ValueError, "exactly 7"):
+            validate_b_post_locomotion_observation(
+                7.1, extended_b=True, convergence_diagnostic=True,
+            )
+        with self.assertRaisesRegex(ValueError, "requires extended waypoint B"):
+            validate_b_post_locomotion_observation(
+                7.0, extended_b=False, convergence_diagnostic=True,
+            )
 
     def test_physical_gate_fails_unsafe_mode_freshness_and_motion(self):
         cases = (

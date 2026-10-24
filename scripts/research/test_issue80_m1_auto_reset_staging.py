@@ -175,6 +175,14 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(option(extended_command, "--extra-stop-observation"), "5.0")
         self.assertEqual(option(extended_command, "--forward-speed"), "0.2")
 
+        args.extra_stop_observation = 7.0
+        args.post_locomotion_convergence_observation_s = 7.0
+        convergence_command = shlex.split(
+            build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--route-waypoint-b-post-locomotion-convergence", convergence_command)
+        self.assertEqual(option(convergence_command, "--extra-stop-observation"), "7.0")
+
     def test_route_workcell_preflight_accepts_only_pinned_infinite_floor_scene(self):
         from issue80_m1_auto_reset_run import ROUTE_SCENE_RELATIVE, ROUTE_X2_RELATIVE
 

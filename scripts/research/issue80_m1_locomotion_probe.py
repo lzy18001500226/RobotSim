@@ -56,7 +56,7 @@ from issue80_m1_first_motion import (
     stand_mode_readback_confirmed,
     summarize_stationary_physical_state,
     validate_local_sim_publishers, validate_first_motion_authorization,
-    validate_runtime_scope,
+    validate_runtime_scope, validate_b_post_locomotion_observation,
 )
 from issue80_coordinated_pose_goal import (
     APPROACH,
@@ -3030,7 +3030,12 @@ class FocusedM1Diagnostic(Node):
                         forward_command_m_s=current_plan.forward_m_s,
                         pulse_duration_s=pulse_duration_s,
                         max_pulse_duration_s=window_cap_s,
-                        extra_post_stop_observe_s=5.0,
+                        extra_post_stop_observe_s=float(self.args.extra_stop_observation),
+                        extra_post_stop_observe_limit_s=(
+                            MAX_EXTRA_POST_STOP_OBSERVE_S
+                            if getattr(self.args, "route_waypoint_b_post_locomotion_convergence", False)
+                            else 5.0
+                        ),
                         after_zero_stop=self.request_postwalk_stand_once,
                         shutdown_event=self.interrupted,
                         on_sample=lambda phase, snapshot, n=window_index + 1: self._trace_first_motion_sample(
@@ -4562,6 +4567,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     ))
     if selected_motion_modes > 1:
         raise ValueError("select only one of turning, right-turn, or point-goal diagnostics")
+    if getattr(args, "route_waypoint_b_post_locomotion_convergence", False) and not (
+        getattr(args, "route_integration", False)
+        and getattr(args, "route_waypoint_b_only", False)
+        and getattr(args, "route_waypoint_b_extended_diagnostic", False)
+    ):
+        raise ValueError("post-locomotion convergence observation requires extended waypoint-B route integration")
     profile: dict[str, Any] = {"point_goal": False}
     if getattr(args, "route_integration", False):
         profile["route_integration"] = True
@@ -4572,17 +4583,31 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         waypoint_b_extended_diagnostic = bool(
             getattr(args, "route_waypoint_b_extended_diagnostic", False)
         )
+        waypoint_b_post_locomotion_convergence = bool(
+            getattr(args, "route_waypoint_b_post_locomotion_convergence", False)
+        )
         profile["route_waypoint_b_only"] = waypoint_b_only
         profile["route_waypoint_b_extended_diagnostic"] = waypoint_b_extended_diagnostic
+        profile["route_waypoint_b_post_locomotion_convergence"] = waypoint_b_post_locomotion_convergence
         if (waypoint_b_short_diagnostic or waypoint_b_extended_diagnostic) and not waypoint_b_only:
             raise ValueError("waypoint-B diagnostics require --route-waypoint-b-only")
         if waypoint_b_short_diagnostic and waypoint_b_extended_diagnostic:
             raise ValueError("select only one waypoint-B diagnostic profile")
+        if waypoint_b_post_locomotion_convergence and not (
+            waypoint_b_only and waypoint_b_extended_diagnostic
+        ):
+            raise ValueError("post-locomotion convergence observation requires extended waypoint-B-only mode")
         if waypoint_b_only:
+            convergence_observation = validate_b_post_locomotion_observation(
+                args.extra_stop_observation,
+                extended_b=waypoint_b_extended_diagnostic,
+                convergence_diagnostic=waypoint_b_post_locomotion_convergence,
+            )
+            expected_b_observation_s = convergence_observation["extra_zero_observation_s"]
             if args.route_turn_qualification_evidence:
                 raise ValueError("waypoint-B-only mode must not request turn qualification evidence")
             if (
-                args.extra_stop_observation != 5.0
+                args.extra_stop_observation != expected_b_observation_s
                 or args.pulse_duration != 1.0
                 or args.forward_speed != 0.2
                 or args.ramp_duration_s != 0.0
@@ -4596,7 +4621,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 or not args.zero_only_stop
             ):
                 raise ValueError(
-                    "waypoint-B-only profile requires fixed 5 s post-stop observation, "
+                    f"waypoint-B-only profile requires fixed {expected_b_observation_s:g} s post-stop observation, "
                     "default generic pulse fields, 0.2 m/s safety guard, 3.5 s STAND wait, "
                     "and zero-only stop"
                 )
@@ -4651,6 +4676,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                     if waypoint_b_extended_diagnostic else
                     "NOT_SATISFIED_BY_SHORT_DIAGNOSTIC"
                     if waypoint_b_short_diagnostic else "THIS_IS_ORIGINAL_0_40_M_ACCEPTANCE"
+                ),
+                "post_locomotion_convergence_observation": (
+                    convergence_observation if waypoint_b_post_locomotion_convergence else None
                 ),
             })
         else:
@@ -4837,6 +4865,7 @@ def main() -> int:
     first.add_argument("--route-waypoint-b-only", action="store_true")
     first.add_argument("--route-waypoint-b-short-diagnostic", action="store_true")
     first.add_argument("--route-waypoint-b-extended-diagnostic", action="store_true")
+    first.add_argument("--route-waypoint-b-post-locomotion-convergence", action="store_true")
     first.add_argument("--route-turn-qualification-evidence", default=None)
     first.add_argument("--point-goal-diagnostic", action="store_true")
     first.add_argument("--heading-change-rad", type=float, default=0.0)

@@ -45,6 +45,7 @@ BASELINE_SAMPLE_PERIOD_S = 1.0 / PUBLISH_HZ
 # A second, physics-based stop check. Keep the empirical legacy envelope above
 # unchanged; this gate evaluates a final 2 s MuJoCo-state hold after MC readback.
 PHYSICAL_STOP_WINDOW_S = 2.0
+PHYSICAL_STOP_ROLLING_STEP_S = 0.5
 PHYSICAL_STOP_MIN_WINDOW_S = 1.90
 PHYSICAL_STOP_MIN_SAMPLES = 20
 PHYSICAL_STOP_MAX_SAMPLE_GAP_S = 0.15
@@ -63,6 +64,30 @@ PHYSICAL_STOP_MAX_JOINT_RANGE_RAD = 0.02
 PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD = 0.02
 PHYSICAL_STOP_TARGET_STABILITY_WINDOW_S = 1.0
 PHYSICAL_STOP_TARGET_STABILITY_RANGE_RAD = 0.01
+
+
+def validate_b_post_locomotion_observation(
+    extra_observation_s: float,
+    *,
+    extended_b: bool,
+    convergence_diagnostic: bool,
+) -> dict[str, Any]:
+    """Keep legacy B at 5 s; allow the named convergence diagnostic only at the existing 7 s cap."""
+    if convergence_diagnostic and not extended_b:
+        raise ValueError("post-locomotion convergence observation requires extended waypoint B")
+    expected = MAX_EXTRA_POST_STOP_OBSERVE_S if convergence_diagnostic else 5.0
+    if not math.isfinite(float(extra_observation_s)) or abs(float(extra_observation_s) - expected) > 1e-9:
+        raise ValueError(f"waypoint-B post-stop observation must be exactly {expected:g} seconds")
+    return {
+        "classification": (
+            "SIMULATION_ONLY_POST_LOCOMOTION_STAND_CONVERGENCE_OBSERVATION"
+            if convergence_diagnostic else "STANDARD_EXTENDED_B_STOP_OBSERVATION"
+        ),
+        "extra_zero_observation_s": expected,
+        "max_extra_zero_observation_s": MAX_EXTRA_POST_STOP_OBSERVE_S if convergence_diagnostic else 5.0,
+        "stop_thresholds_changed": False,
+        "composite_rearm_gate_unchanged": True,
+    }
 # Run64's left arc measured 0.0911 rad at 0.07 rad/s for 4.75 s. A 0.075
 # rad/s, 4.5 s arc preserves the measured heading while a 0.5 s warmup gives
 # both directions time to confirm source/mode; each side remains 5 s total.
@@ -2088,6 +2113,82 @@ def _joint_stop_window_diagnostics(rows: list[Mapping[str, Any]]) -> dict[str, A
     }
 
 
+def _rolling_physical_stop_windows(
+    rows: list[Mapping[str, Any]], *, zero_time: float, baseline_body_status: Any = None,
+) -> list[dict[str, Any]]:
+    """Record unchanged 2 s physical/target gates at 0.5 s spacing after STAND."""
+    if len(rows) < 2:
+        return []
+    ordered = sorted(rows, key=lambda row: float(row["sample_monotonic_s"]))
+    first = float(ordered[0]["sample_monotonic_s"])
+    last = float(ordered[-1]["sample_monotonic_s"])
+    final_start = last - PHYSICAL_STOP_WINDOW_S
+    starts: list[float] = []
+    start = first
+    while start <= final_start + 1e-9:
+        starts.append(start)
+        start += PHYSICAL_STOP_ROLLING_STEP_S
+    if final_start >= first and (not starts or abs(starts[-1] - final_start) > 1e-6):
+        starts.append(final_start)
+
+    windows: list[dict[str, Any]] = []
+    for index, requested_start in enumerate(starts):
+        window_rows = [
+            row for row in ordered
+            if requested_start <= float(row["sample_monotonic_s"])
+            <= requested_start + PHYSICAL_STOP_WINDOW_S
+        ]
+        entry: dict[str, Any] = {
+            "window_index": index,
+            "requested_start_monotonic_s": requested_start,
+            "requested_start_after_zero_s": requested_start - zero_time,
+            "window_duration_s": PHYSICAL_STOP_WINDOW_S,
+            "sample_count": len(window_rows),
+            "evaluation": "NOT_EVALUATED",
+        }
+        try:
+            metrics = _physical_window_metrics(window_rows)
+            violations = _physical_stop_violations(
+                metrics, baseline_body_status=baseline_body_status,
+            )
+            physical_violations = [
+                item for item in violations if item != "joint_target_not_settled"
+            ]
+            joint = _joint_stop_window_diagnostics(window_rows)
+            right_ankle = next(
+                (item for item in joint["per_joint"] if item["name"] == "right_ankle_pitch_joint"),
+                None,
+            )
+            target_status = "FAIL" if "joint_target_not_settled" in violations else "PASS"
+            physical_status = "FAIL" if physical_violations else "PASS"
+            entry.update({
+                "evaluation": "COMPLETE",
+                "window_start_monotonic_s": metrics["window_start_monotonic_s"],
+                "window_end_monotonic_s": metrics["window_end_monotonic_s"],
+                "physical_state_gate": {"status": physical_status, "violations": physical_violations},
+                "controller_target_stability_gate": {
+                    "status": target_status,
+                    "threshold_rad": PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD,
+                    "max_joint_target_range_rad": metrics["max_joint_command_range_rad"],
+                    "violations": [item for item in violations if item == "joint_target_not_settled"],
+                },
+                "composite_gate": {"status": "PASS" if not violations else "FAIL", "violations": violations},
+                "raw_mode_fsm_body_values": {
+                    "get_mode": metrics["mode_desc_values"],
+                    "common_mode": metrics["common_mode_desc_values"],
+                    "fsm": metrics["fsm_state_values"],
+                    "body_status": metrics["body_status_values"],
+                },
+                "right_ankle_pitch_joint": right_ankle,
+                "per_joint": joint["per_joint"],
+                "metrics": metrics,
+            })
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            entry["reason"] = f"{type(exc).__name__}: {exc}"
+        windows.append(entry)
+    return windows
+
+
 def _first_stable_joint_target_window(
     samples: list[Mapping[str, Any]], *, after_monotonic_s: float,
 ) -> dict[str, Any]:
@@ -2257,6 +2358,24 @@ def evaluate_physical_stop_gate(
     baseline_body_status = (
         baseline_state_summary.get("body_status")
         if isinstance(baseline_state_summary, Mapping) else None
+    )
+    rolling_windows = _rolling_physical_stop_windows(
+        after_stand,
+        zero_time=zero_time,
+        baseline_body_status=baseline_body_status,
+    )
+    result["rolling_post_stand_windows"] = rolling_windows
+    result["rolling_post_stand_window_s"] = PHYSICAL_STOP_WINDOW_S
+    result["rolling_post_stand_step_s"] = PHYSICAL_STOP_ROLLING_STEP_S
+    result["first_target_stable_window"] = next(
+        (window for window in rolling_windows
+         if window.get("controller_target_stability_gate", {}).get("status") == "PASS"),
+        None,
+    )
+    result["first_composite_stop_window"] = next(
+        (window for window in rolling_windows
+         if window.get("composite_gate", {}).get("status") == "PASS"),
+        None,
     )
     final_violations = _physical_stop_violations(
         final_metrics, baseline_body_status=baseline_body_status,

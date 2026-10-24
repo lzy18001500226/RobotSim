@@ -23,11 +23,14 @@ from pathlib import Path
 from typing import Any
 
 from issue80_m1_first_motion import (
+    MAX_EXTRA_POST_STOP_OBSERVE_S,
     MODE_STAND,
     TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S,
     TURN_MIN_HEADING_CHANGE_RAD, TURN_PULSE_S,
     ZERO_STOP_MIN_MESSAGES,
+    validate_b_post_locomotion_observation,
 )
+from issue80_stand_baseline_analysis import analyze_standing_trace
 from issue80_coordinated_pose_goal import (
     POSE_GOAL_APPROACH_WARMUP_S,
     POSE_GOAL_CURVE_FORWARD_M_S,
@@ -178,6 +181,69 @@ def standing_baseline_observation_passes(
         and not isinstance(common_sample_count, bool)
         and common_sample_count >= 20
     )
+
+
+def standing_warmup_composite_result(
+    observation: Mapping[str, Any] | None,
+    analysis: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Require an 8 s capture and a passing final 2 s physical+target window."""
+    final_window = analysis.get("final_2s_window") if isinstance(analysis, Mapping) else None
+    physical = final_window.get("physical_state_gate") if isinstance(final_window, Mapping) else None
+    targets = final_window.get("controller_target_stability_gate") if isinstance(final_window, Mapping) else None
+    capture_pass = standing_baseline_observation_passes(observation)
+    physical_pass = isinstance(physical, Mapping) and physical.get("status") == "PASS"
+    target_pass = isinstance(targets, Mapping) and targets.get("status") == "PASS"
+    minimum_duration_pass = (
+        isinstance(analysis, Mapping) and analysis.get("minimum_duration_pass") is True
+    )
+    return {
+        "status": "PASS" if capture_pass and minimum_duration_pass and physical_pass and target_pass else "FAIL",
+        "classification": "SIMULATION_ONLY_STAND_WARMUP_COMPOSITE",
+        "capture_completeness": "PASS" if capture_pass else "FAIL",
+        "minimum_eight_second_observation": "PASS" if minimum_duration_pass else "FAIL",
+        "final_physical_state_gate": "PASS" if physical_pass else "FAIL",
+        "final_controller_target_stability_gate": "PASS" if target_pass else "FAIL",
+        "final_window_start_monotonic_s": final_window.get("start_monotonic_s") if isinstance(final_window, Mapping) else None,
+        "final_window_end_monotonic_s": final_window.get("end_monotonic_s") if isinstance(final_window, Mapping) else None,
+        "final_max_joint_target_range_rad": (
+            targets.get("max_target_range_rad") if isinstance(targets, Mapping) else None
+        ),
+        "original_stop_thresholds_preserved": True,
+    }
+
+
+def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, Any]:
+    """Validate the single extended-B post-locomotion observation profile before runtime."""
+    require_warmup = bool(getattr(args, "require_stand_warmup_composite", False))
+    extended_b = bool(getattr(args, "run65_waypoint_b_extended_diagnostic", False))
+    post_observation = getattr(args, "post_locomotion_convergence_observation_s", None)
+    if require_warmup and (
+        not getattr(args, "maintainer_authorized_first_motion", False) or not extended_b
+    ):
+        raise ValueError("composite stand warmup gate is limited to the authorized extended-B run")
+    if post_observation is None:
+        if require_warmup:
+            raise ValueError("composite stand warmup diagnostic requires the explicit post-locomotion observation horizon")
+        return {"status": "STANDARD_PROFILE", "extra_stop_observation_s": args.extra_stop_observation}
+    if not extended_b or not require_warmup:
+        raise ValueError("post-locomotion convergence observation requires extended-B and the composite warmup gate")
+    if (
+        not math.isfinite(float(post_observation))
+        or abs(float(post_observation) - MAX_EXTRA_POST_STOP_OBSERVE_S) > 1e-9
+        or float(args.extra_stop_observation) != 0.0
+    ):
+        raise ValueError(
+            f"post-locomotion convergence observation is fixed at {MAX_EXTRA_POST_STOP_OBSERVE_S:g} s; "
+            "do not combine it with generic --extra-stop-observation"
+        )
+    args.extra_stop_observation = float(post_observation)
+    return {
+        "status": "SIMULATION_ONLY_POST_LOCOMOTION_STAND_CONVERGENCE_OBSERVATION",
+        "extra_stop_observation_s": float(post_observation),
+        "maximum_extra_observation_s": MAX_EXTRA_POST_STOP_OBSERVE_S,
+        "existing_composite_stop_gate_unchanged": True,
+    }
 
 
 class RunDeadline(TimeoutError):
@@ -624,6 +690,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             " --route-integration --route-waypoint-b-only "
             "--route-waypoint-b-extended-diagnostic"
         )
+        if getattr(args, "post_locomotion_convergence_observation_s", None) is not None:
+            command[-1] += " --route-waypoint-b-post-locomotion-convergence"
     elif getattr(args, "run65_waypoint_b_short_diagnostic", False):
         command[-1] += (
             " --route-integration --route-waypoint-b-only "
@@ -2347,6 +2415,35 @@ class BoundedRun:
         self.reset_classification = str(self.reset_analysis.get("classification","ANALYSIS_FAILED"))
         return self.reset_analysis
 
+    def evaluate_standing_warmup(self) -> dict[str, Any]:
+        """Analyze the completed post-STAND physics window before any motion command."""
+        trace_path = self.evidence / "reset_state_trace.jsonl"
+        takeover_path = self.evidence / "set_action_capture_result.json"
+        observer_path = self.evidence / "reset_state_summary.json"
+        if not all(path.is_file() for path in (trace_path, takeover_path, observer_path)):
+            raise RuntimeError("required fresh standing warmup trace/results are missing")
+        trace_rows = []
+        for line in trace_path.read_text(encoding="utf-8").splitlines():
+            try:
+                trace_rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        takeover = json.loads(takeover_path.read_text(encoding="utf-8"))
+        observer = json.loads(observer_path.read_text(encoding="utf-8"))
+        analysis = analyze_standing_trace(trace_rows, takeover, observer)
+        gate = standing_warmup_composite_result(
+            observer.get("standing_baseline_observation"),
+            analysis,
+        )
+        gate["analysis_classification"] = analysis.get("classification")
+        gate["trace_fsm_reconciliation"] = analysis.get("fsm_trace_reconciliation")
+        gate["zero_velocity_publisher_or_command_created"] = False
+        output = self.evidence / "standing_baseline_warmup_analysis.json"
+        with output.open("x", encoding="utf-8") as stream:
+            json.dump({"schema": "robotsim.issue80.stand-warmup-composite.v1", "gate": gate, "analysis": analysis}, stream, indent=2)
+            stream.write("\n")
+        return gate
+
     def run_m1(self) -> None:
         if not self.args.maintainer_authorized_first_motion:
             self.m1_result = {
@@ -2363,7 +2460,15 @@ class BoundedRun:
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
         command = build_m1_child_command(self.args, self.container)
-        result = self.run("m1_first_motion_diagnostic", command, timeout_s=min(45.0, self.remaining()), check=False)
+        child_timeout_s = (
+            75.0
+            if getattr(self.args, "post_locomotion_convergence_observation_s", None) is not None
+            else 45.0
+        )
+        result = self.run(
+            "m1_first_motion_diagnostic", command,
+            timeout_s=min(child_timeout_s, self.remaining()), check=False,
+        )
         result_file = self.evidence / "m1_first_motion_result.json"
         if result_file.exists():
             try:
@@ -2630,6 +2735,13 @@ class BoundedRun:
                 self.args, "turning_reassessment_provenance", None
             ),
             "outcome_classification": "STANDING_CONTROL_NOT_READY",
+            "standing_warmup_composite": None,
+            "post_locomotion_convergence_observation_s": getattr(
+                self.args, "post_locomotion_convergence_observation_s", None
+            ),
+            "post_locomotion_convergence_profile": getattr(
+                self.args, "post_locomotion_convergence_profile", None
+            ),
             "fault": None,
         }
         standing_only = bool(getattr(self.args, "maintainer_authorized_standing_takeover", False))
@@ -2673,6 +2785,18 @@ class BoundedRun:
             if reset.get("classification") != "AUTO_RESET_PASS":
                 self.outcome_classification = "STANDING_CONTROL_NOT_READY"
                 raise RuntimeError(f"post-SD standing safety gate failed: {reset.get('classification')}")
+
+            if getattr(self.args, "require_stand_warmup_composite", False):
+                warmup = self.evaluate_standing_warmup()
+                result["standing_warmup_composite"] = warmup
+                if warmup.get("status") != "PASS":
+                    self.outcome_classification = "STAND_WARMUP_COMPOSITE_FAILED"
+                    result["m1_status"] = "NOT_RUN_STAND_WARMUP_COMPOSITE_FAILED"
+                    result["outcome_classification"] = self.outcome_classification
+                    result["status"] = "BLOCKED"
+                    result["fault"] = "original final two-second stand warmup composite did not pass"
+                    result["next_motion_stage"] = "NOT_RUN_STAND_WARMUP_COMPOSITE_FAILED"
+                    return result
 
             if standing_only and not first_motion_authorized:
                 # This authorization is limited to the standing takeover gate.
@@ -2885,6 +3009,17 @@ def main() -> int:
         help="fail closed unless 8 s are observed after positive STAND_DEFAULT GetMcAction readback",
     )
     parser.add_argument(
+        "--require-stand-warmup-composite",
+        action="store_true",
+        help="fail closed before M1 unless the post-STAND 8 s warmup and final 2 s physical/target gates pass",
+    )
+    parser.add_argument(
+        "--post-locomotion-convergence-observation-s",
+        type=float,
+        default=None,
+        help="explicit SIMULATION_ONLY extended-B zero-only observation; this task fixes it at the existing 7 s cap",
+    )
+    parser.add_argument(
         "--capture-mc-rl-debug",
         action="store_true",
         help="start the optional version-matched read-only McRLDebug observer before M1 motion",
@@ -3034,9 +3169,17 @@ def main() -> int:
         or args.maintainer_authorized_first_motion
     ):
         parser.error("complete STAND baseline gate is only valid for standing-takeover-only runs")
+    try:
+        convergence_profile = validate_stand_convergence_arguments(args)
+    except (TypeError, ValueError) as exc:
+        parser.error(str(exc))
+    if convergence_profile.get("status") == "SIMULATION_ONLY_POST_LOCOMOTION_STAND_CONVERGENCE_OBSERVATION":
+        args.post_locomotion_convergence_profile = convergence_profile
     extra_observation_limit = (
         POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
         if args.run65_ground_truth_point_goal
+        else MAX_EXTRA_POST_STOP_OBSERVE_S
+        if args.post_locomotion_convergence_observation_s is not None
         else 5.0
     )
     if not 0.0 <= args.extra_stop_observation <= extra_observation_limit:
@@ -3138,8 +3281,17 @@ def main() -> int:
             or args.run65_waypoint_b_short_diagnostic
             or args.run65_waypoint_b_extended_diagnostic
         ):
+            expected_b_observation_s = (
+                MAX_EXTRA_POST_STOP_OBSERVE_S
+                if args.post_locomotion_convergence_observation_s is not None else 5.0
+            )
+            validate_b_post_locomotion_observation(
+                args.extra_stop_observation,
+                extended_b=bool(args.run65_waypoint_b_extended_diagnostic),
+                convergence_diagnostic=args.post_locomotion_convergence_observation_s is not None,
+            )
             if (
-                abs(args.extra_stop_observation - 5.0) > 1e-9
+                abs(args.extra_stop_observation - expected_b_observation_s) > 1e-9
                 or args.pulse_duration != 1.0
                 or abs(args.forward_speed - 0.2) > 1e-9
                 or args.ramp_duration_s != 0.0
@@ -3149,7 +3301,7 @@ def main() -> int:
                 or args.startup_transition_timeout_s != 0.0
             ):
                 parser.error(
-                    "waypoint-B-only route requires the fixed 5-second zero-stop observation "
+                    f"waypoint-B-only route requires its fixed {expected_b_observation_s:g}-second zero-stop observation "
                     "and default generic pulse fields"
                 )
         else:
