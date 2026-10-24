@@ -24,9 +24,14 @@ from issue80_route_motion_bridge import (
     RouteMotionBridge,
     RouteMotionBridgeError,
     RuntimeReadiness,
+    WAYPOINT_B_MAX_WINDOWS,
+    WAYPOINT_B_POSITION_TOLERANCE_M,
+    WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M,
     build_short_right_corner_route,
     measured_m1_nonzero_window_s,
+    waypoint_b_arrival_passes,
     validate_physical_stop_evidence,
+    waypoint_b_window_budget_passes,
 )
 
 
@@ -117,6 +122,71 @@ def turn_directive(**overrides) -> RouteDirective:
 
 
 class RouteMotionBridgeTests(unittest.TestCase):
+    def test_short_diagnostic_waypoint_is_inside_tolerance_of_measured_stop_pose(self) -> None:
+        start = make_pose(
+            x=0.018430078705869258,
+            y=0.0034944242082286378,
+            yaw=0.04873396980315637,
+        )
+        route = build_short_right_corner_route(
+            route_id="short-waypoint-diagnostic",
+            start_pose=start,
+            robot_footprint_radius_m=0.41565748847422734,
+            local_clear_radius_m=2.0,
+            right_turn_qualified=False,
+            waypoint_b_only=True,
+            waypoint_b_distance_m=WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M,
+        )
+        measured_stop = make_pose(
+            x=0.12341386802163214,
+            y=0.0021726180301854946,
+            yaw=-0.022873450552313584,
+            stamp=2_000_000_000,
+            received=30.0,
+        )
+        target = route.steps[0]
+        dx = measured_stop.x_m - start.x_m
+        dy = measured_stop.y_m - start.y_m
+        forward = dx * math.cos(start.yaw_rad) + dy * math.sin(start.yaw_rad)
+        cross_track = -dx * math.sin(start.yaw_rad) + dy * math.cos(start.yaw_rad)
+        yaw_delta = math.atan2(
+            math.sin(measured_stop.yaw_rad - start.yaw_rad),
+            math.cos(measured_stop.yaw_rad - start.yaw_rad),
+        )
+        target_error = math.hypot(target.x_m - measured_stop.x_m, target.y_m - measured_stop.y_m)
+
+        self.assertEqual(len(route.steps), 1)
+        self.assertEqual(target.stop_behavior.value, "VERIFY_PHYSICAL_STOP")
+        self.assertAlmostEqual(target.position_tolerance_m, WAYPOINT_B_POSITION_TOLERANCE_M)
+        self.assertAlmostEqual(math.hypot(target.x_m - start.x_m, target.y_m - start.y_m), 0.20)
+        self.assertLess(target_error, WAYPOINT_B_POSITION_TOLERANCE_M)
+        self.assertLess(abs(cross_track), 0.05)
+        self.assertAlmostEqual(forward, 0.1047947543806907)
+        self.assertGreaterEqual(
+            forward,
+            WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M - WAYPOINT_B_POSITION_TOLERANCE_M,
+        )
+        self.assertAlmostEqual(yaw_delta, -0.071607420356472)
+
+    def test_waypoint_b_window_budget_separates_short_diagnostic_from_original_acceptance(self):
+        self.assertFalse(waypoint_b_window_budget_passes(1, short_diagnostic=False))
+        self.assertTrue(waypoint_b_window_budget_passes(2, short_diagnostic=False))
+        self.assertTrue(waypoint_b_window_budget_passes(1, short_diagnostic=True))
+        self.assertTrue(waypoint_b_window_budget_passes(2, short_diagnostic=True))
+        self.assertFalse(waypoint_b_window_budget_passes(3, short_diagnostic=True))
+        self.assertFalse(waypoint_b_window_budget_passes(0, short_diagnostic=True))
+        self.assertFalse(waypoint_b_window_budget_passes(True, short_diagnostic=True))
+        self.assertEqual(WAYPOINT_B_MAX_WINDOWS, 2)
+
+    def test_waypoint_arrival_requires_trigger_and_settled_pose_within_tolerance(self):
+        self.assertTrue(waypoint_b_arrival_passes(0.10, 0.15, tolerance_m=0.15))
+        self.assertFalse(waypoint_b_arrival_passes(0.10, 0.150001, tolerance_m=0.15))
+        self.assertFalse(waypoint_b_arrival_passes(0.150001, 0.10, tolerance_m=0.15))
+        self.assertFalse(waypoint_b_arrival_passes(None, 0.10, tolerance_m=0.15))
+        self.assertFalse(waypoint_b_arrival_passes(float("nan"), 0.10, tolerance_m=0.15))
+        self.assertFalse(waypoint_b_arrival_passes(0.10, float("inf"), tolerance_m=0.15))
+        self.assertFalse(waypoint_b_arrival_passes(0.10, 0.10, tolerance_m=0.0))
+
     def test_waypoint_b_only_route_reaches_b_after_measured_two_window_transit_and_stop(self) -> None:
         start = make_pose()
         route = build_short_right_corner_route(

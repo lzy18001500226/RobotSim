@@ -138,6 +138,28 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertNotIn("--ramp-start-speed", b_only_command)
         self.assertNotIn("--ramp-duration-s", b_only_command)
 
+        args.run65_waypoint_b_only = False
+        args.run65_waypoint_b_short_diagnostic = True
+        short_diagnostic_command = shlex.split(
+            build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--route-integration", short_diagnostic_command)
+        self.assertIn("--route-waypoint-b-only", short_diagnostic_command)
+        self.assertIn("--route-waypoint-b-short-diagnostic", short_diagnostic_command)
+        self.assertIn("--zero-only-stop", short_diagnostic_command)
+        self.assertIn("--max-observed-planar-speed-m-s", short_diagnostic_command)
+        self.assertNotIn("--route-turn-qualification-evidence", short_diagnostic_command)
+        self.assertNotIn("--ramp-start-speed", short_diagnostic_command)
+        self.assertNotIn("--ramp-duration-s", short_diagnostic_command)
+
+        def option(command: list[str], name: str) -> str:
+            return command[command.index(name) + 1]
+
+        self.assertEqual(option(short_diagnostic_command, "--extra-stop-observation"), "5.0")
+        self.assertEqual(option(short_diagnostic_command, "--pulse-duration"), "1.0")
+        self.assertEqual(option(short_diagnostic_command, "--forward-speed"), "0.2")
+        self.assertEqual(option(short_diagnostic_command, "--zero-until-stand-timeout-s"), "3.5")
+
     def test_route_workcell_preflight_accepts_only_pinned_infinite_floor_scene(self):
         from issue80_m1_auto_reset_run import ROUTE_SCENE_RELATIVE, ROUTE_X2_RELATIVE
 
@@ -179,6 +201,14 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(
             classify_run38_diagnostic_outcome("SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED"),
             "SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED",
+        )
+        self.assertEqual(
+            classify_run38_diagnostic_outcome("SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_PASS"),
+            "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_PASS",
+        )
+        self.assertEqual(
+            classify_run38_diagnostic_outcome("SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED"),
+            "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED",
         )
 
     def make_runner(self, evidence: Path) -> BoundedRun:

@@ -42,6 +42,11 @@ MAX_ANGULAR_RAD_S = 0.075
 MAX_INCREMENTAL_WINDOW_S = 1.0
 MAX_ROUTE_ACTION_WINDOW_S = 5.0
 ROUTE_WINDOW_ZERO_MARGIN_S = 0.02  # A2's timing-recovery margin before a 5 s M1 deadline.
+WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M = 0.20
+WAYPOINT_B_POSITION_TOLERANCE_M = 0.15
+WAYPOINT_B_MAX_WINDOWS = 2
+WAYPOINT_B_WINDOW_MAX_S = 5.0
+WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S = 10.0
 MAX_POSE_AGE_S = 0.20
 MAX_TRANSFORM_AGE_S = 0.50
 ALLOWED_MODE_READBACKS = frozenset(("STAND_DEFAULT", "LOCOMOTION_DEFAULT"))
@@ -133,6 +138,32 @@ class RouteMotionBridgeError(ValueError):
     """Invalid or out-of-order action-window lifecycle."""
 
 
+def waypoint_b_window_budget_passes(window_count: int, *, short_diagnostic: bool) -> bool:
+    """Keep original B acceptance multi-window; allow 1-2 windows only for the short diagnostic."""
+    minimum = 1 if short_diagnostic else WAYPOINT_B_MAX_WINDOWS
+    return (
+        isinstance(window_count, int)
+        and not isinstance(window_count, bool)
+        and minimum <= window_count <= WAYPOINT_B_MAX_WINDOWS
+    )
+
+
+def waypoint_b_arrival_passes(
+    arrival_error_m: float | None,
+    settled_error_m: float | None,
+    *,
+    tolerance_m: float,
+) -> bool:
+    """Require both trigger-time and post-stop position to remain inside tolerance."""
+    values = (arrival_error_m, settled_error_m, tolerance_m)
+    return (
+        all(_finite_number(value) for value in values)
+        and float(tolerance_m) > 0.0
+        and float(arrival_error_m) <= float(tolerance_m)
+        and float(settled_error_m) <= float(tolerance_m)
+    )
+
+
 def measured_m1_nonzero_window_s(result: Mapping[str, object]) -> float:
     """Read the M1 helper's actual nonzero span without counting its stop tail.
 
@@ -181,11 +212,9 @@ def build_short_right_corner_route(
     ):
         raise ValueError("measured start pose or verified open-floor clearance is invalid")
 
-    # B is shortened to 0.40 m for this task. Its 0.15 m arrival region begins
-    # after 0.25 m of progress; the prior measured first window produced 0.174 m
-    # active travel and 0.127 m after its stop hold, so two bounded windows are
-    # required by the observed response. The full-route C target stays 0.45 m
-    # beyond B.
+    # The caller supplies either the original waypoint-B acceptance target or
+    # a separately labeled short diagnostic target. The full-route C target
+    # remains 0.45 m beyond B.
     transit_to_b_m = waypoint_b_distance_m
     waypoint_b_to_c_m = 0.45
     right_turn_delta_rad = -0.12  # A2 measured -0.122523 rad; stay inside its qualified arc.

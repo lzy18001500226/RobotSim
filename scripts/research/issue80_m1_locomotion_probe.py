@@ -97,8 +97,12 @@ from issue80_waypoint_route import (
     WaypointRouteExecutor,
 )
 from issue80_route_motion_bridge import (
-    ROUTE_WINDOW_ZERO_MARGIN_S, RouteMotionBridge, RouteMotionBridgeError, RuntimeReadiness,
+    ROUTE_WINDOW_ZERO_MARGIN_S, WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
+    WAYPOINT_B_MAX_WINDOWS, WAYPOINT_B_POSITION_TOLERANCE_M,
+    WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M, WAYPOINT_B_WINDOW_MAX_S,
+    RouteMotionBridge, RouteMotionBridgeError, RuntimeReadiness,
     build_short_right_corner_route, measured_m1_nonzero_window_s,
+    waypoint_b_arrival_passes, waypoint_b_window_budget_passes,
 )
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
@@ -2362,16 +2366,33 @@ class FocusedM1Diagnostic(Node):
         stationary_baseline: Mapping[str, Any],
     ) -> dict[str, Any]:
         """Execute measured waypoint-B-only or the separately scoped three-step route."""
-        waypoint_b_only = bool(getattr(self.args, "route_waypoint_b_only", False))
+        waypoint_b_short_diagnostic = bool(
+            getattr(self.args, "route_waypoint_b_short_diagnostic", False)
+        )
+        waypoint_b_only = bool(
+            getattr(self.args, "route_waypoint_b_only", False)
+            or waypoint_b_short_diagnostic
+        )
         result: dict[str, Any] = {
             "classification": (
+                "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC"
+                if waypoint_b_short_diagnostic else
                 "SIMULATION_ONLY_WAYPOINT_B_AND_PHYSICAL_STOP"
                 if waypoint_b_only else "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION"
             ),
             "status": "NOT_RUN",
             "route_attempt_id": self.args.attempt_id,
             "segments": [],
-            "route_scope": "WAYPOINT_B_ONLY" if waypoint_b_only else "B_RIGHT_TURN_C",
+            "route_scope": (
+                "SHORT_DIAGNOSTIC_WAYPOINT_ONLY"
+                if waypoint_b_short_diagnostic else
+                "WAYPOINT_B_ONLY" if waypoint_b_only else "B_RIGHT_TURN_C"
+            ),
+            "acceptance_scope": (
+                "DIAGNOSTIC_ONLY_NOT_ORIGINAL_0_40_M_WAYPOINT_B_ACCEPTANCE"
+                if waypoint_b_short_diagnostic else
+                "WAYPOINT_B_ONLY" if waypoint_b_only else "B_RIGHT_TURN_C"
+            ),
             "fault": None,
         }
         evidence_root = Path(self.args.output_dir)
@@ -2516,7 +2537,10 @@ class FocusedM1Diagnostic(Node):
                 local_clear_radius_m=clear_radius,
                 right_turn_qualified=turn_provenance is not None,
                 waypoint_b_only=waypoint_b_only,
-                waypoint_b_distance_m=0.40 if waypoint_b_only else 0.35,
+                waypoint_b_distance_m=(
+                    WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M
+                    if waypoint_b_short_diagnostic else 0.40 if waypoint_b_only else 0.35
+                ),
             )
             transit_x, transit_y = route.steps[0].x_m, route.steps[0].y_m
             if not waypoint_b_only:
@@ -2658,10 +2682,17 @@ class FocusedM1Diagnostic(Node):
                     route.steps[0].x_m - start_pose.x_m,
                     route.steps[0].y_m - start_pose.y_m,
                 )
+                route_spec["waypoint_b_position_tolerance_m"] = WAYPOINT_B_POSITION_TOLERANCE_M
+                route_spec["waypoint_b_diagnostic_only"] = waypoint_b_short_diagnostic
+                route_spec["maximum_transit_windows"] = WAYPOINT_B_MAX_WINDOWS
+                route_spec["maximum_transit_window_s"] = WAYPOINT_B_WINDOW_MAX_S
+                route_spec["aggregate_transit_budget_s"] = WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S
                 route_spec["waypoint_b_target_selection"] = (
-                    "0.40 m based on prior measured 0.174 m active-window travel and "
-                    "0.127 m post-stop net travel, shortened from prior 0.50 m target; "
-                    "0.15 m arrival tolerance retained"
+                    "0.20 m diagnostic target: the latest measured settled position was "
+                    "0.095 m from this target with 0.15 m tolerance; this does not pass "
+                    "the original 0.40 m waypoint-B acceptance"
+                    if waypoint_b_short_diagnostic else
+                    "0.40 m acceptance target based on prior measured travel; 0.15 m arrival tolerance retained"
                 )
             else:
                 route_spec.update({
@@ -2783,17 +2814,34 @@ class FocusedM1Diagnostic(Node):
                 last_result: dict[str, Any] | None = None
                 last_gate: Mapping[str, Any] = {}
                 window_index = 0
+                segment_nonzero_s = 0.0
                 while True:
+                    if window_index >= WAYPOINT_B_MAX_WINDOWS:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": "waypoint_b_window_count_budget_exhausted",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                            "segment_nonzero_command_time_s": segment_nonzero_s,
+                        }
                     remaining_route_s = 30.0 - route_total_nonzero_s
-                    window_cap_s = min(float(current_plan.maximum_duration_s), remaining_route_s)
+                    remaining_transit_s = WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S - segment_nonzero_s
+                    window_cap_s = min(
+                        float(current_plan.maximum_duration_s),
+                        WAYPOINT_B_WINDOW_MAX_S,
+                        remaining_transit_s,
+                        remaining_route_s,
+                    )
                     pulse_duration_s = window_cap_s - ROUTE_WINDOW_ZERO_MARGIN_S
                     if pulse_duration_s < 0.10:
                         return {
                             "status": "BLOCKED",
-                            "fault": "route_nonzero_budget_or_step_window_exhausted",
+                            "fault": "route_transit_or_action_window_budget_exhausted",
                             "last_result": last_result,
                             "last_gate": last_gate,
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                            "segment_nonzero_command_time_s": segment_nonzero_s,
                         }
 
                     route_fault = None
@@ -2868,6 +2916,7 @@ class FocusedM1Diagnostic(Node):
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
                     route_total_nonzero_s += measured_window_s
+                    segment_nonzero_s += measured_window_s
                     window_index += 1
                     last_gate = last_result.get("physical_stop_gate") or {}
                     result["segments"].append({
@@ -3206,11 +3255,17 @@ class FocusedM1Diagnostic(Node):
                     float((segment.get("result") or {}).get("route_window_measured_nonzero_elapsed_s", 0.0))
                     for segment in b_window_segments
                 )
-                b_multwindow_pass = len(b_window_segments) >= 2
+                b_window_count_pass = waypoint_b_window_budget_passes(
+                    len(b_window_segments),
+                    short_diagnostic=waypoint_b_short_diagnostic,
+                )
                 b_arrival_pass = (
                     route_stop_reason is not None
-                    and b_arrival_error is not None
-                    and b_arrival_error <= b_tolerance
+                    and waypoint_b_arrival_passes(
+                        b_arrival_error,
+                        b_poststop_error,
+                        tolerance_m=b_tolerance,
+                    )
                 )
                 b_stop_pass = (
                     transit_gate.get("status") == "PASS"
@@ -3233,11 +3288,11 @@ class FocusedM1Diagnostic(Node):
                     and set_action.get("accepted_by_service") is True
                 )
                 b_budget_pass = (
-                    b_nonzero_s <= 10.0 + 1e-6
+                    b_nonzero_s <= WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S + 1e-6
                     and route_total_nonzero_s <= 30.0 + 1e-6
                     and all(
                         float((segment.get("result") or {}).get("route_window_measured_nonzero_elapsed_s", math.inf))
-                        <= 5.0 + 1e-6
+                        <= WAYPOINT_B_WINDOW_MAX_S + 1e-6
                         for segment in b_window_segments
                     )
                 )
@@ -3249,18 +3304,53 @@ class FocusedM1Diagnostic(Node):
                         and not initial_fault
                     ) else "FAIL",
                     "SOURCE_MODE_HANDSHAKE": "PASS" if b_source_mode_pass else "FAIL",
-                    "MULTI_WINDOW_TRANSIT": "PASS" if b_multwindow_pass else "FAIL",
+                    (
+                        "SHORT_DIAGNOSTIC_WINDOW_BUDGET"
+                        if waypoint_b_short_diagnostic else "MULTI_WINDOW_TRANSIT"
+                    ): "PASS" if b_window_count_pass else "FAIL",
                     "WAYPOINT_B_ARRIVAL": "PASS" if b_arrival_pass else "FAIL",
                     "PHYSICAL_STOP": "PASS" if b_stop_pass else "FAIL",
                     "TRANSIT_AND_ROUTE_BUDGETS": "PASS" if b_budget_pass else "FAIL",
                     "ROUTE_COMPLETE": "PASS" if executor.state is RouteState.COMPLETE else "FAIL",
                 }
                 route_pass = all(value == "PASS" for value in b_gates.values())
+
+                def progress_metrics(x_m: float, y_m: float, yaw_rad: float) -> dict[str, float]:
+                    dx = x_m - start_pose.x_m
+                    dy = y_m - start_pose.y_m
+                    return {
+                        "forward_projection_from_start_m": (
+                            dx * math.cos(start_pose.yaw_rad) + dy * math.sin(start_pose.yaw_rad)
+                        ),
+                        "cross_track_from_start_m": (
+                            -dx * math.sin(start_pose.yaw_rad) + dy * math.cos(start_pose.yaw_rad)
+                        ),
+                        "yaw_delta_from_start_rad": math.atan2(
+                            math.sin(yaw_rad - start_pose.yaw_rad),
+                            math.cos(yaw_rad - start_pose.yaw_rad),
+                        ),
+                    }
+
+                arrival_metrics = (
+                    progress_metrics(b_arrival["x_m"], b_arrival["y_m"], b_arrival["yaw_rad"])
+                    if b_arrival else None
+                )
+                poststop_metrics = progress_metrics(
+                    final_b_pose.x_m, final_b_pose.y_m, final_b_pose.yaw_rad,
+                )
                 result.update({
                     "status": "PASS" if route_pass else "BLOCKED",
                     "classification": (
+                        "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_PASS"
+                        if route_pass and waypoint_b_short_diagnostic else
+                        "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED"
+                        if waypoint_b_short_diagnostic else
                         "SIMULATION_ONLY_WAYPOINT_B_AND_PHYSICAL_STOP_PASS"
                         if route_pass else "SIMULATION_ONLY_WAYPOINT_B_BLOCKED"
+                    ),
+                    "acceptance_scope": (
+                        "SHORT_DIAGNOSTIC_ONLY_NOT_ORIGINAL_0_40_M_WAYPOINT_B_ACCEPTANCE"
+                        if waypoint_b_short_diagnostic else "ORIGINAL_0_40_M_WAYPOINT_B"
                     ),
                     "route_gates": b_gates,
                     "route_state_after_waypoint_b": executor.state.value,
@@ -3268,13 +3358,19 @@ class FocusedM1Diagnostic(Node):
                     "route_total_nonzero_command_time_s": route_total_nonzero_s,
                     "route_total_nonzero_command_time_limit_s": 30.0,
                     "waypoint_b_transit_nonzero_command_time_s": b_nonzero_s,
-                    "waypoint_b_transit_nonzero_command_time_limit_s": 10.0,
+                    "waypoint_b_transit_nonzero_command_time_limit_s": WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
                     "waypoint_b_arrival": {
                         "waypoint_id": route.steps[0].waypoint_id,
+                        "diagnostic_only": waypoint_b_short_diagnostic,
+                        "target_distance_from_start_m": math.hypot(
+                            route.steps[0].x_m - route.start_x_m,
+                            route.steps[0].y_m - route.start_y_m,
+                        ),
                         "target_x_m": route.steps[0].x_m,
                         "target_y_m": route.steps[0].y_m,
                         "arrival_pose": b_arrival,
                         "arrival_error_m": b_arrival_error,
+                        "arrival_progress": arrival_metrics,
                         "poststop_pose": {
                             "x_m": final_b_pose.x_m,
                             "y_m": final_b_pose.y_m,
@@ -3282,9 +3378,13 @@ class FocusedM1Diagnostic(Node):
                             "stamp_ns": final_b_pose.stamp_ns,
                         },
                         "poststop_error_m": b_poststop_error,
+                        "poststop_progress": poststop_metrics,
+                        "arrival_must_remain_in_tolerance_after_stop": True,
                         "tolerance_m": b_tolerance,
                     },
                     "window_count": len(b_window_segments),
+                    "window_count_minimum": 1 if waypoint_b_short_diagnostic else 2,
+                    "window_count_maximum": WAYPOINT_B_MAX_WINDOWS,
                     "physical_stop_gate": transit_gate,
                     "limitation": (
                         "This run ends at waypoint B. No right turn, waypoint C, larger route, "
@@ -3825,6 +3925,8 @@ class FocusedM1Diagnostic(Node):
             "acceptance_scope": (
                 "SIMULATION_ONLY direct MuJoCo ground-truth point-goal; not Nav2, localization, LiDAR, or manufacturer-original acceptance"
                 if getattr(self.args, "point_goal_diagnostic", False)
+                else "SIMULATION_ONLY 0.20 m short-waypoint diagnostic only; not original 0.40 m waypoint-B acceptance"
+                if getattr(self.args, "route_waypoint_b_short_diagnostic", False)
                 else "SIMULATION_ONLY measured waypoint-B transit and physical stop only; no turn, C waypoint, or Nav2 acceptance"
                 if getattr(self.args, "route_waypoint_b_only", False)
                 else "SIMULATION_ONLY waypoint route manager + route bridge to M1 transit and right-turn; not a full route or Nav2 acceptance"
@@ -4260,7 +4362,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     if getattr(args, "route_integration", False):
         profile["route_integration"] = True
         waypoint_b_only = bool(getattr(args, "route_waypoint_b_only", False))
+        waypoint_b_short_diagnostic = bool(
+            getattr(args, "route_waypoint_b_short_diagnostic", False)
+        )
         profile["route_waypoint_b_only"] = waypoint_b_only
+        if waypoint_b_short_diagnostic and not waypoint_b_only:
+            raise ValueError("short waypoint diagnostic requires --route-waypoint-b-only")
         if waypoint_b_only:
             if args.route_turn_qualification_evidence:
                 raise ValueError("waypoint-B-only mode must not request turn qualification evidence")
@@ -4284,18 +4391,30 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                     "and zero-only stop"
                 )
             profile.update({
-                "waypoint_b_distance_m": 0.40,
-                "waypoint_b_tolerance_m": 0.15,
-                "per_window_nonzero_limit_s": 5.0,
-                "aggregate_transit_nonzero_limit_s": 10.0,
-                "minimum_windows_required": 2,
+                "route_waypoint_b_short_diagnostic": waypoint_b_short_diagnostic,
+                "waypoint_b_distance_m": (
+                    WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M
+                    if waypoint_b_short_diagnostic else 0.40
+                ),
+                "waypoint_b_tolerance_m": WAYPOINT_B_POSITION_TOLERANCE_M,
+                "per_window_nonzero_limit_s": WAYPOINT_B_WINDOW_MAX_S,
+                "aggregate_transit_nonzero_limit_s": WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
+                "minimum_windows_required": 1 if waypoint_b_short_diagnostic else 2,
+                "maximum_windows": WAYPOINT_B_MAX_WINDOWS,
                 "route_nonzero_limit_s": 30.0,
+                "original_waypoint_b_acceptance": (
+                    "NOT_SATISFIED_BY_SHORT_DIAGNOSTIC"
+                    if waypoint_b_short_diagnostic else "THIS_IS_ORIGINAL_0_40_M_ACCEPTANCE"
+                ),
             })
         else:
             profile["route_turn_qualification_evidence"] = validate_route_turn_qualification_evidence(
                 args.route_turn_qualification_evidence
             )
-    elif getattr(args, "route_waypoint_b_only", False):
+    elif (
+        getattr(args, "route_waypoint_b_only", False)
+        or getattr(args, "route_waypoint_b_short_diagnostic", False)
+    ):
         raise ValueError("route-waypoint-b-only requires --route-integration")
     if args.point_goal_diagnostic:
         heading_change = float(args.heading_change_rad)
@@ -4469,6 +4588,7 @@ def main() -> int:
     first.add_argument("--right-turn-qualification", action="store_true")
     first.add_argument("--route-integration", action="store_true")
     first.add_argument("--route-waypoint-b-only", action="store_true")
+    first.add_argument("--route-waypoint-b-short-diagnostic", action="store_true")
     first.add_argument("--route-turn-qualification-evidence", default=None)
     first.add_argument("--point-goal-diagnostic", action="store_true")
     first.add_argument("--heading-change-rad", type=float, default=0.0)

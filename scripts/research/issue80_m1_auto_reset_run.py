@@ -33,6 +33,13 @@ from issue80_coordinated_pose_goal import (
     POSE_GOAL_HEADING_STOP_ADVANCE_M,
     POSE_GOAL_WARMUP_FORWARD_M_S,
 )
+from issue80_route_motion_bridge import (
+    WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
+    WAYPOINT_B_MAX_WINDOWS,
+    WAYPOINT_B_POSITION_TOLERANCE_M,
+    WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M,
+    WAYPOINT_B_WINDOW_MAX_S,
+)
 
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
@@ -514,7 +521,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run48_low_cruise_baseline_diagnostic", "run49_smoothstop_diagnostic",
         "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
         "run65_right_turn_qualification", "run65_route_integration",
-        "run65_waypoint_b_only",
+        "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
     )
     if any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += " --max-observed-planar-speed-m-s 0.2"
@@ -525,6 +532,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run49_smoothstop_diagnostic", "run50_threshold_respecting_smoothstop_diagnostic",
         "run53_turning_diagnostic", "run65_right_turn_qualification",
         "run65_route_integration", "run65_waypoint_b_only",
+        "run65_waypoint_b_short_diagnostic",
     )
     if any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
@@ -534,7 +542,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run48_low_cruise_baseline_diagnostic", "run49_smoothstop_diagnostic",
         "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
         "run65_right_turn_qualification", "run65_route_integration",
-        "run65_waypoint_b_only",
+        "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
     )
     if any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
@@ -551,7 +559,12 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             " --route-integration --route-turn-qualification-evidence "
             "/workspace/evidence/route_turn_qualification_evidence.json"
         )
-    if getattr(args, "run65_waypoint_b_only", False):
+    if getattr(args, "run65_waypoint_b_short_diagnostic", False):
+        command[-1] += (
+            " --route-integration --route-waypoint-b-only "
+            "--route-waypoint-b-short-diagnostic"
+        )
+    elif getattr(args, "run65_waypoint_b_only", False):
         command[-1] += " --route-integration --route-waypoint-b-only"
     if run65_point_goal_enabled(args):
         command[-1] += (
@@ -957,6 +970,8 @@ def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
         "SIMULATION_ONLY_DIAGNOSTIC_TURNING_BLOCKED",
         "SIMULATION_ONLY_RIGHT_TURN_AND_STOP_PASS",
         "SIMULATION_ONLY_RIGHT_TURN_AND_STOP_BLOCKED",
+        "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_PASS",
+        "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED",
         "SIMULATION_ONLY_SHORT_ROUTE_TRANSIT_AND_RIGHT_TURN_PASS",
         "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION_BLOCKED",
         "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_PASS",
@@ -1166,8 +1181,12 @@ class BoundedRun:
         run65_right_turn = bool(getattr(self.args, "run65_right_turn_qualification", False))
         run65_route = bool(getattr(self.args, "run65_route_integration", False))
         run65_waypoint_b_only = bool(getattr(self.args, "run65_waypoint_b_only", False))
-        run65_overlay = run65_point_goal or run65_right_turn or run65_route or run65_waypoint_b_only
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_only))
+        run65_waypoint_b_short = bool(
+            getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
+        )
+        run65_waypoint_b_mode = run65_waypoint_b_only or run65_waypoint_b_short
+        run65_overlay = run65_point_goal or run65_right_turn or run65_route or run65_waypoint_b_mode
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_mode))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -1247,7 +1266,7 @@ class BoundedRun:
         manifest["command_speed_m_s"] = (
             TURN_FORWARD_COMMAND_M_S if run53
             else POINT_GOAL_FORWARD_COMMAND_M_S if run65_point_goal
-            else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route or run65_waypoint_b_only)
+            else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route or run65_waypoint_b_mode)
             else float(self.args.forward_speed)
         )
         manifest["command_profile"] = ({
@@ -1327,13 +1346,33 @@ class BoundedRun:
                 "each_M1_action_window_cap_s": 5.0,
                 "second_transit": "OPTIONAL_NOT_EXECUTED_IN_THIS_SHORT_ROUTE_TRIAL",
             }
-        if run65_waypoint_b_only:
+        if run65_waypoint_b_short:
+            manifest["command_profile"] = {
+                "shape": "short-waypoint-diagnostic-only",
+                "classification": "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC",
+                "waypoint_distance_from_start_m": WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M,
+                "position_tolerance_m": WAYPOINT_B_POSITION_TOLERANCE_M,
+                "original_waypoint_b_distance_m": 0.40,
+                "original_waypoint_b_acceptance_unchanged": True,
+                "transit_forward_m_s": TURN_FORWARD_COMMAND_M_S,
+                "per_window_nonzero_limit_s": WAYPOINT_B_WINDOW_MAX_S,
+                "minimum_windows_required": 1,
+                "maximum_windows": WAYPOINT_B_MAX_WINDOWS,
+                "aggregate_transit_nonzero_limit_s": WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
+                "route_nonzero_limit_s": 30.0,
+                "pre_deadline_zero_margin_s": 0.02,
+                "inter_window_requirement": "fresh pose and physical-stop PASS before another window",
+                "post_waypoint_actions": "end after diagnostic waypoint; no turn or C waypoint",
+            }
+        elif run65_waypoint_b_only:
             manifest["command_profile"] = {
                 "shape": "measured-multi-window-waypoint-B-only",
                 "waypoint_b_distance_from_start_m": 0.40,
                 "waypoint_b_position_tolerance_m": 0.15,
                 "transit_forward_m_s": TURN_FORWARD_COMMAND_M_S,
                 "per_window_nonzero_limit_s": 5.0,
+                "minimum_windows_required": 2,
+                "maximum_windows": WAYPOINT_B_MAX_WINDOWS,
                 "aggregate_waypoint_b_nonzero_limit_s": 10.0,
                 "route_nonzero_limit_s": 30.0,
                 "pre_deadline_zero_margin_s": 0.02,
@@ -2501,6 +2540,7 @@ class BoundedRun:
                 getattr(self.args, "run65_right_turn_qualification", False)
                 or getattr(self.args, "run65_route_integration", False)
                 or getattr(self.args, "run65_waypoint_b_only", False)
+                or getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
             ):
                 workcell = inspect_route_workcell_geometry(RUNTIME)
                 geometry_path = self.evidence / "workcell_geometry_preflight.json"
@@ -2585,6 +2625,7 @@ class BoundedRun:
             if (
                 getattr(self.args, "run65_route_integration", False)
                 or getattr(self.args, "run65_waypoint_b_only", False)
+                or getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
             ):
                 route = m1.get("route_integration")
                 result["route_integration"] = route
@@ -2592,6 +2633,8 @@ class BoundedRun:
                 self.outcome_classification = (
                     str(route.get("classification"))
                     if route_pass and isinstance(route, Mapping)
+                    else "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED"
+                    if getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
                     else "SIMULATION_ONLY_WAYPOINT_B_AND_PHYSICAL_STOP_BLOCKED"
                     if getattr(self.args, "run65_waypoint_b_only", False)
                     else "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION_BLOCKED"
@@ -2843,6 +2886,14 @@ def main() -> int:
         help="execute one measured multi-window transit to waypoint B, verify physical stop, then end the route",
     )
     parser.add_argument(
+        "--run65-waypoint-b-short-diagnostic",
+        action="store_true",
+        help=(
+            "execute a distinct 0.20 m, 0.15 m-tolerance waypoint diagnostic; "
+            "this does not satisfy the original 0.40 m waypoint-B acceptance"
+        ),
+    )
+    parser.add_argument(
         "--route-turn-evidence",
         default=None,
         help="governed m1_first_motion_result.json from the passing right-turn qualification run",
@@ -2884,6 +2935,7 @@ def main() -> int:
         args.run65_right_turn_qualification,
         args.run65_route_integration,
         args.run65_waypoint_b_only,
+        args.run65_waypoint_b_short_diagnostic,
         args.run65_ground_truth_point_goal,
     )
     if sum(diagnostic_variants) > 1:
@@ -2946,7 +2998,7 @@ def main() -> int:
                 parser.error(
                     "route integration requires the fixed 5-second zero-stop observation and default generic pulse fields"
                 )
-        elif args.run65_waypoint_b_only:
+        elif args.run65_waypoint_b_only or args.run65_waypoint_b_short_diagnostic:
             if (
                 abs(args.extra_stop_observation - 5.0) > 1e-9
                 or args.pulse_duration != 1.0
@@ -2958,7 +3010,7 @@ def main() -> int:
                 or args.startup_transition_timeout_s != 0.0
             ):
                 parser.error(
-                    "waypoint-B-only run requires the fixed 5-second zero-stop observation "
+                    "waypoint-B-only route requires the fixed 5-second zero-stop observation "
                     "and default generic pulse fields"
                 )
         else:
