@@ -10,6 +10,14 @@ This directory is a **research-only, transport-neutral** prototype. It contains 
 - `PASS_STATIC_GEOMETRY` means only a complete static geometry witness passed the supplied thresholds. It says nothing about contact force, friction, stable hold, table unloading, lifting, transfer, release, placement, or settle.
 - Passive/follower values in `JointCommandProfile` describe evaluated kinematic state only. They do not authorize direct follower actuation or qpos writes. `GripperContract` separates commanded joints from derived joints and records the constraint name for each derived joint; derived coordinates need not have independent actuator limits. The contract requires a range-evidence reference and explicit static-range verification status.
 
+## Measured episode evidence gate
+
+`episode_gate.py` is the model-independent acceptance layer for a later concrete X2 runner. It consumes ordered post-`mj_step` samples tagged with the exact model ID/SHA and measured bottle COM, force-bearing contact roles, tool upward support, table reaction/contact, relative slip, source position/velocity, actuator and follower gates, plus object-integrity flags. It executes no control and performs no MuJoCo calls.
+
+The caller supplies contact-role groups for the selected hand (for example left/right Robotiq pads or thumb plus one opposing OmniHand digit) and explicit persistence, support, unloading and slip thresholds. `LOAD_TRANSFER` requires measured positive hand support and a measured table-reaction reduction. `LIFT_50MM` requires measured bottle COM rise of at least 50 mm, sustained measured upward hand support, a measured table reaction, loss of table contact, persistent required contacts and bounded slip; `HOLD` applies the same measured support requirements for at least one second above the lift threshold. For an airborne hold, callers should set the upward-support threshold against the object's measured weight and declare any measurement tolerance explicitly. PREGRASP/APPROACH require a measured clearance sample, and an absent phase remains `NOT_RUN`. The criteria reject weakening the 2 mm approach, 50 mm lift, or 1 s hold minima.
+
+This gate is an evidence validator, not a physical runner or proof of a candidate. Source/model-specific actuator adapters and a static-qualified grasp are still required before any separately authorized rollout.
+
 ## Pose, time, and frame contract
 
 `PoseSample.frame_id` is the frame in which its position/orientation are expressed. Quaternions are normalized `xyzw`; spatial units are SI. The acquisition stamp names a `TimeDomain` (`SIMULATION`, `ROS`, or `SENSOR`); it is never compared with `received_steady_ns`, which is local monotonic freshness metadata.
