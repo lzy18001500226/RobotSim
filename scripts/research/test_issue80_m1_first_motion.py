@@ -2613,6 +2613,48 @@ class PhysicalStopGateTests(unittest.TestCase):
         self.assertIn("joint_target_not_settled", result["final_window_violations"])
         self.assertEqual(result["criteria"]["max_leg_target_range_rad"], 0.02)
 
+    def test_physical_state_and_controller_target_gates_are_reported_separately(self):
+        rows = self._fixture()
+        for row in rows:
+            if row.get("phase") != "post-stop" or row["sample_monotonic_s"] < 6.0:
+                continue
+            right_knee = next(
+                joint for joint in row["mc_leg_command"]["joints"]
+                if joint["name"] == "right_knee_joint"
+            )
+            right_knee["position"] += 0.015 * (row["sample_monotonic_s"] - 6.0)
+
+        result = evaluate_physical_stop_gate(
+            rows, zero_start_monotonic_s=5.0, stand_confirmed_monotonic_s=5.5,
+            baseline_state_summary={"body_status": 1},
+        )
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertEqual(result["physical_state_gate"]["status"], "PASS")
+        self.assertEqual(result["controller_target_stability_gate"]["status"], "FAIL")
+        self.assertEqual(result["controller_target_stability_gate"]["threshold_rad"], 0.02)
+        self.assertTrue(
+            result["controller_target_stability_gate"][
+                "one_second_tighter_target_window_is_diagnostic_only"
+            ]
+        )
+        self.assertEqual(
+            result["controller_target_stability_gate"]["violating_joints"],
+            ["right_knee_joint"],
+        )
+        diagnostic = next(
+            item for item in result["joint_window_diagnostics"]["per_joint"]
+            if item["name"] == "right_knee_joint"
+        )
+        self.assertAlmostEqual(diagnostic["actual_position_range_rad"], 0.0)
+        self.assertAlmostEqual(diagnostic["target_range_rad"], 0.03)
+        self.assertAlmostEqual(diagnostic["target_delta_rad"], 0.03)
+        self.assertEqual(
+            result["joint_window_diagnostics"]["samplewise_command_minus_state_interpretation"],
+            "raw synchronized telemetry difference; not a calibrated actuator tracking error",
+        )
+        self.assertIn("joint_target_not_settled", result["final_window_violations"])
+
     def test_recovered_source_readback_requires_a_new_complete_two_second_hold(self):
         rows = self._fixture()
         rows.extend(self._sample(t / 20.0) for t in range(161, 166))

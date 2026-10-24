@@ -2027,6 +2027,67 @@ def _physical_stop_violations(
     return violations
 
 
+def _joint_stop_window_diagnostics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Describe measured joints and command targets independently for one window."""
+    ordered = sorted(rows, key=lambda row: float(row["sample_monotonic_s"]))
+    per_joint: dict[str, dict[str, list[float]]] = {}
+    for row in ordered:
+        states = {str(joint["name"]): joint for joint in row["leg_states"]}
+        commands = {
+            str(joint["name"]): joint
+            for joint in row["mc_leg_command"]["joints"]
+        }
+        if set(states) != set(commands):
+            raise ValueError("measured joints and MC command targets differ in stop window")
+        for name in states:
+            state = states[name]
+            command = commands[name]
+            entry = per_joint.setdefault(name, {
+                "position_rad": [], "velocity_rad_s": [], "target_rad": [],
+                "command_minus_state_rad": [],
+            })
+            position = float(state["position"])
+            target = float(command["position"])
+            velocity = float(state["velocity"])
+            if not all(math.isfinite(value) for value in (position, target, velocity)):
+                raise ValueError("nonfinite joint value in stop-window diagnostics")
+            entry["position_rad"].append(position)
+            entry["velocity_rad_s"].append(velocity)
+            entry["target_rad"].append(target)
+            entry["command_minus_state_rad"].append(target - position)
+
+    diagnostics = []
+    for name, values in per_joint.items():
+        positions = values["position_rad"]
+        targets = values["target_rad"]
+        deltas = values["command_minus_state_rad"]
+        diagnostics.append({
+            "name": name,
+            "sample_count": len(positions),
+            "actual_position_start_rad": positions[0],
+            "actual_position_end_rad": positions[-1],
+            "actual_position_range_rad": max(positions) - min(positions),
+            "actual_velocity_abs_max_rad_s": max(abs(value) for value in values["velocity_rad_s"]),
+            "target_start_rad": targets[0],
+            "target_end_rad": targets[-1],
+            "target_delta_rad": targets[-1] - targets[0],
+            "target_range_rad": max(targets) - min(targets),
+            "samplewise_command_minus_state_start_rad": deltas[0],
+            "samplewise_command_minus_state_end_rad": deltas[-1],
+            "samplewise_command_minus_state_abs_max_rad": max(abs(value) for value in deltas),
+        })
+    diagnostics.sort(key=lambda item: (-item["target_range_rad"], item["name"]))
+    return {
+        "window_start_monotonic_s": float(ordered[0]["sample_monotonic_s"]),
+        "window_end_monotonic_s": float(ordered[-1]["sample_monotonic_s"]),
+        "sample_count": len(ordered),
+        "samplewise_command_minus_state_interpretation": (
+            "raw synchronized telemetry difference; not a calibrated actuator tracking error"
+        ),
+        "per_joint": diagnostics,
+    }
+
+
 def _first_stable_joint_target_window(
     samples: list[Mapping[str, Any]], *, after_monotonic_s: float,
 ) -> dict[str, Any]:
@@ -2084,11 +2145,12 @@ def evaluate_physical_stop_gate(
     stand_confirmed_monotonic_s: float | None,
     baseline_state_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Require a fresh, two-second MuJoCo-state hold after MC reports STAND.
+    """Require a fresh two-second hold and report physical/target gates separately.
 
     The final observed two-second window is the acceptance window. The legacy
-    one-second empirical forward-drift gate remains a separate result and is
-    neither weakened nor substituted here.
+    one-second empirical forward-drift gate remains separate. Top-level status
+    stays composite for existing callers: both physical state and controller
+    target stability must pass.
     """
     criteria = {
         "window_s": PHYSICAL_STOP_WINDOW_S,
@@ -2133,6 +2195,9 @@ def evaluate_physical_stop_gate(
             samples, after_monotonic_s=zero_time,
         ),
         "legacy_baseline_stop_gate": "unchanged; see post_stop_forward_tail.status",
+        "physical_state_gate": {"status": "NOT_EVALUATED"},
+        "controller_target_stability_gate": {"status": "NOT_EVALUATED"},
+        "joint_window_diagnostics": {"status": "NOT_EVALUATED"},
         "mc_zero_receipt_ack": False,
         "mc_stop_ack": False,
         "acknowledgement_interpretation": "No installed per-command MC receipt/stop acknowledgement is exposed; this gate uses observed simulator physics and does not fabricate an ACK.",
@@ -2198,6 +2263,38 @@ def evaluate_physical_stop_gate(
     )
     result["final_window"] = final_metrics
     result["final_window_violations"] = final_violations
+    physical_violations = [
+        violation for violation in final_violations
+        if violation != "joint_target_not_settled"
+    ]
+    target_violation = "joint_target_not_settled" in final_violations
+    joint_diagnostics = _joint_stop_window_diagnostics(final_window)
+    result["physical_state_gate"] = {
+        "status": "FAIL" if physical_violations else "PASS",
+        "violations": physical_violations,
+        "includes": "confirmed STAND/FSM/body status, fresh telemetry, base pose/twist, and actual joint state",
+    }
+    target_limit = PHYSICAL_STOP_MAX_COMMAND_RANGE_RAD
+    violating_targets = [
+        item for item in joint_diagnostics["per_joint"]
+        if item["target_range_rad"] > target_limit
+    ]
+    result["controller_target_stability_gate"] = {
+        "status": "FAIL" if target_violation else "PASS",
+        "threshold_rad": target_limit,
+        "window_s": PHYSICAL_STOP_WINDOW_S,
+        "observed_max_target_range_rad": final_metrics["max_joint_command_range_rad"],
+        "violating_joints": [item["name"] for item in violating_targets],
+        "one_second_tighter_target_window_is_diagnostic_only": True,
+        "one_second_tighter_target_window": result["joint_target_stability_after_zero"],
+    }
+    result["joint_window_diagnostics"] = joint_diagnostics
+    result["blocking_components"] = [
+        name for name, status in (
+            ("physical_state_gate", result["physical_state_gate"]["status"]),
+            ("controller_target_stability_gate", result["controller_target_stability_gate"]["status"]),
+        ) if status != "PASS"
+    ]
 
     first_passing: dict[str, Any] | None = None
     first_passing_violations: list[str] = []
