@@ -74,7 +74,11 @@ class OriginalSTLSurfaces:
         package = Path(__file__).resolve().parents[1]
         frame_manifest = json.loads((package / "visual_frames.json").read_text(encoding="utf-8"))
         self.meshes = {}
-        for side, frame in frame_manifest["frames"].items():
+        # Only the narrow/wide jaw surfaces define the aperture measurement.
+        # Loop-link transforms are also recorded in this manifest for mesh-frame
+        # provenance, but they are not jaw rays.
+        for side in ("narrow", "wide"):
+            frame = frame_manifest["frames"][side]
             link_name = frame["link"]
             mesh_path = source_root / "X2_URDF-v1.4.0/meshes" / frame["mesh"]
             if not mesh_path.is_file():
