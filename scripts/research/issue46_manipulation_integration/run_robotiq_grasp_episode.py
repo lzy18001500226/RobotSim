@@ -52,6 +52,10 @@ INITIAL_SETTLE_MAX_LINEAR_SPEED_M_S = 0.020
 INITIAL_SETTLE_MAX_ANGULAR_SPEED_RAD_S = 0.050
 INITIAL_SETTLE_MAX_COM_DRIFT_M = 0.020
 INITIAL_SETTLE_TABLE_FORCE_TOLERANCE_N = 1.0
+EXPLORATORY_BASELINE_RUN = REVIEWS / "issue-46/robotiq-full-x2-episode-20261024T090923Z"
+EXPLORATORY_ENVELOPE_WINDOW_STEPS = 1000
+EXPLORATORY_ENVELOPE_MAX_DURATION_S = 1.5
+EXPLORATORY_ENVELOPE_NUMERIC_TOLERANCE = 1e-6
 ARM = (
     "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
     "right_elbow_joint", "right_wrist_yaw_joint", "right_wrist_pitch_joint", "right_wrist_roll_joint",
@@ -150,7 +154,6 @@ def detailed_contacts(model, data) -> dict:
             row["contact_frame_to_world_n"] = force_on_geom2_world.tolist()
             row["normal_force_n"] = max(0.0, float(local[0]))
             if body1 == bottle_body or body2 == bottle_body:
-                any_pad = True
                 other_body = body2 if body1 == bottle_body else body1
                 sign = 1.0 if body2 == bottle_body else -1.0
                 force_on_bottle = sign * force_on_geom2_world
@@ -164,11 +167,13 @@ def detailed_contacts(model, data) -> dict:
                     table_z += float(force_on_bottle[2])
                     row["bottle_contact_role"] = "table"
                 elif other_body == "rq_left_pad":
+                    any_pad = True
                     if row["normal_force_n"] > 0.0:
                         pad_roles.add("left_pad")
                     hand_z += float(force_on_bottle[2])
                     row["bottle_contact_role"] = "left_pad"
                 elif other_body == "rq_right_pad":
+                    any_pad = True
                     if row["normal_force_n"] > 0.0:
                         pad_roles.add("right_pad")
                     hand_z += float(force_on_bottle[2])
@@ -234,17 +239,72 @@ def pad_opening(model, data) -> float:
     return float(np.linalg.norm(left - right))
 
 
+def load_exploratory_settle_baseline(run_dir: Path, expected_model_sha: str) -> dict:
+    result_path = run_dir / "result.json"
+    trace_path = run_dir / "raw" / "physics_trace.jsonl"
+    if not result_path.is_file() or not trace_path.is_file():
+        raise SystemExit(f"exploratory settle baseline is incomplete: {run_dir}")
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if (result.get("model_identity", {}).get("model_sha256") != expected_model_sha
+            or result.get("physics_steps") != 5000
+            or result.get("cumulative_episode_b_physics_steps") != 7003
+            or result.get("physical_measurements", {}).get("initial_settle_status") != "FAIL"
+            or result.get("physical_measurements", {}).get("bottle_qpos_writes_after_start") != 0):
+        raise SystemExit("exploratory baseline identity or integrity does not match the accepted 5 s settle run")
+
+    rows = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line]
+    if len(rows) != 5000 or not all(row.get("bottle_qpos_writes_after_start") == 0 for row in rows):
+        raise SystemExit("exploratory baseline trace is incomplete or reports bottle qpos writes")
+    times = np.asarray([row["time_s"] for row in rows], dtype=float)
+    if not np.allclose(np.diff(times), EXPECTED_DT, rtol=0.0, atol=1e-12):
+        raise SystemExit("exploratory baseline timestamps are not a continuous 1 ms trace")
+
+    initial_com = np.asarray(rows[0]["bottle_com_world_m"], dtype=float)
+    initial_quat = np.asarray(rows[0]["bottle_quat_world_xyzw"], dtype=float)
+    com = np.asarray([row["bottle_com_world_m"] for row in rows], dtype=float)
+    quat = np.asarray([row["bottle_quat_world_xyzw"] for row in rows], dtype=float)
+    quat_dot = np.clip(np.abs(quat @ initial_quat), 0.0, 1.0)
+    angular_excursion = 2.0 * np.arccos(quat_dot)
+    linear_speed = np.asarray([row["bottle_com_linear_speed_m_s"] for row in rows], dtype=float)
+    angular_speed = np.asarray([row["bottle_angular_speed_rad_s"] for row in rows], dtype=float)
+    table_force = np.asarray([row["table_reaction_vertical_n"] for row in rows], dtype=float)
+    tail = slice(-EXPLORATORY_ENVELOPE_WINDOW_STEPS, None)
+    return {
+        "run_id": result["run_id"],
+        "result_sha256": sha256(result_path),
+        "physics_trace_sha256": sha256(trace_path),
+        "model_sha256": expected_model_sha,
+        "physics_steps": len(rows),
+        "formal_initial_settle_status": "FAIL",
+        "formal_limits": result["gate_criteria"],
+        "max_linear_speed_m_s": float(np.max(linear_speed)),
+        "max_angular_speed_rad_s": float(np.max(angular_speed)),
+        "max_com_excursion_m": float(np.max(np.linalg.norm(com - initial_com, axis=1))),
+        "max_orientation_excursion_rad": float(np.max(angular_excursion)),
+        "table_contact_fraction": float(np.mean(table_force > 0.0)),
+        "last_window_table_contact_fraction": float(np.mean(table_force[tail] > 0.0)),
+        "last_window_table_reaction_mean_n": float(np.mean(table_force[tail])),
+        "bottle_weight_n": float(result["physical_measurements"]["bottle_mass_kg"] * GRAVITY),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-parent", type=Path, default=REVIEWS / "issue-46")
     parser.add_argument("--max-duration-s", type=float, default=30.0)
     parser.add_argument("--prior-abort-steps", type=int, default=0,
-                         help="all previously consumed physics steps in this episode campaign")
+                         help="all physics steps already consumed in this cumulative Experiment B campaign")
     parser.add_argument("--preflight-only", action="store_true",
                          help="compile and validate the exact B episode inputs without mj_step")
+    parser.add_argument("--exploratory-grasp-probe", action="store_true",
+                         help="run a separately classified grasp probe against the saved settle envelope; formal INITIAL_SETTLE remains FAIL")
+    parser.add_argument("--settle-baseline-run", type=Path, default=EXPLORATORY_BASELINE_RUN,
+                         help="saved formal 5 s settle run used to derive the exploratory pre-contact envelope")
     args = parser.parse_args()
     if not math.isclose(args.max_duration_s, 30.0, rel_tol=0.0, abs_tol=1e-12):
         raise SystemExit("the authorized B episode is fixed at a 30 s maximum")
+    if args.exploratory_grasp_probe and args.prior_abort_steps != 8503:
+        raise SystemExit("corrected probe must include all 8,503 already consumed Experiment B physics steps")
 
     for path in (MODEL, HISTORICAL, STATIC, INTERNAL, APPROACH_A, TRANSFER_PREFLIGHT, LIFT_IK):
         if not path.is_file():
@@ -276,6 +336,8 @@ def main() -> int:
     model_sha = sha256(MODEL)
     if model_sha != EXPECTED_MODEL_SHA:
         raise SystemExit(f"exact diagnostic model SHA mismatch: {model_sha}")
+    exploratory_baseline = (load_exploratory_settle_baseline(args.settle_baseline_run, model_sha)
+                            if args.exploratory_grasp_probe else None)
 
     runner = ROOT / "scripts/research/issue46_manipulation_integration/run_robotiq_dynamic_approach.py"
     approach_module = load_module(runner, "issue46_robotiq_approach_helpers")
@@ -286,7 +348,8 @@ def main() -> int:
 
     source = pg.validate_output_path(args.output_parent, authorized_roots=(str(REVIEWS),),
                                      require_exists=True, expected_kind="directory", environment="wsl")
-    output = pg.create_unique_output_directory(source.wsl_path, prefix="robotiq-full-x2-episode",
+    output_prefix = "robotiq-exploratory-grasp-probe" if args.exploratory_grasp_probe else "robotiq-full-x2-episode"
+    output = pg.create_unique_output_directory(source.wsl_path, prefix=output_prefix,
                                                 authorized_roots=(str(REVIEWS),), environment="wsl")
     out = output.native_path
     raw = out / "raw"
@@ -388,6 +451,9 @@ def main() -> int:
     bottle_qpos_initial = data.qpos[bottle_qpos_id:bottle_qpos_id + 7].copy()
     bottle_root_initial = bottle_qpos_initial[:3].copy()
     bottle_com_initial = np.asarray(data.xipos[bottle_body_id], dtype=float).copy()
+    bottle_quat_wxyz_initial = np.asarray(data.xquat[bottle_body_id], dtype=float).copy()
+    bottle_quat_xyzw_initial = np.asarray((bottle_quat_wxyz_initial[1], bottle_quat_wxyz_initial[2],
+                                           bottle_quat_wxyz_initial[3], bottle_quat_wxyz_initial[0]), dtype=float)
     bottle_com_z_trace = [float(bottle_com_initial[2])]
     com_offset_world = bottle_com_initial - bottle_root_initial
     target_root = np.asarray(historical["scene_configuration"]["target_bottle_root_position_world_m"], dtype=float)
@@ -395,7 +461,9 @@ def main() -> int:
     if args.preflight_only:
         preflight = {
             "schema": "robotsim.issue46.full_x2_robotiq_episode_preflight.v1",
-            "classification": "SIMULATION_ONLY_DIAGNOSTIC_ZERO_STEP_PREFLIGHT",
+            "classification": ("SIMULATION_ONLY_EXPLORATORY_GRASP_PROBE_ZERO_STEP_PREFLIGHT"
+                                if args.exploratory_grasp_probe else
+                                "SIMULATION_ONLY_DIAGNOSTIC_ZERO_STEP_PREFLIGHT"),
             "run_id": str(uuid.uuid4()), "physics_steps": 0,
             "mujoco_version": mujoco.__version__, "python": sys.version.split()[0],
             "model_path": str(MODEL), "model_sha256": model_sha,
@@ -414,6 +482,8 @@ def main() -> int:
                                        "maximum_relative_slip_m": criteria.maximum_relative_slip_m,
                                        "minimum_lift_m": criteria.minimum_lift_m,
                                        "minimum_hold_duration_s": criteria.minimum_hold_duration_s},
+            "formal_initial_settle_status": "FAIL" if args.exploratory_grasp_probe else "NOT_RUN",
+            "exploratory_precontact_envelope": exploratory_baseline,
             "output": output.as_dict(),
         }
         pg.write_new_text(out / "preflight.json", json.dumps(preflight, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
@@ -446,7 +516,8 @@ def main() -> int:
     physics_trace_path = raw / "physics_trace.jsonl"
     contact_trace_path = raw / "contact_wrench_trace.jsonl"
     clearance_trace_path = raw / "clearance_trace.jsonl"
-    video_path = out / "full_x2_robotiq_episode.mp4"
+    video_path = out / ("x2_robotiq_exploratory_grasp_probe.mp4" if args.exploratory_grasp_probe
+                        else "full_x2_robotiq_episode.mp4")
     renderer = mujoco.Renderer(model, height=720, width=1280)
     camera = mujoco.MjvCamera()
     mujoco.mjv_defaultCamera(camera)
@@ -473,6 +544,14 @@ def main() -> int:
     settle_balance_residual = []
     settle_samples: list[dict] = []
     first_stable_settle_window = None
+    exploratory_samples: list[dict] = []
+    first_exploratory_envelope = None
+    last_exploratory_envelope = None
+    exploratory_hold_pass = False
+    exploratory_lift_complete = False
+    exploratory_stop_reason = None
+    contact_gate_pass = False
+    load_transfer_gate_pass = False
 
     def save_frame(label: str) -> None:
         renderer.update_scene(data, camera=camera)
@@ -481,11 +560,62 @@ def main() -> int:
     def current_opening() -> float:
         return pad_opening(model, data)
 
+    def evaluate_exploratory_envelope(window: list[dict]) -> dict:
+        baseline = exploratory_baseline
+        if baseline is None:
+            raise RuntimeError("exploratory pre-contact envelope has no verified saved baseline")
+        window_times = np.asarray([row["time_s"] for row in window], dtype=float)
+        window_com = np.asarray([row["bottle_com_world_m"] for row in window], dtype=float)
+        window_quat = np.asarray([row["bottle_quat_world_xyzw"] for row in window], dtype=float)
+        window_table = np.asarray([row["table_reaction_vertical_n"] for row in window], dtype=float)
+        window_linear = np.asarray([row["linear_speed_m_s"] for row in window], dtype=float)
+        window_angular = np.asarray([row["angular_speed_rad_s"] for row in window], dtype=float)
+        window_contact = np.asarray([row["table_contact"] for row in window], dtype=bool)
+        quat_dot = np.clip(np.abs(window_quat @ bottle_quat_xyzw_initial), 0.0, 1.0)
+        max_orientation_excursion = float(np.max(2.0 * np.arccos(quat_dot)))
+        max_com_excursion = float(np.max(np.linalg.norm(window_com - bottle_com_initial, axis=1)))
+        mean_table_reaction = float(np.mean(window_table))
+        table_force_error = abs(mean_table_reaction - bottle_mass * GRAVITY)
+        metrics = {
+            "start_time_s": float(window_times[0] - EXPECTED_DT),
+            "end_time_s": float(window_times[-1]),
+            "duration_s": float(len(window) * EXPECTED_DT),
+            "sample_count": len(window),
+            "table_contact_fraction": float(np.mean(window_contact)),
+            "minimum_table_reaction_n": float(np.min(window_table)),
+            "maximum_table_reaction_n": float(np.max(window_table)),
+            "mean_table_reaction_n": mean_table_reaction,
+            "bottle_weight_n": float(bottle_mass * GRAVITY),
+            "mean_table_force_error_n": float(table_force_error),
+            "maximum_linear_speed_m_s": float(np.max(window_linear)),
+            "maximum_angular_speed_rad_s": float(np.max(window_angular)),
+            "maximum_com_excursion_m": max_com_excursion,
+            "maximum_orientation_excursion_rad": max_orientation_excursion,
+            "tool_object_contact_samples": sum(bool(row["tool_object_contact_active"]) for row in window),
+        }
+        tolerance = EXPLORATORY_ENVELOPE_NUMERIC_TOLERANCE
+        checks = {
+            "consecutive_1ms_samples": bool(
+                len(window) == EXPLORATORY_ENVELOPE_WINDOW_STEPS
+                and np.allclose(np.diff(window_times), EXPECTED_DT, rtol=0.0, atol=1e-12)),
+            "continuous_table_contact": bool(np.all(window_contact) and np.all(window_table > 0.0)),
+            "table_support_force_consistent": bool(table_force_error <= INITIAL_SETTLE_TABLE_FORCE_TOLERANCE_N),
+            "no_precontact_tool_object_contact": metrics["tool_object_contact_samples"] == 0,
+            "linear_speed_within_saved_envelope": metrics["maximum_linear_speed_m_s"] <= baseline["max_linear_speed_m_s"] + tolerance,
+            "angular_speed_within_saved_envelope": metrics["maximum_angular_speed_rad_s"] <= baseline["max_angular_speed_rad_s"] + tolerance,
+            "com_excursion_within_saved_envelope": max_com_excursion <= baseline["max_com_excursion_m"] + tolerance,
+            "orientation_excursion_within_saved_envelope": max_orientation_excursion <= baseline["max_orientation_excursion_rad"] + tolerance,
+        }
+        metrics["checks"] = checks
+        metrics["pass"] = all(checks.values())
+        return metrics
+
     def run_segment(operation: str, target_points: list[np.ndarray], duration: float,
                     grip_start: float, grip_end: float, gate_phase: ManipulationPhase | None = None,
                     approach_clearance: bool = False, stop_when=None) -> dict:
         nonlocal total_steps, q_target_current, previous_com, previous_com_velocity
         nonlocal slip_reference_local, first_failure, first_stable_settle_window
+        nonlocal first_exploratory_envelope, last_exploratory_envelope
         if args.prior_abort_steps + total_steps + int(round(duration / EXPECTED_DT)) > 30000:
             first_failure = {"gate": "30_second_physics_limit", "phase": operation}
             return {"operation": operation, "steps": 0, "completed": False, "failure": first_failure}
@@ -686,6 +816,23 @@ def main() -> int:
                             "maximum_angular_speed_rad_s": float(np.max(window_angular)),
                             "maximum_com_drift_m": max_com_drift,
                         }
+            elif operation == "DIAGNOSTIC_PRECONTACT_ENVELOPE":
+                exploratory_samples.append({
+                    "time_s": t,
+                    "bottle_com_world_m": com.tolist(),
+                    "bottle_quat_world_xyzw": list(bottle_quat_xyzw),
+                    "linear_speed_m_s": linear_speed,
+                    "angular_speed_rad_s": angular_speed,
+                    "table_contact": bool(contacts["table_contact"]),
+                    "table_reaction_vertical_n": float(contacts["table_reaction_vertical_n"]),
+                    "tool_object_contact_active": bool(contacts["tool_object_contact_active"]),
+                })
+                if first_exploratory_envelope is None and len(exploratory_samples) >= EXPLORATORY_ENVELOPE_WINDOW_STEPS:
+                    last_exploratory_envelope = evaluate_exploratory_envelope(
+                        exploratory_samples[-EXPLORATORY_ENVELOPE_WINDOW_STEPS:]
+                    )
+                    if last_exploratory_envelope["pass"]:
+                        first_exploratory_envelope = last_exploratory_envelope
 
             actuator_ctrl_bad, actuator_force_bad = [], []
             for aid in range(model.nu):
@@ -816,29 +963,50 @@ def main() -> int:
     planned_cumulative = 0
     settle_start_time = float(data.time)
     try:
-        # Search for the first complete stable window, stopping no later than five seconds.
-        phase = run_segment("INITIAL_SETTLE", [qpre, qpre], INITIAL_SETTLE_MAX_DURATION_S, 0.0, 0.0,
-                            approach_clearance=True,
-                            stop_when=lambda: first_stable_settle_window is not None)
-        phases_done.append(phase)
-        initial_support_fraction = sum(settle_support) / max(1, len(settle_support))
-        settle_speeds = [x[0] for x in settle_speed]
-        settle_angular = [x[1] for x in settle_speed]
-        initial_settle_pass = first_stable_settle_window is not None
-        initial_table_mean = (first_stable_settle_window["mean_table_reaction_n"]
-                              if first_stable_settle_window else
-                              (float(np.mean(settle_support_rows)) if settle_support_rows else 0.0))
-        initial_support_sign_check = initial_settle_pass
-        if first_failure is None and not initial_settle_pass:
-            first_failure = {"gate": "initial_bottle_settle", "support_fraction": initial_support_fraction,
-                             "max_linear_speed_m_s": max(settle_speeds, default=None),
-                             "max_angular_speed_rad_s": max(settle_angular, default=None),
-                             "search_duration_s": float(data.time - settle_start_time),
-                             "stable_window_found": False,
-                             "maximum_duration_s": INITIAL_SETTLE_MAX_DURATION_S}
-        if first_failure is None and not initial_support_sign_check:
-            first_failure = {"gate": "contact_force_sign_balance", "mean_table_force_n": initial_table_mean,
-                             "bottle_weight_n": bottle_mass * GRAVITY}
+        if args.exploratory_grasp_probe:
+            phase = run_segment(
+                "DIAGNOSTIC_PRECONTACT_ENVELOPE", [qpre, qpre], EXPLORATORY_ENVELOPE_MAX_DURATION_S,
+                0.0, 0.0, approach_clearance=True,
+                stop_when=lambda: first_exploratory_envelope is not None,
+            )
+            phases_done.append(phase)
+            initial_settle_pass = False
+            initial_support_fraction = None
+            initial_table_mean = 0.0
+            initial_support_sign_check = False
+            settle_speeds = []
+            settle_angular = []
+            if first_failure is None and first_exploratory_envelope is None:
+                first_failure = {
+                    "gate": "diagnostic_precontact_envelope",
+                    "search_duration_s": float(data.time - settle_start_time),
+                    "maximum_duration_s": EXPLORATORY_ENVELOPE_MAX_DURATION_S,
+                    "baseline_run_id": exploratory_baseline["run_id"],
+                    "last_window": last_exploratory_envelope,
+                }
+        else:
+            phase = run_segment("INITIAL_SETTLE", [qpre, qpre], INITIAL_SETTLE_MAX_DURATION_S, 0.0, 0.0,
+                                approach_clearance=True,
+                                stop_when=lambda: first_stable_settle_window is not None)
+            phases_done.append(phase)
+            initial_support_fraction = sum(settle_support) / max(1, len(settle_support))
+            settle_speeds = [x[0] for x in settle_speed]
+            settle_angular = [x[1] for x in settle_speed]
+            initial_settle_pass = first_stable_settle_window is not None
+            initial_table_mean = (first_stable_settle_window["mean_table_reaction_n"]
+                                  if first_stable_settle_window else
+                                  (float(np.mean(settle_support_rows)) if settle_support_rows else 0.0))
+            initial_support_sign_check = initial_settle_pass
+            if first_failure is None and not initial_settle_pass:
+                first_failure = {"gate": "initial_bottle_settle", "support_fraction": initial_support_fraction,
+                                 "max_linear_speed_m_s": max(settle_speeds, default=None),
+                                 "max_angular_speed_rad_s": max(settle_angular, default=None),
+                                 "search_duration_s": float(data.time - settle_start_time),
+                                 "stable_window_found": False,
+                                 "maximum_duration_s": INITIAL_SETTLE_MAX_DURATION_S}
+            if first_failure is None and not initial_support_sign_check:
+                first_failure = {"gate": "contact_force_sign_balance", "mean_table_force_n": initial_table_mean,
+                                 "bottle_weight_n": bottle_mass * GRAVITY}
         if first_failure is None:
             save_frame("01_pregrasp_open")
             phases_done.append(run_segment("PREGRASP", [qpre, qpre], 0.2, 0.0, 0.0,
@@ -857,6 +1025,8 @@ def main() -> int:
             if current_gate.stage_status[ManipulationPhase.CONTACT.value] != "PASS":
                 first_failure = {"gate": "CONTACT", "episode_gate_status": current_gate.stage_status["CONTACT"],
                                  "blockers": list(current_gate.blockers)}
+            else:
+                contact_gate_pass = True
         # The first 5 mm is a bounded LOAD_TRANSFER probe. No further lift is attempted unless it passes.
         if first_failure is None:
             phases_done.append(run_segment("LOAD_TRANSFER_5MM", [qapproach, lift_q[0]], 0.5, 255.0, 255.0,
@@ -866,6 +1036,8 @@ def main() -> int:
             if current_gate.stage_status[ManipulationPhase.LOAD_TRANSFER.value] != "PASS":
                 first_failure = {"gate": "LOAD_TRANSFER", "episode_gate_status": current_gate.stage_status["LOAD_TRANSFER"],
                                  "blockers": list(current_gate.blockers)}
+            else:
+                load_transfer_gate_pass = True
 
         lift_started = False
         lift_complete = False
@@ -909,8 +1081,14 @@ def main() -> int:
             if current_gate.stage_status[ManipulationPhase.HOLD.value] != "PASS":
                 first_failure = {"gate": "HOLD", "episode_gate_status": current_gate.stage_status["HOLD"],
                                  "blockers": list(current_gate.blockers)}
+            else:
+                exploratory_hold_pass = True
+                exploratory_lift_complete = lift_complete
 
-        if first_failure is None:
+        if args.exploratory_grasp_probe and first_failure is None:
+            exploratory_stop_reason = "STOP_AFTER_50MM_LIFT_HOLD"
+
+        if first_failure is None and not args.exploratory_grasp_probe:
             # The pinned static route begins at an airborne pose. Execute its source-valid q waypoints
             # with real actuators; actual bottle pose remains entirely dynamic.
             transfer_points = [np.asarray(row["arm_qpos_rad"], dtype=float) for row in route_waypoints]
@@ -969,18 +1147,52 @@ def main() -> int:
 
     gate = evaluate_episode_evidence(stage_frames, criteria)
     all_physical_safety = all(safety.values())
-    episode_pass = (gate.status == "PASS" and first_failure is None and all_physical_safety
+    episode_pass = (not args.exploratory_grasp_probe and gate.status == "PASS" and first_failure is None and all_physical_safety
                     and args.prior_abort_steps + total_steps <= 30000)
     maximum_bottle_com_rise_m = max(bottle_com_z_trace) - float(bottle_com_initial[2])
     phase_status = {"INITIAL_SETTLE": "PASS" if initial_settle_pass else "FAIL", **gate.stage_status}
+    if args.exploratory_grasp_probe:
+        phase_status = {
+            "INITIAL_SETTLE": "FAIL",
+            "DIAGNOSTIC_PRECONTACT_ENVELOPE": "PASS" if first_exploratory_envelope is not None else "FAIL",
+            **gate.stage_status,
+        }
     if first_failure and first_failure.get("gate") in phase_status:
         if phase_status[first_failure["gate"]] == "NOT_RUN":
             phase_status[first_failure["gate"]] = "FAIL"
+    formal_full_episode_status = (
+        "FAIL_INITIAL_SETTLE" if args.exploratory_grasp_probe else
+        ("PASS" if episode_pass else "FAIL_OR_BLOCKED")
+    )
+    exploratory_probe_status = None
+    if args.exploratory_grasp_probe:
+        exploratory_probe_status = (
+            "PASS_50MM_LIFT_HOLD" if first_failure is None and exploratory_lift_complete and exploratory_hold_pass
+            else "FAIL_OR_BLOCKED"
+        )
+        if exploratory_stop_reason is None and exploratory_hold_pass:
+            exploratory_stop_reason = "STOP_AFTER_50MM_LIFT_HOLD"
     result = {
-        "schema": "robotsim.issue46.full_x2_robotiq_physical_episode.v1",
+        "schema": ("robotsim.issue46.exploratory_grasp_probe.v1" if args.exploratory_grasp_probe
+                   else "robotsim.issue46.full_x2_robotiq_physical_episode.v1"),
         "run_id": str(uuid.uuid4()),
-        "classification": "SIMULATION_ONLY_DIAGNOSTIC_PHYSICAL_CONTACT_EPISODE",
-        "status": "PASS_FULL_EPISODE" if episode_pass else "FAIL_OR_BLOCKED",
+        "classification": ("SIMULATION_ONLY_EXPLORATORY_GRASP_PROBE" if args.exploratory_grasp_probe
+                            else "SIMULATION_ONLY_DIAGNOSTIC_PHYSICAL_CONTACT_EPISODE"),
+        "status": ("EXPLORATORY_PASS_50MM_LIFT_HOLD" if exploratory_probe_status == "PASS_50MM_LIFT_HOLD"
+                   else "EXPLORATORY_FAIL_OR_BLOCKED" if args.exploratory_grasp_probe
+                   else "PASS_FULL_EPISODE" if episode_pass else "FAIL_OR_BLOCKED"),
+        "formal_full_episode_status": formal_full_episode_status,
+        "exploratory_probe_status": exploratory_probe_status,
+        "exploratory_stop_reason": exploratory_stop_reason,
+        "exploratory_probe_gates": ({
+            "precontact_envelope": first_exploratory_envelope,
+            "bilateral_contact_pass": contact_gate_pass,
+            "load_transfer_pass": load_transfer_gate_pass,
+            "lift_50mm_pass": exploratory_lift_complete,
+            "hold_pass": exploratory_hold_pass,
+            "transfer_attempted": False,
+            "place_attempted": False,
+        } if args.exploratory_grasp_probe else None),
         "physics_run_completed": first_failure is None,
         "physics_steps": total_steps, "prior_campaign_physics_steps": args.prior_abort_steps,
         "cumulative_episode_b_physics_steps": args.prior_abort_steps + total_steps,
@@ -995,6 +1207,12 @@ def main() -> int:
             {"path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/robotiq-full-x2-episode-20261024T083219Z",
              "physics_steps": 1000,
              "reason": "runner defect used a fixed 1 s settle instead of the requested adaptive 5 s maximum"},
+            {"path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/robotiq-full-x2-episode-20261024T090923Z",
+             "physics_steps": 5000,
+             "reason": "formal INITIAL_SETTLE failed; retained as the evidence source for the separately gated exploratory pre-contact envelope"},
+            {"path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/robotiq-exploratory-grasp-probe-20261024T101455Z",
+             "physics_steps": 1500,
+             "reason": "diagnostic false positive: table support contact was incorrectly reported as gripper-pad contact"},
         ],
         "first_failure": first_failure,
         "experiment_gate": {
@@ -1035,13 +1253,16 @@ def main() -> int:
                                                   for k, v in minimum_clearance.items()},
             "maximum_equality_residuals": max_equality_residual,
             "maximum_actuator_force_by_name": max_torque,
-            "initial_settle_table_contact_fraction": sum(settle_support) / max(1, len(settle_support)),
-            "initial_settle_mean_table_reaction_n": initial_table_mean,
-            "initial_settle_mean_force_balance_residual_n": float(np.mean(settle_balance_residual)) if settle_balance_residual else None,
-            "initial_settle_max_linear_speed_m_s": max(settle_speeds, default=None),
-            "initial_settle_max_angular_speed_rad_s": max(settle_angular, default=None),
+            "initial_settle_table_contact_fraction": (None if args.exploratory_grasp_probe else
+                                                      sum(settle_support) / max(1, len(settle_support))),
+            "initial_settle_mean_table_reaction_n": None if args.exploratory_grasp_probe else initial_table_mean,
+            "initial_settle_mean_force_balance_residual_n": (None if args.exploratory_grasp_probe or not settle_balance_residual
+                                                             else float(np.mean(settle_balance_residual))),
+            "initial_settle_max_linear_speed_m_s": None if args.exploratory_grasp_probe else max(settle_speeds, default=None),
+            "initial_settle_max_angular_speed_rad_s": None if args.exploratory_grasp_probe else max(settle_angular, default=None),
             "initial_settle_status": "PASS" if initial_settle_pass else "FAIL",
-            "initial_settle_search_duration_s": float(data.time - settle_start_time),
+            "initial_settle_search_duration_s": (float(data.time - settle_start_time)
+                                                 if not args.exploratory_grasp_probe else None),
             "initial_settle_stable_window": first_stable_settle_window,
             "initial_settle_window_requirements": {
                 "sample_count": INITIAL_SETTLE_WINDOW_STEPS,
@@ -1053,6 +1274,10 @@ def main() -> int:
                 "continuous_table_contact": True,
                 "positive_table_reaction_each_sample": True,
             },
+            "formal_initial_settle_repeated_this_run": not args.exploratory_grasp_probe,
+            "exploratory_precontact_envelope": first_exploratory_envelope,
+            "exploratory_precontact_envelope_last_window": last_exploratory_envelope,
+            "formal_settle_baseline": exploratory_baseline,
             "lift_path_waypoints": len(lift_plan),
             "transfer_path_waypoints": len(route_waypoints),
         },
@@ -1073,6 +1298,10 @@ def main() -> int:
             "approach_a_result_sha256": sha256(APPROACH_A), "static_approach_result_sha256": sha256(STATIC),
             "internal_preflight_result_sha256": sha256(INTERNAL), "historical_result_sha256": sha256(HISTORICAL),
             "lift_ik_sha256": sha256(LIFT_IK), "transfer_preflight_sha256": sha256(TRANSFER_PREFLIGHT),
+            "exploratory_settle_baseline_result_sha256": (exploratory_baseline["result_sha256"]
+                                                            if exploratory_baseline else None),
+            "exploratory_settle_baseline_trace_sha256": (exploratory_baseline["physics_trace_sha256"]
+                                                           if exploratory_baseline else None),
         },
         "evidence": {
             "physics_trace": str(physics_trace_path), "contact_wrench_trace": str(contact_trace_path),
@@ -1084,20 +1313,29 @@ def main() -> int:
         "duration_wall_s": time.monotonic() - total_wall_start,
     }
     pg.write_new_text(out / "episode_gate.json", json.dumps({"status": gate.status,
+        "formal_full_episode_status": formal_full_episode_status,
+        "exploratory_probe_status": exploratory_probe_status,
         "stage_status": phase_status, "blockers": list(gate.blockers),
         "last_physics_step_index": gate.last_physics_step_index,
         "criteria": result["gate_criteria"]}, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
         authorized_roots=(str(REVIEWS),), environment="wsl")
     report = [
-        "# Full-X2 Robotiq physical grasp episode",
+        "# " + ("SIMULATION_ONLY_EXPLORATORY_GRASP_PROBE" if args.exploratory_grasp_probe
+                else "Full-X2 Robotiq physical grasp episode"),
         "",
         f"Run ID: {result['run_id']}",
         f"Outcome: {result['status']}",
+        f"Formal full episode: {formal_full_episode_status}",
+        f"Exploratory probe: {exploratory_probe_status or 'NOT_RUN'}",
         f"EpisodeGate: {gate.status}",
         f"Physics: {total_steps} steps, {data.time:.3f} s at 1 ms",
         f"Cumulative Experiment B physics steps including all prior consumed attempts: {args.prior_abort_steps + total_steps}/30000.",
         f"First failure: {first_failure}",
-        f"Initial settle: {'PASS' if initial_settle_pass else 'FAIL'} after {data.time - settle_start_time:.3f} s; first stable window: {first_stable_settle_window}.",
+        (f"Formal INITIAL_SETTLE remains FAIL from saved baseline {exploratory_baseline['run_id']}; this probe did not repeat the 5 s formal gate."
+         if args.exploratory_grasp_probe else
+         f"Initial settle: {'PASS' if initial_settle_pass else 'FAIL'} after {data.time - settle_start_time:.3f} s; first stable window: {first_stable_settle_window}."),
+        (f"Exploratory pre-contact envelope: {first_exploratory_envelope or last_exploratory_envelope}."
+         if args.exploratory_grasp_probe else ""),
         "",
         "## Stage status",
         "",
@@ -1106,9 +1344,18 @@ def main() -> int:
         "## Physical measurement",
         "",
         f"- Bottle mass: {bottle_mass:.6f} kg; freejoint initialized once; post-start qpos writes: 0.",
-        f"- Initial table-reaction mean: {initial_table_mean:.6f} N for a {bottle_mass * GRAVITY:.6f} N bottle.",
-        f"- Initial force-balance residual mean: {float(np.mean(settle_balance_residual)) if settle_balance_residual else math.nan:.6f} N.",
-        f"- Initial settle peak speeds over the search: linear {max(settle_speeds, default=math.nan):.6f} m/s, angular {max(settle_angular, default=math.nan):.6f} rad/s.",
+        (f"- Exploratory envelope mean table reaction: {first_exploratory_envelope['mean_table_reaction_n']:.6f} N for a {bottle_mass * GRAVITY:.6f} N bottle."
+         if args.exploratory_grasp_probe and first_exploratory_envelope else
+         f"- Exploratory window not passed; last diagnostic table reaction: {last_exploratory_envelope['mean_table_reaction_n']:.6f} N."
+         if args.exploratory_grasp_probe and last_exploratory_envelope else
+         f"- Exploratory pre-contact envelope produced no complete window."
+         if args.exploratory_grasp_probe else
+         f"- Initial table-reaction mean: {initial_table_mean:.6f} N for a {bottle_mass * GRAVITY:.6f} N bottle."),
+        (f"- Formal settle peak speeds: see saved baseline trace; this exploratory run did not retest the formal settle window."
+         if args.exploratory_grasp_probe else
+         f"- Initial force-balance residual mean: {float(np.mean(settle_balance_residual)) if settle_balance_residual else math.nan:.6f} N."),
+        (f"- Formal settle peak speeds over the search: linear {max(settle_speeds, default=math.nan):.6f} m/s, angular {max(settle_angular, default=math.nan):.6f} rad/s."
+         if not args.exploratory_grasp_probe else ""),
         f"- Maximum bottle COM rise from initial state: {maximum_bottle_com_rise_m * 1000.0:.6f} mm.",
         f"- Tool upward support, table unloading, slip, bottle COM rise: see per-step traces and EpisodeGate frames.",
         f"- Minimum external clearance lower bounds: {result['physical_measurements']['minimum_clearance_lower_bounds_m']}.",
@@ -1117,7 +1364,7 @@ def main() -> int:
         "",
         "## Reproduction",
         "",
-        f"`cd {ROOT} && PYTHONDONTWRITEBYTECODE=1 {sys.executable} {Path(__file__).resolve()} --output-parent {args.output_parent} --max-duration-s 30.0 --prior-abort-steps {args.prior_abort_steps}`",
+        f"`cd {ROOT} && PYTHONDONTWRITEBYTECODE=1 {sys.executable} {Path(__file__).resolve()} --output-parent {args.output_parent} --max-duration-s 30.0 --prior-abort-steps {args.prior_abort_steps}{' --exploratory-grasp-probe --settle-baseline-run ' + str(args.settle_baseline_run) if args.exploratory_grasp_probe else ''}`",
         "",
     ]
     pg.write_new_text(out / "REPORT.md", "\n".join(report), authorized_roots=(str(REVIEWS),), environment="wsl")
