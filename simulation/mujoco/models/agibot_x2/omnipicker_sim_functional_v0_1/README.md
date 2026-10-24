@@ -45,6 +45,12 @@ There is intentionally no default ID. Unknown, missing, modified, or obsolete se
 
 The model uses the pinned official visual meshes and hash-locked CoACD collision proxies. The proxies are generated locally and are not redistributed in this repository. The local STEP file was not needed to load the model; its provenance and license remain separate unresolved metadata.
 
+## Mesh-frame status and comparison reference
+
+The four local mesh-frame rotations for narrow3, wide3, narrow_loop, and wide_loop are classified `CAD_SUPPORTED_EXPERIMENTAL`. The pinned v1.4.0 URDF specifies zero mesh-origin rotations for these links. The registered offsets derive from fitting the source STL bore centers to CAD-derived D-site directions; they are used for both visual geometry and collision proxies. None is `SOURCE_VERIFIED`, and this package does not establish exact STEP-to-URDF link identity or exact source-surface collision fidelity.
+
+`X2-OmniPicker-Sim-Functional-v0.1` remains the selected experimental functional baseline. Official zero-frame geometry is an unregistered static comparison reference only; it has no dynamics qualification and cannot be selected through the loader. The two frame choices have distinct identities and acceptance boundaries.
+
 Historical reference artifacts remain outside the runtime package and are not needed to load it. The frozen PR #90 model is `reviews/issue-46/candidate-b-full-useful-open-static-20261023T105521Z/candidate_b_full_useful_range_static.xml` (SHA-256 `32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45`). The original 17,500-step dynamic record is `reviews/issue-46/candidate-b-2pct-slower-dynamics-20261023-20261023T135940Z/trial_result.json` (SHA-256 `c1c6362987067736f9ab29446ad3a601b41a21b1e8d5e20c59514d26da192e7a`). It validates the frozen original model identity only; portable artifact dynamics were not rerun.
 
 ## Historical variants
