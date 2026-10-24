@@ -22,6 +22,9 @@ MAX_FORWARD_M_S = 0.14
 MAX_ANGULAR_RAD_S = 0.075
 MIN_EFFECTIVE_FORWARD_M_S = 0.12
 MAX_ACTION_WINDOW_S = 10.0
+REALTIME_CLOCK_ALIGNMENT_TOLERANCE_NS = 50_000_000
+REALTIME_CLOCK_BACKSTEP_MIN_NS = 50_000_000
+REALTIME_CLOCK_BACKSTEP_MAX_NS = 2_000_000_000
 
 
 class RouteError(ValueError):
@@ -156,6 +159,7 @@ class PoseEstimate:
     yaw_std_rad: float
     transform_chain: tuple[str, ...]
     transform_age_s: float
+    wall_time_ns: int | None = None
 
 
 @dataclass(frozen=True)
@@ -583,6 +587,9 @@ class WaypointRouteExecutor:
         self._step_started_s: float | None = None
         self._last_now_s: float | None = None
         self._last_stamp_ns: int | None = None
+        self._last_wall_time_ns: int | None = None
+        self._last_received_steady_s: float | None = None
+        self.verified_wall_clock_step_rebases = 0
         self._generation: str | None = None
         self._turn_origin: tuple[float, float] | None = None
         self._recovery_count = 0
@@ -779,6 +786,8 @@ class WaypointRouteExecutor:
             return None, "POSE_FRAME_MISMATCH"
         if pose.stamp_ns <= 0 or not pose.generation or not pose.source:
             return None, "POSE_STAMP_SOURCE_OR_GENERATION_INVALID"
+        if pose.wall_time_ns is not None and pose.wall_time_ns <= 0:
+            return None, "POSE_WALL_TIME_INVALID"
         receive_age = now_steady_s - pose.received_steady_s
         if receive_age < 0.0 or receive_age > self.route.max_pose_age_s:
             return None, "POSE_STALE_OR_FUTURE"
@@ -796,10 +805,37 @@ class WaypointRouteExecutor:
             if self._generation is not None and pose.generation != self._generation:
                 return None, "POSE_GENERATION_CHANGED_RESET_ROUTE"
             if self._last_stamp_ns is not None and pose.stamp_ns <= self._last_stamp_ns:
-                return None, "POSE_STAMP_NOT_STRICTLY_INCREASING"
+                if not self._verified_wall_clock_step(pose):
+                    return None, "POSE_STAMP_NOT_STRICTLY_INCREASING"
+                self.verified_wall_clock_step_rebases += 1
         self._last_stamp_ns = pose.stamp_ns
+        self._last_wall_time_ns = pose.wall_time_ns
+        self._last_received_steady_s = pose.received_steady_s
         self._generation = pose.generation
         return pose, None
+
+    def _verified_wall_clock_step(self, pose: PoseEstimate) -> bool:
+        """Accept a stamp epoch rebase only when fresh MuJoCo data tracks wall time."""
+        if (
+            pose.source != "MUJOCO_GROUND_TRUTH"
+            or self._last_stamp_ns is None
+            or self._last_wall_time_ns is None
+            or self._last_received_steady_s is None
+            or pose.wall_time_ns is None
+            or pose.received_steady_s <= self._last_received_steady_s
+            or pose.received_steady_s - self._last_received_steady_s > self.route.max_pose_age_s
+        ):
+            return False
+
+        stamp_backstep_ns = self._last_stamp_ns - pose.stamp_ns
+        wall_backstep_ns = self._last_wall_time_ns - pose.wall_time_ns
+        return (
+            REALTIME_CLOCK_BACKSTEP_MIN_NS <= stamp_backstep_ns <= REALTIME_CLOCK_BACKSTEP_MAX_NS
+            and REALTIME_CLOCK_BACKSTEP_MIN_NS <= wall_backstep_ns <= REALTIME_CLOCK_BACKSTEP_MAX_NS
+            and abs(stamp_backstep_ns - wall_backstep_ns) <= REALTIME_CLOCK_ALIGNMENT_TOLERANCE_NS
+            and abs(self._last_stamp_ns - self._last_wall_time_ns) <= REALTIME_CLOCK_ALIGNMENT_TOLERANCE_NS
+            and abs(pose.stamp_ns - pose.wall_time_ns) <= REALTIME_CLOCK_ALIGNMENT_TOLERANCE_NS
+        )
 
     def _safety_error(self, step: RouteStep, pose: PoseEstimate, now_steady_s: float) -> str | None:
         corridor = self._active_corridor(step)

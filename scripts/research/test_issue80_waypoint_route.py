@@ -88,12 +88,16 @@ def startup_feedback(**overrides) -> MotionFeedback:
     return MotionFeedback(**values)
 
 
-def make_pose_provider(x=0.0, y=0.0, yaw=0.0, now=0.0, stamp=1_000_000_000) -> FakePoseProvider:
+def make_pose_provider(
+    x=0.0, y=0.0, yaw=0.0, now=0.0, stamp=1_000_000_000,
+    wall_time_ns=None, source="LOCALIZATION",
+) -> FakePoseProvider:
     pose = PoseEstimate(
         frame_id="map", child_frame_id="base_link", x_m=x, y_m=y, yaw_rad=yaw,
         stamp_ns=stamp, received_steady_s=now, generation="epoch-1",
-        source="LOCALIZATION", position_std_m=0.01, yaw_std_rad=0.02,
+        source=source, position_std_m=0.01, yaw_std_rad=0.02,
         transform_chain=("map->odom", "odom->base_link"), transform_age_s=0.05,
+        wall_time_ns=wall_time_ns,
     )
     return FakePoseProvider(pose)
 
@@ -245,6 +249,80 @@ class RouteConfigTests(unittest.TestCase):
 
 
 class RouteExecutionTests(unittest.TestCase):
+    def test_wall_aligned_realtime_step_rebases_odom_stamp_and_records_it(self) -> None:
+        initial_time_ns = 1_700_000_000_000_000_000
+        rebased_time_ns = 1_699_999_999_470_000_000
+        route = verified_rectangle_route()
+        pose = make_pose_provider(
+            now=10.0,
+            stamp=initial_time_ns,
+            wall_time_ns=initial_time_ns,
+            source="MUJOCO_GROUND_TRUTH",
+        )
+        motion = FakeMotionAdapter()
+        runner = WaypointRouteExecutor(route, pose, FakeSafetyProvider(), motion)
+        runner.start(10.0, startup_feedback())
+        pose.pose = PoseEstimate(**{
+            **pose.pose.__dict__,
+            "x_m": 0.1,
+            "received_steady_s": 10.1,
+            "stamp_ns": rebased_time_ns,
+            "wall_time_ns": rebased_time_ns,
+        })
+
+        directive = runner.tick(10.1, startup_feedback())
+
+        self.assertEqual(directive.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        self.assertEqual(runner.verified_wall_clock_step_rebases, 1)
+        self.assertEqual(runner.state, RouteState.RUNNING)
+        self.assertFalse(motion.stop_reasons)
+
+    def test_unaligned_or_unfresh_stamp_regression_still_fails_closed(self) -> None:
+        initial_time_ns = 1_700_000_000_000_000_000
+        rebased_time_ns = 1_699_999_999_470_000_000
+        invalid_updates = (
+            ("wall_time_continued", {
+                "stamp_ns": rebased_time_ns,
+                "wall_time_ns": initial_time_ns + 100_000_000,
+                "received_steady_s": 10.1,
+            }),
+            ("header_wall_mismatch", {
+                "stamp_ns": rebased_time_ns,
+                "wall_time_ns": 1_699_999_999_100_000_000,
+                "received_steady_s": 10.1,
+            }),
+            ("same_receive_time", {
+                "stamp_ns": rebased_time_ns,
+                "wall_time_ns": rebased_time_ns,
+                "received_steady_s": 10.0,
+            }),
+            ("wrong_source", {
+                "stamp_ns": rebased_time_ns,
+                "wall_time_ns": rebased_time_ns,
+                "received_steady_s": 10.1,
+                "source": "LOCALIZATION",
+            }),
+        )
+        for label, update in invalid_updates:
+            with self.subTest(label=label):
+                route = verified_rectangle_route()
+                pose = make_pose_provider(
+                    now=10.0,
+                    stamp=initial_time_ns,
+                    wall_time_ns=initial_time_ns,
+                    source="MUJOCO_GROUND_TRUTH",
+                )
+                motion = FakeMotionAdapter()
+                runner = WaypointRouteExecutor(route, pose, FakeSafetyProvider(), motion)
+                runner.start(10.0, startup_feedback())
+                pose.pose = PoseEstimate(**{**pose.pose.__dict__, **update})
+
+                directive = runner.tick(10.1, startup_feedback())
+
+                self.assertEqual(directive.kind, DirectiveKind.STOP_AND_ABORT)
+                self.assertEqual(runner.verified_wall_clock_step_rebases, 0)
+                self.assertEqual(runner._last_error, "POSE_STAMP_NOT_STRICTLY_INCREASING")
+
     def test_synthetic_rectangle_advances_only_on_pose_and_physical_stop_evidence(self) -> None:
         route = verified_rectangle_route()
         pose = make_pose_provider()

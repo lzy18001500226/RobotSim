@@ -2429,6 +2429,17 @@ class FocusedM1Diagnostic(Node):
             age = ages.get("odom")
             if age is None or not math.isfinite(float(age)):
                 raise ValueError("route odometry receive age is unavailable")
+            sample_steady_s = float(snapshot["sample_monotonic_s"])
+            receive_steady_s = sample_steady_s - float(age)
+            wall_time_ns = None
+            wall_utc = snapshot.get("wall_utc")
+            if isinstance(wall_utc, str):
+                try:
+                    wall_dt = datetime.fromisoformat(wall_utc.replace("Z", "+00:00"))
+                    if wall_dt.tzinfo is not None:
+                        wall_time_ns = int(wall_dt.timestamp() * 1_000_000_000)
+                except (OverflowError, OSError, ValueError):
+                    wall_time_ns = None
             return PoseEstimate(
                 frame_id="odom",
                 child_frame_id="base_link",
@@ -2436,13 +2447,14 @@ class FocusedM1Diagnostic(Node):
                 y_m=float(pose["y"]),
                 yaw_rad=float(pose["yaw"]),
                 stamp_ns=stamp_ns,
-                received_steady_s=float(snapshot["sample_monotonic_s"]),
+                received_steady_s=receive_steady_s,
                 generation=str(self.args.attempt_id),
                 source="MUJOCO_GROUND_TRUTH",
                 position_std_m=0.0,
                 yaw_std_rad=0.0,
                 transform_chain=("odom->base_link",),
                 transform_age_s=float(age),
+                wall_time_ns=wall_time_ns,
             )
 
         class LivePoseProvider:
@@ -2735,6 +2747,10 @@ class FocusedM1Diagnostic(Node):
             route_stop_reason: str | None = None
             route_events: list[dict[str, Any]] = []
             route_arrival_poses: dict[str, dict[str, float]] = {}
+            result["pose_clock_diagnostics"] = {
+                "policy": "strict_header_order_except_fresh_wall-aligned_MuJoCo_clock_rollback",
+                "verified_wall_clock_step_rebases": 0,
+            }
 
             def transit_termination(snapshot: Mapping[str, Any]) -> bool:
                 nonlocal route_fault, route_stop_reason
@@ -2770,7 +2786,23 @@ class FocusedM1Diagnostic(Node):
                     source_mode_handshake_pass=True,
                     safety_gates_pass=True,
                 )
+                prior_clock_rebases = executor.verified_wall_clock_step_rebases
                 directive = executor.tick(float(snapshot["sample_monotonic_s"]), feedback)
+                result["pose_clock_diagnostics"] = {
+                    "policy": "strict_header_order_except_fresh_wall-aligned_MuJoCo_clock_rollback",
+                    "verified_wall_clock_step_rebases": executor.verified_wall_clock_step_rebases,
+                    "latest_odom_stamp_ns": pose.stamp_ns,
+                    "latest_capture_wall_time_ns": pose.wall_time_ns,
+                    "latest_pose_receive_steady_s": pose.received_steady_s,
+                }
+                if executor.verified_wall_clock_step_rebases > prior_clock_rebases:
+                    route_events.append({
+                        "kind": "VERIFIED_WALL_CLOCK_STEP_REBASE",
+                        "sample_monotonic_s": snapshot.get("sample_monotonic_s"),
+                        "odom_stamp_ns": pose.stamp_ns,
+                        "capture_wall_time_ns": pose.wall_time_ns,
+                        "pose_receive_steady_s": pose.received_steady_s,
+                    })
                 if not route_events or route_events[-1]["kind"] != directive.kind.value:
                     route_events.append({"kind": directive.kind.value, "reason": directive.reason,
                                          "sample_monotonic_s": snapshot.get("sample_monotonic_s")})
