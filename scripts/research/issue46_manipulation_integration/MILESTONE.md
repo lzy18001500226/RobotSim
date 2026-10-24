@@ -1,6 +1,6 @@
 # Issue #46 / PR #91 — Full-X2 PR90 grasp milestone
 
-Updated: 2026-10-23 19:00 UTC
+Updated: 2026-10-24 00:38 UTC
 Branch: codex/issue46-manipulation-integration-20261023
 Baseline source HEAD before this audit: 97a1e8a0ca5fa19a34415a2d370a06b5663d77b8
 Contact metrics and source-variant audit implementation commit: 91aeb2465c3e76bfa9f5ce189af2a68637d4905d
@@ -80,7 +80,16 @@ Existing local references do not provide a drop-in, physically validated PR90 bo
 - Existing AGILINK/STEP analysis in reviews/issue-46/omnipicker-mechanism-reconstruction-20261023T055242Z/REPORT.md found matching joint frames but unresolved gears, springs, loop laws, and physical couplings. The old G2-to-MuJoCo conversion failed static closure and is not a newly discovered solution.
 - The previously audited AgiBot-Community grasp demo provides ROS/AimDK planning and command sequencing, but its bundled URDF is simplified IK data without collision geometry and it is not a MuJoCo contact backend.
 
-The objective remains the pinned X2 Ultra. The Ultra Plus IK file is not directly interchangeable. The next physical-grasp step requires manufacturer/maintainer-supported X2 Ultra contact/installation data or separate approval to evaluate a different end-effector model. No source model or mount has been changed here.
+### Official X2 Ultra OmniPicker data audit
+
+- Read the official [OmniPicker User Manual for X2 Ultra](https://x2-aimdk.agibot.com/zh-cn/v0.8.1/_downloads/9179a383c97b0f37b1f0fbf51ed2cb35/omni_picker_introduction_for_x2.pdf) (21 pages; SHA-256 `a27f68422b94d114089d0e8bb4b4839babe66c8d6b8260f310c64c7253d0b173`; PDF metadata date 2025-10-26). Its closing note says hardware Ver1.2 and software Ver3.2.8; it does not name an X2 serial-specific gripper revision.
+- X2 Ultra installation pages 3-5 specify the end-cap/adapter assembly: remove four M2.5x8 screws, fix the adapter using five M3x6 screws, reinstall the four M2.5x8 screws, then fix the gripper to the wrist end using four M4x8 screws. The manual says both sides install the same way, with each wide finger toward the body's outside, and warns to preserve adapter orientation. This is a screw sequence and qualitative orientation rule, not a numerical wrist-to-gripper transform.
+- The pinned X2 URDF remains the numeric source for the accepted mount: `R_omnipicker_joint` is fixed under `right_wrist_roll_link` at xyz `(0.00196, 0.00035, -0.062) m`, rpy `(3.14, 0, 0)`; the left mount is xyz `(0.00259, 0.00035, -0.062) m`, rpy `(3.14, 0, 3.14)`. Source pin and URDF SHA-256 remain `575cc6b988f976c23550e0db85aa1e5475d3652d` and `35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d`. The manual does not supersede these frames; no mount or geometry change was made.
+- Manual typical values are 0.43 kg product mass, 30 N maximum gripping force, 1.5 kg maximum recommended payload, 120 mm maximum stroke, 0.7 s open/close time, +/-0.05 mm repeatability, and 24 V DC. The external-dimension figures label an outer envelope (about 125 mm wide in the open drawing and 88.1 mm in the closed drawing); these are not pad-to-pad aperture measurements and must not be compared directly with the PR90 five-section source-STL aperture of 90.999 mm or treated as the meaning of the 120 mm stroke.
+- The manual describes an adaptive one-active-DoF gripper and force control. `set_pos(x)` uses normalized opening `0..1` (0 closed, 1 fully open); CAN control carries byte-valued position, force, velocity, acceleration and deceleration commands (`0..0xFF`, with `0xFF` documented as maximum). It does not document a conversion from the force command to newtons or a calibrated force-vs-position curve.
+- The manual identifies replaceable soft pads and replaceable fingers, but supplies no pad material, friction coefficient, contact-pressure distribution, per-pad normal-force calibration, bottle-specific contact data, or internal passive-link transmission law. The published maximum gripping force is therefore not proof of this bottle's load-bearing contact capacity and does not validate PR90's simulation-only quartic coupling.
+
+The objective remains the pinned X2 Ultra with PR90 frozen. The public manual now resolves the installation sequence, qualitative hand orientation, outer dimensions and command semantics, but it does not supply the contact/force calibration or internal transmission data needed to infer bottle support or validate the simulation-only coupling. Existing static full-X2 collision gates remain BLOCKED; the single authorized physical trial remains unused, and GRASP/LIFT/TRANSFER/RELEASE/PLACE/SETTLE remain NOT RUN. No model, mount, contact parameter, or physics behavior was changed in this source audit. The Ultra Plus IK file is not directly interchangeable.
 
 
 ## Reproduction
