@@ -27,9 +27,11 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_MAX_WINDOWS,
     WAYPOINT_B_POSITION_TOLERANCE_M,
     WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M,
+    WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M,
     build_short_right_corner_route,
     measured_m1_nonzero_window_s,
     waypoint_b_arrival_passes,
+    waypoint_b_arrival_trigger_radius_m,
     validate_physical_stop_evidence,
     waypoint_b_window_budget_passes,
 )
@@ -177,6 +179,26 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertFalse(waypoint_b_window_budget_passes(0, short_diagnostic=True))
         self.assertFalse(waypoint_b_window_budget_passes(True, short_diagnostic=True))
         self.assertEqual(WAYPOINT_B_MAX_WINDOWS, 2)
+
+    def test_short_waypoint_trigger_reserves_measured_poststop_travel_without_changing_acceptance(self):
+        measured_stop_tail_m = 0.03681105376544568
+        trigger_radius_m = waypoint_b_arrival_trigger_radius_m(
+            acceptance_tolerance_m=WAYPOINT_B_POSITION_TOLERANCE_M,
+            stop_reserve_m=WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M,
+        )
+
+        self.assertAlmostEqual(WAYPOINT_B_POSITION_TOLERANCE_M, 0.15)
+        self.assertAlmostEqual(WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M, 0.045)
+        self.assertAlmostEqual(trigger_radius_m, 0.105)
+        self.assertGreater(WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M, measured_stop_tail_m)
+        self.assertLessEqual(trigger_radius_m + measured_stop_tail_m, WAYPOINT_B_POSITION_TOLERANCE_M)
+        self.assertAlmostEqual(
+            waypoint_b_arrival_trigger_radius_m(
+                acceptance_tolerance_m=WAYPOINT_B_POSITION_TOLERANCE_M,
+                stop_reserve_m=0.0,
+            ),
+            WAYPOINT_B_POSITION_TOLERANCE_M,
+        )
 
     def test_waypoint_arrival_requires_trigger_and_settled_pose_within_tolerance(self):
         self.assertTrue(waypoint_b_arrival_passes(0.10, 0.15, tolerance_m=0.15))

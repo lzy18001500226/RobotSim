@@ -99,10 +99,12 @@ from issue80_waypoint_route import (
 from issue80_route_motion_bridge import (
     ROUTE_WINDOW_ZERO_MARGIN_S, WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
     WAYPOINT_B_MAX_WINDOWS, WAYPOINT_B_POSITION_TOLERANCE_M,
-    WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M, WAYPOINT_B_WINDOW_MAX_S,
+    WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M, WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M,
+    WAYPOINT_B_WINDOW_MAX_S,
     RouteMotionBridge, RouteMotionBridgeError, RuntimeReadiness,
     build_short_right_corner_route, measured_m1_nonzero_window_s,
-    waypoint_b_arrival_passes, waypoint_b_window_budget_passes,
+    waypoint_b_arrival_passes, waypoint_b_arrival_trigger_radius_m,
+    waypoint_b_window_budget_passes,
 )
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
@@ -2696,6 +2698,17 @@ class FocusedM1Diagnostic(Node):
                 )
                 route_spec["waypoint_b_position_tolerance_m"] = WAYPOINT_B_POSITION_TOLERANCE_M
                 route_spec["waypoint_b_diagnostic_only"] = waypoint_b_short_diagnostic
+                route_spec["waypoint_b_stop_reserve_m"] = (
+                    WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M
+                    if waypoint_b_short_diagnostic else 0.0
+                )
+                route_spec["waypoint_b_arrival_trigger_radius_m"] = waypoint_b_arrival_trigger_radius_m(
+                    acceptance_tolerance_m=WAYPOINT_B_POSITION_TOLERANCE_M,
+                    stop_reserve_m=(
+                        WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M
+                        if waypoint_b_short_diagnostic else 0.0
+                    ),
+                )
                 route_spec["maximum_transit_windows"] = WAYPOINT_B_MAX_WINDOWS
                 route_spec["maximum_transit_window_s"] = WAYPOINT_B_WINDOW_MAX_S
                 route_spec["aggregate_transit_budget_s"] = WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S
@@ -2779,8 +2792,15 @@ class FocusedM1Diagnostic(Node):
                 pose = pose_provider.pose
                 assert pose is not None
                 distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
+                arrival_trigger_radius_m = waypoint_b_arrival_trigger_radius_m(
+                    acceptance_tolerance_m=active.position_tolerance_m,
+                    stop_reserve_m=(
+                        WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M
+                        if waypoint_b_short_diagnostic else 0.0
+                    ),
+                )
                 feedback = MotionFeedback(
-                    status=MotionStatus.ARRIVED if distance <= active.position_tolerance_m else MotionStatus.ACTIVE,
+                    status=MotionStatus.ARRIVED if distance <= arrival_trigger_radius_m else MotionStatus.ACTIVE,
                     reset_gate_pass=True,
                     standing_gate_pass=True,
                     source_mode_handshake_pass=True,
@@ -3413,6 +3433,17 @@ class FocusedM1Diagnostic(Node):
                         "poststop_progress": poststop_metrics,
                         "arrival_must_remain_in_tolerance_after_stop": True,
                         "tolerance_m": b_tolerance,
+                        "arrival_trigger_radius_m": waypoint_b_arrival_trigger_radius_m(
+                            acceptance_tolerance_m=b_tolerance,
+                            stop_reserve_m=(
+                                WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M
+                                if waypoint_b_short_diagnostic else 0.0
+                            ),
+                        ),
+                        "stop_reserve_m": (
+                            WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M
+                            if waypoint_b_short_diagnostic else 0.0
+                        ),
                     },
                     "window_count": len(b_window_segments),
                     "window_count_minimum": 1 if waypoint_b_short_diagnostic else 2,
@@ -4431,6 +4462,17 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "waypoint_b_tolerance_m": WAYPOINT_B_POSITION_TOLERANCE_M,
                 "per_window_nonzero_limit_s": WAYPOINT_B_WINDOW_MAX_S,
                 "aggregate_transit_nonzero_limit_s": WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
+                "stop_reserve_m": (
+                    WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M
+                    if waypoint_b_short_diagnostic else 0.0
+                ),
+                "arrival_trigger_radius_m": waypoint_b_arrival_trigger_radius_m(
+                    acceptance_tolerance_m=WAYPOINT_B_POSITION_TOLERANCE_M,
+                    stop_reserve_m=(
+                        WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M
+                        if waypoint_b_short_diagnostic else 0.0
+                    ),
+                ),
                 "minimum_windows_required": 1 if waypoint_b_short_diagnostic else 2,
                 "maximum_windows": WAYPOINT_B_MAX_WINDOWS,
                 "route_nonzero_limit_s": 30.0,

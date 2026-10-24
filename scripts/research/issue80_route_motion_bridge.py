@@ -44,6 +44,8 @@ MAX_ROUTE_ACTION_WINDOW_S = 5.0
 ROUTE_WINDOW_ZERO_MARGIN_S = 0.02  # A2's timing-recovery margin before a 5 s M1 deadline.
 WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M = 0.20
 WAYPOINT_B_POSITION_TOLERANCE_M = 0.15
+# Run d5df79e0 drifted 36.811 mm from arrival to settled pose; reserve 45 mm.
+WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M = 0.045
 WAYPOINT_B_MAX_WINDOWS = 2
 WAYPOINT_B_WINDOW_MAX_S = 5.0
 WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S = 10.0
@@ -162,6 +164,21 @@ def waypoint_b_arrival_passes(
         and float(arrival_error_m) <= float(tolerance_m)
         and float(settled_error_m) <= float(tolerance_m)
     )
+
+
+def waypoint_b_arrival_trigger_radius_m(
+    *, acceptance_tolerance_m: float, stop_reserve_m: float
+) -> float:
+    """Tighten the trigger inside, without changing, the final acceptance radius."""
+    if (
+        not _finite_number(acceptance_tolerance_m)
+        or not _finite_number(stop_reserve_m)
+        or float(acceptance_tolerance_m) <= 0.0
+        or float(stop_reserve_m) < 0.0
+        or float(stop_reserve_m) >= float(acceptance_tolerance_m)
+    ):
+        raise RouteMotionBridgeError("waypoint stop reserve must be finite and inside its acceptance tolerance")
+    return float(acceptance_tolerance_m) - float(stop_reserve_m)
 
 
 def measured_m1_nonzero_window_s(result: Mapping[str, object]) -> float:

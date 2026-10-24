@@ -38,7 +38,9 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_MAX_WINDOWS,
     WAYPOINT_B_POSITION_TOLERANCE_M,
     WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M,
+    WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M,
     WAYPOINT_B_WINDOW_MAX_S,
+    waypoint_b_arrival_trigger_radius_m,
 )
 
 
@@ -1352,6 +1354,11 @@ class BoundedRun:
                 "classification": "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC",
                 "waypoint_distance_from_start_m": WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M,
                 "position_tolerance_m": WAYPOINT_B_POSITION_TOLERANCE_M,
+                "stop_trigger_reserve_m": WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M,
+                "arrival_trigger_radius_m": waypoint_b_arrival_trigger_radius_m(
+                    acceptance_tolerance_m=WAYPOINT_B_POSITION_TOLERANCE_M,
+                    stop_reserve_m=WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M,
+                ),
                 "original_waypoint_b_distance_m": 0.40,
                 "original_waypoint_b_acceptance_unchanged": True,
                 "transit_forward_m_s": TURN_FORWARD_COMMAND_M_S,
