@@ -96,7 +96,8 @@ from issue80_waypoint_route import (
     PhysicalStopStatus, PoseEstimate, SafetyObservation, WaypointRouteExecutor,
 )
 from issue80_route_motion_bridge import (
-    RouteMotionBridge, RuntimeReadiness, build_short_right_corner_route,
+    ROUTE_WINDOW_ZERO_MARGIN_S, RouteMotionBridge, RouteMotionBridgeError, RuntimeReadiness,
+    build_short_right_corner_route, measured_m1_nonzero_window_s,
 )
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
@@ -2731,53 +2732,6 @@ class FocusedM1Diagnostic(Node):
                     return True
                 return False
 
-            baseline_displacements = [
-                float(window["forward_displacement_m"])
-                for window in (stationary_baseline or {}).get("windows", [])
-            ]
-            transit = run_first_motion_window(
-                sample=self.sample_for_first_motion,
-                publish=self._publish,
-                registration=registration,
-                set_action=set_action,
-                joint_limits=self.joint_limits,
-                baseline_forward_displacements_m=baseline_displacements,
-                baseline_state_summary=(stationary_baseline or {}).get("physical_state_summary"),
-                authorized=True,
-                forward_command_m_s=transit_plan.forward_m_s,
-                pulse_duration_s=transit_plan.maximum_duration_s,
-                max_pulse_duration_s=transit_plan.maximum_duration_s,
-                extra_post_stop_observe_s=5.0,
-                after_zero_stop=self.request_postwalk_stand_once,
-                shutdown_event=self.interrupted,
-                on_sample=lambda phase, snapshot: self._trace_first_motion_sample(
-                    f"route-transit-{phase}", snapshot,
-                ),
-                termination_condition=transit_termination,
-                termination_condition_name="route_waypoint_and_physical_stop",
-                state_timeout_s=self.args.state_timeout,
-                min_root_z=self.args.min_root_z,
-                max_tilt_deg=self.args.max_tilt_deg,
-                max_observed_planar_speed_m_s=0.2,
-                zero_until_stand_timeout_s=3.5,
-            )
-            result["segments"].append({"segment_id": "TRANSIT-TO-CORNER", "plan": dict(transit_plan.__dict__),
-                                       "result": transit})
-            result["route_events"] = route_events
-            actual_transit_window_s = float(transit.get("pulse_actual_duration_s", 0.0))
-            if actual_transit_window_s > 0.0:
-                bridge.complete_window(transit_plan.window_id, actual_elapsed_s=actual_transit_window_s)
-            transit_gate = transit.get("physical_stop_gate") or {}
-            if (
-                route_fault
-                or route_stop_reason is None
-                or transit.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
-                or transit_gate.get("status") != "PASS"
-            ):
-                result["status"] = "BLOCKED"
-                result["fault"] = route_fault or route_stop_reason or transit.get("fault") or "transit_waypoint_or_physical_stop_not_passed"
-                return result
-
             def stop_mapping(gate: Mapping[str, Any]) -> dict[str, Any]:
                 final_window = gate.get("final_window", {})
                 return {
@@ -2790,23 +2744,417 @@ class FocusedM1Diagnostic(Node):
                     "generation": str(self.args.attempt_id),
                 }
 
+            route_total_nonzero_s = 0.0
+
+            def run_transit_windows(
+                initial_directive,
+                initial_plan,
+                segment_id: str,
+            ) -> dict[str, Any]:
+                """Run bounded 5 s windows, re-planning only after measured stop."""
+                nonlocal route_fault, route_stop_reason, route_total_nonzero_s
+                current_directive = initial_directive
+                current_plan = initial_plan
+                last_result: dict[str, Any] | None = None
+                last_gate: Mapping[str, Any] = {}
+                window_index = 0
+                while True:
+                    remaining_route_s = 30.0 - route_total_nonzero_s
+                    window_cap_s = min(float(current_plan.maximum_duration_s), remaining_route_s)
+                    pulse_duration_s = window_cap_s - ROUTE_WINDOW_ZERO_MARGIN_S
+                    if pulse_duration_s < 0.10:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": "route_nonzero_budget_or_step_window_exhausted",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+
+                    route_fault = None
+                    route_stop_reason = None
+                    window_angular = float(current_plan.angular_rad_s)
+
+                    def publish_window(forward_m_s: float) -> None:
+                        self._publish(
+                            float(forward_m_s),
+                            0.0,
+                            window_angular if float(forward_m_s) > 0.0 else 0.0,
+                        )
+
+                    last_result = run_first_motion_window(
+                        sample=self.sample_for_first_motion,
+                        publish=publish_window,
+                        registration=registration,
+                        set_action=set_action,
+                        joint_limits=self.joint_limits,
+                        baseline_forward_displacements_m=baseline_displacements,
+                        baseline_state_summary=(stationary_baseline or {}).get("physical_state_summary"),
+                        authorized=True,
+                        forward_command_m_s=current_plan.forward_m_s,
+                        pulse_duration_s=pulse_duration_s,
+                        max_pulse_duration_s=window_cap_s,
+                        extra_post_stop_observe_s=5.0,
+                        after_zero_stop=self.request_postwalk_stand_once,
+                        shutdown_event=self.interrupted,
+                        on_sample=lambda phase, snapshot, n=window_index + 1: self._trace_first_motion_sample(
+                            f"{segment_id.lower()}-window-{n}-{phase}", snapshot,
+                        ),
+                        termination_condition=transit_termination,
+                        termination_condition_name=f"{segment_id.lower()}_waypoint_and_physical_stop",
+                        state_timeout_s=self.args.state_timeout,
+                        min_root_z=self.args.min_root_z,
+                        max_tilt_deg=self.args.max_tilt_deg,
+                        max_observed_planar_speed_m_s=0.2,
+                        zero_until_stand_timeout_s=3.5,
+                    )
+                    last_result["command_angular_velocity_rad_s"] = window_angular
+                    last_result["route_window_maximum_duration_s"] = window_cap_s
+                    try:
+                        measured_window_s = measured_m1_nonzero_window_s(last_result)
+                    except RouteMotionBridgeError as exc:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": f"route_window_elapsed_unavailable:{exc}",
+                            "last_result": last_result,
+                            "last_gate": last_result.get("physical_stop_gate") or {},
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    last_result["route_window_measured_nonzero_elapsed_s"] = measured_window_s
+                    if measured_window_s > window_cap_s + 1e-6:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": "route_window_nonzero_command_deadline_exceeded",
+                            "last_result": last_result,
+                            "last_gate": last_result.get("physical_stop_gate") or {},
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    try:
+                        bridge.complete_window(
+                            current_plan.window_id,
+                            actual_elapsed_s=measured_window_s,
+                        )
+                    except RouteMotionBridgeError as exc:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": f"route_window_completion_rejected:{exc}",
+                            "last_result": last_result,
+                            "last_gate": last_result.get("physical_stop_gate") or {},
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    route_total_nonzero_s += measured_window_s
+                    window_index += 1
+                    last_gate = last_result.get("physical_stop_gate") or {}
+                    result["segments"].append({
+                        "segment_id": f"{segment_id}-WINDOW-{window_index}",
+                        "plan": {
+                            **dict(current_plan.__dict__),
+                            "commanded_window_duration_s": pulse_duration_s,
+                            "executed_angular_velocity_rad_s": window_angular,
+                        },
+                        "result": last_result,
+                    })
+
+                    if (
+                        route_fault
+                        or last_result.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
+                        or last_gate.get("status") != "PASS"
+                    ):
+                        return {
+                            "status": "BLOCKED",
+                            "fault": route_fault or last_result.get("fault") or "route_window_motion_or_stop_gate_failed",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+
+                    if route_stop_reason is not None:
+                        return {
+                            "status": "ARRIVAL_DURING_WINDOW",
+                            "fault": None,
+                            "arrived": True,
+                            "bridge_stop_rearmed": False,
+                            "stop_reason": route_stop_reason,
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+
+                    evidence = stop_mapping(last_gate)
+                    zero_start_s = float(last_gate.get("zero_start_monotonic_s", 0.0))
+                    zero_plan = bridge.zero_window(
+                        route_motion.latest,
+                        now_steady_s=time.monotonic(),
+                        reason=f"{segment_id} action window ended without waypoint arrival; verify stop before replanning",
+                        physical_stop_gate_required=True,
+                    )
+                    bridge_rearmed = bridge.confirm_physical_stop(
+                        evidence,
+                        zero_request_started_s=zero_start_s,
+                        now_steady_s=time.monotonic(),
+                        expected_generation=str(self.args.attempt_id),
+                    )
+                    if not bridge_rearmed:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": "route_window_stop_evidence_failed_to_rearm_bridge",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+
+                    snapshot = self.sample_for_first_motion()
+                    try:
+                        pose = pose_provider.update(snapshot)
+                    except (KeyError, TypeError, ValueError) as exc:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": f"route_replan_pose_invalid:{type(exc).__name__}:{exc}",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    active = executor.active_step
+                    if active is None:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": "route_active_step_missing_after_verified_stop",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    safety_provider.update(snapshot, active.waypoint_id)
+                    safety_fault = snapshot_fault(
+                        snapshot,
+                        self.joint_limits,
+                        state_timeout_s=self.args.state_timeout,
+                        min_root_z=self.args.min_root_z,
+                        max_tilt_deg=self.args.max_tilt_deg,
+                        max_observed_planar_speed_m_s=0.2,
+                    )
+                    if safety_fault:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": f"route_replan_safety:{safety_fault}",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    stop_evidence = PhysicalStopEvidence(
+                        status=PhysicalStopStatus.PASS,
+                        window_start_steady_s=float(evidence["window_start_steady_s"]),
+                        window_end_steady_s=float(evidence["window_end_steady_s"]),
+                        sample_count=int(evidence["sample_count"]),
+                        maximum_sample_gap_s=float(evidence["maximum_sample_gap_s"]),
+                        maximum_state_age_s=float(evidence["maximum_state_age_s"]),
+                        generation=str(self.args.attempt_id),
+                    )
+                    distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
+                    arrived_after_stop = distance <= active.position_tolerance_m
+                    directive_after_stop = executor.tick(
+                        float(snapshot["sample_monotonic_s"]),
+                        MotionFeedback(
+                            status=MotionStatus.ARRIVED if arrived_after_stop else MotionStatus.ACTIVE,
+                            physical_stop_evidence=stop_evidence,
+                            reset_gate_pass=True,
+                            standing_gate_pass=True,
+                            source_mode_handshake_pass=False,
+                            safety_gates_pass=True,
+                            stand_readback_pass=stand_mode_readback_confirmed(snapshot),
+                        ),
+                    )
+                    if directive_after_stop.kind is DirectiveKind.STOP_AND_ABORT:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": directive_after_stop.reason,
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    if arrived_after_stop and directive_after_stop.kind is DirectiveKind.REQUEST_PHYSICAL_STOP:
+                        route_stop_reason = directive_after_stop.reason
+                        route_arrival_poses[active.waypoint_id] = {
+                            "x_m": pose.x_m, "y_m": pose.y_m, "yaw_rad": pose.yaw_rad,
+                            "sample_monotonic_s": pose.received_steady_s,
+                        }
+                        snapshot = self.sample_for_first_motion()
+                        pose = pose_provider.update(snapshot)
+                        safety_provider.update(snapshot, active.waypoint_id)
+                        directive_after_stop = executor.tick(
+                            float(snapshot["sample_monotonic_s"]),
+                            MotionFeedback(
+                                status=MotionStatus.ACTIVE,
+                                physical_stop_evidence=stop_evidence,
+                                reset_gate_pass=True,
+                                standing_gate_pass=True,
+                                source_mode_handshake_pass=False,
+                                safety_gates_pass=True,
+                                stand_readback_pass=stand_mode_readback_confirmed(snapshot),
+                            ),
+                        )
+                        if directive_after_stop.kind is DirectiveKind.STOP_AND_ABORT:
+                            return {
+                                "status": "BLOCKED",
+                                "fault": directive_after_stop.reason,
+                                "last_result": last_result,
+                                "last_gate": last_gate,
+                                "zero_plan": dict(zero_plan.__dict__),
+                                "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                            }
+                        return {
+                            "status": "ARRIVAL_AFTER_VERIFIED_STOP",
+                            "fault": None,
+                            "arrived": True,
+                            "bridge_stop_rearmed": True,
+                            "stop_reason": route_stop_reason,
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "next_directive": directive_after_stop,
+                            "final_snapshot": snapshot,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    if directive_after_stop.kind is not DirectiveKind.FOLLOW_WAYPOINT:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": f"route_did_not_remain_on_waypoint:{directive_after_stop.kind.value}",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    if route_total_nonzero_s >= 30.0:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": "route_total_nonzero_command_budget_exhausted",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    readiness = readiness_from_snapshot(snapshot)
+                    current_plan = bridge.plan_next(
+                        directive_after_stop,
+                        pose,
+                        readiness,
+                        now_steady_s=float(snapshot["sample_monotonic_s"]),
+                    )
+                    if current_plan.status != "PROPOSAL_ONLY" or current_plan.forward_m_s <= 0.0:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": f"route_bridge_refused_next_window:{current_plan.status}:{current_plan.reason}",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    current_directive = directive_after_stop
+
+            baseline_displacements = [
+                float(window["forward_displacement_m"])
+                for window in (stationary_baseline or {}).get("windows", [])
+            ]
+            transit_summary = run_transit_windows(
+                current_directive, transit_plan, "TRANSIT-TO-CORNER"
+            )
+            transit = transit_summary.get("last_result") or {}
+            transit_gate = transit_summary.get("last_gate") or {}
+            result["route_events"] = route_events
+            if (
+                transit_summary.get("status") not in (
+                    "ARRIVAL_DURING_WINDOW", "ARRIVAL_AFTER_VERIFIED_STOP",
+                )
+                or route_fault
+                or route_stop_reason is None
+                or transit.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
+                or transit_gate.get("status") != "PASS"
+            ):
+                result["status"] = "BLOCKED"
+                result["fault"] = (
+                    transit_summary.get("fault") or route_fault or route_stop_reason
+                    or transit.get("fault") or "transit_waypoint_or_physical_stop_not_passed"
+                )
+                result["route_total_nonzero_command_time_s"] = route_total_nonzero_s
+                return result
+
             transit_evidence = stop_mapping(transit_gate)
             transit_zero_start = float(transit_gate.get("zero_start_monotonic_s", 0.0))
-            zero_plan = bridge.zero_window(
-                route_motion.latest,
-                now_steady_s=time.monotonic(),
-                reason="M1 transit ended and its physical-stop gate is being revalidated before the corner",
-                physical_stop_gate_required=True,
-            )
-            transit_stop_rearmed = bridge.confirm_physical_stop(
-                transit_evidence,
-                zero_request_started_s=transit_zero_start,
-                now_steady_s=time.monotonic(),
-                expected_generation=str(self.args.attempt_id),
-            )
+            zero_plan = transit_summary.get("zero_plan")
+            transit_stop_rearmed = bool(transit_summary.get("bridge_stop_rearmed"))
+            if not transit_stop_rearmed:
+                zero_plan = bridge.zero_window(
+                    route_motion.latest,
+                    now_steady_s=time.monotonic(),
+                    reason="waypoint B reached; revalidate measured stop before the corner",
+                    physical_stop_gate_required=True,
+                )
+                transit_stop_rearmed = bridge.confirm_physical_stop(
+                    transit_evidence,
+                    zero_request_started_s=transit_zero_start,
+                    now_steady_s=time.monotonic(),
+                    expected_generation=str(self.args.attempt_id),
+                )
+                if not transit_stop_rearmed:
+                    result["status"] = "BLOCKED"
+                    result["fault"] = "waypoint_b_physical_stop_did_not_rearm_bridge"
+                    return result
+                route_after_transit = self.sample_for_first_motion()
+                pose_provider.update(route_after_transit)
+                active = executor.active_step
+                if active is None:
+                    result["status"] = "BLOCKED"
+                    result["fault"] = "waypoint_b_route_step_missing_after_stop"
+                    return result
+                safety_provider.update(route_after_transit, active.waypoint_id)
+                after_transit = executor.tick(
+                    float(route_after_transit["sample_monotonic_s"]),
+                    MotionFeedback(
+                        status=MotionStatus.ACTIVE,
+                        physical_stop_evidence=PhysicalStopEvidence(
+                            status=PhysicalStopStatus.PASS,
+                            window_start_steady_s=float(transit_evidence["window_start_steady_s"]),
+                            window_end_steady_s=float(transit_evidence["window_end_steady_s"]),
+                            sample_count=int(transit_evidence["sample_count"]),
+                            maximum_sample_gap_s=float(transit_evidence["maximum_sample_gap_s"]),
+                            maximum_state_age_s=float(transit_evidence["maximum_state_age_s"]),
+                            generation=str(self.args.attempt_id),
+                        ),
+                        reset_gate_pass=True,
+                        standing_gate_pass=True,
+                        source_mode_handshake_pass=False,
+                        safety_gates_pass=True,
+                        stand_readback_pass=stand_mode_readback_confirmed(route_after_transit),
+                    ),
+                )
+                if after_transit.kind is DirectiveKind.STOP_AND_ABORT:
+                    result["status"] = "BLOCKED"
+                    result["fault"] = f"route rejected waypoint B stop evidence: {after_transit.reason}"
+                    return result
             route_after_transit = self.sample_for_first_motion()
             route_pose = pose_provider.update(route_after_transit)
-            safety_provider.update(route_after_transit, executor.active_step.waypoint_id)
+            active = executor.active_step
+            if active is None:
+                result["status"] = "BLOCKED"
+                result["fault"] = "route_corner_step_missing_after_waypoint_b"
+                return result
+            safety_provider.update(route_after_transit, active.waypoint_id)
+            route_after_transit_fault = snapshot_fault(
+                route_after_transit,
+                self.joint_limits,
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+                max_observed_planar_speed_m_s=0.2,
+            )
+            if route_after_transit_fault:
+                result["status"] = "BLOCKED"
+                result["fault"] = f"route_corner_preflight:{route_after_transit_fault}"
+                return result
             stop_feedback = MotionFeedback(
                 status=MotionStatus.ACTIVE,
                 physical_stop_evidence=PhysicalStopEvidence(
@@ -2824,12 +3172,6 @@ class FocusedM1Diagnostic(Node):
                 safety_gates_pass=True,
                 stand_readback_pass=stand_mode_readback_confirmed(route_after_transit),
             )
-            after_transit = executor.tick(float(route_after_transit["sample_monotonic_s"]), stop_feedback)
-            if after_transit.kind is DirectiveKind.STOP_AND_ABORT:
-                raise ValueError(f"route rejected transit stop evidence: {after_transit.reason}")
-            route_after_transit = self.sample_for_first_motion()
-            pose_provider.update(route_after_transit)
-            safety_provider.update(route_after_transit, executor.active_step.waypoint_id)
             to_turn = executor.tick(
                 float(route_after_transit["sample_monotonic_s"]),
                 MotionFeedback(
@@ -2955,9 +3297,20 @@ class FocusedM1Diagnostic(Node):
             turn["route_plan"] = dict(turn_plan.__dict__)
             turn["route_stop_reason"] = route_turn_stop_reason
             result["segments"].append({"segment_id": "RIGHT-CORNER", "plan": dict(turn_plan.__dict__), "result": turn})
-            actual_turn_window_s = float(turn.get("pulse_actual_duration_s", 0.0))
-            if actual_turn_window_s > 0.0:
-                bridge.complete_window(turn_plan.window_id, actual_elapsed_s=actual_turn_window_s)
+            try:
+                actual_turn_window_s = measured_m1_nonzero_window_s(turn)
+            except RouteMotionBridgeError as exc:
+                result["status"] = "BLOCKED"
+                result["fault"] = f"turn_window_elapsed_unavailable:{exc}"
+                return result
+            turn["route_window_measured_nonzero_elapsed_s"] = actual_turn_window_s
+            if route_total_nonzero_s + actual_turn_window_s > 30.0:
+                result["status"] = "BLOCKED"
+                result["fault"] = "route_total_nonzero_command_budget_exceeded_by_turn"
+                result["total_actual_nonzero_command_time_s"] = route_total_nonzero_s
+                return result
+            route_total_nonzero_s += actual_turn_window_s
+            bridge.complete_window(turn_plan.window_id, actual_elapsed_s=actual_turn_window_s)
             turn_gate = turn.get("physical_stop_gate") or {}
             turn_rotation = turn.get("rotation") or {}
             turn_guard = turn.get("turn_displacement_guard") or {}
@@ -3067,118 +3420,99 @@ class FocusedM1Diagnostic(Node):
                 result["route_events"] = route_events
                 return result
 
-            # The existing M1 window accepts one forward scalar. Route C uses
-            # the same sole publisher with the bridge's bounded angular
-            # correction, and explicitly zeros all axes during every stop.
-            continuation_angular = float(continuation_plan.angular_rad_s)
-
-            def publish_continuation(forward_m_s: float) -> None:
-                self._publish(
-                    float(forward_m_s),
-                    0.0,
-                    continuation_angular if float(forward_m_s) > 0.0 else 0.0,
-                )
-
-            route_fault = None
-            route_stop_reason = None
-            continuation = run_first_motion_window(
-                sample=self.sample_for_first_motion,
-                publish=publish_continuation,
-                registration=registration,
-                set_action=set_action,
-                joint_limits=self.joint_limits,
-                baseline_forward_displacements_m=baseline_displacements,
-                baseline_state_summary=(stationary_baseline or {}).get("physical_state_summary"),
-                authorized=True,
-                forward_command_m_s=continuation_plan.forward_m_s,
-                pulse_duration_s=continuation_plan.maximum_duration_s,
-                max_pulse_duration_s=continuation_plan.maximum_duration_s,
-                extra_post_stop_observe_s=5.0,
-                after_zero_stop=self.request_postwalk_stand_once,
-                shutdown_event=self.interrupted,
-                on_sample=lambda phase, snapshot: self._trace_first_motion_sample(
-                    f"route-waypoint-c-{phase}", snapshot,
-                ),
-                termination_condition=transit_termination,
-                termination_condition_name="route_waypoint_c_and_physical_stop",
-                state_timeout_s=self.args.state_timeout,
-                min_root_z=self.args.min_root_z,
-                max_tilt_deg=self.args.max_tilt_deg,
-                max_observed_planar_speed_m_s=0.2,
-                zero_until_stand_timeout_s=3.5,
+            continuation_summary = run_transit_windows(
+                next_segment,
+                continuation_plan,
+                "TRANSIT-AFTER-RIGHT-CORNER",
             )
-            # The route callback above supplies this angular component through
-            # the same verified M1 publisher; keep the child result truthful.
-            continuation["command_angular_velocity_rad_s"] = continuation_angular
-            result["segments"].append({
-                "segment_id": "TRANSIT-AFTER-RIGHT-CORNER",
-                "plan": {
-                    **dict(continuation_plan.__dict__),
-                    "executed_angular_velocity_rad_s": continuation_angular,
-                    "angular_control": "fixed bridge output for this single bounded measured-pose window",
-                },
-                "result": continuation,
-            })
-            continuation_actual_s = float(continuation.get("pulse_actual_duration_s", 0.0))
-            if continuation_actual_s > 0.0:
-                bridge.complete_window(
-                    continuation_plan.window_id,
-                    actual_elapsed_s=continuation_actual_s,
-                )
-            continuation_gate = continuation.get("physical_stop_gate") or {}
+            continuation = continuation_summary.get("last_result") or {}
+            continuation_gate = continuation_summary.get("last_gate") or {}
             if (
-                route_fault
+                continuation_summary.get("status") not in (
+                    "ARRIVAL_DURING_WINDOW", "ARRIVAL_AFTER_VERIFIED_STOP",
+                )
+                or route_fault
                 or route_stop_reason is None
                 or continuation.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
                 or continuation_gate.get("status") != "PASS"
             ):
                 result["status"] = "BLOCKED"
                 result["fault"] = (
-                    route_fault or route_stop_reason or continuation.get("fault")
+                    continuation_summary.get("fault") or route_fault or route_stop_reason
+                    or continuation.get("fault")
                     or "waypoint_c_or_physical_stop_not_passed"
                 )
                 result["route_events"] = route_events + route_motion.events
                 result["waypoint_arrival_poses"] = route_arrival_poses
+                result["route_total_nonzero_command_time_s"] = route_total_nonzero_s
                 return result
 
             continuation_evidence = stop_mapping(continuation_gate)
             continuation_zero_start = float(continuation_gate.get("zero_start_monotonic_s", 0.0))
-            continuation_zero_plan = bridge.zero_window(
-                route_motion.latest,
-                now_steady_s=time.monotonic(),
-                reason="waypoint C reached; verifying final measured physical stop",
-                physical_stop_gate_required=True,
-            )
-            final_stop_rearmed = bridge.confirm_physical_stop(
-                continuation_evidence,
-                zero_request_started_s=continuation_zero_start,
-                now_steady_s=time.monotonic(),
-                expected_generation=str(self.args.attempt_id),
-            )
-            final_snapshot = self.sample_for_first_motion()
-            final_pose = pose_provider.update(final_snapshot)
-            safety_provider.update(final_snapshot, continuation_step.waypoint_id)
-            final_c_evidence = PhysicalStopEvidence(
-                status=PhysicalStopStatus.PASS,
-                window_start_steady_s=float(continuation_evidence["window_start_steady_s"]),
-                window_end_steady_s=float(continuation_evidence["window_end_steady_s"]),
-                sample_count=int(continuation_evidence["sample_count"]),
-                maximum_sample_gap_s=float(continuation_evidence["maximum_sample_gap_s"]),
-                maximum_state_age_s=float(continuation_evidence["maximum_state_age_s"]),
-                generation=str(self.args.attempt_id),
-            )
-            completion = executor.tick(
-                float(final_snapshot["sample_monotonic_s"]),
-                MotionFeedback(
-                    status=MotionStatus.ACTIVE,
-                    physical_stop_evidence=final_c_evidence,
-                    reset_gate_pass=True,
-                    standing_gate_pass=True,
-                    source_mode_handshake_pass=False,
-                    safety_gates_pass=True,
-                    stand_readback_pass=stand_mode_readback_confirmed(final_snapshot),
-                ),
-            )
+            final_stop_rearmed = bool(continuation_summary.get("bridge_stop_rearmed"))
+            continuation_zero_plan = continuation_summary.get("zero_plan")
+            if not final_stop_rearmed:
+                continuation_zero_plan = bridge.zero_window(
+                    route_motion.latest,
+                    now_steady_s=time.monotonic(),
+                    reason="waypoint C reached; verifying final measured physical stop",
+                    physical_stop_gate_required=True,
+                )
+                final_stop_rearmed = bridge.confirm_physical_stop(
+                    continuation_evidence,
+                    zero_request_started_s=continuation_zero_start,
+                    now_steady_s=time.monotonic(),
+                    expected_generation=str(self.args.attempt_id),
+                )
+                final_snapshot = self.sample_for_first_motion()
+                final_pose = pose_provider.update(final_snapshot)
+                safety_provider.update(final_snapshot, continuation_step.waypoint_id)
+                final_c_evidence = PhysicalStopEvidence(
+                    status=PhysicalStopStatus.PASS,
+                    window_start_steady_s=float(continuation_evidence["window_start_steady_s"]),
+                    window_end_steady_s=float(continuation_evidence["window_end_steady_s"]),
+                    sample_count=int(continuation_evidence["sample_count"]),
+                    maximum_sample_gap_s=float(continuation_evidence["maximum_sample_gap_s"]),
+                    maximum_state_age_s=float(continuation_evidence["maximum_state_age_s"]),
+                    generation=str(self.args.attempt_id),
+                )
+                completion = executor.tick(
+                    float(final_snapshot["sample_monotonic_s"]),
+                    MotionFeedback(
+                        status=MotionStatus.ACTIVE,
+                        physical_stop_evidence=final_c_evidence,
+                        reset_gate_pass=True,
+                        standing_gate_pass=True,
+                        source_mode_handshake_pass=False,
+                        safety_gates_pass=True,
+                        stand_readback_pass=stand_mode_readback_confirmed(final_snapshot),
+                    ),
+                )
+            else:
+                final_snapshot = continuation_summary.get("final_snapshot")
+                if not isinstance(final_snapshot, Mapping):
+                    result["status"] = "BLOCKED"
+                    result["fault"] = "waypoint_c_poststop_snapshot_missing"
+                    return result
+                final_pose = pose_provider.pose
+                if final_pose is None:
+                    result["status"] = "BLOCKED"
+                    result["fault"] = "waypoint_c_poststop_pose_missing"
+                    return result
+                final_c_evidence = PhysicalStopEvidence(
+                    status=PhysicalStopStatus.PASS,
+                    window_start_steady_s=float(continuation_evidence["window_start_steady_s"]),
+                    window_end_steady_s=float(continuation_evidence["window_end_steady_s"]),
+                    sample_count=int(continuation_evidence["sample_count"]),
+                    maximum_sample_gap_s=float(continuation_evidence["maximum_sample_gap_s"]),
+                    maximum_state_age_s=float(continuation_evidence["maximum_state_age_s"]),
+                    generation=str(self.args.attempt_id),
+                )
+                completion = continuation_summary.get("next_directive")
+                if completion is None:
+                    result["status"] = "BLOCKED"
+                    result["fault"] = "waypoint_c_route_completion_directive_missing"
+                    return result
             waypoint_b = route_arrival_poses.get(route.steps[0].waypoint_id)
             waypoint_c = route_arrival_poses.get(route.steps[2].waypoint_id)
             actual_waypoint_separation = (
@@ -3197,15 +3531,9 @@ class FocusedM1Diagnostic(Node):
                 for segment in result["segments"]
             )
             total_planned_nonzero_s = (
-                float(transit_plan.maximum_duration_s)
-                + float(turn_plan.maximum_duration_s)
-                + float(continuation_plan.maximum_duration_s)
+                sum(float(step.max_command_window_s) for step in route.steps)
             )
-            total_actual_nonzero_s = sum(
-                float(segment.get("result", {}).get("pulse_actual_duration_s", 0.0))
-                for segment in result["segments"]
-                if isinstance(segment.get("result"), Mapping)
-            )
+            total_actual_nonzero_s = route_total_nonzero_s
             route_complete = (
                 final_stop_rearmed
                 and route_source_mode_pass

@@ -41,6 +41,7 @@ MIN_EFFECTIVE_FORWARD_M_S = 0.12
 MAX_ANGULAR_RAD_S = 0.075
 MAX_INCREMENTAL_WINDOW_S = 1.0
 MAX_ROUTE_ACTION_WINDOW_S = 5.0
+ROUTE_WINDOW_ZERO_MARGIN_S = 0.02  # A2's timing-recovery margin before a 5 s M1 deadline.
 MAX_POSE_AGE_S = 0.20
 MAX_TRANSFORM_AGE_S = 0.50
 ALLOWED_MODE_READBACKS = frozenset(("STAND_DEFAULT", "LOCOMOTION_DEFAULT"))
@@ -132,6 +133,22 @@ class RouteMotionBridgeError(ValueError):
     """Invalid or out-of-order action-window lifecycle."""
 
 
+def measured_m1_nonzero_window_s(result: Mapping[str, object]) -> float:
+    """Read the M1 helper's actual nonzero span without counting its stop tail.
+
+    Linear windows expose the last successful nonzero publish offset; some
+    turn helpers expose the pulse duration directly. ``pulse_loop_elapsed_s``
+    includes post-deadline observation and is deliberately not a fallback.
+    """
+    for key in ("last_nonzero_command_offset_s", "pulse_actual_duration_s"):
+        value = result.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = float(value)
+            if math.isfinite(value) and value > 0.0:
+                return value
+    raise RouteMotionBridgeError("M1 result lacks a positive measured nonzero command duration")
+
+
 def build_short_right_corner_route(
     *,
     route_id: str,
@@ -159,10 +176,12 @@ def build_short_right_corner_route(
     ):
         raise ValueError("measured start pose or verified open-floor clearance is invalid")
 
-    # A 0.50 m waypoint spacing keeps B and C regions disjoint (0.15 m
-    # tolerance each) and guarantees that the qualified turn's 0.25 m total
-    # displacement cap cannot enter C before the explicit C transit.
-    transit_distance_m = 0.50
+    # The 0.35 m first leg needs only 0.20 m of progress to enter B's 0.15 m
+    # arrival region. B and C are 0.45 m apart: their 0.15 m regions have a
+    # 0.15 m gap, and the qualified turn's 0.25 m total displacement cannot
+    # enter C before the explicit C transit.
+    transit_to_b_m = 0.35
+    waypoint_b_to_c_m = 0.45
     right_turn_delta_rad = -0.12  # A2 measured -0.122523 rad; stay inside its qualified arc.
     boundary_margin_m = 0.10
     maximum_turn_displacement_m = 0.25
@@ -183,10 +202,10 @@ def build_short_right_corner_route(
         math.sin(start_pose.yaw_rad - turn_angle_magnitude),
         math.cos(start_pose.yaw_rad - turn_angle_magnitude),
     )
-    transit_x = start_pose.x_m + transit_distance_m * math.cos(start_pose.yaw_rad)
-    transit_y = start_pose.y_m + transit_distance_m * math.sin(start_pose.yaw_rad)
-    next_x = transit_x + transit_distance_m * math.cos(corner_yaw)
-    next_y = transit_y + transit_distance_m * math.sin(corner_yaw)
+    transit_x = start_pose.x_m + transit_to_b_m * math.cos(start_pose.yaw_rad)
+    transit_y = start_pose.y_m + transit_to_b_m * math.sin(start_pose.yaw_rad)
+    next_x = transit_x + waypoint_b_to_c_m * math.cos(corner_yaw)
+    next_y = transit_y + waypoint_b_to_c_m * math.sin(corner_yaw)
 
     def corridor(
         center_x_m: float,
@@ -241,7 +260,7 @@ def build_short_right_corner_route(
             max_position_std_m=0.01,
             max_yaw_std_rad=0.05,
             stop_behavior=StopBehavior.VERIFY_PHYSICAL_STOP,
-            segment_timeout_s=20.0,
+            segment_timeout_s=20.0 if is_corner else 60.0,
             recovery_limit=0,
             corridor_polygon=polygon,
             turn_corridor_polygon=turn_corridor if is_corner else None,
@@ -249,7 +268,7 @@ def build_short_right_corner_route(
             target_forward_m_s=0.12,
             max_forward_m_s=0.12,
             max_angular_rad_s=MAX_ANGULAR_RAD_S,
-            max_command_window_s=5.0,
+            max_command_window_s=5.0 if is_corner else 10.0,
             turn_strategy="BOUNDED_MOVING_TURN" if is_corner else None,
             maximum_turn_displacement_m=maximum_turn_displacement_m if is_corner else None,
         )
