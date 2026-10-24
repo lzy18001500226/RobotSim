@@ -2795,7 +2795,7 @@ class FocusedM1Diagnostic(Node):
                     "policy": "fresh odom waypoint-bearing feedback at every M1 publish",
                     "heading_gain": 0.8,
                     "maximum_forward_m_s": ROUTE_TRANSIT_MAX_FORWARD_M_S,
-                    "maximum_angular_rad_s": MAX_ANGULAR_RAD_S,
+                    "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                     "straight_warmup_s": ROUTE_STEERING_WARMUP_S,
                     "steering_requires_same_sample_locomotion_and_source_readback": True,
                     "plan_window_angular_is_not_replayed": True,
@@ -3079,7 +3079,7 @@ class FocusedM1Diagnostic(Node):
                                         current_yaw_rad=float(pose["yaw"]),
                                         target_x_m=float(active.x_m),
                                         target_y_m=float(active.y_m),
-                                        maximum_angular_rad_s=MAX_ANGULAR_RAD_S,
+                                        maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                                     )
                                     angular = float(steering["angular_rad_s"])
                                     control_row.update({
@@ -3136,7 +3136,7 @@ class FocusedM1Diagnostic(Node):
                     last_result["route_feedback_steering"] = {
                         "policy": "FRESH_ODOM_WAYPOINT_BEARING_EVERY_PUBLISH",
                         "heading_gain": 0.8,
-                        "maximum_angular_rad_s": MAX_ANGULAR_RAD_S,
+                        "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                         "straight_warmup_s": ROUTE_STEERING_WARMUP_S,
                         "fresh_mode_source_handshake_required_before_steering": True,
                         "handshake_state": dict(window_control),
@@ -3966,7 +3966,7 @@ class FocusedM1Diagnostic(Node):
             if (
                 continuation_plan.status != "PROPOSAL_ONLY"
                 or continuation_plan.forward_m_s <= 0.0
-                or abs(continuation_plan.angular_rad_s) > MAX_ANGULAR_RAD_S
+                or abs(continuation_plan.angular_rad_s) > POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S
             ):
                 result["status"] = "BLOCKED"
                 result["fault"] = (
