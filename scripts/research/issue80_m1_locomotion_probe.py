@@ -4177,10 +4177,24 @@ class FocusedM1Diagnostic(Node):
             result["total_turn_command_window_s"] = TURN_FORWARD_WARMUP_S + TURN_PULSE_S
         if getattr(self.args, "route_integration", False):
             result["forward_command_m_s"] = TURN_FORWARD_COMMAND_M_S
-            result["pulse_limit_s"] = 10.0 if getattr(self.args, "route_waypoint_b_only", False) else 5.0
+            waypoint_b_only = bool(getattr(self.args, "route_waypoint_b_only", False))
+            waypoint_b_extended = bool(
+                getattr(self.args, "route_waypoint_b_extended_diagnostic", False)
+            )
+            route_transit_limit_s = (
+                WAYPOINT_B_EXTENDED_DIAGNOSTIC_AGGREGATE_TRANSIT_MAX_S
+                if waypoint_b_extended else
+                WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S
+                if waypoint_b_only else 5.0
+            )
+            result["pulse_limit_s"] = route_transit_limit_s
             result["route_action_window_limit_s"] = 5.0
-            if getattr(self.args, "route_waypoint_b_only", False):
-                result["route_transit_nonzero_limit_s"] = 10.0
+            if waypoint_b_only:
+                result["route_transit_nonzero_limit_s"] = route_transit_limit_s
+                result["route_transit_maximum_windows"] = (
+                    WAYPOINT_B_EXTENDED_DIAGNOSTIC_MAX_WINDOWS
+                    if waypoint_b_extended else WAYPOINT_B_MAX_WINDOWS
+                )
                 result["route_total_nonzero_limit_s"] = 30.0
         try:
             result["transport_scope"] = self.check_transport_scope()
