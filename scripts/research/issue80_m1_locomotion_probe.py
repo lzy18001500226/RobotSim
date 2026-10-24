@@ -113,6 +113,7 @@ from issue80_route_motion_bridge import (
     waypoint_b_window_budget_passes, waypoint_b_forward_guard_reached,
     waypoint_b_cross_track_guard_reached,
     TransitSteeringGate,
+    active_locomotion_source_readbacks_valid,
 )
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
@@ -2798,6 +2799,11 @@ class FocusedM1Diagnostic(Node):
                     "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                     "straight_warmup_s": ROUTE_STEERING_WARMUP_S,
                     "steering_requires_same_sample_locomotion_and_source_readback": True,
+                    "after_startup_handshake": (
+                        "each GetMcAction/GetCurrentInputSource/CommonState value must agree and each readback "
+                        "must remain individually fresh within the existing state timeout; asynchronous service "
+                        "timestamp skew is recorded but does not independently abort steering"
+                    ),
                     "plan_window_angular_is_not_replayed": True,
                 },
                 "turn_margin_source": turn_provenance,
@@ -2911,7 +2917,16 @@ class FocusedM1Diagnostic(Node):
 
                 sample_time = float(snapshot.get("sample_monotonic_s", time.monotonic()))
                 handshake = same_sample_handshake(snapshot)
-                gate_state = active_window_gate.observe(sample_time, handshake)
+                active_readbacks_valid = active_locomotion_source_readbacks_valid(
+                    snapshot,
+                    expected_source=self.source,
+                    maximum_age_s=float(self.args.state_timeout),
+                )
+                gate_state = active_window_gate.observe(
+                    sample_time,
+                    handshake,
+                    active_readbacks_valid=active_readbacks_valid,
+                )
                 window_control.update(gate_state)
                 if gate_state["fault"]:
                     route_fault = str(gate_state["fault"])
@@ -3190,7 +3205,12 @@ class FocusedM1Diagnostic(Node):
                         "plan": {
                             **dict(current_plan.__dict__),
                             "commanded_window_duration_s": pulse_duration_s,
-                            "executed_angular_velocity_rad_s": window_angular,
+                            "bridge_proposed_angular_velocity_rad_s": float(current_plan.angular_rad_s),
+                            "runtime_angular_velocity_range_rad_s": [
+                                last_result["route_feedback_steering"]["angular_command_min_rad_s"],
+                                last_result["route_feedback_steering"]["angular_command_max_rad_s"],
+                            ],
+                            "runtime_steering_sample_count": last_result["route_feedback_steering"]["sample_count"],
                         },
                         "result": last_result,
                     })

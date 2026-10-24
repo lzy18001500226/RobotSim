@@ -200,6 +200,51 @@ def waypoint_bearing_angular_command(
     }
 
 
+def active_locomotion_source_readbacks_valid(
+    snapshot: Mapping[str, object],
+    *,
+    expected_source: str,
+    maximum_age_s: float,
+) -> bool:
+    """Check current agreeing mode/source values with independent freshness bounds.
+
+    GetMcAction and GetCurrentInputSource are asynchronous service readbacks.
+    Their timestamps need not stay within the stricter startup-handshake skew
+    once the handshake has been established, but each readback, CommonState,
+    and each value must still be fresh and agree with the active source/mode.
+    """
+    try:
+        now = float(snapshot["sample_monotonic_s"])
+        maximum_age = float(maximum_age_s)
+        readbacks = snapshot["readback_monotonic_s"]
+        state_ages = snapshot["state_age_s"]
+        mode_age = now - float(readbacks["get_mode"])
+        source_age = now - float(readbacks["get_source"])
+        common_age = float(state_ages["common"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if (
+        not all(math.isfinite(value) for value in (now, maximum_age, mode_age, source_age, common_age))
+        or maximum_age <= 0.0
+        or not (0.0 <= mode_age <= maximum_age)
+        or not (0.0 <= source_age <= maximum_age)
+        or not (0.0 <= common_age <= maximum_age)
+    ):
+        return False
+    return bool(
+        snapshot.get("get_mode_header_code") == 0
+        and snapshot.get("get_mode_status_value") == 100
+        and snapshot.get("get_mode_desc") == "LOCOMOTION_DEFAULT"
+        and snapshot.get("common_mode_status_value") == 100
+        and snapshot.get("common_mode_desc") == "LOCOMOTION_DEFAULT"
+        and snapshot.get("get_source_header_code") == 0
+        and snapshot.get("get_source_name") == expected_source
+        and snapshot.get("common_source_name") == expected_source
+        and snapshot.get("get_mode_readback_fault") is None
+        and snapshot.get("get_source_readback_fault") is None
+    )
+
+
 @dataclass
 class TransitSteeringGate:
     """Allow steering only after straight warmup and a same-sample MC handshake."""
@@ -211,7 +256,13 @@ class TransitSteeringGate:
     steering_enabled: bool = False
     fault: str | None = None
 
-    def observe(self, steady_s: float, same_sample_handshake: bool) -> dict[str, object]:
+    def observe(
+        self,
+        steady_s: float,
+        same_sample_handshake: bool,
+        *,
+        active_readbacks_valid: bool | None = None,
+    ) -> dict[str, object]:
         try:
             now = float(steady_s)
             warmup = float(self.warmup_s)
@@ -223,22 +274,29 @@ class TransitSteeringGate:
             self.window_started_steady_s = now
         if now < self.window_started_steady_s:
             self.fault = "transit_steering_monotonic_time_regressed"
+        current_readbacks_valid = (
+            bool(same_sample_handshake)
+            if active_readbacks_valid is None else bool(active_readbacks_valid)
+        )
         if self.fault is None:
             if same_sample_handshake:
                 if not self.handshake_observed:
                     self.handshake_observed = True
                     self.handshake_observed_steady_s = now
             elif self.handshake_observed:
-                self.fault = "transit_locomotion_source_mode_handshake_lost"
+                if not current_readbacks_valid:
+                    self.fault = "transit_locomotion_source_mode_handshake_lost"
             elif now - self.window_started_steady_s >= warmup:
                 self.fault = "transit_locomotion_source_mode_handshake_not_confirmed_after_0p5s_straight_warmup"
         elapsed = max(0.0, now - self.window_started_steady_s)
         self.steering_enabled = bool(
-            self.fault is None and same_sample_handshake and elapsed >= warmup
+            self.fault is None and self.handshake_observed
+            and current_readbacks_valid and elapsed >= warmup
         )
         return {
             "elapsed_s": elapsed,
             "same_sample_handshake": bool(same_sample_handshake),
+            "active_readbacks_valid": current_readbacks_valid,
             "handshake_observed": self.handshake_observed,
             "handshake_observed_steady_s": self.handshake_observed_steady_s,
             "steering_enabled": self.steering_enabled,

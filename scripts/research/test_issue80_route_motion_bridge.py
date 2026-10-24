@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 import math
+from pathlib import Path
+import re
 import unittest
 
 from issue80_m1_first_motion import (
@@ -42,6 +44,7 @@ from issue80_route_motion_bridge import (
     waypoint_b_cross_track_guard_reached,
     waypoint_bearing_angular_command,
     TransitSteeringGate,
+    active_locomotion_source_readbacks_valid,
     validate_physical_stop_evidence,
     waypoint_b_window_budget_passes,
 )
@@ -140,6 +143,44 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertFalse(gate.observe(10.25, True)["steering_enabled"])
         self.assertTrue(gate.observe(10.5, True)["steering_enabled"])
 
+    def test_established_handshake_tolerates_fresh_async_readback_timestamp_skew(self):
+        gate = TransitSteeringGate(warmup_s=0.5)
+        self.assertFalse(gate.observe(10.0, True, active_readbacks_valid=True)["steering_enabled"])
+        intermediate = gate.observe(10.25, False, active_readbacks_valid=True)
+        self.assertIsNone(intermediate["fault"])
+        self.assertFalse(intermediate["steering_enabled"])
+        self.assertTrue(gate.observe(10.5, False, active_readbacks_valid=True)["steering_enabled"])
+
+    def test_active_locomotion_readbacks_require_fresh_consistent_values_without_skew_gate(self):
+        snapshot = {
+            "sample_monotonic_s": 10.213,
+            "readback_monotonic_s": {"get_mode": 10.0, "get_source": 10.212},
+            "state_age_s": {"common": 0.005},
+            "get_mode_header_code": 0,
+            "get_mode_status_value": 100,
+            "get_mode_desc": "LOCOMOTION_DEFAULT",
+            "common_mode_status_value": 100,
+            "common_mode_desc": "LOCOMOTION_DEFAULT",
+            "get_source_header_code": 0,
+            "get_source_name": VELOCITY_SOURCE_NAME,
+            "common_source_name": VELOCITY_SOURCE_NAME,
+            "get_mode_readback_fault": None,
+            "get_source_readback_fault": None,
+        }
+        self.assertTrue(active_locomotion_source_readbacks_valid(
+            snapshot, expected_source=VELOCITY_SOURCE_NAME, maximum_age_s=0.5,
+        ))
+        stale = dict(snapshot)
+        stale["readback_monotonic_s"] = {"get_mode": 9.7, "get_source": 10.212}
+        self.assertFalse(active_locomotion_source_readbacks_valid(
+            stale, expected_source=VELOCITY_SOURCE_NAME, maximum_age_s=0.5,
+        ))
+        conflict = dict(snapshot)
+        conflict["common_source_name"] = "another.source"
+        self.assertFalse(active_locomotion_source_readbacks_valid(
+            conflict, expected_source=VELOCITY_SOURCE_NAME, maximum_age_s=0.5,
+        ))
+
     def test_steering_gate_fails_closed_when_handshake_is_missing_at_warmup_deadline(self):
         gate = TransitSteeringGate(warmup_s=0.5)
         gate.observe(10.0, False)
@@ -198,6 +239,10 @@ class RouteMotionBridgeTests(unittest.TestCase):
                 current_x_m=0.0, current_y_m=0.0, current_yaw_rad=0.0,
                 target_x_m=1.0, target_y_m=0.0, maximum_angular_rad_s=0.0,
             )
+
+    def test_route_window_diagnostics_have_no_stale_window_angular_reference(self):
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"\bwindow_angular\b", source))
 
     def test_short_diagnostic_waypoint_is_inside_tolerance_of_measured_stop_pose(self) -> None:
         start = make_pose(
