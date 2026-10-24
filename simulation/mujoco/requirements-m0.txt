@@ -1,0 +1,4 @@
+numpy==1.26.4
+mujoco==3.2.6
+h5py==3.14.0
+opencv-python-headless==4.11.0.86

@@ -1,0 +1,5953 @@
+{
+  "analysis": "fresh C2 quasi-static contact/wrench input from exact candidate MuJoCo geometry; six intended digit surfaces plus any additional active right-digit segment; no table support in wrench solve",
+  "candidate_run_id": "dfq-long-c2-static-1791445633-37924",
+  "run_id": "dfq-long-c2-static-1791445633-37924",
+  "candidate": "C2",
+  "robotsim_sha": null,
+  "mujoco_version": "3.3.6",
+  "physics_steps": 0,
+  "mj_step_calls": 0,
+  "mj_forward_calls": 1,
+  "candidate_contact_time_s": 0.0,
+  "canonical_sample_time_s": 0.0,
+  "canonical_ready_time_s": 0.0,
+  "sample_offset_after_ready_s": 0.0,
+  "model_path": "/mnt/c/Users/HP/Desktop/Robot/reviews/issue43-g1-dfq-long-grasp-recovery/runs/dfq-long-c2-static-1791445633-37924/compiled/dfq_candidate_c1_mj336.xml",
+  "model_sha256": "ebdf74fc4ac1fb9bf0e9c5d7be62654f03fd5ca51c2968085b08356ae96c2d67",
+  "urdf_path": "/tmp/robotsim-issue43-m0/checkouts/unitree_ros_dex3/robots/g1_description/g1_29dof_rev_1_0_with_inspire_hand_DFQ.urdf",
+  "urdf_sha256": "e2b2d6bfe58f6b8d57b9f28df9ad9e5e5d0ea728f562e925b8b1482a902b6ff3",
+  "state_source": {
+    "joint_state": "candidate_c2.json optimized arm + driver state; official URDF mimic followers reconstructed in scratch MjData",
+    "bottle_pose": "unchanged canonical_ready_wrench_input.json free-joint pose",
+    "qvel": "zeroed in scratch MjData",
+    "state_writes": "scratch MjData only; no active rollout or repository state writes",
+    "hand_position_and_mimic_checks": {
+      "R_thumb_proximal_yaw_joint": {
+        "q_rad": 1.0531295899187407,
+        "lower_rad": -0.1,
+        "upper_rad": 1.3,
+        "position_limit_pass": true,
+        "mimic_residual_rad": null
+      },
+      "R_thumb_proximal_pitch_joint": {
+        "q_rad": 0.1430586513587293,
+        "lower_rad": -0.1,
+        "upper_rad": 0.6,
+        "position_limit_pass": true,
+        "mimic_residual_rad": null
+      },
+      "R_thumb_intermediate_joint": {
+        "q_rad": 0.2288938421739669,
+        "lower_rad": 0.0,
+        "upper_rad": 0.8,
+        "position_limit_pass": true,
+        "mimic_residual_rad": 0.0
+      },
+      "R_thumb_distal_joint": {
+        "q_rad": 0.3433407632609503,
+        "lower_rad": 0.0,
+        "upper_rad": 1.2,
+        "position_limit_pass": true,
+        "mimic_residual_rad": 0.0
+      },
+      "R_index_proximal_joint": {
+        "q_rad": 0.3021937367739144,
+        "lower_rad": 0.0,
+        "upper_rad": 1.7,
+        "position_limit_pass": true,
+        "mimic_residual_rad": null
+      },
+      "R_index_intermediate_joint": {
+        "q_rad": 0.3021937367739144,
+        "lower_rad": 0.0,
+        "upper_rad": 1.7,
+        "position_limit_pass": true,
+        "mimic_residual_rad": 0.0
+      },
+      "R_middle_proximal_joint": {
+        "q_rad": 0.3663940461735578,
+        "lower_rad": 0.0,
+        "upper_rad": 1.7,
+        "position_limit_pass": true,
+        "mimic_residual_rad": null
+      },
+      "R_middle_intermediate_joint": {
+        "q_rad": 0.3663940461735578,
+        "lower_rad": 0.0,
+        "upper_rad": 1.7,
+        "position_limit_pass": true,
+        "mimic_residual_rad": 0.0
+      },
+      "R_ring_proximal_joint": {
+        "q_rad": 0.4104130959601651,
+        "lower_rad": 0.0,
+        "upper_rad": 1.7,
+        "position_limit_pass": true,
+        "mimic_residual_rad": null
+      },
+      "R_ring_intermediate_joint": {
+        "q_rad": 0.4104130959601651,
+        "lower_rad": 0.0,
+        "upper_rad": 1.7,
+        "position_limit_pass": true,
+        "mimic_residual_rad": 0.0
+      },
+      "R_pinky_proximal_joint": {
+        "q_rad": 0.44564880278735064,
+        "lower_rad": 0.0,
+        "upper_rad": 1.7,
+        "position_limit_pass": true,
+        "mimic_residual_rad": null
+      },
+      "R_pinky_intermediate_joint": {
+        "q_rad": 0.44564880278735064,
+        "lower_rad": 0.0,
+        "upper_rad": 1.7,
+        "position_limit_pass": true,
+        "mimic_residual_rad": 0.0
+      }
+    }
+  },
+  "bottle_mass_kg": 0.5700000000000001,
+  "bottle_weight_n": 5.591700000000001,
+  "bottle_com_world_m": [
+    0.30000026728638957,
+    -0.09381708892046467,
+    0.8924916489125823
+  ],
+  "bottle_root_position_world_m": [
+    0.300000172,
+    -0.093817013,
+    0.917105684
+  ],
+  "bottle_root_quaternion_wxyz": [
+    0.9990192157533947,
+    -1.4549999996408371e-06,
+    -2.0019999995058114e-06,
+    -0.04427873698906991
+  ],
+  "contact_convention": {
+    "frame_rows": "orthonormal contact basis with row 0 pointing from bottle surface toward right hand; friction cone is isotropic in rows 1-2",
+    "local_force_on_bottle": "-frame_rows_world.T @ [fn, ft1, ft2]",
+    "torsional_friction": "not modeled in the static LP",
+    "configured_sliding_mu": 1.4
+  },
+  "contacts": [
+    {
+      "digit": "thumb",
+      "body": "R_thumb_distal",
+      "geom": "dfq_collision_R_thumb_distal_0",
+      "bottle_geom": "bottle_body",
+      "point_world_m": [
+        0.26516049229308736,
+        -0.09008341476549667,
+        0.930745715706015
+      ],
+      "frame_rows_world": [
+        [
+          -0.9943215945644253,
+          0.10641694679530767,
+          -4.198037456377053e-06
+        ],
+        [
+          0.10641694679624539,
+          0.9943215945731869,
+          -0.0
+        ],
+        [
+          4.174199297702797e-06,
+          -4.467423286439222e-07,
+          -0.9999999999911883
+        ]
+      ],
+      "normal_bottle_to_hand_world": [
+        -0.9943215945644253,
+        0.10641694679530767,
+        -4.198037456377053e-06
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_pitch": [
+          0.18831753260100956,
+          -0.026216068810631647,
+          0.006392421011833502
+        ],
+        "thumb_proximal_yaw": [
+          0.0014674527318194741,
+          -0.005107797460607466,
+          -0.06413665177018285
+        ]
+      },
+      "signed_distance_m": 7.821554562433613e-05,
+      "penetration_m": 0.0,
+      "contact_status": "near_surface_unilateral_contact",
+      "contact_friction_coefficient": 1.4,
+      "geom_sliding_friction_values": [
+        1.4,
+        1.0
+      ],
+      "distance_point_bottle_world_m": [
+        0.2651993779961098,
+        -0.09008757649527531,
+        0.930745715870191
+      ],
+      "distance_point_hand_world_m": [
+        0.2651216065900649,
+        -0.09007925303571804,
+        0.9307457155418392
+      ],
+      "jacobian_contact_point_com_offset_m": [
+        -0.03483977499330221,
+        0.003733674154968003,
+        0.038254066793432795
+      ],
+      "mimic_chain_projected_bias_terms": {
+        "pinky_proximal": [
+          {
+            "joint": "R_pinky_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0003713150311094411,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_pinky_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -6.310599608841394e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "ring_proximal": [
+          {
+            "joint": "R_ring_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0005530600056879885,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_ring_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0001327932904380412,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "middle_proximal": [
+          {
+            "joint": "R_middle_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.000716239079956364,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_middle_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00020519304186906269,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "index_proximal": [
+          {
+            "joint": "R_index_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0007288394249872902,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_index_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00021422141140032712,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_pitch": [
+          {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": 6.245646896510092e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.6,
+            "qfrc_bias_nm": 1.589869472798421e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_distal_joint",
+            "mimic_multiplier_to_driver": 2.4,
+            "qfrc_bias_nm": 1.2347057945333545e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_yaw": [
+          {
+            "joint": "R_thumb_proximal_yaw_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.006586618702664186,
+            "qfrc_passive_nm": 0.0
+          }
+        ]
+      },
+      "projected_bias_minus_passive_nm": {
+        "pinky_proximal": -0.000434421027197855,
+        "ring_proximal": -0.0006858532961260297,
+        "middle_proximal": -0.0009214321218254267,
+        "index_proximal": -0.0009430608363876173,
+        "thumb_proximal_pitch": 3.8422377121788075e-05,
+        "thumb_proximal_yaw": -0.006586618702664186
+      },
+      "normal_force_n": 0.0
+    },
+    {
+      "digit": "index",
+      "body": "R_index_intermediate",
+      "geom": "dfq_collision_R_index_intermediate_0",
+      "bottle_geom": "bottle_body",
+      "point_world_m": [
+        0.3345583355258008,
+        -0.08958236647813078,
+        0.94015349200918
+      ],
+      "frame_rows_world": [
+        [
+          0.9928137029891122,
+          0.11967017650599723,
+          3.474257583956751e-06
+        ],
+        [
+          0.11967017650671946,
+          -0.992813702995104,
+          0.0
+        ],
+        [
+          3.449290537086926e-06,
+          4.1576501830191314e-07,
+          -0.9999999999939648
+        ]
+      ],
+      "normal_bottle_to_hand_world": [
+        0.9928137029891122,
+        0.11967017650599723,
+        3.474257583956751e-06
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          -0.0455037929384943,
+          -0.0054511918400577675,
+          -0.010470078145080136
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "signed_distance_m": -0.0003665167587581185,
+      "penetration_m": 0.0003665167587581185,
+      "contact_status": "active_MuJoCo_contact",
+      "contact_friction_coefficient": 1.4,
+      "geom_sliding_friction_values": [
+        1.4,
+        1.0
+      ],
+      "distance_point_bottle_world_m": [
+        0.33474027695603586,
+        -0.08956043591552429,
+        0.9401534926458668
+      ],
+      "distance_point_hand_world_m": [
+        0.3343763940955657,
+        -0.08960429704073729,
+        0.9401534913724932
+      ],
+      "jacobian_contact_point_com_offset_m": [
+        0.03455806823941121,
+        0.004234722442333888,
+        0.04766184309659771
+      ],
+      "mimic_chain_projected_bias_terms": {
+        "pinky_proximal": [
+          {
+            "joint": "R_pinky_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0003713150311094411,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_pinky_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -6.310599608841394e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "ring_proximal": [
+          {
+            "joint": "R_ring_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0005530600056879885,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_ring_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0001327932904380412,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "middle_proximal": [
+          {
+            "joint": "R_middle_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.000716239079956364,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_middle_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00020519304186906269,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "index_proximal": [
+          {
+            "joint": "R_index_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0007288394249872902,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_index_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00021422141140032712,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_pitch": [
+          {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": 6.245646896510092e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.6,
+            "qfrc_bias_nm": 1.589869472798421e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_distal_joint",
+            "mimic_multiplier_to_driver": 2.4,
+            "qfrc_bias_nm": 1.2347057945333545e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_yaw": [
+          {
+            "joint": "R_thumb_proximal_yaw_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.006586618702664186,
+            "qfrc_passive_nm": 0.0
+          }
+        ]
+      },
+      "projected_bias_minus_passive_nm": {
+        "pinky_proximal": -0.000434421027197855,
+        "ring_proximal": -0.0006858532961260297,
+        "middle_proximal": -0.0009214321218254267,
+        "index_proximal": -0.0009430608363876173,
+        "thumb_proximal_pitch": 3.8422377121788075e-05,
+        "thumb_proximal_yaw": -0.006586618702664186
+      },
+      "normal_force_n": 0.0
+    },
+    {
+      "digit": "middle",
+      "body": "R_middle_intermediate",
+      "geom": "dfq_collision_R_middle_intermediate_0",
+      "bottle_geom": "bottle_body",
+      "point_world_m": [
+        0.3341037840656842,
+        -0.0853884015107381,
+        0.9173881567018345
+      ],
+      "frame_rows_world": [
+        [
+          0.9707964183336416,
+          0.23990480224760757,
+          3.018219935449501e-06
+        ],
+        [
+          0.23990480224870026,
+          -0.9707964183380633,
+          0.0
+        ],
+        [
+          2.930077103090916e-06,
+          7.240854567570974e-07,
+          -0.9999999999954453
+        ]
+      ],
+      "normal_bottle_to_hand_world": [
+        0.9707964183336416,
+        0.23990480224760757,
+        3.018219935449501e-06
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          -0.061638415422700626,
+          -0.01485500713088872,
+          -0.011307037654291363
+        ],
+        "index_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "signed_distance_m": 0.00025945937874240514,
+      "penetration_m": 0.0,
+      "contact_status": "near_surface_unilateral_contact",
+      "contact_friction_coefficient": 1.4,
+      "geom_sliding_friction_values": [
+        1.4,
+        1.0
+      ],
+      "distance_point_bottle_world_m": [
+        0.3339778429478911,
+        -0.08541952428621233,
+        0.9173881563102818
+      ],
+      "distance_point_hand_world_m": [
+        0.3342297251834773,
+        -0.08535727873526384,
+        0.9173881570933873
+      ],
+      "jacobian_contact_point_com_offset_m": [
+        0.03410351677929463,
+        0.008428687409726576,
+        0.02489650778925223
+      ],
+      "mimic_chain_projected_bias_terms": {
+        "pinky_proximal": [
+          {
+            "joint": "R_pinky_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0003713150311094411,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_pinky_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -6.310599608841394e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "ring_proximal": [
+          {
+            "joint": "R_ring_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0005530600056879885,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_ring_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0001327932904380412,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "middle_proximal": [
+          {
+            "joint": "R_middle_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.000716239079956364,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_middle_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00020519304186906269,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "index_proximal": [
+          {
+            "joint": "R_index_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0007288394249872902,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_index_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00021422141140032712,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_pitch": [
+          {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": 6.245646896510092e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.6,
+            "qfrc_bias_nm": 1.589869472798421e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_distal_joint",
+            "mimic_multiplier_to_driver": 2.4,
+            "qfrc_bias_nm": 1.2347057945333545e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_yaw": [
+          {
+            "joint": "R_thumb_proximal_yaw_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.006586618702664186,
+            "qfrc_passive_nm": 0.0
+          }
+        ]
+      },
+      "projected_bias_minus_passive_nm": {
+        "pinky_proximal": -0.000434421027197855,
+        "ring_proximal": -0.0006858532961260297,
+        "middle_proximal": -0.0009214321218254267,
+        "index_proximal": -0.0009430608363876173,
+        "thumb_proximal_pitch": 3.8422377121788075e-05,
+        "thumb_proximal_yaw": -0.006586618702664186
+      },
+      "normal_force_n": 0.0
+    },
+    {
+      "digit": "ring",
+      "body": "R_ring_intermediate",
+      "geom": "dfq_collision_R_ring_intermediate_0",
+      "bottle_geom": "bottle_body",
+      "point_world_m": [
+        0.3334630402359185,
+        -0.08279032742241689,
+        0.893999624721524
+      ],
+      "frame_rows_world": [
+        [
+          0.9497633749172123,
+          0.3129688988677872,
+          2.7114112503103854e-06
+        ],
+        [
+          0.31296889886893764,
+          -0.9497633749207035,
+          0.0
+        ],
+        [
+          2.5751990998927555e-06,
+          8.485873933904906e-07,
+          -0.999999999996324
+        ]
+      ],
+      "normal_bottle_to_hand_world": [
+        0.9497633749172122,
+        0.31296889886778717,
+        2.711411250310385e-06
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          -0.07709886982111892,
+          -0.02393178064725371,
+          -0.00979706125220145
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "signed_distance_m": 0.0004655073269959242,
+      "penetration_m": 0.0,
+      "contact_status": "near_surface_unilateral_contact",
+      "contact_friction_coefficient": 1.4,
+      "geom_sliding_friction_values": [
+        1.4,
+        1.0
+      ],
+      "distance_point_bottle_world_m": [
+        0.33324197933095034,
+        -0.08286317208018928,
+        0.8939996240904332
+      ],
+      "distance_point_hand_world_m": [
+        0.33368410114088665,
+        -0.0827174827646445,
+        0.893999625352615
+      ],
+      "jacobian_contact_point_com_offset_m": [
+        0.03346277294952893,
+        0.01102676149804778,
+        0.0015079758089417972
+      ],
+      "mimic_chain_projected_bias_terms": {
+        "pinky_proximal": [
+          {
+            "joint": "R_pinky_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0003713150311094411,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_pinky_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -6.310599608841394e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "ring_proximal": [
+          {
+            "joint": "R_ring_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0005530600056879885,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_ring_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0001327932904380412,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "middle_proximal": [
+          {
+            "joint": "R_middle_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.000716239079956364,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_middle_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00020519304186906269,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "index_proximal": [
+          {
+            "joint": "R_index_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0007288394249872902,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_index_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00021422141140032712,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_pitch": [
+          {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": 6.245646896510092e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.6,
+            "qfrc_bias_nm": 1.589869472798421e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_distal_joint",
+            "mimic_multiplier_to_driver": 2.4,
+            "qfrc_bias_nm": 1.2347057945333545e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_yaw": [
+          {
+            "joint": "R_thumb_proximal_yaw_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.006586618702664186,
+            "qfrc_passive_nm": 0.0
+          }
+        ]
+      },
+      "projected_bias_minus_passive_nm": {
+        "pinky_proximal": -0.000434421027197855,
+        "ring_proximal": -0.0006858532961260297,
+        "middle_proximal": -0.0009214321218254267,
+        "index_proximal": -0.0009430608363876173,
+        "thumb_proximal_pitch": 3.8422377121788075e-05,
+        "thumb_proximal_yaw": -0.006586618702664186
+      },
+      "normal_force_n": 0.0
+    },
+    {
+      "digit": "pinky",
+      "body": "R_pinky_intermediate",
+      "geom": "dfq_collision_R_pinky_intermediate_0",
+      "bottle_geom": "bottle_body",
+      "point_world_m": [
+        0.3336523548185917,
+        -0.08423284086815619,
+        0.8716549657198849
+      ],
+      "frame_rows_world": [
+        [
+          0.960684439142101,
+          0.27764259109376177,
+          -9.843343133041557e-07
+        ],
+        [
+          0.2776425910938963,
+          -0.9606844391425664,
+          0.0
+        ],
+        [
+          -9.456346577053862e-07,
+          -2.732931292483969e-07,
+          -0.9999999999995156
+        ]
+      ],
+      "normal_bottle_to_hand_world": [
+        0.9606844391421012,
+        0.2776425910937618,
+        -9.843343133041559e-07
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          -0.08652814899455244,
+          -0.02975350450745423,
+          -0.00643671691942882
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "signed_distance_m": -1.883501073220532e-05,
+      "penetration_m": 1.883501073220532e-05,
+      "contact_status": "active_MuJoCo_contact",
+      "contact_friction_coefficient": 1.4,
+      "geom_sliding_friction_values": [
+        1.4,
+        1.0
+      ],
+      "distance_point_bottle_world_m": [
+        0.3336614020694525,
+        -0.08423022616756473,
+        0.871654965710615
+      ],
+      "distance_point_hand_world_m": [
+        0.333643307567731,
+        -0.08423545556874769,
+        0.8716549657291549
+      ],
+      "jacobian_contact_point_com_offset_m": [
+        0.03365208753220211,
+        0.00958424805230848,
+        -0.02083668319269738
+      ],
+      "mimic_chain_projected_bias_terms": {
+        "pinky_proximal": [
+          {
+            "joint": "R_pinky_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0003713150311094411,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_pinky_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -6.310599608841394e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "ring_proximal": [
+          {
+            "joint": "R_ring_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0005530600056879885,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_ring_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0001327932904380412,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "middle_proximal": [
+          {
+            "joint": "R_middle_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.000716239079956364,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_middle_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00020519304186906269,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "index_proximal": [
+          {
+            "joint": "R_index_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0007288394249872902,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_index_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00021422141140032712,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_pitch": [
+          {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": 6.245646896510092e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.6,
+            "qfrc_bias_nm": 1.589869472798421e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_distal_joint",
+            "mimic_multiplier_to_driver": 2.4,
+            "qfrc_bias_nm": 1.2347057945333545e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_yaw": [
+          {
+            "joint": "R_thumb_proximal_yaw_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.006586618702664186,
+            "qfrc_passive_nm": 0.0
+          }
+        ]
+      },
+      "projected_bias_minus_passive_nm": {
+        "pinky_proximal": -0.000434421027197855,
+        "ring_proximal": -0.0006858532961260297,
+        "middle_proximal": -0.0009214321218254267,
+        "index_proximal": -0.0009430608363876173,
+        "thumb_proximal_pitch": 3.8422377121788075e-05,
+        "thumb_proximal_yaw": -0.006586618702664186
+      },
+      "normal_force_n": 0.0
+    },
+    {
+      "digit": "index",
+      "body": "R_index_proximal",
+      "geom": "dfq_collision_R_index_proximal_0",
+      "bottle_geom": "bottle_body",
+      "point_world_m": [
+        0.33191747964815066,
+        -0.10552537923022742,
+        0.9449189399345119
+      ],
+      "frame_rows_world": [
+        [
+          0.9390808128599347,
+          -0.3436964167578998,
+          5.109257061449995e-06
+        ],
+        [
+          -0.34369641676238577,
+          -0.9390808128721917,
+          0.0
+        ],
+        [
+          4.7980052744394465e-06,
+          -1.75603334433828e-06,
+          -0.9999999999869478
+        ]
+      ],
+      "normal_bottle_to_hand_world": [
+        0.9390808128599347,
+        -0.3436964167578998,
+        5.109257061449995e-06
+      ],
+      "contact_jacobians_m_per_rad": {
+        "pinky_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ring_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "middle_proximal": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "index_proximal": [
+          -0.022113155503316467,
+          -0.0022446853010847923,
+          -0.005157793288963798
+        ],
+        "thumb_proximal_pitch": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "thumb_proximal_yaw": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "signed_distance_m": -0.002005556164103959,
+      "penetration_m": 0.002005556164103959,
+      "contact_status": "active_MuJoCo_contact",
+      "contact_friction_coefficient": 1.4,
+      "geom_sliding_friction_values": [
+        1.4,
+        1.0
+      ],
+      "distance_point_bottle_world_m": [
+        0.3328591693045623,
+        -0.105870030463832,
+        0.9449189450579629
+      ],
+      "distance_point_hand_world_m": [
+        0.3309757899917392,
+        -0.10518072799662277,
+        0.9449189348110609
+      ],
+      "jacobian_contact_point_com_offset_m": [
+        0.031917212361761094,
+        -0.011708290309762753,
+        0.05242729102192967
+      ],
+      "mimic_chain_projected_bias_terms": {
+        "pinky_proximal": [
+          {
+            "joint": "R_pinky_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0003713150311094411,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_pinky_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -6.310599608841394e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "ring_proximal": [
+          {
+            "joint": "R_ring_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0005530600056879885,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_ring_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0001327932904380412,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "middle_proximal": [
+          {
+            "joint": "R_middle_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.000716239079956364,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_middle_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00020519304186906269,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "index_proximal": [
+          {
+            "joint": "R_index_proximal_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.0007288394249872902,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_index_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.00021422141140032712,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_pitch": [
+          {
+            "joint": "R_thumb_proximal_pitch_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": 6.245646896510092e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_intermediate_joint",
+            "mimic_multiplier_to_driver": 1.6,
+            "qfrc_bias_nm": 1.589869472798421e-06,
+            "qfrc_passive_nm": 0.0
+          },
+          {
+            "joint": "R_thumb_distal_joint",
+            "mimic_multiplier_to_driver": 2.4,
+            "qfrc_bias_nm": 1.2347057945333545e-05,
+            "qfrc_passive_nm": 0.0
+          }
+        ],
+        "thumb_proximal_yaw": [
+          {
+            "joint": "R_thumb_proximal_yaw_joint",
+            "mimic_multiplier_to_driver": 1.0,
+            "qfrc_bias_nm": -0.006586618702664186,
+            "qfrc_passive_nm": 0.0
+          }
+        ]
+      },
+      "projected_bias_minus_passive_nm": {
+        "pinky_proximal": -0.000434421027197855,
+        "ring_proximal": -0.0006858532961260297,
+        "middle_proximal": -0.0009214321218254267,
+        "index_proximal": -0.0009430608363876173,
+        "thumb_proximal_pitch": 3.8422377121788075e-05,
+        "thumb_proximal_yaw": -0.006586618702664186
+      },
+      "normal_force_n": 0.0
+    }
+  ],
+  "uncertainty_scenarios": [
+    {
+      "name": "alternating_a_normal_down_1deg",
+      "point_pattern": "alternating_a",
+      "normal_rotation_toward_world_z_deg": -1.0,
+      "contacts": [
+        {
+          "digit": "thumb",
+          "body": "R_thumb_distal",
+          "geom": "dfq_collision_R_thumb_distal_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.26516049229308736,
+            -0.09008341476549667,
+            0.931245715706015
+          ],
+          "frame_rows_world": [
+            [
+              -0.9943215945644253,
+              0.10641694679530767,
+              -4.198037456377053e-06
+            ],
+            [
+              0.10641694679624539,
+              0.9943215945731869,
+              -0.0
+            ],
+            [
+              4.174199297702797e-06,
+              -4.467423286439222e-07,
+              -0.9999999999911883
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            -0.9943215945644253,
+            0.10641694679530767,
+            -4.198037456377053e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.18831753260100956,
+              -0.026216068810631647,
+              0.006392421011833502
+            ],
+            "thumb_proximal_yaw": [
+              0.0014674527318194741,
+              -0.005107797460607466,
+              -0.06413665177018285
+            ]
+          },
+          "signed_distance_m": 7.821554562433613e-05,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.2651993779961098,
+            -0.09008757649527531,
+            0.930745715870191
+          ],
+          "distance_point_hand_world_m": [
+            0.2651216065900649,
+            -0.09007925303571804,
+            0.9307457155418392
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            -0.03483977499330221,
+            0.003733674154968003,
+            0.038254066793432795
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_intermediate",
+          "geom": "dfq_collision_R_index_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3345583355258008,
+            -0.08958236647813078,
+            0.93965349200918
+          ],
+          "frame_rows_world": [
+            [
+              0.9928137029891122,
+              0.11967017650599723,
+              3.474257583956751e-06
+            ],
+            [
+              0.11967017650671946,
+              -0.992813702995104,
+              0.0
+            ],
+            [
+              3.449290537086926e-06,
+              4.1576501830191314e-07,
+              -0.9999999999939648
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9928137029891122,
+            0.11967017650599723,
+            3.474257583956751e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.0455037929384943,
+              -0.0054511918400577675,
+              -0.010470078145080136
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -0.0003665167587581185,
+          "penetration_m": 0.0003665167587581185,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.33474027695603586,
+            -0.08956043591552429,
+            0.9401534926458668
+          ],
+          "distance_point_hand_world_m": [
+            0.3343763940955657,
+            -0.08960429704073729,
+            0.9401534913724932
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03455806823941121,
+            0.004234722442333888,
+            0.04766184309659771
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "middle",
+          "body": "R_middle_intermediate",
+          "geom": "dfq_collision_R_middle_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3341037840656842,
+            -0.0853884015107381,
+            0.9178881567018344
+          ],
+          "frame_rows_world": [
+            [
+              0.9707964183336416,
+              0.23990480224760757,
+              3.018219935449501e-06
+            ],
+            [
+              0.23990480224870026,
+              -0.9707964183380633,
+              0.0
+            ],
+            [
+              2.930077103090916e-06,
+              7.240854567570974e-07,
+              -0.9999999999954453
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9707964183336416,
+            0.23990480224760757,
+            3.018219935449501e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              -0.061638415422700626,
+              -0.01485500713088872,
+              -0.011307037654291363
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": 0.00025945937874240514,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3339778429478911,
+            -0.08541952428621233,
+            0.9173881563102818
+          ],
+          "distance_point_hand_world_m": [
+            0.3342297251834773,
+            -0.08535727873526384,
+            0.9173881570933873
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03410351677929463,
+            0.008428687409726576,
+            0.02489650778925223
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "ring",
+          "body": "R_ring_intermediate",
+          "geom": "dfq_collision_R_ring_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3334630402359185,
+            -0.08279032742241689,
+            0.8934996247215241
+          ],
+          "frame_rows_world": [
+            [
+              0.9497633749172123,
+              0.3129688988677872,
+              2.7114112503103854e-06
+            ],
+            [
+              0.31296889886893764,
+              -0.9497633749207035,
+              0.0
+            ],
+            [
+              2.5751990998927555e-06,
+              8.485873933904906e-07,
+              -0.999999999996324
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9497633749172122,
+            0.31296889886778717,
+            2.711411250310385e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              -0.07709886982111892,
+              -0.02393178064725371,
+              -0.00979706125220145
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": 0.0004655073269959242,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.33324197933095034,
+            -0.08286317208018928,
+            0.8939996240904332
+          ],
+          "distance_point_hand_world_m": [
+            0.33368410114088665,
+            -0.0827174827646445,
+            0.893999625352615
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03346277294952893,
+            0.01102676149804778,
+            0.0015079758089417972
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "pinky",
+          "body": "R_pinky_intermediate",
+          "geom": "dfq_collision_R_pinky_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3336523548185917,
+            -0.08423284086815619,
+            0.8721549657198848
+          ],
+          "frame_rows_world": [
+            [
+              0.960684439142101,
+              0.27764259109376177,
+              -9.843343133041557e-07
+            ],
+            [
+              0.2776425910938963,
+              -0.9606844391425664,
+              0.0
+            ],
+            [
+              -9.456346577053862e-07,
+              -2.732931292483969e-07,
+              -0.9999999999995156
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9606844391421012,
+            0.2776425910937618,
+            -9.843343133041559e-07
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              -0.08652814899455244,
+              -0.02975350450745423,
+              -0.00643671691942882
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -1.883501073220532e-05,
+          "penetration_m": 1.883501073220532e-05,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3336614020694525,
+            -0.08423022616756473,
+            0.871654965710615
+          ],
+          "distance_point_hand_world_m": [
+            0.333643307567731,
+            -0.08423545556874769,
+            0.8716549657291549
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03365208753220211,
+            0.00958424805230848,
+            -0.02083668319269738
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_proximal",
+          "geom": "dfq_collision_R_index_proximal_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.33191747964815066,
+            -0.10552537923022742,
+            0.944418939934512
+          ],
+          "frame_rows_world": [
+            [
+              0.9390808128599347,
+              -0.3436964167578998,
+              5.109257061449995e-06
+            ],
+            [
+              -0.34369641676238577,
+              -0.9390808128721917,
+              0.0
+            ],
+            [
+              4.7980052744394465e-06,
+              -1.75603334433828e-06,
+              -0.9999999999869478
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9390808128599347,
+            -0.3436964167578998,
+            5.109257061449995e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.022113155503316467,
+              -0.0022446853010847923,
+              -0.005157793288963798
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -0.002005556164103959,
+          "penetration_m": 0.002005556164103959,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3328591693045623,
+            -0.105870030463832,
+            0.9449189450579629
+          ],
+          "distance_point_hand_world_m": [
+            0.3309757899917392,
+            -0.10518072799662277,
+            0.9449189348110609
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.031917212361761094,
+            -0.011708290309762753,
+            0.05242729102192967
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        }
+      ]
+    },
+    {
+      "name": "alternating_a_normal_up_1deg",
+      "point_pattern": "alternating_a",
+      "normal_rotation_toward_world_z_deg": 1.0,
+      "contacts": [
+        {
+          "digit": "thumb",
+          "body": "R_thumb_distal",
+          "geom": "dfq_collision_R_thumb_distal_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.26516049229308736,
+            -0.09008341476549667,
+            0.931245715706015
+          ],
+          "frame_rows_world": [
+            [
+              -0.9943215945644253,
+              0.10641694679530767,
+              -4.198037456377053e-06
+            ],
+            [
+              0.10641694679624539,
+              0.9943215945731869,
+              -0.0
+            ],
+            [
+              4.174199297702797e-06,
+              -4.467423286439222e-07,
+              -0.9999999999911883
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            -0.9943215945644253,
+            0.10641694679530767,
+            -4.198037456377053e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.18831753260100956,
+              -0.026216068810631647,
+              0.006392421011833502
+            ],
+            "thumb_proximal_yaw": [
+              0.0014674527318194741,
+              -0.005107797460607466,
+              -0.06413665177018285
+            ]
+          },
+          "signed_distance_m": 7.821554562433613e-05,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.2651993779961098,
+            -0.09008757649527531,
+            0.930745715870191
+          ],
+          "distance_point_hand_world_m": [
+            0.2651216065900649,
+            -0.09007925303571804,
+            0.9307457155418392
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            -0.03483977499330221,
+            0.003733674154968003,
+            0.038254066793432795
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_intermediate",
+          "geom": "dfq_collision_R_index_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3345583355258008,
+            -0.08958236647813078,
+            0.93965349200918
+          ],
+          "frame_rows_world": [
+            [
+              0.9928137029891122,
+              0.11967017650599723,
+              3.474257583956751e-06
+            ],
+            [
+              0.11967017650671946,
+              -0.992813702995104,
+              0.0
+            ],
+            [
+              3.449290537086926e-06,
+              4.1576501830191314e-07,
+              -0.9999999999939648
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9928137029891122,
+            0.11967017650599723,
+            3.474257583956751e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.0455037929384943,
+              -0.0054511918400577675,
+              -0.010470078145080136
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -0.0003665167587581185,
+          "penetration_m": 0.0003665167587581185,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.33474027695603586,
+            -0.08956043591552429,
+            0.9401534926458668
+          ],
+          "distance_point_hand_world_m": [
+            0.3343763940955657,
+            -0.08960429704073729,
+            0.9401534913724932
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03455806823941121,
+            0.004234722442333888,
+            0.04766184309659771
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "middle",
+          "body": "R_middle_intermediate",
+          "geom": "dfq_collision_R_middle_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3341037840656842,
+            -0.0853884015107381,
+            0.9178881567018344
+          ],
+          "frame_rows_world": [
+            [
+              0.9707964183336416,
+              0.23990480224760757,
+              3.018219935449501e-06
+            ],
+            [
+              0.23990480224870026,
+              -0.9707964183380633,
+              0.0
+            ],
+            [
+              2.930077103090916e-06,
+              7.240854567570974e-07,
+              -0.9999999999954453
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9707964183336416,
+            0.23990480224760757,
+            3.018219935449501e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              -0.061638415422700626,
+              -0.01485500713088872,
+              -0.011307037654291363
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": 0.00025945937874240514,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3339778429478911,
+            -0.08541952428621233,
+            0.9173881563102818
+          ],
+          "distance_point_hand_world_m": [
+            0.3342297251834773,
+            -0.08535727873526384,
+            0.9173881570933873
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03410351677929463,
+            0.008428687409726576,
+            0.02489650778925223
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "ring",
+          "body": "R_ring_intermediate",
+          "geom": "dfq_collision_R_ring_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3334630402359185,
+            -0.08279032742241689,
+            0.8934996247215241
+          ],
+          "frame_rows_world": [
+            [
+              0.9497633749172123,
+              0.3129688988677872,
+              2.7114112503103854e-06
+            ],
+            [
+              0.31296889886893764,
+              -0.9497633749207035,
+              0.0
+            ],
+            [
+              2.5751990998927555e-06,
+              8.485873933904906e-07,
+              -0.999999999996324
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9497633749172122,
+            0.31296889886778717,
+            2.711411250310385e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              -0.07709886982111892,
+              -0.02393178064725371,
+              -0.00979706125220145
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": 0.0004655073269959242,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.33324197933095034,
+            -0.08286317208018928,
+            0.8939996240904332
+          ],
+          "distance_point_hand_world_m": [
+            0.33368410114088665,
+            -0.0827174827646445,
+            0.893999625352615
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03346277294952893,
+            0.01102676149804778,
+            0.0015079758089417972
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "pinky",
+          "body": "R_pinky_intermediate",
+          "geom": "dfq_collision_R_pinky_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3336523548185917,
+            -0.08423284086815619,
+            0.8721549657198848
+          ],
+          "frame_rows_world": [
+            [
+              0.960684439142101,
+              0.27764259109376177,
+              -9.843343133041557e-07
+            ],
+            [
+              0.2776425910938963,
+              -0.9606844391425664,
+              0.0
+            ],
+            [
+              -9.456346577053862e-07,
+              -2.732931292483969e-07,
+              -0.9999999999995156
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9606844391421012,
+            0.2776425910937618,
+            -9.843343133041559e-07
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              -0.08652814899455244,
+              -0.02975350450745423,
+              -0.00643671691942882
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -1.883501073220532e-05,
+          "penetration_m": 1.883501073220532e-05,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3336614020694525,
+            -0.08423022616756473,
+            0.871654965710615
+          ],
+          "distance_point_hand_world_m": [
+            0.333643307567731,
+            -0.08423545556874769,
+            0.8716549657291549
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03365208753220211,
+            0.00958424805230848,
+            -0.02083668319269738
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_proximal",
+          "geom": "dfq_collision_R_index_proximal_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.33191747964815066,
+            -0.10552537923022742,
+            0.944418939934512
+          ],
+          "frame_rows_world": [
+            [
+              0.9390808128599347,
+              -0.3436964167578998,
+              5.109257061449995e-06
+            ],
+            [
+              -0.34369641676238577,
+              -0.9390808128721917,
+              0.0
+            ],
+            [
+              4.7980052744394465e-06,
+              -1.75603334433828e-06,
+              -0.9999999999869478
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9390808128599347,
+            -0.3436964167578998,
+            5.109257061449995e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.022113155503316467,
+              -0.0022446853010847923,
+              -0.005157793288963798
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -0.002005556164103959,
+          "penetration_m": 0.002005556164103959,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3328591693045623,
+            -0.105870030463832,
+            0.9449189450579629
+          ],
+          "distance_point_hand_world_m": [
+            0.3309757899917392,
+            -0.10518072799662277,
+            0.9449189348110609
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.031917212361761094,
+            -0.011708290309762753,
+            0.05242729102192967
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        }
+      ]
+    },
+    {
+      "name": "alternating_b_normal_down_1deg",
+      "point_pattern": "alternating_b",
+      "normal_rotation_toward_world_z_deg": -1.0,
+      "contacts": [
+        {
+          "digit": "thumb",
+          "body": "R_thumb_distal",
+          "geom": "dfq_collision_R_thumb_distal_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.26516049229308736,
+            -0.09008341476549667,
+            0.9302457157060151
+          ],
+          "frame_rows_world": [
+            [
+              -0.9943215945644253,
+              0.10641694679530767,
+              -4.198037456377053e-06
+            ],
+            [
+              0.10641694679624539,
+              0.9943215945731869,
+              -0.0
+            ],
+            [
+              4.174199297702797e-06,
+              -4.467423286439222e-07,
+              -0.9999999999911883
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            -0.9943215945644253,
+            0.10641694679530767,
+            -4.198037456377053e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.18831753260100956,
+              -0.026216068810631647,
+              0.006392421011833502
+            ],
+            "thumb_proximal_yaw": [
+              0.0014674527318194741,
+              -0.005107797460607466,
+              -0.06413665177018285
+            ]
+          },
+          "signed_distance_m": 7.821554562433613e-05,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.2651993779961098,
+            -0.09008757649527531,
+            0.930745715870191
+          ],
+          "distance_point_hand_world_m": [
+            0.2651216065900649,
+            -0.09007925303571804,
+            0.9307457155418392
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            -0.03483977499330221,
+            0.003733674154968003,
+            0.038254066793432795
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_intermediate",
+          "geom": "dfq_collision_R_index_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3345583355258008,
+            -0.08958236647813078,
+            0.9406534920091799
+          ],
+          "frame_rows_world": [
+            [
+              0.9928137029891122,
+              0.11967017650599723,
+              3.474257583956751e-06
+            ],
+            [
+              0.11967017650671946,
+              -0.992813702995104,
+              0.0
+            ],
+            [
+              3.449290537086926e-06,
+              4.1576501830191314e-07,
+              -0.9999999999939648
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9928137029891122,
+            0.11967017650599723,
+            3.474257583956751e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.0455037929384943,
+              -0.0054511918400577675,
+              -0.010470078145080136
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -0.0003665167587581185,
+          "penetration_m": 0.0003665167587581185,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.33474027695603586,
+            -0.08956043591552429,
+            0.9401534926458668
+          ],
+          "distance_point_hand_world_m": [
+            0.3343763940955657,
+            -0.08960429704073729,
+            0.9401534913724932
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03455806823941121,
+            0.004234722442333888,
+            0.04766184309659771
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "middle",
+          "body": "R_middle_intermediate",
+          "geom": "dfq_collision_R_middle_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3341037840656842,
+            -0.0853884015107381,
+            0.9168881567018345
+          ],
+          "frame_rows_world": [
+            [
+              0.9707964183336416,
+              0.23990480224760757,
+              3.018219935449501e-06
+            ],
+            [
+              0.23990480224870026,
+              -0.9707964183380633,
+              0.0
+            ],
+            [
+              2.930077103090916e-06,
+              7.240854567570974e-07,
+              -0.9999999999954453
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9707964183336416,
+            0.23990480224760757,
+            3.018219935449501e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              -0.061638415422700626,
+              -0.01485500713088872,
+              -0.011307037654291363
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": 0.00025945937874240514,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3339778429478911,
+            -0.08541952428621233,
+            0.9173881563102818
+          ],
+          "distance_point_hand_world_m": [
+            0.3342297251834773,
+            -0.08535727873526384,
+            0.9173881570933873
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03410351677929463,
+            0.008428687409726576,
+            0.02489650778925223
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "ring",
+          "body": "R_ring_intermediate",
+          "geom": "dfq_collision_R_ring_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3334630402359185,
+            -0.08279032742241689,
+            0.894499624721524
+          ],
+          "frame_rows_world": [
+            [
+              0.9497633749172123,
+              0.3129688988677872,
+              2.7114112503103854e-06
+            ],
+            [
+              0.31296889886893764,
+              -0.9497633749207035,
+              0.0
+            ],
+            [
+              2.5751990998927555e-06,
+              8.485873933904906e-07,
+              -0.999999999996324
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9497633749172122,
+            0.31296889886778717,
+            2.711411250310385e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              -0.07709886982111892,
+              -0.02393178064725371,
+              -0.00979706125220145
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": 0.0004655073269959242,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.33324197933095034,
+            -0.08286317208018928,
+            0.8939996240904332
+          ],
+          "distance_point_hand_world_m": [
+            0.33368410114088665,
+            -0.0827174827646445,
+            0.893999625352615
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03346277294952893,
+            0.01102676149804778,
+            0.0015079758089417972
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "pinky",
+          "body": "R_pinky_intermediate",
+          "geom": "dfq_collision_R_pinky_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3336523548185917,
+            -0.08423284086815619,
+            0.8711549657198849
+          ],
+          "frame_rows_world": [
+            [
+              0.960684439142101,
+              0.27764259109376177,
+              -9.843343133041557e-07
+            ],
+            [
+              0.2776425910938963,
+              -0.9606844391425664,
+              0.0
+            ],
+            [
+              -9.456346577053862e-07,
+              -2.732931292483969e-07,
+              -0.9999999999995156
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9606844391421012,
+            0.2776425910937618,
+            -9.843343133041559e-07
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              -0.08652814899455244,
+              -0.02975350450745423,
+              -0.00643671691942882
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -1.883501073220532e-05,
+          "penetration_m": 1.883501073220532e-05,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3336614020694525,
+            -0.08423022616756473,
+            0.871654965710615
+          ],
+          "distance_point_hand_world_m": [
+            0.333643307567731,
+            -0.08423545556874769,
+            0.8716549657291549
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03365208753220211,
+            0.00958424805230848,
+            -0.02083668319269738
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_proximal",
+          "geom": "dfq_collision_R_index_proximal_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.33191747964815066,
+            -0.10552537923022742,
+            0.9454189399345119
+          ],
+          "frame_rows_world": [
+            [
+              0.9390808128599347,
+              -0.3436964167578998,
+              5.109257061449995e-06
+            ],
+            [
+              -0.34369641676238577,
+              -0.9390808128721917,
+              0.0
+            ],
+            [
+              4.7980052744394465e-06,
+              -1.75603334433828e-06,
+              -0.9999999999869478
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9390808128599347,
+            -0.3436964167578998,
+            5.109257061449995e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.022113155503316467,
+              -0.0022446853010847923,
+              -0.005157793288963798
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -0.002005556164103959,
+          "penetration_m": 0.002005556164103959,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3328591693045623,
+            -0.105870030463832,
+            0.9449189450579629
+          ],
+          "distance_point_hand_world_m": [
+            0.3309757899917392,
+            -0.10518072799662277,
+            0.9449189348110609
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.031917212361761094,
+            -0.011708290309762753,
+            0.05242729102192967
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": -1.0
+        }
+      ]
+    },
+    {
+      "name": "alternating_b_normal_up_1deg",
+      "point_pattern": "alternating_b",
+      "normal_rotation_toward_world_z_deg": 1.0,
+      "contacts": [
+        {
+          "digit": "thumb",
+          "body": "R_thumb_distal",
+          "geom": "dfq_collision_R_thumb_distal_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.26516049229308736,
+            -0.09008341476549667,
+            0.9302457157060151
+          ],
+          "frame_rows_world": [
+            [
+              -0.9943215945644253,
+              0.10641694679530767,
+              -4.198037456377053e-06
+            ],
+            [
+              0.10641694679624539,
+              0.9943215945731869,
+              -0.0
+            ],
+            [
+              4.174199297702797e-06,
+              -4.467423286439222e-07,
+              -0.9999999999911883
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            -0.9943215945644253,
+            0.10641694679530767,
+            -4.198037456377053e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.18831753260100956,
+              -0.026216068810631647,
+              0.006392421011833502
+            ],
+            "thumb_proximal_yaw": [
+              0.0014674527318194741,
+              -0.005107797460607466,
+              -0.06413665177018285
+            ]
+          },
+          "signed_distance_m": 7.821554562433613e-05,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.2651993779961098,
+            -0.09008757649527531,
+            0.930745715870191
+          ],
+          "distance_point_hand_world_m": [
+            0.2651216065900649,
+            -0.09007925303571804,
+            0.9307457155418392
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            -0.03483977499330221,
+            0.003733674154968003,
+            0.038254066793432795
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_intermediate",
+          "geom": "dfq_collision_R_index_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3345583355258008,
+            -0.08958236647813078,
+            0.9406534920091799
+          ],
+          "frame_rows_world": [
+            [
+              0.9928137029891122,
+              0.11967017650599723,
+              3.474257583956751e-06
+            ],
+            [
+              0.11967017650671946,
+              -0.992813702995104,
+              0.0
+            ],
+            [
+              3.449290537086926e-06,
+              4.1576501830191314e-07,
+              -0.9999999999939648
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9928137029891122,
+            0.11967017650599723,
+            3.474257583956751e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.0455037929384943,
+              -0.0054511918400577675,
+              -0.010470078145080136
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -0.0003665167587581185,
+          "penetration_m": 0.0003665167587581185,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.33474027695603586,
+            -0.08956043591552429,
+            0.9401534926458668
+          ],
+          "distance_point_hand_world_m": [
+            0.3343763940955657,
+            -0.08960429704073729,
+            0.9401534913724932
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03455806823941121,
+            0.004234722442333888,
+            0.04766184309659771
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "middle",
+          "body": "R_middle_intermediate",
+          "geom": "dfq_collision_R_middle_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3341037840656842,
+            -0.0853884015107381,
+            0.9168881567018345
+          ],
+          "frame_rows_world": [
+            [
+              0.9707964183336416,
+              0.23990480224760757,
+              3.018219935449501e-06
+            ],
+            [
+              0.23990480224870026,
+              -0.9707964183380633,
+              0.0
+            ],
+            [
+              2.930077103090916e-06,
+              7.240854567570974e-07,
+              -0.9999999999954453
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9707964183336416,
+            0.23990480224760757,
+            3.018219935449501e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              -0.061638415422700626,
+              -0.01485500713088872,
+              -0.011307037654291363
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": 0.00025945937874240514,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3339778429478911,
+            -0.08541952428621233,
+            0.9173881563102818
+          ],
+          "distance_point_hand_world_m": [
+            0.3342297251834773,
+            -0.08535727873526384,
+            0.9173881570933873
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03410351677929463,
+            0.008428687409726576,
+            0.02489650778925223
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "ring",
+          "body": "R_ring_intermediate",
+          "geom": "dfq_collision_R_ring_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3334630402359185,
+            -0.08279032742241689,
+            0.894499624721524
+          ],
+          "frame_rows_world": [
+            [
+              0.9497633749172123,
+              0.3129688988677872,
+              2.7114112503103854e-06
+            ],
+            [
+              0.31296889886893764,
+              -0.9497633749207035,
+              0.0
+            ],
+            [
+              2.5751990998927555e-06,
+              8.485873933904906e-07,
+              -0.999999999996324
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9497633749172122,
+            0.31296889886778717,
+            2.711411250310385e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              -0.07709886982111892,
+              -0.02393178064725371,
+              -0.00979706125220145
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": 0.0004655073269959242,
+          "penetration_m": 0.0,
+          "contact_status": "near_surface_unilateral_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.33324197933095034,
+            -0.08286317208018928,
+            0.8939996240904332
+          ],
+          "distance_point_hand_world_m": [
+            0.33368410114088665,
+            -0.0827174827646445,
+            0.893999625352615
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03346277294952893,
+            0.01102676149804778,
+            0.0015079758089417972
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "pinky",
+          "body": "R_pinky_intermediate",
+          "geom": "dfq_collision_R_pinky_intermediate_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.3336523548185917,
+            -0.08423284086815619,
+            0.8711549657198849
+          ],
+          "frame_rows_world": [
+            [
+              0.960684439142101,
+              0.27764259109376177,
+              -9.843343133041557e-07
+            ],
+            [
+              0.2776425910938963,
+              -0.9606844391425664,
+              0.0
+            ],
+            [
+              -9.456346577053862e-07,
+              -2.732931292483969e-07,
+              -0.9999999999995156
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9606844391421012,
+            0.2776425910937618,
+            -9.843343133041559e-07
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              -0.08652814899455244,
+              -0.02975350450745423,
+              -0.00643671691942882
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -1.883501073220532e-05,
+          "penetration_m": 1.883501073220532e-05,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3336614020694525,
+            -0.08423022616756473,
+            0.871654965710615
+          ],
+          "distance_point_hand_world_m": [
+            0.333643307567731,
+            -0.08423545556874769,
+            0.8716549657291549
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.03365208753220211,
+            0.00958424805230848,
+            -0.02083668319269738
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        },
+        {
+          "digit": "index",
+          "body": "R_index_proximal",
+          "geom": "dfq_collision_R_index_proximal_0",
+          "bottle_geom": "bottle_body",
+          "point_world_m": [
+            0.33191747964815066,
+            -0.10552537923022742,
+            0.9454189399345119
+          ],
+          "frame_rows_world": [
+            [
+              0.9390808128599347,
+              -0.3436964167578998,
+              5.109257061449995e-06
+            ],
+            [
+              -0.34369641676238577,
+              -0.9390808128721917,
+              0.0
+            ],
+            [
+              4.7980052744394465e-06,
+              -1.75603334433828e-06,
+              -0.9999999999869478
+            ]
+          ],
+          "normal_bottle_to_hand_world": [
+            0.9390808128599347,
+            -0.3436964167578998,
+            5.109257061449995e-06
+          ],
+          "contact_jacobians_m_per_rad": {
+            "pinky_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "ring_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "middle_proximal": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "index_proximal": [
+              -0.022113155503316467,
+              -0.0022446853010847923,
+              -0.005157793288963798
+            ],
+            "thumb_proximal_pitch": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "thumb_proximal_yaw": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "signed_distance_m": -0.002005556164103959,
+          "penetration_m": 0.002005556164103959,
+          "contact_status": "active_MuJoCo_contact",
+          "contact_friction_coefficient": 1.4,
+          "geom_sliding_friction_values": [
+            1.4,
+            1.0
+          ],
+          "distance_point_bottle_world_m": [
+            0.3328591693045623,
+            -0.105870030463832,
+            0.9449189450579629
+          ],
+          "distance_point_hand_world_m": [
+            0.3309757899917392,
+            -0.10518072799662277,
+            0.9449189348110609
+          ],
+          "jacobian_contact_point_com_offset_m": [
+            0.031917212361761094,
+            -0.011708290309762753,
+            0.05242729102192967
+          ],
+          "mimic_chain_projected_bias_terms": {
+            "pinky_proximal": [
+              {
+                "joint": "R_pinky_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0003713150311094411,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_pinky_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -6.310599608841394e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "ring_proximal": [
+              {
+                "joint": "R_ring_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0005530600056879885,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_ring_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0001327932904380412,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "middle_proximal": [
+              {
+                "joint": "R_middle_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.000716239079956364,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_middle_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00020519304186906269,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "index_proximal": [
+              {
+                "joint": "R_index_proximal_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.0007288394249872902,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_index_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.00021422141140032712,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_pitch": [
+              {
+                "joint": "R_thumb_proximal_pitch_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": 6.245646896510092e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_intermediate_joint",
+                "mimic_multiplier_to_driver": 1.6,
+                "qfrc_bias_nm": 1.589869472798421e-06,
+                "qfrc_passive_nm": 0.0
+              },
+              {
+                "joint": "R_thumb_distal_joint",
+                "mimic_multiplier_to_driver": 2.4,
+                "qfrc_bias_nm": 1.2347057945333545e-05,
+                "qfrc_passive_nm": 0.0
+              }
+            ],
+            "thumb_proximal_yaw": [
+              {
+                "joint": "R_thumb_proximal_yaw_joint",
+                "mimic_multiplier_to_driver": 1.0,
+                "qfrc_bias_nm": -0.006586618702664186,
+                "qfrc_passive_nm": 0.0
+              }
+            ]
+          },
+          "projected_bias_minus_passive_nm": {
+            "pinky_proximal": -0.000434421027197855,
+            "ring_proximal": -0.0006858532961260297,
+            "middle_proximal": -0.0009214321218254267,
+            "index_proximal": -0.0009430608363876173,
+            "thumb_proximal_pitch": 3.8422377121788075e-05,
+            "thumb_proximal_yaw": -0.006586618702664186
+          },
+          "normal_force_n": 0.0,
+          "point_offset_world_m": [
+            0.0,
+            0.0,
+            0.0005
+          ],
+          "normal_rotation_toward_world_z_deg": 1.0
+        }
+      ]
+    }
+  ],
+  "projected_bias_minus_passive_nm": {
+    "pinky_proximal": -0.000434421027197855,
+    "ring_proximal": -0.0006858532961260297,
+    "middle_proximal": -0.0009214321218254267,
+    "index_proximal": -0.0009430608363876173,
+    "thumb_proximal_pitch": 3.8422377121788075e-05,
+    "thumb_proximal_yaw": -0.006586618702664186
+  },
+  "source_limits": {
+    "pinky_proximal": {
+      "joint": "R_pinky_proximal_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": 0.0,
+      "upper_rad": 1.7,
+      "mimic_chain": [
+        {
+          "joint": "R_pinky_proximal_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -0.0003713150311094411,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_pinky_intermediate_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -6.310599608841394e-05,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "ring_proximal": {
+      "joint": "R_ring_proximal_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": 0.0,
+      "upper_rad": 1.7,
+      "mimic_chain": [
+        {
+          "joint": "R_ring_proximal_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -0.0005530600056879885,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_ring_intermediate_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -0.0001327932904380412,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "middle_proximal": {
+      "joint": "R_middle_proximal_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": 0.0,
+      "upper_rad": 1.7,
+      "mimic_chain": [
+        {
+          "joint": "R_middle_proximal_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -0.000716239079956364,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_middle_intermediate_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -0.00020519304186906269,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "index_proximal": {
+      "joint": "R_index_proximal_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": 0.0,
+      "upper_rad": 1.7,
+      "mimic_chain": [
+        {
+          "joint": "R_index_proximal_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -0.0007288394249872902,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_index_intermediate_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -0.00021422141140032712,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "thumb_proximal_pitch": {
+      "joint": "R_thumb_proximal_pitch_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": -0.1,
+      "upper_rad": 0.6,
+      "mimic_chain": [
+        {
+          "joint": "R_thumb_proximal_pitch_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": 6.245646896510092e-06,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_thumb_intermediate_joint",
+          "mimic_multiplier_to_driver": 1.6,
+          "qfrc_bias_nm": 1.589869472798421e-06,
+          "qfrc_passive_nm": 0.0
+        },
+        {
+          "joint": "R_thumb_distal_joint",
+          "mimic_multiplier_to_driver": 2.4,
+          "qfrc_bias_nm": 1.2347057945333545e-05,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    },
+    "thumb_proximal_yaw": {
+      "joint": "R_thumb_proximal_yaw_joint",
+      "effort_limit_nm": 1.0,
+      "velocity_limit_rad_s": 0.5,
+      "lower_rad": -0.1,
+      "upper_rad": 1.3,
+      "mimic_chain": [
+        {
+          "joint": "R_thumb_proximal_yaw_joint",
+          "mimic_multiplier_to_driver": 1.0,
+          "qfrc_bias_nm": -0.006586618702664186,
+          "qfrc_passive_nm": 0.0
+        }
+      ]
+    }
+  },
+  "simulation_only_driver_effort_cap_nm": 0.531,
+  "joint_state_qpos_rad": {
+    "right_shoulder_pitch_joint": -0.3247479666506803,
+    "right_shoulder_roll_joint": -0.5466483422444973,
+    "right_shoulder_yaw_joint": -0.07695896589277715,
+    "right_elbow_joint": 0.5477644872475893,
+    "right_wrist_roll_joint": 0.36114558400789093,
+    "right_wrist_pitch_joint": -0.3910772824706641,
+    "right_wrist_yaw_joint": 1.2552502466231574,
+    "R_pinky_proximal_joint": 0.44564880278735064,
+    "R_ring_proximal_joint": 0.4104130959601651,
+    "R_middle_proximal_joint": 0.3663940461735578,
+    "R_index_proximal_joint": 0.3021937367739144,
+    "R_thumb_proximal_pitch_joint": 0.1430586513587293,
+    "R_thumb_proximal_yaw_joint": 1.0531295899187407
+  }
+}

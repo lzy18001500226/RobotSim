@@ -1,0 +1,2432 @@
+{
+  "analysis": "fresh C2 quasi-static multi-contact wrench allocation; conservative 64-sided inscribed Coulomb cones; no table or other support",
+  "input": "/mnt/c/Users/HP/Desktop/Robot/reviews/issue43-g1-dfq-long-grasp-recovery/runs/dfq-long-c2-static-1791445633-37924/candidate_c2_wrench_input.json",
+  "run_id": "dfq-long-c2-static-1791445633-37924",
+  "candidate_contact_time_s": 0.0,
+  "physics_steps": 0,
+  "mj_step_calls": 0,
+  "configured_mu": 1.4,
+  "simulation_only_driver_effort_cap_nm": 0.531,
+  "source_effort_limits_nm": {
+    "pinky_proximal": 0.531,
+    "ring_proximal": 0.531,
+    "middle_proximal": 0.531,
+    "index_proximal": 0.531,
+    "thumb_proximal_pitch": 0.531,
+    "thumb_proximal_yaw": 0.531
+  },
+  "static_effort_limits_applied_nm": {
+    "pinky_proximal": 0.531,
+    "ring_proximal": 0.531,
+    "middle_proximal": 0.531,
+    "index_proximal": 0.531,
+    "thumb_proximal_pitch": 0.531,
+    "thumb_proximal_yaw": 0.531
+  },
+  "bottle_mass_kg": 0.5700000000000001,
+  "bottle_weight_n": 5.591700000000001,
+  "effort_bounds_applied": true,
+  "friction_model": "64-sided inscribed cone; no torsional friction; per-contact Fn >= 0; exact static 6D equilibrium at bottle COM",
+  "objective": "bisection on maximum per-contact normalized inscribed-cone utilization; secondary minimize total normal force at the optimal utilization",
+  "candidate_max_margin_allocation": {
+    "feasible_at_mu_1_4": true,
+    "max_inscribed_64_cone_utilization": 0.713714856027755,
+    "minimum_inscribed_64_cone_slack_fraction": 0.286285143972245,
+    "rho_constraint_used": 0.713714856027755,
+    "max_continuous_coulomb_utilization": 0.7137148560277549,
+    "min_continuous_coulomb_slack_fraction": 0.28628514397224514,
+    "total_normal_force_n": 5.665998493060648,
+    "vertical_hand_support_n": 5.5916999999999994,
+    "achieved_wrench_about_com": {
+      "force_n": [
+        1.3322676295501878e-15,
+        1.1102230246251565e-16,
+        5.5916999999999994
+      ],
+      "torque_nm": [
+        -2.7755575615628914e-17,
+        2.7755575615628914e-17,
+        6.669243282630966e-11
+      ],
+      "residual_norm": 6.66924328397205e-11
+    },
+    "per_contact": [
+      {
+        "digit": "thumb",
+        "body": "R_thumb_distal",
+        "geom": "dfq_collision_R_thumb_distal_0",
+        "normal_force_n": 2.709322395451805,
+        "tangential_components_n": [
+          -0.19209285536509418,
+          2.698059714093841
+        ],
+        "tangential_magnitude_n": 2.7048892557549293,
+        "continuous_cone_utilization": 0.7131169614048365,
+        "inscribed_64_cone_utilization": 0.713714856027755,
+        "inscribed_64_cone_slack_fraction": 0.286285143972245,
+        "force_on_bottle_world_n": [
+          2.7143684373651094,
+          -0.0973145376179137,
+          2.698071087906964
+        ],
+        "point_world_m": [
+          0.26516049229308736,
+          -0.09008341476549667,
+          0.930745715706015
+        ]
+      },
+      {
+        "digit": "index",
+        "body": "R_index_intermediate",
+        "geom": "dfq_collision_R_index_intermediate_0",
+        "normal_force_n": 0.5153099740222439,
+        "tangential_components_n": [
+          -0.02526485412198327,
+          0.514277920130055
+        ],
+        "tangential_magnitude_n": 0.5148981374865327,
+        "continuous_cone_utilization": 0.7137148560277549,
+        "inscribed_64_cone_utilization": 0.713714856027755,
+        "inscribed_64_cone_slack_fraction": 0.286285143972245,
+        "force_on_bottle_world_n": [
+          -0.5085851278380163,
+          -0.08675074274178897,
+          0.5142761298073659
+        ],
+        "point_world_m": [
+          0.3345583355258008,
+          -0.08958236647813078,
+          0.94015349200918
+        ]
+      },
+      {
+        "digit": "middle",
+        "body": "R_middle_intermediate",
+        "geom": "dfq_collision_R_middle_intermediate_0",
+        "normal_force_n": 1.4825566213623518,
+        "tangential_components_n": [
+          -0.09568877479031564,
+          1.4773219515583111
+        ],
+        "tangential_magnitude_n": 1.4804176742314747,
+        "continuous_cone_utilization": 0.7132551840805381,
+        "inscribed_64_cone_utilization": 0.7137148560277549,
+        "inscribed_64_cone_slack_fraction": 0.28628514397224514,
+        "force_on_bottle_world_n": [
+          -1.4163087900691291,
+          -0.44856784261775234,
+          1.4773174768696322
+        ],
+        "point_world_m": [
+          0.3341037840656842,
+          -0.0853884015107381,
+          0.9173881567018345
+        ]
+      },
+      {
+        "digit": "ring",
+        "body": "R_ring_intermediate",
+        "geom": "dfq_collision_R_ring_intermediate_0",
+        "normal_force_n": -0.0,
+        "tangential_components_n": [
+          -0.0,
+          -0.0
+        ],
+        "tangential_magnitude_n": 0.0,
+        "continuous_cone_utilization": 0.0,
+        "inscribed_64_cone_utilization": 0.0,
+        "inscribed_64_cone_slack_fraction": 1.0,
+        "force_on_bottle_world_n": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "point_world_m": [
+          0.3334630402359185,
+          -0.08279032742241689,
+          0.893999624721524
+        ]
+      },
+      {
+        "digit": "pinky",
+        "body": "R_pinky_intermediate",
+        "geom": "dfq_collision_R_pinky_intermediate_0",
+        "normal_force_n": -0.0,
+        "tangential_components_n": [
+          -0.0,
+          -0.0
+        ],
+        "tangential_magnitude_n": 0.0,
+        "continuous_cone_utilization": 0.0,
+        "inscribed_64_cone_utilization": 0.0,
+        "inscribed_64_cone_slack_fraction": 1.0,
+        "force_on_bottle_world_n": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "point_world_m": [
+          0.3336523548185917,
+          -0.08423284086815619,
+          0.8716549657198849
+        ]
+      },
+      {
+        "digit": "index",
+        "body": "R_index_proximal",
+        "geom": "dfq_collision_R_index_proximal_0",
+        "normal_force_n": 0.9588095022242472,
+        "tangential_components_n": [
+          0.3227540639126335,
+          0.9020402042320305
+        ],
+        "tangential_magnitude_n": 0.9580431701249602,
+        "continuous_cone_utilization": 0.7137148187432218,
+        "inscribed_64_cone_utilization": 0.713714856027755,
+        "inscribed_64_cone_slack_fraction": 0.286285143972245,
+        "force_on_bottle_world_n": [
+          -0.789474519457963,
+          0.6326331229774551,
+          0.902035305416037
+        ],
+        "point_world_m": [
+          0.33191747964815066,
+          -0.10552537923022742,
+          0.9449189399345119
+        ]
+      }
+    ],
+    "driver_efforts": {
+      "pinky_proximal": {
+        "estimated_required_effort_nm": -0.000434421027197855,
+        "absolute_effort_nm": 0.000434421027197855,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.0008181186952878625
+      },
+      "ring_proximal": {
+        "estimated_required_effort_nm": -0.0006858532961260297,
+        "absolute_effort_nm": 0.0006858532961260297,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.0012916257930810351
+      },
+      "middle_proximal": {
+        "estimated_required_effort_nm": 0.07633699160974447,
+        "absolute_effort_nm": 0.07633699160974447,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.14376081282437753
+      },
+      "index_proximal": {
+        "estimated_required_effort_nm": 0.02867307408394149,
+        "absolute_effort_nm": 0.02867307408394149,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.05399825627860921
+      },
+      "thumb_proximal_pitch": {
+        "estimated_required_effort_nm": 0.5310000000000001,
+        "absolute_effort_nm": 0.5310000000000001,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 1.0000000000000002
+      },
+      "thumb_proximal_yaw": {
+        "estimated_required_effort_nm": -0.1751515941922506,
+        "absolute_effort_nm": 0.1751515941922506,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.329852343111583
+      }
+    },
+    "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)"
+  },
+  "candidate_minimum_normal_allocation": {
+    "feasible_at_mu_1_4": true,
+    "max_inscribed_64_cone_utilization": 1.0000000000000007,
+    "minimum_inscribed_64_cone_slack_fraction": -6.661338147750939e-16,
+    "rho_constraint_used": 1.0,
+    "max_continuous_coulomb_utilization": 1.0000000000000004,
+    "min_continuous_coulomb_slack_fraction": -4.440892098500626e-16,
+    "total_normal_force_n": 3.9988871683946985,
+    "vertical_hand_support_n": 5.5916999999999994,
+    "achieved_wrench_about_com": {
+      "force_n": [
+        2.220446049250313e-16,
+        5.551115123125783e-17,
+        5.5916999999999994
+      ],
+      "torque_nm": [
+        -1.960237527853792e-16,
+        -2.7755575615628914e-17,
+        3.433773274399976e-10
+      ],
+      "residual_norm": 3.4337732744013094e-10
+    },
+    "per_contact": [
+      {
+        "digit": "thumb",
+        "body": "R_thumb_distal",
+        "geom": "dfq_collision_R_thumb_distal_0",
+        "normal_force_n": 1.9630449149000466,
+        "tangential_components_n": [
+          -0.0973480574968895,
+          2.74495247786037
+        ],
+        "tangential_magnitude_n": 2.74667813003457,
+        "continuous_cone_utilization": 0.999423362722492,
+        "inscribed_64_cone_utilization": 1.0,
+        "inscribed_64_cone_slack_fraction": 0.0,
+        "force_on_bottle_world_n": [
+          1.9622459750616599,
+          -0.1121047442203461,
+          2.7449607187722633
+        ],
+        "point_world_m": [
+          0.26516049229308736,
+          -0.09008341476549667,
+          0.930745715706015
+        ]
+      },
+      {
+        "digit": "index",
+        "body": "R_index_intermediate",
+        "geom": "dfq_collision_R_index_intermediate_0",
+        "normal_force_n": 1.0366455878143512,
+        "tangential_components_n": [
+          0.0712121033341623,
+          1.4495556639257596
+        ],
+        "tangential_magnitude_n": 1.4513038229400919,
+        "continuous_cone_utilization": 1.0000000000000002,
+        "inscribed_64_cone_utilization": 1.0,
+        "inscribed_64_cone_slack_fraction": 0.0,
+        "force_on_bottle_world_n": [
+          -1.0377229096393394,
+          -0.053355811133184154,
+          1.4495520623432159
+        ],
+        "point_world_m": [
+          0.3345583355258008,
+          -0.08958236647813078,
+          0.94015349200918
+        ]
+      },
+      {
+        "digit": "middle",
+        "body": "R_middle_intermediate",
+        "geom": "dfq_collision_R_middle_intermediate_0",
+        "normal_force_n": -0.0,
+        "tangential_components_n": [
+          -0.0,
+          -0.0
+        ],
+        "tangential_magnitude_n": 0.0,
+        "continuous_cone_utilization": 0.0,
+        "inscribed_64_cone_utilization": 0.0,
+        "inscribed_64_cone_slack_fraction": 1.0,
+        "force_on_bottle_world_n": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "point_world_m": [
+          0.3341037840656842,
+          -0.0853884015107381,
+          0.9173881567018345
+        ]
+      },
+      {
+        "digit": "ring",
+        "body": "R_ring_intermediate",
+        "geom": "dfq_collision_R_ring_intermediate_0",
+        "normal_force_n": -0.0,
+        "tangential_components_n": [
+          -0.0,
+          -0.0
+        ],
+        "tangential_magnitude_n": 0.0,
+        "continuous_cone_utilization": 0.0,
+        "inscribed_64_cone_utilization": 0.0,
+        "inscribed_64_cone_slack_fraction": 1.0,
+        "force_on_bottle_world_n": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "point_world_m": [
+          0.3334630402359185,
+          -0.08279032742241689,
+          0.893999624721524
+        ]
+      },
+      {
+        "digit": "pinky",
+        "body": "R_pinky_intermediate",
+        "geom": "dfq_collision_R_pinky_intermediate_0",
+        "normal_force_n": 0.3280000100585336,
+        "tangential_components_n": [
+          -0.018175761086174493,
+          0.4586468875543998
+        ],
+        "tangential_magnitude_n": 0.45900689074827616,
+        "continuous_cone_utilization": 0.9995794352618719,
+        "inscribed_64_cone_utilization": 1.0,
+        "inscribed_64_cone_slack_fraction": 0.0,
+        "force_on_bottle_world_n": [
+          -0.3100577065862242,
+          -0.10852781817144888,
+          0.45864721041584233
+        ],
+        "point_world_m": [
+          0.3336523548185917,
+          -0.08423284086815619,
+          0.8716549657198849
+        ]
+      },
+      {
+        "digit": "index",
+        "body": "R_index_proximal",
+        "geom": "dfq_collision_R_index_proximal_0",
+        "normal_force_n": 0.6711966556217671,
+        "tangential_components_n": [
+          0.0461076824707873,
+          0.9385434377971805
+        ],
+        "tangential_magnitude_n": 0.9396753178704743,
+        "continuous_cone_utilization": 1.0000000000000004,
+        "inscribed_64_cone_utilization": 1.0000000000000007,
+        "inscribed_64_cone_slack_fraction": -6.661338147750939e-16,
+        "force_on_bottle_world_n": [
+          -0.6144653588360961,
+          0.2739883735249792,
+          0.938540008468678
+        ],
+        "point_world_m": [
+          0.33191747964815066,
+          -0.10552537923022742,
+          0.9449189399345119
+        ]
+      }
+    ],
+    "driver_efforts": {
+      "pinky_proximal": {
+        "estimated_required_effort_nm": 0.026671199073020072,
+        "absolute_effort_nm": 0.026671199073020072,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.05022824684184571
+      },
+      "ring_proximal": {
+        "estimated_required_effort_nm": -0.0006858532961260297,
+        "absolute_effort_nm": 0.0006858532961260297,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.0012916257930810351
+      },
+      "middle_proximal": {
+        "estimated_required_effort_nm": -0.0009214321218254267,
+        "absolute_effort_nm": 0.0009214321218254267,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.0017352770655846078
+      },
+      "index_proximal": {
+        "estimated_required_effort_nm": 0.03952315196506637,
+        "absolute_effort_nm": 0.03952315196506637,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.07443154795681049
+      },
+      "thumb_proximal_pitch": {
+        "estimated_required_effort_nm": 0.3900496330208119,
+        "absolute_effort_nm": 0.3900496330208119,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.7345567476851448
+      },
+      "thumb_proximal_yaw": {
+        "estimated_required_effort_nm": -0.17918709690093496,
+        "absolute_effort_nm": 0.17918709690093496,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.33745215988876637
+      }
+    },
+    "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)"
+  },
+  "effort_balanced_10pct_margin_allocation": {
+    "feasible_at_mu_1_4": true,
+    "max_inscribed_64_cone_utilization": 0.900000000000069,
+    "minimum_inscribed_64_cone_slack_fraction": 0.09999999999993103,
+    "rho_constraint_used": 0.9,
+    "max_continuous_coulomb_utilization": 0.9000000000000667,
+    "min_continuous_coulomb_slack_fraction": 0.09999999999993325,
+    "total_normal_force_n": 4.530728719117729,
+    "vertical_hand_support_n": 5.5916999999999994,
+    "achieved_wrench_about_com": {
+      "force_n": [
+        2.4980018054066022e-14,
+        3.747002708109903e-15,
+        5.5916999999999994
+      ],
+      "torque_nm": [
+        2.42861286636753e-17,
+        5.551115123125783e-17,
+        4.162258385176365e-11
+      ],
+      "residual_norm": 4.162259151641208e-11
+    },
+    "per_contact": [
+      {
+        "digit": "thumb",
+        "body": "R_thumb_distal",
+        "geom": "dfq_collision_R_thumb_distal_0",
+        "normal_force_n": 2.1208344388987017,
+        "tangential_components_n": [
+          -0.15935399919886842,
+          2.6662518573309395
+        ],
+        "tangential_magnitude_n": 2.6710096712257254,
+        "continuous_cone_utilization": 0.8995817947327497,
+        "inscribed_64_cone_utilization": 0.8999999999999962,
+        "inscribed_64_cone_slack_fraction": 0.10000000000000375,
+        "force_on_bottle_world_n": [
+          2.1257383176807894,
+          -0.06724241193334263,
+          2.6662607606498585
+        ],
+        "point_world_m": [
+          0.26516049229308736,
+          -0.09008341476549667,
+          0.930745715706015
+        ]
+      },
+      {
+        "digit": "index",
+        "body": "R_index_intermediate",
+        "geom": "dfq_collision_R_index_intermediate_0",
+        "normal_force_n": 0.3222811580903439,
+        "tangential_components_n": [
+          -0.05958346871564602,
+          0.4016791184959166
+        ],
+        "tangential_magnitude_n": 0.4060742591938634,
+        "continuous_cone_utilization": 0.9000000000000667,
+        "inscribed_64_cone_utilization": 0.900000000000069,
+        "inscribed_64_cone_slack_fraction": 0.09999999999993103,
+        "force_on_bottle_world_n": [
+          -0.31283617125719226,
+          -0.09772289429022817,
+          0.4016779988057347
+        ],
+        "point_world_m": [
+          0.3345583355258008,
+          -0.08958236647813078,
+          0.94015349200918
+        ]
+      },
+      {
+        "digit": "middle",
+        "body": "R_middle_intermediate",
+        "geom": "dfq_collision_R_middle_intermediate_0",
+        "normal_force_n": 1.3094244198654785,
+        "tangential_components_n": [
+          -0.187521316917708,
+          1.6373916075145725
+        ],
+        "tangential_magnitude_n": 1.6480945120525423,
+        "continuous_cone_utilization": 0.8990288770334334,
+        "inscribed_64_cone_utilization": 0.8999999999997933,
+        "inscribed_64_cone_slack_fraction": 0.1000000000002067,
+        "force_on_bottle_world_n": [
+          -1.2262020701151124,
+          -0.4961834149432137,
+          1.6373876553762265
+        ],
+        "point_world_m": [
+          0.3341037840656842,
+          -0.0853884015107381,
+          0.9173881567018345
+        ]
+      },
+      {
+        "digit": "ring",
+        "body": "R_ring_intermediate",
+        "geom": "dfq_collision_R_ring_intermediate_0",
+        "normal_force_n": -0.0,
+        "tangential_components_n": [
+          1.9718955380250975e-13,
+          -0.0
+        ],
+        "tangential_magnitude_n": 1.9718955380250975e-13,
+        "continuous_cone_utilization": 0.0,
+        "inscribed_64_cone_utilization": 0.0,
+        "inscribed_64_cone_slack_fraction": 1.0,
+        "force_on_bottle_world_n": [
+          -6.171419752202861e-14,
+          1.872834161185793e-13,
+          0.0
+        ],
+        "point_world_m": [
+          0.3334630402359185,
+          -0.08279032742241689,
+          0.893999624721524
+        ]
+      },
+      {
+        "digit": "pinky",
+        "body": "R_pinky_intermediate",
+        "geom": "dfq_collision_R_pinky_intermediate_0",
+        "normal_force_n": 0.0,
+        "tangential_components_n": [
+          -0.0,
+          2.6201263381166385e-12
+        ],
+        "tangential_magnitude_n": 2.6201263381166385e-12,
+        "continuous_cone_utilization": 0.0,
+        "inscribed_64_cone_utilization": 0.0,
+        "inscribed_64_cone_slack_fraction": 1.0,
+        "force_on_bottle_world_n": [
+          2.4776822728897946e-18,
+          7.160625259700394e-19,
+          2.6201263381153694e-12
+        ],
+        "point_world_m": [
+          0.3336523548185917,
+          -0.08423284086815619,
+          0.8716549657198849
+        ]
+      },
+      {
+        "digit": "index",
+        "body": "R_index_proximal",
+        "geom": "dfq_collision_R_index_proximal_0",
+        "normal_force_n": 0.7781887022632054,
+        "tangential_components_n": [
+          0.4192253645611269,
+          0.8863775611432511
+        ],
+        "tangential_magnitude_n": 0.9805177648516459,
+        "continuous_cone_utilization": 0.9000000000000066,
+        "inscribed_64_cone_utilization": 0.9000000000000102,
+        "inscribed_64_cone_slack_fraction": 0.09999999999998976,
+        "force_on_bottle_world_n": [
+          -0.5867000763083978,
+          0.6611487211666008,
+          0.8863735851655596
+        ],
+        "point_world_m": [
+          0.33191747964815066,
+          -0.10552537923022742,
+          0.9449189399345119
+        ]
+      }
+    ],
+    "driver_efforts": {
+      "pinky_proximal": {
+        "estimated_required_effort_nm": -0.00043442102721472027,
+        "absolute_effort_nm": 0.00043442102721472027,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.0008181186953196238
+      },
+      "ring_proximal": {
+        "estimated_required_effort_nm": -0.0006858532961257536,
+        "absolute_effort_nm": 0.0006858532961257536,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.0012916257930805153
+      },
+      "middle_proximal": {
+        "estimated_required_effort_nm": 0.06351652476130466,
+        "absolute_effort_nm": 0.06351652476130466,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.1196168074600841
+      },
+      "index_proximal": {
+        "estimated_required_effort_nm": 0.016537265207357123,
+        "absolute_effort_nm": 0.016537265207357123,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.03114362562590795
+      },
+      "thumb_proximal_pitch": {
+        "estimated_required_effort_nm": 0.41915891032583175,
+        "absolute_effort_nm": 0.41915891032583175,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.7893764789563686
+      },
+      "thumb_proximal_yaw": {
+        "estimated_required_effort_nm": -0.1741287755146348,
+        "absolute_effort_nm": 0.1741287755146348,
+        "source_limit_nm": 0.531,
+        "fraction_of_source_limit": 0.3279261309126832
+      }
+    },
+    "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+    "requested_cone_utilization_cap": 0.9,
+    "minimax_peak_driver_effort_nm": 0.4191589103258302
+  },
+  "contact_force_group_gates": {
+    "max_margin_allocation": {
+      "thumb": 2.709322395451805,
+      "opposing_digits": 2.9566760976088426,
+      "thumb_plus_opposing_gate": 1.0
+    },
+    "effort_balanced_allocation": {
+      "thumb": 2.1208344388987017,
+      "opposing_digits": 2.409894280219028,
+      "thumb_plus_opposing_gate": 1.0
+    },
+    "minimum_group_normal_force_n": 0.1
+  },
+  "uncertainty_model": {
+    "contact_point": "each digit contact point shifted vertically by alternating +/-0.5 mm, with both alternating patterns tested",
+    "contact_normal": "each local frame rigidly rotated by +/-1 degree toward world +Z or -Z",
+    "allocation_recourse": "L1 change in all candidate local force components constrained to <=5% of the fresh candidate max-margin allocation L1 magnitude",
+    "driver_effort": "official URDF source limits intersected with the unchanged 0.531 Nm SIMULATION_ONLY_M0 cap",
+    "scenarios": [
+      {
+        "name": "alternating_a_normal_down_1deg",
+        "point_perturbation_max_abs_m": 0.0005,
+        "normal_perturbation_deg": -1.0,
+        "allocation_recourse_l1_limit_n": 0.5946749415632455,
+        "result": {
+          "feasible_at_mu_1_4": true,
+          "max_inscribed_64_cone_utilization": 0.6893536444262393,
+          "minimum_inscribed_64_cone_slack_fraction": 0.31064635557376075,
+          "rho_constraint_used": 0.6893536444262393,
+          "max_continuous_coulomb_utilization": 0.6893536444262393,
+          "min_continuous_coulomb_slack_fraction": 0.31064635557376075,
+          "total_normal_force_n": 5.763549124428599,
+          "vertical_hand_support_n": 5.591700000000001,
+          "achieved_wrench_about_com": {
+            "force_n": [
+              0.0,
+              -1.1102230246251565e-16,
+              5.591700000000001
+            ],
+            "torque_nm": [
+              1.0408340855860843e-17,
+              -4.163336342344337e-17,
+              0.0
+            ],
+            "residual_norm": 1.7803402042973265e-15
+          },
+          "per_contact": [
+            {
+              "digit": "thumb",
+              "body": "R_thumb_distal",
+              "geom": "dfq_collision_R_thumb_distal_0",
+              "normal_force_n": 2.7557159666539537,
+              "tangential_components_n": [
+                -0.1835882812512078,
+                2.6510954152508814
+              ],
+              "tangential_magnitude_n": 2.6574445540362674,
+              "continuous_cone_utilization": 0.6888136166512396,
+              "inscribed_64_cone_utilization": 0.6893536444262393,
+              "inscribed_64_cone_slack_fraction": 0.31064635557376075,
+              "force_on_bottle_world_n": [
+                2.7131709413492016,
+                -0.10573951831811541,
+                2.698796888232364
+              ],
+              "point_world_m": [
+                0.26516049229308736,
+                -0.09008341476549667,
+                0.931245715706015
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_intermediate",
+              "geom": "dfq_collision_R_index_intermediate_0",
+              "normal_force_n": 0.5639989847802067,
+              "tangential_components_n": [
+                -0.02670815622793533,
+                0.5436570094208426
+              ],
+              "tangential_magnitude_n": 0.5443126578553084,
+              "continuous_cone_utilization": 0.6893536444262393,
+              "inscribed_64_cone_utilization": 0.6893536444262393,
+              "inscribed_64_cone_slack_fraction": 0.31064635557376075,
+              "force_on_bottle_world_n": [
+                -0.5472464385928459,
+                -0.09286458662775879,
+                0.5534154211191769
+              ],
+              "point_world_m": [
+                0.3345583355258008,
+                -0.08958236647813078,
+                0.93965349200918
+              ]
+            },
+            {
+              "digit": "middle",
+              "body": "R_middle_intermediate",
+              "geom": "dfq_collision_R_middle_intermediate_0",
+              "normal_force_n": 1.4479553626302333,
+              "tangential_components_n": [
+                -0.10380309841883872,
+                1.3922610160256104
+              ],
+              "tangential_magnitude_n": 1.396125288069096,
+              "continuous_cone_utilization": 0.6887176043944441,
+              "inscribed_64_cone_utilization": 0.6893536444262393,
+              "inscribed_64_cone_slack_fraction": 0.31064635557376075,
+              "force_on_bottle_world_n": [
+                -1.3569683730923825,
+                -0.4422619609148524,
+                1.4173149771700113
+              ],
+              "point_world_m": [
+                0.3341037840656842,
+                -0.0853884015107381,
+                0.9178881567018344
+              ]
+            },
+            {
+              "digit": "ring",
+              "body": "R_ring_intermediate",
+              "geom": "dfq_collision_R_ring_intermediate_0",
+              "normal_force_n": 0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3334630402359185,
+                -0.08279032742241689,
+                0.8934996247215241
+              ]
+            },
+            {
+              "digit": "pinky",
+              "body": "R_pinky_intermediate",
+              "geom": "dfq_collision_R_pinky_intermediate_0",
+              "normal_force_n": 0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3336523548185917,
+                -0.08423284086815619,
+                0.8721549657198848
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_proximal",
+              "geom": "dfq_collision_R_index_proximal_0",
+              "normal_force_n": 0.9958788103642063,
+              "tangential_components_n": [
+                0.3237897029872191,
+                0.9049350644570836
+              ],
+              "tangential_magnitude_n": 0.9611177048855658,
+              "continuous_cone_utilization": 0.6893536032720345,
+              "inscribed_64_cone_utilization": 0.6893536444262393,
+              "inscribed_64_cone_slack_fraction": 0.31064635557376075,
+              "force_on_bottle_world_n": [
+                -0.8089561296639731,
+                0.6408660658607265,
+                0.9221727134784486
+              ],
+              "point_world_m": [
+                0.33191747964815066,
+                -0.10552537923022742,
+                0.944418939934512
+              ]
+            }
+          ],
+          "driver_efforts": {
+            "pinky_proximal": {
+              "estimated_required_effort_nm": -0.000434421027197855,
+              "absolute_effort_nm": 0.000434421027197855,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0008181186952878625
+            },
+            "ring_proximal": {
+              "estimated_required_effort_nm": -0.0006858532961260297,
+              "absolute_effort_nm": 0.0006858532961260297,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0012916257930810351
+            },
+            "middle_proximal": {
+              "estimated_required_effort_nm": 0.07326411894256761,
+              "absolute_effort_nm": 0.07326411894256761,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.1379738586489032
+            },
+            "index_proximal": {
+              "estimated_required_effort_nm": 0.030364301582489237,
+              "absolute_effort_nm": 0.030364301582489237,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.05718324215158048
+            },
+            "thumb_proximal_pitch": {
+              "estimated_required_effort_nm": 0.531,
+              "absolute_effort_nm": 0.531,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 1.0
+            },
+            "thumb_proximal_yaw": {
+              "estimated_required_effort_nm": -0.1751568687687492,
+              "absolute_effort_nm": 0.1751568687687492,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.32986227640065763
+            }
+          },
+          "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "allocation_recourse_l1_n": 0.35015017164663764,
+          "allocation_recourse_fraction": 0.02944046799131842
+        }
+      },
+      {
+        "name": "alternating_a_normal_up_1deg",
+        "point_perturbation_max_abs_m": 0.0005,
+        "normal_perturbation_deg": 1.0,
+        "allocation_recourse_l1_limit_n": 0.5946749415632455,
+        "result": {
+          "feasible_at_mu_1_4": true,
+          "max_inscribed_64_cone_utilization": 0.7384850638659215,
+          "minimum_inscribed_64_cone_slack_fraction": 0.2615149361340785,
+          "rho_constraint_used": 0.7384850638659214,
+          "max_continuous_coulomb_utilization": 0.7384850638659214,
+          "min_continuous_coulomb_slack_fraction": 0.2615149361340786,
+          "total_normal_force_n": 5.573308212378585,
+          "vertical_hand_support_n": 5.591699999999999,
+          "achieved_wrench_about_com": {
+            "force_n": [
+              4.440892098500626e-16,
+              -1.1102230246251565e-16,
+              5.591699999999999
+            ],
+            "torque_nm": [
+              0.0,
+              0.0,
+              1.734723475976807e-18
+            ],
+            "residual_norm": 9.99202227997857e-16
+          },
+          "per_contact": [
+            {
+              "digit": "thumb",
+              "body": "R_thumb_distal",
+              "geom": "dfq_collision_R_thumb_distal_0",
+              "normal_force_n": 2.661705036448318,
+              "tangential_components_n": [
+                -0.18614692953728088,
+                2.743531683192268
+              ],
+              "tangential_magnitude_n": 2.7498394091393696,
+              "continuous_cone_utilization": 0.7379371416560263,
+              "inscribed_64_cone_utilization": 0.7384850638659209,
+              "inscribed_64_cone_slack_fraction": 0.26151493613407906,
+              "force_on_bottle_world_n": [
+                2.71359497997382,
+                -0.10321164061332067,
+                2.6966720451350943
+              ],
+              "point_world_m": [
+                0.26516049229308736,
+                -0.09008341476549667,
+                0.931245715706015
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_intermediate",
+              "geom": "dfq_collision_R_index_intermediate_0",
+              "normal_force_n": 0.549994739916219,
+              "tangential_components_n": [
+                -0.027924141774804543,
+                0.5679408694814844
+              ],
+              "tangential_magnitude_n": 0.5686269329896746,
+              "continuous_cone_utilization": 0.7384835990513211,
+              "inscribed_64_cone_utilization": 0.7384850638659214,
+              "inscribed_64_cone_slack_fraction": 0.2615149361340786,
+              "force_on_bottle_world_n": [
+                -0.552460092860849,
+                -0.09471780890683848,
+                0.5582536926244404
+              ],
+              "point_world_m": [
+                0.3345583355258008,
+                -0.08958236647813078,
+                0.93965349200918
+              ]
+            },
+            {
+              "digit": "middle",
+              "body": "R_middle_intermediate",
+              "geom": "dfq_collision_R_middle_intermediate_0",
+              "normal_force_n": 1.4053985742047375,
+              "tangential_components_n": [
+                -0.10902487827820014,
+                1.4475460042042267
+              ],
+              "tangential_magnitude_n": 1.4516459135654258,
+              "continuous_cone_utilization": 0.7377906576059791,
+              "inscribed_64_cone_utilization": 0.7384850638659214,
+              "inscribed_64_cone_slack_fraction": 0.2615149361340786,
+              "force_on_bottle_world_n": [
+                -1.362522067611755,
+                -0.44901326090007626,
+                1.422793631400836
+              ],
+              "point_world_m": [
+                0.3341037840656842,
+                -0.0853884015107381,
+                0.9178881567018344
+              ]
+            },
+            {
+              "digit": "ring",
+              "body": "R_ring_intermediate",
+              "geom": "dfq_collision_R_ring_intermediate_0",
+              "normal_force_n": 0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3334630402359185,
+                -0.08279032742241689,
+                0.8934996247215241
+              ]
+            },
+            {
+              "digit": "pinky",
+              "body": "R_pinky_intermediate",
+              "geom": "dfq_collision_R_pinky_intermediate_0",
+              "normal_force_n": 0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3336523548185917,
+                -0.08423284086815619,
+                0.8721549657198848
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_proximal",
+              "geom": "dfq_collision_R_index_proximal_0",
+              "normal_force_n": 0.9562098618093091,
+              "tangential_components_n": [
+                0.3330511219400997,
+                0.9308155294904725
+              ],
+              "tangential_magnitude_n": 0.9886053812144601,
+              "continuous_cone_utilization": 0.7384850638659214,
+              "inscribed_64_cone_utilization": 0.7384850638659215,
+              "inscribed_64_cone_slack_fraction": 0.2615149361340785,
+              "force_on_bottle_world_n": [
+                -0.7986128195012158,
+                0.6469427104202353,
+                0.913980630839628
+              ],
+              "point_world_m": [
+                0.33191747964815066,
+                -0.10552537923022742,
+                0.944418939934512
+              ]
+            }
+          ],
+          "driver_efforts": {
+            "pinky_proximal": {
+              "estimated_required_effort_nm": -0.000434421027197855,
+              "absolute_effort_nm": 0.000434421027197855,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0008181186952878625
+            },
+            "ring_proximal": {
+              "estimated_required_effort_nm": -0.0006858532961260297,
+              "absolute_effort_nm": 0.0006858532961260297,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0012916257930810351
+            },
+            "middle_proximal": {
+              "estimated_required_effort_nm": 0.07364478313222395,
+              "absolute_effort_nm": 0.07364478313222395,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.13869074036200366
+            },
+            "index_proximal": {
+              "estimated_required_effort_nm": 0.03036087750425805,
+              "absolute_effort_nm": 0.03036087750425805,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.057176793793329656
+            },
+            "thumb_proximal_pitch": {
+              "estimated_required_effort_nm": 0.531,
+              "absolute_effort_nm": 0.531,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 1.0
+            },
+            "thumb_proximal_yaw": {
+              "estimated_required_effort_nm": -0.17503287807763648,
+              "absolute_effort_nm": 0.17503287807763648,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.3296287722742683
+            }
+          },
+          "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "allocation_recourse_l1_n": 0.3519843785283823,
+          "allocation_recourse_fraction": 0.029594687275968538
+        }
+      },
+      {
+        "name": "alternating_b_normal_down_1deg",
+        "point_perturbation_max_abs_m": 0.0005,
+        "normal_perturbation_deg": -1.0,
+        "allocation_recourse_l1_limit_n": 0.5946749415632455,
+        "result": {
+          "feasible_at_mu_1_4": true,
+          "max_inscribed_64_cone_utilization": 0.6931017796394227,
+          "minimum_inscribed_64_cone_slack_fraction": 0.30689822036057735,
+          "rho_constraint_used": 0.689764305126472,
+          "max_continuous_coulomb_utilization": 0.6922669081915739,
+          "min_continuous_coulomb_slack_fraction": 0.3077330918084261,
+          "total_normal_force_n": 5.757018355587076,
+          "vertical_hand_support_n": 5.5916999999999994,
+          "achieved_wrench_about_com": {
+            "force_n": [
+              1.1102230246251565e-15,
+              1.1102230246251565e-16,
+              5.5916999999999994
+            ],
+            "torque_nm": [
+              6.938893903907228e-18,
+              8.326672684688674e-17,
+              -7.233796894823286e-16
+            ],
+            "residual_norm": 1.3323591059680055e-15
+          },
+          "per_contact": [
+            {
+              "digit": "thumb",
+              "body": "R_thumb_distal",
+              "geom": "dfq_collision_R_thumb_distal_0",
+              "normal_force_n": 2.7561526726708023,
+              "tangential_components_n": [
+                -0.19768287483976835,
+                2.651720541136616
+              ],
+              "tangential_magnitude_n": 2.659078853153998,
+              "continuous_cone_utilization": 0.6891280213902726,
+              "inscribed_64_cone_utilization": 0.6897643051264721,
+              "inscribed_64_cone_slack_fraction": 0.31023569487352787,
+              "force_on_bottle_world_n": [
+                2.7150941544127782,
+                -0.09177026410287496,
+                2.699429542266521
+              ],
+              "point_world_m": [
+                0.26516049229308736,
+                -0.09008341476549667,
+                0.9302457157060151
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_intermediate",
+              "geom": "dfq_collision_R_index_intermediate_0",
+              "normal_force_n": 0.48295304664059185,
+              "tangential_components_n": [
+                -0.02288385230022142,
+                0.46581151463215004
+              ],
+              "tangential_magnitude_n": 0.46637328167466463,
+              "continuous_cone_utilization": 0.689764305126472,
+              "inscribed_64_cone_utilization": 0.689764305126472,
+              "inscribed_64_cone_slack_fraction": 0.310235694873528,
+              "force_on_bottle_world_n": [
+                -0.46860138537050244,
+                -0.0795330106349188,
+                0.4741676127358527
+              ],
+              "point_world_m": [
+                0.3345583355258008,
+                -0.08958236647813078,
+                0.9406534920091799
+              ]
+            },
+            {
+              "digit": "middle",
+              "body": "R_middle_intermediate",
+              "geom": "dfq_collision_R_middle_intermediate_0",
+              "normal_force_n": 1.55676356188972,
+              "tangential_components_n": [
+                -0.08265816151835181,
+                1.500633138557712
+              ],
+              "tangential_magnitude_n": 1.5029079107527392,
+              "continuous_cone_utilization": 0.6895752680866751,
+              "inscribed_64_cone_utilization": 0.689764305126472,
+              "inscribed_64_cone_slack_fraction": 0.310235694873528,
+              "force_on_bottle_world_n": [
+                -1.465819870117071,
+                -0.4473805005734583,
+                1.5275692363710878
+              ],
+              "point_world_m": [
+                0.3341037840656842,
+                -0.0853884015107381,
+                0.9168881567018345
+              ]
+            },
+            {
+              "digit": "ring",
+              "body": "R_ring_intermediate",
+              "geom": "dfq_collision_R_ring_intermediate_0",
+              "normal_force_n": 6.0892544798728675e-06,
+              "tangential_components_n": [
+                -0.0,
+                5.901545120762593e-06
+              ],
+              "tangential_magnitude_n": 5.901545120762593e-06,
+              "continuous_cone_utilization": 0.6922669081915739,
+              "inscribed_64_cone_utilization": 0.6931017796394227,
+              "inscribed_64_cone_slack_fraction": 0.30689822036057735,
+              "force_on_bottle_world_n": [
+                -5.684663537815696e-06,
+                -1.8732275162949068e-06,
+                6.006902202223115e-06
+              ],
+              "point_world_m": [
+                0.3334630402359185,
+                -0.08279032742241689,
+                0.894499624721524
+              ]
+            },
+            {
+              "digit": "pinky",
+              "body": "R_pinky_intermediate",
+              "geom": "dfq_collision_R_pinky_intermediate_0",
+              "normal_force_n": -0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3336523548185917,
+                -0.08423284086815619,
+                0.8711549657198849
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_proximal",
+              "geom": "dfq_collision_R_index_proximal_0",
+              "normal_force_n": 0.9611429851314812,
+              "tangential_components_n": [
+                0.3126832975165374,
+                0.8738912736436572
+              ],
+              "tangential_magnitude_n": 0.9281469725729588,
+              "continuous_cone_utilization": 0.6897643051264719,
+              "inscribed_64_cone_utilization": 0.689764305126472,
+              "inscribed_64_cone_slack_fraction": 0.310235694873528,
+              "force_on_bottle_world_n": [
+                -0.7806672142616662,
+                0.6186856485387685,
+                0.8905276017243358
+              ],
+              "point_world_m": [
+                0.33191747964815066,
+                -0.10552537923022742,
+                0.9454189399345119
+              ]
+            }
+          ],
+          "driver_efforts": {
+            "pinky_proximal": {
+              "estimated_required_effort_nm": -0.000434421027197855,
+              "absolute_effort_nm": 0.000434421027197855,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0008181186952878625
+            },
+            "ring_proximal": {
+              "estimated_required_effort_nm": -0.0006854290353107396,
+              "absolute_effort_nm": 0.0006854290353107396,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0012908268084948014
+            },
+            "middle_proximal": {
+              "estimated_required_effort_nm": 0.07880293961835397,
+              "absolute_effort_nm": 0.07880293961835397,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.14840478270876453
+            },
+            "index_proximal": {
+              "estimated_required_effort_nm": 0.027130160949812333,
+              "absolute_effort_nm": 0.027130160949812333,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.051092581826388574
+            },
+            "thumb_proximal_pitch": {
+              "estimated_required_effort_nm": 0.531,
+              "absolute_effort_nm": 0.531,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 1.0
+            },
+            "thumb_proximal_yaw": {
+              "estimated_required_effort_nm": -0.1752659749771721,
+              "absolute_effort_nm": 0.1752659749771721,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.3300677494861998
+            }
+          },
+          "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "allocation_recourse_l1_n": 0.3330777158422526,
+          "allocation_recourse_fraction": 0.028005023632463648
+        }
+      },
+      {
+        "name": "alternating_b_normal_up_1deg",
+        "point_perturbation_max_abs_m": 0.0005,
+        "normal_perturbation_deg": 1.0,
+        "allocation_recourse_l1_limit_n": 0.5946749415632455,
+        "result": {
+          "feasible_at_mu_1_4": true,
+          "max_inscribed_64_cone_utilization": 0.738958108177288,
+          "minimum_inscribed_64_cone_slack_fraction": 0.261041891822712,
+          "rho_constraint_used": 0.7389581081772879,
+          "max_continuous_coulomb_utilization": 0.7389581081772879,
+          "min_continuous_coulomb_slack_fraction": 0.2610418918227121,
+          "total_normal_force_n": 5.566516247427147,
+          "vertical_hand_support_n": 5.59170000000006,
+          "achieved_wrench_about_com": {
+            "force_n": [
+              -3.752553823233029e-14,
+              -5.162537064506978e-15,
+              5.59170000000006
+            ],
+            "torque_nm": [
+              4.926614671774132e-16,
+              -2.6645352591003757e-15,
+              -1.734723475976807e-18
+            ],
+            "residual_norm": 7.134320640949596e-14
+          },
+          "per_contact": [
+            {
+              "digit": "thumb",
+              "body": "R_thumb_distal",
+              "geom": "dfq_collision_R_thumb_distal_0",
+              "normal_force_n": 2.662108594215038,
+              "tangential_components_n": [
+                -0.20016298345392075,
+                2.744339376126054
+              ],
+              "tangential_magnitude_n": 2.7516293048485134,
+              "continuous_cone_utilization": 0.7383055325895771,
+              "inscribed_64_cone_utilization": 0.738958108177288,
+              "inscribed_64_cone_slack_fraction": 0.261041891822712,
+              "force_on_bottle_world_n": [
+                2.7155017435250204,
+                -0.0893196140932811,
+                2.6974725737522305
+              ],
+              "point_world_m": [
+                0.26516049229308736,
+                -0.09008341476549667,
+                0.9302457157060151
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_intermediate",
+              "geom": "dfq_collision_R_index_intermediate_0",
+              "normal_force_n": 0.4724279888422119,
+              "tangential_components_n": [
+                -0.024128093941156,
+                0.48814314964679617
+              ],
+              "tangential_magnitude_n": 0.4887390914018723,
+              "continuous_cone_utilization": 0.7389472242253929,
+              "inscribed_64_cone_utilization": 0.738958108177288,
+              "inscribed_64_cone_slack_fraction": 0.261041891822712,
+              "force_on_bottle_world_n": [
+                -0.4745338374179455,
+                -0.08150133482169662,
+                0.47982212711952477
+              ],
+              "point_world_m": [
+                0.3345583355258008,
+                -0.08958236647813078,
+                0.9406534920091799
+              ]
+            },
+            {
+              "digit": "middle",
+              "body": "R_middle_intermediate",
+              "geom": "dfq_collision_R_middle_intermediate_0",
+              "normal_force_n": 1.5093910222522244,
+              "tangential_components_n": [
+                -0.0875463610931422,
+                1.5585703983588328
+              ],
+              "tangential_magnitude_n": 1.561027242549297,
+              "continuous_cone_utilization": 0.7387214065312362,
+              "inscribed_64_cone_utilization": 0.738958108177288,
+              "inscribed_64_cone_slack_fraction": 0.261041891822712,
+              "force_on_bottle_world_n": [
+                -1.4704963637994655,
+                -0.4535714101744346,
+                1.5319858778597155
+              ],
+              "point_world_m": [
+                0.3341037840656842,
+                -0.0853884015107381,
+                0.9168881567018345
+              ]
+            },
+            {
+              "digit": "ring",
+              "body": "R_ring_intermediate",
+              "geom": "dfq_collision_R_ring_intermediate_0",
+              "normal_force_n": -0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3334630402359185,
+                -0.08279032742241689,
+                0.894499624721524
+              ]
+            },
+            {
+              "digit": "pinky",
+              "body": "R_pinky_intermediate",
+              "geom": "dfq_collision_R_pinky_intermediate_0",
+              "normal_force_n": -0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3336523548185917,
+                -0.08423284086815619,
+                0.8711549657198849
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_proximal",
+              "geom": "dfq_collision_R_index_proximal_0",
+              "normal_force_n": 0.9225886421176728,
+              "tangential_components_n": [
+                0.32154657581633883,
+                0.8986624770420798
+              ],
+              "tangential_magnitude_n": 0.9544561006471797,
+              "continuous_cone_utilization": 0.7389581081772879,
+              "inscribed_64_cone_utilization": 0.738958108177288,
+              "inscribed_64_cone_slack_fraction": 0.261041891822712,
+              "force_on_bottle_world_n": [
+                -0.7704715423076468,
+                0.624392359089407,
+                0.882419421268589
+              ],
+              "point_world_m": [
+                0.33191747964815066,
+                -0.10552537923022742,
+                0.9454189399345119
+              ]
+            }
+          ],
+          "driver_efforts": {
+            "pinky_proximal": {
+              "estimated_required_effort_nm": -0.000434421027197855,
+              "absolute_effort_nm": 0.000434421027197855,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0008181186952878625
+            },
+            "ring_proximal": {
+              "estimated_required_effort_nm": -0.0006858532961260297,
+              "absolute_effort_nm": 0.0006858532961260297,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0012916257930810351
+            },
+            "middle_proximal": {
+              "estimated_required_effort_nm": 0.0791332181533228,
+              "absolute_effort_nm": 0.0791332181533228,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.1490267761832821
+            },
+            "index_proximal": {
+              "estimated_required_effort_nm": 0.02715518859474251,
+              "absolute_effort_nm": 0.02715518859474251,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.05113971486768834
+            },
+            "thumb_proximal_pitch": {
+              "estimated_required_effort_nm": 0.531,
+              "absolute_effort_nm": 0.531,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 1.0
+            },
+            "thumb_proximal_yaw": {
+              "estimated_required_effort_nm": -0.17515238087518542,
+              "absolute_effort_nm": 0.17515238087518542,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.32985382462370133
+            }
+          },
+          "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "allocation_recourse_l1_n": 0.3287484439823119,
+          "allocation_recourse_fraction": 0.027641020413447882
+        }
+      }
+    ],
+    "effort_balanced_10pct_margin_allocation_scenarios": [
+      {
+        "name": "alternating_a_normal_down_1deg",
+        "point_perturbation_max_abs_m": 0.0005,
+        "normal_perturbation_deg": -1.0,
+        "allocation_recourse_l1_limit_n": 0.5474056506499289,
+        "required_cone_utilization_cap": 0.9,
+        "result": {
+          "feasible_at_mu_1_4": true,
+          "max_inscribed_64_cone_utilization": 0.9000000000000001,
+          "minimum_inscribed_64_cone_slack_fraction": 0.09999999999999987,
+          "rho_constraint_used": 0.9,
+          "max_continuous_coulomb_utilization": 0.9,
+          "min_continuous_coulomb_slack_fraction": 0.09999999999999998,
+          "total_normal_force_n": 4.47104389580355,
+          "vertical_hand_support_n": 5.5916999999999994,
+          "achieved_wrench_about_com": {
+            "force_n": [
+              1.1102230246251565e-16,
+              -5.551115123125783e-17,
+              5.5916999999999994
+            ],
+            "torque_nm": [
+              -1.0408340855860843e-17,
+              1.3877787807814457e-17,
+              1.734723475976807e-18
+            ],
+            "residual_norm": 1.2534502532787849e-16
+          },
+          "per_contact": [
+            {
+              "digit": "thumb",
+              "body": "R_thumb_distal",
+              "geom": "dfq_collision_R_thumb_distal_0",
+              "normal_force_n": 2.087175887124806,
+              "tangential_components_n": [
+                -0.14826543564373051,
+                2.6247803391219833
+              ],
+              "tangential_magnitude_n": 2.6289645239234285,
+              "continuous_cone_utilization": 0.8996998357379744,
+              "inscribed_64_cone_utilization": 0.9,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999998,
+              "force_on_bottle_world_n": [
+                2.0452262098283662,
+                -0.06977751815160296,
+                2.660815382628952
+              ],
+              "point_world_m": [
+                0.26516049229308736,
+                -0.09008341476549667,
+                0.931245715706015
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_intermediate",
+              "geom": "dfq_collision_R_index_intermediate_0",
+              "normal_force_n": 0.31528058706647005,
+              "tangential_components_n": [
+                -0.05828920035980376,
+                0.3929538699753131
+              ],
+              "tangential_magnitude_n": 0.3972535397037522,
+              "continuous_cone_utilization": 0.8999999999999999,
+              "inscribed_64_cone_utilization": 0.8999999999999999,
+              "inscribed_64_cone_slack_fraction": 0.10000000000000009,
+              "force_on_bottle_world_n": [
+                -0.29918440163993737,
+                -0.09477372263119975,
+                0.39839535476975096
+              ],
+              "point_world_m": [
+                0.3345583355258008,
+                -0.08958236647813078,
+                0.93965349200918
+              ]
+            },
+            {
+              "digit": "middle",
+              "body": "R_middle_intermediate",
+              "geom": "dfq_collision_R_middle_intermediate_0",
+              "normal_force_n": 1.2806752314004612,
+              "tangential_components_n": [
+                -0.20492022800110238,
+                1.5993225590333007
+              ],
+              "tangential_magnitude_n": 1.6123972673249136,
+              "continuous_cone_utilization": 0.8993008575203518,
+              "inscribed_64_cone_utilization": 0.9000000000000001,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999987,
+              "force_on_bottle_world_n": [
+                -1.1668320788827145,
+                -0.49943411201797344,
+                1.621426058580081
+              ],
+              "point_world_m": [
+                0.3341037840656842,
+                -0.0853884015107381,
+                0.9178881567018344
+              ]
+            },
+            {
+              "digit": "ring",
+              "body": "R_ring_intermediate",
+              "geom": "dfq_collision_R_ring_intermediate_0",
+              "normal_force_n": -0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3334630402359185,
+                -0.08279032742241689,
+                0.8934996247215241
+              ]
+            },
+            {
+              "digit": "pinky",
+              "body": "R_pinky_intermediate",
+              "geom": "dfq_collision_R_pinky_intermediate_0",
+              "normal_force_n": -0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3336523548185917,
+                -0.08423284086815619,
+                0.8721549657198848
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_proximal",
+              "geom": "dfq_collision_R_index_proximal_0",
+              "normal_force_n": 0.7879121902118132,
+              "tangential_components_n": [
+                0.4244635963270965,
+                0.8974528716798804
+              ],
+              "tangential_magnitude_n": 0.9927693596668847,
+              "continuous_cone_utilization": 0.9,
+              "inscribed_64_cone_utilization": 0.9000000000000001,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999987,
+              "force_on_bottle_world_n": [
+                -0.5792097293057143,
+                0.6639853528007762,
+                0.9110632040212153
+              ],
+              "point_world_m": [
+                0.33191747964815066,
+                -0.10552537923022742,
+                0.944418939934512
+              ]
+            }
+          ],
+          "driver_efforts": {
+            "pinky_proximal": {
+              "estimated_required_effort_nm": -0.000434421027197855,
+              "absolute_effort_nm": 0.000434421027197855,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0008181186952878625
+            },
+            "ring_proximal": {
+              "estimated_required_effort_nm": -0.0006858532961260297,
+              "absolute_effort_nm": 0.0006858532961260297,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0012916257930810351
+            },
+            "middle_proximal": {
+              "estimated_required_effort_nm": 0.06008582008230258,
+              "absolute_effort_nm": 0.06008582008230258,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.1131559700231687
+            },
+            "index_proximal": {
+              "estimated_required_effort_nm": 0.0156350044447274,
+              "absolute_effort_nm": 0.0156350044447274,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.029444452814929193
+            },
+            "thumb_proximal_pitch": {
+              "estimated_required_effort_nm": 0.40402872020073904,
+              "absolute_effort_nm": 0.40402872020073904,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.7608827122424464
+            },
+            "thumb_proximal_yaw": {
+              "estimated_required_effort_nm": -0.17388472610425948,
+              "absolute_effort_nm": 0.17388472610425948,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.3274665275033135
+            }
+          },
+          "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "allocation_recourse_l1_n": 0.5474056506499287,
+          "allocation_recourse_fraction": 0.049999999999999996,
+          "requested_cone_utilization_cap": 0.9,
+          "minimax_peak_driver_effort_nm": 0.40402872020073904
+        }
+      },
+      {
+        "name": "alternating_a_normal_up_1deg",
+        "point_perturbation_max_abs_m": 0.0005,
+        "normal_perturbation_deg": 1.0,
+        "allocation_recourse_l1_limit_n": 0.5474056506499289,
+        "required_cone_utilization_cap": 0.9,
+        "result": {
+          "feasible_at_mu_1_4": true,
+          "max_inscribed_64_cone_utilization": 0.9000000000000004,
+          "minimum_inscribed_64_cone_slack_fraction": 0.09999999999999964,
+          "rho_constraint_used": 0.9,
+          "max_continuous_coulomb_utilization": 0.9,
+          "min_continuous_coulomb_slack_fraction": 0.09999999999999998,
+          "total_normal_force_n": 4.597713695131941,
+          "vertical_hand_support_n": 5.591700000000001,
+          "achieved_wrench_about_com": {
+            "force_n": [
+              1.3322676295501878e-15,
+              5.551115123125783e-17,
+              5.591700000000001
+            ],
+            "torque_nm": [
+              1.3877787807814457e-17,
+              1.249000902703301e-16,
+              0.0
+            ],
+            "residual_norm": 2.224692062081024e-15
+          },
+          "per_contact": [
+            {
+              "digit": "thumb",
+              "body": "R_thumb_distal",
+              "geom": "dfq_collision_R_thumb_distal_0",
+              "normal_force_n": 2.1531320455139853,
+              "tangential_components_n": [
+                -0.1597920780403134,
+                2.707051344221079
+              ],
+              "tangential_magnitude_n": 2.7117633540656887,
+              "continuous_cone_utilization": 0.8996075407303921,
+              "inscribed_64_cone_utilization": 0.8999999999999999,
+              "inscribed_64_cone_slack_fraction": 0.10000000000000009,
+              "force_on_bottle_world_n": [
+                2.204549348906768,
+                -0.07523655640216428,
+                2.6690709474812246
+              ],
+              "point_world_m": [
+                0.26516049229308736,
+                -0.09008341476549667,
+                0.931245715706015
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_intermediate",
+              "geom": "dfq_collision_R_index_intermediate_0",
+              "normal_force_n": 0.3773585465001151,
+              "tangential_components_n": [
+                -0.06976619819536231,
+                0.4703255046407815
+              ],
+              "tangential_magnitude_n": 0.47547176859014495,
+              "continuous_cone_utilization": 0.9,
+              "inscribed_64_cone_utilization": 0.9,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999998,
+              "force_on_bottle_world_n": [
+                -0.3743916659642404,
+                -0.11539900647857265,
+                0.4636667177005471
+              ],
+              "point_world_m": [
+                0.3345583355258008,
+                -0.08958236647813078,
+                0.93965349200918
+              ]
+            },
+            {
+              "digit": "middle",
+              "body": "R_middle_intermediate",
+              "geom": "dfq_collision_R_middle_intermediate_0",
+              "normal_force_n": 1.2687705656494563,
+              "tangential_components_n": [
+                -0.18764332329171002,
+                1.5859698842124632
+              ],
+              "tangential_magnitude_n": 1.5970317750141514,
+              "continuous_cone_utilization": 0.8990884664549628,
+              "inscribed_64_cone_utilization": 0.9,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999998,
+              "force_on_bottle_world_n": [
+                -1.2133890366140185,
+                -0.4931427136813184,
+                1.5635813213361252
+              ],
+              "point_world_m": [
+                0.3341037840656842,
+                -0.0853884015107381,
+                0.9178881567018344
+              ]
+            },
+            {
+              "digit": "ring",
+              "body": "R_ring_intermediate",
+              "geom": "dfq_collision_R_ring_intermediate_0",
+              "normal_force_n": 0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3334630402359185,
+                -0.08279032742241689,
+                0.8934996247215241
+              ]
+            },
+            {
+              "digit": "pinky",
+              "body": "R_pinky_intermediate",
+              "geom": "dfq_collision_R_pinky_intermediate_0",
+              "normal_force_n": 0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3336523548185917,
+                -0.08423284086815619,
+                0.8721549657198848
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_proximal",
+              "geom": "dfq_collision_R_index_proximal_0",
+              "normal_force_n": 0.7984525374683845,
+              "tangential_components_n": [
+                0.43014188606374587,
+                0.9094586066227174
+              ],
+              "tangential_magnitude_n": 1.0060501972101645,
+              "continuous_cone_utilization": 0.9,
+              "inscribed_64_cone_utilization": 0.9000000000000004,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999964,
+              "force_on_bottle_world_n": [
+                -0.616768646328508,
+                0.6837782765620554,
+                0.8953810134821032
+              ],
+              "point_world_m": [
+                0.33191747964815066,
+                -0.10552537923022742,
+                0.944418939934512
+              ]
+            }
+          ],
+          "driver_efforts": {
+            "pinky_proximal": {
+              "estimated_required_effort_nm": -0.000434421027197855,
+              "absolute_effort_nm": 0.000434421027197855,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0008181186952878625
+            },
+            "ring_proximal": {
+              "estimated_required_effort_nm": -0.0006858532961260297,
+              "absolute_effort_nm": 0.0006858532961260297,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0012916257930810351
+            },
+            "middle_proximal": {
+              "estimated_required_effort_nm": 0.06351611103872754,
+              "absolute_effort_nm": 0.06351611103872754,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.11961602832152078
+            },
+            "index_proximal": {
+              "estimated_required_effort_nm": 0.019353259121245088,
+              "absolute_effort_nm": 0.019353259121245088,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0364468156708947
+            },
+            "thumb_proximal_pitch": {
+              "estimated_required_effort_nm": 0.43422794820687377,
+              "absolute_effort_nm": 0.43422794820687377,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.8177550813688771
+            },
+            "thumb_proximal_yaw": {
+              "estimated_required_effort_nm": -0.1741525275549596,
+              "absolute_effort_nm": 0.1741525275549596,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.327970861685423
+            }
+          },
+          "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "allocation_recourse_l1_n": 0.547405650649929,
+          "allocation_recourse_fraction": 0.05000000000000002,
+          "requested_cone_utilization_cap": 0.9,
+          "minimax_peak_driver_effort_nm": 0.4342279482068738
+        }
+      },
+      {
+        "name": "alternating_b_normal_down_1deg",
+        "point_perturbation_max_abs_m": 0.0005,
+        "normal_perturbation_deg": -1.0,
+        "allocation_recourse_l1_limit_n": 0.5474056506499289,
+        "required_cone_utilization_cap": 0.9,
+        "result": {
+          "feasible_at_mu_1_4": true,
+          "max_inscribed_64_cone_utilization": 0.9,
+          "minimum_inscribed_64_cone_slack_fraction": 0.09999999999999998,
+          "rho_constraint_used": 0.9,
+          "max_continuous_coulomb_utilization": 0.9,
+          "min_continuous_coulomb_slack_fraction": 0.09999999999999998,
+          "total_normal_force_n": 4.467069067184609,
+          "vertical_hand_support_n": 5.5916999999999994,
+          "achieved_wrench_about_com": {
+            "force_n": [
+              -4.440892098500626e-16,
+              -1.1102230246251565e-16,
+              5.5916999999999994
+            ],
+            "torque_nm": [
+              1.3877787807814457e-17,
+              -1.3877787807814457e-17,
+              -3.469446951953614e-18
+            ],
+            "residual_norm": 4.581903545474971e-16
+          },
+          "per_contact": [
+            {
+              "digit": "thumb",
+              "body": "R_thumb_distal",
+              "geom": "dfq_collision_R_thumb_distal_0",
+              "normal_force_n": 2.0899924489324384,
+              "tangential_components_n": [
+                -0.15838897396364526,
+                2.6273450015070625
+              ],
+              "tangential_magnitude_n": 2.632114895671806,
+              "continuous_cone_utilization": 0.8995640483281863,
+              "inscribed_64_cone_utilization": 0.8999999999999999,
+              "inscribed_64_cone_slack_fraction": 0.10000000000000009,
+              "force_on_bottle_world_n": [
+                2.049059151278269,
+                -0.06000638530424912,
+                2.663428821819256
+              ],
+              "point_world_m": [
+                0.26516049229308736,
+                -0.09008341476549667,
+                0.9302457157060151
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_intermediate",
+              "geom": "dfq_collision_R_index_intermediate_0",
+              "normal_force_n": 0.2722501203157962,
+              "tangential_components_n": [
+                -0.05033371054882755,
+                0.3393223140528534
+              ],
+              "tangential_magnitude_n": 0.3430351515979032,
+              "continuous_cone_utilization": 0.9,
+              "inscribed_64_cone_utilization": 0.9,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999998,
+              "force_on_bottle_world_n": [
+                -0.2583507919119354,
+                -0.08183871271363818,
+                0.3440211282226898
+              ],
+              "point_world_m": [
+                0.3345583355258008,
+                -0.08958236647813078,
+                0.9406534920091799
+              ]
+            },
+            {
+              "digit": "middle",
+              "body": "R_middle_intermediate",
+              "geom": "dfq_collision_R_middle_intermediate_0",
+              "normal_force_n": 1.345662224122408,
+              "tangential_components_n": [
+                -0.1876588006350408,
+                1.6832033622103113
+              ],
+              "tangential_magnitude_n": 1.693632009620708,
+              "continuous_cone_utilization": 0.8989901983152004,
+              "inscribed_64_cone_utilization": 0.9,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999998,
+              "force_on_bottle_world_n": [
+                -1.2326317881482278,
+                -0.4979139569176662,
+                1.70642807401749
+              ],
+              "point_world_m": [
+                0.3341037840656842,
+                -0.0853884015107381,
+                0.9168881567018345
+              ]
+            },
+            {
+              "digit": "ring",
+              "body": "R_ring_intermediate",
+              "geom": "dfq_collision_R_ring_intermediate_0",
+              "normal_force_n": 0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3334630402359185,
+                -0.08279032742241689,
+                0.894499624721524
+              ]
+            },
+            {
+              "digit": "pinky",
+              "body": "R_pinky_intermediate",
+              "geom": "dfq_collision_R_pinky_intermediate_0",
+              "normal_force_n": -0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3336523548185917,
+                -0.08423284086815619,
+                0.8711549657198849
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_proximal",
+              "geom": "dfq_collision_R_index_proximal_0",
+              "normal_force_n": 0.7591642738139666,
+              "tangential_components_n": [
+                0.4089765355445233,
+                0.8647082328145712
+              ],
+              "tangential_magnitude_n": 0.9565469850055979,
+              "continuous_cone_utilization": 0.9,
+              "inscribed_64_cone_utilization": 0.8999999999999999,
+              "inscribed_64_cone_slack_fraction": 0.10000000000000009,
+              "force_on_bottle_world_n": [
+                -0.558076571218106,
+                0.6397590549355535,
+                0.8778219759405643
+              ],
+              "point_world_m": [
+                0.33191747964815066,
+                -0.10552537923022742,
+                0.9454189399345119
+              ]
+            }
+          ],
+          "driver_efforts": {
+            "pinky_proximal": {
+              "estimated_required_effort_nm": -0.000434421027197855,
+              "absolute_effort_nm": 0.000434421027197855,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0008181186952878625
+            },
+            "ring_proximal": {
+              "estimated_required_effort_nm": -0.0006858532961260297,
+              "absolute_effort_nm": 0.0006858532961260297,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0012916257930810351
+            },
+            "middle_proximal": {
+              "estimated_required_effort_nm": 0.06315790699260666,
+              "absolute_effort_nm": 0.06315790699260666,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.11894144443052102
+            },
+            "index_proximal": {
+              "estimated_required_effort_nm": 0.014034222490007067,
+              "absolute_effort_nm": 0.014034222490007067,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.026429797532969992
+            },
+            "thumb_proximal_pitch": {
+              "estimated_required_effort_nm": 0.404511075789698,
+              "absolute_effort_nm": 0.404511075789698,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.7617911031821055
+            },
+            "thumb_proximal_yaw": {
+              "estimated_required_effort_nm": -0.17409662765067396,
+              "absolute_effort_nm": 0.17409662765067396,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.32786558879599614
+            }
+          },
+          "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "allocation_recourse_l1_n": 0.5474056506499289,
+          "allocation_recourse_fraction": 0.05,
+          "requested_cone_utilization_cap": 0.9,
+          "minimax_peak_driver_effort_nm": 0.404511075789698
+        }
+      },
+      {
+        "name": "alternating_b_normal_up_1deg",
+        "point_perturbation_max_abs_m": 0.0005,
+        "normal_perturbation_deg": 1.0,
+        "allocation_recourse_l1_limit_n": 0.5474056506499289,
+        "required_cone_utilization_cap": 0.9,
+        "result": {
+          "feasible_at_mu_1_4": true,
+          "max_inscribed_64_cone_utilization": 0.9,
+          "minimum_inscribed_64_cone_slack_fraction": 0.09999999999999998,
+          "rho_constraint_used": 0.9,
+          "max_continuous_coulomb_utilization": 0.8999999999999999,
+          "min_continuous_coulomb_slack_fraction": 0.10000000000000009,
+          "total_normal_force_n": 4.593489396973314,
+          "vertical_hand_support_n": 5.5917,
+          "achieved_wrench_about_com": {
+            "force_n": [
+              0.0,
+              2.220446049250313e-16,
+              5.5917
+            ],
+            "torque_nm": [
+              6.938893903907228e-18,
+              0.0,
+              -3.469446951953614e-18
+            ],
+            "residual_norm": 9.155462288208539e-16
+          },
+          "per_contact": [
+            {
+              "digit": "thumb",
+              "body": "R_thumb_distal",
+              "geom": "dfq_collision_R_thumb_distal_0",
+              "normal_force_n": 2.155837781759495,
+              "tangential_components_n": [
+                -0.17100390135406257,
+                2.709368673038941
+              ],
+              "tangential_magnitude_n": 2.7147598311311265,
+              "continuous_cone_utilization": 0.8994712781733729,
+              "inscribed_64_cone_utilization": 0.9,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999998,
+              "force_on_bottle_world_n": [
+                2.2084726429716817,
+                -0.06438059350556169,
+                2.671340713276828
+              ],
+              "point_world_m": [
+                0.26516049229308736,
+                -0.09008341476549667,
+                0.9302457157060151
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_intermediate",
+              "geom": "dfq_collision_R_index_intermediate_0",
+              "normal_force_n": 0.3279944424763472,
+              "tangential_components_n": [
+                -0.06063974300572843,
+                0.40879994134971237
+              ],
+              "tangential_magnitude_n": 0.41327299752019736,
+              "continuous_cone_utilization": 0.8999999999999998,
+              "inscribed_64_cone_utilization": 0.8999999999999999,
+              "inscribed_64_cone_slack_fraction": 0.10000000000000009,
+              "force_on_bottle_world_n": [
+                -0.32541567399135185,
+                -0.10030310203204121,
+                0.4030122226660167
+              ],
+              "point_world_m": [
+                0.3345583355258008,
+                -0.08958236647813078,
+                0.9406534920091799
+              ]
+            },
+            {
+              "digit": "middle",
+              "body": "R_middle_intermediate",
+              "geom": "dfq_collision_R_middle_intermediate_0",
+              "normal_force_n": 1.34091451392025,
+              "tangential_components_n": [
+                -0.16994090218706326,
+                1.678944603727308
+              ],
+              "tangential_magnitude_n": 1.6875233013565176,
+              "continuous_cone_utilization": 0.8989191884866985,
+              "inscribed_64_cone_utilization": 0.8999999999999999,
+              "inscribed_64_cone_slack_fraction": 0.10000000000000009,
+              "force_on_bottle_world_n": [
+                -1.2892378666489652,
+                -0.4936516540279755,
+                1.6552825722326237
+              ],
+              "point_world_m": [
+                0.3341037840656842,
+                -0.0853884015107381,
+                0.9168881567018345
+              ]
+            },
+            {
+              "digit": "ring",
+              "body": "R_ring_intermediate",
+              "geom": "dfq_collision_R_ring_intermediate_0",
+              "normal_force_n": -0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3334630402359185,
+                -0.08279032742241689,
+                0.894499624721524
+              ]
+            },
+            {
+              "digit": "pinky",
+              "body": "R_pinky_intermediate",
+              "geom": "dfq_collision_R_pinky_intermediate_0",
+              "normal_force_n": -0.0,
+              "tangential_components_n": [
+                -0.0,
+                -0.0
+              ],
+              "tangential_magnitude_n": 0.0,
+              "continuous_cone_utilization": 0.0,
+              "inscribed_64_cone_utilization": 0.0,
+              "inscribed_64_cone_slack_fraction": 1.0,
+              "force_on_bottle_world_n": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "point_world_m": [
+                0.3336523548185917,
+                -0.08423284086815619,
+                0.8711549657198849
+              ]
+            },
+            {
+              "digit": "index",
+              "body": "R_index_proximal",
+              "geom": "dfq_collision_R_index_proximal_0",
+              "normal_force_n": 0.7687426588172219,
+              "tangential_components_n": [
+                0.41413659753619564,
+                0.875618267249901
+              ],
+              "tangential_magnitude_n": 0.9686157501096996,
+              "continuous_cone_utilization": 0.8999999999999999,
+              "inscribed_64_cone_utilization": 0.9,
+              "inscribed_64_cone_slack_fraction": 0.09999999999999998,
+              "force_on_bottle_world_n": [
+                -0.5938191023313644,
+                0.6583353495655785,
+                0.8620644918245317
+              ],
+              "point_world_m": [
+                0.33191747964815066,
+                -0.10552537923022742,
+                0.9454189399345119
+              ]
+            }
+          ],
+          "driver_efforts": {
+            "pinky_proximal": {
+              "estimated_required_effort_nm": -0.000434421027197855,
+              "absolute_effort_nm": 0.000434421027197855,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0008181186952878625
+            },
+            "ring_proximal": {
+              "estimated_required_effort_nm": -0.0006858532961260297,
+              "absolute_effort_nm": 0.0006858532961260297,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0012916257930810351
+            },
+            "middle_proximal": {
+              "estimated_required_effort_nm": 0.06716200354939385,
+              "absolute_effort_nm": 0.06716200354939385,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.12648211591222946
+            },
+            "index_proximal": {
+              "estimated_required_effort_nm": 0.017398896616201656,
+              "absolute_effort_nm": 0.017398896616201656,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.0327662836463308
+            },
+            "thumb_proximal_pitch": {
+              "estimated_required_effort_nm": 0.43469668189310723,
+              "absolute_effort_nm": 0.43469668189310723,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.8186378190077348
+            },
+            "thumb_proximal_yaw": {
+              "estimated_required_effort_nm": -0.17434779554451452,
+              "absolute_effort_nm": 0.17434779554451452,
+              "source_limit_nm": 0.531,
+              "fraction_of_source_limit": 0.3283385980122684
+            }
+          },
+          "solver_message": "Optimization terminated successfully. (HiGHS Status 7: Optimal)",
+          "allocation_recourse_l1_n": 0.547405650649929,
+          "allocation_recourse_fraction": 0.05000000000000002,
+          "requested_cone_utilization_cap": 0.9,
+          "minimax_peak_driver_effort_nm": 0.4346966818931073
+        }
+      }
+    ]
+  },
+  "robustness_summary": {
+    "scenarios_total": 4,
+    "scenarios_feasible": 4,
+    "worst_max_inscribed_cone_utilization": 0.738958108177288,
+    "worst_minimum_cone_slack_fraction": 0.261041891822712,
+    "worst_driver_effort_fraction_of_source_limit": 1.0,
+    "effort_balanced_scenarios_feasible": 4,
+    "effort_balanced_worst_peak_effort_nm": 0.4346966818931073,
+    "all_effort_balanced_scenarios_meet_10pct_cone_slack_and_0p531Nm_cap": true
+  },
+  "classification": "A \u2014 NOMINAL GEOMETRY ACCEPTABLE",
+  "classification_criterion": "A requires every specified candidate-geometry uncertainty scenario feasible with an effort-minimized allocation constrained to <=0.90 maximum inscribed-cone utilization and <=0.531 Nm, <=5% L1 recourse from the fresh candidate max-margin allocation, and positive thumb plus opposing-digit support. B means the friction/uncertainty margin fails; C means the static effort margin is not demonstrated. This is an analysis screen, not a physical grasp acceptance gate."
+}
