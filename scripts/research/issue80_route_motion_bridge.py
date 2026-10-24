@@ -338,6 +338,39 @@ def waypoint_b_arrival_passes(
     )
 
 
+def waypoint_b_arrival_after_verified_stop_passes(
+    arrival_error_m: float | None,
+    settled_error_m: float | None,
+    *,
+    tolerance_m: float,
+    composite_stop_gate_passed: bool,
+    bridge_rearmed: bool,
+    fresh_stand_readback_passed: bool,
+    source_readback_passed: bool,
+    safety_gates_passed: bool,
+) -> bool:
+    """Accept arrival discovered after a bounded window already stopped and passed its full gate.
+
+    This path is distinct from in-window goal-triggered stopping. It requires
+    both the fresh pose at discovery and the final settled pose within the
+    unchanged tolerance, plus the completed composite stop and all rearm
+    readbacks. It avoids asking the route FSM for a second stop gate after the
+    same already-verified stationary interval.
+    """
+    return bool(
+        composite_stop_gate_passed
+        and bridge_rearmed
+        and fresh_stand_readback_passed
+        and source_readback_passed
+        and safety_gates_passed
+        and waypoint_b_arrival_passes(
+            arrival_error_m,
+            settled_error_m,
+            tolerance_m=tolerance_m,
+        )
+    )
+
+
 def waypoint_b_arrival_trigger_radius_m(
     *, acceptance_tolerance_m: float, stop_reserve_m: float
 ) -> float:

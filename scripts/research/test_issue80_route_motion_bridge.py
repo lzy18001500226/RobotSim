@@ -39,6 +39,7 @@ from issue80_route_motion_bridge import (
     build_short_right_corner_route,
     measured_m1_nonzero_window_s,
     waypoint_b_arrival_passes,
+    waypoint_b_arrival_after_verified_stop_passes,
     waypoint_b_arrival_trigger_radius_m,
     waypoint_b_forward_guard_reached,
     waypoint_b_cross_track_guard_reached,
@@ -367,6 +368,42 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertFalse(waypoint_b_arrival_passes(float("nan"), 0.10, tolerance_m=0.15))
         self.assertFalse(waypoint_b_arrival_passes(0.10, float("inf"), tolerance_m=0.15))
         self.assertFalse(waypoint_b_arrival_passes(0.10, 0.10, tolerance_m=0.0))
+
+    def test_poststop_arrival_reuses_only_a_previously_passed_composite_stop(self):
+        self.assertTrue(waypoint_b_arrival_after_verified_stop_passes(
+            0.112, 0.113, tolerance_m=0.15,
+            composite_stop_gate_passed=True,
+            bridge_rearmed=True,
+            fresh_stand_readback_passed=True,
+            source_readback_passed=True,
+            safety_gates_passed=True,
+        ))
+        for gate in (
+            {"composite_stop_gate_passed": False},
+            {"bridge_rearmed": False},
+            {"fresh_stand_readback_passed": False},
+            {"source_readback_passed": False},
+            {"safety_gates_passed": False},
+        ):
+            fields = {
+                "composite_stop_gate_passed": True,
+                "bridge_rearmed": True,
+                "fresh_stand_readback_passed": True,
+                "source_readback_passed": True,
+                "safety_gates_passed": True,
+            }
+            fields.update(gate)
+            self.assertFalse(waypoint_b_arrival_after_verified_stop_passes(
+                0.112, 0.113, tolerance_m=0.15, **fields,
+            ))
+        self.assertFalse(waypoint_b_arrival_after_verified_stop_passes(
+            0.112, 0.150001, tolerance_m=0.15,
+            composite_stop_gate_passed=True,
+            bridge_rearmed=True,
+            fresh_stand_readback_passed=True,
+            source_readback_passed=True,
+            safety_gates_passed=True,
+        ))
 
     def test_waypoint_b_only_route_reaches_b_after_measured_two_window_transit_and_stop(self) -> None:
         start = make_pose()

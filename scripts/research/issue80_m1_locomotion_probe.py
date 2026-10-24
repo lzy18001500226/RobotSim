@@ -110,6 +110,7 @@ from issue80_route_motion_bridge import (
     build_short_right_corner_route, measured_m1_nonzero_window_s,
     waypoint_bearing_angular_command,
     waypoint_b_arrival_passes, waypoint_b_arrival_trigger_radius_m,
+    waypoint_b_arrival_after_verified_stop_passes,
     waypoint_b_window_budget_passes, waypoint_b_forward_guard_reached,
     waypoint_b_cross_track_guard_reached,
     TransitSteeringGate,
@@ -3315,6 +3316,63 @@ class FocusedM1Diagnostic(Node):
                     )
                     distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
                     arrived_after_stop = distance <= active.position_tolerance_m
+                    try:
+                        source_age = float(snapshot["sample_monotonic_s"]) - float(
+                            snapshot["readback_monotonic_s"]["get_source"]
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        source_age = math.inf
+                    source_readback_passed = bool(
+                        snapshot.get("get_source_header_code") == 0
+                        and snapshot.get("get_source_name") == self.source
+                        and snapshot.get("common_source_name") == self.source
+                        and 0.0 <= source_age <= float(self.args.state_timeout)
+                    )
+                    stand_readback_passed = stand_mode_readback_confirmed(snapshot)
+                    arrival_after_verified_stop = waypoint_b_arrival_after_verified_stop_passes(
+                        distance,
+                        distance,
+                        tolerance_m=active.position_tolerance_m,
+                        composite_stop_gate_passed=last_gate.get("status") == "PASS",
+                        bridge_rearmed=bridge_rearmed,
+                        fresh_stand_readback_passed=stand_readback_passed,
+                        source_readback_passed=source_readback_passed,
+                        safety_gates_passed=safety_fault is None,
+                    )
+                    if arrival_after_verified_stop:
+                        route_stop_reason = f"WAYPOINT_REACHED_AFTER_VERIFIED_STOP:{active.waypoint_id}"
+                        route_arrival_poses[active.waypoint_id] = {
+                            "x_m": pose.x_m,
+                            "y_m": pose.y_m,
+                            "yaw_rad": pose.yaw_rad,
+                            "sample_monotonic_s": pose.received_steady_s,
+                        }
+                        arrival_event = {
+                            "kind": "WAYPOINT_REACHED_AFTER_VERIFIED_STOP",
+                            "waypoint_id": active.waypoint_id,
+                            "sample_monotonic_s": snapshot.get("sample_monotonic_s"),
+                            "position_error_m": distance,
+                            "position_tolerance_m": active.position_tolerance_m,
+                            "composite_stop_gate": last_gate.get("status"),
+                            "bridge_rearmed": bridge_rearmed,
+                            "stand_readback_passed": stand_readback_passed,
+                            "source_readback_passed": source_readback_passed,
+                            "safety_gates_passed": safety_fault is None,
+                        }
+                        route_events.append(arrival_event)
+                        return {
+                            "status": "ARRIVAL_AFTER_VERIFIED_STOP",
+                            "fault": None,
+                            "arrived": True,
+                            "completion_evidence": "M1_COMPOSITE_STOP_GATE_PASSED_BEFORE_FRESH_POSTSTOP_ARRIVAL_CHECK",
+                            "bridge_stop_rearmed": True,
+                            "stop_reason": route_stop_reason,
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "final_snapshot": snapshot,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
                     directive_after_stop = executor.tick(
                         float(snapshot["sample_monotonic_s"]),
                         MotionFeedback(
@@ -3499,12 +3557,24 @@ class FocusedM1Diagnostic(Node):
                     return result
 
             if waypoint_b_only:
-                if after_transit is None or after_transit.kind is not DirectiveKind.COMPLETE:
+                after_verified_stop_completion = (
+                    transit_summary.get("completion_evidence")
+                    == "M1_COMPOSITE_STOP_GATE_PASSED_BEFORE_FRESH_POSTSTOP_ARRIVAL_CHECK"
+                )
+                if (
+                    (after_transit is None or after_transit.kind is not DirectiveKind.COMPLETE)
+                    and not after_verified_stop_completion
+                ):
                     result["status"] = "BLOCKED"
                     result["fault"] = "waypoint_b_only_route_did_not_complete_after_physical_stop"
                     result["route_events"] = route_events + route_motion.events
                     result["route_total_nonzero_command_time_s"] = route_total_nonzero_s
                     return result
+                result["route_lifecycle_completion"] = (
+                    "ROUTE_EXECUTOR_COMPLETE" if after_transit is not None
+                    and after_transit.kind is DirectiveKind.COMPLETE
+                    else "WAYPOINT_COMPLETED_FROM_PRIOR_M1_COMPOSITE_STOP_GATE"
+                )
                 final_b_snapshot = self.sample_for_first_motion()
                 try:
                     final_b_pose = pose_provider.update(final_b_snapshot)
