@@ -197,7 +197,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertFalse(waypoint_b_window_budget_passes(1, short_diagnostic=True, extended_diagnostic=True))
         self.assertEqual(WAYPOINT_B_EXTENDED_DIAGNOSTIC_MAX_WINDOWS, 3)
         self.assertEqual(WAYPOINT_B_EXTENDED_DIAGNOSTIC_AGGREGATE_TRANSIT_MAX_S, 15.0)
-        self.assertEqual(WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M, 0.045)
+        self.assertEqual(WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M, 0.055)
 
     def test_extended_b_progress_guard_preserves_corridor_and_stop_margin(self):
         self.assertFalse(waypoint_b_forward_guard_reached(
@@ -218,11 +218,13 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertTrue(waypoint_b_cross_track_guard_reached(-WAYPOINT_B_MAX_CROSS_TRACK_M - 1e-6))
 
     def test_extended_b_stop_trigger_uses_measured_reserve_without_relaxing_arrival(self):
+        measured_post_command_excursion_m = 0.048370466515190544
         trigger_radius_m = waypoint_b_arrival_trigger_radius_m(
             acceptance_tolerance_m=WAYPOINT_B_POSITION_TOLERANCE_M,
             stop_reserve_m=WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M,
         )
-        self.assertEqual(trigger_radius_m, 0.105)
+        self.assertEqual(trigger_radius_m, 0.095)
+        self.assertGreater(WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M, measured_post_command_excursion_m)
         self.assertEqual(WAYPOINT_B_POSITION_TOLERANCE_M, 0.15)
 
     def test_short_waypoint_trigger_reserves_measured_poststop_travel_without_changing_acceptance(self):
