@@ -135,6 +135,8 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--zero-only-stop", b_only_command)
         self.assertIn("--max-observed-planar-speed-m-s", b_only_command)
         self.assertNotIn("--route-turn-qualification-evidence", b_only_command)
+        self.assertNotIn("--ramp-start-speed", b_only_command)
+        self.assertNotIn("--ramp-duration-s", b_only_command)
 
     def test_route_workcell_preflight_accepts_only_pinned_infinite_floor_scene(self):
         from issue80_m1_auto_reset_run import ROUTE_SCENE_RELATIVE, ROUTE_X2_RELATIVE

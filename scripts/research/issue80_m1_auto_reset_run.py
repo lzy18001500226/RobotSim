@@ -485,14 +485,19 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         + " --extra-stop-observation " + str(args.extra_stop_observation)
         + " --pulse-duration " + str(args.pulse_duration)
         + " --forward-speed " + str(args.forward_speed)
-        + " --ramp-start-speed " + str(getattr(args, "ramp_start_speed", None) or args.forward_speed)
-        + " --ramp-duration-s " + str(getattr(args, "ramp_duration_s", 0.0))
         + " --attempt-id " + str(args.attempt_id)
         + " --robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml"
         + " --mc-sim-config-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
         + " --state-timeout 0.5 --ready-timeout 4 --max-tilt-deg 15 --min-root-z 0.52"
         + " --output-dir /workspace/evidence"
     ]
+    ramp_start_speed = getattr(args, "ramp_start_speed", None)
+    ramp_duration_s = float(getattr(args, "ramp_duration_s", 0.0))
+    if ramp_start_speed is not None or ramp_duration_s != 0.0:
+        command[-1] += (
+            " --ramp-start-speed " + str(ramp_start_speed or args.forward_speed)
+            + " --ramp-duration-s " + str(ramp_duration_s)
+        )
     startup_speed = getattr(args, "startup_speed", None)
     if startup_speed is not None:
         command[-1] += (
