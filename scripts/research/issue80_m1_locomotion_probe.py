@@ -3191,6 +3191,16 @@ class FocusedM1Diagnostic(Node):
             required_region_separation = (
                 route.steps[0].position_tolerance_m + route.steps[2].position_tolerance_m
             )
+            route_source_mode_pass = all(
+                isinstance(segment.get("result"), Mapping)
+                and segment["result"].get("control_handshake_confirmed") is True
+                for segment in result["segments"]
+            )
+            total_planned_nonzero_s = (
+                float(transit_plan.maximum_duration_s)
+                + float(turn_plan.maximum_duration_s)
+                + float(continuation_plan.maximum_duration_s)
+            )
             total_actual_nonzero_s = sum(
                 float(segment.get("result", {}).get("pulse_actual_duration_s", 0.0))
                 for segment in result["segments"]
@@ -3198,6 +3208,7 @@ class FocusedM1Diagnostic(Node):
             )
             route_complete = (
                 final_stop_rearmed
+                and route_source_mode_pass
                 and executor.state.value == "COMPLETE"
                 and completion.kind is DirectiveKind.COMPLETE
                 and final_c_evidence.status is PhysicalStopStatus.PASS
@@ -3207,6 +3218,7 @@ class FocusedM1Diagnostic(Node):
                 not route_complete
                 or actual_waypoint_separation is None
                 or actual_waypoint_separation <= required_region_separation
+                or total_planned_nonzero_s > 30.0
                 or total_actual_nonzero_s > 30.0
             ):
                 result["status"] = "BLOCKED"
@@ -3215,8 +3227,18 @@ class FocusedM1Diagnostic(Node):
                 result["waypoint_arrival_poses"] = route_arrival_poses
                 result["final_stop_rearmed"] = final_stop_rearmed
                 result["route_state_after_c"] = executor.state.value
+                result["total_planned_nonzero_command_window_s"] = total_planned_nonzero_s
                 result["total_actual_nonzero_command_time_s"] = total_actual_nonzero_s
                 return result
+
+            waypoint_b_error = math.hypot(
+                route.steps[0].x_m - waypoint_b["x_m"],
+                route.steps[0].y_m - waypoint_b["y_m"],
+            )
+            waypoint_c_error_at_arrival = math.hypot(
+                route.steps[2].x_m - waypoint_c["x_m"],
+                route.steps[2].y_m - waypoint_c["y_m"],
+            )
 
             result.update({
                 "status": "PASS",
@@ -3226,6 +3248,43 @@ class FocusedM1Diagnostic(Node):
                 "next_route_directive": completion.kind.value,
                 "next_route_step": None,
                 "waypoint_arrival_poses": route_arrival_poses,
+                "route_gates": {
+                    "RESET_STAND": "PASS",
+                    "SOURCE_MODE": "PASS" if route_source_mode_pass else "NOT_CONFIRMED",
+                    "WAYPOINT_B_ARRIVAL": "PASS" if (
+                        transit.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED"
+                        and (transit.get("physical_stop_gate") or {}).get("status") == "PASS"
+                        and waypoint_b_error <= route.steps[0].position_tolerance_m
+                    ) else "FAIL",
+                    "BOUNDED_RIGHT_TURN": "PASS" if (
+                        route_turn_yaw_pass and route_turn_displacement_pass
+                        and turn_gate.get("status") == "PASS"
+                    ) else "FAIL",
+                    "WAYPOINT_C_ARRIVAL": "PASS" if (
+                        continuation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED"
+                        and waypoint_c_error_at_arrival <= route.steps[2].position_tolerance_m
+                    ) else "FAIL",
+                    "FINAL_PHYSICAL_STOP": "PASS" if continuation_gate.get("status") == "PASS" else "FAIL",
+                    "ROUTE_COMPLETE": "PASS" if route_complete else "FAIL",
+                },
+                "waypoint_target_errors": {
+                    "TRANSIT-TO-CORNER": {
+                        "target_x_m": route.steps[0].x_m,
+                        "target_y_m": route.steps[0].y_m,
+                        "arrival_error_m": waypoint_b_error,
+                        "tolerance_m": route.steps[0].position_tolerance_m,
+                    },
+                    "TRANSIT-AFTER-RIGHT-CORNER": {
+                        "target_x_m": route.steps[2].x_m,
+                        "target_y_m": route.steps[2].y_m,
+                        "arrival_error_m": waypoint_c_error_at_arrival,
+                        "post_stop_error_m": math.hypot(
+                            route.steps[2].x_m - final_pose.x_m,
+                            route.steps[2].y_m - final_pose.y_m,
+                        ),
+                        "tolerance_m": route.steps[2].position_tolerance_m,
+                    },
+                },
                 "waypoint_b_c_separation_m": actual_waypoint_separation,
                 "minimum_distinct_region_separation_m": required_region_separation,
                 "route_events": route_events + route_motion.events,
@@ -3233,6 +3292,7 @@ class FocusedM1Diagnostic(Node):
                 "physical_stop_gate": continuation_gate,
                 "final_stop_rearmed": final_stop_rearmed,
                 "total_actual_nonzero_command_time_s": total_actual_nonzero_s,
+                "total_planned_nonzero_command_window_s": total_planned_nonzero_s,
                 "total_nonzero_command_time_limit_s": 30.0,
                 "route_turn_gates": {
                     "route_yaw_target_reached": True,
