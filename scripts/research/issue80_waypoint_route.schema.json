@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://robotsim.local/schemas/issue80-waypoint-route-v1.json",
+  "title": "RobotSim Issue 80 waypoint route prototype",
+  "type": "object",
+  "required": [
+    "schema_version", "route_id", "frame_id", "workspace_clearance_verified",
+    "turn_capabilities", "start_anchor", "localization", "safety", "steps"
+  ],
+  "properties": {
+    "schema_version": {"const": "robotsim.issue80.waypoint-route.v1"},
+    "route_id": {"type": "string", "minLength": 1},
+    "frame_id": {"enum": ["map", "odom"]},
+    "workspace_clearance_verified": {"type": "boolean"},
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "turn_capabilities": {
+      "type": "object",
+      "required": ["zero_forward_turn_qualified", "bounded_moving_turn_qualified", "evidence_classification", "evidence_attempt_id"],
+      "properties": {
+        "zero_forward_turn_qualified": {"type": "boolean"},
+        "bounded_moving_turn_qualified": {"type": "boolean"},
+        "evidence_classification": {"type": "string"},
+        "evidence_attempt_id": {"type": "string"},
+        "note": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "start_anchor": {
+      "type": "object",
+      "required": ["x_m", "y_m", "yaw_rad", "position_tolerance_m", "yaw_tolerance_rad"],
+      "properties": {
+        "x_m": {"type": "number"},
+        "y_m": {"type": "number"},
+        "yaw_rad": {"type": "number"},
+        "position_tolerance_m": {"type": "number", "exclusiveMinimum": 0},
+        "yaw_tolerance_rad": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "localization": {
+      "type": "object",
+      "required": ["max_pose_age_s", "max_transform_age_s", "max_position_std_m", "max_yaw_std_rad"],
+      "properties": {
+        "max_pose_age_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.5},
+        "max_transform_age_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 1.0},
+        "max_position_std_m": {"type": "number", "exclusiveMinimum": 0},
+        "max_yaw_std_rad": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "safety": {
+      "type": "object",
+      "required": ["robot_footprint_radius_m", "boundary_margin_m", "max_observation_age_s"],
+      "properties": {
+        "robot_footprint_radius_m": {"type": "number", "exclusiveMinimum": 0},
+        "boundary_margin_m": {"type": "number", "minimum": 0},
+        "max_observation_age_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.5}
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "profile", "pose", "acceptance", "stop_behavior", "segment_timeout_s", "recovery_limit", "corridor", "command_bounds"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "profile": {"enum": ["TRANSIT", "CORNER", "DOCKING"]},
+          "pose": {
+            "type": "object",
+            "required": ["x_m", "y_m", "yaw_rad"],
+            "properties": {
+              "x_m": {"type": "number"},
+              "y_m": {"type": "number"},
+              "yaw_rad": {"type": ["number", "null"]}
+            },
+            "additionalProperties": false
+          },
+          "acceptance": {
+            "type": "object",
+            "required": ["position_tolerance_m", "yaw_policy", "yaw_tolerance_rad", "max_position_std_m", "max_yaw_std_rad"],
+            "properties": {
+              "position_tolerance_m": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.30},
+              "yaw_policy": {"enum": ["IGNORE", "EXPLICIT", "NEXT_SEGMENT"]},
+              "yaw_tolerance_rad": {"type": ["number", "null"]},
+              "max_position_std_m": {"type": "number", "exclusiveMinimum": 0},
+              "max_yaw_std_rad": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "additionalProperties": false
+          },
+          "stop_behavior": {"enum": ["ROLLING", "VERIFY_PHYSICAL_STOP"]},
+          "segment_timeout_s": {"type": "number", "exclusiveMinimum": 0},
+          "recovery_limit": {"type": "integer", "minimum": 0, "maximum": 3},
+          "corridor": {
+            "type": "object",
+            "required": ["polygon", "minimum_obstacle_clearance_m"],
+            "properties": {
+              "polygon": {"$ref": "#/$defs/polygon"},
+              "turn_polygon": {"$ref": "#/$defs/polygon"},
+              "minimum_obstacle_clearance_m": {"type": "number", "minimum": 0}
+            },
+            "additionalProperties": false
+          },
+          "command_bounds": {
+            "type": "object",
+            "required": ["target_forward_m_s", "max_forward_m_s", "max_angular_rad_s", "max_command_window_s"],
+            "properties": {
+              "target_forward_m_s": {"type": "number", "minimum": 0.12, "maximum": 0.14},
+              "max_forward_m_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.14},
+              "max_angular_rad_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.075},
+              "max_command_window_s": {"type": "number", "exclusiveMinimum": 0, "maximum": 10}
+            },
+            "additionalProperties": false
+          },
+          "turn": {
+            "type": "object",
+            "required": ["strategy", "maximum_displacement_m"],
+            "properties": {
+              "strategy": {"const": "BOUNDED_MOVING_TURN"},
+              "maximum_displacement_m": {"type": "number", "exclusiveMinimum": 0, "maximum": 1.0}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "polygon": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "array",
+        "prefixItems": [{"type": "number"}, {"type": "number"}],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,85 @@
+{
+  "schema_version": "robotsim.issue80.waypoint-route.v1",
+  "route_id": "rectangle-return-template-5m",
+  "frame_id": "map",
+  "workspace_clearance_verified": false,
+  "turn_capabilities": {
+    "zero_forward_turn_qualified": false,
+    "bounded_moving_turn_qualified": false,
+    "evidence_classification": "SIMULATION_ONLY_DERIVED_FOUNDATIONWALK_TURN_PAIR_PASS_REASSESSED",
+    "evidence_attempt_id": "08795827-b26f-44f9-8447-075bb7777d32",
+    "note": "Run65 supports further testing of a forward arc only; asymmetric response, a left source-header regression, and a reassessed displacement envelope leave route-corner capability unqualified."
+  },
+  "start_anchor": {
+    "x_m": 0.0,
+    "y_m": 0.0,
+    "yaw_rad": 0.0,
+    "position_tolerance_m": 0.25,
+    "yaw_tolerance_rad": 0.25
+  },
+  "localization": {
+    "max_pose_age_s": 0.2,
+    "max_transform_age_s": 0.5,
+    "max_position_std_m": 0.10,
+    "max_yaw_std_rad": 0.20
+  },
+  "safety": {
+    "robot_footprint_radius_m": 0.35,
+    "boundary_margin_m": 0.25,
+    "max_observation_age_s": 0.2
+  },
+  "steps": [
+    {
+      "id": "B",
+      "profile": "CORNER",
+      "pose": {"x_m": 5.0, "y_m": 0.0, "yaw_rad": null},
+      "acceptance": {"position_tolerance_m": 0.25, "yaw_policy": "NEXT_SEGMENT", "yaw_tolerance_rad": 0.26, "max_position_std_m": 0.10, "max_yaw_std_rad": 0.20},
+      "stop_behavior": "VERIFY_PHYSICAL_STOP",
+      "segment_timeout_s": 240.0,
+      "recovery_limit": 1,
+      "corridor": {"polygon": [[-1.0, -1.0], [6.0, -1.0], [6.0, 1.0], [-1.0, 1.0]], "turn_polygon": [[3.5, -1.5], [6.5, -1.5], [6.5, 2.0], [3.5, 2.0]], "minimum_obstacle_clearance_m": 0.50},
+      "command_bounds": {"target_forward_m_s": 0.12, "max_forward_m_s": 0.12, "max_angular_rad_s": 0.075, "max_command_window_s": 10.0},
+      "turn": {"strategy": "BOUNDED_MOVING_TURN", "maximum_displacement_m": 0.25}
+    },
+    {
+      "id": "C",
+      "profile": "CORNER",
+      "pose": {"x_m": 5.0, "y_m": 5.0, "yaw_rad": null},
+      "acceptance": {"position_tolerance_m": 0.25, "yaw_policy": "NEXT_SEGMENT", "yaw_tolerance_rad": 0.26, "max_position_std_m": 0.10, "max_yaw_std_rad": 0.20},
+      "stop_behavior": "VERIFY_PHYSICAL_STOP",
+      "segment_timeout_s": 240.0,
+      "recovery_limit": 1,
+      "corridor": {"polygon": [[4.0, -1.0], [6.0, -1.0], [6.0, 6.0], [4.0, 6.0]], "turn_polygon": [[3.5, 3.5], [6.5, 3.5], [6.5, 6.5], [3.5, 6.5]], "minimum_obstacle_clearance_m": 0.50},
+      "command_bounds": {"target_forward_m_s": 0.12, "max_forward_m_s": 0.12, "max_angular_rad_s": 0.075, "max_command_window_s": 10.0},
+      "turn": {"strategy": "BOUNDED_MOVING_TURN", "maximum_displacement_m": 0.25}
+    },
+    {
+      "id": "D",
+      "profile": "CORNER",
+      "pose": {"x_m": 0.0, "y_m": 5.0, "yaw_rad": null},
+      "acceptance": {"position_tolerance_m": 0.25, "yaw_policy": "NEXT_SEGMENT", "yaw_tolerance_rad": 0.26, "max_position_std_m": 0.10, "max_yaw_std_rad": 0.20},
+      "stop_behavior": "VERIFY_PHYSICAL_STOP",
+      "segment_timeout_s": 240.0,
+      "recovery_limit": 1,
+      "corridor": {"polygon": [[-1.0, 4.0], [6.0, 4.0], [6.0, 6.0], [-1.0, 6.0]], "turn_polygon": [[-1.5, 3.5], [1.5, 3.5], [1.5, 6.5], [-1.5, 6.5]], "minimum_obstacle_clearance_m": 0.50},
+      "command_bounds": {"target_forward_m_s": 0.12, "max_forward_m_s": 0.12, "max_angular_rad_s": 0.075, "max_command_window_s": 10.0},
+      "turn": {"strategy": "BOUNDED_MOVING_TURN", "maximum_displacement_m": 0.25}
+    },
+    {
+      "id": "A_RETURN",
+      "profile": "TRANSIT",
+      "pose": {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0},
+      "acceptance": {"position_tolerance_m": 0.25, "yaw_policy": "EXPLICIT", "yaw_tolerance_rad": 0.25, "max_position_std_m": 0.10, "max_yaw_std_rad": 0.20},
+      "stop_behavior": "VERIFY_PHYSICAL_STOP",
+      "segment_timeout_s": 240.0,
+      "recovery_limit": 1,
+      "corridor": {"polygon": [[-1.0, -1.0], [1.0, -1.0], [1.0, 6.0], [-1.0, 6.0]], "minimum_obstacle_clearance_m": 0.50},
+      "command_bounds": {"target_forward_m_s": 0.14, "max_forward_m_s": 0.14, "max_angular_rad_s": 0.075, "max_command_window_s": 10.0}
+    }
+  ],
+  "notes": [
+    "TEMPLATE ONLY: the 5 m square, footprint radius, margins, corridors, and turn displacement budgets are illustrative and unverified against an actual mapped workspace.",
+    "The route executor must refuse to start until workspace_clearance_verified is set from a reviewed map/footprint check.",
+    "Stage B's existing 50 mm goal criterion is unchanged; this route's 0.25 m transit/return tolerance is a separate proposed milestone."
+  ]
+}
