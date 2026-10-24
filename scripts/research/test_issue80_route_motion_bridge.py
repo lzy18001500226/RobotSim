@@ -28,10 +28,18 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_POSITION_TOLERANCE_M,
     WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M,
     WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M,
+    WAYPOINT_B_EXTENDED_DIAGNOSTIC_MAX_WINDOWS,
+    WAYPOINT_B_EXTENDED_DIAGNOSTIC_AGGREGATE_TRANSIT_MAX_S,
+    WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M,
+    WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M,
+    WAYPOINT_B_CORRIDOR_MAX_FORWARD_M,
+    WAYPOINT_B_MAX_CROSS_TRACK_M,
     build_short_right_corner_route,
     measured_m1_nonzero_window_s,
     waypoint_b_arrival_passes,
     waypoint_b_arrival_trigger_radius_m,
+    waypoint_b_forward_guard_reached,
+    waypoint_b_cross_track_guard_reached,
     validate_physical_stop_evidence,
     waypoint_b_window_budget_passes,
 )
@@ -179,6 +187,43 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertFalse(waypoint_b_window_budget_passes(0, short_diagnostic=True))
         self.assertFalse(waypoint_b_window_budget_passes(True, short_diagnostic=True))
         self.assertEqual(WAYPOINT_B_MAX_WINDOWS, 2)
+
+    def test_extended_b_budget_is_separate_and_capped_at_three_stopped_windows(self):
+        self.assertTrue(waypoint_b_window_budget_passes(2, short_diagnostic=False))
+        self.assertFalse(waypoint_b_window_budget_passes(3, short_diagnostic=False))
+        self.assertTrue(waypoint_b_window_budget_passes(1, short_diagnostic=False, extended_diagnostic=True))
+        self.assertTrue(waypoint_b_window_budget_passes(3, short_diagnostic=False, extended_diagnostic=True))
+        self.assertFalse(waypoint_b_window_budget_passes(4, short_diagnostic=False, extended_diagnostic=True))
+        self.assertFalse(waypoint_b_window_budget_passes(1, short_diagnostic=True, extended_diagnostic=True))
+        self.assertEqual(WAYPOINT_B_EXTENDED_DIAGNOSTIC_MAX_WINDOWS, 3)
+        self.assertEqual(WAYPOINT_B_EXTENDED_DIAGNOSTIC_AGGREGATE_TRANSIT_MAX_S, 15.0)
+        self.assertEqual(WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M, 0.045)
+
+    def test_extended_b_progress_guard_preserves_corridor_and_stop_margin(self):
+        self.assertFalse(waypoint_b_forward_guard_reached(
+            WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M - 1e-6,
+        ))
+        self.assertTrue(waypoint_b_forward_guard_reached(
+            WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M,
+        ))
+        self.assertAlmostEqual(
+            WAYPOINT_B_CORRIDOR_MAX_FORWARD_M - WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M,
+            0.15,
+        )
+
+    def test_waypoint_b_cross_track_guard_matches_declared_50mm_centerline_bound(self):
+        self.assertFalse(waypoint_b_cross_track_guard_reached(WAYPOINT_B_MAX_CROSS_TRACK_M))
+        self.assertFalse(waypoint_b_cross_track_guard_reached(-WAYPOINT_B_MAX_CROSS_TRACK_M))
+        self.assertTrue(waypoint_b_cross_track_guard_reached(WAYPOINT_B_MAX_CROSS_TRACK_M + 1e-6))
+        self.assertTrue(waypoint_b_cross_track_guard_reached(-WAYPOINT_B_MAX_CROSS_TRACK_M - 1e-6))
+
+    def test_extended_b_stop_trigger_uses_measured_reserve_without_relaxing_arrival(self):
+        trigger_radius_m = waypoint_b_arrival_trigger_radius_m(
+            acceptance_tolerance_m=WAYPOINT_B_POSITION_TOLERANCE_M,
+            stop_reserve_m=WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M,
+        )
+        self.assertEqual(trigger_radius_m, 0.105)
+        self.assertEqual(WAYPOINT_B_POSITION_TOLERANCE_M, 0.15)
 
     def test_short_waypoint_trigger_reserves_measured_poststop_travel_without_changing_acceptance(self):
         measured_stop_tail_m = 0.03681105376544568

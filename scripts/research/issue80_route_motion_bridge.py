@@ -49,6 +49,13 @@ WAYPOINT_B_SHORT_DIAGNOSTIC_STOP_RESERVE_M = 0.045
 WAYPOINT_B_MAX_WINDOWS = 2
 WAYPOINT_B_WINDOW_MAX_S = 5.0
 WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S = 10.0
+WAYPOINT_B_EXTENDED_DIAGNOSTIC_MAX_WINDOWS = 3
+WAYPOINT_B_EXTENDED_DIAGNOSTIC_AGGREGATE_TRANSIT_MAX_S = 15.0
+WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M = 0.045
+WAYPOINT_B_CORRIDOR_MAX_FORWARD_M = 1.25
+# Keep an additional 0.15 m before the existing corridor edge for stopping and drift.
+WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M = 1.10
+WAYPOINT_B_MAX_CROSS_TRACK_M = 0.05
 MAX_POSE_AGE_S = 0.20
 MAX_TRANSFORM_AGE_S = 0.50
 ALLOWED_MODE_READBACKS = frozenset(("STAND_DEFAULT", "LOCOMOTION_DEFAULT"))
@@ -140,13 +147,21 @@ class RouteMotionBridgeError(ValueError):
     """Invalid or out-of-order action-window lifecycle."""
 
 
-def waypoint_b_window_budget_passes(window_count: int, *, short_diagnostic: bool) -> bool:
-    """Keep original B acceptance multi-window; allow 1-2 windows only for the short diagnostic."""
-    minimum = 1 if short_diagnostic else WAYPOINT_B_MAX_WINDOWS
+def waypoint_b_window_budget_passes(
+    window_count: int, *, short_diagnostic: bool, extended_diagnostic: bool = False
+) -> bool:
+    """Keep legacy two-window acceptance distinct from both diagnostics."""
+    if short_diagnostic and extended_diagnostic:
+        return False
+    minimum = 1 if short_diagnostic or extended_diagnostic else WAYPOINT_B_MAX_WINDOWS
+    maximum = (
+        WAYPOINT_B_EXTENDED_DIAGNOSTIC_MAX_WINDOWS
+        if extended_diagnostic else WAYPOINT_B_MAX_WINDOWS
+    )
     return (
         isinstance(window_count, int)
         and not isinstance(window_count, bool)
-        and minimum <= window_count <= WAYPOINT_B_MAX_WINDOWS
+        and minimum <= window_count <= maximum
     )
 
 
@@ -179,6 +194,26 @@ def waypoint_b_arrival_trigger_radius_m(
     ):
         raise RouteMotionBridgeError("waypoint stop reserve must be finite and inside its acceptance tolerance")
     return float(acceptance_tolerance_m) - float(stop_reserve_m)
+
+
+def waypoint_b_forward_guard_reached(
+    forward_projection_m: float,
+    *,
+    guard_m: float = WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M,
+) -> bool:
+    """Fail closed before extended transit reaches the route-corridor edge."""
+    if not _finite_number(forward_projection_m) or not _finite_number(guard_m) or float(guard_m) <= 0.0:
+        raise RouteMotionBridgeError("extended waypoint-B progress guard inputs must be finite and positive")
+    return float(forward_projection_m) >= float(guard_m)
+
+
+def waypoint_b_cross_track_guard_reached(
+    cross_track_m: float, *, limit_m: float = WAYPOINT_B_MAX_CROSS_TRACK_M
+) -> bool:
+    """Reject B transit after the already-declared centerline lateral bound is crossed."""
+    if not _finite_number(cross_track_m) or not _finite_number(limit_m) or float(limit_m) <= 0.0:
+        raise RouteMotionBridgeError("waypoint-B cross-track guard inputs must be finite and positive")
+    return abs(float(cross_track_m)) > float(limit_m)
 
 
 def measured_m1_nonzero_window_s(result: Mapping[str, object]) -> float:
@@ -246,7 +281,7 @@ def build_short_right_corner_route(
     turn_lateral_half_width_m = (
         robot_footprint_radius_m + boundary_margin_m + turn_lateral_envelope_m + 0.05
     )
-    maximum_local_radius = math.hypot(1.25, turn_lateral_half_width_m)
+    maximum_local_radius = math.hypot(WAYPOINT_B_CORRIDOR_MAX_FORWARD_M, turn_lateral_half_width_m)
     if maximum_local_radius >= local_clear_radius_m:
         raise ValueError("verified open-floor region does not contain the swept route corridor")
 
@@ -273,8 +308,8 @@ def build_short_right_corner_route(
 
         return tuple(point(along, lateral) for along, lateral in (
             (-0.75, -lateral_half_width),
-            (1.25, -lateral_half_width),
-            (1.25, lateral_half_width),
+            (WAYPOINT_B_CORRIDOR_MAX_FORWARD_M, -lateral_half_width),
+            (WAYPOINT_B_CORRIDOR_MAX_FORWARD_M, lateral_half_width),
             (-0.75, lateral_half_width),
         ))
 

@@ -109,6 +109,8 @@ class ResearchScriptStagingTests(unittest.TestCase):
             run65_right_turn_qualification=True,
             run65_route_integration=False,
             run65_waypoint_b_only=False,
+            run65_waypoint_b_short_diagnostic=False,
+            run65_waypoint_b_extended_diagnostic=False,
         )
         turn_command = shlex.split(build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1])
         self.assertIn("--right-turn-qualification", turn_command)
@@ -159,6 +161,19 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(option(short_diagnostic_command, "--pulse-duration"), "1.0")
         self.assertEqual(option(short_diagnostic_command, "--forward-speed"), "0.2")
         self.assertEqual(option(short_diagnostic_command, "--zero-until-stand-timeout-s"), "3.5")
+
+        args.run65_waypoint_b_short_diagnostic = False
+        args.run65_waypoint_b_extended_diagnostic = True
+        extended_command = shlex.split(
+            build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--route-integration", extended_command)
+        self.assertIn("--route-waypoint-b-only", extended_command)
+        self.assertIn("--route-waypoint-b-extended-diagnostic", extended_command)
+        self.assertNotIn("--route-waypoint-b-short-diagnostic", extended_command)
+        self.assertIn("--zero-only-stop", extended_command)
+        self.assertEqual(option(extended_command, "--extra-stop-observation"), "5.0")
+        self.assertEqual(option(extended_command, "--forward-speed"), "0.2")
 
     def test_route_workcell_preflight_accepts_only_pinned_infinite_floor_scene(self):
         from issue80_m1_auto_reset_run import ROUTE_SCENE_RELATIVE, ROUTE_X2_RELATIVE
