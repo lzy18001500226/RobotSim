@@ -116,6 +116,104 @@ def _capture_xwd(window_id: int) -> bytes:
     return contents
 
 
+def record_verified_no_motion_preflight(
+    evidence_dir: Path,
+    *,
+    fps: float = 5.0,
+    duration_s: float = 2.0,
+    output_name: str = "mujoco_video_preflight.gif",
+) -> dict[str, Any]:
+    """Capture a short, passive MuJoCo GUI window before any M1 motion command."""
+    if not 1.0 <= fps <= 10.0:
+        raise ValueError("recording fps must be between 1 and 10")
+    if not 1.0 <= duration_s <= 5.0:
+        raise ValueError("no-motion preflight duration must be between 1 and 5 seconds")
+    root = evidence_dir.resolve(strict=True)
+    reset_path = root / "reset_dispatch_event.json"
+    output_path = root / output_name
+    manifest_path = root / "x11_video_preflight.json"
+    if output_path.exists() or manifest_path.exists():
+        raise FileExistsError("refusing to overwrite existing no-motion video preflight evidence")
+    if not reset_path.is_file():
+        raise FileNotFoundError("verified Reset dispatch event is required before video preflight")
+    reset_event = json.loads(reset_path.read_text(encoding="utf-8"))
+    window = reset_event.get("window")
+    if not isinstance(window, dict):
+        raise ValueError("Reset dispatch event lacks the verified MuJoCo window")
+    window_id = int(window["window_id"])
+    expected_pid = int(window["pid"])
+    expected_title = str(window["title"])
+    verified_window = _verify_x11_window(window_id, expected_pid, expected_title)
+
+    from PIL import Image
+
+    frames = []
+    frame_times = []
+    errors = []
+    started = time.monotonic()
+    deadline = started + duration_s
+    next_frame = started
+    next_identity_check = started
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now >= next_identity_check:
+            try:
+                verified_window = _verify_x11_window(window_id, expected_pid, expected_title)
+            except Exception as exc:
+                errors.append(f"window identity lost: {type(exc).__name__}: {exc}")
+                break
+            next_identity_check = now + 1.0
+        try:
+            image = _xwd_to_rgb_image(_capture_xwd(window_id))
+            if image.width > 1280:
+                height = max(1, round(image.height * (1280 / image.width)))
+                image = image.resize((1280, height), Image.Resampling.LANCZOS)
+            frames.append(image.copy())
+            frame_times.append(time.monotonic() - started)
+        except Exception as exc:
+            errors.append(f"frame capture: {type(exc).__name__}: {exc}")
+            if len(errors) >= 3:
+                break
+        next_frame += 1.0 / fps
+        time.sleep(max(0.0, next_frame - time.monotonic()))
+
+    if frames:
+        frames[0].save(
+            output_path,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=round(1000.0 / fps),
+            loop=0,
+            optimize=True,
+            disposal=2,
+        )
+    minimum_frames = max(2, int(fps * duration_s * 0.75))
+    result = {
+        "schema": "robotsim.issue80.x11-video-preflight.v1",
+        "status": "PASS" if len(frames) >= minimum_frames and not errors else "FAIL",
+        "classification": "NO_MOTION_MUJOCO_GUI_RECORDING_PREFLIGHT",
+        "window": verified_window,
+        "reset_event": str(reset_path),
+        "requested_fps": fps,
+        "requested_duration_s": duration_s,
+        "minimum_frames": minimum_frames,
+        "frame_count": len(frames),
+        "frame_elapsed_s": frame_times,
+        "video_path": str(output_path) if frames else None,
+        "motion_command_observed": False,
+        "input_events_sent": False,
+        "errors": errors,
+        "limitations": [
+            "This preflight validates only passive X11 capture of the verified MuJoCo window.",
+            "It is not motion evidence and does not validate the later in-run command-synchronized capture.",
+            "The artifact is an animated GIF, not an MP4.",
+        ],
+    }
+    manifest_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
 def _xwd_to_rgb_image(contents: bytes):
     """Decode a validated 24/32-bit TrueColor XWD image to a Pillow RGB image."""
     import numpy as np
@@ -301,7 +399,21 @@ def main() -> int:
     parser.add_argument("--duration-s", type=float, default=11.5)
     parser.add_argument("--wait-timeout-s", type=float, default=180.0)
     parser.add_argument("--output-name", default="mujoco_walk.gif")
+    parser.add_argument(
+        "--no-motion-preflight",
+        action="store_true",
+        help="passively record the Reset-verified MuJoCo window without waiting for or sending motion commands",
+    )
     args = parser.parse_args()
+    if args.no_motion_preflight:
+        result = record_verified_no_motion_preflight(
+            Path(args.evidence_dir),
+            fps=args.fps,
+            duration_s=args.duration_s,
+            output_name=args.output_name,
+        )
+        print(json.dumps(result, indent=2))
+        return 0 if result["status"] == "PASS" else 2
     result = record_verified_walk_window(
         Path(args.evidence_dir),
         fps=args.fps,

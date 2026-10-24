@@ -40,6 +40,8 @@ from issue80_route_motion_bridge import (
     waypoint_b_arrival_trigger_radius_m,
     waypoint_b_forward_guard_reached,
     waypoint_b_cross_track_guard_reached,
+    waypoint_bearing_angular_command,
+    TransitSteeringGate,
     validate_physical_stop_evidence,
     waypoint_b_window_budget_passes,
 )
@@ -132,6 +134,71 @@ def turn_directive(**overrides) -> RouteDirective:
 
 
 class RouteMotionBridgeTests(unittest.TestCase):
+    def test_steering_waits_for_warmup_and_fresh_mode_source_handshake(self):
+        gate = TransitSteeringGate(warmup_s=0.5)
+        self.assertFalse(gate.observe(10.0, False)["steering_enabled"])
+        self.assertFalse(gate.observe(10.25, True)["steering_enabled"])
+        self.assertTrue(gate.observe(10.5, True)["steering_enabled"])
+
+    def test_steering_gate_fails_closed_when_handshake_is_missing_at_warmup_deadline(self):
+        gate = TransitSteeringGate(warmup_s=0.5)
+        gate.observe(10.0, False)
+        state = gate.observe(10.5, False)
+        self.assertFalse(state["steering_enabled"])
+        self.assertEqual(
+            state["fault"],
+            "transit_locomotion_source_mode_handshake_not_confirmed_after_0p5s_straight_warmup",
+        )
+
+    def test_steering_gate_fails_closed_if_handshake_is_lost(self):
+        gate = TransitSteeringGate(warmup_s=0.5)
+        gate.observe(10.0, True)
+        gate.observe(10.5, True)
+        state = gate.observe(10.6, False)
+        self.assertFalse(state["steering_enabled"])
+        self.assertEqual(state["fault"], "transit_locomotion_source_mode_handshake_lost")
+
+    def test_fresh_waypoint_bearing_feedback_changes_with_each_odom_pose(self):
+        centered = waypoint_bearing_angular_command(
+            current_x_m=0.0, current_y_m=0.0, current_yaw_rad=0.0,
+            target_x_m=0.40, target_y_m=0.0,
+        )
+        displaced_left = waypoint_bearing_angular_command(
+            current_x_m=0.10, current_y_m=0.02, current_yaw_rad=0.0,
+            target_x_m=0.40, target_y_m=0.0,
+        )
+        self.assertAlmostEqual(centered["angular_rad_s"], 0.0)
+        self.assertLess(displaced_left["angular_rad_s"], 0.0)
+        self.assertNotEqual(centered["angular_rad_s"], displaced_left["angular_rad_s"])
+        self.assertAlmostEqual(
+            displaced_left["angular_rad_s"], 0.8 * displaced_left["bearing_error_rad"]
+        )
+
+    def test_fresh_waypoint_bearing_feedback_wraps_and_respects_angular_cap(self):
+        right_turn = waypoint_bearing_angular_command(
+            current_x_m=0.0, current_y_m=0.0, current_yaw_rad=0.0,
+            target_x_m=0.0, target_y_m=1.0,
+        )
+        saturated = waypoint_bearing_angular_command(
+            current_x_m=0.0, current_y_m=0.0, current_yaw_rad=0.0,
+            target_x_m=-1.0, target_y_m=0.0,
+        )
+        self.assertGreater(right_turn["angular_rad_s"], 0.0)
+        self.assertTrue(saturated["saturated"])
+        self.assertAlmostEqual(saturated["angular_rad_s"], 0.075)
+
+    def test_fresh_waypoint_bearing_feedback_rejects_nonfinite_or_invalid_bounds(self):
+        with self.assertRaisesRegex(RouteMotionBridgeError, "finite"):
+            waypoint_bearing_angular_command(
+                current_x_m=float("nan"), current_y_m=0.0, current_yaw_rad=0.0,
+                target_x_m=1.0, target_y_m=0.0,
+            )
+        with self.assertRaisesRegex(RouteMotionBridgeError, "limits"):
+            waypoint_bearing_angular_command(
+                current_x_m=0.0, current_y_m=0.0, current_yaw_rad=0.0,
+                target_x_m=1.0, target_y_m=0.0, maximum_angular_rad_s=0.0,
+            )
+
     def test_short_diagnostic_waypoint_is_inside_tolerance_of_measured_stop_pose(self) -> None:
         start = make_pose(
             x=0.018430078705869258,

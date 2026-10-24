@@ -108,9 +108,11 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_WINDOW_MAX_S,
     RouteMotionBridge, RouteMotionBridgeError, RuntimeReadiness,
     build_short_right_corner_route, measured_m1_nonzero_window_s,
+    waypoint_bearing_angular_command,
     waypoint_b_arrival_passes, waypoint_b_arrival_trigger_radius_m,
     waypoint_b_window_budget_passes, waypoint_b_forward_guard_reached,
     waypoint_b_cross_track_guard_reached,
+    TransitSteeringGate,
 )
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
@@ -128,6 +130,8 @@ POINT_GOAL_MAX_DURATION_S = 10.0
 POINT_GOAL_MAX_PLANAR_SPEED_M_S = 0.2
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 POINT_GOAL_HEADING_GAIN = 0.8
+ROUTE_TRANSIT_MAX_FORWARD_M_S = 0.12
+ROUTE_STEERING_WARMUP_S = 0.5
 # Run80's 0.15 m taper still missed the yaw stop gate by 0.13 deg. A saved-pose
 # command-only replay showed 0.25 m start reduces angular command integral
 # further; this is one bounded terminal-settling diagnostic, not a new goal
@@ -2687,8 +2691,6 @@ class FocusedM1Diagnostic(Node):
             )
             if transit_plan.status != "PROPOSAL_ONLY" or transit_plan.forward_m_s <= 0.0:
                 raise ValueError(f"route bridge refused transit proposal: {transit_plan.status}: {transit_plan.reason}")
-            if abs(transit_plan.angular_rad_s) > 0.002:
-                raise ValueError("straight route transit requires an angular command unsupported by its fixed-forward M1 segment")
             route_spec = {
                 "route_id": route.route_id,
                 "frame_id": route.frame_id,
@@ -2789,6 +2791,15 @@ class FocusedM1Diagnostic(Node):
             result["route_spec"] = route_spec
             result["route_motion_bridge"] = {
                 "transit_window": dict(transit_plan.__dict__),
+                "runtime_controller": {
+                    "policy": "fresh odom waypoint-bearing feedback at every M1 publish",
+                    "heading_gain": 0.8,
+                    "maximum_forward_m_s": ROUTE_TRANSIT_MAX_FORWARD_M_S,
+                    "maximum_angular_rad_s": MAX_ANGULAR_RAD_S,
+                    "straight_warmup_s": ROUTE_STEERING_WARMUP_S,
+                    "steering_requires_same_sample_locomotion_and_source_readback": True,
+                    "plan_window_angular_is_not_replayed": True,
+                },
                 "turn_margin_source": turn_provenance,
                 "turn_displacement_guard": None if waypoint_b_only else {
                     "maximum_m": 0.25,
@@ -2820,9 +2831,16 @@ class FocusedM1Diagnostic(Node):
                 "policy": "strict_header_order_except_fresh_wall-aligned_MuJoCo_clock_rollback",
                 "verified_wall_clock_step_rebases": 0,
             }
+            latest_transit_snapshot: Mapping[str, Any] | None = None
+            window_control: dict[str, Any] = {}
+            active_window_gate = TransitSteeringGate(warmup_s=ROUTE_STEERING_WARMUP_S)
 
             def transit_termination(snapshot: Mapping[str, Any]) -> bool:
-                nonlocal route_fault, route_stop_reason
+                nonlocal route_fault, route_stop_reason, latest_transit_snapshot
+                latest_transit_snapshot = snapshot
+                if window_control.get("feedback_fault"):
+                    route_fault = str(window_control["feedback_fault"])
+                    return True
                 fault = snapshot_fault(
                     snapshot,
                     self.joint_limits,
@@ -2834,8 +2852,6 @@ class FocusedM1Diagnostic(Node):
                 if fault:
                     route_fault = "transit_safety:" + fault
                     return True
-                if not same_sample_handshake(snapshot):
-                    return False
                 try:
                     pose_provider.update(snapshot)
                 except (KeyError, TypeError, ValueError) as exc:
@@ -2892,6 +2908,23 @@ class FocusedM1Diagnostic(Node):
                     route_progress_monitor["guard_triggers"].append(guard_event)
                     route_events.append(guard_event)
                     return True
+
+                sample_time = float(snapshot.get("sample_monotonic_s", time.monotonic()))
+                handshake = same_sample_handshake(snapshot)
+                gate_state = active_window_gate.observe(sample_time, handshake)
+                window_control.update(gate_state)
+                if gate_state["fault"]:
+                    route_fault = str(gate_state["fault"])
+                    route_events.append({
+                        "kind": "TRANSIT_STEERING_HANDSHAKE_ABORT",
+                        "reason": route_fault,
+                        "sample_monotonic_s": sample_time,
+                        "straight_warmup_elapsed_s": gate_state["elapsed_s"],
+                        "source_mode_handshake": handshake,
+                    })
+                    return True
+                if not gate_state["steering_enabled"]:
+                    return False
                 distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
                 arrival_trigger_radius_m = waypoint_b_arrival_trigger_radius_m(
                     acceptance_tolerance_m=active.position_tolerance_m,
@@ -2971,7 +3004,8 @@ class FocusedM1Diagnostic(Node):
                 segment_id: str,
             ) -> dict[str, Any]:
                 """Run bounded 5 s windows, re-planning only after measured stop."""
-                nonlocal route_fault, route_stop_reason, route_total_nonzero_s
+                nonlocal route_fault, route_stop_reason, route_total_nonzero_s, latest_transit_snapshot
+                nonlocal active_window_gate
                 current_directive = initial_directive
                 current_plan = initial_plan
                 last_result: dict[str, Any] | None = None
@@ -3009,14 +3043,61 @@ class FocusedM1Diagnostic(Node):
 
                     route_fault = None
                     route_stop_reason = None
-                    window_angular = float(current_plan.angular_rad_s)
+                    latest_transit_snapshot = None
+                    window_control.clear()
+                    active_window_gate = TransitSteeringGate(warmup_s=ROUTE_STEERING_WARMUP_S)
+                    steering_samples: list[dict[str, Any]] = []
+                    transit_forward_m_s = min(
+                        float(current_plan.forward_m_s), ROUTE_TRANSIT_MAX_FORWARD_M_S,
+                    )
 
                     def publish_window(forward_m_s: float) -> None:
-                        self._publish(
-                            float(forward_m_s),
-                            0.0,
-                            window_angular if float(forward_m_s) > 0.0 else 0.0,
-                        )
+                        forward = float(forward_m_s)
+                        angular = 0.0
+                        control_row: dict[str, Any] = {
+                            "sample_monotonic_s": None,
+                            "forward_velocity_m_s": forward,
+                            "angular_velocity_rad_s": 0.0,
+                            "control_phase": "ZERO_STOP" if forward <= 0.0 else "STRAIGHT_HANDSHAKE_WARMUP",
+                            "heading_error_rad": None,
+                            "saturated": False,
+                        }
+                        snapshot = latest_transit_snapshot
+                        if forward > 0.0 and isinstance(snapshot, Mapping):
+                            control_row["sample_monotonic_s"] = snapshot.get("sample_monotonic_s")
+                            if window_control.get("steering_enabled"):
+                                pose = snapshot.get("pose")
+                                active = executor.active_step
+                                if not isinstance(pose, Mapping) or active is None:
+                                    window_control["feedback_fault"] = "transit_feedback_steering_pose_or_goal_missing"
+                                    self._publish(0.0, 0.0, 0.0)
+                                    return
+                                else:
+                                    steering = waypoint_bearing_angular_command(
+                                        current_x_m=float(pose["x"]),
+                                        current_y_m=float(pose["y"]),
+                                        current_yaw_rad=float(pose["yaw"]),
+                                        target_x_m=float(active.x_m),
+                                        target_y_m=float(active.y_m),
+                                        maximum_angular_rad_s=MAX_ANGULAR_RAD_S,
+                                    )
+                                    angular = float(steering["angular_rad_s"])
+                                    control_row.update({
+                                        "control_phase": "CLOSED_LOOP_WAYPOINT_BEARING",
+                                        "target_x_m": float(active.x_m),
+                                        "target_y_m": float(active.y_m),
+                                        "current_x_m": float(pose["x"]),
+                                        "current_y_m": float(pose["y"]),
+                                        "current_yaw_rad": float(pose["yaw"]),
+                                        "heading_error_rad": float(steering["bearing_error_rad"]),
+                                        "raw_angular_velocity_rad_s": float(steering["raw_angular_rad_s"]),
+                                        "saturated": bool(steering["saturated"]),
+                                        "locomotion_handshake_confirmed": True,
+                                    })
+                            control_row["angular_velocity_rad_s"] = angular
+                            control_row["straight_warmup_elapsed_s"] = window_control.get("elapsed_s")
+                            steering_samples.append(control_row)
+                        self._publish(forward, 0.0, angular if forward > 0.0 else 0.0)
 
                     last_result = run_first_motion_window(
                         sample=self.sample_for_first_motion,
@@ -3027,7 +3108,7 @@ class FocusedM1Diagnostic(Node):
                         baseline_forward_displacements_m=baseline_displacements,
                         baseline_state_summary=(stationary_baseline or {}).get("physical_state_summary"),
                         authorized=True,
-                        forward_command_m_s=current_plan.forward_m_s,
+                        forward_command_m_s=transit_forward_m_s,
                         pulse_duration_s=pulse_duration_s,
                         max_pulse_duration_s=window_cap_s,
                         extra_post_stop_observe_s=float(self.args.extra_stop_observation),
@@ -3049,7 +3130,24 @@ class FocusedM1Diagnostic(Node):
                         max_observed_planar_speed_m_s=0.2,
                         zero_until_stand_timeout_s=3.5,
                     )
-                    last_result["command_angular_velocity_rad_s"] = window_angular
+                    angular_values = [
+                        float(row["angular_velocity_rad_s"]) for row in steering_samples
+                    ]
+                    last_result["route_feedback_steering"] = {
+                        "policy": "FRESH_ODOM_WAYPOINT_BEARING_EVERY_PUBLISH",
+                        "heading_gain": 0.8,
+                        "maximum_angular_rad_s": MAX_ANGULAR_RAD_S,
+                        "straight_warmup_s": ROUTE_STEERING_WARMUP_S,
+                        "fresh_mode_source_handshake_required_before_steering": True,
+                        "handshake_state": dict(window_control),
+                        "sample_count": len(steering_samples),
+                        "angular_command_min_rad_s": min(angular_values) if angular_values else None,
+                        "angular_command_max_rad_s": max(angular_values) if angular_values else None,
+                        "samples": steering_samples,
+                    }
+                    last_result["command_angular_velocity_rad_s"] = None
+                    last_result["planned_initial_angular_velocity_rad_s"] = float(current_plan.angular_rad_s)
+                    last_result["executed_forward_command_m_s"] = transit_forward_m_s
                     last_result["route_window_maximum_duration_s"] = window_cap_s
                     try:
                         measured_window_s = measured_m1_nonzero_window_s(last_result)

@@ -39,6 +39,7 @@ from issue80_waypoint_route import (
 MAX_FORWARD_M_S = 0.14
 MIN_EFFECTIVE_FORWARD_M_S = 0.12
 MAX_ANGULAR_RAD_S = 0.075
+RUN73_BEARING_HEADING_GAIN = 0.8
 MAX_INCREMENTAL_WINDOW_S = 1.0
 MAX_ROUTE_ACTION_WINDOW_S = 5.0
 ROUTE_WINDOW_ZERO_MARGIN_S = 0.02  # A2's timing-recovery margin before a 5 s M1 deadline.
@@ -146,6 +147,103 @@ class RouteActionWindow:
 
 class RouteMotionBridgeError(ValueError):
     """Invalid or out-of-order action-window lifecycle."""
+
+
+def waypoint_bearing_angular_command(
+    *,
+    current_x_m: float,
+    current_y_m: float,
+    current_yaw_rad: float,
+    target_x_m: float,
+    target_y_m: float,
+    maximum_angular_rad_s: float = MAX_ANGULAR_RAD_S,
+    heading_gain: float = RUN73_BEARING_HEADING_GAIN,
+) -> dict[str, float | bool]:
+    """Recompute bounded Run73 line-of-sight steering from one fresh odom pose.
+
+    The function intentionally takes the target in odom coordinates and does
+    not retain state between calls. Callers can therefore invoke it for every
+    fresh sample without holding a window-level angular command. Positive yaw
+    follows the documented odom convention (counter-clockwise).
+    """
+    values = (
+        current_x_m, current_y_m, current_yaw_rad, target_x_m, target_y_m,
+        maximum_angular_rad_s, heading_gain,
+    )
+    try:
+        x, y, yaw, target_x, target_y, maximum, gain = map(float, values)
+    except (TypeError, ValueError) as exc:
+        raise RouteMotionBridgeError("waypoint steering inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (x, y, yaw, target_x, target_y, maximum, gain)):
+        raise RouteMotionBridgeError("waypoint steering inputs must be finite")
+    if maximum <= 0.0 or gain < 0.0:
+        raise RouteMotionBridgeError("waypoint steering limits are invalid")
+    dx, dy = target_x - x, target_y - y
+    if math.hypot(dx, dy) <= 1e-9:
+        return {
+            "bearing_error_rad": 0.0,
+            "raw_angular_rad_s": 0.0,
+            "angular_rad_s": 0.0,
+            "saturated": False,
+        }
+    bearing_error = math.atan2(
+        math.sin(math.atan2(dy, dx) - yaw),
+        math.cos(math.atan2(dy, dx) - yaw),
+    )
+    raw = gain * bearing_error
+    command = max(-maximum, min(maximum, raw))
+    return {
+        "bearing_error_rad": bearing_error,
+        "raw_angular_rad_s": raw,
+        "angular_rad_s": command,
+        "saturated": abs(raw) > maximum,
+    }
+
+
+@dataclass
+class TransitSteeringGate:
+    """Allow steering only after straight warmup and a same-sample MC handshake."""
+
+    warmup_s: float = 0.5
+    window_started_steady_s: float | None = None
+    handshake_observed: bool = False
+    handshake_observed_steady_s: float | None = None
+    steering_enabled: bool = False
+    fault: str | None = None
+
+    def observe(self, steady_s: float, same_sample_handshake: bool) -> dict[str, object]:
+        try:
+            now = float(steady_s)
+            warmup = float(self.warmup_s)
+        except (TypeError, ValueError) as exc:
+            raise RouteMotionBridgeError("transit steering gate time must be numeric") from exc
+        if not math.isfinite(now) or not math.isfinite(warmup) or warmup < 0.0:
+            raise RouteMotionBridgeError("transit steering gate time must be finite and bounded")
+        if self.window_started_steady_s is None:
+            self.window_started_steady_s = now
+        if now < self.window_started_steady_s:
+            self.fault = "transit_steering_monotonic_time_regressed"
+        if self.fault is None:
+            if same_sample_handshake:
+                if not self.handshake_observed:
+                    self.handshake_observed = True
+                    self.handshake_observed_steady_s = now
+            elif self.handshake_observed:
+                self.fault = "transit_locomotion_source_mode_handshake_lost"
+            elif now - self.window_started_steady_s >= warmup:
+                self.fault = "transit_locomotion_source_mode_handshake_not_confirmed_after_0p5s_straight_warmup"
+        elapsed = max(0.0, now - self.window_started_steady_s)
+        self.steering_enabled = bool(
+            self.fault is None and same_sample_handshake and elapsed >= warmup
+        )
+        return {
+            "elapsed_s": elapsed,
+            "same_sample_handshake": bool(same_sample_handshake),
+            "handshake_observed": self.handshake_observed,
+            "handshake_observed_steady_s": self.handshake_observed_steady_s,
+            "steering_enabled": self.steering_enabled,
+            "fault": self.fault,
+        }
 
 
 def waypoint_b_window_budget_passes(
