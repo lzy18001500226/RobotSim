@@ -93,3 +93,25 @@ Before any new physical grasp trial:
 4. Only after static gates pass, request/perform a separate authorized dynamic arm and physical-grasp validation. Keep `GRASP`, `LIFT`, `TRANSFER`, `RELEASE`, `PLACE`, and `SETTLE` statuses separate.
 
 Prototype disposition for this task: `KEEP-AS-TOOL` pending focused review; this package is not imported by production or ROS runtime code.
+
+## Full-X2 Robotiq static approach and historical episode gate — 2026-10-24
+
+The historical full-X2 + Robotiq episode remains a saved simulation-only diagnostic, not a rerun. Its original runner reports 56.30 mm peak bottle COM rise, bilateral pad contact during lift, transfer, release, and free settling. The independent evidence gate was applied to all 14,350 saved physics samples with zero new physics steps.
+
+The prior 0.005701 mm witness was a conservative world-AABB lower bound at sample 20 for `rq_right_spring_link/unnamed_geom_102` to `bottle_body`. At the identical model and qpos, compiled-hull SAT gives 29.439789 mm, `mj_geomDistance` gives 29.454623 mm, and the registered source STL distance bound is 20.033924–29.454840 mm. The 0.005701 mm value is not actual spring-to-bottle surface proximity.
+
+One 25 mm retreat path was evaluated using 101 linear joint-space configurations. It preserves the historical final grasp vector and passes source position limits and IK. External swept lower bounds are 2.000361 mm robot/bottle, 2.000631 mm non-pad robot/bottle, 14.253024 mm robot/table, and 2.000003 mm external robot/self. These margins are only micrometres above 2 mm and do not include the historical right wrist-yaw tracking error of 0.036843 rad, so they do not establish robust dynamic execution clearance.
+
+The static gate remains blocked because the internal spring-link/pad clearance lower bound is 1.571048 mm and invariant across all 101 arm states. No active contact was observed. This is an unproven 2 mm internal-clearance gate, not evidence of penetration; arm-only path changes cannot change the fixed relative geometry.
+
+Historical episode-gate stages: CONTACT, PLACE, RELEASE pass their recorded gates; PREGRASP, APPROACH, LOAD_TRANSFER, LIFT_50MM, HOLD, and TRANSFER are blocked by missing measurements; SETTLE fails the strict peak angular-speed gate (0.087526 rad/s versus 0.05 rad/s), while terminal angular speed is 0.030392 rad/s. The contact trace lacks contact-frame orientation, so world-upward hand support and per-contact world tangential force cannot be reconstructed. Right-arm position/velocity checks pass for the recorded seven joints, but whole-model joint, actuator, and follower evidence is missing.
+
+The saved model retains diagnostic-only assumptions: a `head_pitch_link`/`torso_link` collision exclusion; a derived Robotiq wrist adapter at xyz `0.00196 0.00035 -0.062 m`, rpy `3.14 0 0`; and a simulation-derived +0.001 rad coupler margin. The source-faithful coupler configuration was reported to exceed its stop on the first step. Manufacturer-equivalent mounting is not claimed.
+
+Evidence:
+
+- Static path and sample-20 geometry reconciliation: `/home/lzy18001500226/projects/RobotSim/reviews/issue-46/robotiq-arm-approach-qualified-20261024T065752Z/`
+- Historical episode-gate replay: `/home/lzy18001500226/projects/RobotSim/reviews/issue-46/robotiq-historical-episode-gate-audit-20261024T070116Z/`
+- Original physical diagnostic episode: `/mnt/c/Users/HP/Desktop/RobotSim/reviews/issue-46/issue-46-x2-single-hand/overnight-transfer-20261010/full_episode_x022_attempt03/`
+
+Both new evidence packets use the pinned MuJoCo 3.3.6 Python runtime and verified path-governed manifests. No `mj_step` was run.

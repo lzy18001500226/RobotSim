@@ -8,6 +8,10 @@ from scripts.research.issue46_manipulation_integration.episode_gate import (
     ManipulationPhase,
     evaluate_episode_evidence,
 )
+from scripts.research.issue46_manipulation_integration.audit_historical_robotiq_episode import (
+    infer_timestep_s,
+    sample_step_index,
+)
 
 
 MODEL_SHA = "a" * 64
@@ -22,6 +26,9 @@ def frame(phase, step, time_s, z, roles=(), **overrides):
         "model_sha256": MODEL_SHA,
         "bottle_com_world_m": (0.3, 0.04, z),
         "bottle_quat_world_xyzw": (0.0, 0.0, 0.0, 1.0),
+        "bottle_linear_speed_m_s": 0.001,
+        "bottle_angular_speed_rad_s": 0.001,
+        "target_bottle_com_world_m": (0.3, 0.04, 0.0),
         "force_bearing_contact_roles": frozenset(roles),
         "tool_object_contact_active": bool(roles),
         "left_hand_contact": False,
@@ -30,6 +37,7 @@ def frame(phase, step, time_s, z, roles=(), **overrides):
         "table_reaction_vertical_n": 5.4,
         "max_relative_slip_m": 0.001,
         "minimum_approach_clearance_m": 0.005,
+        "tool_opening_m": 0.0934,
         "source_position_limits_pass": True,
         "source_velocity_limits_pass": True,
         "actuator_limits_pass": True,
@@ -50,6 +58,7 @@ def criteria(groups=(('left_pad',), ('right_pad',))):
         minimum_tool_upward_support_n=3.0,
         minimum_table_unloading_n=3.0,
         maximum_relative_slip_m=0.005,
+        place_target_xy_world_m=(0.3, 0.04),
     )
 
 
@@ -83,10 +92,52 @@ def valid_episode(groups=(('left_pad',), ('right_pad',))):
             table_reaction_vertical_n=0.0,
             table_contact=False,
         ))
+    for i in range(10):
+        frames.append(frame(
+            ManipulationPhase.TRANSFER, 154+i, 1.54+0.01*i, 0.05, contacts,
+            tool_upward_support_n=5.4,
+            table_reaction_vertical_n=0.0,
+            table_contact=False,
+            max_relative_slip_m=0.002,
+        ))
+    for i in range(10):
+        frames.append(frame(
+            ManipulationPhase.PLACE, 164+i, 1.64+0.01*i, 0.0, contacts,
+            tool_upward_support_n=4.0,
+            table_reaction_vertical_n=5.4,
+            table_contact=True,
+        ))
+    for i in range(10):
+        frames.append(frame(
+            ManipulationPhase.RELEASE, 174+i, 1.74+0.01*i, 0.0, (),
+            tool_object_contact_active=False,
+            table_contact=True,
+            tool_upward_support_n=0.0,
+            table_reaction_vertical_n=5.4,
+            tool_opening_m=0.0934,
+        ))
+    for i in range(31):
+        frames.append(frame(
+            ManipulationPhase.SETTLE, 184+i, 1.84+0.1*i, 0.0, (),
+            tool_object_contact_active=False,
+            table_contact=True,
+            tool_upward_support_n=0.0,
+            table_reaction_vertical_n=5.4,
+            max_relative_slip_m=0.0,
+        ))
     return tuple(frames)
 
 
 class EpisodeGateTests(unittest.TestCase):
+    def test_historical_truncating_step_index_is_reconstructed_from_monotonic_time(self):
+        rows = [
+            {"step": "1006", "time_s": "1.006"},
+            {"step": "1006", "time_s": "1.007"},
+        ]
+        timestep = infer_timestep_s(rows)
+        self.assertAlmostEqual(timestep, 0.001)
+        self.assertEqual([sample_step_index(row, timestep) for row in rows], [1006, 1007])
+
     def test_measured_complete_episode_passes_with_role_groups(self):
         result = evaluate_episode_evidence(valid_episode(), criteria())
         self.assertEqual(result.status, "PASS")
@@ -202,11 +253,52 @@ class EpisodeGateTests(unittest.TestCase):
         self.assertEqual(result.status, "BLOCKED")
         self.assertIn("HOLD_TABLE_REACTION_EVIDENCE_MISSING", result.blockers)
 
+    def test_release_requires_opening_and_contact_loss(self):
+        rows = list(valid_episode())
+        rows[173] = frame(
+            ManipulationPhase.RELEASE, 174, 1.74, 0.0, ('left_pad', 'right_pad'),
+            tool_upward_support_n=0.0,
+            table_reaction_vertical_n=5.4,
+            table_contact=True,
+            tool_opening_m=0.0934,
+        )
+        result = evaluate_episode_evidence(tuple(rows), criteria())
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("RELEASE_CONTACT_PERSISTED", result.blockers)
+
+    def test_missing_source_limit_evidence_is_not_passed(self):
+        rows = list(valid_episode())
+        rows[0] = frame(ManipulationPhase.PREGRASP, 1, 0.01, 0.0, (), source_position_limits_pass=None)
+        result = evaluate_episode_evidence(tuple(rows), criteria())
+        self.assertEqual(result.status, "BLOCKED")
+        self.assertIn("SOURCE_POSITION_LIMIT_EVIDENCE_MISSING:0", result.blockers)
+
     def test_policy_cannot_weaken_required_lift_or_hold(self):
         with self.assertRaises(ValueError):
             EpisodeCriteria((('pad_a',), ('pad_b',)), 0.9, 1.0, 1.0, 0.005, minimum_lift_m=0.01)
         with self.assertRaises(ValueError):
             EpisodeCriteria((('pad_a',), ('pad_b',)), 0.9, 1.0, 1.0, 0.005, minimum_hold_duration_s=0.1)
+
+    def test_post_step_sample_span_counts_first_physics_interval_for_hold_and_settle(self):
+        rows = [row for row in valid_episode()
+                if row.phase is not ManipulationPhase.HOLD and row.phase is not ManipulationPhase.SETTLE]
+        rows.extend(
+            frame(ManipulationPhase.HOLD, 1000 + i, 1.0 + i * 0.001, 0.05,
+                  ('left_pad', 'right_pad'), tool_upward_support_n=5.4,
+                  table_reaction_vertical_n=0.0, table_contact=False)
+            for i in range(1000)
+        )
+        rows.extend(
+            frame(ManipulationPhase.SETTLE, 2000 + i, 2.0 + i * 0.001, 0.0, (),
+                  table_contact=True, tool_object_contact_active=False,
+                  tool_upward_support_n=0.0, table_reaction_vertical_n=5.4,
+                  max_relative_slip_m=0.0)
+            for i in range(3000)
+        )
+        rows.sort(key=lambda row: row.physics_step_index)
+        result = evaluate_episode_evidence(tuple(rows), criteria())
+        self.assertEqual(result.stage_status[ManipulationPhase.HOLD.value], "PASS")
+        self.assertEqual(result.stage_status[ManipulationPhase.SETTLE.value], "PASS")
 
 
 if __name__ == "__main__":
