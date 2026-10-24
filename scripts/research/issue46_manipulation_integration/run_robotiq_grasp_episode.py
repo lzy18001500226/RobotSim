@@ -46,6 +46,12 @@ EXPECTED_MODEL_SHA = "a5dcd589fedaea5645ccf29b708b560f2e0dc923c8955a7d5901a996df
 EXPECTED_DT = 0.001
 CLEARANCE_M = 0.002
 GRAVITY = 9.81
+INITIAL_SETTLE_MAX_DURATION_S = 5.0
+INITIAL_SETTLE_WINDOW_STEPS = 1000
+INITIAL_SETTLE_MAX_LINEAR_SPEED_M_S = 0.020
+INITIAL_SETTLE_MAX_ANGULAR_SPEED_RAD_S = 0.050
+INITIAL_SETTLE_MAX_COM_DRIFT_M = 0.020
+INITIAL_SETTLE_TABLE_FORCE_TOLERANCE_N = 1.0
 ARM = (
     "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
     "right_elbow_joint", "right_wrist_yaw_joint", "right_wrist_pitch_joint", "right_wrist_roll_joint",
@@ -233,7 +239,7 @@ def main() -> int:
     parser.add_argument("--output-parent", type=Path, default=REVIEWS / "issue-46")
     parser.add_argument("--max-duration-s", type=float, default=30.0)
     parser.add_argument("--prior-abort-steps", type=int, default=0,
-                         help="steps spent on the ordinary mixed-unit follower-gate abort")
+                         help="all previously consumed physics steps in this episode campaign")
     parser.add_argument("--preflight-only", action="store_true",
                          help="compile and validate the exact B episode inputs without mj_step")
     args = parser.parse_args()
@@ -382,6 +388,7 @@ def main() -> int:
     bottle_qpos_initial = data.qpos[bottle_qpos_id:bottle_qpos_id + 7].copy()
     bottle_root_initial = bottle_qpos_initial[:3].copy()
     bottle_com_initial = np.asarray(data.xipos[bottle_body_id], dtype=float).copy()
+    bottle_com_z_trace = [float(bottle_com_initial[2])]
     com_offset_world = bottle_com_initial - bottle_root_initial
     target_root = np.asarray(historical["scene_configuration"]["target_bottle_root_position_world_m"], dtype=float)
     criteria = gate_criteria(tuple((target_root + com_offset_world)[:2]))
@@ -464,6 +471,8 @@ def main() -> int:
     settle_support_rows = []
     settle_speed = []
     settle_balance_residual = []
+    settle_samples: list[dict] = []
+    first_stable_settle_window = None
 
     def save_frame(label: str) -> None:
         renderer.update_scene(data, camera=camera)
@@ -474,8 +483,9 @@ def main() -> int:
 
     def run_segment(operation: str, target_points: list[np.ndarray], duration: float,
                     grip_start: float, grip_end: float, gate_phase: ManipulationPhase | None = None,
-                    approach_clearance: bool = False) -> dict:
-        nonlocal total_steps, q_target_current, previous_com, previous_com_velocity, slip_reference_local, first_failure
+                    approach_clearance: bool = False, stop_when=None) -> dict:
+        nonlocal total_steps, q_target_current, previous_com, previous_com_velocity
+        nonlocal slip_reference_local, first_failure, first_stable_settle_window
         if args.prior_abort_steps + total_steps + int(round(duration / EXPECTED_DT)) > 30000:
             first_failure = {"gate": "30_second_physics_limit", "phase": operation}
             return {"operation": operation, "steps": 0, "completed": False, "failure": first_failure}
@@ -486,6 +496,7 @@ def main() -> int:
         contact_force_roles: dict[str, int] = {"left_pad": 0, "right_pad": 0}
         table_force_rows = []
         step_count_bilateral = 0
+        early_stop_reason = None
         for k in range(steps):
             u = (k + 1) / steps
             s, dsdu = legacy.quintic(u)
@@ -553,6 +564,7 @@ def main() -> int:
             }, allow_nan=False) + "\n")
 
             com = np.asarray(data.xipos[bottle_body_id], dtype=float).copy()
+            bottle_com_z_trace.append(float(com[2]))
             if previous_com is None:
                 com_velocity = np.zeros(3)
             else:
@@ -603,7 +615,12 @@ def main() -> int:
                 "all_actuator_force": data.actuator_force.astype(float).tolist(),
                 "all_generalized_actuator_force": data.qfrc_actuator.astype(float).tolist(),
                 "bottle_root_qpos": data.qpos[bottle_qpos_id:bottle_qpos_id + 7].astype(float).tolist(),
-                "bottle_com_world_m": com.tolist(), "bottle_com_velocity_world_m_s": com_velocity.tolist(),
+                "bottle_com_world_m": com.tolist(),
+                "bottle_com_displacement_from_initial_world_m": (com - bottle_com_initial).tolist(),
+                "bottle_com_velocity_world_m_s": com_velocity.tolist(),
+                "bottle_com_linear_speed_m_s": linear_speed,
+                "bottle_freejoint_angular_qvel_rad_s": data.qvel[bottle_dof_id + 3:bottle_dof_id + 6].astype(float).tolist(),
+                "bottle_angular_speed_rad_s": angular_speed,
                 "bottle_com_acceleration_z_m_s2": com_acceleration_z,
                 "bottle_quat_world_xyzw": bottle_quat_xyzw,
                 "tcp_world_m": tcp_pos.tolist(), "tcp_rotation_world": tcp_rot.tolist(),
@@ -615,11 +632,60 @@ def main() -> int:
                 "follower_constraints": equality, "bottle_qpos_writes_after_start": 0,
             }, allow_nan=False) + "\n")
 
-            if settle_start_time is not None and operation == "INITIAL_SETTLE" and t >= settle_start_time + 0.5:
+            if settle_start_time is not None and operation == "INITIAL_SETTLE":
                 settle_support.append(bool(contacts["table_contact"]))
                 settle_support_rows.append(float(contacts["table_reaction_vertical_n"]))
                 settle_speed.append((linear_speed, angular_speed))
                 settle_balance_residual.append(balance_residual)
+                settle_samples.append({
+                    "time_s": t,
+                    "bottle_com_world_m": com.tolist(),
+                    "bottle_quat_world_xyzw": list(bottle_quat_xyzw),
+                    "bottle_com_linear_velocity_world_m_s": com_velocity.tolist(),
+                    "bottle_freejoint_angular_qvel_rad_s": data.qvel[bottle_dof_id + 3:bottle_dof_id + 6].astype(float).tolist(),
+                    "linear_speed_m_s": linear_speed,
+                    "angular_speed_rad_s": angular_speed,
+                    "table_contact": bool(contacts["table_contact"]),
+                    "table_reaction_vertical_n": float(contacts["table_reaction_vertical_n"]),
+                    "force_balance_residual_n": float(balance_residual),
+                })
+                if first_stable_settle_window is None and len(settle_samples) >= INITIAL_SETTLE_WINDOW_STEPS:
+                    window = settle_samples[-INITIAL_SETTLE_WINDOW_STEPS:]
+                    window_times = np.asarray([row["time_s"] for row in window], dtype=float)
+                    window_com = np.asarray([row["bottle_com_world_m"] for row in window], dtype=float)
+                    window_table = np.asarray([row["table_reaction_vertical_n"] for row in window], dtype=float)
+                    window_linear = np.asarray([row["linear_speed_m_s"] for row in window], dtype=float)
+                    window_angular = np.asarray([row["angular_speed_rad_s"] for row in window], dtype=float)
+                    window_contact = np.asarray([row["table_contact"] for row in window], dtype=bool)
+                    max_com_drift = float(np.max(np.linalg.norm(window_com - window_com[0], axis=1)))
+                    mean_table_reaction = float(np.mean(window_table))
+                    table_force_error = abs(mean_table_reaction - bottle_mass * GRAVITY)
+                    stable = bool(
+                        len(window) == INITIAL_SETTLE_WINDOW_STEPS
+                        and np.allclose(np.diff(window_times), EXPECTED_DT, rtol=0.0, atol=1e-12)
+                        and np.all(window_contact)
+                        and np.all(window_table > 0.0)
+                        and float(np.max(window_linear)) <= INITIAL_SETTLE_MAX_LINEAR_SPEED_M_S
+                        and float(np.max(window_angular)) <= INITIAL_SETTLE_MAX_ANGULAR_SPEED_RAD_S
+                        and max_com_drift <= INITIAL_SETTLE_MAX_COM_DRIFT_M
+                        and table_force_error <= INITIAL_SETTLE_TABLE_FORCE_TOLERANCE_N
+                    )
+                    if stable:
+                        first_stable_settle_window = {
+                            "start_time_s": float(window_times[0] - EXPECTED_DT),
+                            "end_time_s": float(window_times[-1]),
+                            "duration_s": float(len(window) * EXPECTED_DT),
+                            "sample_count": len(window),
+                            "table_contact_fraction": float(np.mean(window_contact)),
+                            "minimum_table_reaction_n": float(np.min(window_table)),
+                            "maximum_table_reaction_n": float(np.max(window_table)),
+                            "mean_table_reaction_n": mean_table_reaction,
+                            "bottle_weight_n": float(bottle_mass * GRAVITY),
+                            "mean_table_force_error_n": float(table_force_error),
+                            "maximum_linear_speed_m_s": float(np.max(window_linear)),
+                            "maximum_angular_speed_rad_s": float(np.max(window_angular)),
+                            "maximum_com_drift_m": max_com_drift,
+                        }
 
             actuator_ctrl_bad, actuator_force_bad = [], []
             for aid in range(model.nu):
@@ -725,11 +791,17 @@ def main() -> int:
             if safety_detail is not None:
                 first_failure = safety_detail
                 break
+            if stop_when is not None and stop_when():
+                early_stop_reason = "first_qualifying_stable_window"
+                break
+        actual_steps = total_steps - start_step
         return {
             "operation": operation, "episode_phase": gate_phase.value if gate_phase else None,
             "start_time_s": phase_start_time, "duration_s": float(data.time - phase_start_time),
-            "steps": total_steps - start_step, "completed": first_failure is None and total_steps - start_step == steps,
-            "bilateral_force_bearing_fraction": step_count_bilateral / max(1, total_steps - start_step),
+            "steps": actual_steps, "requested_steps": steps,
+            "completed": first_failure is None and (actual_steps == steps or early_stop_reason is not None),
+            "early_stop_reason": early_stop_reason,
+            "bilateral_force_bearing_fraction": step_count_bilateral / max(1, actual_steps),
             "force_bearing_contact_steps": contact_force_roles,
             "mean_table_reaction_vertical_n": float(np.mean(table_force_rows)) if table_force_rows else None,
             "minimum_clearance_lower_bounds_m": {k: (None if not math.isfinite(v) else v) for k, v in min_clear.items()},
@@ -744,21 +816,26 @@ def main() -> int:
     planned_cumulative = 0
     settle_start_time = float(data.time)
     try:
-        # Initial deterministic bottle settle happens before PREGRASP; it remains a separate diagnostic gate.
-        phase = run_segment("INITIAL_SETTLE", [qpre, qpre], 1.0, 0.0, 0.0,
-                            approach_clearance=True)
+        # Search for the first complete stable window, stopping no later than five seconds.
+        phase = run_segment("INITIAL_SETTLE", [qpre, qpre], INITIAL_SETTLE_MAX_DURATION_S, 0.0, 0.0,
+                            approach_clearance=True,
+                            stop_when=lambda: first_stable_settle_window is not None)
         phases_done.append(phase)
         initial_support_fraction = sum(settle_support) / max(1, len(settle_support))
         settle_speeds = [x[0] for x in settle_speed]
         settle_angular = [x[1] for x in settle_speed]
-        initial_settle_pass = bool(initial_support_fraction >= 0.95 and settle_speeds and settle_angular
-                                   and max(settle_speeds) <= 0.020 and max(settle_angular) <= 0.050)
-        initial_table_mean = float(np.mean(settle_support_rows)) if settle_support_rows else 0.0
-        initial_support_sign_check = bool(abs(initial_table_mean - bottle_mass * GRAVITY) <= 1.0)
+        initial_settle_pass = first_stable_settle_window is not None
+        initial_table_mean = (first_stable_settle_window["mean_table_reaction_n"]
+                              if first_stable_settle_window else
+                              (float(np.mean(settle_support_rows)) if settle_support_rows else 0.0))
+        initial_support_sign_check = initial_settle_pass
         if first_failure is None and not initial_settle_pass:
             first_failure = {"gate": "initial_bottle_settle", "support_fraction": initial_support_fraction,
                              "max_linear_speed_m_s": max(settle_speeds, default=None),
-                             "max_angular_speed_rad_s": max(settle_angular, default=None)}
+                             "max_angular_speed_rad_s": max(settle_angular, default=None),
+                             "search_duration_s": float(data.time - settle_start_time),
+                             "stable_window_found": False,
+                             "maximum_duration_s": INITIAL_SETTLE_MAX_DURATION_S}
         if first_failure is None and not initial_support_sign_check:
             first_failure = {"gate": "contact_force_sign_balance", "mean_table_force_n": initial_table_mean,
                              "bottle_weight_n": bottle_mass * GRAVITY}
@@ -894,7 +971,8 @@ def main() -> int:
     all_physical_safety = all(safety.values())
     episode_pass = (gate.status == "PASS" and first_failure is None and all_physical_safety
                     and args.prior_abort_steps + total_steps <= 30000)
-    phase_status = dict(gate.stage_status)
+    maximum_bottle_com_rise_m = max(bottle_com_z_trace) - float(bottle_com_initial[2])
+    phase_status = {"INITIAL_SETTLE": "PASS" if initial_settle_pass else "FAIL", **gate.stage_status}
     if first_failure and first_failure.get("gate") in phase_status:
         if phase_status[first_failure["gate"]] == "NOT_RUN":
             phase_status[first_failure["gate"]] = "FAIL"
@@ -904,7 +982,7 @@ def main() -> int:
         "classification": "SIMULATION_ONLY_DIAGNOSTIC_PHYSICAL_CONTACT_EPISODE",
         "status": "PASS_FULL_EPISODE" if episode_pass else "FAIL_OR_BLOCKED",
         "physics_run_completed": first_failure is None,
-        "physics_steps": total_steps, "prior_ordinary_runner_abort_steps": args.prior_abort_steps,
+        "physics_steps": total_steps, "prior_campaign_physics_steps": args.prior_abort_steps,
         "cumulative_episode_b_physics_steps": args.prior_abort_steps + total_steps,
         "physics_duration_s": float(data.time),
         "prior_aborted_attempts": [
@@ -914,6 +992,9 @@ def main() -> int:
             {"path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/robotiq-full-x2-episode-20261024T082915Z",
              "physics_steps": 1000,
              "reason": "runner TypeError while summarizing scalar table-reaction samples after initial settle"},
+            {"path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/robotiq-full-x2-episode-20261024T083219Z",
+             "physics_steps": 1000,
+             "reason": "runner defect used a fixed 1 s settle instead of the requested adaptive 5 s maximum"},
         ],
         "first_failure": first_failure,
         "experiment_gate": {
@@ -945,6 +1026,8 @@ def main() -> int:
         "physical_measurements": {
             "bottle_mass_kg": bottle_mass,
             "bottle_freejoint_qpos_initial": bottle_qpos_initial.tolist(),
+            "maximum_bottle_com_rise_m": maximum_bottle_com_rise_m,
+            "maximum_bottle_com_rise_mm": maximum_bottle_com_rise_m * 1000.0,
             "bottle_qpos_writes_after_start": 0,
             "bottle_attachment_active": False, "mocap_carry_active": False, "hidden_support_active": False,
             "left_hand_assistance": False,
@@ -957,6 +1040,19 @@ def main() -> int:
             "initial_settle_mean_force_balance_residual_n": float(np.mean(settle_balance_residual)) if settle_balance_residual else None,
             "initial_settle_max_linear_speed_m_s": max(settle_speeds, default=None),
             "initial_settle_max_angular_speed_rad_s": max(settle_angular, default=None),
+            "initial_settle_status": "PASS" if initial_settle_pass else "FAIL",
+            "initial_settle_search_duration_s": float(data.time - settle_start_time),
+            "initial_settle_stable_window": first_stable_settle_window,
+            "initial_settle_window_requirements": {
+                "sample_count": INITIAL_SETTLE_WINDOW_STEPS,
+                "duration_s": INITIAL_SETTLE_WINDOW_STEPS * EXPECTED_DT,
+                "maximum_linear_speed_m_s": INITIAL_SETTLE_MAX_LINEAR_SPEED_M_S,
+                "maximum_angular_speed_rad_s": INITIAL_SETTLE_MAX_ANGULAR_SPEED_RAD_S,
+                "maximum_com_drift_m": INITIAL_SETTLE_MAX_COM_DRIFT_M,
+                "maximum_mean_table_force_error_n": INITIAL_SETTLE_TABLE_FORCE_TOLERANCE_N,
+                "continuous_table_contact": True,
+                "positive_table_reaction_each_sample": True,
+            },
             "lift_path_waypoints": len(lift_plan),
             "transfer_path_waypoints": len(route_waypoints),
         },
@@ -999,8 +1095,9 @@ def main() -> int:
         f"Outcome: {result['status']}",
         f"EpisodeGate: {gate.status}",
         f"Physics: {total_steps} steps, {data.time:.3f} s at 1 ms",
-        f"Cumulative Experiment B steps including the ordinary diagnostic abort: {args.prior_abort_steps + total_steps}/30000.",
+        f"Cumulative Experiment B physics steps including all prior consumed attempts: {args.prior_abort_steps + total_steps}/30000.",
         f"First failure: {first_failure}",
+        f"Initial settle: {'PASS' if initial_settle_pass else 'FAIL'} after {data.time - settle_start_time:.3f} s; first stable window: {first_stable_settle_window}.",
         "",
         "## Stage status",
         "",
@@ -1011,6 +1108,8 @@ def main() -> int:
         f"- Bottle mass: {bottle_mass:.6f} kg; freejoint initialized once; post-start qpos writes: 0.",
         f"- Initial table-reaction mean: {initial_table_mean:.6f} N for a {bottle_mass * GRAVITY:.6f} N bottle.",
         f"- Initial force-balance residual mean: {float(np.mean(settle_balance_residual)) if settle_balance_residual else math.nan:.6f} N.",
+        f"- Initial settle peak speeds over the search: linear {max(settle_speeds, default=math.nan):.6f} m/s, angular {max(settle_angular, default=math.nan):.6f} rad/s.",
+        f"- Maximum bottle COM rise from initial state: {maximum_bottle_com_rise_m * 1000.0:.6f} mm.",
         f"- Tool upward support, table unloading, slip, bottle COM rise: see per-step traces and EpisodeGate frames.",
         f"- Minimum external clearance lower bounds: {result['physical_measurements']['minimum_clearance_lower_bounds_m']}.",
         "- MuJoCo contact-frame force was rotated using the documented geom1-to-geom2 normal and equal/opposite body forces.",
@@ -1018,7 +1117,7 @@ def main() -> int:
         "",
         "## Reproduction",
         "",
-        f"`cd {ROOT} && PYTHONDONTWRITEBYTECODE=1 {sys.executable} {Path(__file__).resolve()} --output-parent {args.output_parent} --prior-abort-steps {args.prior_abort_steps}`",
+        f"`cd {ROOT} && PYTHONDONTWRITEBYTECODE=1 {sys.executable} {Path(__file__).resolve()} --output-parent {args.output_parent} --max-duration-s 30.0 --prior-abort-steps {args.prior_abort_steps}`",
         "",
     ]
     pg.write_new_text(out / "REPORT.md", "\n".join(report), authorized_roots=(str(REVIEWS),), environment="wsl")
