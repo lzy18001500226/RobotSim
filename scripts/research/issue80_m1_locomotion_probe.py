@@ -4264,6 +4264,33 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         if waypoint_b_only:
             if args.route_turn_qualification_evidence:
                 raise ValueError("waypoint-B-only mode must not request turn qualification evidence")
+            if (
+                args.extra_stop_observation != 5.0
+                or args.pulse_duration != 1.0
+                or args.forward_speed != 0.2
+                or args.ramp_duration_s != 0.0
+                or args.ramp_start_speed is not None
+                or args.deceleration_duration_s != 0.0
+                or args.startup_speed is not None
+                or args.startup_transition_displacement is not None
+                or args.startup_transition_timeout_s != 0.0
+                or args.max_observed_planar_speed_m_s != 0.2
+                or args.zero_until_stand_timeout_s != 3.5
+                or not args.zero_only_stop
+            ):
+                raise ValueError(
+                    "waypoint-B-only profile requires fixed 5 s post-stop observation, "
+                    "default generic pulse fields, 0.2 m/s safety guard, 3.5 s STAND wait, "
+                    "and zero-only stop"
+                )
+            profile.update({
+                "waypoint_b_distance_m": 0.40,
+                "waypoint_b_tolerance_m": 0.15,
+                "per_window_nonzero_limit_s": 5.0,
+                "aggregate_transit_nonzero_limit_s": 10.0,
+                "minimum_windows_required": 2,
+                "route_nonzero_limit_s": 30.0,
+            })
         else:
             profile["route_turn_qualification_evidence"] = validate_route_turn_qualification_evidence(
                 args.route_turn_qualification_evidence
