@@ -93,7 +93,8 @@ from issue80_coordinated_pose_goal import (
 from issue80_m1_mode_logic import classify_set_mc_action_response
 from issue80_waypoint_route import (
     DirectiveKind, MotionFeedback, MotionStatus, PhysicalStopEvidence,
-    PhysicalStopStatus, PoseEstimate, SafetyObservation, WaypointRouteExecutor,
+    PhysicalStopStatus, PoseEstimate, RouteState, SafetyObservation,
+    WaypointRouteExecutor,
 )
 from issue80_route_motion_bridge import (
     ROUTE_WINDOW_ZERO_MARGIN_S, RouteMotionBridge, RouteMotionBridgeError, RuntimeReadiness,
@@ -2360,13 +2361,17 @@ class FocusedM1Diagnostic(Node):
         set_action: Mapping[str, Any],
         stationary_baseline: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Execute measured transit to B, bounded right turn, and transit to C."""
+        """Execute measured waypoint-B-only or the separately scoped three-step route."""
+        waypoint_b_only = bool(getattr(self.args, "route_waypoint_b_only", False))
         result: dict[str, Any] = {
-            "classification": "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION",
+            "classification": (
+                "SIMULATION_ONLY_WAYPOINT_B_AND_PHYSICAL_STOP"
+                if waypoint_b_only else "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION"
+            ),
             "status": "NOT_RUN",
             "route_attempt_id": self.args.attempt_id,
             "segments": [],
-            "second_transit": "REQUIRED_PENDING",
+            "route_scope": "WAYPOINT_B_ONLY" if waypoint_b_only else "B_RIGHT_TURN_C",
             "fault": None,
         }
         evidence_root = Path(self.args.output_dir)
@@ -2377,11 +2382,14 @@ class FocusedM1Diagnostic(Node):
             workcell = json.loads(workcell_path.read_text(encoding="utf-8"))
             if workcell.get("status") != "PASS":
                 raise ValueError("host workcell geometry preflight did not pass")
-            turn_provenance = validate_route_turn_qualification_evidence(
-                self.args.route_turn_qualification_evidence
-            )
+            turn_provenance = None
+            if not waypoint_b_only:
+                turn_provenance = validate_route_turn_qualification_evidence(
+                    self.args.route_turn_qualification_evidence
+                )
             result["workcell_geometry_preflight"] = workcell
-            result["qualified_right_turn_evidence"] = turn_provenance
+            if turn_provenance is not None:
+                result["qualified_right_turn_evidence"] = turn_provenance
         except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
             result["status"] = "BLOCKED"
             result["fault"] = f"route_preflight:{type(exc).__name__}:{exc}"
@@ -2506,11 +2514,14 @@ class FocusedM1Diagnostic(Node):
                 start_pose=start_pose,
                 robot_footprint_radius_m=footprint,
                 local_clear_radius_m=clear_radius,
-                right_turn_qualified=True,
+                right_turn_qualified=turn_provenance is not None,
+                waypoint_b_only=waypoint_b_only,
+                waypoint_b_distance_m=0.40 if waypoint_b_only else 0.35,
             )
             transit_x, transit_y = route.steps[0].x_m, route.steps[0].y_m
-            next_x, next_y = route.steps[2].x_m, route.steps[2].y_m
-            corner_yaw = math.atan2(next_y - transit_y, next_x - transit_x)
+            if not waypoint_b_only:
+                next_x, next_y = route.steps[2].x_m, route.steps[2].y_m
+                corner_yaw = math.atan2(next_y - transit_y, next_x - transit_x)
             corridor_half_width = footprint + 0.10 + 0.05
             ideal_turn_lateral_m = (TURN_FORWARD_COMMAND_M_S / TURN_COMMAND_RAD_S) * (
                 1.0 - math.cos(TURN_COMMAND_RAD_S * TURN_PULSE_S)
@@ -2543,7 +2554,7 @@ class FocusedM1Diagnostic(Node):
             publishers = scope.get("velocity_publishers", [])
             subscribers = scope.get("velocity_subscribers", [])
             expected_domain = int(os.environ.get("ROS_DOMAIN_ID", "-1"))
-            turn_evidence_id = str(turn_provenance["sha256"])
+            turn_evidence_id = str(turn_provenance["sha256"]) if turn_provenance else ""
 
             def same_sample_handshake(snapshot: Mapping[str, Any]) -> bool:
                 times = snapshot.get("readback_monotonic_s")
@@ -2592,10 +2603,10 @@ class FocusedM1Diagnostic(Node):
                     workspace_clearance_verified=workcell.get("status") == "PASS",
                     corridor_clear=True,
                     swept_path_clear=True,
-                    bounded_moving_turn_qualified=True,
-                    qualified_turn_directions=("RIGHT",),
-                    turn_stop_margin_m=0.05,
-                    turn_stop_margin_direction="RIGHT",
+                    bounded_moving_turn_qualified=turn_provenance is not None,
+                    qualified_turn_directions=("RIGHT",) if turn_provenance else (),
+                    turn_stop_margin_m=0.05 if turn_provenance else None,
+                    turn_stop_margin_direction="RIGHT" if turn_provenance else "",
                     turn_stop_margin_evidence_id=turn_evidence_id,
                     transport_isolated=(scope.get("status") == "PASS" and scope.get("docker_network_mode") == "bridge"),
                     publisher_identity_verified=(
@@ -2624,7 +2635,7 @@ class FocusedM1Diagnostic(Node):
                 raise ValueError(f"route bridge refused transit proposal: {transit_plan.status}: {transit_plan.reason}")
             if abs(transit_plan.angular_rad_s) > 0.002:
                 raise ValueError("straight route transit requires an angular command unsupported by its fixed-forward M1 segment")
-            result["route_spec"] = {
+            route_spec = {
                 "route_id": route.route_id,
                 "frame_id": route.frame_id,
                 "start_anchor": {"x_m": route.start_x_m, "y_m": route.start_y_m, "yaw_rad": route.start_yaw_rad},
@@ -2636,38 +2647,52 @@ class FocusedM1Diagnostic(Node):
                     for step in route.steps
                 ],
                 "corridor_half_width_m": corridor_half_width,
-                "turn_corridor_half_width_m": turn_corridor_half_width,
-                "expected_ideal_turn_lateral_m": ideal_turn_lateral_m,
                 "corridor_longitudinal_limits_m": [-0.75, 1.25],
-                "turn_corridor_longitudinal_limits_m": [-0.75, 1.25],
                 "maximum_centerline_lateral_error_m": 0.05,
-                "waypoint_b_c_center_distance_m": math.hypot(
-                    route.steps[2].x_m - route.steps[0].x_m,
-                    route.steps[2].y_m - route.steps[0].y_m,
-                ),
-                "waypoint_b_c_region_gap_m": (
-                    math.hypot(
-                        route.steps[2].x_m - route.steps[0].x_m,
-                        route.steps[2].y_m - route.steps[0].y_m,
-                    )
-                    - route.steps[0].position_tolerance_m
-                    - route.steps[2].position_tolerance_m
-                ),
-                "minimum_waypoint_c_distance_after_max_turn_displacement_m": (
-                    math.hypot(
-                        route.steps[2].x_m - route.steps[0].x_m,
-                        route.steps[2].y_m - route.steps[0].y_m,
-                    )
-                    - float(route.steps[1].maximum_turn_displacement_m)
-                ),
                 "robot_footprint_radial_upper_bound_m": footprint,
                 "boundary_margin_m": route.corridor_boundary_margin_m,
                 "pose_uncertainty_note": "installed simulator ground-truth odometry publishes no covariance; route uses zero covariance only as the deterministic ground-truth contract, not as an estimated localization confidence",
             }
+            if waypoint_b_only:
+                route_spec["waypoint_b_target_distance_from_start_m"] = math.hypot(
+                    route.steps[0].x_m - start_pose.x_m,
+                    route.steps[0].y_m - start_pose.y_m,
+                )
+                route_spec["waypoint_b_target_selection"] = (
+                    "0.40 m based on prior measured 0.174 m active-window travel and "
+                    "0.127 m post-stop net travel, shortened from prior 0.50 m target; "
+                    "0.15 m arrival tolerance retained"
+                )
+            else:
+                route_spec.update({
+                    "turn_corridor_half_width_m": turn_corridor_half_width,
+                    "expected_ideal_turn_lateral_m": ideal_turn_lateral_m,
+                    "turn_corridor_longitudinal_limits_m": [-0.75, 1.25],
+                    "waypoint_b_c_center_distance_m": math.hypot(
+                        route.steps[2].x_m - route.steps[0].x_m,
+                        route.steps[2].y_m - route.steps[0].y_m,
+                    ),
+                    "waypoint_b_c_region_gap_m": (
+                        math.hypot(
+                            route.steps[2].x_m - route.steps[0].x_m,
+                            route.steps[2].y_m - route.steps[0].y_m,
+                        )
+                        - route.steps[0].position_tolerance_m
+                        - route.steps[2].position_tolerance_m
+                    ),
+                    "minimum_waypoint_c_distance_after_max_turn_displacement_m": (
+                        math.hypot(
+                            route.steps[2].x_m - route.steps[0].x_m,
+                            route.steps[2].y_m - route.steps[0].y_m,
+                        )
+                        - float(route.steps[1].maximum_turn_displacement_m)
+                    ),
+                })
+            result["route_spec"] = route_spec
             result["route_motion_bridge"] = {
                 "transit_window": dict(transit_plan.__dict__),
                 "turn_margin_source": turn_provenance,
-                "turn_displacement_guard": {
+                "turn_displacement_guard": None if waypoint_b_only else {
                     "maximum_m": 0.25,
                     "stop_reserve_m": 0.05,
                     "active_trigger_m": 0.20,
@@ -3086,6 +3111,8 @@ class FocusedM1Diagnostic(Node):
             transit_zero_start = float(transit_gate.get("zero_start_monotonic_s", 0.0))
             zero_plan = transit_summary.get("zero_plan")
             transit_stop_rearmed = bool(transit_summary.get("bridge_stop_rearmed"))
+            after_transit = transit_summary.get("next_directive")
+            route_after_transit = transit_summary.get("final_snapshot")
             if not transit_stop_rearmed:
                 zero_plan = bridge.zero_window(
                     route_motion.latest,
@@ -3135,6 +3162,142 @@ class FocusedM1Diagnostic(Node):
                     result["status"] = "BLOCKED"
                     result["fault"] = f"route rejected waypoint B stop evidence: {after_transit.reason}"
                     return result
+
+            if waypoint_b_only:
+                if after_transit is None or after_transit.kind is not DirectiveKind.COMPLETE:
+                    result["status"] = "BLOCKED"
+                    result["fault"] = "waypoint_b_only_route_did_not_complete_after_physical_stop"
+                    result["route_events"] = route_events + route_motion.events
+                    result["route_total_nonzero_command_time_s"] = route_total_nonzero_s
+                    return result
+                final_b_snapshot = self.sample_for_first_motion()
+                try:
+                    final_b_pose = pose_provider.update(final_b_snapshot)
+                except (KeyError, TypeError, ValueError) as exc:
+                    result["status"] = "BLOCKED"
+                    result["fault"] = f"waypoint_b_poststop_pose:{type(exc).__name__}:{exc}"
+                    return result
+                final_b_fault = snapshot_fault(
+                    final_b_snapshot,
+                    self.joint_limits,
+                    state_timeout_s=self.args.state_timeout,
+                    min_root_z=self.args.min_root_z,
+                    max_tilt_deg=self.args.max_tilt_deg,
+                    max_observed_planar_speed_m_s=0.2,
+                )
+                b_arrival = route_arrival_poses.get(route.steps[0].waypoint_id)
+                b_arrival_error = (
+                    math.hypot(
+                        route.steps[0].x_m - b_arrival["x_m"],
+                        route.steps[0].y_m - b_arrival["y_m"],
+                    )
+                    if b_arrival else None
+                )
+                b_poststop_error = math.hypot(
+                    route.steps[0].x_m - final_b_pose.x_m,
+                    route.steps[0].y_m - final_b_pose.y_m,
+                )
+                b_tolerance = route.steps[0].position_tolerance_m
+                b_window_segments = [
+                    segment for segment in result["segments"]
+                    if str(segment.get("segment_id", "")).startswith("TRANSIT-TO-CORNER-WINDOW-")
+                ]
+                b_nonzero_s = sum(
+                    float((segment.get("result") or {}).get("route_window_measured_nonzero_elapsed_s", 0.0))
+                    for segment in b_window_segments
+                )
+                b_multwindow_pass = len(b_window_segments) >= 2
+                b_arrival_pass = (
+                    route_stop_reason is not None
+                    and b_arrival_error is not None
+                    and b_arrival_error <= b_tolerance
+                )
+                b_stop_pass = (
+                    transit_gate.get("status") == "PASS"
+                    and transit_stop_rearmed
+                    and not final_b_fault
+                    and stand_mode_readback_confirmed(final_b_snapshot)
+                )
+                b_source_mode_pass = bool(b_window_segments) and all(
+                    (segment.get("result") or {}).get("control_handshake_confirmed") is True
+                    for segment in b_window_segments
+                )
+                b_runtime_connected = (
+                    scope.get("status") == "PASS"
+                    and len(publishers) == 1
+                    and len(subscribers) == 1
+                    and local_identity.get("is_owned_publisher") is True
+                    and local_identity.get("node_topic_publisher_count") == 1
+                    and bool(scope.get("verified_mc_runtime_identity"))
+                    and registration.get("success") is True
+                    and set_action.get("accepted_by_service") is True
+                )
+                b_budget_pass = (
+                    b_nonzero_s <= 10.0 + 1e-6
+                    and route_total_nonzero_s <= 30.0 + 1e-6
+                    and all(
+                        float((segment.get("result") or {}).get("route_window_measured_nonzero_elapsed_s", math.inf))
+                        <= 5.0 + 1e-6
+                        for segment in b_window_segments
+                    )
+                )
+                b_gates = {
+                    "REAL_RUNTIME_CONNECTED": "PASS" if b_runtime_connected else "FAIL",
+                    "RESET_STAND": "PASS" if (
+                        getattr(self.args, "reset_gate_verified", False)
+                        and stand_mode_readback_confirmed(initial)
+                        and not initial_fault
+                    ) else "FAIL",
+                    "SOURCE_MODE_HANDSHAKE": "PASS" if b_source_mode_pass else "FAIL",
+                    "MULTI_WINDOW_TRANSIT": "PASS" if b_multwindow_pass else "FAIL",
+                    "WAYPOINT_B_ARRIVAL": "PASS" if b_arrival_pass else "FAIL",
+                    "PHYSICAL_STOP": "PASS" if b_stop_pass else "FAIL",
+                    "TRANSIT_AND_ROUTE_BUDGETS": "PASS" if b_budget_pass else "FAIL",
+                    "ROUTE_COMPLETE": "PASS" if executor.state is RouteState.COMPLETE else "FAIL",
+                }
+                route_pass = all(value == "PASS" for value in b_gates.values())
+                result.update({
+                    "status": "PASS" if route_pass else "BLOCKED",
+                    "classification": (
+                        "SIMULATION_ONLY_WAYPOINT_B_AND_PHYSICAL_STOP_PASS"
+                        if route_pass else "SIMULATION_ONLY_WAYPOINT_B_BLOCKED"
+                    ),
+                    "route_gates": b_gates,
+                    "route_state_after_waypoint_b": executor.state.value,
+                    "route_events": route_events + route_motion.events,
+                    "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                    "route_total_nonzero_command_time_limit_s": 30.0,
+                    "waypoint_b_transit_nonzero_command_time_s": b_nonzero_s,
+                    "waypoint_b_transit_nonzero_command_time_limit_s": 10.0,
+                    "waypoint_b_arrival": {
+                        "waypoint_id": route.steps[0].waypoint_id,
+                        "target_x_m": route.steps[0].x_m,
+                        "target_y_m": route.steps[0].y_m,
+                        "arrival_pose": b_arrival,
+                        "arrival_error_m": b_arrival_error,
+                        "poststop_pose": {
+                            "x_m": final_b_pose.x_m,
+                            "y_m": final_b_pose.y_m,
+                            "yaw_rad": final_b_pose.yaw_rad,
+                            "stamp_ns": final_b_pose.stamp_ns,
+                        },
+                        "poststop_error_m": b_poststop_error,
+                        "tolerance_m": b_tolerance,
+                    },
+                    "window_count": len(b_window_segments),
+                    "physical_stop_gate": transit_gate,
+                    "limitation": (
+                        "This run ends at waypoint B. No right turn, waypoint C, larger route, "
+                        "Nav2, LiDAR, or hardware navigation is validated."
+                    ),
+                })
+                if not route_pass:
+                    result["fault"] = (
+                        f"waypoint_b_gates_failed:"
+                        f"{','.join(name for name,value in b_gates.items() if value != 'PASS')}"
+                    )
+                return result
+
             route_after_transit = self.sample_for_first_motion()
             route_pose = pose_provider.update(route_after_transit)
             active = executor.active_step
@@ -3662,6 +3825,8 @@ class FocusedM1Diagnostic(Node):
             "acceptance_scope": (
                 "SIMULATION_ONLY direct MuJoCo ground-truth point-goal; not Nav2, localization, LiDAR, or manufacturer-original acceptance"
                 if getattr(self.args, "point_goal_diagnostic", False)
+                else "SIMULATION_ONLY measured waypoint-B transit and physical stop only; no turn, C waypoint, or Nav2 acceptance"
+                if getattr(self.args, "route_waypoint_b_only", False)
                 else "SIMULATION_ONLY waypoint route manager + route bridge to M1 transit and right-turn; not a full route or Nav2 acceptance"
                 if getattr(self.args, "route_integration", False)
                 else "SIMULATION_ONLY derived-configuration left/right turning and physical-stop validation; "
@@ -3719,9 +3884,12 @@ class FocusedM1Diagnostic(Node):
             result["pulse_limit_s"] = TURN_PULSE_S
             result["total_turn_command_window_s"] = TURN_FORWARD_WARMUP_S + TURN_PULSE_S
         if getattr(self.args, "route_integration", False):
-            result["forward_command_m_s"] = POINT_GOAL_COMMAND_M_S
-            result["pulse_limit_s"] = 5.0
+            result["forward_command_m_s"] = TURN_FORWARD_COMMAND_M_S
+            result["pulse_limit_s"] = 10.0 if getattr(self.args, "route_waypoint_b_only", False) else 5.0
             result["route_action_window_limit_s"] = 5.0
+            if getattr(self.args, "route_waypoint_b_only", False):
+                result["route_transit_nonzero_limit_s"] = 10.0
+                result["route_total_nonzero_limit_s"] = 30.0
         try:
             result["transport_scope"] = self.check_transport_scope()
             self.wait_for_standing()
@@ -4091,9 +4259,17 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     profile: dict[str, Any] = {"point_goal": False}
     if getattr(args, "route_integration", False):
         profile["route_integration"] = True
-        profile["route_turn_qualification_evidence"] = validate_route_turn_qualification_evidence(
-            args.route_turn_qualification_evidence
-        )
+        waypoint_b_only = bool(getattr(args, "route_waypoint_b_only", False))
+        profile["route_waypoint_b_only"] = waypoint_b_only
+        if waypoint_b_only:
+            if args.route_turn_qualification_evidence:
+                raise ValueError("waypoint-B-only mode must not request turn qualification evidence")
+        else:
+            profile["route_turn_qualification_evidence"] = validate_route_turn_qualification_evidence(
+                args.route_turn_qualification_evidence
+            )
+    elif getattr(args, "route_waypoint_b_only", False):
+        raise ValueError("route-waypoint-b-only requires --route-integration")
     if args.point_goal_diagnostic:
         heading_change = float(args.heading_change_rad)
         if not math.isfinite(heading_change) or abs(heading_change) > POINT_GOAL_MAX_HEADING_CHANGE_RAD:
@@ -4265,6 +4441,7 @@ def main() -> int:
     first.add_argument("--turning-diagnostic", action="store_true")
     first.add_argument("--right-turn-qualification", action="store_true")
     first.add_argument("--route-integration", action="store_true")
+    first.add_argument("--route-waypoint-b-only", action="store_true")
     first.add_argument("--route-turn-qualification-evidence", default=None)
     first.add_argument("--point-goal-diagnostic", action="store_true")
     first.add_argument("--heading-change-rad", type=float, default=0.0)

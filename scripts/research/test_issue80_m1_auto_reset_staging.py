@@ -108,6 +108,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             startup_transition_timeout_s=0.0,
             run65_right_turn_qualification=True,
             run65_route_integration=False,
+            run65_waypoint_b_only=False,
         )
         turn_command = shlex.split(build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1])
         self.assertIn("--right-turn-qualification", turn_command)
@@ -123,6 +124,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(route_command[evidence_index + 1], "/workspace/evidence/route_turn_qualification_evidence.json")
         self.assertIn("--zero-only-stop", route_command)
         self.assertNotIn("--right-turn-qualification", route_command)
+
+        args.run65_route_integration = False
+        args.run65_waypoint_b_only = True
+        b_only_command = shlex.split(
+            build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--route-integration", b_only_command)
+        self.assertIn("--route-waypoint-b-only", b_only_command)
+        self.assertIn("--zero-only-stop", b_only_command)
+        self.assertIn("--max-observed-planar-speed-m-s", b_only_command)
+        self.assertNotIn("--route-turn-qualification-evidence", b_only_command)
 
     def test_route_workcell_preflight_accepts_only_pinned_infinite_floor_scene(self):
         from issue80_m1_auto_reset_run import ROUTE_SCENE_RELATIVE, ROUTE_X2_RELATIVE

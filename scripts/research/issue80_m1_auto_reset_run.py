@@ -509,6 +509,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run48_low_cruise_baseline_diagnostic", "run49_smoothstop_diagnostic",
         "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
         "run65_right_turn_qualification", "run65_route_integration",
+        "run65_waypoint_b_only",
     )
     if any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += " --max-observed-planar-speed-m-s 0.2"
@@ -518,7 +519,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run46_startup_cruise_threshold_diagnostic", "run48_low_cruise_baseline_diagnostic",
         "run49_smoothstop_diagnostic", "run50_threshold_respecting_smoothstop_diagnostic",
         "run53_turning_diagnostic", "run65_right_turn_qualification",
-        "run65_route_integration",
+        "run65_route_integration", "run65_waypoint_b_only",
     )
     if any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
@@ -528,6 +529,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run48_low_cruise_baseline_diagnostic", "run49_smoothstop_diagnostic",
         "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
         "run65_right_turn_qualification", "run65_route_integration",
+        "run65_waypoint_b_only",
     )
     if any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
@@ -544,6 +546,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             " --route-integration --route-turn-qualification-evidence "
             "/workspace/evidence/route_turn_qualification_evidence.json"
         )
+    if getattr(args, "run65_waypoint_b_only", False):
+        command[-1] += " --route-integration --route-waypoint-b-only"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -1156,8 +1160,9 @@ class BoundedRun:
         run65_point_goal = run65_point_goal_enabled(self.args)
         run65_right_turn = bool(getattr(self.args, "run65_right_turn_qualification", False))
         run65_route = bool(getattr(self.args, "run65_route_integration", False))
-        run65_overlay = run65_point_goal or run65_right_turn or run65_route
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route))
+        run65_waypoint_b_only = bool(getattr(self.args, "run65_waypoint_b_only", False))
+        run65_overlay = run65_point_goal or run65_right_turn or run65_route or run65_waypoint_b_only
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_only))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -1237,7 +1242,7 @@ class BoundedRun:
         manifest["command_speed_m_s"] = (
             TURN_FORWARD_COMMAND_M_S if run53
             else POINT_GOAL_FORWARD_COMMAND_M_S if run65_point_goal
-            else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route)
+            else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route or run65_waypoint_b_only)
             else float(self.args.forward_speed)
         )
         manifest["command_profile"] = ({
@@ -1316,6 +1321,19 @@ class BoundedRun:
                 "displacement-trigger_m": 0.20,
                 "each_M1_action_window_cap_s": 5.0,
                 "second_transit": "OPTIONAL_NOT_EXECUTED_IN_THIS_SHORT_ROUTE_TRIAL",
+            }
+        if run65_waypoint_b_only:
+            manifest["command_profile"] = {
+                "shape": "measured-multi-window-waypoint-B-only",
+                "waypoint_b_distance_from_start_m": 0.40,
+                "waypoint_b_position_tolerance_m": 0.15,
+                "transit_forward_m_s": TURN_FORWARD_COMMAND_M_S,
+                "per_window_nonzero_limit_s": 5.0,
+                "aggregate_waypoint_b_nonzero_limit_s": 10.0,
+                "route_nonzero_limit_s": 30.0,
+                "pre_deadline_zero_margin_s": 0.02,
+                "inter_window_requirement": "fresh measured pose, safe state and physical-stop PASS before replanning",
+                "post_waypoint_actions": "zero-only physical stop verification; right turn and waypoint C NOT RUN",
             }
         manifest_path = self.evidence / "foundationwalk_config_overlay_manifest.json"
         with manifest_path.open("x", encoding="utf-8") as stream:
@@ -2474,7 +2492,11 @@ class BoundedRun:
             result["fault"] = "explicit maintainer standing-takeover or first-motion authorization is required before runtime"
             return result
         try:
-            if getattr(self.args, "run65_right_turn_qualification", False) or getattr(self.args, "run65_route_integration", False):
+            if (
+                getattr(self.args, "run65_right_turn_qualification", False)
+                or getattr(self.args, "run65_route_integration", False)
+                or getattr(self.args, "run65_waypoint_b_only", False)
+            ):
                 workcell = inspect_route_workcell_geometry(RUNTIME)
                 geometry_path = self.evidence / "workcell_geometry_preflight.json"
                 with geometry_path.open("x", encoding="utf-8") as stream:
@@ -2555,13 +2577,19 @@ class BoundedRun:
                 result["outcome_classification"] = self.outcome_classification
                 result["status"] = "PASS" if status == "PASS" else "BLOCKED"
                 return result
-            if getattr(self.args, "run65_route_integration", False):
+            if (
+                getattr(self.args, "run65_route_integration", False)
+                or getattr(self.args, "run65_waypoint_b_only", False)
+            ):
                 route = m1.get("route_integration")
                 result["route_integration"] = route
                 route_pass = isinstance(route, Mapping) and route.get("status") == "PASS"
                 self.outcome_classification = (
-                    "SIMULATION_ONLY_SHORT_ROUTE_TRANSIT_AND_RIGHT_TURN_PASS"
-                    if route_pass else "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION_BLOCKED"
+                    str(route.get("classification"))
+                    if route_pass and isinstance(route, Mapping)
+                    else "SIMULATION_ONLY_WAYPOINT_B_AND_PHYSICAL_STOP_BLOCKED"
+                    if getattr(self.args, "run65_waypoint_b_only", False)
+                    else "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION_BLOCKED"
                 )
                 result["outcome_classification"] = self.outcome_classification
                 result["status"] = "PASS" if route_pass else "BLOCKED"
@@ -2805,6 +2833,11 @@ def main() -> int:
         help="execute one short measured waypoint transit and evidence-qualified bounded right corner through M1",
     )
     parser.add_argument(
+        "--run65-waypoint-b-only",
+        action="store_true",
+        help="execute one measured multi-window transit to waypoint B, verify physical stop, then end the route",
+    )
+    parser.add_argument(
         "--route-turn-evidence",
         default=None,
         help="governed m1_first_motion_result.json from the passing right-turn qualification run",
@@ -2845,6 +2878,7 @@ def main() -> int:
         args.run53_turning_diagnostic,
         args.run65_right_turn_qualification,
         args.run65_route_integration,
+        args.run65_waypoint_b_only,
         args.run65_ground_truth_point_goal,
     )
     if sum(diagnostic_variants) > 1:
@@ -2906,6 +2940,21 @@ def main() -> int:
             ):
                 parser.error(
                     "route integration requires the fixed 5-second zero-stop observation and default generic pulse fields"
+                )
+        elif args.run65_waypoint_b_only:
+            if (
+                abs(args.extra_stop_observation - 5.0) > 1e-9
+                or args.pulse_duration != 1.0
+                or abs(args.forward_speed - 0.2) > 1e-9
+                or args.ramp_duration_s != 0.0
+                or args.ramp_start_speed is not None
+                or args.startup_speed is not None
+                or args.startup_transition_displacement is not None
+                or args.startup_transition_timeout_s != 0.0
+            ):
+                parser.error(
+                    "waypoint-B-only run requires the fixed 5-second zero-stop observation "
+                    "and default generic pulse fields"
                 )
         else:
             if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic:

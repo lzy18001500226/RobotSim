@@ -156,12 +156,14 @@ def build_short_right_corner_route(
     robot_footprint_radius_m: float,
     local_clear_radius_m: float,
     right_turn_qualified: bool,
+    waypoint_b_only: bool = False,
+    waypoint_b_distance_m: float = 0.35,
 ) -> RouteSpec:
     """Build the bounded transit/corner/continuation geometry from a measured start.
 
-    The corner corridor includes the authored forward-arc envelope plus the
-    existing 50 mm unintended-drift allowance. Runtime still has to enforce the
-    separate turn-origin displacement cutoff and all measured safety gates.
+    waypoint_b_only builds a one-step route for the first waypoint milestone.
+    The full three-step route remains available for a later separately authorized
+    B -> right corner -> C trial.
     """
     if (
         not route_id
@@ -169,18 +171,22 @@ def build_short_right_corner_route(
         or start_pose.child_frame_id != "base_link"
         or not all(_finite_number(value) for value in (
             start_pose.x_m, start_pose.y_m, start_pose.yaw_rad,
-            robot_footprint_radius_m, local_clear_radius_m,
+            robot_footprint_radius_m, local_clear_radius_m, waypoint_b_distance_m,
         ))
         or robot_footprint_radius_m <= 0.0
         or local_clear_radius_m <= robot_footprint_radius_m + 0.10
+        or waypoint_b_distance_m <= 0.15
+        or waypoint_b_distance_m > 0.75
+        or (not waypoint_b_only and not right_turn_qualified)
     ):
         raise ValueError("measured start pose or verified open-floor clearance is invalid")
 
-    # The 0.35 m first leg needs only 0.20 m of progress to enter B's 0.15 m
-    # arrival region. B and C are 0.45 m apart: their 0.15 m regions have a
-    # 0.15 m gap, and the qualified turn's 0.25 m total displacement cannot
-    # enter C before the explicit C transit.
-    transit_to_b_m = 0.35
+    # B is shortened to 0.40 m for this task. Its 0.15 m arrival region begins
+    # after 0.25 m of progress; the prior measured first window produced 0.174 m
+    # active travel and 0.127 m after its stop hold, so two bounded windows are
+    # required by the observed response. The full-route C target stays 0.45 m
+    # beyond B.
+    transit_to_b_m = waypoint_b_distance_m
     waypoint_b_to_c_m = 0.45
     right_turn_delta_rad = -0.12  # A2 measured -0.122523 rad; stay inside its qualified arc.
     boundary_margin_m = 0.10
@@ -273,11 +279,22 @@ def build_short_right_corner_route(
             maximum_turn_displacement_m=maximum_turn_displacement_m if is_corner else None,
         )
 
+    steps = (
+        step("TRANSIT-TO-CORNER", transit_x, transit_y, Profile.TRANSIT, 0.15,
+             YawPolicy.IGNORE, None, approach_corridor),
+    ) if waypoint_b_only else (
+        step("TRANSIT-TO-CORNER", transit_x, transit_y, Profile.TRANSIT, 0.15,
+             YawPolicy.IGNORE, None, approach_corridor),
+        step("RIGHT-CORNER", transit_x, transit_y, Profile.CORNER, 0.20,
+             YawPolicy.NEXT_SEGMENT, 0.03, approach_corridor, is_corner=True),
+        step("TRANSIT-AFTER-RIGHT-CORNER", next_x, next_y, Profile.TRANSIT, 0.15,
+             YawPolicy.IGNORE, None, continuation_corridor),
+    )
     route = RouteSpec(
         route_id=route_id,
         frame_id="odom",
         workspace_verified=True,
-        bounded_moving_turn_qualified=right_turn_qualified,
+        bounded_moving_turn_qualified=right_turn_qualified if not waypoint_b_only else False,
         zero_forward_turn_qualified=False,
         start_x_m=start_pose.x_m,
         start_y_m=start_pose.y_m,
@@ -291,14 +308,7 @@ def build_short_right_corner_route(
         max_safety_age_s=0.50,
         max_position_std_m=0.01,
         max_yaw_std_rad=0.05,
-        steps=(
-            step("TRANSIT-TO-CORNER", transit_x, transit_y, Profile.TRANSIT, 0.15,
-                 YawPolicy.IGNORE, None, approach_corridor),
-            step("RIGHT-CORNER", transit_x, transit_y, Profile.CORNER, 0.20,
-                 YawPolicy.NEXT_SEGMENT, 0.03, approach_corridor, is_corner=True),
-            step("TRANSIT-AFTER-RIGHT-CORNER", next_x, next_y, Profile.TRANSIT, 0.15,
-                 YawPolicy.IGNORE, None, continuation_corridor),
-        ),
+        steps=steps,
     )
     route.validate()
     return route

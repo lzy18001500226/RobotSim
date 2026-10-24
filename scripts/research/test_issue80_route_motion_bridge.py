@@ -117,6 +117,135 @@ def turn_directive(**overrides) -> RouteDirective:
 
 
 class RouteMotionBridgeTests(unittest.TestCase):
+    def test_waypoint_b_only_route_reaches_b_after_measured_two_window_transit_and_stop(self) -> None:
+        start = make_pose()
+        route = build_short_right_corner_route(
+            route_id="waypoint-b-only",
+            start_pose=start,
+            robot_footprint_radius_m=0.41565748847422734,
+            local_clear_radius_m=2.0,
+            right_turn_qualified=False,
+            waypoint_b_only=True,
+            waypoint_b_distance_m=0.40,
+        )
+        self.assertEqual(len(route.steps), 1)
+        self.assertFalse(route.bounded_moving_turn_qualified)
+        target = route.steps[0]
+        self.assertEqual(target.waypoint_id, "TRANSIT-TO-CORNER")
+        self.assertEqual(target.stop_behavior.value, "VERIFY_PHYSICAL_STOP")
+        self.assertAlmostEqual(target.position_tolerance_m, 0.15)
+        self.assertAlmostEqual(math.hypot(target.x_m - start.x_m, target.y_m - start.y_m), 0.40)
+        self.assertAlmostEqual(target.max_command_window_s, 10.0)
+
+        class PoseStore:
+            def __init__(self):
+                self.pose = start
+
+            def latest_pose(self, target_frame, now_steady_s):
+                return self.pose if target_frame == "odom" else None
+
+        class SafetyStore:
+            def latest_observation(self, segment_id, frame_id, now_steady_s):
+                return SafetyObservation(segment_id, frame_id, now_steady_s, True, True, 2.0)
+
+        class MotionStore:
+            def dispatch(self, directive):
+                self.latest = directive
+
+            def request_zero_and_stop(self, reason, requested_steady_s):
+                return requested_steady_s
+
+        pose_store = PoseStore()
+        executor = WaypointRouteExecutor(route, pose_store, SafetyStore(), MotionStore())
+        directive = executor.start(10.0, MotionFeedback(
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=False,
+            safety_gates_pass=True,
+            initial_activation_authorized=True,
+        ))
+        bridge = RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.0)
+        first = bridge.plan_next(directive, pose_store.pose, readiness(), now_steady_s=10.0)
+        self.assertEqual(first.maximum_duration_s, 5.0)
+        bridge.complete_window(first.window_id, actual_elapsed_s=4.98)
+
+        first_stop = {
+            "status": "PASS",
+            "window_start_steady_s": 15.01,
+            "window_end_steady_s": 16.92,
+            "sample_count": 40,
+            "maximum_sample_gap_s": 0.08,
+            "maximum_state_age_s": 0.2,
+            "generation": "episode-1",
+        }
+        bridge.zero_window(directive, now_steady_s=15.0, reason="first B transit window")
+        self.assertTrue(bridge.confirm_physical_stop(
+            first_stop, zero_request_started_s=15.0, now_steady_s=16.95,
+            expected_generation="episode-1",
+        ))
+        pose_store.pose = make_pose(x=0.127, stamp=2_000_000_000, received=16.95)
+        follow = executor.tick(16.95, MotionFeedback(
+            status=MotionStatus.ACTIVE,
+            physical_stop_evidence=PhysicalStopEvidence(
+                PhysicalStopStatus.PASS, 15.01, 16.92, 40, 0.08, 0.2, "episode-1",
+            ),
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=False,
+            safety_gates_pass=True,
+            stand_readback_pass=True,
+        ))
+        self.assertEqual(follow.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        second = bridge.plan_next(
+            follow, pose_store.pose,
+            readiness(observed_steady_s=16.95), now_steady_s=16.95,
+        )
+        self.assertEqual(second.maximum_duration_s, 5.0)
+        bridge.complete_window(second.window_id, actual_elapsed_s=4.98)
+
+        arrival_pose = make_pose(x=0.27, stamp=3_000_000_000, received=22.0)
+        pose_store.pose = arrival_pose
+        arrival = executor.tick(22.0, MotionFeedback(
+            status=MotionStatus.ARRIVED,
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=True,
+            safety_gates_pass=True,
+        ))
+        self.assertEqual(arrival.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
+        self.assertLessEqual(math.hypot(
+            target.x_m - arrival_pose.x_m, target.y_m - arrival_pose.y_m,
+        ), target.position_tolerance_m)
+
+        b_stop = {
+            "status": "PASS",
+            "window_start_steady_s": 22.01,
+            "window_end_steady_s": 23.92,
+            "sample_count": 40,
+            "maximum_sample_gap_s": 0.08,
+            "maximum_state_age_s": 0.2,
+            "generation": "episode-1",
+        }
+        bridge.zero_window(arrival, now_steady_s=22.0, reason="waypoint B reached")
+        self.assertTrue(bridge.confirm_physical_stop(
+            b_stop, zero_request_started_s=22.0, now_steady_s=24.0,
+            expected_generation="episode-1",
+        ))
+        pose_store.pose = make_pose(x=0.27, stamp=4_000_000_000, received=24.0)
+        complete = executor.tick(24.0, MotionFeedback(
+            status=MotionStatus.ACTIVE,
+            physical_stop_evidence=PhysicalStopEvidence(
+                PhysicalStopStatus.PASS, 22.01, 23.92, 40, 0.08, 0.2, "episode-1",
+            ),
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=False,
+            safety_gates_pass=True,
+            stand_readback_pass=True,
+        ))
+        self.assertEqual(executor.state, RouteState.COMPLETE)
+        self.assertEqual(complete.kind, DirectiveKind.COMPLETE)
+
     def test_short_right_corner_geometry_derives_corridors_from_footprint_and_arc(self) -> None:
         start = make_pose(x=1.0, y=-0.5, yaw=0.4)
         footprint = 0.41565748847422734
