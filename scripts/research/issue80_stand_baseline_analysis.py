@@ -42,7 +42,12 @@ class StandingAnalysisError(ValueError):
 
 
 def _enum(value: Any) -> Any:
-    return value.get("value") if isinstance(value, Mapping) else value
+    if isinstance(value, Mapping):
+        if "value" in value:
+            return value["value"]
+        if "current_state" in value:
+            return value["current_state"]
+    return value
 
 
 def _finite(value: Any) -> bool:
@@ -186,6 +191,28 @@ def summarize_window(
             bucket["velocity"].append(float(joint["velocity"]))
             targets.setdefault(name, []).append(float(commanded[name]["position"]))
             errors.add(int(joint.get("error_code", 0)))
+    per_joint_motion = {}
+    for name, values in state_values.items():
+        target_values = targets[name]
+        position_values = values["position"]
+        velocity_values = values["velocity"]
+        per_joint_motion[name] = {
+            "target_rad": {
+                "start": target_values[0], "end": target_values[-1],
+                "min": min(target_values), "max": max(target_values),
+                "range": max(target_values) - min(target_values),
+            },
+            "actual_position_rad": {
+                "start": position_values[0], "end": position_values[-1],
+                "min": min(position_values), "max": max(position_values),
+                "range": max(position_values) - min(position_values),
+            },
+            "actual_velocity_rad_s": {
+                "start": velocity_values[0], "end": velocity_values[-1],
+                "min": min(velocity_values), "max": max(velocity_values),
+                "max_abs": max(abs(value) for value in velocity_values),
+            },
+        }
     target_ranges = {name: max(values) - min(values) for name, values in targets.items()}
     position_ranges = {
         name: max(values["position"]) - min(values["position"])
@@ -277,6 +304,7 @@ def summarize_window(
         "joint_error_codes": sorted(errors), "metrics": metrics, "thresholds": limits,
         "physical_state_gate": {"status": "PASS" if not violations else "FAIL", "violations": violations},
         "controller_target_stability_gate": target_gate,
+        "per_joint_leg_motion": per_joint_motion,
         "yaw_drift_rad": yaw[-1] - yaw[0],
         "imu_orientation_rpy_range_rad": (
             {axis: max(value[index] for value in imu_rpy) - min(value[index] for value in imu_rpy)
@@ -332,15 +360,43 @@ def analyze_standing_trace(
         result["blocker"] = "positive STAND readback or complete >=8 s post-readback observation missing"
         return result
     aligned, alignment = normalize_trace_samples(trace_rows, start_ns=stand_ns, end_ns=end_ns)
+    trace_fsm_values = []
+    for row in aligned:
+        value = row.get("fsm_state")
+        if value not in trace_fsm_values:
+            trace_fsm_values.append(value)
+    trace_fsm_values.sort(key=str)
+    summary_fsm_values = observation.get("raw_fsm_state_values")
+    result["fsm_trace_reconciliation"] = {
+        "trace_raw_current_state_values": trace_fsm_values,
+        "observer_summary_values": summary_fsm_values,
+        "observer_summary_mismatch": summary_fsm_values != trace_fsm_values,
+        "authoritative_field": "CommonState.fsm_state.current_state in the preserved raw trace",
+        "interpretation": "raw FSM integers are preserved; this report does not assign undocumented meanings",
+    }
     result["source_start"] = aligned[0].get("input_source") if aligned else None
     aligned_duration_s = (
         float(aligned[-1]["sample_monotonic_s"]) - float(aligned[0]["sample_monotonic_s"])
         if len(aligned) >= 2 else 0.0
     )
     result["aligned_target_trace_duration_s"] = aligned_duration_s
-    if aligned_duration_s + 1e-6 < minimum_stand_observation_s:
+    edge_start_gap_s = float(aligned[0]["sample_monotonic_s"]) - stand_ns / 1e9 if aligned else math.inf
+    edge_end_gap_s = end_ns / 1e9 - float(aligned[-1]["sample_monotonic_s"]) if aligned else math.inf
+    result["aligned_trace_edge_gaps_s"] = {"start": edge_start_gap_s, "end": edge_end_gap_s}
+    edge_coverage_limit_s = PHYSICAL_STOP_MAX_STATE_AGE_S
+    edge_coverage_pass = (
+        math.isfinite(edge_start_gap_s) and math.isfinite(edge_end_gap_s)
+        and 0.0 <= edge_start_gap_s <= edge_coverage_limit_s
+        and 0.0 <= edge_end_gap_s <= edge_coverage_limit_s
+    )
+    result["aligned_trace_edge_coverage"] = {
+        "status": "PASS" if edge_coverage_pass else "FAIL",
+        "maximum_gap_s": edge_coverage_limit_s,
+        "basis": "existing maximum telemetry age threshold",
+    }
+    if not edge_coverage_pass:
         result["classification"] = "STAND_BASELINE_INCOMPLETE"
-        result["blocker"] = "fresh aligned joint-command/state telemetry did not cover >=8 s after STAND readback"
+        result["blocker"] = "aligned target telemetry is missing or outside the existing freshness bound at an observation edge"
         result["alignment"] = alignment
         return result
     body_status = _enum((takeover.get("joint_to_stand_gate") or {}).get("raw_body_status"))
@@ -350,13 +406,17 @@ def analyze_standing_trace(
         return result
     physical_failures = sum(row["metrics"]["physical_state_gate"]["status"] != "PASS" for row in windows)
     target_failures = sum(row["metrics"]["controller_target_stability_gate"]["status"] != "PASS" for row in windows)
-    if physical_failures:
-        classification = "STAND_BASELINE_PHYSICAL_STATE_UNSTABLE_OR_UNVERIFIED"
-    elif target_failures:
+    final_window = windows[-1]["metrics"]
+    final_physical_pass = final_window["physical_state_gate"]["status"] == "PASS"
+    final_target_pass = final_window["controller_target_stability_gate"]["status"] == "PASS"
+    if not final_physical_pass:
+        classification = "STAND_BASELINE_FINAL_PHYSICAL_WINDOW_UNSTABLE_OR_UNVERIFIED"
+    elif not final_target_pass:
         classification = "TARGET_VARIATION_REPRODUCED_DURING_ZERO_COMMAND_STANDING"
+    elif physical_failures or target_failures:
+        classification = "FINAL_2S_GATES_PASS_AFTER_EARLY_WINDOW_TRANSIENT"
     else:
         classification = "TARGET_STABLE_DURING_ZERO_COMMAND_STANDING_POST_LOCOMOTION_TRANSITION_SUSPECTED"
-    final_window = windows[-1]["metrics"]
     result.update({
         "classification": classification,
         "alignment": alignment,
@@ -368,6 +428,8 @@ def analyze_standing_trace(
         "source_at_end_of_stand_window": (aligned[-1].get("input_source") or {}),
         "physical_failure_window_count": physical_failures,
         "target_failure_window_count": target_failures,
+        "final_physical_window_pass": final_physical_pass,
+        "final_target_stability_window_pass": final_target_pass,
         "positive_get_mc_action_readbacks": [
             row for row in (takeover.get("get_mc_action_readbacks") or [])
             if row.get("action_desc") == MODE_STAND and row.get("action_status_value") == 100

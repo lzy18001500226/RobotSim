@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from issue80_m1_first_motion import (
-    MC_FSM_STABLE, MODE_STAND,
+    MODE_STAND,
     TURN_COMMAND_RAD_S, TURN_FORWARD_COMMAND_M_S, TURN_FORWARD_WARMUP_S,
     TURN_MIN_HEADING_CHANGE_RAD, TURN_PULSE_S,
     ZERO_STOP_MIN_MESSAGES,
@@ -155,6 +155,7 @@ def standing_baseline_observation_passes(
     duration = observation.get("observed_duration_s")
     expected_body_status = observation.get("expected_body_status")
     common_sample_count = observation.get("common_state_sample_count")
+    raw_fsm_values = observation.get("raw_fsm_state_values")
     return (
         observation.get("anchor") == "STAND_DEFAULT_GETMC_READBACK"
         and observation.get("observer_status") == "STAND_DEFAULT_BASELINE_COMPLETE"
@@ -168,7 +169,9 @@ def standing_baseline_observation_passes(
         and confirmed(final_readback)
         and observation.get("common_mode_desc_values") == [MODE_STAND]
         and observation.get("common_mode_status_values") == [100]
-        and observation.get("raw_fsm_state_values") == [MC_FSM_STABLE]
+        and isinstance(raw_fsm_values, list)
+        and bool(raw_fsm_values)
+        and all(isinstance(value, int) and not isinstance(value, bool) for value in raw_fsm_values)
         and expected_body_status is not None
         and observation.get("raw_body_status_values") == [expected_body_status]
         and isinstance(common_sample_count, int)

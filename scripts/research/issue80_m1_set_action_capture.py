@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 REQUIRED_TOPICS = frozenset({"odom", "imu", "common", "leg_state", "leg_command"})
@@ -146,6 +146,14 @@ def installed_body_stand_value(message_type: Any) -> int:
     if value is None:
         raise ValueError("installed McBodyPoseStatus has no MC_BODY_POSE_STAND constant")
     return int(value)
+
+
+def _raw_fsm_state_value(common_state: Mapping[str, Any]) -> Any:
+    """Preserve the installed CommonState FSM field without assigning semantics."""
+    fsm_state = common_state.get("fsm_state")
+    if isinstance(fsm_state, Mapping):
+        return fsm_state.get("current_state", fsm_state.get("value"))
+    return fsm_state
 
 
 def assess_pre_action_state(
@@ -1080,7 +1088,7 @@ def main() -> int:
                     action_descriptions.append(action.get("action_desc"))
                     status_value = (action.get("status") or {}).get("value")
                     action_statuses.append(status_value)
-                    fsm_values.append((common.get("fsm_state") or {}).get("value"))
+                    fsm_values.append(_raw_fsm_state_value(common))
                     body_values.append((common.get("body_status") or {}).get("value"))
                     input_sources.append(common.get("input_source") or {})
                 standing_observation.update({

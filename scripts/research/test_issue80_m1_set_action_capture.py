@@ -15,6 +15,7 @@ from issue80_m1_set_action_capture import (
     assess_pre_action_state,
     command_is_effective,
     installed_body_stand_value,
+    _raw_fsm_state_value,
     set_action_record,
     standing_observation_window,
     summarize_takeover_timing,
@@ -31,6 +32,11 @@ class FakeMessage:
 
 
 class SetActionCaptureTests(unittest.TestCase):
+    def test_raw_fsm_capture_reads_nested_current_state_without_interpreting_it(self) -> None:
+        self.assertEqual(_raw_fsm_state_value({"fsm_state": {"current_state": 4}}), 4)
+        self.assertEqual(_raw_fsm_state_value({"fsm_state": {"value": 4}}), 4)
+        self.assertIsNone(_raw_fsm_state_value({"fsm_state": {"other": 4}}))
+
     def test_standing_baseline_duration_starts_at_positive_stand_readback(self) -> None:
         window = standing_observation_window(
             reset_dispatch_monotonic_ns=1_000_000_000,

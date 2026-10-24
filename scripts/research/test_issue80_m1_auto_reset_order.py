@@ -445,6 +445,11 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
             "final_stand_mode_readback": readback,
         }
         self.assertTrue(standing_baseline_observation_passes(observation))
+        observation["raw_fsm_state_values"] = [1, 4]
+        self.assertTrue(standing_baseline_observation_passes(observation))
+        observation["raw_fsm_state_values"] = [None, 4]
+        self.assertFalse(standing_baseline_observation_passes(observation))
+        observation["raw_fsm_state_values"] = [4]
         observation["observed_duration_s"] = 7.999
         self.assertFalse(standing_baseline_observation_passes(observation))
         observation["observed_duration_s"] = 8.0
