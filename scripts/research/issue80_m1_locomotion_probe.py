@@ -2359,13 +2359,13 @@ class FocusedM1Diagnostic(Node):
         set_action: Mapping[str, Any],
         stationary_baseline: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Execute one transit and one route-manager/bridge right turn through M1."""
+        """Execute measured transit to B, bounded right turn, and transit to C."""
         result: dict[str, Any] = {
             "classification": "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION",
             "status": "NOT_RUN",
             "route_attempt_id": self.args.attempt_id,
             "segments": [],
-            "second_transit": "NOT_RUN_OPTIONAL_AFTER_CORNER",
+            "second_transit": "REQUIRED_PENDING",
             "fault": None,
         }
         evidence_root = Path(self.args.output_dir)
@@ -2640,6 +2640,25 @@ class FocusedM1Diagnostic(Node):
                 "corridor_longitudinal_limits_m": [-0.75, 1.25],
                 "turn_corridor_longitudinal_limits_m": [-0.75, 1.25],
                 "maximum_centerline_lateral_error_m": 0.05,
+                "waypoint_b_c_center_distance_m": math.hypot(
+                    route.steps[2].x_m - route.steps[0].x_m,
+                    route.steps[2].y_m - route.steps[0].y_m,
+                ),
+                "waypoint_b_c_region_gap_m": (
+                    math.hypot(
+                        route.steps[2].x_m - route.steps[0].x_m,
+                        route.steps[2].y_m - route.steps[0].y_m,
+                    )
+                    - route.steps[0].position_tolerance_m
+                    - route.steps[2].position_tolerance_m
+                ),
+                "minimum_waypoint_c_distance_after_max_turn_displacement_m": (
+                    math.hypot(
+                        route.steps[2].x_m - route.steps[0].x_m,
+                        route.steps[2].y_m - route.steps[0].y_m,
+                    )
+                    - float(route.steps[1].maximum_turn_displacement_m)
+                ),
                 "robot_footprint_radial_upper_bound_m": footprint,
                 "boundary_margin_m": route.corridor_boundary_margin_m,
                 "pose_uncertainty_note": "installed simulator ground-truth odometry publishes no covariance; route uses zero covariance only as the deterministic ground-truth contract, not as an estimated localization confidence",
@@ -2658,6 +2677,7 @@ class FocusedM1Diagnostic(Node):
             route_fault: str | None = None
             route_stop_reason: str | None = None
             route_events: list[dict[str, Any]] = []
+            route_arrival_poses: dict[str, dict[str, float]] = {}
 
             def transit_termination(snapshot: Mapping[str, Any]) -> bool:
                 nonlocal route_fault, route_stop_reason
@@ -2699,6 +2719,12 @@ class FocusedM1Diagnostic(Node):
                                          "sample_monotonic_s": snapshot.get("sample_monotonic_s")})
                 if directive.kind is DirectiveKind.REQUEST_PHYSICAL_STOP:
                     route_stop_reason = directive.reason
+                    route_arrival_poses[active.waypoint_id] = {
+                        "x_m": pose.x_m,
+                        "y_m": pose.y_m,
+                        "yaw_rad": pose.yaw_rad,
+                        "sample_monotonic_s": pose.received_steady_s,
+                    }
                     return True
                 if directive.kind is DirectiveKind.STOP_AND_ABORT:
                     route_fault = directive.reason
@@ -2888,7 +2914,9 @@ class FocusedM1Diagnostic(Node):
                 if directive.kind is DirectiveKind.REQUEST_PHYSICAL_STOP:
                     route_turn_stop_reason = directive.reason
                     route_events.append({"kind": directive.kind.value, "reason": directive.reason,
-                                         "sample_monotonic_s": snapshot.get("sample_monotonic_s")})
+                                         "sample_monotonic_s": snapshot.get("sample_monotonic_s"),
+                                         "pose": {"x_m": pose.x_m, "y_m": pose.y_m,
+                                                  "yaw_rad": pose.yaw_rad}})
                     return "ROUTE_CORNER_YAW_REACHED"
                 if directive.kind is DirectiveKind.STOP_AND_ABORT:
                     route_fault = directive.reason
@@ -3008,15 +3036,204 @@ class FocusedM1Diagnostic(Node):
                 result["fault"] = "route_corner_stop_or_step_transition_failed"
                 result["route_events"] = route_events
                 return result
+            continuation_step = executor.active_step
+            if (
+                continuation_step is None
+                or continuation_step.waypoint_id != "TRANSIT-AFTER-RIGHT-CORNER"
+                or next_segment.kind is not DirectiveKind.FOLLOW_WAYPOINT
+            ):
+                result["status"] = "BLOCKED"
+                result["fault"] = "route_manager_did_not_activate_waypoint_c"
+                result["route_events"] = route_events
+                return result
+
+            continuation_readiness = readiness_from_snapshot(final_snapshot)
+            continuation_plan = bridge.plan_next(
+                next_segment,
+                pose_provider.pose,
+                continuation_readiness,
+                now_steady_s=float(final_snapshot["sample_monotonic_s"]),
+            )
+            if (
+                continuation_plan.status != "PROPOSAL_ONLY"
+                or continuation_plan.forward_m_s <= 0.0
+                or abs(continuation_plan.angular_rad_s) > MAX_ANGULAR_RAD_S
+            ):
+                result["status"] = "BLOCKED"
+                result["fault"] = (
+                    f"route_bridge_refused_waypoint_c:{continuation_plan.status}:"
+                    f"{continuation_plan.reason}"
+                )
+                result["route_events"] = route_events
+                return result
+
+            # The existing M1 window accepts one forward scalar. Route C uses
+            # the same sole publisher with the bridge's bounded angular
+            # correction, and explicitly zeros all axes during every stop.
+            continuation_angular = float(continuation_plan.angular_rad_s)
+
+            def publish_continuation(forward_m_s: float) -> None:
+                self._publish(
+                    float(forward_m_s),
+                    0.0,
+                    continuation_angular if float(forward_m_s) > 0.0 else 0.0,
+                )
+
+            route_fault = None
+            route_stop_reason = None
+            continuation = run_first_motion_window(
+                sample=self.sample_for_first_motion,
+                publish=publish_continuation,
+                registration=registration,
+                set_action=set_action,
+                joint_limits=self.joint_limits,
+                baseline_forward_displacements_m=baseline_displacements,
+                baseline_state_summary=(stationary_baseline or {}).get("physical_state_summary"),
+                authorized=True,
+                forward_command_m_s=continuation_plan.forward_m_s,
+                pulse_duration_s=continuation_plan.maximum_duration_s,
+                max_pulse_duration_s=continuation_plan.maximum_duration_s,
+                extra_post_stop_observe_s=5.0,
+                after_zero_stop=self.request_postwalk_stand_once,
+                shutdown_event=self.interrupted,
+                on_sample=lambda phase, snapshot: self._trace_first_motion_sample(
+                    f"route-waypoint-c-{phase}", snapshot,
+                ),
+                termination_condition=transit_termination,
+                termination_condition_name="route_waypoint_c_and_physical_stop",
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+                max_observed_planar_speed_m_s=0.2,
+                zero_until_stand_timeout_s=3.5,
+            )
+            # The route callback above supplies this angular component through
+            # the same verified M1 publisher; keep the child result truthful.
+            continuation["command_angular_velocity_rad_s"] = continuation_angular
+            result["segments"].append({
+                "segment_id": "TRANSIT-AFTER-RIGHT-CORNER",
+                "plan": {
+                    **dict(continuation_plan.__dict__),
+                    "executed_angular_velocity_rad_s": continuation_angular,
+                    "angular_control": "fixed bridge output for this single bounded measured-pose window",
+                },
+                "result": continuation,
+            })
+            continuation_actual_s = float(continuation.get("pulse_actual_duration_s", 0.0))
+            if continuation_actual_s > 0.0:
+                bridge.complete_window(
+                    continuation_plan.window_id,
+                    actual_elapsed_s=continuation_actual_s,
+                )
+            continuation_gate = continuation.get("physical_stop_gate") or {}
+            if (
+                route_fault
+                or route_stop_reason is None
+                or continuation.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
+                or continuation_gate.get("status") != "PASS"
+            ):
+                result["status"] = "BLOCKED"
+                result["fault"] = (
+                    route_fault or route_stop_reason or continuation.get("fault")
+                    or "waypoint_c_or_physical_stop_not_passed"
+                )
+                result["route_events"] = route_events + route_motion.events
+                result["waypoint_arrival_poses"] = route_arrival_poses
+                return result
+
+            continuation_evidence = stop_mapping(continuation_gate)
+            continuation_zero_start = float(continuation_gate.get("zero_start_monotonic_s", 0.0))
+            continuation_zero_plan = bridge.zero_window(
+                route_motion.latest,
+                now_steady_s=time.monotonic(),
+                reason="waypoint C reached; verifying final measured physical stop",
+                physical_stop_gate_required=True,
+            )
+            final_stop_rearmed = bridge.confirm_physical_stop(
+                continuation_evidence,
+                zero_request_started_s=continuation_zero_start,
+                now_steady_s=time.monotonic(),
+                expected_generation=str(self.args.attempt_id),
+            )
+            final_snapshot = self.sample_for_first_motion()
+            final_pose = pose_provider.update(final_snapshot)
+            safety_provider.update(final_snapshot, continuation_step.waypoint_id)
+            final_c_evidence = PhysicalStopEvidence(
+                status=PhysicalStopStatus.PASS,
+                window_start_steady_s=float(continuation_evidence["window_start_steady_s"]),
+                window_end_steady_s=float(continuation_evidence["window_end_steady_s"]),
+                sample_count=int(continuation_evidence["sample_count"]),
+                maximum_sample_gap_s=float(continuation_evidence["maximum_sample_gap_s"]),
+                maximum_state_age_s=float(continuation_evidence["maximum_state_age_s"]),
+                generation=str(self.args.attempt_id),
+            )
+            completion = executor.tick(
+                float(final_snapshot["sample_monotonic_s"]),
+                MotionFeedback(
+                    status=MotionStatus.ACTIVE,
+                    physical_stop_evidence=final_c_evidence,
+                    reset_gate_pass=True,
+                    standing_gate_pass=True,
+                    source_mode_handshake_pass=False,
+                    safety_gates_pass=True,
+                    stand_readback_pass=stand_mode_readback_confirmed(final_snapshot),
+                ),
+            )
+            waypoint_b = route_arrival_poses.get(route.steps[0].waypoint_id)
+            waypoint_c = route_arrival_poses.get(route.steps[2].waypoint_id)
+            actual_waypoint_separation = (
+                math.hypot(
+                    waypoint_c["x_m"] - waypoint_b["x_m"],
+                    waypoint_c["y_m"] - waypoint_b["y_m"],
+                )
+                if waypoint_b and waypoint_c else None
+            )
+            required_region_separation = (
+                route.steps[0].position_tolerance_m + route.steps[2].position_tolerance_m
+            )
+            total_actual_nonzero_s = sum(
+                float(segment.get("result", {}).get("pulse_actual_duration_s", 0.0))
+                for segment in result["segments"]
+                if isinstance(segment.get("result"), Mapping)
+            )
+            route_complete = (
+                final_stop_rearmed
+                and executor.state.value == "COMPLETE"
+                and completion.kind is DirectiveKind.COMPLETE
+                and final_c_evidence.status is PhysicalStopStatus.PASS
+                and final_pose.frame_id == "odom"
+            )
+            if (
+                not route_complete
+                or actual_waypoint_separation is None
+                or actual_waypoint_separation <= required_region_separation
+                or total_actual_nonzero_s > 30.0
+            ):
+                result["status"] = "BLOCKED"
+                result["fault"] = "route_completion_waypoint_separation_or_30s_budget_gate_failed"
+                result["route_events"] = route_events + route_motion.events
+                result["waypoint_arrival_poses"] = route_arrival_poses
+                result["final_stop_rearmed"] = final_stop_rearmed
+                result["route_state_after_c"] = executor.state.value
+                result["total_actual_nonzero_command_time_s"] = total_actual_nonzero_s
+                return result
+
             result.update({
                 "status": "PASS",
-                "classification": "SIMULATION_ONLY_SHORT_ROUTE_TRANSIT_AND_RIGHT_TURN_PASS",
-                "route_state_after_corner": executor.state.value,
-                "next_route_directive": next_segment.kind.value,
-                "next_route_step": executor.active_step.waypoint_id if executor.active_step else None,
+                "classification": "SIMULATION_ONLY_SHORT_ROUTE_TRANSIT_RIGHT_TURN_TRANSIT_PASS",
+                "second_transit": "PASS",
+                "route_state_after_route": executor.state.value,
+                "next_route_directive": completion.kind.value,
+                "next_route_step": None,
+                "waypoint_arrival_poses": route_arrival_poses,
+                "waypoint_b_c_separation_m": actual_waypoint_separation,
+                "minimum_distinct_region_separation_m": required_region_separation,
                 "route_events": route_events + route_motion.events,
-                "final_odometry": self._pose(),
-                "physical_stop_gate": turn_gate,
+                "final_odometry": final_snapshot.get("pose"),
+                "physical_stop_gate": continuation_gate,
+                "final_stop_rearmed": final_stop_rearmed,
+                "total_actual_nonzero_command_time_s": total_actual_nonzero_s,
+                "total_nonzero_command_time_limit_s": 30.0,
                 "route_turn_gates": {
                     "route_yaw_target_reached": True,
                     "rightward_yaw_at_least_0p087_rad": route_turn_yaw_pass,
@@ -3026,8 +3243,18 @@ class FocusedM1Diagnostic(Node):
                     "physical_stop_gate": turn_gate.get("status"),
                     "control_handshake": turn.get("control_handshake_confirmed"),
                 },
+                "route_waypoint_c_gates": {
+                    "physical_motion_confirmed": continuation.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED",
+                    "position_error_m": math.hypot(
+                        continuation_step.x_m - final_pose.x_m,
+                        continuation_step.y_m - final_pose.y_m,
+                    ),
+                    "position_tolerance_m": continuation_step.position_tolerance_m,
+                    "physical_stop_gate": continuation_gate.get("status"),
+                    "command_angular_velocity_rad_s": continuation_angular,
+                },
                 "limitations": [
-                    "This pass is one short measured transit and bounded right corner only; the optional second transit is NOT RUN.",
+                    "This pass is one short measured transit to B, bounded right corner, and transit to C only.",
                     "The route corridor is static open-floor clearance from the pinned scene, not a LiDAR/map-based obstacle guarantee.",
                     "This does not establish a closed L route, rectangle, return, docking, Nav2, or real-hardware behavior.",
                 ],

@@ -133,12 +133,26 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertTrue(route.bounded_moving_turn_qualified)
         self.assertFalse(route.zero_forward_turn_qualified)
         self.assertAlmostEqual(route.steps[0].position_tolerance_m, 0.15)
+        self.assertAlmostEqual(route.steps[-1].position_tolerance_m, 0.15)
+        self.assertAlmostEqual(
+            math.hypot(route.steps[-1].x_m - route.steps[0].x_m,
+                       route.steps[-1].y_m - route.steps[0].y_m),
+            0.50,
+            places=7,
+        )
+        self.assertGreater(
+            math.hypot(route.steps[-1].x_m - route.steps[0].x_m,
+                       route.steps[-1].y_m - route.steps[0].y_m)
+            - route.steps[0].position_tolerance_m
+            - route.steps[-1].position_tolerance_m,
+            0.0,
+        )
         self.assertAlmostEqual(route.steps[1].maximum_turn_displacement_m, 0.25)
         corner_heading = math.atan2(
             route.steps[2].y_m - route.steps[1].y_m,
             route.steps[2].x_m - route.steps[1].x_m,
         )
-        self.assertAlmostEqual(corner_heading, start.yaw_rad - 0.15, places=7)
+        self.assertAlmostEqual(corner_heading, start.yaw_rad - 0.12, places=7)
 
         def lateral_span(polygon, center_x, center_y, heading):
             values = [
@@ -221,7 +235,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual((transit_plan.forward_m_s, transit_plan.angular_rad_s), (0.12, 0.0))
         bridge.complete_window(transit_plan.window_id, actual_elapsed_s=1.0)
 
-        pose_store.pose = make_pose(x=0.15, stamp=2_000_000_000, received=11.0)
+        pose_store.pose = make_pose(x=0.40, stamp=2_000_000_000, received=11.0)
         arrived = executor.tick(11.0, MotionFeedback(
             status=MotionStatus.ARRIVED,
             reset_gate_pass=True,
@@ -247,7 +261,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
             expected_generation="episode-1",
         ))
 
-        pose_store.pose = make_pose(x=0.15, stamp=3_000_000_000, received=13.0)
+        pose_store.pose = make_pose(x=0.40, stamp=3_000_000_000, received=13.0)
         next_follow = executor.tick(13.0, MotionFeedback(
             physical_stop_evidence=PhysicalStopEvidence(
                 PhysicalStopStatus.PASS, 11.01, 12.91, 40, 0.08, 0.2, "episode-1",
@@ -259,7 +273,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
             stand_readback_pass=True,
         ))
         self.assertEqual(next_follow.kind, DirectiveKind.FOLLOW_WAYPOINT)
-        pose_store.pose = make_pose(x=0.15, stamp=4_000_000_000, received=13.1)
+        pose_store.pose = make_pose(x=0.40, stamp=4_000_000_000, received=13.1)
         turn = executor.tick(13.1, MotionFeedback(
             status=MotionStatus.ARRIVED,
             physical_stop_evidence=PhysicalStopEvidence(
@@ -288,7 +302,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual(turn_plan.maximum_duration_s, 5.0)
         bridge.complete_window(turn_plan.window_id, actual_elapsed_s=0.9)
 
-        pose_store.pose = make_pose(x=0.20, y=-0.01, yaw=-0.15, stamp=5_000_000_000, received=14.0)
+        pose_store.pose = make_pose(x=0.60, y=-0.02, yaw=-0.12, stamp=5_000_000_000, received=14.0)
         turn_stop = executor.tick(14.0, MotionFeedback(
             status=MotionStatus.ARRIVED,
             reset_gate_pass=True,
@@ -311,7 +325,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
             turn_stop_evidence, zero_request_started_s=14.0, now_steady_s=16.0,
             expected_generation="episode-1",
         ))
-        pose_store.pose = make_pose(x=0.20, y=-0.01, yaw=-0.15, stamp=6_000_000_000, received=16.0)
+        pose_store.pose = make_pose(x=0.60, y=-0.02, yaw=-0.12, stamp=6_000_000_000, received=16.0)
         continuation = executor.tick(16.0, MotionFeedback(
             physical_stop_evidence=PhysicalStopEvidence(
                 PhysicalStopStatus.PASS, 14.01, 15.91, 40, 0.08, 0.2, "episode-1",
@@ -325,6 +339,60 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual(continuation.kind, DirectiveKind.FOLLOW_WAYPOINT)
         self.assertEqual(executor.step_index, 2)
         self.assertEqual(executor.active_step.waypoint_id, "TRANSIT-AFTER-RIGHT-CORNER")
+
+        continuation_plan = bridge.plan_next(
+            continuation, pose_store.pose,
+            readiness(observed_steady_s=16.0), now_steady_s=16.0,
+        )
+        self.assertEqual(continuation_plan.status, "PROPOSAL_ONLY")
+        self.assertEqual(continuation_plan.forward_m_s, 0.12)
+        self.assertLessEqual(abs(continuation_plan.angular_rad_s), 0.075)
+        bridge.complete_window(continuation_plan.window_id, actual_elapsed_s=2.0)
+
+        c_step = route.steps[2]
+        pose_store.pose = make_pose(
+            x=c_step.x_m - 0.08 * math.cos(-0.12),
+            y=c_step.y_m - 0.08 * math.sin(-0.12),
+            yaw=-0.12, stamp=7_000_000_000, received=17.0,
+        )
+        c_stop = executor.tick(17.0, MotionFeedback(
+            status=MotionStatus.ARRIVED,
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=True,
+            safety_gates_pass=True,
+        ))
+        self.assertEqual(c_stop.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
+        c_stop_evidence = {
+            "status": "PASS",
+            "window_start_steady_s": 17.01,
+            "window_end_steady_s": 18.92,
+            "sample_count": 40,
+            "maximum_sample_gap_s": 0.08,
+            "maximum_state_age_s": 0.2,
+            "generation": "episode-1",
+        }
+        bridge.zero_window(c_stop, now_steady_s=17.0, reason="waypoint C reached")
+        self.assertTrue(bridge.confirm_physical_stop(
+            c_stop_evidence, zero_request_started_s=17.0, now_steady_s=19.1,
+            expected_generation="episode-1",
+        ))
+        pose_store.pose = make_pose(
+            x=pose_store.pose.x_m, y=pose_store.pose.y_m, yaw=-0.12,
+            stamp=8_000_000_000, received=19.1,
+        )
+        completed = executor.tick(19.1, MotionFeedback(
+            physical_stop_evidence=PhysicalStopEvidence(
+                PhysicalStopStatus.PASS, 17.01, 18.92, 40, 0.08, 0.2, "episode-1",
+            ),
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=False,
+            safety_gates_pass=True,
+            stand_readback_pass=True,
+        ))
+        self.assertEqual(executor.state, RouteState.COMPLETE)
+        self.assertEqual(completed.kind, DirectiveKind.COMPLETE)
 
     def test_follow_maps_measured_bearing_to_bounded_forward_arc(self) -> None:
         bridge = RouteMotionBridge(route_frame_id="odom")

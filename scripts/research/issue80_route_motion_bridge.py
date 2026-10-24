@@ -159,8 +159,11 @@ def build_short_right_corner_route(
     ):
         raise ValueError("measured start pose or verified open-floor clearance is invalid")
 
-    transit_distance_m = 0.30
-    right_turn_delta_rad = -0.15
+    # A 0.50 m waypoint spacing keeps B and C regions disjoint (0.15 m
+    # tolerance each) and guarantees that the qualified turn's 0.25 m total
+    # displacement cap cannot enter C before the explicit C transit.
+    transit_distance_m = 0.50
+    right_turn_delta_rad = -0.12  # A2 measured -0.122523 rad; stay inside its qualified arc.
     boundary_margin_m = 0.10
     maximum_turn_displacement_m = 0.25
     lateral_half_width_m = robot_footprint_radius_m + boundary_margin_m + 0.05
@@ -274,7 +277,7 @@ def build_short_right_corner_route(
                  YawPolicy.IGNORE, None, approach_corridor),
             step("RIGHT-CORNER", transit_x, transit_y, Profile.CORNER, 0.20,
                  YawPolicy.NEXT_SEGMENT, 0.03, approach_corridor, is_corner=True),
-            step("TRANSIT-AFTER-RIGHT-CORNER", next_x, next_y, Profile.TRANSIT, 0.20,
+            step("TRANSIT-AFTER-RIGHT-CORNER", next_x, next_y, Profile.TRANSIT, 0.15,
                  YawPolicy.IGNORE, None, continuation_corridor),
         ),
     )
