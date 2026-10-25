@@ -51,7 +51,7 @@ The four local mesh-frame rotations for narrow3, wide3, narrow_loop, and wide_lo
 
 `X2-OmniPicker-Sim-Functional-v0.1` remains the selected experimental functional baseline. Official zero-frame geometry is an unregistered static comparison reference only; it has no dynamics qualification and cannot be selected through the loader. The two frame choices have distinct identities and acceptance boundaries.
 
-Historical reference artifacts remain outside the runtime package and are not needed to load it. The frozen PR #90 model is `reviews/issue-46/candidate-b-full-useful-open-static-20261023T105521Z/candidate_b_full_useful_range_static.xml` (SHA-256 `32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45`). The original 17,500-step dynamic record is `reviews/issue-46/candidate-b-2pct-slower-dynamics-20261023-20261023T135940Z/trial_result.json` (SHA-256 `c1c6362987067736f9ab29446ad3a601b41a21b1e8d5e20c59514d26da192e7a`). It validates the frozen original model identity only; portable artifact dynamics were not rerun.
+Historical qualification artifacts are not required to load or test this package. The frozen PR #90 source model SHA-256 is `32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45`; its original 17,500-step dynamic record SHA-256 is `c1c6362987067736f9ab29446ad3a601b41a21b1e8d5e20c59514d26da192e7a`. That evidence qualifies the original PR #90 model identity only. The portable model hash above has static-equivalence coverage; portable artifact dynamics were not rerun. These historical files live outside the source checkout and a fresh clone does not depend on their local `reviews/` paths.
 
 ## Historical variants
 

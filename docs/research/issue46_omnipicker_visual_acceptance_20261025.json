@@ -1,0 +1,673 @@
+{
+  "approval": {
+    "approval_source": "explicit maintainer confirmation for the exact scene SHA-256 below",
+    "date": "2026-10-25",
+    "scope": "visual geometry, wrist mounting/orientation, and static 2%, 50%, 100% poses only",
+    "status": "HUMAN_VISUAL_REVIEW=PASS"
+  },
+  "canonical_model": {
+    "classification": "SIMULATION_ONLY_UNVERIFIED_EXPERIMENTAL_GEOMETRY_SELECTED_COUPLING",
+    "extended_wrist_meshes": {
+      "left_sha256": "f379d912d341e6224ec16a62ec9a3c21621e43b6aae1bec0ba93e9a947d7507f",
+      "right_sha256": "94c4c7b32306504e74efa3934a473be54c601a8e61c68476b0ef78fc397657de"
+    },
+    "historical_dynamic_evidence": {
+      "original_pr90_model_sha256": "32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45",
+      "qualification_applies_to_portable_model": false,
+      "trial_result_sha256": "c1c6362987067736f9ab29446ad3a601b41a21b1e8d5e20c59514d26da192e7a"
+    },
+    "model_id": "X2-OmniPicker-Sim-Functional-v0.1",
+    "package_manifests": {
+      "collision_proxy_manifest.json": "7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a",
+      "portability.json": "eb6ddaeef5334d28b71307a2634d4b9db3e6c543cece358edc8d0c1ff9baa9c4",
+      "source_assets.json": "982d01c39f97d16df7d20c78901f170ce448ff90325dd01428dd2fee6e1a6c17",
+      "visual_frames.json": "c53724fe5bfead6f3a11624b18f84c6b8d03c0c7bfbab7f80b1cd6a9b37acb19"
+    },
+    "portable_model_sha256": "5e33d30e212ee72271efc3f0a790ebfb46cd31e775c578a10f1a2fb1f33c93e7",
+    "pr": 92,
+    "registry_sha256": "40eabca55e8ce80131e97af8cc702c10940f1d6e7f0651162863c9c04a7af05b",
+    "reviewed_pr_head": "5e2ed1dcbfac2e357fd19191733b377034ea09f5",
+    "vendor": {
+      "commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+      "repository": "https://github.com/AgibotTech/agibot_x2_urdf.git",
+      "urdf": "X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+      "urdf_sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d"
+    }
+  },
+  "evidence_boundary": "The local review capture is hash-bound but excluded from Git and is not required to load the canonical model. A clean clone must provision the pinned vendor checkout and hash-locked generated collision proxies using the model package instructions.",
+  "qualification": {
+    "bottle_grasp": "NOT_RUN_BLOCKED",
+    "collision_overlay_visibility": "PASS_DISPLAY_ONLY",
+    "full_x2_dynamic_physics": "NOT_QUALIFIED",
+    "head_torso_collision": "BLOCKED",
+    "human_visual_review": "PASS",
+    "left_gripper_kinematics": "PASS_STATIC_TRANSFORM_PARITY",
+    "left_wrist_visual": "PASS",
+    "manufacturer_equivalent_gripper_transmission": "UNVERIFIED",
+    "option_d_right_wrist_collision": "DIAGNOSTIC_SUBSTITUTION_NOT_OFFICIAL_URDF_ASSIGNMENT",
+    "right_gripper_kinematics": "PASS_STATIC_TRANSFORM_PARITY",
+    "right_wrist_visual": "PASS",
+    "visual_assembly": "PASS"
+  },
+  "review_capture": {
+    "files_sha256": {
+      "REPORT.md": "f24069fcaf27c1d77d8a6a5936ddb6f13861f637b69d1160b15198f7f76407e2",
+      "REPRODUCE.md": "a9f871ea5712d552088ea992c670dfafee8dd9e737e5db28fdaff585e04c6d24",
+      "artifact_paths.json": "e89ad8b5ec9b603f618cecba579019d9ad9da76e3c9d465be0fdd2eff3e38a04",
+      "both_grippers_002_visual.png": "a6b29d33af78d3cd5db47f0fce60d51ddb1ece74132f056428c8a9d23e919982",
+      "both_grippers_050_visual.png": "f9aae23a3d7cd192d6ef3229ee57756b2734367e6295e79fade0c83a98c67b32",
+      "both_grippers_100_visual.png": "be6f10553322dc02723db8056b8d5e732760dd137100501ea742d3c10737a419",
+      "full_x2_02_collision_only.png": "befd283bf72f1fdf9963ad1a9145a1d590e9395fadb9d789c92cb5b98da05e15",
+      "full_x2_front_002_visual.png": "3520d00762ec9038d278b6d3c184aa61467e5bdd8d503cc272c03724ee228677",
+      "full_x2_front_02_visual.png": "0ce133d9cb91d8f039ec4344876885ef11fece638158df4d2921ac8d1812d8cd",
+      "full_x2_front_050_visual.png": "53d79024ecf8379faaa0ef8e8de63a71b3c13e88be41787b9ba53a8b1fe74066",
+      "full_x2_front_100_visual.png": "059c97a041c053aa05e9eb2609521676ebca0279bcde31c2ed72cdc7388416e8",
+      "full_x2_rear_02_visual.png": "eb0f0e451285c3d7893a92fc15e151f7a36f11afef7089415b58907a5242c98a",
+      "full_x2_side_02_visual.png": "6b0c088105ffdc2cfee45f65c89c6cc0b23a1b8b886d42a1687b208a3e97e25b",
+      "full_x2_three_quarter_02_visual.png": "a0e3b195581a5b354307b09679ae71dbb57124569e52874d9a9d715b8d80b1a1",
+      "left_wrist_02_collision_overlay.png": "6bcafb2ef4bdae686277a6f133e99134c232b3b5e3d19c42f3ce192113a29555",
+      "left_wrist_02_visual.png": "647a2402290fbb3a89d77eb6c476dbabff7c4f9a6da08fd6cc1ca1f1009aa4e0",
+      "left_wrist_050_collision_overlay.png": "42a116ce990650a468d08cf0260085162d437588a31e060b503d2f309e2a06fa",
+      "left_wrist_050_visual.png": "fde8a680fc2356ea49348818ac9aac83849cc348fbaab277f66ea230a6dbe47e",
+      "left_wrist_100_collision_overlay.png": "c932d36ee52fb87a1c119711eae30b503c6437a0c2360d0b4ddd4224bc8d2f6a",
+      "left_wrist_100_visual.png": "585bd4dbd555d56cf28e5533b3905de459c2d44b3791c9786ce86feb18945d38",
+      "opening_comparison_02_50_100.png": "5ccc1d0615ccfdc86903e4d222598a41a5a3a37768fbe8cd53ddb21edfe8dd1d",
+      "right_wrist_02_collision_overlay.png": "87d4a0aff403b4bb8c56ec74eff3f5bc06fbd338cd19c7c648b0c5fc0167442b",
+      "right_wrist_02_visual.png": "219c30aa7ff3b4d3566122b63a91187efeef572fd1ebbfb4c4c0b346b45bc189",
+      "right_wrist_050_collision_overlay.png": "f7cae85817a8417ae15fbacdeb937cc5a79bc45cc0fe79a708d40db1b2f8fbe8",
+      "right_wrist_050_visual.png": "22fc044ddba1ae70185cf5cc03c5f89be03a74373dc9a09c10dd926a01c0d651",
+      "right_wrist_100_collision_overlay.png": "57086312f96177d0027546bdcb7ee62c1aa7b1628f71421816164eab47820f72",
+      "right_wrist_100_visual.png": "0dd31c93f39cea8b5014f14c9e544cc5a8a2ab2bb3fbad962900575cc398818f",
+      "static_review_summary.json": "b81a29bcdc164aa1825c8e8bc352815cb25932fcac9ce63e43a7f388a6dea1c3"
+    },
+    "repo_relative_path": "reviews/issue-46/dual-omnipicker-human-review-20261025-20261025T062606Z",
+    "required_for_clean_checkout": false
+  },
+  "reviewed_scene": {
+    "audit_evidence_sha256": {
+      "REPORT.md": "3ba074b36c7a7907368c8ff04f3b49cafde8f5c6774c4d0850640ecca640f9b3",
+      "full_x2_d_right_ext_collision_diagnostic.xml": "a137a6efc793a16df808e23d764594eba4f3449664fbc5ceca554a210742b10a",
+      "result.json": "418c631b28498b20ac57a121a16bdbd94f220dc901c5db3e14890e9ad542ae8c",
+      "scene_variant_invariants.json": "ef813b14bd877b010c4a869e0e35903beb5a0592f69f1b74208493837bc20f1a"
+    },
+    "classification": "SIMULATION_ONLY_DIAGNOSTIC",
+    "configuration": "Option D",
+    "follower_kinematics_parity": {
+      "samples": {
+        "100%": {
+          "L": {
+            "bodies": [
+              {
+                "body": "L_hand_narrow1_Link",
+                "position_error_m": 6.221978685732418e-17,
+                "rotation_matrix_max_error": 6.661338147750939e-16
+              },
+              {
+                "body": "L_hand_narrow2_Link",
+                "position_error_m": 1.2226613804819674e-16,
+                "rotation_matrix_max_error": 6.661338147750939e-16
+              },
+              {
+                "body": "L_hand_narrow3_Link",
+                "position_error_m": 1.1028304166582793e-16,
+                "rotation_matrix_max_error": 5.551115123125783e-16
+              },
+              {
+                "body": "L_hand_narrow_loop_Link",
+                "position_error_m": 5.909748511210502e-17,
+                "rotation_matrix_max_error": 6.661338147750939e-16
+              },
+              {
+                "body": "L_hand_wide1_Link",
+                "position_error_m": 3.177465083963714e-17,
+                "rotation_matrix_max_error": 2.220446049250313e-16
+              },
+              {
+                "body": "L_hand_wide2_Link",
+                "position_error_m": 8.945403836025021e-17,
+                "rotation_matrix_max_error": 2.220446049250313e-16
+              },
+              {
+                "body": "L_hand_wide3_Link",
+                "position_error_m": 1.21055287406749e-16,
+                "rotation_matrix_max_error": 3.885780586188048e-16
+              },
+              {
+                "body": "L_hand_wide_loop_Link",
+                "position_error_m": 5.582189036971291e-17,
+                "rotation_matrix_max_error": 4.440892098500626e-16
+              }
+            ],
+            "max_position_error_m": 1.2226613804819674e-16,
+            "max_rotation_matrix_error": 6.661338147750939e-16
+          },
+          "R": {
+            "bodies": [
+              {
+                "body": "R_hand_narrow1_Link",
+                "position_error_m": 3.351769690019324e-17,
+                "rotation_matrix_max_error": 1.1102230246251565e-15
+              },
+              {
+                "body": "R_hand_narrow2_Link",
+                "position_error_m": 9.826921647327152e-17,
+                "rotation_matrix_max_error": 1.1102230246251565e-15
+              },
+              {
+                "body": "R_hand_narrow3_Link",
+                "position_error_m": 1.447841587937977e-16,
+                "rotation_matrix_max_error": 1.1102230246251565e-15
+              },
+              {
+                "body": "R_hand_narrow_loop_Link",
+                "position_error_m": 1.2602090383165012e-16,
+                "rotation_matrix_max_error": 1.2212453270876722e-15
+              },
+              {
+                "body": "R_hand_wide1_Link",
+                "position_error_m": 7.836032688825388e-17,
+                "rotation_matrix_max_error": 8.881784197001252e-16
+              },
+              {
+                "body": "R_hand_wide2_Link",
+                "position_error_m": 1.3691418407843583e-16,
+                "rotation_matrix_max_error": 8.881784197001252e-16
+              },
+              {
+                "body": "R_hand_wide3_Link",
+                "position_error_m": 2.129251891024027e-16,
+                "rotation_matrix_max_error": 9.992007221626409e-16
+              },
+              {
+                "body": "R_hand_wide_loop_Link",
+                "position_error_m": 6.597566661535286e-17,
+                "rotation_matrix_max_error": 1.2212453270876722e-15
+              }
+            ],
+            "max_position_error_m": 2.129251891024027e-16,
+            "max_rotation_matrix_error": 1.2212453270876722e-15
+          }
+        },
+        "2%": {
+          "L": {
+            "bodies": [
+              {
+                "body": "L_hand_narrow1_Link",
+                "position_error_m": 6.221978685732418e-17,
+                "rotation_matrix_max_error": 3.3306690738754696e-16
+              },
+              {
+                "body": "L_hand_narrow2_Link",
+                "position_error_m": 8.674728615926834e-17,
+                "rotation_matrix_max_error": 5.551115123125783e-16
+              },
+              {
+                "body": "L_hand_narrow3_Link",
+                "position_error_m": 1.3988553325855265e-16,
+                "rotation_matrix_max_error": 6.661338147750939e-16
+              },
+              {
+                "body": "L_hand_narrow_loop_Link",
+                "position_error_m": 5.909748511210502e-17,
+                "rotation_matrix_max_error": 4.440892098500626e-16
+              },
+              {
+                "body": "L_hand_wide1_Link",
+                "position_error_m": 3.177465083963714e-17,
+                "rotation_matrix_max_error": 2.220446049250313e-16
+              },
+              {
+                "body": "L_hand_wide2_Link",
+                "position_error_m": 7.382519208533356e-17,
+                "rotation_matrix_max_error": 5.551115123125783e-16
+              },
+              {
+                "body": "L_hand_wide3_Link",
+                "position_error_m": 7.503216733369017e-17,
+                "rotation_matrix_max_error": 4.440892098500626e-16
+              },
+              {
+                "body": "L_hand_wide_loop_Link",
+                "position_error_m": 5.582189036971291e-17,
+                "rotation_matrix_max_error": 5.551115123125783e-16
+              }
+            ],
+            "max_position_error_m": 1.3988553325855265e-16,
+            "max_rotation_matrix_error": 6.661338147750939e-16
+          },
+          "R": {
+            "bodies": [
+              {
+                "body": "R_hand_narrow1_Link",
+                "position_error_m": 3.351769690019324e-17,
+                "rotation_matrix_max_error": 8.881784197001252e-16
+              },
+              {
+                "body": "R_hand_narrow2_Link",
+                "position_error_m": 5.118548196565333e-17,
+                "rotation_matrix_max_error": 9.992007221626409e-16
+              },
+              {
+                "body": "R_hand_narrow3_Link",
+                "position_error_m": 5.983974384734715e-17,
+                "rotation_matrix_max_error": 7.771561172376096e-16
+              },
+              {
+                "body": "R_hand_narrow_loop_Link",
+                "position_error_m": 1.2602090383165012e-16,
+                "rotation_matrix_max_error": 9.992007221626409e-16
+              },
+              {
+                "body": "R_hand_wide1_Link",
+                "position_error_m": 7.836032688825388e-17,
+                "rotation_matrix_max_error": 1.2212453270876722e-15
+              },
+              {
+                "body": "R_hand_wide2_Link",
+                "position_error_m": 1.1896005367729673e-16,
+                "rotation_matrix_max_error": 1.2212453270876722e-15
+              },
+              {
+                "body": "R_hand_wide3_Link",
+                "position_error_m": 1.15684419087605e-16,
+                "rotation_matrix_max_error": 1.2212453270876722e-15
+              },
+              {
+                "body": "R_hand_wide_loop_Link",
+                "position_error_m": 6.597566661535286e-17,
+                "rotation_matrix_max_error": 8.881784197001252e-16
+              }
+            ],
+            "max_position_error_m": 1.2602090383165012e-16,
+            "max_rotation_matrix_error": 1.2212453270876722e-15
+          }
+        },
+        "50%": {
+          "L": {
+            "bodies": [
+              {
+                "body": "L_hand_narrow1_Link",
+                "position_error_m": 6.221978685732418e-17,
+                "rotation_matrix_max_error": 4.440892098500626e-16
+              },
+              {
+                "body": "L_hand_narrow2_Link",
+                "position_error_m": 6.864380557637387e-17,
+                "rotation_matrix_max_error": 5.551115123125783e-16
+              },
+              {
+                "body": "L_hand_narrow3_Link",
+                "position_error_m": 5.503316672653061e-17,
+                "rotation_matrix_max_error": 4.440892098500626e-16
+              },
+              {
+                "body": "L_hand_narrow_loop_Link",
+                "position_error_m": 5.909748511210502e-17,
+                "rotation_matrix_max_error": 3.3306690738754696e-16
+              },
+              {
+                "body": "L_hand_wide1_Link",
+                "position_error_m": 3.177465083963714e-17,
+                "rotation_matrix_max_error": 4.440892098500626e-16
+              },
+              {
+                "body": "L_hand_wide2_Link",
+                "position_error_m": 5.79834575659018e-17,
+                "rotation_matrix_max_error": 4.440892098500626e-16
+              },
+              {
+                "body": "L_hand_wide3_Link",
+                "position_error_m": 9.426849533709744e-17,
+                "rotation_matrix_max_error": 4.440892098500626e-16
+              },
+              {
+                "body": "L_hand_wide_loop_Link",
+                "position_error_m": 5.582189036971291e-17,
+                "rotation_matrix_max_error": 2.220446049250313e-16
+              }
+            ],
+            "max_position_error_m": 9.426849533709744e-17,
+            "max_rotation_matrix_error": 5.551115123125783e-16
+          },
+          "R": {
+            "bodies": [
+              {
+                "body": "R_hand_narrow1_Link",
+                "position_error_m": 3.351769690019324e-17,
+                "rotation_matrix_max_error": 8.881784197001252e-16
+              },
+              {
+                "body": "R_hand_narrow2_Link",
+                "position_error_m": 4.091854266145403e-17,
+                "rotation_matrix_max_error": 8.881784197001252e-16
+              },
+              {
+                "body": "R_hand_narrow3_Link",
+                "position_error_m": 7.943236867215502e-17,
+                "rotation_matrix_max_error": 9.992007221626409e-16
+              },
+              {
+                "body": "R_hand_narrow_loop_Link",
+                "position_error_m": 1.2602090383165012e-16,
+                "rotation_matrix_max_error": 8.881784197001252e-16
+              },
+              {
+                "body": "R_hand_wide1_Link",
+                "position_error_m": 7.836032688825388e-17,
+                "rotation_matrix_max_error": 9.992007221626409e-16
+              },
+              {
+                "body": "R_hand_wide2_Link",
+                "position_error_m": 1.0576014298875643e-16,
+                "rotation_matrix_max_error": 7.771561172376096e-16
+              },
+              {
+                "body": "R_hand_wide3_Link",
+                "position_error_m": 1.4906034203971092e-16,
+                "rotation_matrix_max_error": 6.661338147750939e-16
+              },
+              {
+                "body": "R_hand_wide_loop_Link",
+                "position_error_m": 6.597566661535286e-17,
+                "rotation_matrix_max_error": 9.992007221626409e-16
+              }
+            ],
+            "max_position_error_m": 1.4906034203971092e-16,
+            "max_rotation_matrix_error": 9.992007221626409e-16
+          }
+        }
+      },
+      "status": "PASS_STATIC_TRANSFORM_PARITY",
+      "tolerance": 1e-08
+    },
+    "known_baseline_collision": {
+      "bodies": [
+        "head_pitch_link",
+        "torso_link"
+      ],
+      "detail": "Option D full-scene audit reports this pair in 99/99 sampled poses, deepest penetration -7.112 mm; this viewer does not resolve or mask it.",
+      "status": "KNOWN_PREEXISTING_STATIC_CONTACT"
+    },
+    "model_counts": {
+      "bodies": 57,
+      "equalities": 10,
+      "geoms": 401,
+      "joints": 48,
+      "meshes": 188
+    },
+    "physics_steps": 0,
+    "pose_samples": {
+      "100%": {
+        "command_percent": 100.0,
+        "fixture_d_gap_mm": 5.786607e-06,
+        "fixture_minimum_five_section_mm": 90.9920478,
+        "left_root_q_rad": -0.684125989067,
+        "narrow2_rad": -0.0386529443141,
+        "narrow3_rad": 0.283947495048,
+        "narrow_loop_rad": -0.854158386248,
+        "physics_steps": 0,
+        "right_root_q_rad": -0.684125989067,
+        "static_contacts": [
+          {
+            "body1": "head_pitch_link",
+            "body2": "torso_link",
+            "distance_m": -0.007112461424559645,
+            "geom1": "unnamed_geom_id_387",
+            "geom2": "unnamed_geom_id_62",
+            "known_preexisting_head_torso_pair": true
+          }
+        ]
+      },
+      "2%": {
+        "command_percent": 2.0,
+        "fixture_d_gap_mm": 2.12928911e-06,
+        "fixture_minimum_five_section_mm": 12.8511896,
+        "left_root_q_rad": -0.0136825197813,
+        "narrow2_rad": 0.10182694752,
+        "narrow3_rad": -0.146796338696,
+        "narrow_loop_rad": 0.24126845811,
+        "physics_steps": 0,
+        "right_root_q_rad": -0.0136825197813,
+        "static_contacts": [
+          {
+            "body1": "head_pitch_link",
+            "body2": "torso_link",
+            "distance_m": -0.007112461424559645,
+            "geom1": "unnamed_geom_id_387",
+            "geom2": "unnamed_geom_id_62",
+            "known_preexisting_head_torso_pair": true
+          }
+        ]
+      },
+      "50%": {
+        "command_percent": 50.0,
+        "fixture_d_gap_mm": 1.32418679e-05,
+        "fixture_minimum_five_section_mm": 61.4157632,
+        "left_root_q_rad": -0.342062994533,
+        "narrow2_rad": -0.317269738891,
+        "narrow3_rad": 0.679529031175,
+        "narrow_loop_rad": -0.527460106018,
+        "physics_steps": 0,
+        "right_root_q_rad": -0.342062994533,
+        "static_contacts": [
+          {
+            "body1": "head_pitch_link",
+            "body2": "torso_link",
+            "distance_m": -0.007112461424559645,
+            "geom1": "unnamed_geom_id_387",
+            "geom2": "unnamed_geom_id_62",
+            "known_preexisting_head_torso_pair": true
+          }
+        ]
+      }
+    },
+    "referenced_collision_proxy_sha256": {
+      "narrow1_Link_coacd_00.stl": "ec298c4863e1830565dc65b65a984e590987e2beb029fc0a1f0331603c3c3d17",
+      "narrow1_Link_coacd_01.stl": "85707cadf86bed41cdfa4c8d99312b1de01224b916d22fcb6a9f3f59359bc885",
+      "narrow1_Link_coacd_02.stl": "f9514c28cb601926c79796f0ebee97e46e831f166b156cb7058abf5b57fea921",
+      "narrow1_Link_coacd_03.stl": "9594e6473062d56bcc7aa74ff00b03f604e257c9609dbd5ea329ed050137f9ae",
+      "narrow1_Link_coacd_04.stl": "4b429fe5bd0cf4d7e63287adcd99cca23667e1d4a6eb105a97093858cf3dd543",
+      "narrow1_Link_coacd_05.stl": "842bb0b5b7add883ef8d9fd554847e240b65ca80d4945586c0c70adfcc891a02",
+      "narrow1_Link_coacd_06.stl": "eb5f64e936f4a786830b7e72d0aa2073592e930d889130403a47f7136e01846d",
+      "narrow1_Link_coacd_07.stl": "83e8ae3237023d6cfbbff8ed93a63d0b4ebff84b9dd154b787eda73d03dea543",
+      "narrow1_Link_coacd_08.stl": "4032d8e649636560c0d72fb97a1763dc9cada970e7373e78ca74c1bf8415c3aa",
+      "narrow1_Link_coacd_09.stl": "650bc4844838328ea4eb93432f6c818595c1c35198ee2ae34e1555bea4640088",
+      "narrow1_Link_coacd_10.stl": "9596662fb7194c9582245cbdec6868b857607ec68d77ee083f96efe90e24cb28",
+      "narrow1_Link_coacd_11.stl": "293d4242b3400f11d56b0373be09e3f2f29dda23a3ef59a90e7903279076299c",
+      "narrow1_Link_coacd_12.stl": "bb1bb7cd228d609d23da66f21788330ec14c12059ba8c75a7ac98200c1b3adda",
+      "narrow1_Link_coacd_13.stl": "486b5c3857339df80b4dcecae487d1374c38a343e4b846a90b9911567c9d9c73",
+      "narrow1_Link_coacd_14.stl": "4237b616dadb141b5af204e8db8126535ee53cebda612c807e5b047b9c9dc953",
+      "narrow1_Link_coacd_15.stl": "99f5480595b9f6c1e07d91e928f8bca6a2073fef147a4d5eb2d3216ccf5b091c",
+      "narrow1_Link_coacd_16.stl": "98ba346d4292494cd6ce9aa62c9b0cd7d2c2aab756eb459c9611ac7048b591ff",
+      "narrow1_Link_coacd_17.stl": "e7e060bc10b2cbc46d1a638080cd3165afcb2c5cd6b038edb17f9489735abec8",
+      "narrow1_Link_coacd_18.stl": "f5ccc0afb585f7601cac9a196490482ad1e372959a301c54ed2a41829d3adeb9",
+      "narrow1_Link_coacd_19.stl": "9aa2d04ec7fd31dd196f5f25d117af2638203d97577361f1523250223e688479",
+      "narrow1_Link_coacd_20.stl": "e96207f05e7123876f8a03af8925b2b722e8983f915859e57e29eb2923abf518",
+      "narrow1_Link_coacd_21.stl": "3e2c96e8167664f1e3cac48f9e0fd3ff03fe6a73bcbc784daefd236cc10611b1",
+      "narrow1_Link_coacd_22.stl": "284e1948b8f39bc9f2cf8bade382141df197c6156ae2d11dfd7c380bbb87d2fd",
+      "narrow1_Link_coacd_23.stl": "57f7dee6807e128c7ce0e5eee08a58992ecda1db2feb1643a01eb987f86ad1ed",
+      "narrow2_Link_coacd_00.stl": "c0adaaa1eee46015591005f6190ad00e25dae68849d794059c1ea9e1a1f97c12",
+      "narrow2_Link_coacd_01.stl": "5457a8f85e32cf1f06819b3c907652ab28e1885c05cc6001d3eec0e8baea8e33",
+      "narrow2_Link_coacd_02.stl": "5ded5a4daf11daeb5a153840d080038e0523c214e385224a67697def30efdb29",
+      "narrow2_Link_coacd_03.stl": "9073c96119bc5fc124a2e425beb128eeb8f637cd4d7cfe059f1d18403964af7e",
+      "narrow2_Link_coacd_04.stl": "884680dd06e64a5a894ffb7d97a277fbfc5f7ef9c18359222e69be0c5ec1e54f",
+      "narrow2_Link_coacd_05.stl": "0f878c7c00688f4793b6cc52db356f3f4eb42e129f88c38f796a5e5eb457f89a",
+      "narrow2_Link_coacd_06.stl": "744019000a8326fa5a141fdec17df65bad5e962eaeeb189c1def852b88fd63dc",
+      "narrow2_Link_coacd_07.stl": "d75ea0e9c294966aa87391d1acb6ce3ee4961d1ad3cb3bb8ed48b487d6764532",
+      "narrow2_Link_coacd_08.stl": "a3ae2ca8adde746b69772249aafbf9399194a4d69a775455fdce56c26b1b1e0f",
+      "narrow2_Link_coacd_09.stl": "b0ea339b502c8aedb0a330bea54046ccf71b253eb656c58da0fea727ea417485",
+      "narrow2_Link_coacd_10.stl": "8970c2193eaed4e08d8f824b782af88b55916614b0d258b86503112d524d1394",
+      "narrow2_Link_coacd_11.stl": "90bdcbf58da7a18eb31abc7d6421c2c078112fc86d7f44abd02e263dac6d1f72",
+      "narrow2_Link_coacd_12.stl": "467f8e1f4d8b48bda716bfe53f2e204448b6ecc0b9d94db9b02323c8e830d06a",
+      "narrow2_Link_coacd_13.stl": "6f18c64c689d14072024c72c10f1874b202fe2e171f2fafa4cd4fbf7a398aacd",
+      "narrow3_Link_coacd_00.stl": "acc078709af75f01dbb4319280432a548d822bf1df6ff3d9c0cad9e844960bc6",
+      "narrow3_Link_coacd_01.stl": "9d1e19c801d94956ffae8c45f4d1f35fd99047df8403e35acf85abdf0362b0fb",
+      "narrow3_Link_coacd_02.stl": "dba75d57f47437190a976462d374a23e05a4c2bc0a6b8408402efb667daeafdc",
+      "narrow3_Link_coacd_03.stl": "dac195da4e2bb06ed8caa2e1c9b53525cace259034b7a65cf027de081265a574",
+      "narrow3_Link_coacd_04.stl": "997bb5565a02de5358ee23ce9df5dbd7c6fb77f3a2a7a2bffae2fff048a1c980",
+      "narrow3_Link_coacd_05.stl": "2323929f240df8c27b2c28aed36e6859d84af4e85d95a418403dfdae8a7f8226",
+      "narrow3_Link_coacd_06.stl": "69a2c81f06bf49f602f4a5dfbcb4f19277630f9372a5c0eeebaed0483c7494a3",
+      "narrow3_Link_coacd_07.stl": "b7d87cc69b0b740601aa94757fa4de2e5286ea90e38ae8a3b11f702805b740ea",
+      "narrow3_Link_coacd_08.stl": "d5e23794fcfcfee11df465e175bc9575572448e28e38cc9363f91ee87cf22c73",
+      "narrow3_Link_coacd_09.stl": "301537423ac1e893fcf814b764dd1538b7dc09386567d88d06d5f212e47f91ec",
+      "narrow3_Link_coacd_10.stl": "72f21f8272a33598e354304083533cd03393668dec6ea8d74a289388b9af7cca",
+      "narrow3_Link_coacd_11.stl": "3174fc334d619367c81fcc4823ce1e064c20b89204c102c9adc205bdcba4e827",
+      "narrow_loop_Link_coacd_00.stl": "c37660eb3529a8d4f19ef8e2f74997b62ab2f8ac01bf0d6cb78d3c6dd1f025d1",
+      "narrow_loop_Link_coacd_01.stl": "eb6113decc614456c1983ab5c2441a7924fa0ff11cbf5084147cb89683d8420e",
+      "narrow_loop_Link_coacd_02.stl": "a76aec8b91442d7b8ebcaaae742c1c79f5d2ba2f69c086bb0304f66137ddb8e4",
+      "narrow_loop_Link_coacd_03.stl": "d9fef6c0dd4c1b2d282275548dbcf3129dfd08aeb7cacc317a0443ea2bb916ad",
+      "narrow_loop_Link_coacd_04.stl": "fc3abebdf1f277a47a256529cacbee6e4d4c60c66852fde0937b2a52821687ff",
+      "narrow_loop_Link_coacd_05.stl": "0bb4b15cff1d14f21c6299fb09996604aa9bfc250f3244df42fb54f8f7ba61ab",
+      "narrow_loop_Link_coacd_06.stl": "c033ad7c3b77c2ede2851d6b7254b74bab0df9f1fb4795dea4f8ece5bc00d27e",
+      "narrow_loop_Link_coacd_07.stl": "572756688d144c121069f35c9a87f10cba4566c9504418097757f0d08958751d",
+      "narrow_loop_Link_coacd_08.stl": "a7d2d8f175a8da8165e3609c2cb89300b4044e6bdbdb4a282f7de0ef310fa48c",
+      "narrow_loop_Link_coacd_09.stl": "e27b7e1a468be65656860eab19ebc34c57438ff3b882a949b154e5760849c70c",
+      "narrow_loop_Link_coacd_10.stl": "b6153aed847ea12d8b05755c2087c88a47d4d10cbf460cad6ca15a785696e536",
+      "narrow_loop_Link_coacd_11.stl": "140e02be8230041e8112f474f14d77dd3c506b265b9587c9104ff69ff40cf670",
+      "narrow_loop_Link_coacd_12.stl": "844bb3743bc72bb5eb12691024008cf42c53d13db140705a377a6abbe9ae59c3",
+      "narrow_loop_Link_coacd_13.stl": "cb0a477cab6e261d6b6a7677a6c8ba7d8cb5dedaa9d79689143d119ce63d646a",
+      "narrow_loop_Link_coacd_14.stl": "1a002e02012483dc68b01c37f1e11f43fa9e8f05ac75487ad94653ff48d1186f",
+      "narrow_loop_Link_coacd_15.stl": "480af9a35b6baa65801d15c2164ceb02e6b1d07ecb902f97d13ed6c0cc3d3b61",
+      "narrow_loop_Link_coacd_16.stl": "465deaa785d3aace3b8f846487fd4ed22a3f4c13d9d6f69c2b15dec4732d1480",
+      "narrow_loop_Link_coacd_17.stl": "cb830c28e4db03d0b99178d5a36c54b48cae07ea4ab2c4da2fdc64686dd99e5b",
+      "narrow_loop_Link_coacd_18.stl": "6245e43f9a128ec1862c85a9ce6ccd9104f16dce64a74a4c05331b717004a563",
+      "narrow_loop_Link_coacd_19.stl": "0f30e49cbb2a193ce5f2dfb45aa7ce34a7a1aecafc6bcc607eefcc62533566c3",
+      "wide1_Link_coacd_00.stl": "ef41e3fc7efbf1afdca729cc834918bbaabbba2d479ee5021cc467db82eb6704",
+      "wide1_Link_coacd_01.stl": "32c172884f40dee67eff7e05526763cb366a71410fc641113610e1c05c81d1fb",
+      "wide1_Link_coacd_02.stl": "bce919ef95b7b0d762613324851668749a944b8d5a0418dd3b3b86f9f01b8512",
+      "wide1_Link_coacd_03.stl": "18ec9ae72df5c4ad6f446b6c15f443aaef6e910d9003c624ecf7e25645c057e0",
+      "wide1_Link_coacd_04.stl": "5a5ea5436863b1a8661138f2932ca7bcafeb25869e3bf763910519d4a2038c2a",
+      "wide1_Link_coacd_05.stl": "23b14ae69c0173082665bed75b89339e426e62a6d08964881a878a7f1a19df9e",
+      "wide1_Link_coacd_06.stl": "5937c7e3b674efc753caf1c46615c2761961a5724e9003b5ce5abe857d5a109b",
+      "wide1_Link_coacd_07.stl": "ea94fcf82c33fa8c6d39115549e413a534cea875b5d68943cd1fda10e588c09c",
+      "wide1_Link_coacd_08.stl": "0dcb543edf90f49a0aabc11d62be8a1d658ff44d1ea8771c27965652de61936d",
+      "wide1_Link_coacd_09.stl": "1d5a556761c2c1115736828451aed3fe8345399edd6b8358f7818d19f1f93fe5",
+      "wide1_Link_coacd_10.stl": "b809935d8d722a29b5e70c0e439628a9bee025136f340f82fd63538dc42226ff",
+      "wide1_Link_coacd_11.stl": "7a051fbc68955d9980f497f18512c11209ed021409d9925169db9f9d6e03cf11",
+      "wide1_Link_coacd_12.stl": "90a4779f7e3944da9bdf7c41dabe824328cfba292d7d282f4e5b4411905dfc76",
+      "wide1_Link_coacd_13.stl": "35ada4696e0878f0571f50da4c754581885a23d9344988cdfdb51358f0448a9e",
+      "wide1_Link_coacd_14.stl": "51490c9d750ec3b2d7556e3da834dfbbb08fa344a4197c1cd6a3ec08fbdfdfd7",
+      "wide1_Link_coacd_15.stl": "a1de6211180904e3e8bee84bceb5baf9d121a59f17bbb3d7444f2e170089dadf",
+      "wide1_Link_coacd_16.stl": "ff77525ccf26e3387e80f718c811311263f531f8e13f22eac8ad3da5d8d8446a",
+      "wide1_Link_coacd_17.stl": "662c497b2370440f008ad07f1c0299e20204571eee76888d24cf4e3839cc9a0b",
+      "wide1_Link_coacd_18.stl": "39b502049922a537ccadf24a3ffa073d66cc5a91ea38cc7dcac0d8e02249d3a7",
+      "wide1_Link_coacd_19.stl": "a85dfcda14203bee8502802dc5001cb6c3b59fafa0411a76c8553a7a43b77d08",
+      "wide1_Link_coacd_20.stl": "ac4539b4480c4a48f1f55d6fd71814eecf72dc8aa7aa1849d7897489a9ed3971",
+      "wide1_Link_coacd_21.stl": "093b94db7f618eb32c4ee044e35714bf63b0288afaa74cac8e6f2ee9c089e315",
+      "wide1_Link_coacd_22.stl": "3dc6e923e606af1b040464990dd4c7da0092df6d6b60bb04f74053acf1cf1a65",
+      "wide1_Link_coacd_23.stl": "cddc558eb8ddef5c5a2874dad2023454d03d785cd47bc166f7dc07e3ba227a1b",
+      "wide2_Link_coacd_00.stl": "724c8d1668fe15e204b6cc16c0ec6c979717050adcfd5ca509139b0be239b2ab",
+      "wide2_Link_coacd_01.stl": "fbc6ad6619ca848e06dac4f0221330892446647a4eb4b9d1a62a421be039730e",
+      "wide2_Link_coacd_02.stl": "36d47fc623d42711864c9d9831583f0dedaa14ee7c128a3afee59b3fbf1a49fc",
+      "wide2_Link_coacd_03.stl": "ec1296e4d9fbd3c72f989e70ea7d60edb3c3b90143410e0d95c475eab362e1dc",
+      "wide2_Link_coacd_04.stl": "964c178ca1edbf872a83879c862a9e507f5da7a34130b05a5cb2b76a44accf57",
+      "wide2_Link_coacd_05.stl": "0fcc9d61de81faba349b589fb2bf094437cac362b239e0b3a7cf64461dd31b93",
+      "wide2_Link_coacd_06.stl": "bdcaada1e6d965da4e3e773015d68e82c25f5a43eaae06ebaeb55837bdaaed70",
+      "wide2_Link_coacd_07.stl": "1119cbebd1a7d97cd9bf58e4e854cfaa2092b9f38e2a5eee9408c74fa385fc31",
+      "wide2_Link_coacd_08.stl": "163a33d0faa908b04a0157aad459f9558d1a37950cdc6bd602b785c50caf1d75",
+      "wide2_Link_coacd_09.stl": "0c4107ede0e18e15f6a0c021eba37263010e56bb52c5fde601183e905f94f428",
+      "wide2_Link_coacd_10.stl": "fdbbe838138fa3b7821787d9ce337e8fd1df4a38f90157ea4900432a73a7ecbe",
+      "wide2_Link_coacd_11.stl": "1fc7833f2f9fbf426425de978156ce5b9b5365716edfad284f2e7ee86c4fe40a",
+      "wide2_Link_coacd_12.stl": "bc73cf113b8ed00dad507023049bcd2af15a1c63c7fc41c7fb4b30a2c6398718",
+      "wide2_Link_coacd_13.stl": "ab4a220e66798697e1a315e597a06a698753a9b38fd8b0df8f88571388bb5934",
+      "wide3_Link_coacd_00.stl": "4b39e6aac35ed46a5290ea54949380091ce698e58cca8e92e25b3926cba5e786",
+      "wide3_Link_coacd_01.stl": "25424e30d90cb5ab98b814ca9149a2f9700df977a5d7affe3cfc9b162a394d15",
+      "wide3_Link_coacd_02.stl": "5a9e54f08d206d79780d4cb19ec19167c0f14d5bf6dc6f3199218fd9f6e3c12d",
+      "wide3_Link_coacd_03.stl": "31c609011199ae417b82d8ffac6c1177250f383660b3972144df4b335eee428f",
+      "wide3_Link_coacd_04.stl": "84d16a9fc8cf742e3fa68975f6bbf7b0bb3b65513d13961c22cd4e6db564f45b",
+      "wide3_Link_coacd_05.stl": "a69d5ab4142bf1021bcd01019207c71328ed12c280557b8f1e0640922388249e",
+      "wide3_Link_coacd_06.stl": "7c87738d00daaff9b5305b166841c10e04cf15799e5477031a29e7f620efa918",
+      "wide3_Link_coacd_07.stl": "b925fe4a1fddc96c8440e3188a6039a8e5a5a4e37278a78e106bc12f7e36b392",
+      "wide3_Link_coacd_08.stl": "3db35e837e67a8ab82fa95623f01dbaa0c24108c5e66b49d43c37adb04d13a4e",
+      "wide3_Link_coacd_09.stl": "22f33c08bd9181f84f99387315e76b3a7deedbbb3ca993b0c053b80e80fe03db",
+      "wide_loop_Link_coacd_00.stl": "2a5ae64e00a37df533b622e965c882f33869309413dff0efb848f6dcf86f23e8",
+      "wide_loop_Link_coacd_01.stl": "6a4dd6f243e97352cdbfe4255b20fc023219a8b6459663ce62dab2b8da369f00",
+      "wide_loop_Link_coacd_02.stl": "de0f33db228f55ac2d879f867af1909f914ef7080a0d2156c3caeb18fa8c2b9b",
+      "wide_loop_Link_coacd_03.stl": "a350394527b2d04ef5e8693bde3e34c46b92c6e4c736c5e4af3016408518f918",
+      "wide_loop_Link_coacd_04.stl": "f177deb0d7412c818e70c2ef5ce65772f7209fab2cdbb8b07d4555600909b324",
+      "wide_loop_Link_coacd_05.stl": "7699aabba6fa243c51aa0883b95210bf28240bfbaf539822775299abfa5697ce",
+      "wide_loop_Link_coacd_06.stl": "8938b906dca892155f86e34ab1e081f3b4ea92b18243504c5ff641a5bfd7a98b",
+      "wide_loop_Link_coacd_07.stl": "17db0e39138946ffae0fb1491533c0758f249b21751a2ed34e6f89717c1cc976",
+      "wide_loop_Link_coacd_08.stl": "2fce474102bb7a5b4a4eb64eae0e70bef1f17daf56e4f55ddc44599aeb2f8283",
+      "wide_loop_Link_coacd_09.stl": "634bf1e361bd6c11839c163d74f33685917175a2d5ece9b76053f536c765f365",
+      "wide_loop_Link_coacd_10.stl": "14d8c088f9ec983715d4a63391f294e7cdc6d594d4b2a0f2ce5c3b7533ef11d7",
+      "wide_loop_Link_coacd_11.stl": "193d0f57cd1c0ef96e9985cc5e95179a74bf005adcf3aab7568eac55b7494ed4",
+      "wide_loop_Link_coacd_12.stl": "b4eac7521521ad87f691bae349ef4b9c17f44c72425f0343782faa2725249a9c",
+      "wide_loop_Link_coacd_13.stl": "e2489cc4851f560d3bf119d36cc0d285f06c8d2a8b86bfff9ae88ef95341eb3d",
+      "wide_loop_Link_coacd_14.stl": "7b586c0771789a3260ce03defa82ebf478cbda65c04eb2414f60c1f72d605df4",
+      "wide_loop_Link_coacd_15.stl": "267f94783bbf727218aa3112721cd051cb1560ed10419e31fd4e06beb428013c",
+      "wide_loop_Link_coacd_16.stl": "008074a6922e70596229b8cbfb67657e723aa337c1516f0b4ac06cef12e965be",
+      "wide_loop_Link_coacd_17.stl": "521064969d5d9384a4d231daf536793658a53d863bcc2959da2abc172561bd8d",
+      "wide_loop_Link_coacd_18.stl": "14decf971d27662befa263d7d8dabd822a28232d0022b5f67723ec5beab67d52"
+    },
+    "scene_sha256": "a137a6efc793a16df808e23d764594eba4f3449664fbc5ceca554a210742b10a",
+    "source_mesh_sha256": {
+      "X2_URDF-v1.4.0/meshes/agibot.stl": "a9465b48bc12a9705ed84a6cebd8cd1adf86c6029a7be62a7d3020a61c685c92",
+      "X2_URDF-v1.4.0/meshes/base_link.stl": "ca4911f4e84a6d850bafab3b35f8e7fb6db32eb3bd36165079de3d1342ff8e4a",
+      "X2_URDF-v1.4.0/meshes/head_pitch_link.stl": "765cd7690f861bba7bae520e7ba7be04234bc9ef423fa6679ef9fbf17de646ca",
+      "X2_URDF-v1.4.0/meshes/head_yaw_link.stl": "06060e2d2c61e80b6b21a7d33f0313accd92fe011f475a9eb95c830298673c3f",
+      "X2_URDF-v1.4.0/meshes/imu_in_pelvis_link.stl": "0ff4fb3447615cbc00a077165b4c49a45b9785911f555f5bb6892385a9394308",
+      "X2_URDF-v1.4.0/meshes/imu_in_torso_link.stl": "06a95800f3167a0f73b9eb9dc108ee7ecd639abaf23dfac4328ca80577d3a641",
+      "X2_URDF-v1.4.0/meshes/left_ankle_pitch_link.stl": "7b9171cb1d41938c0fb5bfb1f07345963332df8c212b1dcd7329699bf8dd947e",
+      "X2_URDF-v1.4.0/meshes/left_ankle_roll_link.stl": "89f4c318ec03d24b971651584f0dc094b70c81d8cb14242d3c364d4f4c7e7153",
+      "X2_URDF-v1.4.0/meshes/left_elbow_link.stl": "49346d3f616bac61a8108e23f0cc4d0361965c2073aef8d091bf22c1c60a357d",
+      "X2_URDF-v1.4.0/meshes/left_hip_pitch_link.stl": "3248cfcb160a0fe66e8dbd4f696458ef57e09dd620aadba9124482237b87aba3",
+      "X2_URDF-v1.4.0/meshes/left_hip_roll_link.stl": "d3fbaa7ac96d7040263d5535f925b0bbf9c48d63c465b7f7f6302c5cb007381a",
+      "X2_URDF-v1.4.0/meshes/left_hip_yaw_link.stl": "cb99a65a4bebfcc517ae6c36238ab695ef7b67e9acf2c9b50e351966ec2a0d89",
+      "X2_URDF-v1.4.0/meshes/left_knee_link.stl": "79437cc841abebdb09b6601b54656ebb16a20837503644eda03d1b5331581f30",
+      "X2_URDF-v1.4.0/meshes/left_shoulder_pitch_link.stl": "bc6faae5931e5d184e989ea57e46598cb6c06a8dbf142cba3b2135dae9170042",
+      "X2_URDF-v1.4.0/meshes/left_shoulder_roll_link.stl": "607ca0c704ebbd72b71a286a1678e5bbe82c71cacfccf3306812d413f4a9eb66",
+      "X2_URDF-v1.4.0/meshes/left_shoulder_yaw_link.stl": "8448bbfe7e22cefb29b0481404566bf79a8ae2f542ec09bce89a7f6cb384196c",
+      "X2_URDF-v1.4.0/meshes/left_wrist_pitch_link.stl": "e788de51902a93907c4ec6d62ea8b949f4747cce436d5a249edd211f6b16b404",
+      "X2_URDF-v1.4.0/meshes/left_wrist_roll_extend_link.stl": "f379d912d341e6224ec16a62ec9a3c21621e43b6aae1bec0ba93e9a947d7507f",
+      "X2_URDF-v1.4.0/meshes/left_wrist_roll_link.stl": "690c3d6199b93269e091d569557f2ddf5e95cad6259b810b81d07e3ecfd73c8c",
+      "X2_URDF-v1.4.0/meshes/left_wrist_yaw_link.stl": "f12fd39300f589ca12df52b00c000a19261fc847c558c1540911cfd708acf9da",
+      "X2_URDF-v1.4.0/meshes/lidar_chest_front_link.stl": "c17ad52f27c3e9f19b7cd8e7027c393bdc4913a7a27803d9d7729bfc0a5ce9f8",
+      "X2_URDF-v1.4.0/meshes/narrow1_Link.stl": "82a707fe539d02f571e075a06c59b6846567ce61d741285b0f86f2d934cabb99",
+      "X2_URDF-v1.4.0/meshes/narrow2_Link.stl": "e113852a3859903e3be17ecb4b27809a5c5da8d73002157844b132abe7e3a17f",
+      "X2_URDF-v1.4.0/meshes/narrow3_Link.stl": "0fb55604e97d18c9545567e082e071746a968f624a0aa31ece3a0cc4fc1217b0",
+      "X2_URDF-v1.4.0/meshes/narrow_loop_Link.stl": "63b895ff646b799c303c41c924ea4c77cf00f9c5d357e2fb4f6761c649237b17",
+      "X2_URDF-v1.4.0/meshes/pelvis.stl": "19a02d072eb3aa6bb70a33942712d11342bf6f58d9f36af99cfd5f37678f178c",
+      "X2_URDF-v1.4.0/meshes/rgb_head_center_link.stl": "b101df14d774573b3b8bc02c3324be9e6107cd4c24f9471fe836998fdef3d096",
+      "X2_URDF-v1.4.0/meshes/rgb_head_rear_link.stl": "d65da262f1b8ebb3f110539d57482b4ff239499636e0a1964227dfa164c788a6",
+      "X2_URDF-v1.4.0/meshes/rgbd_head_front_link.stl": "74012dc6ccefa729fc44e0d47015c876f41a24610a5acdadf2947503cd042a1d",
+      "X2_URDF-v1.4.0/meshes/right_ankle_pitch_link.stl": "f7c4377a6b273d575a68a07ab278e59924e55dc328902f00c66520c13f5975e7",
+      "X2_URDF-v1.4.0/meshes/right_ankle_roll_link.stl": "39049286d27d91f5f5f0473a08cff52dd748f7ac00141edc4f6c6b09053f4dc9",
+      "X2_URDF-v1.4.0/meshes/right_elbow_link.stl": "d874d030557716abc7854d8eb3bb2c715d032ad96c714c75909894488820d00d",
+      "X2_URDF-v1.4.0/meshes/right_hip_pitch_link.stl": "9ca2c8d8b1a6b46cce1cbe6c9b0e381487d92f7b39216df602e480ece2ccb4e8",
+      "X2_URDF-v1.4.0/meshes/right_hip_roll_link.stl": "5ca3e69d45bfe7d8a209a2b235de95635852953feca9a0a4032b9a50d1eef61f",
+      "X2_URDF-v1.4.0/meshes/right_hip_yaw_link.stl": "ab21ff019f818cc7e9c79fc80d7a544bf8256f7c40c9fb53cecdb902e4fd54e9",
+      "X2_URDF-v1.4.0/meshes/right_knee_link.stl": "0205f0d017277fd323f3a835f61ab3b8c6de403a8ff7a247a6102398904b86bd",
+      "X2_URDF-v1.4.0/meshes/right_shoulder_pitch_link.stl": "3d7a48fd472436311cf58785ef69fbd547a4ca394ec98e18d4fb1ff7d7d0bcf4",
+      "X2_URDF-v1.4.0/meshes/right_shoulder_roll_link.stl": "97e0353794f28dc0c3da07f86fba878678c71d47397e0058559119ff832a76f0",
+      "X2_URDF-v1.4.0/meshes/right_shoulder_yaw_link.stl": "3cc9bcf54a77ac88c1aae187a2517fba163ffb12a30bf71de9a8f8444a877936",
+      "X2_URDF-v1.4.0/meshes/right_wrist_pitch_link.stl": "6b443af3e4c1e706dee7080e8860044d3335ef59a0ab0bd6692d873f2aecfd19",
+      "X2_URDF-v1.4.0/meshes/right_wrist_roll_extend_link.stl": "94c4c7b32306504e74efa3934a473be54c601a8e61c68476b0ef78fc397657de",
+      "X2_URDF-v1.4.0/meshes/right_wrist_roll_link.stl": "f6ed0a2a01407c6f314b6b2c04e5df8914f60963f3b546622f6734f03d487c72",
+      "X2_URDF-v1.4.0/meshes/right_wrist_yaw_link.stl": "4cb4c932f96fe0c1ae1c8e2fedd8e985a723c3f97036ca1b8daef6250c114998",
+      "X2_URDF-v1.4.0/meshes/stereo_head_front_link.stl": "3959f7521b5073920acf5512fcfe0ef2fdd6a5b3a286b8d094608925458e8a7d",
+      "X2_URDF-v1.4.0/meshes/torso_link.stl": "5f179c78e9eceed634b804fd91fdb4e20a2a57e9397273da29a3fad3e93c3c30",
+      "X2_URDF-v1.4.0/meshes/waist_pitch_link.stl": "23e9c15ec385b98cb13a405f92146059476cbb4937dacc2cf9de60a9aec2f664",
+      "X2_URDF-v1.4.0/meshes/waist_yaw_link.stl": "72eb27c1384f5d61bebd6f3fedbe0c0efe172d7195688f3cbd4c6d252a8d3f0e",
+      "X2_URDF-v1.4.0/meshes/wide1_Link.stl": "c858476345282813a6311bd0501787f15431f58daf638ce4381d241250c98075",
+      "X2_URDF-v1.4.0/meshes/wide2_Link.stl": "fd388efb484bb85ba2ce1cb9e3fd3a57953f3eb9bffe1e23ed0c6d53a71e014f",
+      "X2_URDF-v1.4.0/meshes/wide3_Link.stl": "a06d0c7e16ddd06e28a8e75c5a27c2e5fa025c00b79d973983f389cd08a380fb",
+      "X2_URDF-v1.4.0/meshes/wide_loop_Link.stl": "31aa42a993b3364e16efa657700ffe621eeaa5994d415bbe1b77f0687419b2b8"
+    },
+    "static_mujoco_version": "3.3.6",
+    "unreferenced_generated_collision_proxy_count": 24,
+    "viewer_head": "3dc22a5bbcc5b9ac7e6ca1419d2df159f5e7f7f4",
+    "viewer_pr": 94,
+    "wrist_geom_mapping": {
+      "left_wrist_roll_link": {
+        "collision_mesh": "left_wrist_roll_extend__variant",
+        "visual_mesh": "left_wrist_roll_extend__variant"
+      },
+      "right_wrist_roll_link": {
+        "collision_mesh": "right_wrist_roll_extend__variant",
+        "visual_mesh": "right_wrist_roll_extend__variant"
+      }
+    }
+  },
+  "schema_version": "robotsim.issue46.omnipicker-visual-acceptance.v1"
+}
