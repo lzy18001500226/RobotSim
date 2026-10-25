@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
@@ -22,6 +23,11 @@ from issue80_waypoint_route import (
     RouteState,
     SafetyObservation,
     WaypointRouteExecutor,
+    YawPolicy,
+)
+from issue80_route_motion_bridge import (
+    build_curved_waypoint_route,
+    build_shallow_curved_path_reference,
 )
 
 
@@ -249,6 +255,197 @@ class RouteConfigTests(unittest.TestCase):
 
 
 class RouteExecutionTests(unittest.TestCase):
+    def test_shallow_curved_route_corridor_contains_endpoint_with_full_footprint_margin(self) -> None:
+        start = PoseEstimate(
+            frame_id="odom", child_frame_id="base_link", x_m=0.2, y_m=-0.1, yaw_rad=0.25,
+            stamp_ns=1_000_000_000, received_steady_s=0.0, generation="epoch-1",
+            source="MUJOCO_GROUND_TRUTH", position_std_m=0.0, yaw_std_rad=0.0,
+            transform_chain=("odom->base_link",), transform_age_s=0.01,
+        )
+        reference = build_shallow_curved_path_reference(start)
+        route = build_curved_waypoint_route(
+            route_id="curved-route-corridor-test",
+            start_pose=start,
+            reference=reference,
+            robot_footprint_radius_m=0.41565748847422734,
+            local_clear_radius_m=2.0,
+        )
+        pose = FakePoseProvider(start)
+        safety = FakeSafetyProvider()
+        runner = WaypointRouteExecutor(route, pose, safety, FakeMotionAdapter())
+        first = runner.start(0.0, startup_feedback())
+        self.assertEqual(first.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        pose.pose = PoseEstimate(**{
+            **start.__dict__,
+            "x_m": float(reference["target_x_m"]),
+            "y_m": float(reference["target_y_m"]),
+            "stamp_ns": 2_000_000_000,
+            "received_steady_s": 0.1,
+        })
+        observation = runner.tick(0.1, startup_feedback(status=MotionStatus.ACTIVE))
+        self.assertEqual(observation.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        self.assertEqual(runner.state, RouteState.RUNNING)
+
+    def test_arrival_after_completed_stop_advances_without_duplicate_stop(self) -> None:
+        route = verified_rectangle_route()
+        first = replace(
+            route.steps[0], profile=Profile.TRANSIT, yaw_policy=YawPolicy.IGNORE,
+            yaw_rad=None, yaw_tolerance_rad=None, turn_corridor_polygon=None,
+            turn_strategy=None, maximum_turn_displacement_m=None,
+        )
+        route = replace(route, steps=(first, *route.steps[1:]))
+        route.validate()
+        pose = make_pose_provider()
+        motion = FakeMotionAdapter()
+        runner = WaypointRouteExecutor(route, pose, FakeSafetyProvider(), motion)
+        first = runner.start(0.0, startup_feedback())
+        self.assertEqual(first.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        self.assertEqual(first.waypoint_id, "B")
+
+        # Arrival during the M1 window requests one physical stop.
+        pose.update(x=5.0, y=0.0, yaw=0.0, now=1.0, stamp=2_000_000_000)
+        requested = runner.tick(1.0, startup_feedback(status=MotionStatus.ARRIVED))
+        self.assertEqual(requested.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
+        self.assertEqual(motion.stop_reasons, ["WAYPOINT_REACHED:B"])
+
+        # The M1 adapter completes its stop gate, then a fresh settled pose
+        # confirms the waypoint. The executor advances to the next route step
+        # using that same evidence and does not ask for another stop window.
+        pose.update(x=5.0, y=0.0, yaw=0.0, now=3.05, stamp=3_000_000_000)
+        next_step = runner.accept_arrival_after_verified_stop(
+            3.05,
+            startup_feedback(
+                status=MotionStatus.ARRIVED,
+                physical_stop_evidence=stop_evidence(1.05),
+                stand_readback_pass=True,
+                input_source_readback_pass=True,
+            ),
+            zero_request_started_s=1.05,
+            bridge_rearmed=True,
+        )
+        self.assertEqual(next_step.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        self.assertNotEqual(next_step.waypoint_id, "B")
+        self.assertEqual(runner.active_step.waypoint_id, next_step.waypoint_id)
+        self.assertEqual(runner.phase.value, "FOLLOW")
+        self.assertEqual(motion.stop_reasons, ["WAYPOINT_REACHED:B"])
+
+    def test_last_waypoint_completes_after_prior_stop_without_second_stop(self) -> None:
+        source_route = verified_rectangle_route()
+        first = replace(
+            source_route.steps[0], profile=Profile.TRANSIT, yaw_policy=YawPolicy.IGNORE,
+            yaw_rad=None, yaw_tolerance_rad=None, turn_corridor_polygon=None,
+            turn_strategy=None, maximum_turn_displacement_m=None,
+        )
+        route = replace(source_route, steps=(first,))
+        route.validate()
+        pose = make_pose_provider()
+        motion = FakeMotionAdapter()
+        runner = WaypointRouteExecutor(route, pose, FakeSafetyProvider(), motion)
+        runner.start(0.0, startup_feedback())
+        pose.update(x=5.0, y=0.0, yaw=0.0, now=1.0, stamp=2_000_000_000)
+        runner.tick(1.0, startup_feedback(status=MotionStatus.ARRIVED))
+        pose.update(x=5.0, y=0.0, yaw=0.0, now=3.0, stamp=3_000_000_000)
+
+        complete = runner.accept_arrival_after_verified_stop(
+            3.0,
+            startup_feedback(
+                status=MotionStatus.ARRIVED,
+                physical_stop_evidence=stop_evidence(1.0),
+                stand_readback_pass=True,
+                input_source_readback_pass=True,
+            ),
+            zero_request_started_s=1.0,
+            bridge_rearmed=True,
+        )
+
+        self.assertEqual(complete.kind, DirectiveKind.COMPLETE)
+        self.assertEqual(runner.state, RouteState.COMPLETE)
+        self.assertEqual(motion.stop_reasons, ["WAYPOINT_REACHED:B"])
+
+    def test_poststop_only_arrival_completes_from_external_m1_gate_without_route_stop(self) -> None:
+        source_route = verified_rectangle_route()
+        first = replace(
+            source_route.steps[0], profile=Profile.TRANSIT, yaw_policy=YawPolicy.IGNORE,
+            yaw_rad=None, yaw_tolerance_rad=None, turn_corridor_polygon=None,
+            turn_strategy=None, maximum_turn_displacement_m=None,
+        )
+        route = replace(source_route, steps=(first,))
+        route.validate()
+        pose = make_pose_provider()
+        motion = FakeMotionAdapter()
+        runner = WaypointRouteExecutor(route, pose, FakeSafetyProvider(), motion)
+        runner.start(0.0, startup_feedback())
+        # No route-level arrival/stop transition occurred during motion. The
+        # M1 adapter publishes zero and passes its composite stop gate first.
+        pose.update(x=4.9, y=0.0, yaw=0.0, now=2.5, stamp=2_000_000_000)
+        complete = runner.accept_arrival_after_verified_stop(
+            2.5,
+            startup_feedback(
+                status=MotionStatus.ARRIVED,
+                physical_stop_evidence=stop_evidence(0.5),
+                stand_readback_pass=True,
+                input_source_readback_pass=True,
+            ),
+            zero_request_started_s=0.5,
+            bridge_rearmed=True,
+        )
+        self.assertEqual(complete.kind, DirectiveKind.COMPLETE)
+        self.assertEqual(runner.state, RouteState.COMPLETE)
+        self.assertEqual(motion.stop_reasons, [])
+
+    def test_poststop_arrival_rejects_outside_tolerance_stale_readbacks_or_failed_stop(self) -> None:
+        cases = (
+            ("outside_tolerance", {"x": 4.7, "stand": True, "source": True, "stop": PhysicalStopStatus.PASS, "bridge": True},
+             "POSTSTOP_ARRIVAL_POSE_OUTSIDE_WAYPOINT_TOLERANCE"),
+            ("stale_stand", {"x": 5.0, "stand": False, "source": True, "stop": PhysicalStopStatus.PASS, "bridge": True},
+             "POSTSTOP_ARRIVAL_REQUIRES_FRESH_STAND_AND_SOURCE_READBACKS"),
+            ("stale_source", {"x": 5.0, "stand": True, "source": False, "stop": PhysicalStopStatus.PASS, "bridge": True},
+             "POSTSTOP_ARRIVAL_REQUIRES_FRESH_STAND_AND_SOURCE_READBACKS"),
+            ("stop_failed", {"x": 5.0, "stand": True, "source": True, "stop": PhysicalStopStatus.FAIL, "bridge": True},
+             "POSTSTOP_ARRIVAL_REQUIRES_COMPOSITE_PHYSICAL_STOP_PASS"),
+            ("bridge_not_rearmed", {"x": 5.0, "stand": True, "source": True, "stop": PhysicalStopStatus.PASS, "bridge": False},
+             "POSTSTOP_ARRIVAL_REQUIRES_STOP_GATED_BRIDGE_REARM"),
+            ("reset_gate_missing", {"x": 5.0, "stand": True, "source": True, "stop": PhysicalStopStatus.PASS, "bridge": True, "reset": False},
+             "POSTSTOP_ARRIVAL_REQUIRES_RESET_AND_STANDING_GATES"),
+            ("standing_gate_missing", {"x": 5.0, "stand": True, "source": True, "stop": PhysicalStopStatus.PASS, "bridge": True, "standing": False},
+             "POSTSTOP_ARRIVAL_REQUIRES_RESET_AND_STANDING_GATES"),
+        )
+        for label, case, expected in cases:
+            with self.subTest(label=label):
+                source_route = verified_rectangle_route()
+                first = replace(
+                    source_route.steps[0], profile=Profile.TRANSIT, yaw_policy=YawPolicy.IGNORE,
+                    yaw_rad=None, yaw_tolerance_rad=None, turn_corridor_polygon=None,
+                    turn_strategy=None, maximum_turn_displacement_m=None,
+                )
+                route = replace(source_route, steps=(first, *source_route.steps[1:]))
+                route.validate()
+                pose = make_pose_provider()
+                motion = FakeMotionAdapter()
+                runner = WaypointRouteExecutor(route, pose, FakeSafetyProvider(), motion)
+                runner.start(0.0, startup_feedback())
+                pose.update(x=5.0, y=0.0, yaw=0.0, now=1.0, stamp=2_000_000_000)
+                runner.tick(1.0, startup_feedback(status=MotionStatus.ARRIVED))
+                pose.update(x=case["x"], y=0.0, yaw=0.0, now=3.0, stamp=3_000_000_000)
+                evidence = replace(stop_evidence(1.0), status=case["stop"])
+                result = runner.accept_arrival_after_verified_stop(
+                    3.0,
+                    startup_feedback(
+                        status=MotionStatus.ARRIVED,
+                        physical_stop_evidence=evidence,
+                        reset_gate_pass=case.get("reset", True),
+                        standing_gate_pass=case.get("standing", True),
+                        stand_readback_pass=case["stand"],
+                        input_source_readback_pass=case["source"],
+                    ),
+                    zero_request_started_s=1.0,
+                    bridge_rearmed=case["bridge"],
+                )
+                self.assertEqual(result.kind, DirectiveKind.STOP_AND_ABORT)
+                self.assertEqual(runner.result["failure_reason"], expected)
+                self.assertEqual(len(motion.stop_reasons), 2)  # original stop plus fail-closed abort
+                self.assertNotEqual(runner.state, RouteState.COMPLETE)
+
     def test_wall_aligned_realtime_step_rebases_odom_stamp_and_records_it(self) -> None:
         initial_time_ns = 1_700_000_000_000_000_000
         rebased_time_ns = 1_699_999_999_470_000_000

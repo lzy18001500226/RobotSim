@@ -36,6 +36,18 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M,
     WAYPOINT_B_CORRIDOR_MAX_FORWARD_M,
     WAYPOINT_B_MAX_CROSS_TRACK_M,
+    CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
+    CURVED_PATH_FORWARD_M_S,
+    CURVED_PATH_MAX_CROSS_TRACK_M,
+    CURVED_PATH_MAX_WINDOW_S,
+    CURVED_PATH_MAX_WINDOWS,
+    CURVED_PATH_POSITION_TOLERANCE_M,
+    CURVED_PATH_RADIUS_M,
+    CURVED_PATH_STOP_RESERVE_M,
+    CURVED_PATH_SWEEP_RAD,
+    build_curved_waypoint_route,
+    build_shallow_curved_path_reference,
+    curved_path_metrics,
     build_short_right_corner_route,
     measured_m1_nonzero_window_s,
     waypoint_b_arrival_passes,
@@ -50,6 +62,7 @@ from issue80_route_motion_bridge import (
     fresh_input_source_readback_valid,
     validate_physical_stop_evidence,
     waypoint_b_window_budget_passes,
+    validate_curved_path_cli_profile,
 )
 
 
@@ -140,6 +153,122 @@ def turn_directive(**overrides) -> RouteDirective:
 
 
 class RouteMotionBridgeTests(unittest.TestCase):
+    def test_curved_path_cli_profile_accepts_only_the_bounded_reviewed_envelope(self):
+        values = {
+            "route_integration": True,
+            "curved_path": True,
+            "waypoint_b_mode": False,
+            "turn_evidence_present": False,
+            "extra_stop_observation_s": 5.0,
+            "pulse_duration_s": 1.0,
+            "generic_forward_speed_m_s": 0.2,
+            "ramp_duration_s": 0.0,
+            "ramp_start_speed_m_s": None,
+            "deceleration_duration_s": 0.0,
+            "startup_speed_m_s": None,
+            "startup_transition_displacement_m": None,
+            "startup_transition_timeout_s": 0.0,
+            "max_observed_planar_speed_m_s": 0.2,
+            "zero_until_stand_timeout_s": 3.5,
+            "zero_only_stop": True,
+        }
+        profile = validate_curved_path_cli_profile(**values)
+        self.assertEqual(profile["profile_classification"], "SIMULATION_ONLY_CURVED_PATH_DIAGNOSTIC")
+        self.assertEqual(profile["geometry"]["signed_sweep_rad"], -0.22)
+        self.assertEqual(profile["maximum_windows"], 3)
+        self.assertEqual(profile["aggregate_nonzero_limit_s"], 15.0)
+
+        for mutation in (
+            {"route_integration": False},
+            {"waypoint_b_mode": True},
+            {"turn_evidence_present": True},
+            {"extra_stop_observation_s": 4.0},
+            {"zero_only_stop": False},
+            {"max_observed_planar_speed_m_s": 0.3},
+        ):
+            invalid = dict(values)
+            invalid.update(mutation)
+            with self.subTest(mutation=mutation), self.assertRaises(RouteMotionBridgeError):
+                validate_curved_path_cli_profile(**invalid)
+
+    def test_shallow_curve_is_frozen_in_measured_odom_and_within_motion_envelope(self):
+        start = make_pose(x=1.2, y=-0.4, yaw=0.31, received=10.0)
+        reference = build_shallow_curved_path_reference(start)
+
+        self.assertEqual(reference["frame_id"], "odom")
+        self.assertEqual(reference["direction"], "RIGHT")
+        self.assertAlmostEqual(reference["radius_m"], CURVED_PATH_RADIUS_M)
+        self.assertAlmostEqual(reference["sweep_rad"], CURVED_PATH_SWEEP_RAD)
+        self.assertAlmostEqual(reference["expected_path_length_m"], CURVED_PATH_RADIUS_M * CURVED_PATH_SWEEP_RAD, places=9)
+        self.assertAlmostEqual(
+            reference["nominal_angular_rate_rad_s"],
+            -CURVED_PATH_FORWARD_M_S / CURVED_PATH_RADIUS_M,
+            places=9,
+        )
+        self.assertLess(reference["nominal_angular_rate_rad_s"], reference["angular_command_limit_rad_s"])
+        self.assertAlmostEqual(reference["position_tolerance_m"], CURVED_PATH_POSITION_TOLERANCE_M)
+        self.assertAlmostEqual(reference["stop_reserve_m"], CURVED_PATH_STOP_RESERVE_M)
+        self.assertAlmostEqual(reference["maximum_cross_track_m"], CURVED_PATH_MAX_CROSS_TRACK_M)
+        points = reference["reference_points"]
+        self.assertEqual(len(points), 21)
+        self.assertAlmostEqual(points[0]["x_m"], start.x_m)
+        self.assertAlmostEqual(points[0]["y_m"], start.y_m)
+        self.assertAlmostEqual(points[-1]["x_m"], reference["target_x_m"])
+        self.assertAlmostEqual(points[-1]["y_m"], reference["target_y_m"])
+
+    def test_curve_projection_uses_curve_not_start_centerline(self):
+        start = make_pose(x=-0.2, y=0.7, yaw=-0.4, received=10.0)
+        reference = build_shallow_curved_path_reference(start)
+        point = reference["reference_points"][10]
+        on_curve = curved_path_metrics(reference, x_m=point["x_m"], y_m=point["y_m"])
+        self.assertLess(on_curve["cross_track_error_m"], 1e-9)
+        self.assertGreater(on_curve["path_progress_m"], 0.0)
+        self.assertLess(on_curve["path_progress_m"], reference["expected_path_length_m"])
+        self.assertLess(on_curve["path_tangent_yaw_rad"], start.yaw_rad)
+
+        tangent = on_curve["path_tangent_yaw_rad"]
+        offset = 0.051
+        displaced = curved_path_metrics(
+            reference,
+            x_m=point["x_m"] - offset * math.sin(tangent),
+            y_m=point["y_m"] + offset * math.cos(tangent),
+        )
+        self.assertGreater(displaced["cross_track_error_m"], CURVED_PATH_MAX_CROSS_TRACK_M)
+
+    def test_curved_route_has_single_verified_stop_waypoint_and_bounded_windows(self):
+        start = make_pose(x=0.5, y=0.1, yaw=0.2, received=10.0)
+        reference = build_shallow_curved_path_reference(start)
+        route = build_curved_waypoint_route(
+            route_id="curved-test",
+            start_pose=start,
+            reference=reference,
+            robot_footprint_radius_m=0.25,
+            local_clear_radius_m=2.0,
+        )
+        self.assertEqual(route.frame_id, "odom")
+        self.assertEqual(len(route.steps), 1)
+        step = route.steps[0]
+        self.assertEqual(step.waypoint_id, "CURVE-ENDPOINT")
+        self.assertAlmostEqual(step.x_m, reference["target_x_m"])
+        self.assertAlmostEqual(step.y_m, reference["target_y_m"])
+        self.assertEqual(step.position_tolerance_m, CURVED_PATH_POSITION_TOLERANCE_M)
+        self.assertEqual(step.target_forward_m_s, CURVED_PATH_FORWARD_M_S)
+        self.assertEqual(step.max_forward_m_s, CURVED_PATH_FORWARD_M_S)
+        self.assertEqual(step.max_angular_rad_s, 0.075)
+        self.assertEqual(step.max_command_window_s, CURVED_PATH_MAX_WINDOW_S)
+        self.assertEqual(step.stop_behavior.value, "VERIFY_PHYSICAL_STOP")
+        self.assertEqual(CURVED_PATH_MAX_WINDOWS, 3)
+        self.assertEqual(CURVED_PATH_AGGREGATE_NONZERO_MAX_S, 15.0)
+
+        with self.assertRaisesRegex(RouteMotionBridgeError, "clearance"):
+            build_curved_waypoint_route(
+                route_id="curved-test-too-tight",
+                start_pose=start,
+                reference=reference,
+                robot_footprint_radius_m=0.25,
+                local_clear_radius_m=1.0,
+            )
+
     def test_steering_waits_for_warmup_and_fresh_mode_source_handshake(self):
         gate = TransitSteeringGate(warmup_s=0.5)
         self.assertFalse(gate.observe(10.0, False)["steering_enabled"])

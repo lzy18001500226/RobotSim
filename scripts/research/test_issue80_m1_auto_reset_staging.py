@@ -24,6 +24,33 @@ from issue80_m1_auto_reset_run import (
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_parent_child_curved_path_profile_is_explicit_and_keeps_stop_gates(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=5.0,
+            pulse_duration=1.0,
+            forward_speed=0.2,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="curved-path-cli-test",
+            run65_ground_truth_point_goal=False,
+            run65_curved_path_diagnostic=True,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "curve-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--route-integration", child)
+        self.assertIn("--route-curved-path-diagnostic", child)
+        self.assertIn("--zero-only-stop", child)
+        self.assertIn("--max-observed-planar-speed-m-s", child)
+        self.assertIn("--zero-until-stand-timeout-s", child)
+        self.assertNotIn("--route-waypoint-b-only", child)
+        self.assertNotIn("--route-turn-qualification-evidence", child)
+        self.assertEqual(child[child.index("--extra-stop-observation") + 1], "5.0")
+
     def test_parent_child_point_goal_invocation_propagates_runtime_profile(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=7.0,

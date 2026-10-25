@@ -58,6 +58,16 @@ WAYPOINT_B_CORRIDOR_MAX_FORWARD_M = 1.25
 # Keep an additional 0.15 m before the existing corridor edge for stopping and drift.
 WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M = 1.10
 WAYPOINT_B_MAX_CROSS_TRACK_M = 0.05
+CURVED_PATH_RADIUS_M = 4.4
+CURVED_PATH_SWEEP_RAD = 0.22
+CURVED_PATH_TURN_SIGN = -1
+CURVED_PATH_FORWARD_M_S = 0.12
+CURVED_PATH_POSITION_TOLERANCE_M = 0.15
+CURVED_PATH_STOP_RESERVE_M = 0.055
+CURVED_PATH_MAX_WINDOWS = 3
+CURVED_PATH_MAX_WINDOW_S = 5.0
+CURVED_PATH_AGGREGATE_NONZERO_MAX_S = 15.0
+CURVED_PATH_MAX_CROSS_TRACK_M = 0.05
 MAX_POSE_AGE_S = 0.20
 MAX_TRANSFORM_AGE_S = 0.50
 ALLOWED_MODE_READBACKS = frozenset(("STAND_DEFAULT", "LOCOMOTION_DEFAULT"))
@@ -147,6 +157,267 @@ class RouteActionWindow:
 
 class RouteMotionBridgeError(ValueError):
     """Invalid or out-of-order action-window lifecycle."""
+
+
+def validate_curved_path_cli_profile(
+    *,
+    route_integration: bool,
+    curved_path: bool,
+    waypoint_b_mode: bool,
+    turn_evidence_present: bool,
+    extra_stop_observation_s: float,
+    pulse_duration_s: float,
+    generic_forward_speed_m_s: float,
+    ramp_duration_s: float,
+    ramp_start_speed_m_s: float | None,
+    deceleration_duration_s: float,
+    startup_speed_m_s: float | None,
+    startup_transition_displacement_m: float | None,
+    startup_transition_timeout_s: float,
+    max_observed_planar_speed_m_s: float | None,
+    zero_until_stand_timeout_s: float,
+    zero_only_stop: bool,
+) -> dict[str, object]:
+    """Validate only the fixed bounded curved-path M1 profile, without ROS I/O."""
+    if not route_integration or not curved_path:
+        raise RouteMotionBridgeError("curved-path diagnostic requires route integration and its explicit flag")
+    if waypoint_b_mode or turn_evidence_present:
+        raise RouteMotionBridgeError("curved-path diagnostic cannot be combined with waypoint-B or turn qualification")
+    if (
+        extra_stop_observation_s != 5.0
+        or pulse_duration_s != 1.0
+        or generic_forward_speed_m_s != 0.2
+        or ramp_duration_s != 0.0
+        or ramp_start_speed_m_s is not None
+        or deceleration_duration_s != 0.0
+        or startup_speed_m_s is not None
+        or startup_transition_displacement_m is not None
+        or startup_transition_timeout_s != 0.0
+        or max_observed_planar_speed_m_s != 0.2
+        or zero_until_stand_timeout_s != 3.5
+        or zero_only_stop is not True
+    ):
+        raise RouteMotionBridgeError(
+            "curved path requires fixed 5 s observation, default generic fields, 0.2 m/s guard, "
+            "3.5 s STAND wait, and zero-only stop"
+        )
+    return {
+        "geometry": {
+            "frame_id": "odom",
+            "radius_m": CURVED_PATH_RADIUS_M,
+            "signed_sweep_rad": CURVED_PATH_TURN_SIGN * CURVED_PATH_SWEEP_RAD,
+            "expected_path_length_m": CURVED_PATH_RADIUS_M * CURVED_PATH_SWEEP_RAD,
+            "target_yaw_gate": "NONE_REPORT_ONLY",
+        },
+        "endpoint_tolerance_m": CURVED_PATH_POSITION_TOLERANCE_M,
+        "forward_m_s": CURVED_PATH_FORWARD_M_S,
+        "angular_limit_rad_s": MAX_ANGULAR_RAD_S,
+        "maximum_cross_track_m": CURVED_PATH_MAX_CROSS_TRACK_M,
+        "stop_reserve_m": CURVED_PATH_STOP_RESERVE_M,
+        "per_window_nonzero_limit_s": CURVED_PATH_MAX_WINDOW_S,
+        "maximum_windows": CURVED_PATH_MAX_WINDOWS,
+        "aggregate_nonzero_limit_s": CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
+        "profile_classification": "SIMULATION_ONLY_CURVED_PATH_DIAGNOSTIC",
+        "post_stop_observation_s": 5.0,
+    }
+
+
+def build_shallow_curved_path_reference(start_pose: PoseEstimate) -> dict[str, object]:
+    """Freeze one gentle, source-odom circular arc from a fresh measured start.
+
+    The fixed diagnostic is a 0.968 m arc at 4.4 m radius (0.22 rad sweep),
+    initially curving right in the odom frame. Its nominal feed-forward rate
+    at 0.12 m/s is about -0.0273 rad/s, below the -0.0459 rad/s average yaw
+    rate measured in Run65's right arc. Run65 itself failed its planar-drift
+    gate, so this is only a curvature scale reference, not a qualification.
+    This defines path geometry only; it does not predict MC tracking.
+    """
+    values = (start_pose.x_m, start_pose.y_m, start_pose.yaw_rad)
+    if (
+        start_pose.frame_id != "odom"
+        or start_pose.child_frame_id != "base_link"
+        or not all(math.isfinite(float(value)) for value in values)
+        or not start_pose.generation
+    ):
+        raise RouteMotionBridgeError("curved path requires a finite odom->base_link start pose")
+    radius = CURVED_PATH_RADIUS_M
+    sweep = CURVED_PATH_SWEEP_RAD
+    direction = CURVED_PATH_TURN_SIGN
+    local_x = radius * math.sin(sweep)
+    local_y = direction * radius * (1.0 - math.cos(sweep))
+    cosine, sine = math.cos(start_pose.yaw_rad), math.sin(start_pose.yaw_rad)
+    end_x = start_pose.x_m + local_x * cosine - local_y * sine
+    end_y = start_pose.y_m + local_x * sine + local_y * cosine
+    points = []
+    for index in range(21):
+        theta = sweep * index / 20.0
+        px = radius * math.sin(theta)
+        py = direction * radius * (1.0 - math.cos(theta))
+        points.append({
+            "fraction": index / 20.0,
+            "x_m": start_pose.x_m + px * cosine - py * sine,
+            "y_m": start_pose.y_m + px * sine + py * cosine,
+        })
+    return {
+        "schema": "robotsim.issue80.curved_path_reference.v1",
+        "frame_id": "odom",
+        "direction": "RIGHT" if direction < 0 else "LEFT",
+        "turn_sign": direction,
+        "start_pose": {
+            "x_m": start_pose.x_m,
+            "y_m": start_pose.y_m,
+            "yaw_rad": start_pose.yaw_rad,
+            "stamp_ns": start_pose.stamp_ns,
+            "generation": start_pose.generation,
+        },
+        "radius_m": radius,
+        "sweep_rad": sweep,
+        "curvature_per_m": direction / radius,
+        "nominal_forward_m_s": CURVED_PATH_FORWARD_M_S,
+        "nominal_angular_rate_rad_s": direction * CURVED_PATH_FORWARD_M_S / radius,
+        "curvature_basis": (
+            "Run65 measured -0.229410 rad over 5.0 s at -0.075 rad/s and 0.12 m/s; "
+            "that right-turn trial failed its planar-drift gate and is used only as a rate-scale reference"
+        ),
+        "angular_command_limit_rad_s": MAX_ANGULAR_RAD_S,
+        "expected_path_length_m": radius * sweep,
+        "target_x_m": end_x,
+        "target_y_m": end_y,
+        "target_yaw_rad": None,
+        "position_tolerance_m": CURVED_PATH_POSITION_TOLERANCE_M,
+        "stop_reserve_m": CURVED_PATH_STOP_RESERVE_M,
+        "maximum_cross_track_m": CURVED_PATH_MAX_CROSS_TRACK_M,
+        "reference_points": points,
+        "classification": "SIMULATION_ONLY_PATH_GEOMETRY_PRECHECK_NOT_DYNAMICS_VALIDATION",
+    }
+
+
+def curved_path_metrics(
+    reference: Mapping[str, object], *, x_m: float, y_m: float
+) -> dict[str, float]:
+    """Project one fresh odom position onto the frozen circular-arc segment."""
+    try:
+        origin = reference["start_pose"]
+        if not isinstance(origin, Mapping):
+            raise TypeError("start_pose")
+        x0, y0, yaw0 = (float(origin[key]) for key in ("x_m", "y_m", "yaw_rad"))
+        radius = float(reference["radius_m"])
+        sweep = float(reference["sweep_rad"])
+        x, y = float(x_m), float(y_m)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RouteMotionBridgeError("curved path reference or pose is malformed") from exc
+    if not all(math.isfinite(value) for value in (x0, y0, yaw0, radius, sweep, x, y)) or radius <= 0.0 or sweep <= 0.0:
+        raise RouteMotionBridgeError("curved path metrics require finite positive geometry")
+    dx, dy = x - x0, y - y0
+    cosine, sine = math.cos(yaw0), math.sin(yaw0)
+    local_x = dx * cosine + dy * sine
+    local_y = -dx * sine + dy * cosine
+    direction = int(reference["turn_sign"])
+    raw_theta = math.atan2(local_x, radius - direction * local_y)
+    theta = min(sweep, max(0.0, raw_theta))
+    reference_x = radius * math.sin(theta)
+    direction = int(reference["turn_sign"])
+    reference_y = direction * radius * (1.0 - math.cos(theta))
+    cross_track = math.hypot(local_x - reference_x, local_y - reference_y)
+    radial_error = math.hypot(local_x, local_y - direction * radius) - radius
+    return {
+        "path_progress_m": radius * theta,
+        "path_progress_fraction": theta / sweep,
+        "cross_track_error_m": cross_track,
+        "signed_radial_error_m": radial_error,
+        "path_tangent_yaw_rad": yaw0 + direction * theta,
+        "remaining_path_m": max(0.0, radius * (sweep - theta)),
+        "raw_arc_angle_rad": raw_theta,
+        "clamped_arc_angle_rad": theta,
+    }
+
+
+def build_curved_waypoint_route(
+    *,
+    route_id: str,
+    start_pose: PoseEstimate,
+    reference: Mapping[str, object],
+    robot_footprint_radius_m: float,
+    local_clear_radius_m: float,
+) -> RouteSpec:
+    """Create a single fixed-point route step around the frozen curved path."""
+    if not route_id or local_clear_radius_m <= robot_footprint_radius_m + 0.10:
+        raise RouteMotionBridgeError("curved route identity or verified local clearance is invalid")
+    if reference.get("frame_id") != "odom":
+        raise RouteMotionBridgeError("curved route reference must remain in odom")
+    try:
+        goal_x = float(reference["target_x_m"])
+        goal_y = float(reference["target_y_m"])
+        position_tolerance = float(reference["position_tolerance_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RouteMotionBridgeError("curved route target is malformed") from exc
+
+    curve_lateral_envelope = float(reference["radius_m"]) * (
+        1.0 - math.cos(float(reference["sweep_rad"]))
+    )
+    half_width = robot_footprint_radius_m + 0.10 + 0.05 + curve_lateral_envelope
+    curve_forward_extent = float(reference["radius_m"]) * math.sin(float(reference["sweep_rad"]))
+    forward_limit = max(1.25, curve_forward_extent + robot_footprint_radius_m + 0.10 + 0.05)
+    local_bounds = ((-0.75, -half_width), (forward_limit, -half_width),
+                    (forward_limit, half_width), (-0.75, half_width))
+    cosine, sine = math.cos(start_pose.yaw_rad), math.sin(start_pose.yaw_rad)
+    polygon = tuple(
+        (
+            start_pose.x_m + lx * cosine - ly * sine,
+            start_pose.y_m + lx * sine + ly * cosine,
+        )
+        for lx, ly in local_bounds
+    )
+    maximum_corridor_radius = max(math.hypot(lx, ly) for lx, ly in local_bounds)
+    if maximum_corridor_radius >= local_clear_radius_m:
+        raise RouteMotionBridgeError("verified open-floor clearance does not contain curved route corridor")
+
+    step = RouteStep(
+        waypoint_id="CURVE-ENDPOINT",
+        x_m=goal_x,
+        y_m=goal_y,
+        profile=Profile.TRANSIT,
+        position_tolerance_m=position_tolerance,
+        yaw_policy=YawPolicy.IGNORE,
+        yaw_rad=None,
+        yaw_tolerance_rad=None,
+        max_position_std_m=0.01,
+        max_yaw_std_rad=0.05,
+        stop_behavior=StopBehavior.VERIFY_PHYSICAL_STOP,
+        segment_timeout_s=20.0,
+        recovery_limit=0,
+        corridor_polygon=polygon,
+        turn_corridor_polygon=None,
+        minimum_obstacle_clearance_m=local_clear_radius_m,
+        target_forward_m_s=CURVED_PATH_FORWARD_M_S,
+        max_forward_m_s=CURVED_PATH_FORWARD_M_S,
+        max_angular_rad_s=MAX_ANGULAR_RAD_S,
+        max_command_window_s=CURVED_PATH_MAX_WINDOW_S,
+        turn_strategy=None,
+        maximum_turn_displacement_m=None,
+    )
+    route = RouteSpec(
+        route_id=route_id,
+        frame_id="odom",
+        workspace_verified=True,
+        bounded_moving_turn_qualified=False,
+        zero_forward_turn_qualified=False,
+        start_x_m=start_pose.x_m,
+        start_y_m=start_pose.y_m,
+        start_yaw_rad=start_pose.yaw_rad,
+        start_position_tolerance_m=0.01,
+        start_yaw_tolerance_rad=0.01,
+        robot_footprint_radius_m=robot_footprint_radius_m,
+        corridor_boundary_margin_m=0.10,
+        max_pose_age_s=MAX_POSE_AGE_S,
+        max_transform_age_s=MAX_TRANSFORM_AGE_S,
+        max_safety_age_s=0.20,
+        max_position_std_m=0.01,
+        max_yaw_std_rad=0.05,
+        steps=(step,),
+    )
+    route.validate()
+    return route
 
 
 def waypoint_bearing_angular_command(

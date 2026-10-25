@@ -38,6 +38,15 @@ from issue80_coordinated_pose_goal import (
     POSE_GOAL_WARMUP_FORWARD_M_S,
 )
 from issue80_route_motion_bridge import (
+    CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
+    CURVED_PATH_FORWARD_M_S,
+    CURVED_PATH_MAX_CROSS_TRACK_M,
+    CURVED_PATH_MAX_WINDOW_S,
+    CURVED_PATH_MAX_WINDOWS,
+    CURVED_PATH_POSITION_TOLERANCE_M,
+    CURVED_PATH_RADIUS_M,
+    CURVED_PATH_STOP_RESERVE_M,
+    CURVED_PATH_SWEEP_RAD,
     WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
     WAYPOINT_B_MAX_WINDOWS,
     WAYPOINT_B_POSITION_TOLERANCE_M,
@@ -646,7 +655,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
         "run65_right_turn_qualification", "run65_route_integration",
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
-        "run65_waypoint_b_extended_diagnostic",
+        "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
     )
     if any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += " --max-observed-planar-speed-m-s 0.2"
@@ -658,6 +667,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run53_turning_diagnostic", "run65_right_turn_qualification",
         "run65_route_integration", "run65_waypoint_b_only",
         "run65_waypoint_b_short_diagnostic", "run65_waypoint_b_extended_diagnostic",
+        "run65_curved_path_diagnostic",
     )
     if any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
@@ -668,7 +678,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run50_threshold_respecting_smoothstop_diagnostic", "run53_turning_diagnostic",
         "run65_right_turn_qualification", "run65_route_integration",
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
-        "run65_waypoint_b_extended_diagnostic",
+        "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
     )
     if any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
@@ -685,7 +695,9 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             " --route-integration --route-turn-qualification-evidence "
             "/workspace/evidence/route_turn_qualification_evidence.json"
         )
-    if getattr(args, "run65_waypoint_b_extended_diagnostic", False):
+    if getattr(args, "run65_curved_path_diagnostic", False):
+        command[-1] += " --route-integration --route-curved-path-diagnostic"
+    elif getattr(args, "run65_waypoint_b_extended_diagnostic", False):
         command[-1] += (
             " --route-integration --route-waypoint-b-only "
             "--route-waypoint-b-extended-diagnostic"
@@ -1320,11 +1332,12 @@ class BoundedRun:
         run65_waypoint_b_extended = bool(
             getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
         )
+        run65_curved_path = bool(getattr(self.args, "run65_curved_path_diagnostic", False))
         run65_waypoint_b_mode = (
             run65_waypoint_b_only or run65_waypoint_b_short or run65_waypoint_b_extended
         )
-        run65_overlay = run65_point_goal or run65_right_turn or run65_route or run65_waypoint_b_mode
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_mode))
+        run65_overlay = run65_point_goal or run65_right_turn or run65_route or run65_waypoint_b_mode or run65_curved_path
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_mode, run65_curved_path))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -1404,6 +1417,7 @@ class BoundedRun:
         manifest["command_speed_m_s"] = (
             TURN_FORWARD_COMMAND_M_S if run53
             else POINT_GOAL_FORWARD_COMMAND_M_S if run65_point_goal
+            else CURVED_PATH_FORWARD_M_S if run65_curved_path
             else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route or run65_waypoint_b_mode)
             else float(self.args.forward_speed)
         )
@@ -1506,6 +1520,26 @@ class BoundedRun:
                 "route_corridor_forward_limit_m": WAYPOINT_B_CORRIDOR_MAX_FORWARD_M,
                 "inter_window_requirement": "fresh pose and full composite physical-stop PASS before another window",
                 "post_waypoint_actions": "end after original B target; no turn or C waypoint",
+            }
+        if run65_curved_path:
+            manifest["command_profile"] = {
+                "shape": "closed_loop_shallow_right_circular_arc",
+                "classification": "SIMULATION_ONLY_CURVED_PATH_DIAGNOSTIC",
+                "path_radius_m": CURVED_PATH_RADIUS_M,
+                "path_sweep_rad": CURVED_PATH_SWEEP_RAD,
+                "expected_path_length_m": CURVED_PATH_RADIUS_M * CURVED_PATH_SWEEP_RAD,
+                "nominal_forward_m_s": CURVED_PATH_FORWARD_M_S,
+                "nominal_angular_rad_s": -CURVED_PATH_FORWARD_M_S / CURVED_PATH_RADIUS_M,
+                "maximum_forward_m_s": CURVED_PATH_FORWARD_M_S,
+                "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                "maximum_cross_track_m": CURVED_PATH_MAX_CROSS_TRACK_M,
+                "endpoint_tolerance_m": CURVED_PATH_POSITION_TOLERANCE_M,
+                "stop_reserve_m": CURVED_PATH_STOP_RESERVE_M,
+                "window_cap_s": CURVED_PATH_MAX_WINDOW_S,
+                "maximum_windows": CURVED_PATH_MAX_WINDOWS,
+                "aggregate_nonzero_limit_s": CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
+                "inter_window_requirement": "fresh odom, source, STAND and full physical/controller-target stop PASS before rearm",
+                "final_yaw_target": None,
             }
         elif run65_waypoint_b_short:
             manifest["command_profile"] = {
@@ -2756,6 +2790,7 @@ class BoundedRun:
                 or getattr(self.args, "run65_waypoint_b_only", False)
                 or getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
                 or getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
+                or getattr(self.args, "run65_curved_path_diagnostic", False)
             ):
                 workcell = inspect_route_workcell_geometry(RUNTIME)
                 geometry_path = self.evidence / "workcell_geometry_preflight.json"
@@ -2861,6 +2896,7 @@ class BoundedRun:
                 return result
             if (
                 getattr(self.args, "run65_route_integration", False)
+                or getattr(self.args, "run65_curved_path_diagnostic", False)
                 or getattr(self.args, "run65_waypoint_b_only", False)
                 or getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
                 or getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
@@ -2871,6 +2907,8 @@ class BoundedRun:
                 self.outcome_classification = (
                     str(route.get("classification"))
                     if route_pass and isinstance(route, Mapping)
+                    else "SIMULATION_ONLY_CURVED_PATH_DIAGNOSTIC_BLOCKED"
+                    if getattr(self.args, "run65_curved_path_diagnostic", False)
                     else "SIMULATION_ONLY_EXTENDED_B_DIAGNOSTIC_BLOCKED"
                     if getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
                     else "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED"
@@ -3158,6 +3196,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--run65-curved-path-diagnostic",
+        action="store_true",
+        help=(
+            "execute one source-odom shallow right-arc fixed-point route with at most "
+            "three independently stopped 5-second windows and 15 seconds aggregate"
+        ),
+    )
+    parser.add_argument(
         "--route-turn-evidence",
         default=None,
         help="governed m1_first_motion_result.json from the passing right-turn qualification run",
@@ -3214,6 +3260,7 @@ def main() -> int:
         args.run65_waypoint_b_only,
         args.run65_waypoint_b_short_diagnostic,
         args.run65_waypoint_b_extended_diagnostic,
+        args.run65_curved_path_diagnostic,
         args.run65_ground_truth_point_goal,
     )
     if sum(diagnostic_variants) > 1:
@@ -3257,6 +3304,22 @@ def main() -> int:
                     "right-turn qualification uses the fixed 0.5 s warmup plus 4.5 s "
                     "0.12 m/s and -0.075 rad/s arc, 5 s post-stop observation, "
                     "and the measured 0.20 m trigger with 0.05 m stop reserve"
+                )
+        elif args.run65_curved_path_diagnostic:
+            if (
+                abs(args.extra_stop_observation - 5.0) > 1e-9
+                or args.pulse_duration != 1.0
+                or abs(args.forward_speed - 0.2) > 1e-9
+                or args.ramp_duration_s != 0.0
+                or args.ramp_start_speed is not None
+                or args.startup_speed is not None
+                or args.startup_transition_displacement is not None
+                or args.startup_transition_timeout_s != 0.0
+                or args.route_turn_evidence is not None
+            ):
+                parser.error(
+                    "curved-path profile requires the fixed 5-second zero-stop observation, "
+                    "default generic pulse fields, and no right-turn qualification input"
                 )
         elif args.run65_route_integration:
             try:

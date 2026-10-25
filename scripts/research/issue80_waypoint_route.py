@@ -213,6 +213,7 @@ class MotionFeedback:
     safety_gates_pass: bool = False
     initial_activation_authorized: bool = False
     stand_readback_pass: bool = False
+    input_source_readback_pass: bool = False
     reason: str = ""
 
 
@@ -772,8 +773,87 @@ class WaypointRouteExecutor:
 
         return self._abort("UNKNOWN_ROUTE_PHASE")
 
+    def accept_arrival_after_verified_stop(
+        self,
+        now_steady_s: float,
+        feedback: MotionFeedback,
+        *,
+        zero_request_started_s: float,
+        bridge_rearmed: bool,
+    ) -> RouteDirective:
+        """Advance a waypoint whose arrival is confirmed after its stop gate.
+
+        This path is for adapters that only discover arrival after an M1 window
+        has already completed the composite physical-stop gate. It consumes
+        that existing evidence; it does not publish another zero request or
+        ask the caller to repeat the physical-stop window.
+        """
+        if (
+            self.state is not RouteState.RUNNING
+            or self.phase not in {RoutePhase.FOLLOW, RoutePhase.STOP}
+            or self.active_step is None
+            or self.active_step.stop_behavior is not StopBehavior.VERIFY_PHYSICAL_STOP
+        ):
+            return self._abort("POSTSTOP_ARRIVAL_NOT_VALID_IN_CURRENT_ROUTE_PHASE")
+        if not math.isfinite(now_steady_s) or not math.isfinite(zero_request_started_s):
+            return self._abort("POSTSTOP_ARRIVAL_TIME_INVALID")
+        if (
+            self.phase is RoutePhase.STOP
+            and (
+                self._stop_requested_at_s is None
+                or zero_request_started_s < self._stop_requested_at_s - 1e-6
+            )
+        ):
+            return self._abort("POSTSTOP_ARRIVAL_ZERO_STREAM_PRECEDES_ROUTE_STOP_REQUEST")
+        if self.phase is RoutePhase.FOLLOW and self._stop_requested_at_s is not None:
+            return self._abort("POSTSTOP_ARRIVAL_HAS_UNEXPECTED_PRIOR_STOP_STATE")
+        if feedback.status is not MotionStatus.ARRIVED:
+            return self._abort("POSTSTOP_ARRIVAL_REQUIRES_ARRIVED_STATUS")
+        if not feedback.reset_gate_pass or not feedback.standing_gate_pass:
+            return self._abort("POSTSTOP_ARRIVAL_REQUIRES_RESET_AND_STANDING_GATES")
+        if not feedback.safety_gates_pass:
+            return self._abort("POSTSTOP_ARRIVAL_REQUIRES_PASSING_SAFETY_GATES")
+        if bridge_rearmed is not True:
+            return self._abort("POSTSTOP_ARRIVAL_REQUIRES_STOP_GATED_BRIDGE_REARM")
+        if not feedback.stand_readback_pass or not feedback.input_source_readback_pass:
+            return self._abort("POSTSTOP_ARRIVAL_REQUIRES_FRESH_STAND_AND_SOURCE_READBACKS")
+
+        evidence = feedback.physical_stop_evidence
+        if evidence is None or evidence.status is not PhysicalStopStatus.PASS:
+            return self._abort("POSTSTOP_ARRIVAL_REQUIRES_COMPOSITE_PHYSICAL_STOP_PASS")
+        if (
+            evidence.generation != self._generation
+            or evidence.window_start_steady_s < zero_request_started_s
+            or evidence.window_end_steady_s > now_steady_s + 1e-9
+            or now_steady_s - evidence.window_end_steady_s > 0.5
+            or evidence.window_end_steady_s - evidence.window_start_steady_s < 1.9
+            or evidence.sample_count < 20
+            or evidence.maximum_sample_gap_s > 0.15
+            or evidence.maximum_state_age_s > 0.5
+        ):
+            return self._abort("POSTSTOP_ARRIVAL_STOP_EVIDENCE_INVALID_OR_STALE")
+
+        pose, pose_error = self._validated_pose(now_steady_s, record=False)
+        if pose_error or pose is None:
+            return self._abort("POSTSTOP_ARRIVAL_POSE_INVALID:" + str(pose_error))
+        step = self.active_step
+        if not self._position_reached(step, pose):
+            return self._abort("POSTSTOP_ARRIVAL_POSE_OUTSIDE_WAYPOINT_TOLERANCE")
+        safety_error = self._safety_error(step, pose, now_steady_s)
+        if safety_error:
+            return self._abort("POSTSTOP_ARRIVAL_SAFETY_INVALID:" + safety_error)
+
+        # Seed the STOP phase with the already observed zero-request time and
+        # consume the same complete evidence through the normal route advance.
+        # _request_stop is intentionally not called here: doing so would create
+        # a duplicate zero/stop lifecycle after the M1 gate already passed.
+        self._last_now_s = now_steady_s
+        self._stop_requested_at_s = zero_request_started_s
+        self.phase = RoutePhase.STOP
+        return self.tick(now_steady_s, feedback)
+
     def _validated_pose(
-        self, now_steady_s: float, *, initializing: bool = False
+        self, now_steady_s: float, *, initializing: bool = False, record: bool = True
     ) -> tuple[PoseEstimate | None, str | None]:
         pose = self.pose_provider.latest_pose(self.route.frame_id, now_steady_s)
         if pose is None:
@@ -807,11 +887,13 @@ class WaypointRouteExecutor:
             if self._last_stamp_ns is not None and pose.stamp_ns <= self._last_stamp_ns:
                 if not self._verified_wall_clock_step(pose):
                     return None, "POSE_STAMP_NOT_STRICTLY_INCREASING"
-                self.verified_wall_clock_step_rebases += 1
-        self._last_stamp_ns = pose.stamp_ns
-        self._last_wall_time_ns = pose.wall_time_ns
-        self._last_received_steady_s = pose.received_steady_s
-        self._generation = pose.generation
+                if record:
+                    self.verified_wall_clock_step_rebases += 1
+        if record:
+            self._last_stamp_ns = pose.stamp_ns
+            self._last_wall_time_ns = pose.wall_time_ns
+            self._last_received_steady_s = pose.received_steady_s
+            self._generation = pose.generation
         return pose, None
 
     def _verified_wall_clock_step(self, pose: PoseEstimate) -> bool:
