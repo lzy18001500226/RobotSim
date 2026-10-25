@@ -90,7 +90,12 @@ from issue80_coordinated_pose_goal import (
     pose_path_tracking_yaw_rate_command,
     terminal_yaw_rate_command,
 )
-from issue80_m1_mode_logic import classify_set_mc_action_response
+from issue80_m1_mode_logic import (
+    MCLocomotionAbortLifecycle,
+    classify_locomotion_activation_readbacks,
+    classify_set_mc_action_response,
+    run_zero_only_locomotion_activation_observation,
+)
 from issue80_waypoint_route import (
     DirectiveKind, MotionFeedback, MotionStatus, PhysicalStopEvidence,
     PhysicalStopStatus, PoseEstimate, RouteState, SafetyObservation,
@@ -230,9 +235,19 @@ class FocusedM1Diagnostic(Node):
 
     def __init__(self, args: argparse.Namespace):
         verified_network_mode = os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE")
+        zero_only_authorized = bool(
+            getattr(args, "zero_only_activation_verification", False)
+            and getattr(args, "maintainer_authorized_zero_only_activation", False)
+        )
+        if bool(getattr(args, "zero_only_activation_verification", False)) != bool(
+            getattr(args, "maintainer_authorized_zero_only_activation", False)
+        ):
+            raise ValueError("zero-only activation verification requires its separate authorization flag")
+        if zero_only_authorized and args.maintainer_authorized:
+            raise ValueError("zero-only activation authorization must not be combined with motion authorization")
         validate_first_motion_authorization(
             reset_gate_verified=args.reset_gate_verified,
-            maintainer_authorized=args.maintainer_authorized,
+            maintainer_authorized=bool(args.maintainer_authorized or zero_only_authorized),
             network_mode=verified_network_mode,
         )
         if not 0.0 < args.pulse_duration <= MAX_AUTHORIZED_PULSE_S:
@@ -302,6 +317,7 @@ class FocusedM1Diagnostic(Node):
         self.mc_runtime_identity: VerifiedMcRuntimeIdentity | None = None
         self.scope_evidence: dict[str, Any] | None = None
         self.pulse_result: dict[str, Any] | None = None
+        self.activation_lifecycle: MCLocomotionAbortLifecycle | None = None
 
         self.state_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=10,
@@ -695,7 +711,7 @@ class FocusedM1Diagnostic(Node):
         return registration
 
     def request_postwalk_stand_once(self) -> dict[str, Any]:
-        """Reassert the vendor stand action once after a confirmed stop window."""
+        """Send one bounded STAND recovery request while zero publication continues."""
         # The one-second zero burst services its own ROS callbacks; refresh the
         # snapshot again before the safety gate so its cached odometry is not
         # falsely rejected as stale at the end of that bounded burst.
@@ -705,16 +721,26 @@ class FocusedM1Diagnostic(Node):
             state_timeout_s=self.args.state_timeout,
             min_root_z=self.args.min_root_z,
             max_tilt_deg=self.args.max_tilt_deg,
-            max_observed_planar_speed_m_s=getattr(self.args, "max_observed_planar_speed_m_s", None),
         )
         if fault:
             raise RuntimeError(f"post-stop stand request safety gate failed: {fault}")
+        pose = snapshot.get("pose")
+        try:
+            measured_planar_speed = math.hypot(float(pose["vx"]), float(pose["vy"]))
+            speed_cap = float(getattr(self.args, "max_observed_planar_speed_m_s", None) or 0.2)
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError(f"post-stop stand request lacks finite planar speed telemetry: {exc}") from exc
+        if not math.isfinite(measured_planar_speed) or not math.isfinite(speed_cap) or speed_cap <= 0.0:
+            raise RuntimeError("post-stop stand request lacks finite planar speed telemetry")
         if (
             snapshot.get("get_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
             or snapshot.get("common_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
         ):
             raise RuntimeError("post-stop stand request observed unrelated MC action")
-        if snapshot.get("common_source_name") not in ("", self.source):
+        if (
+            snapshot.get("get_source_name") not in ("", self.source)
+            or snapshot.get("common_source_name") not in ("", self.source)
+        ):
             raise RuntimeError("post-stop stand request observed conflicting active source")
         request = SetMcAction.Request()
         request.header = RequestHeader()
@@ -737,6 +763,14 @@ class FocusedM1Diagnostic(Node):
             "wall_utc_returned": datetime.now(timezone.utc).isoformat(),
             "request": _json_safe(request),
             "response": payload,
+            "measured_planar_speed_m_s": measured_planar_speed,
+            "planar_speed_guard_exceeded_during_recovery": measured_planar_speed > speed_cap,
+            "planar_speed_cap_m_s": speed_cap,
+            "recovery_semantics": (
+                "one STAND recovery request may be sent above the motion speed cap if telemetry, "
+                "posture, joint limits, mode and source are otherwise valid; the speed violation "
+                "remains an experiment failure and cannot authorize rearm"
+            ),
             **diagnostics,
         }
         result["success"] = bool(diagnostics.get("accepted_by_service"))
@@ -763,6 +797,7 @@ class FocusedM1Diagnostic(Node):
         result = {
             "wall_utc_submitted": submitted,
             "wall_utc_returned": datetime.now(timezone.utc).isoformat(),
+            "request_sent": True,
             "request": _json_safe(request),
             "request_source": str(request.source),
             "requested_action_desc": str(request.command.action_desc),
@@ -770,6 +805,163 @@ class FocusedM1Diagnostic(Node):
             **diagnostics,
         }
         self.events.append({"event": "set_mc_action_ld", **result})
+        return result
+
+    def _activation_speed_cap(self) -> float:
+        configured = getattr(self.args, "max_observed_planar_speed_m_s", None)
+        return 0.2 if configured is None else float(configured)
+
+    def begin_zero_only_locomotion_activation(
+        self,
+        *,
+        registration: Mapping[str, Any],
+        phase: str,
+    ) -> tuple[MCLocomotionAbortLifecycle, dict[str, Any], dict[str, Any]]:
+        """Request LD, then observe only zero commands until fresh mode/source confirmation."""
+        initial = self.sample_for_first_motion()
+        initial_fault = snapshot_fault(
+            initial,
+            self.joint_limits,
+            state_timeout_s=self.args.state_timeout,
+            min_root_z=self.args.min_root_z,
+            max_tilt_deg=self.args.max_tilt_deg,
+            max_observed_planar_speed_m_s=self._activation_speed_cap(),
+        )
+        self._trace_first_motion_sample(f"{phase}-stand-before-ld", initial)
+        stand_confirmed = (
+            initial_fault is None
+            and stand_mode_readback_confirmed(initial)
+            and initial.get("get_mode_status_value") == 100
+            and initial.get("common_mode_status_value") == 100
+            and initial.get("fsm_state") == MC_FSM_STABLE
+            and initial.get("body_status") == 1
+        )
+        lifecycle = MCLocomotionAbortLifecycle()
+        if not lifecycle.verify_initial_stand(confirmed=stand_confirmed, now_s=time.monotonic()):
+            result = {
+                "status": "BLOCKED",
+                "classification": "INITIAL_STAND_NOT_FRESHLY_VERIFIED",
+                "fault": initial_fault or "fresh STAND/FSM/body readback did not pass",
+                "initial_snapshot": initial,
+                "zero_publish_calls_returned": 0,
+                "nonzero_publish_calls_returned": 0,
+                "final_lifecycle": lifecycle.snapshot(),
+            }
+            return lifecycle, {"request_sent": False, "accepted_by_service": False}, result
+
+        set_action = self.request_ld_once()
+        accepted = set_action.get("accepted_by_service") is True
+        lifecycle.request_locomotion(accepted=accepted, now_s=time.monotonic())
+        # Do not make blocking GetMcAction/GetCurrentInputSource service calls
+        # between the accepted LD request and the zero publisher. Their fresh
+        # asynchronous snapshots are captured by the observer after each zero.
+        self.events.append({
+            "event": "locomotion_request_pending_zero_only_observation_started",
+            "phase": phase,
+            "set_mc_action_ld": set_action,
+            "monotonic_s": time.monotonic(),
+        })
+        if not accepted:
+            activation = {
+                "status": "BLOCKED",
+                "classification": "LOCOMOTION_REQUEST_REJECTED",
+                "fault": set_action.get("message") or "SetMcAction did not accept LOCOMOTION_DEFAULT",
+                "zero_publish_calls_returned": 0,
+                "nonzero_publish_calls_returned": 0,
+                "final_lifecycle": lifecycle.snapshot(),
+            }
+            return lifecycle, set_action, activation
+
+        def record_activation_sample(row: Mapping[str, Any]) -> None:
+            raw = row.get("raw_snapshot")
+            if isinstance(raw, Mapping):
+                snapshot = dict(raw)
+                snapshot["zero_only_activation_classification"] = row.get("classification")
+                snapshot["zero_only_activation_reason"] = row.get("reason")
+                snapshot["zero_only_safety_fault"] = row.get("safety_fault")
+                self._trace_first_motion_sample(f"{phase}-zero-only-activation", snapshot)
+
+        activation = run_zero_only_locomotion_activation_observation(
+            sample=self.sample_for_first_motion,
+            publish_zero=lambda: self._publish(0.0, 0.0, 0.0),
+            lifecycle=lifecycle,
+            safety_fault=lambda snapshot: snapshot_fault(
+                snapshot,
+                self.joint_limits,
+                state_timeout_s=self.args.state_timeout,
+                min_root_z=self.args.min_root_z,
+                max_tilt_deg=self.args.max_tilt_deg,
+                max_observed_planar_speed_m_s=self._activation_speed_cap(),
+            ),
+            expected_source=self.source,
+            timeout_s=2.0,
+            maximum_readback_age_s=self.args.state_timeout,
+            maximum_sync_skew_s=MODE_SOURCE_READBACK_SKEW_MAX_S,
+            publish_hz=PUBLISH_HZ,
+            clock=time.monotonic,
+            sleep=self._spin_for,
+            on_sample=record_activation_sample,
+        )
+        activation["set_mc_action_ld"] = set_action
+        activation["input_source_registration"] = {
+            "accepted_by_service": registration.get("accepted_by_service"),
+            "task_completion_confirmed": registration.get("task_completion_confirmed"),
+            "task_state_value": registration.get("task_state_value"),
+            "task_id": registration.get("task_id"),
+            "selected_action": registration.get("selected_action"),
+        }
+        activation["initial_stand_snapshot"] = initial
+        activation["final_lifecycle"] = lifecycle.snapshot()
+        self.events.append({"event": "zero_only_locomotion_activation", "phase": phase, **activation})
+        return lifecycle, set_action, activation
+
+    def recover_activation_to_stand(
+        self,
+        *,
+        lifecycle: MCLocomotionAbortLifecycle,
+        registration: Mapping[str, Any],
+        set_action: Mapping[str, Any],
+        baseline: Mapping[str, Any] | None,
+        reason: str,
+        phase: str,
+    ) -> dict[str, Any]:
+        """Zero-only abort and one STAND request, followed by unchanged stop gates."""
+        lifecycle.request_zero_and_stop(now_s=time.monotonic(), reason=reason)
+        result = run_first_motion_window(
+            sample=self.sample_for_first_motion,
+            publish=lambda value: self._publish(value, 0.0, 0.0),
+            sleep=self._spin_for,
+            registration=registration,
+            set_action=set_action,
+            joint_limits=self.joint_limits,
+            baseline_forward_displacements_m=(
+                [float(window["forward_displacement_m"]) for window in baseline.get("windows", [])]
+                if isinstance(baseline, Mapping) and isinstance(baseline.get("windows"), list)
+                else None
+            ),
+            baseline_state_summary=(
+                baseline.get("physical_state_summary") if isinstance(baseline, Mapping) else None
+            ),
+            authorized=True,
+            forward_command_m_s=self.args.forward_speed,
+            pulse_duration_s=self.args.pulse_duration,
+            max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
+            extra_post_stop_observe_s=5.0,
+            after_zero_stop=self.request_postwalk_stand_once,
+            after_zero_abort=self.request_postwalk_stand_once,
+            shutdown_event=self.interrupted,
+            on_sample=lambda sample_phase, snapshot: self._trace_first_motion_sample(
+                f"{phase}-{sample_phase}", dict(snapshot),
+            ),
+            state_timeout_s=self.args.state_timeout,
+            min_root_z=self.args.min_root_z,
+            max_tilt_deg=self.args.max_tilt_deg,
+            max_observed_planar_speed_m_s=self._activation_speed_cap(),
+            zero_until_stand_timeout_s=3.5,
+            require_locomotion_confirmation=True,
+            pre_motion_abort_reason=reason,
+            activation_lifecycle=lifecycle,
+        )
         return result
 
     def wait_for_standing(self) -> None:
@@ -1859,6 +2051,7 @@ class FocusedM1Diagnostic(Node):
                 if has_heading_target else 5.0
             ),
             after_zero_stop=self.request_postwalk_stand_once,
+            after_zero_abort=self.request_postwalk_stand_once,
             during_zero_callback=lambda: self._spin_for(0.001),
             shutdown_event=self.interrupted,
             on_sample=on_goal_sample,
@@ -1872,6 +2065,8 @@ class FocusedM1Diagnostic(Node):
                 "coordinated_pose_terminal_yaw_and_position_settled_or_bounded_failure"
                 if has_heading_target else "ground_truth_predicted_goal_approach_or_speed_scaled_stop_line"
             ),
+            require_locomotion_confirmation=True,
+            activation_lifecycle=self.activation_lifecycle,
         )
         final_metrics = state.get("last_metrics")
         final_distance = (
@@ -3325,6 +3520,45 @@ class FocusedM1Diagnostic(Node):
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                             "segment_nonzero_command_time_s": segment_nonzero_s,
                         }
+                    if window_index > 0:
+                        # A prior window may rearm only after its full physical
+                        # stop gate passed. Start a new LD lifecycle from that
+                        # fresh STAND state and observe zero-only activation.
+                        lifecycle, next_set_action, activation_gate = self.begin_zero_only_locomotion_activation(
+                            registration=registration,
+                            phase=f"{segment_id.lower()}-window-{window_index + 1}-rearm",
+                        )
+                        result.setdefault("activation_rearms", []).append({
+                            "window_index": window_index + 1,
+                            "set_mc_action_ld": next_set_action,
+                            "activation_gate": activation_gate,
+                            "lifecycle_after_activation": lifecycle.snapshot(),
+                        })
+                        if activation_gate.get("status") != "PASS":
+                            recovery = self.recover_activation_to_stand(
+                                lifecycle=lifecycle,
+                                registration=registration,
+                                set_action=next_set_action,
+                                baseline=stationary_baseline,
+                                reason=str(
+                                    activation_gate.get("fault")
+                                    or activation_gate.get("terminal_reason")
+                                    or "route-window LOCOMOTION reactivation was not confirmed"
+                                ),
+                                phase=f"{segment_id.lower()}-window-{window_index + 1}-rearm-recovery",
+                            )
+                            result["activation_rearms"][-1]["stand_recovery"] = recovery
+                            return {
+                                "status": "BLOCKED",
+                                "fault": "route_window_locomotion_reactivation_not_confirmed",
+                                "activation_gate": activation_gate,
+                                "stand_recovery": recovery,
+                                "last_result": last_result,
+                                "last_gate": last_gate,
+                                "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                            }
+                        set_action = next_set_action
+                        self.activation_lifecycle = lifecycle
                     remaining_route_s = 30.0 - route_total_nonzero_s
                     remaining_transit_s = transit_aggregate_limit_s - segment_nonzero_s
                     window_cap_s = min(
@@ -3483,6 +3717,7 @@ class FocusedM1Diagnostic(Node):
                             else 5.0
                         ),
                         after_zero_stop=self.request_postwalk_stand_once,
+                        after_zero_abort=self.request_postwalk_stand_once,
                         shutdown_event=self.interrupted,
                         on_sample=lambda phase, snapshot, n=window_index + 1: self._trace_first_motion_sample(
                             f"{segment_id.lower()}-window-{n}-{phase}", snapshot,
@@ -3494,6 +3729,8 @@ class FocusedM1Diagnostic(Node):
                         max_tilt_deg=self.args.max_tilt_deg,
                         max_observed_planar_speed_m_s=0.2,
                         zero_until_stand_timeout_s=3.5,
+                        require_locomotion_confirmation=True,
+                        activation_lifecycle=self.activation_lifecycle,
                     )
                     raw_stop_gate = last_result.get("physical_stop_gate")
                     final_stop_window = (
@@ -4919,6 +5156,12 @@ class FocusedM1Diagnostic(Node):
             ),
             "attempt_id": self.args.attempt_id,
             "maintainer_authorized": bool(self.args.maintainer_authorized),
+            "zero_only_activation_authorized": bool(
+                getattr(self.args, "maintainer_authorized_zero_only_activation", False)
+            ),
+            "zero_only_activation_verification": bool(
+                getattr(self.args, "zero_only_activation_verification", False)
+            ),
             "reset_gate_verified_by_parent": bool(self.args.reset_gate_verified),
             "status": "NOT_RUN",
             "source": self.source,
@@ -4993,22 +5236,146 @@ class FocusedM1Diagnostic(Node):
             registration = self.register_source()
             result["source_registration"] = registration
             if registration["success"]:
-                self.read_mode("before_set_mc_action_ld")
-                set_action = self.request_ld_once()
+                # The stationary baseline belongs to verified STAND, before the
+                # locomotion action is requested. It is also command-free.
+                stationary_baseline = self.collect_stationary_odom_baseline()
+                lifecycle, set_action, activation_gate = self.begin_zero_only_locomotion_activation(
+                    registration=registration,
+                    phase="initial",
+                )
             else:
+                lifecycle = None
+                activation_gate = {
+                    "status": "BLOCKED",
+                    "classification": "SOURCE_REGISTRATION_REJECTED",
+                    "fault": "input source registration did not pass; SetMcAction was not sent",
+                    "zero_publish_calls_returned": 0,
+                    "nonzero_publish_calls_returned": 0,
+                }
                 set_action = {
                     "accepted_by_service": False,
+                    "request_sent": False,
                     "header_code": None,
                     "status_value": None,
                     "message": "source registration failed; SetMcAction was not sent",
                 }
                 self.events.append({"event": "set_mc_action_ld_not_sent", **set_action})
             result["set_mc_action_ld"] = set_action
-            result["mode_after_ld_request"] = self.read_mode("after_set_mc_action_ld")
-            result["source_after_ld_request"] = self.read_input_source("after_set_mc_action_ld")
-            if registration["success"] and set_action.get("accepted_by_service"):
-                stationary_baseline = self.collect_stationary_odom_baseline()
             result["stationary_odom_baseline"] = stationary_baseline
+            result["locomotion_activation_gate"] = activation_gate
+            result["zero_only_activation_lifecycle"] = (
+                lifecycle.snapshot() if lifecycle is not None else None
+            )
+
+            if getattr(self.args, "zero_only_activation_verification", False):
+                recovery = None
+                if lifecycle is not None:
+                    recovery = self.recover_activation_to_stand(
+                        lifecycle=lifecycle,
+                        registration=registration,
+                        set_action=set_action,
+                        baseline=stationary_baseline,
+                        reason=(
+                            "zero-only activation observed LOCOMOTION; cancel to STAND for the bounded verification"
+                            if activation_gate.get("status") == "PASS"
+                            else str(activation_gate.get("fault") or activation_gate.get("terminal_reason") or "zero-only activation not confirmed")
+                        ),
+                        phase="zero-only-verification-recovery",
+                    )
+                stop_gate = recovery.get("physical_stop_gate") if isinstance(recovery, Mapping) else None
+                stop_confirmation = recovery.get("stop_transition_confirmation") if isinstance(recovery, Mapping) else None
+                activation_pass = activation_gate.get("status") == "PASS"
+                recovery_pass = (
+                    isinstance(stop_gate, Mapping)
+                    and stop_gate.get("status") == "PASS"
+                    and isinstance(stop_confirmation, Mapping)
+                    and stop_confirmation.get("stand_confirmed") is True
+                    and isinstance(recovery.get("after_zero_stop_action"), Mapping)
+                    and recovery["after_zero_stop_action"].get("success") is True
+                    and recovery.get("post_stop_fault") is None
+                    and int(recovery.get("nonzero_publish_calls_returned", 0) or 0) == 0
+                    and isinstance(recovery.get("activation_lifecycle"), Mapping)
+                    and recovery["activation_lifecycle"].get("state") == "STAND_VERIFIED"
+                )
+                final_lifecycle = (
+                    recovery.get("activation_lifecycle")
+                    if isinstance(recovery, Mapping)
+                    else lifecycle.snapshot() if lifecycle is not None else None
+                )
+                late_locomotion = bool(
+                    isinstance(final_lifecycle, Mapping)
+                    and final_lifecycle.get("late_locomotion_after_abort") is True
+                )
+                result["zero_only_activation_verification"] = {
+                    "classification": "SIMULATION_ONLY_ZERO_COMMAND_ACTIVATION_AND_CANCEL_TEST",
+                    "status": "PASS" if activation_pass and recovery_pass else "BLOCKED",
+                    "activation": activation_gate,
+                    "stand_recovery": recovery,
+                    "activation_confirmation_pass": activation_pass,
+                    "stand_and_composite_stop_pass": recovery_pass,
+                    "late_locomotion_after_abort": late_locomotion,
+                    "nonzero_publish_calls_returned": 0,
+                    "route_motion_authorized": False,
+                    "final_lifecycle": final_lifecycle,
+                }
+                result["acceptance_gates"] = {
+                    "MC_ACTIVATION_RECOVERY": "PASS" if activation_pass and recovery_pass else "BLOCKED",
+                    "LATE_LOCOMOTION_ABORT": (
+                        "RECOVERED_NO_REARM" if late_locomotion and recovery_pass
+                        else "UNRESOLVED" if late_locomotion
+                        else "NOT_OBSERVED"
+                    ),
+                    "PHYSICAL_STOP": "PASS" if recovery_pass else "FAIL",
+                    "IN_PLACE_ROTATION_SUPPORTED": "NOT_RUN",
+                    "ROTATE_TO_YAW": "NOT_RUN",
+                    "STRAIGHT_LINE_TRACKING": "NOT_RUN",
+                    "GO_TO_POSE_POSITION": "NOT_RUN",
+                    "GO_TO_POSE_FINAL_YAW": "NOT_RUN",
+                    "GO_TO_POSE_RUNTIME": "NOT_RUN",
+                    "HUMAN_VISUAL_REVIEW": "PENDING_USER_REVIEW",
+                }
+                self.pulse_result = recovery
+                result["nonzero_publish_calls_returned"] = 0
+                result["zero_publish_calls_returned"] = int(self.zero_publish_calls_returned)
+                result["get_mc_action_final"] = self.read_mode("final_zero_only_activation")
+                result["get_current_input_source_final"] = self.read_input_source("final_zero_only_activation")
+                result["final_common_state"] = _json_safe(self.latest.get("common"))
+                result["final_odometry"] = self._pose()
+                result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
+                result["status"] = "PASS" if activation_pass and recovery_pass else "BLOCKED"
+                result["fault"] = None if result["status"] == "PASS" else (
+                    activation_gate.get("fault")
+                    or activation_gate.get("terminal_reason")
+                    or "zero-only activation or its physical cancellation gate did not pass"
+                )
+                return result
+
+            if activation_gate.get("status") != "PASS" or lifecycle is None:
+                recovery = None
+                if lifecycle is not None:
+                    recovery = self.recover_activation_to_stand(
+                        lifecycle=lifecycle,
+                        registration=registration,
+                        set_action=set_action,
+                        baseline=stationary_baseline,
+                        reason=str(activation_gate.get("fault") or activation_gate.get("terminal_reason") or "LOCOMOTION activation was not confirmed"),
+                        phase="activation-abort-recovery",
+                    )
+                result["activation_abort_recovery"] = recovery
+                self.pulse_result = recovery
+                result["nonzero_publish_calls_returned"] = 0
+                result["zero_publish_calls_returned"] = int(self.zero_publish_calls_returned)
+                result["get_mc_action_final"] = self.read_mode("final_activation_abort_recovery")
+                result["get_current_input_source_final"] = self.read_input_source("final_activation_abort_recovery")
+                result["final_common_state"] = _json_safe(self.latest.get("common"))
+                result["final_odometry"] = self._pose()
+                result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
+                result["status"] = "BLOCKED"
+                result["fault"] = activation_gate.get("fault") or activation_gate.get("terminal_reason") or "LOCOMOTION activation was not confirmed"
+                return result
+
+            self.activation_lifecycle = lifecycle
+            result["activation_lifecycle_after_confirmation"] = lifecycle.snapshot()
 
             if getattr(self.args, "point_goal_diagnostic", False):
                 point_goal = self.run_ground_truth_point_goal(
@@ -5124,9 +5491,6 @@ class FocusedM1Diagnostic(Node):
                 result["status"] = "PASS" if turning.get("status") == "PASS" else "BLOCKED"
                 return result
 
-            # The first nonzero request is permitted after the standing, transport,
-            # registration and SetMcAction response gates. It does not require LD or
-            # an active source beforehand; these are measured during activation.
             pulse = run_first_motion_window(
                 sample=self.sample_for_first_motion,
                 publish=self._publish,
@@ -5158,6 +5522,7 @@ class FocusedM1Diagnostic(Node):
                     None if getattr(self.args, "zero_only_stop", False)
                     else self.request_postwalk_stand_once
                 ),
+                after_zero_abort=self.request_postwalk_stand_once,
                 shutdown_event=self.interrupted,
                 on_sample=self._trace_first_motion_sample,
                 state_timeout_s=self.args.state_timeout,
@@ -5165,6 +5530,8 @@ class FocusedM1Diagnostic(Node):
                 max_tilt_deg=self.args.max_tilt_deg,
                 max_observed_planar_speed_m_s=getattr(self.args, "max_observed_planar_speed_m_s", None),
                 zero_until_stand_timeout_s=getattr(self.args, "zero_until_stand_timeout_s", 0.0),
+                require_locomotion_confirmation=True,
+                activation_lifecycle=self.activation_lifecycle,
             )
             self.pulse_result = pulse
             result["activation"] = pulse
@@ -5219,6 +5586,7 @@ class FocusedM1Diagnostic(Node):
                             None if getattr(self.args, "zero_only_stop", False)
                             else self.request_postwalk_stand_once
                         ),
+                        after_zero_abort=self.request_postwalk_stand_once,
                         shutdown_event=self.interrupted,
                         on_sample=self._trace_first_motion_sample,
                         state_timeout_s=self.args.state_timeout,
@@ -5277,7 +5645,10 @@ class FocusedM1Diagnostic(Node):
 def _focused_diagnostic_command(args: argparse.Namespace) -> int:
     validate_first_motion_authorization(
         reset_gate_verified=args.reset_gate_verified,
-        maintainer_authorized=args.maintainer_authorized,
+        maintainer_authorized=bool(
+            args.maintainer_authorized
+            or getattr(args, "maintainer_authorized_zero_only_activation", False)
+        ),
         network_mode=os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
     )
     rclpy.init()
@@ -5343,6 +5714,19 @@ def validate_route_turn_qualification_evidence(path: str | None) -> dict[str, An
 
 def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     """Validate the complete child CLI profile without initializing ROS or the simulator."""
+    zero_only_verification = bool(getattr(args, "zero_only_activation_verification", False))
+    zero_only_authorized = bool(getattr(args, "maintainer_authorized_zero_only_activation", False))
+    if zero_only_verification != zero_only_authorized:
+        raise ValueError("zero-only activation verification requires its separate authorization flag")
+    if not args.reset_gate_verified or not (args.maintainer_authorized or zero_only_authorized):
+        raise ValueError("a verified Reset and matching explicit authorization are required")
+    if zero_only_verification and (
+        args.maintainer_authorized
+        or args.turning_diagnostic
+        or args.point_goal_diagnostic
+        or getattr(args, "right_turn_qualification", False)
+    ):
+        raise ValueError("zero-only activation verification cannot include a nonzero-motion authorization")
     selected_motion_modes = sum((
         args.turning_diagnostic,
         args.point_goal_diagnostic,
@@ -5357,7 +5741,10 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         and getattr(args, "route_waypoint_b_extended_diagnostic", False)
     ):
         raise ValueError("post-locomotion convergence observation requires extended waypoint-B route integration")
-    profile: dict[str, Any] = {"point_goal": False}
+    profile: dict[str, Any] = {
+        "point_goal": False,
+        "zero_only_activation_verification": zero_only_verification,
+    }
     if getattr(args, "route_integration", False):
         profile["route_integration"] = True
         curved_path_diagnostic = bool(getattr(args, "route_curved_path_diagnostic", False))
@@ -5646,9 +6033,11 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     first = subparsers.add_parser(
         "first-motion",
-        help="one authorized SIMULATION_ONLY first-motion run following the verified Reset/standing gates",
+        help="bounded SIMULATION_ONLY activation or motion run following the verified Reset/standing gates",
     )
     first.add_argument("--maintainer-authorized", action="store_true")
+    first.add_argument("--maintainer-authorized-zero-only-activation", action="store_true")
+    first.add_argument("--zero-only-activation-verification", action="store_true")
     first.add_argument("--reset-gate-verified", action="store_true")
     first.add_argument("--attempt-id", required=True)
     first.add_argument("--output-dir", required=True)
@@ -5695,7 +6084,10 @@ def main() -> int:
     except (TypeError, ValueError) as exc:
         parser.error(str(exc))
     if args.validate_only:
-        if not args.maintainer_authorized or not args.reset_gate_verified:
+        if not args.reset_gate_verified or not (
+            args.maintainer_authorized
+            or getattr(args, "maintainer_authorized_zero_only_activation", False)
+        ):
             print("BLOCKED: validation-only invocation must carry the production authorization flags", file=sys.stderr)
             return 2
         print(json.dumps({

@@ -13,6 +13,16 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from issue80_m1_mode_logic import (
+    LOCOMOTION_CONFIRMED,
+    LOCOMOTION_REQUESTED,
+    MODE_LD,
+    MOTION_ACTIVE,
+    STAND_VERIFIED,
+    ZERO_AND_STOP_REQUESTED,
+    MCLocomotionAbortLifecycle,
+)
+
 VELOCITY_SOURCE_NAME = "node.locomotion_velocity"
 ACTION_SOURCE_NAME = "rc"  # exact source used by the installed set_mode.py example
 SOURCE_PRIORITY = 40
@@ -1534,6 +1544,7 @@ class ActivationTracker:
         self.source_acquired = False
         self.ld_observed = False
         self.control_handshake_confirmed = False
+        self.last_control_handshake_observed = False
         self.samples: list[dict[str, Any]] = []
         self.first_pose: dict[str, float] | None = None
         self.first_pose_monotonic_s: float | None = None
@@ -1553,6 +1564,8 @@ class ActivationTracker:
             "readback_monotonic_s": dict(snapshot.get("readback_monotonic_s", {})),
             "get_mode_header_code": snapshot.get("get_mode_header_code"),
             "get_source_header_code": snapshot.get("get_source_header_code"),
+            "get_mode_status_value": snapshot.get("get_mode_status_value"),
+            "common_mode_status_value": snapshot.get("common_mode_status_value"),
             "phase": phase,
         }
         self.samples.append(row)
@@ -1567,14 +1580,16 @@ class ActivationTracker:
 
         source_get = row["get_source_header_code"] == 0 and row["get_source_name"] == self.expected_source
         source_common = row["common_source_name"] == self.expected_source
-        mode_get = row["get_mode_header_code"] == 0 and row["get_mode_desc"] == MODE_LOCOMOTION
-        mode_common = row["common_mode_desc"] == MODE_LOCOMOTION
+        mode_get_seen = row["get_mode_header_code"] == 0 and row["get_mode_desc"] == MODE_LOCOMOTION
+        mode_common_seen = row["common_mode_desc"] == MODE_LOCOMOTION
+        mode_get = mode_get_seen and row.get("get_mode_status_value") == 100
+        mode_common = mode_common_seen and row.get("common_mode_status_value") == 100
         source_pair = source_get and source_common
-        mode_pair = mode_get and mode_common
+        mode_pair = mode_get_seen and mode_common_seen
         self.get_source_seen |= source_get
         self.common_source_seen |= source_common
-        self.get_locomotion_seen |= mode_get
-        self.common_locomotion_seen |= mode_common
+        self.get_locomotion_seen |= mode_get_seen
+        self.common_locomotion_seen |= mode_common_seen
         self.source_acquired |= source_pair
         self.ld_observed |= mode_pair
 
@@ -1601,18 +1616,41 @@ class ActivationTracker:
             common_skew = None
         row["mode_source_readback_skew_s"] = readback_skew
         row["mode_source_common_skew_max_s"] = common_skew
+        readback_ages = snapshot.get("state_age_s", {})
+        try:
+            get_mode_age = float(readback_ages["get_mode"])
+            get_source_age = float(readback_ages["get_source"])
+            common_state_age = float(readback_ages["common"])
+            maximum_readback_age_s = max(get_mode_age, get_source_age, common_state_age)
+            fresh_readbacks = (
+                all(math.isfinite(value) and value >= 0.0 for value in (
+                    get_mode_age, get_source_age, common_state_age,
+                ))
+                and maximum_readback_age_s <= 0.5
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            get_mode_age = get_source_age = common_state_age = None
+            maximum_readback_age_s = None
+            fresh_readbacks = False
+        row["mode_readback_age_s"] = get_mode_age
+        row["source_readback_age_s"] = get_source_age
+        row["common_state_age_s"] = common_state_age
+        row["fresh_mode_source_readbacks"] = fresh_readbacks
         row["mode_source_readbacks_contemporaneous"] = (
             readback_skew is not None
             and readback_skew <= MODE_SOURCE_READBACK_SKEW_MAX_S
             and common_skew is not None
             and common_skew <= MODE_SOURCE_READBACK_SKEW_MAX_S
+            and fresh_readbacks
         )
         row["source_pair_observed"] = source_pair
         row["ld_pair_observed"] = mode_pair
         row["control_handshake_observed"] = (
-            source_pair and mode_pair and row["mode_source_readbacks_contemporaneous"]
+            source_pair and mode_get and mode_common
+            and row["mode_source_readbacks_contemporaneous"]
         )
-        if row["control_handshake_observed"]:
+        self.last_control_handshake_observed = bool(row["control_handshake_observed"])
+        if self.last_control_handshake_observed:
             self.control_handshake_confirmed = True
             self.handshake_sample_indices.append(len(self.samples) - 1)
 
@@ -3639,6 +3677,7 @@ def run_first_motion_window(
     extra_post_stop_observe_s: float = 0.0,
     extra_post_stop_observe_limit_s: float = 5.0,
     after_zero_stop: Callable[[], Mapping[str, Any]] | None = None,
+    after_zero_abort: Callable[[], Mapping[str, Any]] | None = None,
     during_zero_callback: Callable[[], None] | None = None,
     shutdown_event: threading.Event | None = None,
     on_sample: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -3649,6 +3688,9 @@ def run_first_motion_window(
     max_tilt_deg: float = 15.0,
     max_observed_planar_speed_m_s: float | None = None,
     zero_until_stand_timeout_s: float = 0.0,
+    require_locomotion_confirmation: bool = True,
+    pre_motion_abort_reason: str | None = None,
+    activation_lifecycle: MCLocomotionAbortLifecycle | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
@@ -3696,6 +3738,8 @@ def run_first_motion_window(
         "watchdog_scope_limitation": WATCHDOG_LIMITATION,
         "max_observed_planar_speed_m_s": max_observed_planar_speed_m_s,
         "zero_until_stand_timeout_s": zero_until_stand_timeout_s,
+        "require_locomotion_confirmation": bool(require_locomotion_confirmation),
+        "pre_motion_abort_reason": pre_motion_abort_reason,
         "registration": dict(registration),
         "set_mc_action": dict(set_action),
         "nonzero_publish_calls_returned": 0,
@@ -3709,7 +3753,7 @@ def run_first_motion_window(
         result["status"] = "NOT_AUTHORIZED"
         return result
 
-    pulse_fault: str | None = None
+    pulse_fault: str | None = pre_motion_abort_reason
     if (
         not math.isfinite(extra_post_stop_observe_limit_s)
         or not 0.0 <= extra_post_stop_observe_limit_s <= MAX_EXTRA_POST_STOP_OBSERVE_S
@@ -3823,6 +3867,24 @@ def run_first_motion_window(
     def record_sample(phase: str, snapshot: Mapping[str, Any], fault: str | None) -> None:
         row = dict(snapshot)
         row["phase"] = phase
+        if (
+            activation_lifecycle is not None
+            and activation_lifecycle.state == ZERO_AND_STOP_REQUESTED
+            and not activation_lifecycle.locomotion_confirmed_before_stop
+            and phase.startswith("post-stop")
+            and (row.get("get_mode_desc") == MODE_LD or row.get("common_mode_desc") == MODE_LD)
+        ):
+            activation_lifecycle.observe_locomotion_readback(
+                {
+                    "classification": "LATE_LOCOMOTION_MODE_OBSERVED",
+                    "reason": "GetMcAction or CommonState still reports LOCOMOTION after the abort/STAND recovery request",
+                    "get_mode_desc": row.get("get_mode_desc"),
+                    "common_mode_desc": row.get("common_mode_desc"),
+                    "get_mode_status_value": row.get("get_mode_status_value"),
+                    "common_mode_status_value": row.get("common_mode_status_value"),
+                },
+                now_s=float(row.get("sample_monotonic_s", clock())),
+            )
         common_status_diagnostic = common_action_status_diagnostic(
             row.get("common_mode_status_value")
         )
@@ -3885,6 +3947,13 @@ def run_first_motion_window(
         zero_stop.run_once()
 
     try:
+        if activation_lifecycle is not None:
+            if pulse_fault is None:
+                activation_lifecycle.begin_motion(now_s=clock())
+            else:
+                activation_lifecycle.request_zero_and_stop(
+                    now_s=clock(), reason=str(pulse_fault),
+                )
         if pulse_fault is None:
             initial = sample()
             initial_fault = snapshot_fault(
@@ -3979,6 +4048,10 @@ def run_first_motion_window(
                     current["forward_displacement_since_start_m"] = startup_displacement
                 tracker.observe(current, phase="activation")
                 record_sample("activation", current, None)
+                if require_locomotion_confirmation and not tracker.last_control_handshake_observed:
+                    pulse_fault = "fresh_locomotion_mode_source_handshake_not_confirmed_before_nonzero"
+                    stop_requested.set()
+                    break
                 if termination_condition is not None:
                     try:
                         reached = bool(termination_condition(current))
@@ -4068,6 +4141,18 @@ def run_first_motion_window(
         if pulse_start is not None and pulse_end is None:
             pulse_end = clock()
         stop_requested.set()
+        if activation_lifecycle is not None:
+            if pulse_fault is not None:
+                activation_lifecycle.rearm_forbidden = True
+            activation_lifecycle.request_zero_and_stop(
+                now_s=clock(),
+                reason=pulse_fault or "bounded motion window ended; zero and STAND recovery required",
+            )
+        recovery_callback = after_zero_stop
+        if pulse_fault is not None or (
+            require_locomotion_confirmation and not tracker.last_control_handshake_observed
+        ):
+            recovery_callback = after_zero_abort or after_zero_stop
         # Start and complete the bounded zero-command window before any
         # telemetry callback can stall. The deadline watchdog remains armed
         # until the stop path has been initiated by run_once().
@@ -4083,9 +4168,12 @@ def run_first_motion_window(
             "status": "NOT_REQUESTED" if zero_until_stand_timeout_s == 0.0 else "WAITING_FOR_STAND_READBACK",
             "requested_timeout_s": zero_until_stand_timeout_s,
             "stand_action_requested": bool(
-                after_zero_stop is not None
-                and tracker.control_handshake_confirmed
-                and result["nonzero_publish_calls_returned"] > 0
+                recovery_callback is not None
+                and (
+                    bool(set_action.get("request_sent"))
+                    or bool(set_action.get("accepted_by_service"))
+                )
+                and zero_until_stand_timeout_s > 0.0
             ),
             "request_result": None,
             "started_monotonic_s": None,
@@ -4145,7 +4233,8 @@ def run_first_motion_window(
                     "post_stop_initial_zero_callback_error:" + initial_zero_callback_error
                 )
         post_stop_zero_extension["initial_zero_callback_error"] = initial_zero_callback_error
-        if after_zero_stop is not None and tracker.control_handshake_confirmed and result["nonzero_publish_calls_returned"] > 0:
+        stand_request_was_eligible = bool(stop_transition_confirmation["stand_action_requested"])
+        if recovery_callback is not None and stand_request_was_eligible:
             callback_zero_stop = threading.Event()
             callback_zero_metrics: dict[str, Any] = {
                 "started": False,
@@ -4194,7 +4283,27 @@ def run_first_motion_window(
                     and initial_zero_callback_error is None
                     and not zero_window_callback_errors
                 ):
-                    result["after_zero_stop_action"] = dict(after_zero_stop())
+                    if activation_lifecycle is not None and not activation_lifecycle.begin_stand_request_once(now_s=clock()):
+                        raise RuntimeError("STAND recovery request is not permitted in the current activation lifecycle")
+                    stop_transition_confirmation["stand_action_requested"] = True
+                    result["after_zero_stop_action"] = dict(recovery_callback())
+                    immediate_mode = result["after_zero_stop_action"].get("mode_readback_after_request")
+                    if (
+                        activation_lifecycle is not None
+                        and activation_lifecycle.state == ZERO_AND_STOP_REQUESTED
+                        and not activation_lifecycle.locomotion_confirmed_before_stop
+                        and isinstance(immediate_mode, Mapping)
+                        and immediate_mode.get("action_desc") == MODE_LD
+                    ):
+                        activation_lifecycle.observe_locomotion_readback(
+                            {
+                                "classification": "LATE_LOCOMOTION_MODE_OBSERVED",
+                                "reason": "GetMcAction immediately after the one STAND recovery request still reports LOCOMOTION",
+                                "get_mode_desc": immediate_mode.get("action_desc"),
+                                "get_mode_status_value": immediate_mode.get("status_value"),
+                            },
+                            now_s=clock(),
+                        )
                 else:
                     result["after_zero_stop_action"] = {
                         "success": False,
@@ -4559,6 +4668,13 @@ def run_first_motion_window(
         ),
         baseline_state_summary=baseline_state_summary,
     )
+    if activation_lifecycle is not None:
+        activation_lifecycle.confirm_stand_after_stop(
+            stand_readback_pass=bool(stop_transition_confirmation.get("stand_confirmed")),
+            physical_stop_gate_pass=result["physical_stop_gate"].get("status") == "PASS",
+            now_s=clock(),
+        )
+        result["activation_lifecycle"] = activation_lifecycle.snapshot()
     result["mc_receipt_confirmed_for_zero_calls"] = False
     result["watchdog"] = {
         "implementation": "threading.Timer in the first-motion Python process",

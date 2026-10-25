@@ -1,0 +1,109 @@
+{
+  "schema": "robotsim.issue80.mc-activation-abort-replay.v1",
+  "source_attempt_id": "b31c62cc-d558-4a91-8eea-9de2c216a542",
+  "source_trace": "issue80-curved-route-run-20261025T033414Z/m1_first_motion_trace.jsonl",
+  "source_trace_sha256": "1767cab680b0f8124a4d67f4f479ad6d6553c78d3874647a707a002a8b581d11",
+  "source_result_sha256": "dc02f4b8e3b1640759ed69e8cbd568e147a938e545c8ade20be401eb486eaf78",
+  "timing_origin": "first nonzero velocity publication",
+  "request_timeline": {
+    "set_mc_input_source_add": {
+      "wall_utc_submitted": "2026-10-25T03:35:07.519114+00:00",
+      "header_code": 0,
+      "task_id": 1,
+      "task_state_value": 0,
+      "completion_confirmed": false
+    },
+    "set_mc_action_locomotion": {
+      "wall_utc_submitted": "2026-10-25T03:35:07.522567+00:00",
+      "wall_utc_returned": "2026-10-25T03:35:07.525999+00:00",
+      "header_code": 0,
+      "status_value": 1,
+      "message": "success, action: LOCOMOTION_DEFAULT",
+      "service_accepted": true,
+      "applied_mode_confirmed": false
+    },
+    "immediate_get_mc_action": {
+      "wall_utc": "2026-10-25T03:35:07.527910+00:00",
+      "mode": "STAND_DEFAULT",
+      "status_value": 100
+    },
+    "immediate_get_current_input_source": {
+      "wall_utc": "2026-10-25T03:35:07.530981+00:00",
+      "source": ""
+    }
+  },
+  "command_timeline": {
+    "first_nonzero_wall_utc": "2026-10-25T03:35:09.981218+00:00",
+    "last_nonzero_wall_utc": "2026-10-25T03:35:10.505579+00:00",
+    "nonzero_publish_calls_returned": 14,
+    "first_zero_wall_utc": "2026-10-25T03:35:10.555860+00:00",
+    "post_stop_stand_callback_invoked": false,
+    "stand_callback_skip_reason": "legacy callback was conditional on a completed control handshake and at least one nonzero command; the handshake never completed before zero",
+    "first_measured_speed_guard_failure": {
+      "wall_utc": "2026-10-25T03:35:12.802494+00:00",
+      "planar_speed_m_s": 0.27846187424659113,
+      "limit_m_s": 0.2
+    },
+    "physical_stop_gate": "NOT_PASSED",
+    "mc_zero_receipt_confirmed": false
+  },
+  "observations": [
+    {
+      "offset_s": 0.023649,
+      "get_mode_desc": "STAND_DEFAULT",
+      "get_mode_status_value": 100,
+      "common_mode_desc": "STAND_DEFAULT",
+      "common_mode_status_value": 100,
+      "get_source_name": "node.locomotion_velocity",
+      "common_source_name": "node.locomotion_velocity",
+      "get_mode_age_s": 0.002230,
+      "get_source_age_s": 0.002399,
+      "common_age_s": 0.015310,
+      "fsm_state": 4,
+      "body_status": 1
+    },
+    {
+      "offset_s": 0.380972,
+      "get_mode_desc": "STAND_DEFAULT",
+      "get_mode_status_value": 200,
+      "common_mode_desc": "LOCOMOTION_DEFAULT",
+      "common_mode_status_value": 100,
+      "get_source_name": "node.locomotion_velocity",
+      "common_source_name": "node.locomotion_velocity",
+      "get_mode_age_s": 0.096489,
+      "get_source_age_s": 0.086324,
+      "common_age_s": 0.001220,
+      "fsm_state": 4,
+      "body_status": 1
+    },
+    {
+      "offset_s": 0.569158,
+      "get_mode_desc": "STAND_DEFAULT",
+      "get_mode_status_value": 200,
+      "common_mode_desc": "LOCOMOTION_DEFAULT",
+      "common_mode_status_value": 100,
+      "get_source_name": "node.locomotion_velocity",
+      "common_source_name": "node.locomotion_velocity",
+      "get_mode_age_s": 0.341674,
+      "get_source_age_s": 0.000300,
+      "common_age_s": 0.022759,
+      "fsm_state": 5,
+      "body_status": 1
+    },
+    {
+      "offset_s": 1.784649,
+      "phase": "post-stop-first-observation",
+      "get_mode_desc": "LOCOMOTION_DEFAULT",
+      "get_mode_status_value": 100,
+      "common_mode_desc": "LOCOMOTION_DEFAULT",
+      "common_mode_status_value": 100,
+      "get_source_name": "node.locomotion_velocity",
+      "common_source_name": "node.locomotion_velocity",
+      "get_mode_age_s": 0.017849,
+      "get_source_age_s": 0.018091,
+      "common_age_s": 0.016764,
+      "fsm_state": 5,
+      "body_status": 1
+    }
+  ]
+}

@@ -619,9 +619,16 @@ def run65_child_heading_policy(args: argparse.Namespace) -> str:
 
 def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str]:
     """Build the exact production Docker exec command for the M1 child runner."""
+    zero_only_activation = bool(
+        getattr(args, "maintainer_authorized_zero_only_activation", False)
+    )
+    child_authorization = (
+        "--maintainer-authorized-zero-only-activation --zero-only-activation-verification"
+        if zero_only_activation else "--maintainer-authorized"
+    )
     command = [
         "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", container, "bash", "-lc",
-        "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion --maintainer-authorized --reset-gate-verified"
+        "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion " + child_authorization + " --reset-gate-verified"
         + " --extra-stop-observation " + str(args.extra_stop_observation)
         + " --pulse-duration " + str(args.pulse_duration)
         + " --forward-speed " + str(args.forward_speed)
@@ -657,7 +664,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
     )
-    if any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
+    if zero_only_activation or any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += " --max-observed-planar-speed-m-s 0.2"
     stand_timeout_diagnostics = (
         "run42_stop_confirmation_diagnostic", "run43_zero_only_stop_diagnostic",
@@ -669,7 +676,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_waypoint_b_short_diagnostic", "run65_waypoint_b_extended_diagnostic",
         "run65_curved_path_diagnostic",
     )
-    if any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
+    if zero_only_activation or any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
     zero_only_diagnostics = (
         "run43_zero_only_stop_diagnostic", "run44_threshold_margin_diagnostic",
@@ -680,7 +687,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
     )
-    if any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
+    if zero_only_activation or any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
     if getattr(args, "run49_smoothstop_diagnostic", False):
         command[-1] += " --deceleration-duration-s 1.0"
@@ -2479,10 +2486,13 @@ class BoundedRun:
         return gate
 
     def run_m1(self) -> None:
-        if not self.args.maintainer_authorized_first_motion:
+        zero_only_activation = bool(
+            getattr(self.args, "maintainer_authorized_zero_only_activation", False)
+        )
+        if not self.args.maintainer_authorized_first_motion and not zero_only_activation:
             self.m1_result = {
                 "status": "NOT_AUTHORIZED",
-                "reason": "first nonzero simulation-only command requires explicit maintainer authorization",
+                "reason": "a separate explicit first-motion or zero-only activation authorization is required",
             }
             return
         if self.reset_classification != "AUTO_RESET_PASS":
@@ -2494,7 +2504,7 @@ class BoundedRun:
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
         command = build_m1_child_command(self.args, self.container)
-        child_timeout_s = (
+        child_timeout_s = 30.0 if zero_only_activation else (
             75.0
             if getattr(self.args, "post_locomotion_convergence_observation_s", None) is not None
             else 45.0
@@ -2780,8 +2790,12 @@ class BoundedRun:
         }
         standing_only = bool(getattr(self.args, "maintainer_authorized_standing_takeover", False))
         first_motion_authorized = bool(getattr(self.args, "maintainer_authorized_first_motion", False))
-        if not standing_only and not first_motion_authorized:
-            result["fault"] = "explicit maintainer standing-takeover or first-motion authorization is required before runtime"
+        zero_only_activation_authorized = bool(
+            getattr(self.args, "maintainer_authorized_zero_only_activation", False)
+        )
+        result["zero_only_activation_authorized"] = zero_only_activation_authorized
+        if not standing_only and not first_motion_authorized and not zero_only_activation_authorized:
+            result["fault"] = "explicit standing, zero-only activation, or first-motion authorization is required before runtime"
             return result
         try:
             if (
@@ -3037,6 +3051,11 @@ def main() -> int:
         help="explicit human authorization for one bounded simulation-only first-motion run",
     )
     parser.add_argument(
+        "--maintainer-authorized-zero-only-activation",
+        action="store_true",
+        help="explicit authorization for one Reset-gated LD/zero-only/stand-recovery test; no nonzero command may be published",
+    )
+    parser.add_argument(
         "--maintainer-authorized-standing-takeover",
         action="store_true",
         help="explicit human authorization for one simulation-only standing-takeover test; no LD or velocity command",
@@ -3210,6 +3229,8 @@ def main() -> int:
     )
     add_run65_point_goal_arguments(parser)
     args=parser.parse_args()
+    if args.maintainer_authorized_zero_only_activation and args.maintainer_authorized_first_motion:
+        parser.error("zero-only activation authorization must be separate from first-motion authorization")
     if args.require_complete_stand_baseline and (
         not args.maintainer_authorized_standing_takeover
         or args.maintainer_authorized_first_motion
@@ -3266,8 +3287,10 @@ def main() -> int:
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
     if any(diagnostic_variants):
-        if not args.maintainer_authorized_first_motion:
-            parser.error("FoundationWalk diagnostic requires the authorized first-motion gate")
+        if not args.maintainer_authorized_first_motion and not (
+            args.maintainer_authorized_zero_only_activation and args.run65_curved_path_diagnostic
+        ):
+            parser.error("FoundationWalk diagnostic requires first-motion authorization, except the zero-only activation preflight")
         if args.run65_ground_truth_point_goal:
             try:
                 args.turning_reassessment_provenance = validate_run65_point_goal_profile(args)

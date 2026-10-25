@@ -24,6 +24,36 @@ from issue80_m1_auto_reset_run import (
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_zero_only_activation_command_has_separate_authority_and_no_motion_profile(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.2,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="zero-only-activation-cli-test",
+            maintainer_authorized_first_motion=False,
+            maintainer_authorized_zero_only_activation=True,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "activation-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--maintainer-authorized-zero-only-activation", child)
+        self.assertIn("--zero-only-activation-verification", child)
+        self.assertIn("--reset-gate-verified", child)
+        self.assertIn("--zero-only-stop", child)
+        self.assertIn("--max-observed-planar-speed-m-s", child)
+        self.assertEqual(child[child.index("--max-observed-planar-speed-m-s") + 1], "0.2")
+        self.assertIn("--zero-until-stand-timeout-s", child)
+        self.assertNotIn("--maintainer-authorized", child)
+        self.assertNotIn("--route-curved-path-diagnostic", child)
+        self.assertNotIn("--route-integration", child)
+
     def test_parent_child_curved_path_profile_is_explicit_and_keeps_stop_gates(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=5.0,
@@ -739,6 +769,30 @@ class ResearchScriptStagingTests(unittest.TestCase):
             runner.run_m1()
             self.assertEqual(captured, [])
             self.assertEqual(runner.m1_result["status"], "NOT_AUTHORIZED")
+
+    def test_runner_accepts_zero_only_authorization_without_motion_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            runner.args.maintainer_authorized_first_motion = False
+            runner.args.maintainer_authorized_zero_only_activation = True
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.network_mode = "bridge"
+            runner.remaining = lambda: 60.0
+            captured: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                captured.append(command)
+                return subprocess.CompletedProcess(command, 2, "", "")
+
+            runner.run = fake_run
+            runner.run_m1()
+            self.assertEqual(len(captured), 1)
+            child = shlex.split(captured[0][-1].rsplit(" && ", 1)[1])
+            self.assertIn("--maintainer-authorized-zero-only-activation", child)
+            self.assertIn("--zero-only-activation-verification", child)
+            self.assertNotIn("--maintainer-authorized", child)
+            self.assertNotIn("--route-integration", child)
+            self.assertNotIn("--route-curved-path-diagnostic", child)
 
     def test_parent_does_not_start_container_without_first_motion_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
