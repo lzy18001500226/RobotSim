@@ -115,6 +115,8 @@ from issue80_route_motion_bridge import (
     CURVED_PATH_STOP_RESERVE_M,
     MAX_POSE_AGE_S,
     RouteMotionBridge, RouteMotionBridgeError, RuntimeReadiness,
+    evaluate_route_odom_freshness_window,
+    evaluate_route_window_rearm_gate,
     build_short_right_corner_route, build_shallow_curved_path_reference,
     build_curved_waypoint_route, curved_path_metrics, measured_m1_nonzero_window_s,
     waypoint_bearing_angular_command,
@@ -124,7 +126,8 @@ from issue80_route_motion_bridge import (
     waypoint_b_cross_track_guard_reached,
     TransitSteeringGate,
     active_locomotion_source_readbacks_valid,
-    classify_route_odom_stamp,
+    RouteOdomFreshnessTracker,
+    route_feedback_sample_disposition,
     fresh_stand_mode_readback_valid,
     fresh_input_source_readback_valid,
     validate_curved_path_cli_profile,
@@ -2970,6 +2973,12 @@ class FocusedM1Diagnostic(Node):
                 "duplicate_odom_stamp_sample_count": 0,
                 "first_duplicate_odom_stamp_sample": None,
                 "last_duplicate_odom_stamp_sample": None,
+                "duplicate_odom_hold_max_duration_s": 0.0,
+                "duplicate_odom_consecutive_sample_count": 0,
+                "duplicate_odom_hold_started_monotonic_s": None,
+                "last_unique_odom_stamp_ns": start_pose.stamp_ns,
+                "maximum_age_since_last_unique_odom_s": 0.0,
+                "odom_stamp_observations": [],
                 "last_sample": None,
                 "samples": [],
                 "guard_triggers": [],
@@ -2980,13 +2989,16 @@ class FocusedM1Diagnostic(Node):
                 "verified_wall_clock_step_rebases": 0,
             }
             latest_transit_snapshot: Mapping[str, Any] | None = None
-            last_route_executor_odom_stamp_ns = start_pose.stamp_ns
+            odom_freshness_tracker = RouteOdomFreshnessTracker(
+                last_unique_stamp_ns=start_pose.stamp_ns,
+                last_unique_received_steady_s=start_pose.received_steady_s,
+                maximum_age_s=MAX_POSE_AGE_S,
+            )
             window_control: dict[str, Any] = {}
             active_window_gate = TransitSteeringGate(warmup_s=ROUTE_STEERING_WARMUP_S)
 
             def transit_termination(snapshot: Mapping[str, Any]) -> bool:
                 nonlocal route_fault, route_stop_reason, latest_transit_snapshot
-                nonlocal last_route_executor_odom_stamp_ns
                 latest_transit_snapshot = snapshot
                 if window_control.get("feedback_fault"):
                     route_fault = str(window_control["feedback_fault"])
@@ -3015,20 +3027,79 @@ class FocusedM1Diagnostic(Node):
                 assert pose is not None
                 sample_time = float(snapshot.get("sample_monotonic_s", time.monotonic()))
                 pose_receive_age_s = sample_time - pose.received_steady_s
-                odom_stamp_action = classify_route_odom_stamp(
-                    previous_stamp_ns=last_route_executor_odom_stamp_ns,
+                odom_freshness = odom_freshness_tracker.observe(
                     current_stamp_ns=pose.stamp_ns,
-                    receive_age_s=pose_receive_age_s,
-                    maximum_receive_age_s=MAX_POSE_AGE_S,
+                    sample_steady_s=sample_time,
+                    received_steady_s=pose.received_steady_s,
                 )
-                if odom_stamp_action == "STALE_OR_INVALID":
-                    route_fault = "transit_pose:ODOM_SOURCE_SAMPLE_STALE_OR_INVALID"
+                odom_stamp_action = str(odom_freshness["action"])
+                freshness_record = {
+                    "sample_monotonic_s": sample_time,
+                    "odom_stamp_ns": pose.stamp_ns,
+                    **odom_freshness,
+                }
+                route_progress_monitor["odom_stamp_observations"].append(freshness_record)
+                route_progress_monitor["last_unique_odom_stamp_ns"] = odom_freshness.get(
+                    "last_unique_stamp_ns"
+                )
+                unique_age = odom_freshness.get("age_since_last_unique_s")
+                if isinstance(unique_age, (int, float)) and math.isfinite(float(unique_age)):
+                    route_progress_monitor["maximum_age_since_last_unique_odom_s"] = max(
+                        float(route_progress_monitor["maximum_age_since_last_unique_odom_s"]),
+                        float(unique_age),
+                    )
+                relation = str(odom_freshness.get("source_stamp_relation"))
+                if relation == "DUPLICATE":
+                    route_progress_monitor["duplicate_odom_stamp_sample_count"] += 1
+                    route_progress_monitor["duplicate_odom_consecutive_sample_count"] += 1
+                    if route_progress_monitor["duplicate_odom_hold_started_monotonic_s"] is None:
+                        route_progress_monitor["duplicate_odom_hold_started_monotonic_s"] = sample_time
+                    hold_duration = max(0.0, sample_time - float(
+                        route_progress_monitor["duplicate_odom_hold_started_monotonic_s"]
+                    ))
+                    route_progress_monitor["duplicate_odom_hold_max_duration_s"] = max(
+                        float(route_progress_monitor["duplicate_odom_hold_max_duration_s"]),
+                        hold_duration,
+                        float(unique_age) if isinstance(unique_age, (int, float)) else 0.0,
+                    )
+                    duplicate_record = {
+                        **freshness_record,
+                        "odom_receive_age_s": pose_receive_age_s,
+                        "duplicate_hold_duration_s": hold_duration,
+                    }
+                    if route_progress_monitor["first_duplicate_odom_stamp_sample"] is None:
+                        route_progress_monitor["first_duplicate_odom_stamp_sample"] = duplicate_record
+                        route_events.append({
+                            "kind": "DUPLICATE_ODOM_SAMPLE_SKIPPED_FOR_ROUTE_TICK",
+                            **duplicate_record,
+                            "route_executor_core_remains_strictly_increasing": True,
+                        })
+                    route_progress_monitor["last_duplicate_odom_stamp_sample"] = duplicate_record
+                elif relation == "NEW" and odom_stamp_action == "NEW":
+                    route_progress_monitor["duplicate_odom_consecutive_sample_count"] = 0
+                    route_progress_monitor["duplicate_odom_hold_started_monotonic_s"] = None
+                if odom_stamp_action in {"STALE_OR_INVALID", "REGRESSION"}:
+                    route_fault = (
+                        "transit_pose:ODOM_SOURCE_DUPLICATE_HOLD_EXCEEDED_UNIQUE_SAMPLE_AGE"
+                        if relation == "DUPLICATE" and odom_stamp_action == "STALE_OR_INVALID"
+                        else f"transit_pose:ODOM_SOURCE_{odom_stamp_action}"
+                    )
+                    route_events.append({
+                        "kind": "ROUTE_ODOMETRY_FRESHNESS_ABORT",
+                        "reason": route_fault,
+                        **freshness_record,
+                        "maximum_unique_sample_age_s": MAX_POSE_AGE_S,
+                    })
                     return True
-                if odom_stamp_action != "DUPLICATE":
-                    last_route_executor_odom_stamp_ns = pose.stamp_ns
                 window_control["odom_stamp_action"] = odom_stamp_action
                 window_control["odom_stamp_ns"] = pose.stamp_ns
                 window_control["odom_receive_age_s"] = pose_receive_age_s
+                window_control["odom_age_since_last_unique_s"] = odom_freshness.get(
+                    "age_since_last_unique_s"
+                )
+                window_control["last_unique_odom_stamp_ns"] = odom_freshness.get(
+                    "last_unique_stamp_ns"
+                )
                 dx = pose.x_m - start_pose.x_m
                 dy = pose.y_m - start_pose.y_m
                 forward_projection_m = dx * math.cos(start_pose.yaw_rad) + dy * math.sin(start_pose.yaw_rad)
@@ -3062,6 +3133,12 @@ class FocusedM1Diagnostic(Node):
                     "odom_stamp_ns": pose.stamp_ns,
                     "odom_stamp_action": odom_stamp_action,
                     "odom_receive_age_s": pose_receive_age_s,
+                    "odom_age_since_last_unique_s": odom_freshness.get(
+                        "age_since_last_unique_s"
+                    ),
+                    "last_unique_odom_stamp_ns": odom_freshness.get(
+                        "last_unique_stamp_ns"
+                    ),
                     "forward_projection_m": forward_projection_m,
                     "cross_track_m": cross_track_m,
                     "cross_track_error_m": cross_track_guard_m,
@@ -3080,7 +3157,19 @@ class FocusedM1Diagnostic(Node):
                     CURVED_PATH_MAX_CROSS_TRACK_M if curved_path_diagnostic
                     else WAYPOINT_B_MAX_CROSS_TRACK_M
                 )
-                if waypoint_b_only and cross_track_guard_m > cross_track_limit:
+                sample_disposition = (
+                    route_feedback_sample_disposition(
+                        odom_action=odom_stamp_action,
+                        cross_track_error_m=cross_track_guard_m,
+                        maximum_cross_track_m=cross_track_limit,
+                    )
+                    if waypoint_b_only else
+                    "SKIP_DUPLICATE_ROUTE_TICK" if odom_stamp_action == "DUPLICATE"
+                    else "ADVANCE_ROUTE_TICK"
+                )
+                route_progress_monitor["last_sample"]["sample_disposition"] = sample_disposition
+                route_progress_monitor["samples"][-1]["sample_disposition"] = sample_disposition
+                if sample_disposition == "ABORT_CROSS_TRACK_GUARD":
                     route_fault = (
                         "curved_path_reference_cross_track_limit_exceeded"
                         if curved_path_diagnostic else
@@ -3131,21 +3220,7 @@ class FocusedM1Diagnostic(Node):
                     return True
                 if not gate_state["steering_enabled"]:
                     return False
-                if odom_stamp_action == "DUPLICATE":
-                    route_progress_monitor["duplicate_odom_stamp_sample_count"] += 1
-                    duplicate_record = {
-                        "sample_monotonic_s": sample_time,
-                        "odom_stamp_ns": pose.stamp_ns,
-                        "odom_receive_age_s": pose_receive_age_s,
-                    }
-                    if route_progress_monitor["first_duplicate_odom_stamp_sample"] is None:
-                        route_progress_monitor["first_duplicate_odom_stamp_sample"] = duplicate_record
-                        route_events.append({
-                            "kind": "DUPLICATE_ODOM_SAMPLE_SKIPPED_FOR_ROUTE_TICK",
-                            **duplicate_record,
-                            "route_executor_core_remains_strictly_increasing": True,
-                        })
-                    route_progress_monitor["last_duplicate_odom_stamp_sample"] = duplicate_record
+                if sample_disposition == "SKIP_DUPLICATE_ROUTE_TICK":
                     # The command layer may hold the last bounded control for
                     # this fresh-but-unchanged sample; do not advance or abort
                     # the core route state on a duplicate source timestamp.
@@ -3296,6 +3371,12 @@ class FocusedM1Diagnostic(Node):
                             control_row["odom_stamp_action"] = window_control.get("odom_stamp_action")
                             control_row["odom_stamp_ns"] = window_control.get("odom_stamp_ns")
                             control_row["odom_receive_age_s"] = window_control.get("odom_receive_age_s")
+                            control_row["odom_age_since_last_unique_s"] = window_control.get(
+                                "odom_age_since_last_unique_s"
+                            )
+                            control_row["last_unique_odom_stamp_ns"] = window_control.get(
+                                "last_unique_odom_stamp_ns"
+                            )
                             if window_control.get("steering_enabled"):
                                 pose = snapshot.get("pose")
                                 active = executor.active_step
@@ -3414,6 +3495,38 @@ class FocusedM1Diagnostic(Node):
                         max_observed_planar_speed_m_s=0.2,
                         zero_until_stand_timeout_s=3.5,
                     )
+                    raw_stop_gate = last_result.get("physical_stop_gate")
+                    final_stop_window = (
+                        raw_stop_gate.get("final_window")
+                        if isinstance(raw_stop_gate, Mapping) else None
+                    )
+                    if (
+                        isinstance(final_stop_window, Mapping)
+                        and isinstance(final_stop_window.get("window_start_monotonic_s"), (int, float))
+                        and isinstance(final_stop_window.get("window_end_monotonic_s"), (int, float))
+                    ):
+                        route_odom_stop_gate = evaluate_route_odom_freshness_window(
+                            last_result.get("samples", []),
+                            window_start_steady_s=float(final_stop_window["window_start_monotonic_s"]),
+                            window_end_steady_s=float(final_stop_window["window_end_monotonic_s"]),
+                            maximum_age_s=MAX_POSE_AGE_S,
+                            minimum_window_s=1.90,
+                        )
+                    else:
+                        route_odom_stop_gate = {
+                            "status": "FAIL",
+                            "reason": "COMPOSITE_STOP_WINDOW_UNAVAILABLE_FOR_ODOMETRY_FRESHNESS",
+                            "observations": [],
+                        }
+                    last_result["route_stop_odom_freshness_gate"] = route_odom_stop_gate
+                    route_rearm_gate = evaluate_route_window_rearm_gate(
+                        physical_stop_status=str(
+                            (raw_stop_gate or {}).get("status", "NOT_EVALUATED")
+                            if isinstance(raw_stop_gate, Mapping) else "NOT_EVALUATED"
+                        ),
+                        odometry_freshness_status=str(route_odom_stop_gate.get("status")),
+                    )
+                    last_result["route_window_rearm_gate"] = route_rearm_gate
                     angular_values = [
                         float(row["angular_velocity_rad_s"]) for row in steering_samples
                     ]
@@ -3500,10 +3613,19 @@ class FocusedM1Diagnostic(Node):
                         route_fault
                         or last_result.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
                         or last_gate.get("status") != "PASS"
+                        or route_rearm_gate.get("rearm_allowed") is not True
                     ):
                         return {
                             "status": "BLOCKED",
-                            "fault": route_fault or last_result.get("fault") or "route_window_motion_or_stop_gate_failed",
+                            "fault": (
+                                route_fault or last_result.get("fault")
+                                or (
+                                    "route_stop_rearm_gate_failed:"
+                                    + ",".join(str(item) for item in route_rearm_gate.get("blockers", []))
+                                    if route_rearm_gate.get("rearm_allowed") is not True
+                                    else "route_window_motion_or_stop_gate_failed"
+                                )
+                            ),
                             "last_result": last_result,
                             "last_gate": last_gate,
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,

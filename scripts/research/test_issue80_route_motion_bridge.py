@@ -49,6 +49,10 @@ from issue80_route_motion_bridge import (
     build_shallow_curved_path_reference,
     curved_path_metrics,
     classify_route_odom_stamp,
+    RouteOdomFreshnessTracker,
+    route_feedback_sample_disposition,
+    evaluate_route_odom_freshness_window,
+    evaluate_route_window_rearm_gate,
     build_short_right_corner_route,
     measured_m1_nonzero_window_s,
     waypoint_b_arrival_passes,
@@ -191,6 +195,195 @@ class RouteMotionBridgeTests(unittest.TestCase):
             ),
             "REGRESSION",
         )
+
+    def test_odometry_tracker_holds_one_fresh_duplicate_then_resumes_on_new_stamp(self):
+        tracker = RouteOdomFreshnessTracker(10_000, 5.0, maximum_age_s=0.20)
+        duplicate = tracker.observe(
+            current_stamp_ns=10_000, sample_steady_s=5.03, received_steady_s=5.029,
+        )
+        self.assertEqual(duplicate["action"], "DUPLICATE")
+        self.assertAlmostEqual(duplicate["age_since_last_unique_s"], 0.03)
+        resumed = tracker.observe(
+            current_stamp_ns=10_001, sample_steady_s=5.05, received_steady_s=5.049,
+        )
+        self.assertEqual(resumed["action"], "NEW")
+        self.assertEqual(tracker.last_unique_stamp_ns, 10_001)
+        self.assertAlmostEqual(tracker.last_unique_received_steady_s, 5.049)
+
+    def test_consecutive_fresh_duplicate_deliveries_expire_from_last_unique_receipt(self):
+        tracker = RouteOdomFreshnessTracker(20_000, 10.0, maximum_age_s=0.20)
+        outcomes = [
+            tracker.observe(
+                current_stamp_ns=20_000,
+                sample_steady_s=sample_time,
+                received_steady_s=sample_time - 0.001,
+            )
+            for sample_time in (10.04, 10.10, 10.18)
+        ]
+        self.assertEqual([row["action"] for row in outcomes], ["DUPLICATE"] * 3)
+        self.assertTrue(all(row["message_receive_age_s"] <= 0.20 for row in outcomes))
+        self.assertAlmostEqual(outcomes[-1]["age_since_last_unique_s"], 0.18)
+        expired = tracker.observe(
+            current_stamp_ns=20_000,
+            sample_steady_s=10.205,
+            received_steady_s=10.204,
+        )
+        self.assertEqual(expired["action"], "STALE_OR_INVALID")
+        self.assertEqual(expired["source_stamp_relation"], "DUPLICATE")
+        self.assertAlmostEqual(expired["message_receive_age_s"], 0.001)
+        self.assertAlmostEqual(expired["age_since_last_unique_s"], 0.205)
+        self.assertEqual(tracker.last_unique_stamp_ns, 20_000)
+
+    def test_odometry_stamp_regression_fails_closed_without_rewinding_unique_anchor(self):
+        tracker = RouteOdomFreshnessTracker(30_000, 20.0, maximum_age_s=0.20)
+        regression = tracker.observe(
+            current_stamp_ns=29_999, sample_steady_s=20.02, received_steady_s=20.019,
+        )
+        self.assertEqual(regression["action"], "REGRESSION")
+        self.assertEqual(tracker.last_unique_stamp_ns, 30_000)
+        resumed = tracker.observe(
+            current_stamp_ns=30_001, sample_steady_s=20.04, received_steady_s=20.039,
+        )
+        self.assertEqual(resumed["action"], "NEW")
+
+    def test_actual_stale_odometry_delivery_is_rejected_even_with_advancing_stamp(self):
+        tracker = RouteOdomFreshnessTracker(40_000, 30.0, maximum_age_s=0.20)
+        stale = tracker.observe(
+            current_stamp_ns=40_001, sample_steady_s=30.25, received_steady_s=30.049,
+        )
+        self.assertEqual(stale["action"], "STALE_OR_INVALID")
+        self.assertEqual(stale["source_stamp_relation"], "NEW")
+        self.assertEqual(tracker.last_unique_stamp_ns, 40_000)
+
+    def test_duplicate_odom_does_not_skip_the_50mm_cross_track_guard(self):
+        self.assertEqual(
+            route_feedback_sample_disposition(
+                odom_action="DUPLICATE",
+                cross_track_error_m=0.050001,
+                maximum_cross_track_m=0.05,
+            ),
+            "ABORT_CROSS_TRACK_GUARD",
+        )
+        self.assertEqual(
+            route_feedback_sample_disposition(
+                odom_action="DUPLICATE",
+                cross_track_error_m=0.05,
+                maximum_cross_track_m=0.05,
+            ),
+            "SKIP_DUPLICATE_ROUTE_TICK",
+        )
+
+    def test_duplicate_odometry_during_shutdown_cannot_pass_route_stop_freshness_gate(self):
+        samples = []
+        for index in range(61):
+            sample_time = 3.0 + 0.05 * index
+            samples.append({
+                "sample_monotonic_s": sample_time,
+                "phase": "post-stop",
+                "pose": {"stamp_sec": 100, "stamp_nanosec": 0},
+                "state_age_s": {"odom": 0.001},
+            })
+        gate = evaluate_route_odom_freshness_window(
+            samples,
+            window_start_steady_s=3.0,
+            window_end_steady_s=6.0,
+            maximum_age_s=0.20,
+            minimum_window_s=1.90,
+        )
+        self.assertEqual(gate["status"], "FAIL")
+        self.assertIn("NONUNIQUE_OR_STALE_ODOMETRY_SOURCE", gate["reason"])
+        self.assertEqual(gate["unique_source_stamp_count"], 1)
+        self.assertGreater(gate["maximum_age_since_last_unique_s"], 0.20)
+        rearm = evaluate_route_window_rearm_gate(
+            physical_stop_status="PASS",
+            odometry_freshness_status=gate["status"],
+        )
+        self.assertFalse(rearm["rearm_allowed"])
+        self.assertIn("UNIQUE_ODOMETRY_FRESHNESS_GATE_NOT_PASS", rearm["blockers"])
+
+    def test_route_window_rearm_requires_composite_stop_and_unique_odometry(self):
+        self.assertFalse(evaluate_route_window_rearm_gate(
+            physical_stop_status="PASS", odometry_freshness_status="FAIL",
+        )["rearm_allowed"])
+        self.assertFalse(evaluate_route_window_rearm_gate(
+            physical_stop_status="FAIL", odometry_freshness_status="PASS",
+        )["rearm_allowed"])
+        self.assertTrue(evaluate_route_window_rearm_gate(
+            physical_stop_status="PASS", odometry_freshness_status="PASS",
+        )["rearm_allowed"])
+
+    def test_advancing_odometry_through_a_complete_stop_window_passes_unique_freshness(self):
+        samples = []
+        for index in range(61):
+            sample_time = 3.0 + 0.05 * index
+            samples.append({
+                "sample_monotonic_s": sample_time,
+                "phase": "post-stop",
+                "pose": {"stamp_sec": 100 + index, "stamp_nanosec": 0},
+                "state_age_s": {"odom": 0.001},
+            })
+        gate = evaluate_route_odom_freshness_window(
+            samples,
+            window_start_steady_s=3.0,
+            window_end_steady_s=6.0,
+            maximum_age_s=0.20,
+            minimum_window_s=1.90,
+        )
+        self.assertEqual(gate["status"], "PASS")
+        self.assertEqual(gate["unique_source_stamp_count"], 61)
+
+    def test_two_window_curved_route_rearms_only_after_both_stop_and_odometry_gates(self):
+        start = make_pose(stamp=1_000_000_000, received=10.0)
+        reference = build_shallow_curved_path_reference(start)
+        route = build_curved_waypoint_route(
+            route_id="two-window-curved-route",
+            start_pose=start,
+            reference=reference,
+            robot_footprint_radius_m=0.25,
+            local_clear_radius_m=2.0,
+        )
+        step = route.steps[0]
+        directive = follow_directive(
+            route_id=route.route_id,
+            segment_id=step.waypoint_id,
+            waypoint_id=step.waypoint_id,
+            goal_x_m=step.x_m,
+            goal_y_m=step.y_m,
+            position_tolerance_m=step.position_tolerance_m,
+            target_forward_m_s=step.target_forward_m_s,
+            max_forward_m_s=step.max_forward_m_s,
+            max_angular_rad_s=step.max_angular_rad_s,
+            max_command_window_s=step.max_command_window_s,
+        )
+        bridge = RouteMotionBridge(route_frame_id="odom", incremental_window_s=1.0)
+        first = bridge.plan_next(directive, start, readiness(), now_steady_s=10.0)
+        self.assertEqual(first.status, "PROPOSAL_ONLY")
+        bridge.complete_window(first.window_id, actual_elapsed_s=1.0)
+        zero = bridge.zero_window(directive, now_steady_s=11.0, reason="window-one stop")
+        self.assertTrue(bridge.confirm_physical_stop(
+            {"status": "PASS", "window_start_steady_s": 11.0,
+             "window_end_steady_s": 12.95, "sample_count": 40,
+             "maximum_sample_gap_s": 0.05, "maximum_state_age_s": 0.02,
+             "generation": start.generation},
+            zero_request_started_s=11.0,
+            now_steady_s=13.0,
+            expected_generation=start.generation,
+        ))
+        theta = 0.11
+        origin = reference["start_pose"]
+        resumed_pose = make_pose(
+            x=float(origin["x_m"]) + CURVED_PATH_RADIUS_M * math.sin(theta),
+            y=float(origin["y_m"]) - CURVED_PATH_RADIUS_M * (1.0 - math.cos(theta)),
+            yaw=start.yaw_rad - theta,
+            stamp=2_000_000_000,
+            received=13.0,
+        )
+        second = bridge.plan_next(
+            directive, resumed_pose, readiness(observed_steady_s=13.0), now_steady_s=13.0,
+        )
+        self.assertEqual(second.status, "PROPOSAL_ONLY")
+        self.assertEqual(second.segment_id, first.segment_id)
+        self.assertEqual(second.window_id, zero.window_id + 1)
 
     def test_curved_path_cli_profile_accepts_only_the_bounded_reviewed_envelope(self):
         values = {

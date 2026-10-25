@@ -2369,6 +2369,109 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], ZERO_STOP_MIN_MESSAGES)
         self.assertGreaterEqual(sum(value == 0.0 for value in commands), ZERO_STOP_MIN_MESSAGES)
 
+    def test_duplicate_odometry_expiry_starts_zero_stop_and_blocks_route_rearm(self) -> None:
+        from issue80_route_motion_bridge import (
+            RouteOdomFreshnessTracker,
+            evaluate_route_odom_freshness_window,
+            evaluate_route_window_rearm_gate,
+        )
+
+        clock = FakeClock()
+        clock.value = 10.0
+        state = self.snapshot()
+        state["pose"].update({
+            "stamp_sec": 100,
+            "stamp_nanosec": 0,
+            "vx": 0.0,
+            "vy": 0.0,
+            "vz": 0.0,
+            "wz": 0.0,
+        })
+        state["state_age_s"]["odom"] = 0.001
+        commands = []
+        tracker = RouteOdomFreshnessTracker(100_000_000_000, 9.999, maximum_age_s=0.20)
+
+        def sample():
+            row = dict(state)
+            row["pose"] = dict(state["pose"])
+            row["state_age_s"] = dict(state["state_age_s"])
+            row["sample_monotonic_s"] = clock.now()
+            row["readback_monotonic_s"] = {
+                "get_mode": clock.now(), "get_source": clock.now(),
+            }
+            return row
+
+        def publish(value):
+            commands.append((float(value), clock.now()))
+            if value > 0.0:
+                state.update({
+                    "get_source_name": VELOCITY_SOURCE_NAME,
+                    "common_source_name": VELOCITY_SOURCE_NAME,
+                    "get_mode_desc": "LOCOMOTION_DEFAULT",
+                    "common_mode_desc": "LOCOMOTION_DEFAULT",
+                })
+            else:
+                state.update({
+                    "get_source_name": "",
+                    "common_source_name": "",
+                    "get_mode_desc": "STAND_DEFAULT",
+                    "common_mode_desc": "STAND_DEFAULT",
+                    "get_mode_status_value": 100,
+                    "common_mode_status_value": 100,
+                    "fsm_state": MC_FSM_STABLE,
+                })
+
+        def duplicate_expired(row):
+            observation = tracker.observe(
+                current_stamp_ns=(
+                    int(row["pose"]["stamp_sec"]) * 1_000_000_000
+                    + int(row["pose"]["stamp_nanosec"])
+                ),
+                sample_steady_s=float(row["sample_monotonic_s"]),
+                received_steady_s=(
+                    float(row["sample_monotonic_s"])
+                    - float(row["state_age_s"]["odom"])
+                ),
+            )
+            return observation["action"] == "STALE_OR_INVALID"
+
+        result = self.run_protocol(
+            sample,
+            publish,
+            fake_clock=clock,
+            pulse_duration_s=0.5,
+            max_pulse_duration_s=0.5,
+            zero_until_stand_timeout_s=2.0,
+            after_zero_stop=lambda: {"success": True, "mode": "STAND_DEFAULT"},
+            termination_condition=duplicate_expired,
+            termination_condition_name="duplicate_odometry_feedback_age_exceeded",
+        )
+
+        self.assertTrue(result["termination_condition_met"])
+        self.assertEqual(
+            result["termination_condition_name"],
+            "duplicate_odometry_feedback_age_exceeded",
+        )
+        self.assertGreaterEqual(result["zero_stop"]["zero_publish_calls_returned"], ZERO_STOP_MIN_MESSAGES)
+        self.assertGreaterEqual(result["post_stop_zero_extension"]["zero_publish_calls_returned"], 1)
+        self.assertGreaterEqual(sum(value == 0.0 for value, _ in commands), ZERO_STOP_MIN_MESSAGES)
+        self.assertGreaterEqual(result["post_stop_sample_count"], 20)
+
+        final_window = result["physical_stop_gate"].get("final_window", {})
+        odom_gate = evaluate_route_odom_freshness_window(
+            result["samples"],
+            window_start_steady_s=float(final_window.get("window_start_monotonic_s", 0.0)),
+            window_end_steady_s=float(final_window.get("window_end_monotonic_s", 0.0)),
+            maximum_age_s=0.20,
+            minimum_window_s=1.90,
+        )
+        rearm = evaluate_route_window_rearm_gate(
+            physical_stop_status=str(result["physical_stop_gate"].get("status")),
+            odometry_freshness_status=str(odom_gate["status"]),
+        )
+        self.assertEqual(odom_gate["status"], "FAIL")
+        self.assertFalse(rearm["rearm_allowed"])
+
     def test_source_conflict_during_activation_aborts_and_zero_stops(self) -> None:
         sample = self.snapshot()
         commands = []

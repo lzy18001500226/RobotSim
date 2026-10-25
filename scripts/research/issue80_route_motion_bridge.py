@@ -199,6 +199,293 @@ def classify_route_odom_stamp(
     return "REGRESSION"
 
 
+@dataclass
+class RouteOdomFreshnessTracker:
+    """Track route feedback age from the last strictly advancing source sample.
+
+    A newly delivered message can repeat an old source stamp.  Its host receive
+    age may be fresh even though the pose itself has not advanced.  Duplicate
+    holds therefore expire relative to the receipt time of the last unique
+    source stamp, while genuinely stale deliveries are rejected independently.
+    """
+
+    last_unique_stamp_ns: int
+    last_unique_received_steady_s: float
+    maximum_age_s: float = MAX_POSE_AGE_S
+
+    def observe(
+        self,
+        *,
+        current_stamp_ns: int,
+        sample_steady_s: float,
+        received_steady_s: float,
+    ) -> dict[str, object]:
+        try:
+            sample_time = float(sample_steady_s)
+            received_time = float(received_steady_s)
+            unique_received_time = float(self.last_unique_received_steady_s)
+            maximum_age = float(self.maximum_age_s)
+        except (TypeError, ValueError, OverflowError):
+            sample_time = received_time = unique_received_time = maximum_age = math.nan
+        if (
+            isinstance(current_stamp_ns, bool)
+            or not isinstance(current_stamp_ns, int)
+            or current_stamp_ns <= 0
+            or isinstance(self.last_unique_stamp_ns, bool)
+            or not isinstance(self.last_unique_stamp_ns, int)
+            or self.last_unique_stamp_ns <= 0
+            or not all(math.isfinite(value) for value in (
+                sample_time, received_time, unique_received_time, maximum_age,
+            ))
+            or maximum_age <= 0.0
+        ):
+            return {
+                "action": "STALE_OR_INVALID",
+                "source_stamp_relation": "INVALID",
+                "message_receive_age_s": None,
+                "age_since_last_unique_s": None,
+                "last_unique_stamp_ns": self.last_unique_stamp_ns,
+                "last_unique_received_steady_s": self.last_unique_received_steady_s,
+            }
+
+        message_age = sample_time - received_time
+        unique_age = sample_time - unique_received_time
+        relation = (
+            "NEW" if current_stamp_ns > self.last_unique_stamp_ns
+            else "DUPLICATE" if current_stamp_ns == self.last_unique_stamp_ns
+            else "REGRESSION"
+        )
+        common = {
+            "source_stamp_relation": relation,
+            "message_receive_age_s": message_age,
+            "age_since_last_unique_s": unique_age,
+            "last_unique_stamp_ns": self.last_unique_stamp_ns,
+            "last_unique_received_steady_s": self.last_unique_received_steady_s,
+        }
+        if message_age < 0.0 or message_age > maximum_age:
+            return {"action": "STALE_OR_INVALID", **common}
+        if relation == "REGRESSION":
+            return {"action": "REGRESSION", **common}
+        if relation == "DUPLICATE":
+            if unique_age < 0.0 or unique_age > maximum_age:
+                return {"action": "STALE_OR_INVALID", **common}
+            return {"action": "DUPLICATE", **common}
+
+        self.last_unique_stamp_ns = current_stamp_ns
+        self.last_unique_received_steady_s = received_time
+        common["last_unique_stamp_ns"] = current_stamp_ns
+        common["last_unique_received_steady_s"] = received_time
+        common["age_since_last_unique_s"] = message_age
+        return {"action": "NEW", **common}
+
+
+def route_feedback_sample_disposition(
+    *,
+    odom_action: str,
+    cross_track_error_m: float,
+    maximum_cross_track_m: float,
+) -> str:
+    """Keep lateral safety checks ahead of duplicate-sample route-tick skips."""
+    try:
+        cross_track = float(cross_track_error_m)
+        maximum_cross_track = float(maximum_cross_track_m)
+    except (TypeError, ValueError, OverflowError):
+        return "ABORT_INVALID_FEEDBACK"
+    if (
+        odom_action not in {"NEW", "DUPLICATE"}
+        or not all(math.isfinite(value) for value in (cross_track, maximum_cross_track))
+        or cross_track < 0.0
+        or maximum_cross_track <= 0.0
+    ):
+        return "ABORT_INVALID_FEEDBACK"
+    if cross_track > maximum_cross_track:
+        return "ABORT_CROSS_TRACK_GUARD"
+    if odom_action == "DUPLICATE":
+        return "SKIP_DUPLICATE_ROUTE_TICK"
+    return "ADVANCE_ROUTE_TICK"
+
+
+def evaluate_route_odom_freshness_window(
+    samples: list[Mapping[str, object]],
+    *,
+    window_start_steady_s: float,
+    window_end_steady_s: float,
+    maximum_age_s: float = MAX_POSE_AGE_S,
+    minimum_window_s: float = 1.90,
+) -> dict[str, object]:
+    """Require advancing source-pose coverage before a stopped route can rearm.
+
+    The generic physical-stop gate independently checks measured motion and
+    controller targets. This route-specific gate prevents a stream of freshly
+    received copies of one old odometry pose from being mistaken for fresh
+    settled-position evidence during zero/stand observation.
+    """
+    try:
+        start_time = float(window_start_steady_s)
+        end_time = float(window_end_steady_s)
+        maximum_age = float(maximum_age_s)
+        minimum_window = float(minimum_window_s)
+    except (TypeError, ValueError, OverflowError):
+        return {"status": "FAIL", "reason": "INVALID_WINDOW_OR_LIMITS", "observations": []}
+    if (
+        not all(math.isfinite(value) for value in (start_time, end_time, maximum_age, minimum_window))
+        or start_time < 0.0
+        or end_time <= start_time
+        or maximum_age <= 0.0
+        or minimum_window <= 0.0
+    ):
+        return {"status": "FAIL", "reason": "INVALID_WINDOW_OR_LIMITS", "observations": []}
+
+    timed_rows: list[tuple[float, Mapping[str, object]]] = []
+    invalid_timestamps = 0
+    for row in samples:
+        if not isinstance(row, Mapping):
+            invalid_timestamps += 1
+            continue
+        try:
+            sample_time = float(row["sample_monotonic_s"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            invalid_timestamps += 1
+            continue
+        if not math.isfinite(sample_time):
+            invalid_timestamps += 1
+            continue
+        timed_rows.append((sample_time, row))
+    ordered = [row for _, row in sorted(timed_rows, key=lambda item: item[0])]
+    tracker: RouteOdomFreshnessTracker | None = None
+    observations: list[dict[str, object]] = []
+    for row in ordered:
+        try:
+            sample_time = float(row["sample_monotonic_s"])
+            pose = row["pose"]
+            ages = row["state_age_s"]
+            if not isinstance(pose, Mapping) or not isinstance(ages, Mapping):
+                raise ValueError("pose or state ages missing")
+            stamp_ns = int(pose["stamp_sec"]) * 1_000_000_000 + int(pose["stamp_nanosec"])
+            message_age = float(ages["odom"])
+            receive_time = sample_time - message_age
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            if start_time <= float(row.get("sample_monotonic_s", -math.inf)) <= end_time:
+                observations.append({
+                    "sample_monotonic_s": row.get("sample_monotonic_s"),
+                    "action": "STALE_OR_INVALID",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+            continue
+        if tracker is None:
+            if (
+                stamp_ns <= 0 or not math.isfinite(sample_time)
+                or not math.isfinite(receive_time)
+                or message_age < 0.0 or message_age > maximum_age
+            ):
+                state: dict[str, object] = {
+                    "action": "STALE_OR_INVALID",
+                    "source_stamp_relation": "INVALID",
+                    "message_receive_age_s": message_age,
+                    "age_since_last_unique_s": None,
+                    "last_unique_stamp_ns": None,
+                    "last_unique_received_steady_s": None,
+                }
+            else:
+                tracker = RouteOdomFreshnessTracker(
+                    last_unique_stamp_ns=stamp_ns,
+                    last_unique_received_steady_s=receive_time,
+                    maximum_age_s=maximum_age,
+                )
+                state = {
+                    "action": "NEW",
+                    "source_stamp_relation": "NEW",
+                    "message_receive_age_s": message_age,
+                    "age_since_last_unique_s": message_age,
+                    "last_unique_stamp_ns": stamp_ns,
+                    "last_unique_received_steady_s": receive_time,
+                }
+        else:
+            state = tracker.observe(
+                current_stamp_ns=stamp_ns,
+                sample_steady_s=sample_time,
+                received_steady_s=receive_time,
+            )
+        if start_time <= sample_time <= end_time:
+            observations.append({
+                "sample_monotonic_s": sample_time,
+                "odom_stamp_ns": stamp_ns,
+                **state,
+            })
+
+    if len(observations) < 2:
+        return {
+            "status": "FAIL",
+            "reason": "INSUFFICIENT_ODOMETRY_SAMPLES_IN_STOP_WINDOW",
+            "window_start_monotonic_s": start_time,
+            "window_end_monotonic_s": end_time,
+            "window_duration_s": end_time - start_time,
+            "sample_count": len(observations),
+            "observations": observations,
+        }
+    observation_times = [
+        float(item["sample_monotonic_s"])
+        for item in observations
+        if isinstance(item.get("sample_monotonic_s"), (int, float))
+    ]
+    duration = (
+        max(observation_times) - min(observation_times)
+        if observation_times else 0.0
+    )
+    invalid = [
+        item for item in observations
+        if item.get("action") not in {"NEW", "DUPLICATE"}
+        or not isinstance(item.get("age_since_last_unique_s"), (int, float))
+        or float(item["age_since_last_unique_s"]) < 0.0
+        or float(item["age_since_last_unique_s"]) > maximum_age
+    ]
+    unique_count = sum(item.get("action") == "NEW" for item in observations)
+    max_unique_age = max(
+        (float(item["age_since_last_unique_s"]) for item in observations
+         if isinstance(item.get("age_since_last_unique_s"), (int, float))),
+        default=None,
+    )
+    reasons: list[str] = []
+    if invalid_timestamps:
+        reasons.append("INVALID_SAMPLE_MONOTONIC_TIMESTAMPS")
+    if duration < minimum_window:
+        reasons.append("ODOMETRY_WINDOW_TOO_SHORT")
+    if invalid:
+        reasons.append("NONUNIQUE_OR_STALE_ODOMETRY_SOURCE")
+    if unique_count < 2:
+        reasons.append("TOO_FEW_ADVANCING_ODOMETRY_STAMPS")
+    return {
+        "status": "PASS" if not reasons else "FAIL",
+        "reason": ";".join(reasons) if reasons else None,
+        "window_start_monotonic_s": start_time,
+        "window_end_monotonic_s": end_time,
+        "window_duration_s": duration,
+        "minimum_window_s": minimum_window,
+        "maximum_unique_sample_age_s": maximum_age,
+        "sample_count": len(observations),
+        "unique_source_stamp_count": unique_count,
+        "maximum_age_since_last_unique_s": max_unique_age,
+        "invalid_sample_count": len(invalid),
+        "observations": observations,
+    }
+
+
+def evaluate_route_window_rearm_gate(
+    *, physical_stop_status: str, odometry_freshness_status: str,
+) -> dict[str, object]:
+    """Keep stop-gated route rearming closed unless both independent gates pass."""
+    blockers = []
+    if physical_stop_status != "PASS":
+        blockers.append("COMPOSITE_PHYSICAL_STOP_GATE_NOT_PASS")
+    if odometry_freshness_status != "PASS":
+        blockers.append("UNIQUE_ODOMETRY_FRESHNESS_GATE_NOT_PASS")
+    return {
+        "status": "PASS" if not blockers else "FAIL",
+        "rearm_allowed": not blockers,
+        "blockers": blockers,
+    }
+
+
 def validate_curved_path_cli_profile(
     *,
     route_integration: bool,
