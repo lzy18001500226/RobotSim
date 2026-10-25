@@ -142,6 +142,10 @@ FOUNDATIONWALK_CONFIG_CONTAINER_PATH = (
     "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
     "lx2501_3_t2d5/rl/foundationwalk_config.yaml"
 )
+MC_SIM_CONFIG_DUMP_CONTAINER_PATH = (
+    "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
+    "lx2501_3_t2d5/mc_sim.yaml.dump"
+)
 RUN38_FOUNDATIONWALK_CONFIG_SHA256 = "b3081e9bca2035d4a986657bdc03b79ca0ed5d4e852c7972d86816f569acc2e9"
 RUN38_FOUNDATIONWALK_ONNX_SHA256 = "b8cca5e9048c3c056e94c56ad06f171f9d5a76149aebd893ad524b365507cc9b"
 RUN38_FOUNDATIONWALK_RUNNER_SHA256 = "0fa34f81a7ec87179309cd78859f5469c5e84ec595588bf7cc7ff935c865556b"
@@ -1558,6 +1562,10 @@ class BoundedRun:
         self.local01_scene_bundle: dict[str, Any] | None = None
         self.local01_scene_source: dict[str, Any] | None = None
         self.local01_scene_readonly_mounts: list[tuple[Path, str]] = []
+        # Exception-only nested mounts for a known MC-generated runtime dump.
+        # The base vendor runtime stays read-only, and every source must live
+        # in the evidence directory.
+        self.runtime_writeback_mounts: list[tuple[Path, str]] = []
         if getattr(args, "route_config", None):
             source = Path(args.route_config)
             if source.is_symlink() or not source.is_file():
@@ -2183,6 +2191,21 @@ class BoundedRun:
                 "type=bind,source=" + str(self.foundationwalk_config_overlay)
                 + ",target=" + FOUNDATIONWALK_CONFIG_CONTAINER_PATH + ",readonly",
             ]
+        for source_path, container_path in self.runtime_writeback_mounts:
+            try:
+                source_path.resolve(strict=True).relative_to(self.evidence.resolve(strict=True))
+            except (OSError, ValueError) as exc:
+                raise RuntimeError("runtime writeback source must be a regular evidence-local file") from exc
+            if (
+                source_path.is_symlink()
+                or not source_path.is_file()
+                or container_path != MC_SIM_CONFIG_DUMP_CONTAINER_PATH
+            ):
+                raise RuntimeError("only the staged mc_sim.yaml.dump writeback target is permitted")
+            cmd += [
+                "--mount",
+                "type=bind,source=" + str(source_path) + ",target=" + container_path,
+            ]
         if self.mc_rl_debug_overlay_manifest is not None:
             mc_debug_install = self.evidence / "mc_debug_overlay/install"
             if mc_debug_install.is_symlink() or not (mc_debug_install / "setup.bash").is_file():
@@ -2231,6 +2254,18 @@ class BoundedRun:
                 or mount.get("Type") != "bind"
             ):
                 raise RuntimeError("diagnostic FoundationWalk config mount source/type/read-only state is invalid")
+        for source_path, container_path in self.runtime_writeback_mounts:
+            matches = [
+                mount for mount in container.get("Mounts", [])
+                if mount.get("Destination") == container_path
+            ]
+            if (
+                len(matches) != 1
+                or Path(str(matches[0].get("Source", ""))).resolve() != source_path.resolve()
+                or matches[0].get("RW") is not True
+                or matches[0].get("Type") != "bind"
+            ):
+                raise RuntimeError("MC runtime writeback mount is not the verified narrow writable target")
         if self.mc_rl_debug_overlay_manifest is not None:
             target = "/workspace/evidence/mc_debug_overlay/install"
             matching_mounts = [

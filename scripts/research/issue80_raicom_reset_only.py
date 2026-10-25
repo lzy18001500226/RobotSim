@@ -43,6 +43,7 @@ from issue80_m1_auto_reset_run import (
     IMAGE,
     IMAGE_DIGEST,
     MC_LAUNCH,
+    MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
     REPO,
     RUN38_ACTION_SETTING_SHA256,
     RUN38_FOUNDATIONWALK_CONFIG_SHA256,
@@ -94,6 +95,12 @@ FOUNDATIONWALK_INPUTS = {
         RUN38_MC_SIM_CONFIG_SHA256,
     ),
 }
+MC_SIM_CONFIG_RELATIVE = Path(
+    "mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
+)
+MC_SIM_CONFIG_DUMP_RELATIVE = Path(
+    "mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml.dump"
+)
 SAFE_INFRA_METHODS = frozenset({
     "run", "docker_exec", "start_container", "start_sim_first",
     "capture_service_topic_inventory", "inspect_window",
@@ -323,6 +330,62 @@ def _prepare_foundationwalk_overlay(evidence: Path) -> tuple[Path, dict[str, Any
     manifest["overlay_sha256"] = hashlib.sha256(overlay_bytes).hexdigest()
     _write_json(evidence / "foundationwalk_config_overlay_manifest.json", manifest)
     return target, manifest
+
+
+def _stage_mc_config_dump_writeback(evidence: Path) -> tuple[Path, dict[str, Any]]:
+    """Give MC its one observed generated dump target without making vendor inputs writable."""
+    config = RUNTIME / MC_SIM_CONFIG_RELATIVE
+    original_dump = RUNTIME / MC_SIM_CONFIG_DUMP_RELATIVE
+    for path in (config, original_dump):
+        if path.is_symlink() or not path.is_file():
+            raise ResetOnlyError(f"required MC config input is missing or unsafe: {path.name}")
+    staged_directory = evidence / "mc_runtime_writeback"
+    staged_directory.mkdir(mode=0o755)
+    staged_dump = staged_directory / "mc_sim.yaml.dump"
+    # Copy, never move or modify, the preexisting vendor-side dump. The nested
+    # bind mount is the sole writable path underneath the otherwise read-only
+    # runtime tree; MC may replace its staged copy during startup.
+    with staged_dump.open("xb") as stream:
+        stream.write(original_dump.read_bytes())
+    manifest = {
+        "schema": "robotsim.issue80.raicom-reset-only-mc-writeback.v1",
+        "classification": "NARROW_EPHEMERAL_MC_GENERATED_DUMP_ONLY",
+        "runtime_readonly": True,
+        "vendor_source_config": str(config),
+        "vendor_source_config_sha256": _sha256(config),
+        "vendor_source_dump": str(original_dump),
+        "vendor_source_dump_sha256": _sha256(original_dump),
+        "staged_dump": str(staged_dump),
+        "staged_dump_initial_sha256": _sha256(staged_dump),
+        "container_target": MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
+        "vendor_runtime_tree_modified": False,
+        "permitted_write_scope": [MC_SIM_CONFIG_DUMP_CONTAINER_PATH],
+    }
+    _write_json(evidence / "mc_runtime_writeback_manifest.json", manifest)
+    return staged_dump, manifest
+
+
+def _verify_mc_started_without_crash(runtime: BoundedRun) -> dict[str, Any]:
+    """Refuse to wait for telemetry when MC has already aborted during startup."""
+    probe = runtime.docker_exec(
+        "verify_mc_started_before_reset_observer",
+        "timeout 4s bash -lc 'until pgrep -x aima-mc-app-main >/dev/null; do "
+        "if grep -qE \"filesystem error|Aborted|SIGABRT\" /workspace/evidence/mc-console.log; then exit 3; fi; "
+        "sleep 0.1; done; "
+        "! grep -qE \"filesystem error|Aborted|SIGABRT\" /workspace/evidence/mc-console.log'",
+        timeout_s=5.0,
+        check=False,
+    )
+    record = {
+        "returncode": probe.returncode,
+        "stdout": probe.stdout,
+        "stderr": probe.stderr,
+        "mc_process_name": "aima-mc-app-main",
+        "fatal_log_patterns": ["filesystem error", "Aborted", "SIGABRT"],
+    }
+    if probe.returncode != 0:
+        raise ResetOnlyError("MC did not remain live before observer startup: " + json.dumps(record))
+    return {"status": "PASS_MC_PROCESS_ALIVE_BEFORE_OBSERVER", **record}
 
 
 def _scene_expected_poses(source: Mapping[str, Any]) -> dict[str, Any]:
@@ -654,7 +717,9 @@ class ResetOnlyRun:
             bundle = prepared["bundle"]
             overlay_path = prepared["overlay_path"]
             overlay_manifest = prepared["overlay_manifest"]
-            scene_dir = self.evidence / "local01_scene"
+            staged_mc_dump, mc_writeback_manifest = _stage_mc_config_dump_writeback(
+                self.evidence
+            )
             runtime_args = build_reset_only_runtime_args(self.evidence, self.container)
             self.runtime = BoundedRun(runtime_args)
             self.runtime.source = None
@@ -663,9 +728,14 @@ class ResetOnlyRun:
             self.runtime.local01_scene_readonly_mounts = prepared["scene_mounts"]
             self.runtime.foundationwalk_config_overlay = overlay_path
             self.runtime.foundationwalk_config_overlay_manifest = overlay_manifest
+            self.runtime.runtime_writeback_mounts = [
+                (staged_mc_dump, MC_SIM_CONFIG_DUMP_CONTAINER_PATH)
+            ]
+            self.result["mc_runtime_writeback"] = mc_writeback_manifest
             self.runtime.start_container()
             self._arm_container_stop_watchdog()
             self.runtime.start_sim_first()
+            self.result["mc_startup"] = _verify_mc_started_without_crash(self.runtime)
             velocity_graph = self.runtime.docker_exec(
                 "inspect_velocity_endpoint_without_publishing",
                 "source /opt/ros/humble/setup.bash && "

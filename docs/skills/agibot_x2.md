@@ -90,6 +90,23 @@ PASS. The next authorized capture must observe either a post-Reset odometry
 generation/timestamp rebase or a measured pelvis-pose discontinuity from the
 fresh pre-Reset snapshot; otherwise it reports `RESET_EFFECT_UNCONFIRMED`.
 
+The same Humble/rclpy image now has a construction-smoke mode on the observer.
+It creates the five state subscriptions, then requires zero publishers and
+zero service clients before teardown. In this image rclpy creates a
+`/parameter_events` publisher even with parameter services disabled, so the
+observer explicitly destroys that unused framework publisher. The construction
+smoke and its injected-failure path must run before a future Reset-only episode.
+
+The renewed Reset-only attempt `8bf0e747-10bc-4569-97d4-ea5fdb3db55f` reached
+the corrected scene and logged `Odom initialized: body_id=1, name=pelvis`, but
+MC aborted before telemetry readiness because its startup copies
+`mc_sim.yaml.dump` beside the readonly vendor runtime config. No Reset was
+dispatched. The runner now stages that one generated dump file in its evidence
+directory and mounts only that exact file writable beneath the otherwise
+readonly runtime tree. This is an unexecuted next-attempt correction; it is
+not evidence that MC startup or Reset has passed. A new explicit authorization
+is required before trying it.
+
 For a separately authorized future attempt, the command shape is:
 
 ```bash

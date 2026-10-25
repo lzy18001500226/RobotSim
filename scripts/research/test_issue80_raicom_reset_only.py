@@ -28,9 +28,13 @@ from issue80_raicom_reset_only import (
     parse_attempt_id,
     required_state_ages_pass,
     _static_preflight,
+    _stage_mc_config_dump_writeback,
     validate_policy,
 )
-from issue80_m1_auto_reset_run import build_runtime_bind_mount
+from issue80_m1_auto_reset_run import (
+    MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
+    build_runtime_bind_mount,
+)
 
 
 RUNNER = Path(__file__).with_name("issue80_raicom_reset_only.py")
@@ -237,6 +241,21 @@ class ResetOnlySafetyTests(unittest.TestCase):
             build_runtime_bind_mount(Path("/runtime"), readonly=False),
             "type=bind,source=/runtime,target=/workspace/raicom2026",
         )
+
+    def test_mc_dump_writeback_is_one_evidence_local_file_and_preserves_vendor_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source_dump = Path(
+                "/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/"
+                "mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml.dump"
+            )
+            before = source_dump.read_bytes()
+            staged, manifest = _stage_mc_config_dump_writeback(Path(directory))
+            self.assertTrue(staged.is_file())
+            self.assertEqual(staged.read_bytes(), before)
+            self.assertEqual(manifest["container_target"], MC_SIM_CONFIG_DUMP_CONTAINER_PATH)
+            self.assertTrue(manifest["runtime_readonly"])
+            self.assertFalse(manifest["vendor_runtime_tree_modified"])
+            self.assertEqual(source_dump.read_bytes(), before)
 
     def test_static_preflight_stages_scene_and_existing_overlay_without_route_runtime_input(self):
         with tempfile.TemporaryDirectory() as directory:
