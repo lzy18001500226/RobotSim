@@ -1,11 +1,14 @@
 """Explicitly provision hash-locked CoACD pieces from the pinned X2 source."""
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import importlib.metadata
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -107,6 +110,61 @@ def write_binary_stl(vertices: np.ndarray, faces: np.ndarray, name: str) -> byte
     return header + struct.pack("<I", len(triangles)) + output.tobytes()
 
 
+def _verify_proxy_directory(directory: Path, expected: dict[str, dict[str, Any]], label: str) -> None:
+    if directory.is_symlink() or not directory.is_dir():
+        raise ProvisionError(f"{label} is not a regular directory")
+    entries = list(directory.iterdir())
+    if any(path.is_symlink() or not path.is_file() for path in entries):
+        raise ProvisionError(f"{label} contains a non-regular or linked asset")
+    if {path.name for path in entries} != set(expected):
+        raise ProvisionError(f"{label} is incomplete or contains unregistered files")
+    mismatches = [
+        name for name, record in expected.items()
+        if sha256(directory / name) != record["sha256"]
+    ]
+    if mismatches:
+        raise ProvisionError(f"{label} SHA-256 mismatch: " + ", ".join(mismatches[:5]))
+
+
+def _rename_directory_noreplace(staging: Path, destination: Path) -> None:
+    """Atomically publish a sibling directory without replacing a concurrent winner."""
+    if os.name == "nt":
+        os.rename(staging, destination)
+        return
+    if os.name != "posix":
+        raise ProvisionError("atomic no-replace directory publication is unsupported on this platform")
+
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except AttributeError as exc:
+        raise ProvisionError("atomic no-replace directory publication requires renameat2") from exc
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(-100, os.fsencode(staging), -100, os.fsencode(destination), 1)  # RENAME_NOREPLACE
+    if result == 0:
+        return
+
+    error_number = ctypes.get_errno()
+    if error_number in (errno.EEXIST, errno.ENOTEMPTY):
+        raise FileExistsError(error_number, os.strerror(error_number), os.fspath(destination))
+    raise OSError(error_number, os.strerror(error_number), os.fspath(destination))
+
+
+def _reused_result(
+    source_manifest: dict[str, Any],
+    coacd_version: str,
+    expected: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    _verify_proxy_directory(OUTPUT, expected, "collision_generated")
+    return {
+        "status": "REUSED_HASH_VERIFIED",
+        "source_commit": source_manifest["commit"],
+        "coacd_version": coacd_version,
+        "piece_count": len(expected),
+        "output": str(OUTPUT),
+    }
+
+
 def provision() -> dict[str, Any]:
     try:
         coacd_version = importlib.metadata.version("coacd")
@@ -137,60 +195,71 @@ def provision() -> dict[str, Any]:
         raise ProvisionError(f"expected 161 collision-piece hashes, found {len(expected)}")
 
     # Reuse an existing generated directory only if it is already complete and exact.
-    if OUTPUT.exists():
-        existing = {p.name for p in OUTPUT.iterdir() if p.is_file()}
-        if existing != set(expected):
-            raise ProvisionError("collision_generated exists but is incomplete or contains unregistered files")
-        mismatches = [name for name, record in expected.items() if sha256(OUTPUT / name) != record["sha256"]]
-        if mismatches:
-            raise ProvisionError("existing collision proxy SHA-256 mismatch: " + ", ".join(mismatches[:5]))
+    if OUTPUT.exists() or OUTPUT.is_symlink():
+        return _reused_result(source_manifest, coacd_version, expected)
+
+    # A per-attempt sibling keeps partial output invisible and on the same filesystem.
+    staging = Path(tempfile.mkdtemp(prefix=f".{OUTPUT.name}.staging-", dir=OUTPUT.parent))
+    try:
+        written: list[str] = []
+        for mesh in proxy_manifest["mesh_decompositions"]:
+            source_mesh = source / mesh["source_mesh"]
+            content = source_mesh.read_bytes()
+            triangle_count = struct.unpack_from("<I", content, 80)[0]
+            dtype = np.dtype(
+                [("normal", "<f4", (3,)), ("vertices", "<f4", (3, 3)), ("attribute", "<u2")]
+            )
+            triangles = np.frombuffer(content[84:], dtype=dtype)["vertices"].astype(np.float32)
+            vertices, inverse = np.unique(triangles.reshape(-1, 3), axis=0, return_inverse=True)
+            faces = inverse.reshape(-1, 3).astype(np.uint32)
+            if len(vertices) != mesh["vertices_unique"] or triangle_count != mesh["triangles"]:
+                raise ProvisionError(f"source STL topology differs from collision manifest: {mesh['source_mesh']}")
+            parts = coacd.run_coacd(coacd.Mesh(vertices.astype(np.float32), faces), **settings)
+            if len(parts) != len(mesh["parts"]):
+                raise ProvisionError(
+                    f"CoACD piece count differs for {mesh['source_mesh']}: expected {len(mesh['parts'])}, got {len(parts)}"
+                )
+            for index, (piece_vertices, piece_faces) in enumerate(parts):
+                name = f"{Path(mesh['source_mesh']).stem}_coacd_{index:02d}.stl"
+                record = expected[name]
+                data = write_binary_stl(piece_vertices, piece_faces, record["name"])
+                if hashlib.sha256(data).hexdigest() != record["sha256"]:
+                    raise ProvisionError(f"generated CoACD piece hash differs from frozen reference: {name}")
+                target = staging / name
+                with target.open("xb") as stream:
+                    stream.write(data)
+                written.append(name)
+
+        if set(written) != set(expected):
+            raise ProvisionError("generated collision piece set is incomplete")
+        _verify_proxy_directory(staging, expected, "staged collision proxies")
+
+        try:
+            _rename_directory_noreplace(staging, OUTPUT)
+        except FileExistsError:
+            # Another provisioner may have published first. Reuse only an exact output.
+            return _reused_result(source_manifest, coacd_version, expected)
+        except OSError as exc:
+            if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                return _reused_result(source_manifest, coacd_version, expected)
+            raise ProvisionError("could not atomically publish collision proxies") from exc
+
         return {
-            "status": "REUSED_HASH_VERIFIED",
+            "status": "GENERATED_AND_HASH_VERIFIED",
             "source_commit": source_manifest["commit"],
             "coacd_version": coacd_version,
-            "piece_count": len(expected),
+            "numpy_version": np.__version__,
+            "piece_count": len(written),
             "output": str(OUTPUT),
         }
-
-    OUTPUT.mkdir(parents=True, exist_ok=False)
-    written: list[str] = []
-    for mesh in proxy_manifest["mesh_decompositions"]:
-        source_mesh = source / mesh["source_mesh"]
-        content = source_mesh.read_bytes()
-        triangle_count = struct.unpack_from("<I", content, 80)[0]
-        dtype = np.dtype(
-            [("normal", "<f4", (3,)), ("vertices", "<f4", (3, 3)), ("attribute", "<u2")]
-        )
-        triangles = np.frombuffer(content[84:], dtype=dtype)["vertices"].astype(np.float32)
-        vertices, inverse = np.unique(triangles.reshape(-1, 3), axis=0, return_inverse=True)
-        faces = inverse.reshape(-1, 3).astype(np.uint32)
-        if len(vertices) != mesh["vertices_unique"] or triangle_count != mesh["triangles"]:
-            raise ProvisionError(f"source STL topology differs from collision manifest: {mesh['source_mesh']}")
-        parts = coacd.run_coacd(coacd.Mesh(vertices.astype(np.float32), faces), **settings)
-        if len(parts) != len(mesh["parts"]):
-            raise ProvisionError(
-                f"CoACD piece count differs for {mesh['source_mesh']}: expected {len(mesh['parts'])}, got {len(parts)}"
-            )
-        for index, (piece_vertices, piece_faces) in enumerate(parts):
-            name = f"{Path(mesh['source_mesh']).stem}_coacd_{index:02d}.stl"
-            record = expected[name]
-            data = write_binary_stl(piece_vertices, piece_faces, record["name"])
-            if hashlib.sha256(data).hexdigest() != record["sha256"]:
-                raise ProvisionError(f"generated CoACD piece hash differs from frozen reference: {name}")
-            target = OUTPUT / name
-            with target.open("xb") as stream:
-                stream.write(data)
-            written.append(name)
-    if set(written) != set(expected):
-        raise ProvisionError("generated collision piece set is incomplete")
-    return {
-        "status": "GENERATED_AND_HASH_VERIFIED",
-        "source_commit": source_manifest["commit"],
-        "coacd_version": coacd_version,
-        "numpy_version": np.__version__,
-        "piece_count": len(written),
-        "output": str(OUTPUT),
-    }
+    finally:
+        # A hard-kill orphan is not discovered or reused by a later attempt.
+        if staging.is_symlink():
+            raise ProvisionError("staging path was replaced by a link; refusing cleanup")
+        if staging.exists():
+            if not staging.is_dir():
+                raise ProvisionError("staging path was replaced by a non-directory; refusing cleanup")
+            shutil.rmtree(staging)
 
 
 if __name__ == "__main__":

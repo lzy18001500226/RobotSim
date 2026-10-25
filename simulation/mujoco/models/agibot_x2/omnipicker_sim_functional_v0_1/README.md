@@ -4,7 +4,7 @@ Classification: `SIMULATION_ONLY_UNVERIFIED_EXPERIMENTAL_GEOMETRY_SELECTED_COUPL
 
 Registry consumers must request the versioned ID explicitly; there is no implicit default.
 
-This package is the uniquely selectable, hash-pinned port of PR #90 Candidate B. Its only qualification is an isolated, unloaded, single-actuator 2%-100%-2% open/close cycle in MuJoCo 3.3.6. It is not manufacturer transmission fidelity and is not qualified for a bottle grasp, load transfer, lift, full-X2 integration, or hardware control. The tested cycle did not include the dynamic 0% endpoint.
+This package is the uniquely selectable, hash-pinned port of PR #90 Candidate B. The historical isolated, unloaded, single-actuator 2%-100%-2% cycle in MuJoCo 3.3.6 was run on the original PR #90 MJCF (SHA-256 `32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45`) only. Portable v0.1 (`model.xml` SHA-256 `5e33d30e212ee72271efc3f0a790ebfb46cd31e775c578a10f1a2fb1f33c93e7`) has static-equivalence validation only; portable-model dynamic regression has NOT RUN. Full-X2 dynamic physics, bottle grasp, and manufacturer-equivalent transmission remain unqualified. The historical cycle did not include the dynamic 0% endpoint.
 
 The canonical source is `model.xml`. Its MJCF asset paths are repository-relative and it must be loaded through `simulation/mujoco/models/agibot_x2/loader.py`. Do not load an older Candidate B file by path, infer a default, or fall back to an official fixed-link URDF. The loader requires the exact model ID and verifies every model/source/collision hash before compiling.
 
