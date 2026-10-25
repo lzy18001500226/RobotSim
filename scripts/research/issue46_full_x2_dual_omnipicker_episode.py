@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One bounded full-X2 Option-D dual OmniPicker physical regression, MuJoCo 3.3.6."""
 from __future__ import annotations
-import csv,gzip,hashlib,json,math,os,platform,subprocess,sys,xml.etree.ElementTree as ET
+import argparse,csv,gzip,hashlib,json,math,os,platform,subprocess,sys,uuid,xml.etree.ElementTree as ET
 from collections import deque
 from pathlib import Path
 import numpy as np
@@ -13,10 +13,13 @@ FIX=Path("/home/lzy18001500226/robotsim-issue46-canonical-model-integration-2026
 MODEL=Path("/home/lzy18001500226/robotsim-issue46-full-x2-dual-omnipicker-20261024/simulation/mujoco/models/agibot_x2/omnipicker_sim_functional_v0_1/model.xml")
 VENDOR=Path("/home/lzy18001500226/robotsim-issue46-canonical-model-integration-20261024/reference/AgibotTech/agibot_x2_urdf")
 URDF_ROBOT=VENDOR/"X2_URDF-v1.4.0/X2-Ultra.urdf";URDF_HAND=VENDOR/"X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf"
+MODEL_REPO=Path("/home/lzy18001500226/robotsim-issue46-canonical-model-integration-20261024")
+EXPECTED_MODEL_SHA="5e33d30e212ee72271efc3f0a790ebfb46cd31e775c578a10f1a2fb1f33c93e7"
+CANONICAL_MODEL=MODEL_REPO/"simulation/mujoco/models/agibot_x2/omnipicker_sim_functional_v0_1/model.xml"
 OUT=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/full-x2-omnipicker-physical-grasp-20261024T181317Z")
-RUN_OUT=OUT/"stage2_run01"
+DEFAULT_SCENE=SCENE;DEFAULT_OUT=OUT;RUN_OUT=OUT/"stage2_run01"
 DT=.001;MAX_STEPS=30000;SETTLE_MAX=2000;WINDOW=1000;LIN_MAX=.020;ANG_MAX=.050;ROOT_ERR_MAX=.020;MIMIC_MAX=.003
-SUPPORT_MIN=.80;SUPPORT_MAX=1.20;NECK_BASE=-.007112461424559693;NECK_EXTRA=.0005
+SUPPORT_MIN=.80;SUPPORT_MAX=1.20
 OPEN_STEPS=CLOSE_STEPS=4000;HOLD_STEPS=250;FINAL_HOLD=1000;VIDEO_FPS=20;FRAME_EVERY=50
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
@@ -47,7 +50,7 @@ def collect_contacts(m,d):
   neck=("head_pitch_link" in pair and "torso_link" in pair);table=("canonical_bottle" in pair and "m0_table" in pair);floor=((gn1=="floor" or gn2=="floor") and any(t in n1+n2 for t in ["ankle","foot"]))
   local=np.zeros(6);mujoco.mj_contactForce(m,d,k,local);R=np.asarray(c.frame,dtype=float).reshape(3,3);f2=R.T@local[:3]
   fb=(f2 if b2==bottle else (-f2 if b1==bottle else None))
-  out.append({"geom1":gn1,"geom2":gn2,"body1":n1,"body2":n2,"distance_m":float(c.dist),"position_world_m":np.asarray(c.pos,dtype=float).tolist(),"wrench_contact_frame_N_Nm":local.tolist(),"force_on_geom2_world_N":f2.tolist(),"force_on_bottle_world_N":None if fb is None else fb.tolist(),"allowed":bool(neck or table or floor),"category":"neck_baseline" if neck else ("bottle_table_support" if table else ("foot_floor_support" if floor else "unexpected"))})
+  out.append({"geom1":gn1,"geom2":gn2,"body1":n1,"body2":n2,"distance_m":float(c.dist),"position_world_m":np.asarray(c.pos,dtype=float).tolist(),"wrench_contact_frame_N_Nm":local.tolist(),"force_on_geom2_world_N":f2.tolist(),"force_on_bottle_world_N":None if fb is None else fb.tolist(),"allowed":bool(table or floor),"category":"head_torso" if neck else ("bottle_table_support" if table else ("foot_floor_support" if floor else "unexpected"))})
  return out
 def object_state(m,d,bid):
  v=np.zeros(6);mujoco.mj_objectVelocity(m,d,mujoco.mjtObj.mjOBJ_BODY,bid,v,0);q=np.zeros(4);mujoco.mju_mat2Quat(q,np.asarray(d.xmat[bid]).reshape(-1))
@@ -88,8 +91,21 @@ def asset_hashes(scene):
  return out
 
 def main():
- RUN_OUT.mkdir(parents=True,exist_ok=True);result_path=RUN_OUT/"stage2_result.json"
- if result_path.exists() and "--preflight-only" not in sys.argv:raise SystemExit(f"Refusing repeat episode: {result_path} exists")
+ parser=argparse.ArgumentParser(description=__doc__)
+ parser.add_argument("--scene",type=Path,default=DEFAULT_SCENE)
+ parser.add_argument("--output-root",type=Path,default=DEFAULT_OUT)
+ parser.add_argument("--run-id",default="stage2_run01")
+ parser.add_argument("--attempt-id",default=None)
+ parser.add_argument("--preflight-only",action="store_true")
+ args=parser.parse_args()
+ SCENE=args.scene.resolve();OUT=args.output_root.resolve();RUN_OUT=OUT/args.run_id
+ attempt_id=args.attempt_id or str(uuid.uuid4())
+ if not args.run_id or "/" in args.run_id or args.run_id in (".",".."):raise SystemExit("run-id must be one path component")
+ review_root=Path("/home/lzy18001500226/projects/RobotSim/reviews").resolve()
+ if not OUT.resolve().is_relative_to(review_root):raise SystemExit(f"Output root is outside governed reviews: {OUT}")
+ if not args.preflight_only:
+  OUT.mkdir(parents=True,exist_ok=True)
+  RUN_OUT.mkdir(parents=False,exist_ok=False)
  if mujoco.__version__!="3.3.6":raise SystemExit(f"Expected MuJoCo 3.3.6, got {mujoco.__version__}")
  for p in [SCENE,FIX,MODEL,URDF_ROBOT,URDF_HAND]:
   if not p.is_file():raise SystemExit(f"Missing required input: {p}")
@@ -120,11 +136,12 @@ def main():
  je0,ce0=equalities(m,d)
  if max([abs(x) for x in je0.values()] or [0])>MIMIC_MAX:raise SystemExit(f"Initial mimic residual too large: {je0}")
  if abs(float(m.body_mass[bottle])-.570)>1e-6:raise SystemExit(f"Canonical bottle mass changed: {m.body_mass[bottle]}")
- if "--preflight-only" in sys.argv:
-  vh=git(VENDOR,"rev-parse","HEAD");vd=git(VENDOR,"status","--porcelain");repo=Path("/home/lzy18001500226/robotsim-issue46-full-x2-dual-omnipicker-20261024");rh=git(repo,"rev-parse","HEAD");md=git(repo,"status","--porcelain","--",str(MODEL.relative_to(repo)))
+ if args.preflight_only:
+  vh=git(VENDOR,"rev-parse","HEAD");vd=git(VENDOR,"status","--porcelain");model_head=git(MODEL_REPO,"rev-parse","HEAD");model_dirty=git(MODEL_REPO,"status","--porcelain","--",str(CANONICAL_MODEL.relative_to(MODEL_REPO)));repo=Path(__file__).resolve().parents[2];rh=git(repo,"rev-parse","HEAD");integration_dirty=git(repo,"status","--porcelain")
   if vh!="575cc6b988f976c23550e0db85aa1e5475d3652d" or vd:raise SystemExit(f"Vendor source identity/cleanliness failed: {vh}, {vd}")
-  if rh!="5e2ed1dcbfac2e357fd19191733b377034ea09f5" or md:raise SystemExit(f"PR92 model baseline failed: {rh}, {md}")
-  print(json.dumps({"preflight_only":True,"physics_steps":0,"MuJoCo":mujoco.__version__,"scene_sha256":sha(SCENE),"canonical_model_sha256":sha(MODEL),"vendor_head":vh,"initial_contacts":c0,"joint_eq_residuals_rad":je0,"connect_eq_residuals_m":ce0,"Option_D_wrist_collision_meshes":d_mesh,"follower_actuators":followers,"bottle_mass_kg":float(m.body_mass[bottle])},indent=2,allow_nan=False));return
+  if model_head!="5e2ed1dcbfac2e357fd19191733b377034ea09f5" or model_dirty or sha(MODEL)!=EXPECTED_MODEL_SHA or sha(CANONICAL_MODEL)!=EXPECTED_MODEL_SHA:raise SystemExit(f"PR92 model baseline failed: head={model_head}, dirty={model_dirty}, sha={sha(MODEL)}")
+  if integration_dirty:raise SystemExit(f"Integration worktree must be clean before preflight or dynamics: {integration_dirty}")
+  print(json.dumps({"preflight_only":True,"physics_steps":0,"MuJoCo":mujoco.__version__,"scene_sha256":sha(SCENE),"canonical_model_sha256":sha(CANONICAL_MODEL),"vendor_head":vh,"initial_contacts":c0,"joint_eq_residuals_rad":je0,"connect_eq_residuals_m":ce0,"Option_D_wrist_collision_meshes":d_mesh,"follower_actuators":followers,"bottle_mass_kg":float(m.body_mass[bottle])},indent=2,allow_nan=False));return
  # Renderer and MP4 encoder are fully initialized before the only authorized physics episode.
  os.environ.setdefault("MUJOCO_GL","egl")
  renderer=mujoco.Renderer(m,height=480,width=480)
@@ -151,29 +168,30 @@ def main():
  joint_headers=qheaders+vheaders
  statef=gzip.open(RUN_OUT/"joint_actuator_trace.csv.gz","wt",newline="",encoding="utf8");sw=csv.writer(statef);sw.writerow(["step","time_s","stage"]+joint_headers+[f"ctrl_{n}" for n in act_names]+[f"force_{n}" for n in act_names])
  contactf=gzip.open(RUN_OUT/"contact_physics_trace.jsonl.gz","wt",encoding="utf8")
- bottlef=gzip.open(RUN_OUT/"bottle_support_trace.csv.gz","wt",newline="",encoding="utf8");bw=csv.writer(bottlef);bw.writerow(["step","time_s","stage","com_x_m","com_y_m","com_z_m","linear_speed_m_s","angular_speed_rad_s","table_contact_count","table_support_on_bottle_z_N","hand_support_on_bottle_z_N","neck_contact_min_m","max_joint_eq_resid_rad","max_connect_eq_resid_m","max_root_tracking_error_rad","source_velocity_ratio"])
+ bottlef=gzip.open(RUN_OUT/"bottle_support_trace.csv.gz","wt",newline="",encoding="utf8");bw=csv.writer(bottlef);bw.writerow(["step","time_s","stage","com_x_m","com_y_m","com_z_m","linear_speed_m_s","angular_speed_rad_s","table_contact_count","table_support_on_bottle_z_N","hand_support_on_bottle_z_N","head_torso_contact_min_m","max_joint_eq_resid_rad","max_connect_eq_resid_m","max_root_tracking_error_rad","source_velocity_ratio"])
  assets=asset_hashes(SCENE);vend_head=git(VENDOR,"rev-parse","HEAD")
  if vend_head!="575cc6b988f976c23550e0db85aa1e5475d3652d":raise SystemExit(f"Pinned vendor revision mismatch: {vend_head}")
  vendor_dirty=git(VENDOR,"status","--porcelain")
  if vendor_dirty:raise SystemExit(f"Pinned vendor checkout is dirty: {vendor_dirty}")
- repo=Path("/home/lzy18001500226/robotsim-issue46-full-x2-dual-omnipicker-20261024");repo_head=git(repo,"rev-parse","HEAD")
- model_dirty=git(repo,"status","--porcelain","--",str(MODEL.relative_to(repo)))
- if repo_head!="5e2ed1dcbfac2e357fd19191733b377034ea09f5" or model_dirty:raise SystemExit(f"Integration baseline/model mismatch: HEAD={repo_head}, model_status={model_dirty}")
- manifest={"schema":"robotsim.issue46.full_x2_dual_omnipicker_stage2_manifest.v1","attempt_id":"a57b153e-aa31-43f0-a598-4a02457c17b1","mujoco_version":mujoco.__version__,"python":sys.version,"platform":platform.platform(),"scene_path":str(SCENE),"scene_sha256":sha(SCENE),"canonical_model_path":str(MODEL),"canonical_model_sha256":sha(MODEL),"pinned_vendor_head":vend_head,"vendor_clean":not bool(vendor_dirty),"vendor_expected":"575cc6b988f976c23550e0db85aa1e5475d3652d","integration_worktree_head":repo_head,"canonical_model_worktree_clean":not bool(model_dirty),"robot_urdf_sha256":sha(URDF_ROBOT),"hand_urdf_sha256":sha(URDF_HAND),"fixture_sha256":sha(FIX),"runner_sha256":sha(Path(__file__).resolve()),"assets":assets,"option_d_right_wrist_collision_meshes":d_mesh,"fixed_base_world_pos_m":np.asarray(m.body_pos[pelvis]).tolist(),"model_counts":{"nq":m.nq,"nv":m.nv,"nu":m.nu,"neq":m.neq,"ngeom":m.ngeom,"nbody":m.nbody},"timestep_s":float(m.opt.timestep),"physics_budget":{"stage2_max":MAX_STEPS,"planned_max":28250,"stage3_5_max":50000,"combined_max":80000,"previous_steps":0},"initial_contacts":c0,"initial_joint_eq_residual_rad":je0,"initial_connect_eq_residual_m":ce0,"controller":{"arm_kp_kd":[150,22],"body_kp_kd":[250,30],"motor_ctrlrange_unchanged":True,"native_gripper_actuators_unchanged":True,"gripper_force_cap_Nm":.5,"trajectory":"quintic 2%-100%-2%, 4000 steps per ramp"},"limits_note":"URDF gripper velocity/effort fields are zero placeholders and are reported as unspecified; positive source velocity limits and all position ranges are enforced."}
+ repo=Path(__file__).resolve().parents[2];repo_head=git(repo,"rev-parse","HEAD");integration_dirty=git(repo,"status","--porcelain")
+ model_head=git(MODEL_REPO,"rev-parse","HEAD");model_dirty=git(MODEL_REPO,"status","--porcelain","--",str(CANONICAL_MODEL.relative_to(MODEL_REPO)))
+ if integration_dirty:raise SystemExit(f"Integration worktree is not clean: {integration_dirty}")
+ if model_head!="5e2ed1dcbfac2e357fd19191733b377034ea09f5" or model_dirty or sha(MODEL)!=EXPECTED_MODEL_SHA or sha(CANONICAL_MODEL)!=EXPECTED_MODEL_SHA:raise SystemExit(f"Canonical PR92 model mismatch: head={model_head}, dirty={model_dirty}, sha={sha(MODEL)}")
+ manifest={"schema":"robotsim.issue46.full_x2_dual_omnipicker_stage2_manifest.v1","attempt_id":attempt_id,"mujoco_version":mujoco.__version__,"python":sys.version,"platform":platform.platform(),"scene_path":str(SCENE),"scene_sha256":sha(SCENE),"canonical_model_path":str(CANONICAL_MODEL),"canonical_model_sha256":sha(CANONICAL_MODEL),"integration_copy_path":str(MODEL),"integration_copy_sha256":sha(MODEL),"pinned_vendor_head":vend_head,"vendor_clean":not bool(vendor_dirty),"vendor_expected":"575cc6b988f976c23550e0db85aa1e5475d3652d","integration_worktree_head":repo_head,"canonical_model_worktree_clean":not bool(model_dirty),"robot_urdf_sha256":sha(URDF_ROBOT),"hand_urdf_sha256":sha(URDF_HAND),"fixture_sha256":sha(FIX),"runner_sha256":sha(Path(__file__).resolve()),"assets":assets,"option_d_right_wrist_collision_meshes":d_mesh,"fixed_base_world_pos_m":np.asarray(m.body_pos[pelvis]).tolist(),"model_counts":{"nq":m.nq,"nv":m.nv,"nu":m.nu,"neq":m.neq,"ngeom":m.ngeom,"nbody":m.nbody},"timestep_s":float(m.opt.timestep),"physics_budget":{"stage2_max":MAX_STEPS,"planned_max":28250,"stage4_max":40000,"combined_max":70000,"previous_steps":0},"initial_contacts":c0,"initial_joint_eq_residual_rad":je0,"initial_connect_eq_residual_m":ce0,"controller":{"arm_kp_kd":[150,22],"body_kp_kd":[250,30],"motor_ctrlrange_unchanged":True,"native_gripper_actuators_unchanged":True,"gripper_force_cap_Nm":.5,"trajectory":"quintic 2%-100%-2%, 4000 steps per ramp"},"limits_note":"URDF gripper velocity/effort fields are zero placeholders and are reported as unspecified; positive source velocity limits and all position ranges are enforced."}
  (RUN_OUT/"stage2_run_manifest.json").write_text(json.dumps(manifest,indent=2,allow_nan=False)+"\n")
  physics_steps=0;stage="INITIAL_SETTLE";first_failure=None;warn0=np.asarray(d.warning.number,dtype=int).copy();initial_com=np.asarray(d.xipos[bottle],dtype=float).copy();mass=float(m.body_mass[bottle]);weight=mass*9.81
  if abs(mass-.570)>1e-6:raise SystemExit(f"Bottle mass mismatch {mass}")
  claw={"left":float(r2["right_claw_joint_rad"]),"right":float(r2["right_claw_joint_rad"])};flags=deque(maxlen=WINDOW);stable_window=None
- metrics={"max_bottle_com_rise_m":0.0,"max_bottle_linear_speed_m_s":0.0,"max_bottle_angular_speed_rad_s":0.0,"max_joint_eq_residual_rad":0.0,"max_connect_eq_residual_m":0.0,"max_root_tracking_error_rad":0.0,"max_abs_joint_qvel_rad_s":{},"max_abs_actuator_force":{},"max_source_velocity_ratio":{"ratio":0.0,"joint":None,"qvel":0.0,"limit":None},"min_neck_contact_distance_m":None,"table_support_min_N":None,"table_support_max_N":None}
+ metrics={"max_bottle_com_rise_m":0.0,"max_bottle_linear_speed_m_s":0.0,"max_bottle_angular_speed_rad_s":0.0,"max_joint_eq_residual_rad":0.0,"max_connect_eq_residual_m":0.0,"max_root_tracking_error_rad":0.0,"max_abs_joint_qvel_rad_s":{},"max_abs_actuator_force":{},"max_source_velocity_ratio":{"ratio":0.0,"joint":None,"qvel":0.0,"limit":None},"min_head_torso_contact_distance_m":None,"table_support_min_N":None,"table_support_max_N":None}
  phases={"initial_settle":"NOT RUN","left_gripper_dynamic":"NOT RUN","right_gripper_dynamic":"NOT RUN","dual_gripper_dynamic":"NOT RUN"}
  def sample(step,stage,draw=True):
   nonlocal first_failure
-  cs=collect_contacts(m,d);bad=[c for c in cs if not c["allowed"]]
-  if bad and first_failure is None:first_failure={"step":step,"time_s":float(d.time),"stage":stage,"gate":"UNEXPECTED_ACTIVE_CONTACT","contacts":bad}
-  neck=[c["distance_m"] for c in cs if c["category"]=="neck_baseline"];nmin=min(neck) if neck else None
-  if nmin is not None:
-   metrics["min_neck_contact_distance_m"]=nmin if metrics["min_neck_contact_distance_m"] is None else min(metrics["min_neck_contact_distance_m"],nmin)
-   if nmin<NECK_BASE-NECK_EXTRA and first_failure is None:first_failure={"step":step,"time_s":float(d.time),"stage":stage,"gate":"NECK_BASELINE_PENETRATION_WORSENED","distance_m":nmin,"baseline_m":NECK_BASE}
+  cs=collect_contacts(m,d);head_torso=[c for c in cs if c["category"]=="head_torso"];bad=[c for c in cs if not c["allowed"]]
+  nmin=min([c["distance_m"] for c in head_torso] or [float("inf")])
+  if head_torso:
+   metrics["min_head_torso_contact_distance_m"]=nmin if metrics["min_head_torso_contact_distance_m"] is None else min(metrics["min_head_torso_contact_distance_m"],nmin)
+   if first_failure is None:first_failure={"step":step,"time_s":float(d.time),"stage":stage,"gate":"HEAD_TORSO_ACTIVE_CONTACT","contacts":head_torso}
+  elif bad and first_failure is None:first_failure={"step":step,"time_s":float(d.time),"stage":stage,"gate":"UNEXPECTED_ACTIVE_CONTACT","contacts":bad}
   support=np.zeros(3);hand=np.zeros(3);table_count=0
   for c in cs:
    f=c["force_on_bottle_world_N"]
@@ -208,7 +226,7 @@ def main():
   for j in range(m.njnt):
    jt=int(m.jnt_type[j]);nq=7 if jt==int(mujoco.mjtJoint.mjJNT_FREE) else (4 if jt==int(mujoco.mjtJoint.mjJNT_BALL) else 1);nv=6 if jt==int(mujoco.mjtJoint.mjJNT_FREE) else (3 if jt==int(mujoco.mjtJoint.mjJNT_BALL) else 1);qa=int(m.jnt_qposadr[j]);va=int(m.jnt_dofadr[j]);qflat.extend(d.qpos[qa:qa+nq]);vflat.extend(d.qvel[va:va+nv])
   sw.writerow([step,float(d.time),stage]+qflat+vflat+list(d.ctrl)+list(d.actuator_force))
-  contactf.write(json.dumps({"step":step,"time_s":float(d.time),"stage":stage,"contacts":cs,"table_support_on_bottle_z_N":fz,"table_contact_count":table_count,"hand_support_on_bottle_world_N":hand.tolist(),"bottle":bs,"neck_contact_min_m":nmin,"joint_equalities_rad":je,"connect_equalities_m":ce,"first_failure":first_failure},allow_nan=False)+"\n")
+  contactf.write(json.dumps({"step":step,"time_s":float(d.time),"stage":stage,"contacts":cs,"table_support_on_bottle_z_N":fz,"table_contact_count":table_count,"hand_support_on_bottle_world_N":hand.tolist(),"bottle":bs,"head_torso_contact_min_m":nmin,"joint_equalities_rad":je,"connect_equalities_m":ce,"first_failure":first_failure},allow_nan=False)+"\n")
   bw.writerow([step,float(d.time),stage,*bs["com_world_m"],bs["linear_speed_m_s"],bs["angular_speed_rad_s"],table_count,fz,float(hand[2]),"" if nmin is None else nmin,jmax,cmax,rerr,worst["ratio"]])
   if draw and step>0 and step%FRAME_EVERY==0:vgen.send(frame(stage))
   if step>0 and step%2500==0:print(f"step={step} t={d.time:.3f} stage={stage} bottle_v={bs['linear_speed_m_s']:.4f} bottle_w={bs['angular_speed_rad_s']:.4f} tableFz={fz:.3f} rooterr={rerr:.4f} mimic={jmax:.2g}",flush=True)
@@ -243,7 +261,7 @@ def main():
  q2=float(r2["right_claw_joint_rad"]);q100=float(r100["right_claw_joint_rad"]);claw={"left":q2,"right":q2}
  flags=deque(maxlen=WINDOW);window=None;first_failure=None
  phases={"initial_settle":"NOT RUN","left_gripper_dynamic":"NOT RUN","right_gripper_dynamic":"NOT RUN","dual_gripper_dynamic":"NOT RUN"}
- metrics={"max_bottle_com_rise_m":0.0,"max_bottle_linear_speed_m_s":0.0,"max_bottle_angular_speed_rad_s":0.0,"max_joint_eq_residual_rad":0.0,"max_connect_eq_residual_m":0.0,"max_root_tracking_error_rad":0.0,"max_abs_joint_qvel_rad_s":{},"max_abs_actuator_force":{},"max_source_velocity_ratio":{"ratio":0.0,"joint":None,"qvel":0.0,"limit":None},"min_neck_contact_distance_m":None,"table_support_min_N":None,"table_support_max_N":None}
+ metrics={"max_bottle_com_rise_m":0.0,"max_bottle_linear_speed_m_s":0.0,"max_bottle_angular_speed_rad_s":0.0,"max_joint_eq_residual_rad":0.0,"max_connect_eq_residual_m":0.0,"max_root_tracking_error_rad":0.0,"max_abs_joint_qvel_rad_s":{},"max_abs_actuator_force":{},"max_source_velocity_ratio":{"ratio":0.0,"joint":None,"qvel":0.0,"limit":None},"min_head_torso_contact_distance_m":None,"table_support_min_N":None,"table_support_max_N":None}
  # Record the initialized state; it is not a physics step and occurs before the sole episode starts.
  sample(0,"INITIAL",False)
  for local in range(1,SETTLE_MAX+1):
@@ -260,7 +278,7 @@ def main():
  else:
   phases["initial_settle"]="FAIL"
  if phases["initial_settle"]=="PASS":
-  for side,lab in [("left","LEFT_GRIPPER"),("right","RIGHT_GRIPPER")]:
+  for side,lab in [("right","RIGHT_GRIPPER"),("left","LEFT_GRIPPER")]:
    ok=ramp_one(lab+"_OPEN",side,q2,q100,OPEN_STEPS) and hold(lab+"_OPEN_HOLD",HOLD_STEPS)
    if ok:ok=ramp_one(lab+"_CLOSE",side,q100,q2,CLOSE_STEPS) and hold(lab+"_CLOSED_HOLD",HOLD_STEPS)
    phases["left_gripper_dynamic" if side=="left" else "right_gripper_dynamic"]="PASS" if ok else "FAIL"
@@ -278,7 +296,9 @@ def main():
    try:f.close()
    except Exception:pass
  final_bottle=object_state(m,d,bottle);final_contacts=collect_contacts(m,d);final_je,final_ce=equalities(m,d)
- report={"schema":"robotsim.issue46.full_x2_dual_omnipicker_stage2_result.v1","attempt_id":"a57b153e-aa31-43f0-a598-4a02457c17b1","run_status":"FAIL" if first_failure else "PASS","phase_results":phases,"first_failure":first_failure,"physics_steps":physics_steps,"physics_time_s":float(d.time),"max_steps":MAX_STEPS,"initial_settle_window":window,"full_body_scope":"fixed-base diagnostic; no balance/locomotion claim","option_d":"D_RIGHT_EXT_COLLISION_DIAGNOSTIC","bottle_mass_kg":mass,"bottle_weight_N":weight,"final_bottle_state":final_bottle,"final_contacts":final_contacts,"final_joint_equality_residual_rad":final_je,"final_connect_equality_residual_m":final_ce,"metrics":metrics,"video":{"path":str(video),"windows_unc":"\\\\wsl.localhost\\Ubuntu-22.04\\home\\lzy18001500226\\projects\\RobotSim\\reviews\\issue-46\\full-x2-omnipicker-physical-grasp-20261024T181317Z\\stage2_run01\\full_x2_dual_omnipicker_stage2_actual_mujoco.mp4","exists":video.is_file(),"size_bytes":video.stat().st_size if video.is_file() else 0,"fps":VIDEO_FPS,"sample_every_steps":FRAME_EVERY,"render":"full X2/table/bottle left pane; active gripper close-up right pane; sampled from post-mj_step state"},"safety":{"bottle_qpos_writes_after_first_step":0,"bottle_equality_or_weld":False,"mocap_carry":False,"hidden_support":False,"follower_actuators":followers,"collision_suppression":False,"robot_root_fixed":True,"motor_ctrlrange_unchanged":True,"gripper_native_actuator_and_force_cap_unchanged":True},"step_budget":{"this_episode":physics_steps,"stage2_max":MAX_STEPS,"stage3_5_max":50000,"combined_max":80000,"retries":0},"trace_files":["joint_actuator_trace.csv.gz","contact_physics_trace.jsonl.gz","bottle_support_trace.csv.gz"],"reproduction_command":"cd /home/lzy18001500226/robotsim-issue46-full-x2-dual-omnipicker-20261024 && source /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/activate && MUJOCO_GL=egl python scripts/research/issue46_full_x2_dual_omnipicker_episode.py","human_visual_review":"PENDING"}
+ report={"schema":"robotsim.issue46.full_x2_dual_omnipicker_stage2_result.v1","attempt_id":attempt_id,"run_status":"FAIL" if first_failure else "PASS","phase_results":phases,"first_failure":first_failure,"physics_steps":physics_steps,"physics_time_s":float(d.time),"max_steps":MAX_STEPS,"initial_settle_window":window,"full_body_scope":"fixed-base diagnostic; no balance/locomotion claim","option_d":"D_RIGHT_EXT_COLLISION_DIAGNOSTIC","bottle_mass_kg":mass,"bottle_weight_N":weight,"final_bottle_state":final_bottle,"final_contacts":final_contacts,"final_joint_equality_residual_rad":final_je,"final_connect_equality_residual_m":final_ce,"metrics":metrics,"video":{"path":str(video),"windows_unc":"\\\\wsl.localhost\\Ubuntu-22.04\\home\\lzy18001500226\\projects\\RobotSim\\reviews\\issue-46\\full-x2-omnipicker-physical-grasp-20261024T181317Z\\stage2_run01\\full_x2_dual_omnipicker_stage2_actual_mujoco.mp4","exists":video.is_file(),"size_bytes":video.stat().st_size if video.is_file() else 0,"fps":VIDEO_FPS,"sample_every_steps":FRAME_EVERY,"render":"full X2/table/bottle left pane; active gripper close-up right pane; sampled from post-mj_step state"},"safety":{"bottle_qpos_writes_after_first_step":0,"bottle_equality_or_weld":False,"mocap_carry":False,"hidden_support":False,"follower_actuators":followers,"collision_suppression":False,"robot_root_fixed":True,"motor_ctrlrange_unchanged":True,"gripper_native_actuator_and_force_cap_unchanged":True},"step_budget":{"this_episode":physics_steps,"stage2_max":MAX_STEPS,"stage4_max":40000,"combined_max":70000,"retries":0},"trace_files":["joint_actuator_trace.csv.gz","contact_physics_trace.jsonl.gz","bottle_support_trace.csv.gz"],"reproduction_command":"cd /home/lzy18001500226/robotsim-issue46-full-x2-dual-omnipicker-20261024 && source /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/activate && MUJOCO_GL=egl python scripts/research/issue46_full_x2_dual_omnipicker_episode.py","human_visual_review":"PENDING"}
+ report["video"]["windows_unc"]=chr(92)*2+"wsl.localhost"+chr(92)+"Ubuntu-22.04"+str(video).replace("/",chr(92))
+ report["reproduction_command"]=f"MUJOCO_GL=egl python {Path(__file__).resolve()} --scene {SCENE} --output-root {OUT} --run-id {args.run_id} --attempt-id {attempt_id}"
  (RUN_OUT/"stage2_result.json").write_text(json.dumps(report,indent=2,allow_nan=False)+"\n")
  (RUN_OUT/"STAGE2_REPORT.md").write_text("# Full-X2 Dual OmniPicker Stage 2\n\nStatus: **"+report["run_status"]+"**\n\nPhysics steps: "+str(physics_steps)+"\n\nFirst failure: `"+str(first_failure)+"`\n\nActual MuJoCo MP4: `"+str(video)+"`\n\nThis is fixed-base dynamics only. The video uses post-`mj_step` frames.\n")
  print(json.dumps({"run_status":report["run_status"],"phase_results":phases,"physics_steps":physics_steps,"first_failure":first_failure,"settle_window":window,"video":report["video"],"metrics":metrics},indent=2,allow_nan=False))
