@@ -97,6 +97,51 @@ def classify_set_mc_action_response(
     }
 
 
+def activation_probe_abort_is_expected(result: Mapping[str, Any] | None) -> bool:
+    """Only the exact synchronized-handshake abort is a successful probe termination."""
+    if not isinstance(result, Mapping) or result.get("activation_probe_only") is not True:
+        return False
+    activation = result.get("activation_probe")
+    return (
+        result.get("fault") == "activation_probe_complete_abort_to_stand"
+        and isinstance(activation, Mapping)
+        and activation.get("mode_source_confirmed") is True
+        and activation.get("terminal_reason")
+        == "fresh synchronized LOCO/source handshake observed; aborting probe to STAND"
+    )
+
+
+def activation_probe_safe_stop_passes(
+    probe_result: Mapping[str, Any] | None,
+    physical_stop_gate: Mapping[str, Any] | None,
+    stand_confirmation: Mapping[str, Any] | None,
+    final_lifecycle: Mapping[str, Any] | None,
+) -> bool:
+    """Require the intended probe abort plus every independent stop/rearm gate."""
+    if (
+        not activation_probe_abort_is_expected(probe_result)
+        or not isinstance(physical_stop_gate, Mapping)
+        or physical_stop_gate.get("status") != "PASS"
+        or not isinstance(stand_confirmation, Mapping)
+        or stand_confirmation.get("stand_confirmed") is not True
+        or not isinstance(probe_result.get("after_zero_stop_action"), Mapping)
+        or probe_result["after_zero_stop_action"].get("success") is not True
+        or probe_result.get("post_stop_fault") is not None
+        or not isinstance(final_lifecycle, Mapping)
+        or final_lifecycle.get("state") != STAND_VERIFIED
+    ):
+        return False
+    try:
+        nonzero_count = int(probe_result.get("nonzero_publish_calls_returned", 0) or 0)
+        zero_result = probe_result.get("zero_stop")
+        zero_count = int(zero_result.get("zero_publish_calls_returned", 0) or 0) if isinstance(
+            zero_result, Mapping
+        ) else 0
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return 1 <= nonzero_count <= 25 and zero_count > 0
+
+
 def classify_ld_transition(
     set_result: Mapping[str, Any] | None,
     mode_observations: Sequence[Mapping[str, Any]],

@@ -94,6 +94,8 @@ from issue80_m1_mode_logic import (
     ACTIVATION_PROBE_DURATION_S,
     ACTIVATION_PROBE_FORWARD_M_S,
     MCLocomotionAbortLifecycle,
+    activation_probe_abort_is_expected,
+    activation_probe_safe_stop_passes,
     classify_locomotion_activation_readbacks,
     classify_set_mc_action_response,
     run_zero_only_locomotion_activation_observation,
@@ -5524,19 +5526,12 @@ class FocusedM1Diagnostic(Node):
                     probe_result.get("activation_lifecycle") if isinstance(probe_result, Mapping) else None
                 )
                 mode_source_activation_pass = probe.get("mode_source_confirmed") is True
-                physical_stop_pass = (
-                    isinstance(stand_gate, Mapping)
-                    and stand_gate.get("status") == "PASS"
-                    and isinstance(stand_confirmation, Mapping)
-                    and stand_confirmation.get("stand_confirmed") is True
-                    and isinstance(probe_result.get("after_zero_stop_action"), Mapping)
-                    and probe_result["after_zero_stop_action"].get("success") is True
-                    and probe_result.get("post_stop_fault") is None
-                    and isinstance(final_lifecycle, Mapping)
-                    and final_lifecycle.get("state") == "STAND_VERIFIED"
-                    and int(probe_result.get("nonzero_publish_calls_returned", 0) or 0) <= 25
-                    and isinstance(probe_result.get("zero_stop"), Mapping)
-                    and int(probe_result["zero_stop"].get("zero_publish_calls_returned", 0) or 0) > 0
+                intentional_abort_confirmed = activation_probe_abort_is_expected(probe_result)
+                physical_stop_pass = activation_probe_safe_stop_passes(
+                    probe_result,
+                    stand_gate if isinstance(stand_gate, Mapping) else None,
+                    stand_confirmation if isinstance(stand_confirmation, Mapping) else None,
+                    final_lifecycle if isinstance(final_lifecycle, Mapping) else None,
                 )
                 late_locomotion = bool(
                     isinstance(final_lifecycle, Mapping)
@@ -5548,6 +5543,7 @@ class FocusedM1Diagnostic(Node):
                     "preflight": activation_gate,
                     "probe": probe_result,
                     "mode_source_activation_pass": mode_source_activation_pass,
+                    "intentional_abort_confirmed": intentional_abort_confirmed,
                     "safe_stand_and_physical_stop_pass": physical_stop_pass,
                     "late_locomotion_after_abort": late_locomotion,
                     "route_motion_authorized": False,

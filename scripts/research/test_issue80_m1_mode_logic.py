@@ -19,6 +19,8 @@ from issue80_m1_mode_logic import (
     STAND_VERIFIED,
     ZERO_AND_STOP_REQUESTED,
     MCLocomotionAbortLifecycle,
+    activation_probe_abort_is_expected,
+    activation_probe_safe_stop_passes,
     assess_input_source_add,
     classify_locomotion_activation_readbacks,
     classify_ld_transition,
@@ -191,6 +193,76 @@ class ActionResponseAndTransitionTests(unittest.TestCase):
 
 
 class ActivationAbortLifecycleTests(unittest.TestCase):
+    def test_probe_pass_requires_exact_intentional_abort_marker_and_fresh_mode_confirmation(self) -> None:
+        expected = {
+            "activation_probe_only": True,
+            "fault": "activation_probe_complete_abort_to_stand",
+            "activation_probe": {
+                "mode_source_confirmed": True,
+                "terminal_reason": "fresh synchronized LOCO/source handshake observed; aborting probe to STAND",
+            },
+        }
+        self.assertTrue(activation_probe_abort_is_expected(expected))
+
+        safety_fault = {
+            **expected,
+            "fault": "measured_root_planar_speed_limit:0.250000>0.200000",
+        }
+        self.assertFalse(activation_probe_abort_is_expected(safety_fault))
+
+        wrong_terminal_reason = {
+            **expected,
+            "activation_probe": {
+                "mode_source_confirmed": True,
+                "terminal_reason": "fall_detected_during_activation",
+            },
+        }
+        self.assertFalse(activation_probe_abort_is_expected(wrong_terminal_reason))
+
+        unconfirmed_mode = {
+            **expected,
+            "activation_probe": {
+                "mode_source_confirmed": False,
+                "terminal_reason": "fresh synchronized LOCO/source handshake observed; aborting probe to STAND",
+            },
+        }
+        self.assertFalse(activation_probe_abort_is_expected(unconfirmed_mode))
+
+    def test_probe_stop_pass_requires_intentional_abort_stand_and_physical_pass(self) -> None:
+        probe_result = {
+            "activation_probe_only": True,
+            "fault": "activation_probe_complete_abort_to_stand",
+            "activation_probe": {
+                "mode_source_confirmed": True,
+                "terminal_reason": "fresh synchronized LOCO/source handshake observed; aborting probe to STAND",
+            },
+            "after_zero_stop_action": {"success": True},
+            "post_stop_fault": None,
+            "nonzero_publish_calls_returned": 20,
+            "zero_stop": {"zero_publish_calls_returned": 50},
+        }
+        physical_gate = {"status": "PASS"}
+        stand_confirmation = {"stand_confirmed": True}
+        lifecycle = {"state": STAND_VERIFIED}
+        self.assertTrue(activation_probe_safe_stop_passes(
+            probe_result, physical_gate, stand_confirmation, lifecycle,
+        ))
+
+        safety_abort = {**probe_result, "fault": "measured_root_planar_speed_limit"}
+        self.assertFalse(activation_probe_safe_stop_passes(
+            safety_abort, physical_gate, stand_confirmation, lifecycle,
+        ))
+        no_nonzero_probe = {**probe_result, "nonzero_publish_calls_returned": 0}
+        self.assertFalse(activation_probe_safe_stop_passes(
+            no_nonzero_probe, physical_gate, stand_confirmation, lifecycle,
+        ))
+        self.assertFalse(activation_probe_safe_stop_passes(
+            probe_result, {"status": "FAIL"}, stand_confirmation, lifecycle,
+        ))
+        self.assertFalse(activation_probe_safe_stop_passes(
+            probe_result, physical_gate, {"stand_confirmed": False}, lifecycle,
+        ))
+
     def test_activation_probe_is_separate_and_fixed_to_the_supported_startup_envelope(self) -> None:
         lifecycle = MCLocomotionAbortLifecycle()
         lifecycle.verify_initial_stand(confirmed=True, now_s=1.0)
