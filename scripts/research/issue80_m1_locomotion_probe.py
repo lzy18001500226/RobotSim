@@ -113,6 +113,7 @@ from issue80_route_motion_bridge import (
     CURVED_PATH_MAX_WINDOWS,
     CURVED_PATH_POSITION_TOLERANCE_M,
     CURVED_PATH_STOP_RESERVE_M,
+    MAX_POSE_AGE_S,
     RouteMotionBridge, RouteMotionBridgeError, RuntimeReadiness,
     build_short_right_corner_route, build_shallow_curved_path_reference,
     build_curved_waypoint_route, curved_path_metrics, measured_m1_nonzero_window_s,
@@ -123,6 +124,7 @@ from issue80_route_motion_bridge import (
     waypoint_b_cross_track_guard_reached,
     TransitSteeringGate,
     active_locomotion_source_readbacks_valid,
+    classify_route_odom_stamp,
     fresh_stand_mode_readback_valid,
     fresh_input_source_readback_valid,
     validate_curved_path_cli_profile,
@@ -2965,6 +2967,9 @@ class FocusedM1Diagnostic(Node):
                 "corridor_forward_limit_m": WAYPOINT_B_CORRIDOR_MAX_FORWARD_M,
                 "maximum_abs_cross_track_m": 0.0,
                 "maximum_abs_yaw_delta_rad": 0.0,
+                "duplicate_odom_stamp_sample_count": 0,
+                "first_duplicate_odom_stamp_sample": None,
+                "last_duplicate_odom_stamp_sample": None,
                 "last_sample": None,
                 "samples": [],
                 "guard_triggers": [],
@@ -2975,11 +2980,13 @@ class FocusedM1Diagnostic(Node):
                 "verified_wall_clock_step_rebases": 0,
             }
             latest_transit_snapshot: Mapping[str, Any] | None = None
+            last_route_executor_odom_stamp_ns = start_pose.stamp_ns
             window_control: dict[str, Any] = {}
             active_window_gate = TransitSteeringGate(warmup_s=ROUTE_STEERING_WARMUP_S)
 
             def transit_termination(snapshot: Mapping[str, Any]) -> bool:
                 nonlocal route_fault, route_stop_reason, latest_transit_snapshot
+                nonlocal last_route_executor_odom_stamp_ns
                 latest_transit_snapshot = snapshot
                 if window_control.get("feedback_fault"):
                     route_fault = str(window_control["feedback_fault"])
@@ -3006,6 +3013,22 @@ class FocusedM1Diagnostic(Node):
                 safety_provider.update(snapshot, active.waypoint_id)
                 pose = pose_provider.pose
                 assert pose is not None
+                sample_time = float(snapshot.get("sample_monotonic_s", time.monotonic()))
+                pose_receive_age_s = sample_time - pose.received_steady_s
+                odom_stamp_action = classify_route_odom_stamp(
+                    previous_stamp_ns=last_route_executor_odom_stamp_ns,
+                    current_stamp_ns=pose.stamp_ns,
+                    receive_age_s=pose_receive_age_s,
+                    maximum_receive_age_s=MAX_POSE_AGE_S,
+                )
+                if odom_stamp_action == "STALE_OR_INVALID":
+                    route_fault = "transit_pose:ODOM_SOURCE_SAMPLE_STALE_OR_INVALID"
+                    return True
+                if odom_stamp_action != "DUPLICATE":
+                    last_route_executor_odom_stamp_ns = pose.stamp_ns
+                window_control["odom_stamp_action"] = odom_stamp_action
+                window_control["odom_stamp_ns"] = pose.stamp_ns
+                window_control["odom_receive_age_s"] = pose_receive_age_s
                 dx = pose.x_m - start_pose.x_m
                 dy = pose.y_m - start_pose.y_m
                 forward_projection_m = dx * math.cos(start_pose.yaw_rad) + dy * math.sin(start_pose.yaw_rad)
@@ -3035,7 +3058,10 @@ class FocusedM1Diagnostic(Node):
                     float(route_progress_monitor["maximum_abs_yaw_delta_rad"]), abs(yaw_delta_rad)
                 )
                 route_progress_monitor["last_sample"] = {
-                    "sample_monotonic_s": snapshot.get("sample_monotonic_s"),
+                    "sample_monotonic_s": sample_time,
+                    "odom_stamp_ns": pose.stamp_ns,
+                    "odom_stamp_action": odom_stamp_action,
+                    "odom_receive_age_s": pose_receive_age_s,
                     "forward_projection_m": forward_projection_m,
                     "cross_track_m": cross_track_m,
                     "cross_track_error_m": cross_track_guard_m,
@@ -3081,7 +3107,6 @@ class FocusedM1Diagnostic(Node):
                     route_events.append(guard_event)
                     return True
 
-                sample_time = float(snapshot.get("sample_monotonic_s", time.monotonic()))
                 handshake = same_sample_handshake(snapshot)
                 active_readbacks_valid = active_locomotion_source_readbacks_valid(
                     snapshot,
@@ -3105,6 +3130,25 @@ class FocusedM1Diagnostic(Node):
                     })
                     return True
                 if not gate_state["steering_enabled"]:
+                    return False
+                if odom_stamp_action == "DUPLICATE":
+                    route_progress_monitor["duplicate_odom_stamp_sample_count"] += 1
+                    duplicate_record = {
+                        "sample_monotonic_s": sample_time,
+                        "odom_stamp_ns": pose.stamp_ns,
+                        "odom_receive_age_s": pose_receive_age_s,
+                    }
+                    if route_progress_monitor["first_duplicate_odom_stamp_sample"] is None:
+                        route_progress_monitor["first_duplicate_odom_stamp_sample"] = duplicate_record
+                        route_events.append({
+                            "kind": "DUPLICATE_ODOM_SAMPLE_SKIPPED_FOR_ROUTE_TICK",
+                            **duplicate_record,
+                            "route_executor_core_remains_strictly_increasing": True,
+                        })
+                    route_progress_monitor["last_duplicate_odom_stamp_sample"] = duplicate_record
+                    # The command layer may hold the last bounded control for
+                    # this fresh-but-unchanged sample; do not advance or abort
+                    # the core route state on a duplicate source timestamp.
                     return False
                 distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
                 arrival_trigger_radius_m = waypoint_b_arrival_trigger_radius_m(
@@ -3249,6 +3293,9 @@ class FocusedM1Diagnostic(Node):
                         snapshot = latest_transit_snapshot
                         if forward > 0.0 and isinstance(snapshot, Mapping):
                             control_row["sample_monotonic_s"] = snapshot.get("sample_monotonic_s")
+                            control_row["odom_stamp_action"] = window_control.get("odom_stamp_action")
+                            control_row["odom_stamp_ns"] = window_control.get("odom_stamp_ns")
+                            control_row["odom_receive_age_s"] = window_control.get("odom_receive_age_s")
                             if window_control.get("steering_enabled"):
                                 pose = snapshot.get("pose")
                                 active = executor.active_step
@@ -3256,6 +3303,15 @@ class FocusedM1Diagnostic(Node):
                                     window_control["feedback_fault"] = "transit_feedback_steering_pose_or_goal_missing"
                                     self._publish(0.0, 0.0, 0.0)
                                     return
+                                elif window_control.get("odom_stamp_action") == "DUPLICATE":
+                                    angular = float(window_control.get("last_route_angular_command_rad_s", 0.0))
+                                    control_row.update({
+                                        "control_phase": "ZERO_ORDER_HOLD_DUPLICATE_ODOM",
+                                        "angular_velocity_rad_s": angular,
+                                        "raw_angular_velocity_rad_s": angular,
+                                        "duplicate_odom_feedback_reused": True,
+                                        "locomotion_handshake_confirmed": True,
+                                    })
                                 elif curved_path_diagnostic:
                                     try:
                                         path_feedback = curved_path_metrics(
@@ -3319,9 +3375,12 @@ class FocusedM1Diagnostic(Node):
                                         "saturated": bool(steering["saturated"]),
                                         "locomotion_handshake_confirmed": True,
                                     })
+                            window_control["last_route_angular_command_rad_s"] = angular
                             control_row["angular_velocity_rad_s"] = angular
                             control_row["straight_warmup_elapsed_s"] = window_control.get("elapsed_s")
                             steering_samples.append(control_row)
+                        elif forward > 0.0:
+                            window_control["last_route_angular_command_rad_s"] = 0.0
                         self._publish(forward, 0.0, angular if forward > 0.0 else 0.0)
 
                     last_result = run_first_motion_window(

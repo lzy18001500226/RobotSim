@@ -159,6 +159,46 @@ class RouteMotionBridgeError(ValueError):
     """Invalid or out-of-order action-window lifecycle."""
 
 
+def classify_route_odom_stamp(
+    *,
+    previous_stamp_ns: int | None,
+    current_stamp_ns: int,
+    receive_age_s: float,
+    maximum_receive_age_s: float = MAX_POSE_AGE_S,
+) -> str:
+    """Classify one route sample without treating a fresh duplicate as a new pose.
+
+    A duplicate source stamp may be held briefly by the ROS observer while it
+    waits for a new Odometry message. The route adapter must skip that sample;
+    the core route manager remains strictly increasing. Stale data and source
+    clock regressions stay distinct and fail or follow the existing rebase check.
+    """
+    if (
+        isinstance(current_stamp_ns, bool)
+        or not isinstance(current_stamp_ns, int)
+        or current_stamp_ns <= 0
+        or (
+            previous_stamp_ns is not None
+            and (
+                isinstance(previous_stamp_ns, bool)
+                or not isinstance(previous_stamp_ns, int)
+                or previous_stamp_ns <= 0
+            )
+        )
+        or not math.isfinite(receive_age_s)
+        or not math.isfinite(maximum_receive_age_s)
+        or maximum_receive_age_s <= 0.0
+        or receive_age_s < 0.0
+        or receive_age_s > maximum_receive_age_s
+    ):
+        return "STALE_OR_INVALID"
+    if previous_stamp_ns is None or current_stamp_ns > previous_stamp_ns:
+        return "NEW"
+    if current_stamp_ns == previous_stamp_ns:
+        return "DUPLICATE"
+    return "REGRESSION"
+
+
 def validate_curved_path_cli_profile(
     *,
     route_integration: bool,

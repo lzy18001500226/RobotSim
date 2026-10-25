@@ -48,6 +48,7 @@ from issue80_route_motion_bridge import (
     build_curved_waypoint_route,
     build_shallow_curved_path_reference,
     curved_path_metrics,
+    classify_route_odom_stamp,
     build_short_right_corner_route,
     measured_m1_nonzero_window_s,
     waypoint_b_arrival_passes,
@@ -153,6 +154,44 @@ def turn_directive(**overrides) -> RouteDirective:
 
 
 class RouteMotionBridgeTests(unittest.TestCase):
+    def test_route_adapter_skips_only_fresh_duplicate_odom_without_relaxing_core_stamps(self):
+        self.assertEqual(
+            classify_route_odom_stamp(
+                previous_stamp_ns=10_000,
+                current_stamp_ns=10_000,
+                receive_age_s=0.0115,
+                maximum_receive_age_s=0.20,
+            ),
+            "DUPLICATE",
+        )
+        self.assertEqual(
+            classify_route_odom_stamp(
+                previous_stamp_ns=10_000,
+                current_stamp_ns=10_000,
+                receive_age_s=0.201,
+                maximum_receive_age_s=0.20,
+            ),
+            "STALE_OR_INVALID",
+        )
+        self.assertEqual(
+            classify_route_odom_stamp(
+                previous_stamp_ns=10_000,
+                current_stamp_ns=10_001,
+                receive_age_s=0.01,
+                maximum_receive_age_s=0.20,
+            ),
+            "NEW",
+        )
+        self.assertEqual(
+            classify_route_odom_stamp(
+                previous_stamp_ns=10_000,
+                current_stamp_ns=9_999,
+                receive_age_s=0.01,
+                maximum_receive_age_s=0.20,
+            ),
+            "REGRESSION",
+        )
+
     def test_curved_path_cli_profile_accepts_only_the_bounded_reviewed_envelope(self):
         values = {
             "route_integration": True,
