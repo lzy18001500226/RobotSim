@@ -76,6 +76,14 @@ class ResetOnlySafetyTests(unittest.TestCase):
         self.assertIn("self.subscription_handles = [", observer_source)
         self.assertIn("reset_only_observer_startup_error.json", observer_source)
         self.assertNotIn("self.subscriptions = [", observer_source)
+        self.assertIn("enable_rosout=False", observer_source)
+        self.assertIn("start_parameter_services=False", observer_source)
+        self.assertIn("self.destroy_publisher(parameter_events)", observer_source)
+        self.assertIn("--construction-smoke", observer_source)
+        self.assertIn("--inject-construction-failure-for-test", observer_source)
+        self.assertIn("subscriptions = list(self.subscriptions)", observer_source)
+        self.assertIn("publishers = list(self.publishers)", observer_source)
+        self.assertIn("clients = list(self.clients)", observer_source)
         runner_source = RUNNER.read_text(encoding="utf-8")
         self.assertIn("Odom initialized:", runner_source)
         self.assertIn("name=pelvis", runner_source)
@@ -147,11 +155,21 @@ class ResetOnlySafetyTests(unittest.TestCase):
             "pose": {"x_m": 0.0, "y_m": 0.0, "z_m": 0.68, "yaw_rad": 0.0},
         }]
         self.assertEqual(classify(pre, unchanged)["status"], "RESET_EFFECT_UNCONFIRMED")
+        identical_stamp = [{
+            "source_stamp_ns": 1000,
+            "pose": {"x_m": 0.0, "y_m": 0.0, "z_m": 0.68, "yaw_rad": 0.0},
+        }]
+        identical = classify(pre, identical_stamp)
+        self.assertEqual(identical["status"], "RESET_EFFECT_UNCONFIRMED")
+        self.assertTrue(identical["source_stamp_unchanged_duplicate"])
+        self.assertFalse(identical["source_stamp_rebased"])
         rebased = [{
             "source_stamp_ns": 10,
             "pose": {"x_m": 0.0, "y_m": 0.0, "z_m": 0.68, "yaw_rad": 0.0},
         }]
-        self.assertEqual(classify(pre, rebased)["status"], "RESET_EFFECT_OBSERVED")
+        rebased_result = classify(pre, rebased)
+        self.assertEqual(rebased_result["status"], "RESET_EFFECT_OBSERVED")
+        self.assertTrue(rebased_result["source_stamp_rebased"])
         displaced = [{
             "source_stamp_ns": 1100,
             "pose": {"x_m": 0.0, "y_m": 0.0, "z_m": 0.682, "yaw_rad": 0.0},

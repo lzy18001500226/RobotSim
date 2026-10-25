@@ -136,7 +136,17 @@ def classify_reset_effect(
     source_stamp_rebased = (
         isinstance(pre_stamp, int)
         and isinstance(first_stamp, int)
-        and first_stamp <= pre_stamp
+        and first_stamp < pre_stamp
+    )
+    source_stamp_unchanged = (
+        isinstance(pre_stamp, int)
+        and isinstance(first_stamp, int)
+        and first_stamp == pre_stamp
+    )
+    source_stamp_advanced = (
+        isinstance(pre_stamp, int)
+        and isinstance(first_stamp, int)
+        and first_stamp > pre_stamp
     )
     pose_delta: dict[str, float] | None = None
     pose_changed = False
@@ -166,7 +176,9 @@ def classify_reset_effect(
     observed = source_stamp_rebased or pose_changed
     return {
         "status": "RESET_EFFECT_OBSERVED" if observed else "RESET_EFFECT_UNCONFIRMED",
-        "source_stamp_rebased_or_nonincreasing": source_stamp_rebased,
+        "source_stamp_rebased": source_stamp_rebased,
+        "source_stamp_unchanged_duplicate": source_stamp_unchanged,
+        "source_stamp_advanced_without_generation_proof": source_stamp_advanced,
         "physical_pose_change_observed": pose_changed,
         "last_pre_reset_odom_stamp_ns": pre_stamp,
         "first_post_reset_odom_stamp_ns": first_stamp,
@@ -179,7 +191,20 @@ def classify_reset_effect(
 
 class ResetOnlyObserver(Node):
     def __init__(self, output_dir: Path, reset_event_path: Path):
-        super().__init__("issue80_raicom_reset_only_observer")
+        # This observer must have no implicit rosout publisher or parameter
+        # service surface: it is subscriptions-only by construction.
+        super().__init__(
+            "issue80_raicom_reset_only_observer",
+            enable_rosout=False,
+            start_parameter_services=False,
+        )
+        # Humble rclpy still creates /parameter_events even when parameter
+        # services are disabled. The observer has no parameters to announce,
+        # so remove that framework publisher before creating subscriptions.
+        parameter_events = getattr(self, "_parameter_event_publisher", None)
+        if parameter_events is not None:
+            self.destroy_publisher(parameter_events)
+            self._parameter_event_publisher = None
         self.output_dir = output_dir
         self.reset_event_path = reset_event_path
         self.trace_path = output_dir / "reset_only_state_trace.jsonl"
@@ -216,6 +241,20 @@ class ResetOnlyObserver(Node):
             self.create_subscription(message_type, topic, self._callback(key), self.qos)
             for key, (message_type, topic) in TOPIC_TYPES.items()
         ]
+
+    def interface_counts(self) -> dict[str, Any]:
+        """Expose the actual rclpy entity counts for the construction smoke test."""
+        subscriptions = list(self.subscriptions)
+        publishers = list(self.publishers)
+        clients = list(self.clients)
+        return {
+            "subscriptions": len(self.subscription_handles),
+            "node_subscriptions": len(subscriptions),
+            "publishers": len(publishers),
+            "service_clients": len(clients),
+            "publisher_topics": [str(getattr(item, "topic_name", "")) for item in publishers],
+            "service_client_names": [str(getattr(item, "srv_name", "")) for item in clients],
+        }
 
     def _callback(self, key: str):
         def receive(message: Any) -> None:
@@ -404,12 +443,22 @@ class ResetOnlyObserver(Node):
             "odom_source_stamp_across_reset": {
                 "last_pre_reset_stamp_ns": last_pre_stamp,
                 "first_post_reset_stamp_ns": first_post_stamp,
-                "first_post_stamp_rebased_or_nonincreasing": (
+                "first_post_stamp_rebased": (
                     isinstance(last_pre_stamp, int)
                     and isinstance(first_post_stamp, int)
-                    and first_post_stamp <= last_pre_stamp
+                    and first_post_stamp < last_pre_stamp
                 ),
-                "classification": "OBSERVED_ONLY_NOT_A_FRAME_OR_RESET_SUCCESS_GATE",
+                "first_post_stamp_unchanged_duplicate": (
+                    isinstance(last_pre_stamp, int)
+                    and isinstance(first_post_stamp, int)
+                    and first_post_stamp == last_pre_stamp
+                ),
+                "first_post_stamp_advanced_without_generation_proof": (
+                    isinstance(last_pre_stamp, int)
+                    and isinstance(first_post_stamp, int)
+                    and first_post_stamp > last_pre_stamp
+                ),
+                "classification": "DUPLICATES_DO_NOT_PROVE_RESET_GENERATION",
             },
             "post_reset_upright_status": (
                 "PASS_UPRIGHT_SAMPLES_OBSERVED" if self.first_upright_ns is not None
@@ -529,6 +578,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--reset-event-file", required=True, type=Path)
+    parser.add_argument(
+        "--construction-smoke",
+        action="store_true",
+        help="construct and tear down the subscriptions-only observer; do not capture or wait for Reset",
+    )
+    parser.add_argument(
+        "--inject-construction-failure-for-test",
+        action="store_true",
+        help="test-only construction-smoke failure path; requires --construction-smoke",
+    )
     args = parser.parse_args()
     output = args.output_dir.resolve(strict=True)
     reset_event = args.reset_event_file.resolve(strict=False)
@@ -538,10 +597,37 @@ def main() -> int:
         parser.error("reset event must be the single canonical event file in the evidence directory")
     if reset_event.exists():
         parser.error("refusing to start after a Reset event already exists")
+    if args.inject_construction_failure_for_test and not args.construction_smoke:
+        parser.error("--inject-construction-failure-for-test requires --construction-smoke")
     rclpy.init()
     observer: ResetOnlyObserver | None = None
     try:
         observer = ResetOnlyObserver(output, reset_event)
+        if args.construction_smoke:
+            if args.inject_construction_failure_for_test:
+                raise RuntimeError("injected observer construction-smoke failure")
+            counts = observer.interface_counts()
+            expected_subscriptions = len(TOPIC_TYPES)
+            counts_ok = (
+                counts["subscriptions"] == expected_subscriptions
+                and counts["node_subscriptions"] == expected_subscriptions
+                and counts["publishers"] == 0
+                and counts["service_clients"] == 0
+            )
+            status = "PASS_CONSTRUCTION_SMOKE" if counts_ok else "BLOCKED_CONSTRUCTION_INTERFACE_COUNTS"
+            _write_new_json(output / "reset_only_observer_smoke.json", {
+                "schema": "robotsim.issue80.raicom-reset-only-observer-smoke.v1",
+                "status": status,
+                "interface_counts": counts,
+                "required_subscription_topics": {
+                    key: topic for key, (_, topic) in TOPIC_TYPES.items()
+                },
+                "velocity_command_source_created": False,
+                "service_action_or_input_source_created": False,
+                "native_reset_dispatched": False,
+                "locomotion_or_simulation_started": False,
+            })
+            return 0 if status == "PASS_CONSTRUCTION_SMOKE" else 2
         return observer.run_capture()
     except Exception as exc:
         try:
