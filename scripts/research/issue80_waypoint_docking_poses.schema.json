@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://robotsim.local/schemas/issue80-waypoint-docking-poses-v1.json",
+  "title": "RobotSim Issue 80 Local01 waypoint and table docking poses",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "route_id",
+    "frame_id",
+    "start",
+    "waypoint",
+    "table_docking"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "robotsim.issue80.waypoint-docking-poses.v1"
+    },
+    "route_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "frame_id": {
+      "const": "odom"
+    },
+    "start": {
+      "$ref": "#/$defs/pose"
+    },
+    "waypoint": {
+      "$ref": "#/$defs/pose"
+    },
+    "table_docking": {
+      "$ref": "#/$defs/pose"
+    }
+  },
+  "$defs": {
+    "pose": {
+      "type": "object",
+      "required": ["x_m", "y_m", "yaw_rad"],
+      "properties": {
+        "x_m": {"type": "number"},
+        "y_m": {"type": "number"},
+        "yaw_rad": {"type": "number"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

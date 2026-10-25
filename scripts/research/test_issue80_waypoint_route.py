@@ -7,6 +7,7 @@ from dataclasses import replace
 import json
 import math
 from pathlib import Path
+import tempfile
 import unittest
 
 from issue80_waypoint_route import (
@@ -22,12 +23,23 @@ from issue80_waypoint_route import (
     RouteSpec,
     RouteState,
     SafetyObservation,
+    StopBehavior,
     WaypointRouteExecutor,
     YawPolicy,
+    build_waypoint_docking_route_from_poses,
+    load_waypoint_docking_pose_input,
+    validate_waypoint_docking_scene_clearance,
+    validate_waypoint_docking_route,
 )
 from issue80_route_motion_bridge import (
     build_curved_waypoint_route,
     build_shallow_curved_path_reference,
+)
+from issue80_coordinated_pose_goal import (
+    PoseGoalPhaseController,
+    TERMINAL_POSE_CONTROL,
+    ZERO_STOP,
+    terminal_yaw_rate_command,
 )
 
 
@@ -159,6 +171,112 @@ def one_docking_route() -> RouteSpec:
 
 
 class RouteConfigTests(unittest.TestCase):
+    @staticmethod
+    def waypoint_docking_config():
+        return {
+            "schema_version": "robotsim.issue80.waypoint-docking-poses.v1",
+            "route_id": "local01-waypoint-docking-fixture",
+            "frame_id": "odom",
+            "start": {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0},
+            "waypoint": {"x_m": 0.25, "y_m": 0.0, "yaw_rad": 0.0},
+            "table_docking": {"x_m": 0.6, "y_m": 0.1, "yaw_rad": 0.1},
+        }
+
+    @classmethod
+    def waypoint_docking_route(cls):
+        return build_waypoint_docking_route_from_poses(
+            cls.waypoint_docking_config(),
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+        )
+
+    @staticmethod
+    def load_pose_input(raw):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "route.json"
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            return load_waypoint_docking_pose_input(path)
+
+    def test_waypoint_docking_profile_accepts_two_bounded_stop_gated_steps(self) -> None:
+        route = self.waypoint_docking_route()
+        self.assertEqual([step.waypoint_id for step in route.steps], ["WAYPOINT", "TABLE_DOCKING"])
+        self.assertEqual((route.start_position_tolerance_m, route.start_yaw_tolerance_rad), (0.02, 0.02))
+        for step in route.steps:
+            self.assertEqual(step.target_forward_m_s, 0.12)
+            self.assertEqual(step.max_forward_m_s, 0.12)
+            self.assertEqual(step.max_angular_rad_s, 0.075)
+            self.assertEqual(step.max_command_window_s, 5.0)
+            self.assertEqual(step.recovery_limit, 0)
+            self.assertEqual(step.stop_behavior.value, "VERIFY_PHYSICAL_STOP")
+        self.assertEqual(route.steps[0].stop_behavior.value, "VERIFY_PHYSICAL_STOP")
+        self.assertEqual(route.steps[1].profile, Profile.DOCKING)
+        self.assertEqual(route.steps[1].yaw_policy, YawPolicy.EXPLICIT)
+        self.assertEqual(route.steps[1].position_tolerance_m, 0.08)
+        self.assertEqual(route.steps[1].yaw_tolerance_rad, 0.10)
+
+    def test_waypoint_docking_profile_rejects_expanded_motion_or_retry_limits(self) -> None:
+        route = self.waypoint_docking_route()
+        for index, changed in (
+            (0, replace(route.steps[0], max_forward_m_s=0.121)),
+            (0, replace(route.steps[0], max_angular_rad_s=0.076)),
+            (1, replace(route.steps[1], max_command_window_s=5.01)),
+            (1, replace(route.steps[1], recovery_limit=1)),
+            (1, replace(route.steps[1], stop_behavior=StopBehavior.ROLLING)),
+        ):
+            steps = list(route.steps)
+            steps[index] = changed
+            with self.subTest(step=changed.waypoint_id, field=changed):
+                with self.assertRaises(ValueError):
+                    validate_waypoint_docking_route(replace(route, steps=tuple(steps)))
+
+    def test_waypoint_docking_pose_input_rejects_missing_frame_yaw_or_short_segment(self) -> None:
+        raw = self.waypoint_docking_config()
+        raw["frame_id"] = "map"
+        with self.assertRaisesRegex(ValueError, "ground-truth odom"):
+            self.load_pose_input(raw)
+
+        raw = self.waypoint_docking_config()
+        raw["table_docking"].pop("yaw_rad")
+        with self.assertRaisesRegex(ValueError, "exactly x_m, y_m, yaw_rad"):
+            self.load_pose_input(raw)
+
+        raw = self.waypoint_docking_config()
+        raw["waypoint"]["x_m"] = 0.03
+        with self.assertRaisesRegex(ValueError, "0.05 m stop/noise envelope"):
+            self.load_pose_input(raw)
+
+        raw = self.waypoint_docking_config()
+        raw["unreviewed_limit"] = 0.16
+        with self.assertRaisesRegex(ValueError, "exactly schema_version"):
+            self.load_pose_input(raw)
+
+        for invalid in (True, "0.25"):
+            raw = self.waypoint_docking_config()
+            raw["waypoint"]["x_m"] = invalid
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "must be a JSON number"):
+                self.load_pose_input(raw)
+
+    def test_waypoint_docking_route_checks_the_inspected_scene_footprint_and_clear_radius(self) -> None:
+        route = self.waypoint_docking_route()
+        evidence = validate_waypoint_docking_scene_clearance(
+            route,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+        )
+        self.assertEqual(evidence["status"], "PASS")
+        with self.assertRaisesRegex(ValueError, "smaller than the inspected"):
+            validate_waypoint_docking_scene_clearance(
+                route,
+                runtime_robot_footprint_radius_m=0.46,
+                verified_local_clear_radius_m=2.0,
+            )
+        with self.assertRaisesRegex(ValueError, "clear radius"):
+            validate_waypoint_docking_scene_clearance(
+                route,
+                runtime_robot_footprint_radius_m=0.41565748847422734,
+                verified_local_clear_radius_m=0.45,
+            )
+
     def test_three_profile_accuracy_and_motion_envelopes_are_separate(self) -> None:
         transit = PROPOSED_PROFILE_POLICIES[Profile.TRANSIT]
         corner = PROPOSED_PROFILE_POLICIES[Profile.CORNER]
@@ -782,6 +900,148 @@ class RouteExecutionTests(unittest.TestCase):
         pose.update(x=1, y=0, yaw=0.2, now=3.4, stamp=7_000_000_000)
         completed = runner.tick(3.4, startup_feedback(physical_stop_evidence=stop_evidence(1.0)), manipulation_complete=True)
         self.assertEqual(completed.kind, DirectiveKind.COMPLETE)
+
+    def test_configured_two_step_route_stops_once_at_each_pose_and_waits_at_docking(self) -> None:
+        route = RouteConfigTests.waypoint_docking_route()
+
+        class OdomStore:
+            def __init__(self):
+                self.pose = PoseEstimate(
+                    frame_id="odom", child_frame_id="base_link", x_m=0.0, y_m=0.0, yaw_rad=0.0,
+                    stamp_ns=1_000_000_000, received_steady_s=0.0, generation="epoch-1",
+                    source="MUJOCO_GROUND_TRUTH", position_std_m=0.0, yaw_std_rad=0.0,
+                    transform_chain=("odom->base_link",), transform_age_s=0.01,
+                )
+
+            def latest_pose(self, target_frame, now_steady_s):
+                return self.pose if target_frame == "odom" else None
+
+            def set(self, x, y, yaw, now, stamp):
+                self.pose = PoseEstimate(
+                    frame_id="odom", child_frame_id="base_link", x_m=x, y_m=y, yaw_rad=yaw,
+                    stamp_ns=stamp, received_steady_s=now, generation="epoch-1",
+                    source="MUJOCO_GROUND_TRUTH", position_std_m=0.0, yaw_std_rad=0.0,
+                    transform_chain=("odom->base_link",), transform_age_s=0.01,
+                )
+
+        class OdomSafety:
+            def latest_observation(self, segment_id, frame_id, now_steady_s):
+                return SafetyObservation(segment_id, frame_id, now_steady_s, True, True, 2.0)
+
+        pose = OdomStore()
+        motion = FakeMotionAdapter()
+        runner = WaypointRouteExecutor(route, pose, OdomSafety(), motion)
+        start = runner.start(0.0, MotionFeedback(
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=False,
+            safety_gates_pass=True,
+            initial_activation_authorized=True,
+        ))
+        self.assertEqual(start.kind, DirectiveKind.FOLLOW_WAYPOINT)
+
+        waypoint = route.steps[0]
+        pose.set(waypoint.x_m, waypoint.y_m, 0.0, 1.0, 2_000_000_000)
+        stop_waypoint = runner.tick(1.0, MotionFeedback(
+            status=MotionStatus.ARRIVED,
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=True,
+            safety_gates_pass=True,
+        ))
+        self.assertEqual(stop_waypoint.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
+        self.assertEqual(len(motion.stop_reasons), 1)
+        pose.set(waypoint.x_m, waypoint.y_m, 0.0, 3.0, 3_000_000_000)
+        next_step = runner.tick(3.0, MotionFeedback(
+            status=MotionStatus.ACTIVE,
+            physical_stop_evidence=stop_evidence(1.01),
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=False,
+            safety_gates_pass=True,
+            stand_readback_pass=True,
+        ))
+        self.assertEqual(next_step.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        self.assertEqual(runner.active_step.waypoint_id, "TABLE_DOCKING")
+        self.assertEqual(len(motion.stop_reasons), 1)
+
+        docking = route.steps[1]
+        pose.set(docking.x_m, docking.y_m, docking.yaw_rad, 4.0, 4_000_000_000)
+        stop_docking = runner.tick(4.0, MotionFeedback(
+            status=MotionStatus.ARRIVED,
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=True,
+            safety_gates_pass=True,
+        ))
+        self.assertEqual(stop_docking.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
+        self.assertEqual(len(motion.stop_reasons), 2)
+        pose.set(docking.x_m, docking.y_m, docking.yaw_rad, 6.0, 5_000_000_000)
+        terminal = runner.tick(6.0, MotionFeedback(
+            status=MotionStatus.ACTIVE,
+            physical_stop_evidence=stop_evidence(4.01),
+            reset_gate_pass=True,
+            standing_gate_pass=True,
+            source_mode_handshake_pass=False,
+            safety_gates_pass=True,
+            stand_readback_pass=True,
+        ))
+        self.assertEqual(terminal.kind, DirectiveKind.WAIT)
+        self.assertEqual(runner.state, RouteState.WAITING_FOR_DOCKING)
+        self.assertEqual(len(motion.stop_reasons), 2)
+        self.assertFalse(any(d.kind is DirectiveKind.DOCKING_HANDOFF for d in motion.directives))
+
+    def test_docking_pose_goal_uses_bounded_terminal_yaw_then_zero_stop_phase(self) -> None:
+        controller = PoseGoalPhaseController(
+            goal_distance_m=0.6,
+            final_position_tolerance_m=0.08,
+            maximum_lateral_error_m=0.05,
+            maximum_overshoot_m=0.05,
+            final_yaw_tolerance_rad=0.10,
+            terminal_yaw_setpoint_tolerance_rad=0.10,
+        )
+        entered = controller.update(
+            monotonic_s=1.0,
+            position_stop_reason="goal_approach_predicted_settle_within_tolerance",
+            distance_to_goal_m=0.07,
+            lateral_error_m=0.01,
+            along_track_progress_m=0.55,
+            yaw_error_rad=0.20,
+            measured_yaw_rate_rad_s=0.0,
+            terminal_setpoint_error_rad=0.20,
+        )
+        self.assertEqual(entered["phase"], TERMINAL_POSE_CONTROL)
+        command = terminal_yaw_rate_command(
+            current_yaw_rad=-0.10,
+            target_yaw_rad=0.10,
+            measured_yaw_rate_rad_s=0.0,
+            maximum_angular_rad_s=0.075,
+            final_yaw_tolerance_rad=0.10,
+        )
+        self.assertGreater(command["command_yaw_rate_rad_s"], 0.0)
+        self.assertLessEqual(abs(command["command_yaw_rate_rad_s"]), 0.075)
+        controller.update(
+            monotonic_s=1.1,
+            position_stop_reason="goal_approach_predicted_settle_within_tolerance",
+            distance_to_goal_m=0.06,
+            lateral_error_m=0.01,
+            along_track_progress_m=0.56,
+            yaw_error_rad=0.05,
+            measured_yaw_rate_rad_s=0.001,
+            terminal_setpoint_error_rad=0.05,
+        )
+        ready = controller.update(
+            monotonic_s=1.51,
+            position_stop_reason="goal_approach_predicted_settle_within_tolerance",
+            distance_to_goal_m=0.06,
+            lateral_error_m=0.01,
+            along_track_progress_m=0.56,
+            yaw_error_rad=0.05,
+            measured_yaw_rate_rad_s=0.001,
+            terminal_setpoint_error_rad=0.05,
+        )
+        self.assertEqual(ready["phase"], ZERO_STOP)
+        self.assertTrue(ready["terminal_pose_ready"])
 
     def test_zero_forward_turn_is_not_selected_by_route_template(self) -> None:
         raw = json.loads(RECTANGLE.read_text(encoding="utf-8"))

@@ -18,9 +18,11 @@ from typing import Any, Mapping, Protocol, Sequence
 
 
 SCHEMA_VERSION = "robotsim.issue80.waypoint-route.v1"
+WAYPOINT_DOCKING_POSE_SCHEMA_VERSION = "robotsim.issue80.waypoint-docking-poses.v1"
 MAX_FORWARD_M_S = 0.14
 MAX_ANGULAR_RAD_S = 0.075
 MIN_EFFECTIVE_FORWARD_M_S = 0.12
+CONFIGURED_ROUTE_MAX_CROSS_TRACK_M = 0.05
 MAX_ACTION_WINDOW_S = 10.0
 REALTIME_CLOCK_ALIGNMENT_TOLERANCE_NS = 50_000_000
 REALTIME_CLOCK_BACKSTEP_MIN_NS = 50_000_000
@@ -378,6 +380,284 @@ class RouteSpec:
                 raise RouteError(f"{step.waypoint_id}: NEXT_SEGMENT yaw requires a following waypoint")
             if step.profile is Profile.CORNER and index + 1 >= len(self.steps):
                 raise RouteError(f"{step.waypoint_id}: a corner requires a following segment")
+
+
+def validate_waypoint_docking_route(route: RouteSpec) -> RouteSpec:
+    """Validate the bounded Local01 START -> WAYPOINT -> TABLE_DOCKING route.
+
+    This is a narrow profile for the existing route manager and M1 bridge, not
+    a second route format. It deliberately accepts only odom-frame two-step
+    routes, requires a physical stop at both steps, and freezes the live
+    motion envelope to the previously exercised 0.12 m/s profile.
+    """
+    route.validate()
+    if route.frame_id != "odom":
+        raise RouteError("waypoint-docking route must use the ground-truth odom frame")
+    if not route.workspace_verified:
+        raise RouteError("waypoint-docking route requires verified workspace clearance")
+    if len(route.steps) != 2:
+        raise RouteError("waypoint-docking route must contain exactly WAYPOINT and TABLE_DOCKING")
+    if route.start_position_tolerance_m > 0.02 or route.start_yaw_tolerance_rad > 0.02:
+        raise RouteError("waypoint-docking start anchor tolerance may not exceed 0.02 m/rad")
+    waypoint, docking = route.steps
+    if waypoint.waypoint_id != "WAYPOINT" or waypoint.profile is not Profile.TRANSIT:
+        raise RouteError("first route step must be id WAYPOINT with TRANSIT profile")
+    if waypoint.yaw_policy is not YawPolicy.EXPLICIT:
+        raise RouteError("WAYPOINT requires the Local01 explicit target yaw")
+    if float(waypoint.yaw_tolerance_rad or 0.0) > 0.10:
+        raise RouteError("WAYPOINT yaw tolerance may not exceed 0.10 rad")
+    if abs(waypoint.position_tolerance_m - 0.15) > 1e-9:
+        raise RouteError("WAYPOINT tolerance must retain the existing 0.15 m diagnostic limit")
+    if docking.waypoint_id != "TABLE_DOCKING" or docking.profile is not Profile.DOCKING:
+        raise RouteError("final route step must be id TABLE_DOCKING with DOCKING profile")
+    if docking.yaw_policy is not YawPolicy.EXPLICIT:
+        raise RouteError("TABLE_DOCKING requires an explicit target yaw")
+    if math.hypot(waypoint.x_m - route.start_x_m, waypoint.y_m - route.start_y_m) <= 0.05:
+        raise RouteError("START to WAYPOINT segment must exceed the 0.05 m stop/noise envelope")
+    if math.hypot(docking.x_m - waypoint.x_m, docking.y_m - waypoint.y_m) <= 0.05:
+        raise RouteError("WAYPOINT to TABLE_DOCKING segment must exceed the 0.05 m stop/noise envelope")
+    for step in route.steps:
+        if step.stop_behavior is not StopBehavior.VERIFY_PHYSICAL_STOP:
+            raise RouteError(f"{step.waypoint_id}: every route step must require a measured physical stop")
+        if step.recovery_limit != 0:
+            raise RouteError(f"{step.waypoint_id}: automatic route retries are disabled")
+        if (
+            step.target_forward_m_s != MIN_EFFECTIVE_FORWARD_M_S
+            or step.max_forward_m_s > MIN_EFFECTIVE_FORWARD_M_S
+            or step.max_angular_rad_s > MAX_ANGULAR_RAD_S
+            or step.max_command_window_s > 5.0
+        ):
+            raise RouteError(
+                f"{step.waypoint_id}: route commands must stay at 0.12 m/s, "
+                "0.075 rad/s, and 5 s per window"
+            )
+    if docking.position_tolerance_m > 0.08 or float(docking.yaw_tolerance_rad or 0.0) > 0.10:
+        raise RouteError("TABLE_DOCKING tolerance may not exceed 0.08 m / 0.10 rad")
+    return route
+
+
+def build_waypoint_docking_route_from_poses(
+    pose_input: Mapping[str, Any],
+    *,
+    runtime_robot_footprint_radius_m: float,
+    verified_local_clear_radius_m: float,
+) -> RouteSpec:
+    """Build the existing RouteSpec from three ground-truth poses and inspected scene bounds."""
+    try:
+        input_id = str(pose_input["route_id"])
+        start = pose_input["start"]
+        waypoint = pose_input["waypoint"]
+        docking = pose_input["table_docking"]
+        if pose_input.get("schema_version") != WAYPOINT_DOCKING_POSE_SCHEMA_VERSION:
+            raise RouteError("unsupported waypoint-docking pose schema_version")
+        if pose_input.get("frame_id") != "odom":
+            raise RouteError("waypoint-docking poses must be expressed in ground-truth odom")
+        start_x, start_y, start_yaw = (float(start[k]) for k in ("x_m", "y_m", "yaw_rad"))
+        waypoint_x, waypoint_y, waypoint_yaw = (float(waypoint[k]) for k in ("x_m", "y_m", "yaw_rad"))
+        docking_x, docking_y, docking_yaw = (float(docking[k]) for k in ("x_m", "y_m", "yaw_rad"))
+        footprint = float(runtime_robot_footprint_radius_m)
+        local_clearance = float(verified_local_clear_radius_m)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RouteError("waypoint-docking poses or scene measurements are malformed") from exc
+    if not all(math.isfinite(v) for v in (
+        start_x, start_y, start_yaw, waypoint_x, waypoint_y, waypoint_yaw,
+        docking_x, docking_y, docking_yaw, footprint, local_clearance,
+    )):
+        raise RouteError("waypoint-docking poses and scene measurements must be finite")
+    if footprint <= 0.0 or local_clearance <= 0.0:
+        raise RouteError("runtime footprint and local clear radius must be positive")
+
+    boundary_margin = 0.10
+    cross_track_allowance = CONFIGURED_ROUTE_MAX_CROSS_TRACK_M
+    corridor_half_width = footprint + boundary_margin + cross_track_allowance
+    corridor_extension = footprint + boundary_margin + cross_track_allowance
+
+    def corridor(start_xy: tuple[float, float], end_xy: tuple[float, float]) -> tuple[tuple[float, float], ...]:
+        sx, sy = start_xy
+        ex, ey = end_xy
+        length = math.hypot(ex - sx, ey - sy)
+        if length <= 0.05:
+            raise RouteError("configured route segment is too short for the existing stop/noise envelope")
+        heading = math.atan2(ey - sy, ex - sx)
+        ux, uy = math.cos(heading), math.sin(heading)
+        nx, ny = -uy, ux
+
+        def point(along: float, lateral: float) -> tuple[float, float]:
+            return (
+                sx + along * ux + lateral * nx,
+                sy + along * uy + lateral * ny,
+            )
+
+        return tuple(point(along, lateral) for along, lateral in (
+            (-corridor_extension, -corridor_half_width),
+            (length + corridor_extension, -corridor_half_width),
+            (length + corridor_extension, corridor_half_width),
+            (-corridor_extension, corridor_half_width),
+        ))
+
+    waypoint_corridor = corridor((start_x, start_y), (waypoint_x, waypoint_y))
+    docking_corridor = corridor((waypoint_x, waypoint_y), (docking_x, docking_y))
+    common = {
+        "max_position_std_m": 0.01,
+        "max_yaw_std_rad": 0.05,
+        "stop_behavior": StopBehavior.VERIFY_PHYSICAL_STOP,
+        "segment_timeout_s": 60.0,
+        "recovery_limit": 0,
+        "minimum_obstacle_clearance_m": 0.0,
+        "target_forward_m_s": MIN_EFFECTIVE_FORWARD_M_S,
+        "max_forward_m_s": MIN_EFFECTIVE_FORWARD_M_S,
+        "max_angular_rad_s": MAX_ANGULAR_RAD_S,
+        "max_command_window_s": 5.0,
+        "turn_strategy": None,
+        "maximum_turn_displacement_m": None,
+    }
+    route = RouteSpec(
+        route_id=input_id,
+        frame_id="odom",
+        workspace_verified=True,
+        bounded_moving_turn_qualified=False,
+        zero_forward_turn_qualified=False,
+        start_x_m=start_x,
+        start_y_m=start_y,
+        start_yaw_rad=start_yaw,
+        start_position_tolerance_m=0.02,
+        start_yaw_tolerance_rad=0.02,
+        robot_footprint_radius_m=footprint,
+        corridor_boundary_margin_m=boundary_margin,
+        max_pose_age_s=0.20,
+        max_transform_age_s=0.50,
+        max_safety_age_s=0.20,
+        max_position_std_m=0.01,
+        max_yaw_std_rad=0.05,
+        steps=(
+            RouteStep(
+                waypoint_id="WAYPOINT", x_m=waypoint_x, y_m=waypoint_y,
+                profile=Profile.TRANSIT, position_tolerance_m=0.15,
+                yaw_policy=YawPolicy.EXPLICIT, yaw_rad=waypoint_yaw,
+                yaw_tolerance_rad=0.10, corridor_polygon=waypoint_corridor,
+                turn_corridor_polygon=None, **common,
+            ),
+            RouteStep(
+                waypoint_id="TABLE_DOCKING", x_m=docking_x, y_m=docking_y,
+                profile=Profile.DOCKING, position_tolerance_m=0.08,
+                yaw_policy=YawPolicy.EXPLICIT, yaw_rad=docking_yaw,
+                yaw_tolerance_rad=0.10, corridor_polygon=docking_corridor,
+                turn_corridor_polygon=None, **common,
+            ),
+        ),
+    )
+    return validate_waypoint_docking_route(route)
+
+
+def load_waypoint_docking_pose_input(path: str | Path) -> dict[str, Any]:
+    """Load the minimal Local01 pose input without inventing route coordinates."""
+    route_path = Path(path)
+    if route_path.is_symlink() or not route_path.is_file():
+        raise RouteError("route config must be a regular, non-symlink file")
+    try:
+        raw = json.loads(route_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RouteError(f"route pose input is unreadable: {type(exc).__name__}") from exc
+    required = {"schema_version", "route_id", "frame_id", "start", "waypoint", "table_docking"}
+    if not isinstance(raw, Mapping) or set(raw) != required:
+        raise RouteError("route pose input must contain exactly schema_version, route_id, frame_id, start, waypoint, table_docking")
+    if raw.get("schema_version") != WAYPOINT_DOCKING_POSE_SCHEMA_VERSION:
+        raise RouteError("unsupported waypoint-docking pose schema_version")
+    if not isinstance(raw.get("route_id"), str) or not str(raw["route_id"]).strip():
+        raise RouteError("route_id must be a non-empty string")
+    if raw.get("frame_id") != "odom":
+        raise RouteError("waypoint-docking poses must be expressed in ground-truth odom")
+    result: dict[str, Any] = {
+        "schema_version": WAYPOINT_DOCKING_POSE_SCHEMA_VERSION,
+        "route_id": str(raw["route_id"]),
+        "frame_id": "odom",
+    }
+    for key in ("start", "waypoint", "table_docking"):
+        pose = raw.get(key)
+        if not isinstance(pose, Mapping) or set(pose) != {"x_m", "y_m", "yaw_rad"}:
+            raise RouteError(f"{key} must contain exactly x_m, y_m, yaw_rad")
+        values: dict[str, float] = {}
+        for name in ("x_m", "y_m", "yaw_rad"):
+            raw_value = pose[name]
+            if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+                raise RouteError(f"{key}.{name} must be a JSON number")
+            values[name] = _number(pose, name)
+        result[key] = values
+    if math.hypot(
+        result["waypoint"]["x_m"] - result["start"]["x_m"],
+        result["waypoint"]["y_m"] - result["start"]["y_m"],
+    ) <= 0.05:
+        raise RouteError("START to WAYPOINT segment must exceed the 0.05 m stop/noise envelope")
+    if math.hypot(
+        result["table_docking"]["x_m"] - result["waypoint"]["x_m"],
+        result["table_docking"]["y_m"] - result["waypoint"]["y_m"],
+    ) <= 0.05:
+        raise RouteError("WAYPOINT to TABLE_DOCKING segment must exceed the 0.05 m stop/noise envelope")
+    return result
+
+
+def load_waypoint_docking_route(
+    path: str | Path,
+    *,
+    runtime_robot_footprint_radius_m: float,
+    verified_local_clear_radius_m: float,
+) -> RouteSpec:
+    """Build the existing RouteSpec from the minimal Local01 pose input."""
+    pose_input = load_waypoint_docking_pose_input(path)
+    route = build_waypoint_docking_route_from_poses(
+        pose_input,
+        runtime_robot_footprint_radius_m=runtime_robot_footprint_radius_m,
+        verified_local_clear_radius_m=verified_local_clear_radius_m,
+    )
+    validate_waypoint_docking_scene_clearance(
+        route,
+        runtime_robot_footprint_radius_m=runtime_robot_footprint_radius_m,
+        verified_local_clear_radius_m=verified_local_clear_radius_m,
+    )
+    return route
+
+
+def validate_waypoint_docking_scene_clearance(
+    route: RouteSpec,
+    *,
+    runtime_robot_footprint_radius_m: float,
+    verified_local_clear_radius_m: float,
+) -> dict[str, Any]:
+    """Fail closed when a configured route exceeds the inspected simple scene."""
+    validate_waypoint_docking_route(route)
+    values = (runtime_robot_footprint_radius_m, verified_local_clear_radius_m)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise RouteError("scene clearance measurements must be finite")
+    runtime_footprint = float(runtime_robot_footprint_radius_m)
+    local_clearance = float(verified_local_clear_radius_m)
+    if runtime_footprint <= 0.0 or local_clearance <= 0.0:
+        raise RouteError("scene footprint and local clearance must be positive")
+    if route.robot_footprint_radius_m + 1e-9 < runtime_footprint:
+        raise RouteError("route footprint is smaller than the inspected runtime robot footprint")
+    if route.robot_footprint_radius_m + route.corridor_boundary_margin_m >= local_clearance:
+        raise RouteError("route footprint and margin do not fit inside the verified clear radius")
+    maximum_center_radius = (
+        local_clearance - route.robot_footprint_radius_m - route.corridor_boundary_margin_m
+    )
+    maximum_vertex_radius = 0.0
+    for step in route.steps:
+        if step.minimum_obstacle_clearance_m > local_clearance:
+            raise RouteError(f"{step.waypoint_id}: requested clearance exceeds the inspected scene")
+        for x_m, y_m in step.corridor_polygon:
+            radius = math.hypot(x_m - route.start_x_m, y_m - route.start_y_m)
+            maximum_vertex_radius = max(maximum_vertex_radius, radius)
+            if radius > maximum_center_radius + 1e-9:
+                raise RouteError(
+                    f"{step.waypoint_id}: corridor exceeds clear radius after footprint and boundary margin"
+                )
+    return {
+        "status": "PASS",
+        "runtime_robot_footprint_radius_m": runtime_footprint,
+        "declared_route_footprint_radius_m": route.robot_footprint_radius_m,
+        "verified_local_clear_radius_m": local_clearance,
+        "maximum_corridor_center_radius_m": maximum_center_radius,
+        "maximum_corridor_vertex_radius_from_start_m": maximum_vertex_radius,
+    }
 
 
 def _number(raw: Mapping[str, Any], key: str) -> float:

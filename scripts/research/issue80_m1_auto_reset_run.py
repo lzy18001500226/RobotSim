@@ -61,6 +61,11 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_WINDOW_MAX_S,
     waypoint_b_arrival_trigger_radius_m,
 )
+from issue80_waypoint_route import (
+    build_waypoint_docking_route_from_poses,
+    load_waypoint_docking_pose_input,
+    validate_waypoint_docking_scene_clearance,
+)
 
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
@@ -769,6 +774,36 @@ def validate_activation_probe_prerequisite(evidence_dir: str | os.PathLike[str])
     return result
 
 
+def validate_waypoint_docking_route_input(route_path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Validate a Local01 route config against the pinned simple scene, without runtime startup."""
+    source = Path(route_path)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("route config must be a regular, non-symlink input file")
+    pose_input = load_waypoint_docking_pose_input(source)
+    workcell = inspect_route_workcell_geometry(RUNTIME)
+    if workcell.get("status") != "PASS":
+        raise ValueError("pinned simple-scene workcell preflight did not pass")
+    route = build_waypoint_docking_route_from_poses(
+        pose_input,
+        runtime_robot_footprint_radius_m=float(
+            workcell["robot_collision_footprint_radial_upper_bound_m"]
+        ),
+        verified_local_clear_radius_m=float(workcell["verified_local_clear_radius_m"]),
+    )
+    clearance = validate_waypoint_docking_scene_clearance(
+        route,
+        runtime_robot_footprint_radius_m=float(workcell["robot_collision_footprint_radial_upper_bound_m"]),
+        verified_local_clear_radius_m=float(workcell["verified_local_clear_radius_m"]),
+    )
+    return {
+        "route": route,
+        "pose_input": pose_input,
+        "workcell": workcell,
+        "clearance": clearance,
+        "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
+
+
 def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str]:
     """Build the exact production Docker exec command for the M1 child runner."""
     zero_only_activation = bool(
@@ -781,7 +816,11 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "--maintainer-authorized-activation-probe --activation-probe-qualification"
         if activation_probe else "--maintainer-authorized"
     )
-    child_extra_stop = 5.0 if activation_probe else args.extra_stop_observation
+    configured_waypoint_route = bool(getattr(args, "route_config", None))
+    child_extra_stop = (
+        5.0 if activation_probe else 7.0 if configured_waypoint_route
+        else args.extra_stop_observation
+    )
     child_pulse = ACTIVATION_PROBE_DURATION_S if activation_probe else args.pulse_duration
     child_forward = 0.12 if activation_probe else args.forward_speed
     command = [
@@ -821,6 +860,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_right_turn_qualification", "run65_route_integration",
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
+        "route_config",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += " --max-observed-planar-speed-m-s 0.2"
@@ -832,7 +872,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run53_turning_diagnostic", "run65_right_turn_qualification",
         "run65_route_integration", "run65_waypoint_b_only",
         "run65_waypoint_b_short_diagnostic", "run65_waypoint_b_extended_diagnostic",
-        "run65_curved_path_diagnostic",
+        "run65_curved_path_diagnostic", "route_config",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
@@ -844,6 +884,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_right_turn_qualification", "run65_route_integration",
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
+        "route_config",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
@@ -884,6 +925,11 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         )
     elif getattr(args, "run65_waypoint_b_only", False):
         command[-1] += " --route-integration --route-waypoint-b-only"
+    if configured_waypoint_route:
+        command[-1] += (
+            " --route-integration --route-config /workspace/evidence/route_config.json"
+            " --route-config-post-stand-observation"
+        )
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -1312,6 +1358,8 @@ def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
         "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_PASS",
         "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_FAIL",
         "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_BLOCKED",
+        "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_PASS",
+        "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED",
     ):
         return baseline_classification
     if baseline_classification == "FIRST_PHYSICAL_WALKING_PASS":
@@ -1413,6 +1461,33 @@ class BoundedRun:
     def __init__(self, args: argparse.Namespace):
         self.args = args
         self.evidence = Path(args.evidence_dir).resolve(strict=True)
+        self.route_config_sha256: str | None = None
+        if getattr(args, "route_config", None):
+            source = Path(args.route_config)
+            if source.is_symlink() or not source.is_file():
+                raise ValueError("route config must be a regular, non-symlink input file")
+            route_pose_input = load_waypoint_docking_pose_input(source)
+            route_bytes = source.read_bytes()
+            configured_sha = getattr(self.args, "configured_waypoint_docking_config_sha256", None)
+            if configured_sha is not None and configured_sha != hashlib.sha256(route_bytes).hexdigest():
+                raise ValueError("route config changed after its pre-runtime validation")
+            staged = self.evidence / "route_config.json"
+            with staged.open("xb") as stream:
+                stream.write(route_bytes)
+            self.route_config_sha256 = hashlib.sha256(route_bytes).hexdigest()
+            route_input = {
+                "schema": "robotsim.issue80.route-config-input.v1",
+                "classification": "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE",
+                "source_sha256": self.route_config_sha256,
+                "staged_path": str(staged),
+                "frame_id": "odom",
+                "route_id": route_pose_input["route_id"],
+                "step_ids": ["WAYPOINT", "TABLE_DOCKING"],
+                "not_a_motion_or_safety_gate": True,
+            }
+            with (self.evidence / "route_config_input.json").open("x", encoding="utf-8") as stream:
+                json.dump(route_input, stream, indent=2)
+                stream.write("\n")
         self.container = args.container
         self.source = "node.locomotion_velocity"
         self.started = time.monotonic()
@@ -1523,11 +1598,12 @@ class BoundedRun:
             getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
         )
         run65_curved_path = bool(getattr(self.args, "run65_curved_path_diagnostic", False))
+        run65_waypoint_docking = bool(getattr(self.args, "route_config", None))
         run65_waypoint_b_mode = (
             run65_waypoint_b_only or run65_waypoint_b_short or run65_waypoint_b_extended
         )
-        run65_overlay = run65_point_goal or run65_right_turn or run65_route or run65_waypoint_b_mode or run65_curved_path
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_mode, run65_curved_path))
+        run65_overlay = run65_point_goal or run65_right_turn or run65_route or run65_waypoint_b_mode or run65_curved_path or run65_waypoint_docking
+        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_mode, run65_curved_path, run65_waypoint_docking))
         if selected_variants == 0:
             return
         if selected_variants != 1:
@@ -1608,7 +1684,7 @@ class BoundedRun:
             TURN_FORWARD_COMMAND_M_S if run53
             else POINT_GOAL_FORWARD_COMMAND_M_S if run65_point_goal
             else CURVED_PATH_FORWARD_M_S if run65_curved_path
-            else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route or run65_waypoint_b_mode)
+            else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route or run65_waypoint_b_mode or run65_waypoint_docking)
             else float(self.args.forward_speed)
         )
         manifest["command_profile"] = ({
@@ -1730,6 +1806,24 @@ class BoundedRun:
                 "aggregate_nonzero_limit_s": CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
                 "inter_window_requirement": "fresh odom, source, STAND and full physical/controller-target stop PASS before rearm",
                 "final_yaw_target": None,
+            }
+        elif run65_waypoint_docking:
+            route = getattr(self.args, "configured_waypoint_docking_route", None)
+            manifest["command_profile"] = {
+                "shape": "ground-truth-two-step-waypoint-and-table-docking-route",
+                "classification": "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE",
+                "route_id": route.route_id if route is not None else None,
+                "frame_id": "odom",
+                "step_ids": [step.waypoint_id for step in route.steps] if route is not None else [],
+                "forward_m_s": 0.12,
+                "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                "maximum_windows_total": 3,
+                "maximum_window_s": 5.0,
+                "aggregate_nonzero_limit_s": 15.0,
+                "maximum_cross_track_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
+                "zero_stop_gate": "unchanged composite physical and joint-target gate after fresh STAND",
+                "post_stand_observation_s": 7.0,
+                "terminal_state": "WAITING_FOR_DOCKING_WITHOUT_MANIPULATOR_HANDOFF",
             }
         elif run65_waypoint_b_short:
             manifest["command_profile"] = {
@@ -3023,6 +3117,7 @@ class BoundedRun:
                 or getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
                 or getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
                 or getattr(self.args, "run65_curved_path_diagnostic", False)
+                or bool(getattr(self.args, "route_config", None))
             ):
                 workcell = inspect_route_workcell_geometry(RUNTIME)
                 geometry_path = self.evidence / "workcell_geometry_preflight.json"
@@ -3030,6 +3125,20 @@ class BoundedRun:
                     json.dump(workcell, stream, indent=2)
                     stream.write("\n")
                 result["workcell_geometry_preflight"] = workcell
+                if getattr(self.args, "route_config", None):
+                    result["route_config_input"] = {
+                        "sha256": self.route_config_sha256,
+                        "staged_path": str(self.evidence / "route_config.json"),
+                        "route_id": self.args.configured_waypoint_docking_route.route_id,
+                        "scene_clearance": validate_waypoint_docking_scene_clearance(
+                            self.args.configured_waypoint_docking_route,
+                            runtime_robot_footprint_radius_m=float(
+                                workcell["robot_collision_footprint_radial_upper_bound_m"]
+                            ),
+                            verified_local_clear_radius_m=float(workcell["verified_local_clear_radius_m"]),
+                        ),
+                        "execution_status": "INPUT_PREFLIGHT_ONLY",
+                    }
             if getattr(self.args, "run65_route_integration", False):
                 result["route_turn_qualification_evidence"] = self.stage_route_turn_qualification_evidence()
             self.prepare_foundationwalk_diagnostic_overlay()
@@ -3199,6 +3308,7 @@ class BoundedRun:
                 or getattr(self.args, "run65_waypoint_b_only", False)
                 or getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
                 or getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
+                or bool(getattr(self.args, "route_config", None))
             ):
                 route = m1.get("route_integration")
                 result["route_integration"] = route
@@ -3212,6 +3322,8 @@ class BoundedRun:
                     if getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
                     else "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED"
                     if getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
+                    else "SIMULATION_ONLY_WAYPOINT_DOCKING_ROUTE_BLOCKED"
+                    if getattr(self.args, "route_config", None)
                     else "SIMULATION_ONLY_WAYPOINT_B_AND_PHYSICAL_STOP_BLOCKED"
                     if getattr(self.args, "run65_waypoint_b_only", False)
                     else "SIMULATION_ONLY_SHORT_ROUTE_INTEGRATION_BLOCKED"
@@ -3522,6 +3634,11 @@ def main() -> int:
         default=None,
         help="governed m1_first_motion_result.json from the passing right-turn qualification run",
     )
+    parser.add_argument(
+        "--route-config",
+        default=None,
+        help="Local01-provided odom-frame START/WAYPOINT/TABLE_DOCKING x/y/yaw JSON",
+    )
     add_run65_point_goal_arguments(parser)
     args=parser.parse_args()
     if sum((
@@ -3617,9 +3734,28 @@ def main() -> int:
         args.run65_waypoint_b_extended_diagnostic,
         args.run65_curved_path_diagnostic,
         args.run65_ground_truth_point_goal,
+        bool(args.route_config),
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
+    if args.route_config:
+        if not args.maintainer_authorized_first_motion:
+            parser.error("configured waypoint-docking route requires explicit first-motion authorization")
+        if not args.require_stand_warmup_composite:
+            parser.error("configured waypoint-docking route requires the complete STAND warmup composite gate")
+        if args.route_turn_evidence is not None or args.capture_mc_rl_debug:
+            parser.error("configured waypoint-docking route does not accept turn evidence or extra runtime observers")
+        try:
+            route_input_preflight = validate_waypoint_docking_route_input(args.route_config)
+            args.configured_waypoint_docking_route = route_input_preflight["route"]
+            args.configured_waypoint_docking_workcell = route_input_preflight["workcell"]
+            args.configured_waypoint_docking_clearance = route_input_preflight["clearance"]
+            args.configured_waypoint_docking_config_sha256 = route_input_preflight["source_sha256"]
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            parser.error(f"configured waypoint-docking route rejected before runtime: {exc}")
+        # This route uses the already bounded post-STAND observation allowance;
+        # it does not relax the composite physical/controller-target gate.
+        args.extra_stop_observation = 7.0
     if args.maintainer_authorized_activation_probe and (
         any(diagnostic_variants)
         or args.capture_mc_rl_debug

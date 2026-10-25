@@ -102,8 +102,10 @@ from issue80_m1_mode_logic import (
 )
 from issue80_waypoint_route import (
     DirectiveKind, MotionFeedback, MotionStatus, PhysicalStopEvidence,
-    PhysicalStopStatus, PoseEstimate, RouteState, SafetyObservation,
-    WaypointRouteExecutor,
+    PhysicalStopStatus, PoseEstimate, Profile, RouteState,
+    SafetyObservation, WaypointRouteExecutor, YawPolicy,
+    build_waypoint_docking_route_from_poses, load_waypoint_docking_pose_input,
+    validate_waypoint_docking_scene_clearance,
 )
 from issue80_route_motion_bridge import (
     ROUTE_WINDOW_ZERO_MARGIN_S, WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
@@ -2700,6 +2702,7 @@ class FocusedM1Diagnostic(Node):
         waypoint_b_extended_diagnostic = bool(
             getattr(self.args, "route_waypoint_b_extended_diagnostic", False)
         )
+        route_config_mode = bool(getattr(self.args, "route_config", None))
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -2708,6 +2711,8 @@ class FocusedM1Diagnostic(Node):
         )
         result: dict[str, Any] = {
             "classification": (
+                "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE"
+                if route_config_mode else
                 "SIMULATION_ONLY_CURVED_PATH_DIAGNOSTIC"
                 if curved_path_diagnostic else
                 "SIMULATION_ONLY_EXTENDED_B_DIAGNOSTIC"
@@ -2721,6 +2726,8 @@ class FocusedM1Diagnostic(Node):
             "route_attempt_id": self.args.attempt_id,
             "segments": [],
             "route_scope": (
+                "CONFIGURED_START_WAYPOINT_TABLE_DOCKING"
+                if route_config_mode else
                 "SHALLOW_CURVED_FIXED_POINT_ENDPOINT"
                 if curved_path_diagnostic else
                 "EXTENDED_THREE_WINDOW_WAYPOINT_B_DIAGNOSTIC"
@@ -2730,6 +2737,8 @@ class FocusedM1Diagnostic(Node):
                 "WAYPOINT_B_ONLY" if waypoint_b_only else "B_RIGHT_TURN_C"
             ),
             "acceptance_scope": (
+                "LOCAL01_CONFIGURED_WAYPOINT_AND_TABLE_DOCKING_POSE"
+                if route_config_mode else
                 "CURVED_PATH_ROUTE_LIFECYCLE_DIAGNOSTIC"
                 if curved_path_diagnostic else
                 "EXTENDED_PROFILE_ORIGINAL_0_40_M_WAYPOINT_B_DIAGNOSTIC"
@@ -2749,13 +2758,31 @@ class FocusedM1Diagnostic(Node):
             if workcell.get("status") != "PASS":
                 raise ValueError("host workcell geometry preflight did not pass")
             turn_provenance = None
-            if not waypoint_b_only:
+            if not waypoint_b_only and not route_config_mode:
                 turn_provenance = validate_route_turn_qualification_evidence(
                     self.args.route_turn_qualification_evidence
                 )
             result["workcell_geometry_preflight"] = workcell
             if turn_provenance is not None:
                 result["qualified_right_turn_evidence"] = turn_provenance
+            if route_config_mode:
+                route_config_path = Path(self.args.route_config)
+                manifest_path = evidence_root / "route_config_input.json"
+                if (
+                    route_config_path.is_symlink() or not route_config_path.is_file()
+                    or manifest_path.is_symlink() or not manifest_path.is_file()
+                ):
+                    raise ValueError("configured route or its parent-staged input manifest is missing")
+                route_config_sha256 = hashlib.sha256(route_config_path.read_bytes()).hexdigest()
+                input_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if input_manifest.get("source_sha256") != route_config_sha256:
+                    raise ValueError("configured route input hash differs from its staged parent manifest")
+                result["route_config_input"] = {
+                    "sha256": route_config_sha256,
+                    "route_id": load_waypoint_docking_pose_input(route_config_path)["route_id"],
+                    "staged_path": str(route_config_path),
+                    "parent_manifest_verified": True,
+                }
         except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
             result["status"] = "BLOCKED"
             result["fault"] = f"route_preflight:{type(exc).__name__}:{exc}"
@@ -2891,7 +2918,18 @@ class FocusedM1Diagnostic(Node):
                 build_shallow_curved_path_reference(start_pose)
                 if curved_path_diagnostic else None
             )
-            if curved_reference is not None:
+            if route_config_mode:
+                route = build_waypoint_docking_route_from_poses(
+                    load_waypoint_docking_pose_input(self.args.route_config),
+                    runtime_robot_footprint_radius_m=footprint,
+                    verified_local_clear_radius_m=clear_radius,
+                )
+                result["route_config_preflight"] = validate_waypoint_docking_scene_clearance(
+                    route,
+                    runtime_robot_footprint_radius_m=footprint,
+                    verified_local_clear_radius_m=clear_radius,
+                )
+            elif curved_reference is not None:
                 route = build_curved_waypoint_route(
                     route_id=f"issue80-curved-route-{self.args.attempt_id}",
                     start_pose=start_pose,
@@ -2913,7 +2951,7 @@ class FocusedM1Diagnostic(Node):
                     ),
                 )
             transit_x, transit_y = route.steps[0].x_m, route.steps[0].y_m
-            if not waypoint_b_only:
+            if not waypoint_b_only and not route_config_mode:
                 next_x, next_y = route.steps[2].x_m, route.steps[2].y_m
                 corner_yaw = math.atan2(next_y - transit_y, next_x - transit_x)
             corridor_half_width = (
@@ -3049,7 +3087,22 @@ class FocusedM1Diagnostic(Node):
                 "boundary_margin_m": route.corridor_boundary_margin_m,
                 "pose_uncertainty_note": "installed simulator ground-truth odometry publishes no covariance; route uses zero covariance only as the deterministic ground-truth contract, not as an estimated localization confidence",
             }
-            if curved_path_diagnostic:
+            if route_config_mode:
+                route_spec.update({
+                    "configured_route_input_sha256": hashlib.sha256(
+                        Path(self.args.route_config).read_bytes()
+                    ).hexdigest(),
+                    "route_motion_profile": "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE",
+                    "maximum_windows_total": 3,
+                    "maximum_window_s": 5.0,
+                    "aggregate_nonzero_limit_s": 15.0,
+                    "maximum_forward_m_s": 0.12,
+                    "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                    "maximum_segment_cross_track_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
+                    "post_stand_observation_s": 7.0,
+                    "final_state": "WAITING_FOR_DOCKING_WITHOUT_MANIPULATOR_HANDOFF",
+                })
+            elif curved_path_diagnostic:
                 curve_forward_extent = float(curved_reference["radius_m"]) * math.sin(
                     float(curved_reference["sweep_rad"])
                 )
@@ -3255,9 +3308,13 @@ class FocusedM1Diagnostic(Node):
             route_progress_monitor: dict[str, Any] = {
                 "cross_track_limit_m": (
                     CURVED_PATH_MAX_CROSS_TRACK_M if curved_path_diagnostic else
+                    WAYPOINT_B_MAX_CROSS_TRACK_M if route_config_mode else
                     WAYPOINT_B_MAX_CROSS_TRACK_M if waypoint_b_only else None
                 ),
-                "cross_track_reference": "CIRCULAR_ARC" if curved_path_diagnostic else "START_CENTERLINE",
+                "cross_track_reference": (
+                    "CIRCULAR_ARC" if curved_path_diagnostic else
+                    "CURRENT_CONFIGURED_ROUTE_SEGMENT" if route_config_mode else "START_CENTERLINE"
+                ),
                 "maximum_forward_projection_guard_m": (
                     WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M
                     if waypoint_b_extended_diagnostic else None
@@ -3284,6 +3341,10 @@ class FocusedM1Diagnostic(Node):
                 "verified_wall_clock_step_rebases": 0,
             }
             latest_transit_snapshot: Mapping[str, Any] | None = None
+            route_segment_origin = {
+                "x_m": route.start_x_m,
+                "y_m": route.start_y_m,
+            }
             odom_freshness_tracker = RouteOdomFreshnessTracker(
                 last_unique_stamp_ns=start_pose.stamp_ns,
                 last_unique_received_steady_s=start_pose.received_steady_s,
@@ -3291,7 +3352,13 @@ class FocusedM1Diagnostic(Node):
             )
             window_control: dict[str, Any] = {}
             active_window_gate = TransitSteeringGate(warmup_s=ROUTE_STEERING_WARMUP_S)
-
+            configured_docking_control: dict[str, Any] = {
+                "step_id": None,
+                "phase_controller": None,
+                "yaw_rate_monitor": SustainedYawRateWindow() if route_config_mode else None,
+                "yaw_rate_feedback": None,
+                "last_decision": None,
+            }
             def transit_termination(snapshot: Mapping[str, Any]) -> bool:
                 nonlocal route_fault, route_stop_reason, latest_transit_snapshot
                 latest_transit_snapshot = snapshot
@@ -3395,10 +3462,34 @@ class FocusedM1Diagnostic(Node):
                 window_control["last_unique_odom_stamp_ns"] = odom_freshness.get(
                     "last_unique_stamp_ns"
                 )
-                dx = pose.x_m - start_pose.x_m
-                dy = pose.y_m - start_pose.y_m
-                forward_projection_m = dx * math.cos(start_pose.yaw_rad) + dy * math.sin(start_pose.yaw_rad)
-                cross_track_m = -dx * math.sin(start_pose.yaw_rad) + dy * math.cos(start_pose.yaw_rad)
+                if route_config_mode and odom_stamp_action == "NEW":
+                    yaw_rate_sample = configured_docking_control["yaw_rate_monitor"].update(snapshot)
+                    if yaw_rate_sample.get("status") == "MEASURED":
+                        configured_docking_control["yaw_rate_feedback"] = {
+                            "signed_net_yaw_rate_rad_s": float(yaw_rate_sample["signed_net_yaw_rate_rad_s"]),
+                            "sample_monotonic_s": sample_time,
+                        }
+                    elif yaw_rate_sample.get("status") == "HOST_MONOTONIC_RESET":
+                        configured_docking_control["yaw_rate_feedback"] = None
+                if route_config_mode:
+                    active_for_axis = executor.active_step
+                    if active_for_axis is None:
+                        route_fault = "configured_route_active_step_missing"
+                        return True
+                    axis_dx = active_for_axis.x_m - float(route_segment_origin["x_m"])
+                    axis_dy = active_for_axis.y_m - float(route_segment_origin["y_m"])
+                    if math.hypot(axis_dx, axis_dy) <= 1e-6:
+                        route_fault = f"configured_route_zero_length_segment:{active_for_axis.waypoint_id}"
+                        return True
+                    segment_yaw = math.atan2(axis_dy, axis_dx)
+                    dx = pose.x_m - float(route_segment_origin["x_m"])
+                    dy = pose.y_m - float(route_segment_origin["y_m"])
+                else:
+                    segment_yaw = start_pose.yaw_rad
+                    dx = pose.x_m - start_pose.x_m
+                    dy = pose.y_m - start_pose.y_m
+                forward_projection_m = dx * math.cos(segment_yaw) + dy * math.sin(segment_yaw)
+                cross_track_m = -dx * math.sin(segment_yaw) + dy * math.cos(segment_yaw)
                 curve_sample = None
                 cross_track_guard_m = abs(cross_track_m)
                 if curved_path_diagnostic:
@@ -3450,7 +3541,8 @@ class FocusedM1Diagnostic(Node):
                 )
                 cross_track_limit = (
                     CURVED_PATH_MAX_CROSS_TRACK_M if curved_path_diagnostic
-                    else WAYPOINT_B_MAX_CROSS_TRACK_M
+                    else WAYPOINT_B_MAX_CROSS_TRACK_M if waypoint_b_only or route_config_mode
+                    else None
                 )
                 sample_disposition = (
                     route_feedback_sample_disposition(
@@ -3458,7 +3550,7 @@ class FocusedM1Diagnostic(Node):
                         cross_track_error_m=cross_track_guard_m,
                         maximum_cross_track_m=cross_track_limit,
                     )
-                    if waypoint_b_only else
+                    if waypoint_b_only or route_config_mode else
                     "SKIP_DUPLICATE_ROUTE_TICK" if odom_stamp_action == "DUPLICATE"
                     else "ADVANCE_ROUTE_TICK"
                 )
@@ -3468,6 +3560,8 @@ class FocusedM1Diagnostic(Node):
                     route_fault = (
                         "curved_path_reference_cross_track_limit_exceeded"
                         if curved_path_diagnostic else
+                        "configured_route_segment_cross_track_limit_exceeded"
+                        if route_config_mode else
                         "waypoint_b_centerline_cross_track_limit_exceeded"
                     )
                     guard_event = {
@@ -3521,9 +3615,95 @@ class FocusedM1Diagnostic(Node):
                     # the core route state on a duplicate source timestamp.
                     return False
                 distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
+                docking_decision = None
+                if route_config_mode and active.yaw_policy is YawPolicy.EXPLICIT:
+                    if configured_docking_control["step_id"] != active.waypoint_id:
+                        segment_length = math.hypot(
+                            active.x_m - float(route_segment_origin["x_m"]),
+                            active.y_m - float(route_segment_origin["y_m"]),
+                        )
+                        if segment_length <= 1e-6:
+                            route_fault = "configured_docking_segment_has_zero_length"
+                            return True
+                        configured_docking_control.update({
+                            "step_id": active.waypoint_id,
+                            "phase_controller": PoseGoalPhaseController(
+                                goal_distance_m=segment_length,
+                                final_position_tolerance_m=active.position_tolerance_m,
+                                maximum_lateral_error_m=WAYPOINT_B_MAX_CROSS_TRACK_M,
+                                maximum_overshoot_m=0.05,
+                                final_yaw_tolerance_rad=float(active.yaw_tolerance_rad),
+                                terminal_yaw_setpoint_tolerance_rad=float(active.yaw_tolerance_rad),
+                            ),
+                            "last_decision": None,
+                        })
+                    yaw_error = math.atan2(
+                        math.sin(float(active.yaw_rad) - pose.yaw_rad),
+                        math.cos(float(active.yaw_rad) - pose.yaw_rad),
+                    )
+                    try:
+                        measured_forward = point_goal_forward_speed_m_s(
+                            snapshot["pose"],
+                            start_yaw_rad=math.atan2(
+                                active.y_m - float(route_segment_origin["y_m"]),
+                                active.x_m - float(route_segment_origin["x_m"]),
+                            ),
+                        )
+                        stop_advance = speed_scaled_point_goal_stop_advance_m(
+                            measured_forward,
+                            endpoint_response_intercept_m=POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M,
+                            endpoint_response_time_s=POINT_GOAL_ENDPOINT_RESPONSE_TIME_S,
+                            maximum_forward_speed_m_s=0.2,
+                        )
+                        docking_position_stop_reason = point_goal_stop_reason(
+                            along_track_progress_m=forward_projection_m,
+                            lateral_error_m=cross_track_m,
+                            goal_distance_m=math.hypot(
+                                active.x_m - float(route_segment_origin["x_m"]),
+                                active.y_m - float(route_segment_origin["y_m"]),
+                            ),
+                            dynamic_stop_progress_m=math.hypot(
+                                active.x_m - float(route_segment_origin["x_m"]),
+                                active.y_m - float(route_segment_origin["y_m"]),
+                            ) + stop_advance,
+                            final_tolerance_m=active.position_tolerance_m,
+                            predicted_settled_tolerance_m=max(0.02, active.position_tolerance_m - 0.04),
+                            maximum_lateral_error_m=WAYPOINT_B_MAX_CROSS_TRACK_M,
+                            maximum_overshoot_m=0.05,
+                        )
+                        yaw_rate_feedback = configured_docking_control["yaw_rate_feedback"]
+                        measured_yaw_rate = None
+                        if yaw_rate_feedback is not None:
+                            try:
+                                measured_yaw_rate = fresh_yaw_rate_feedback(
+                                    yaw_rate_feedback,
+                                    sample_monotonic_s=sample_time,
+                                    maximum_age_s=MAX_POSE_AGE_S,
+                                )["signed_yaw_rate_rad_s"]
+                            except ValueError:
+                                measured_yaw_rate = None
+                        docking_decision = configured_docking_control["phase_controller"].update(
+                            monotonic_s=sample_time,
+                            position_stop_reason=docking_position_stop_reason,
+                            distance_to_goal_m=distance,
+                            lateral_error_m=cross_track_m,
+                            along_track_progress_m=forward_projection_m,
+                            yaw_error_rad=yaw_error,
+                            measured_yaw_rate_rad_s=measured_yaw_rate,
+                            terminal_setpoint_error_rad=yaw_error,
+                        )
+                        configured_docking_control["last_decision"] = docking_decision
+                    except (KeyError, TypeError, ValueError) as exc:
+                        route_fault = f"configured_docking_pose_goal:{type(exc).__name__}:{exc}"
+                        return True
+                    if docking_decision.get("failure_reason"):
+                        route_fault = "configured_docking_pose_goal:" + str(docking_decision["failure_reason"])
+                        return True
                 arrival_trigger_radius_m = waypoint_b_arrival_trigger_radius_m(
                     acceptance_tolerance_m=active.position_tolerance_m,
                     stop_reserve_m=(
+                        min(0.04, active.position_tolerance_m * 0.5)
+                        if route_config_mode else
                         CURVED_PATH_STOP_RESERVE_M if curved_path_diagnostic else
                         WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M
                         if waypoint_b_extended_diagnostic else
@@ -3532,7 +3712,17 @@ class FocusedM1Diagnostic(Node):
                     ),
                 )
                 feedback = MotionFeedback(
-                    status=MotionStatus.ARRIVED if distance <= arrival_trigger_radius_m else MotionStatus.ACTIVE,
+                    status=(
+                        MotionStatus.ARRIVED
+                        if (
+                            docking_decision is not None
+                            and docking_decision.get("phase") == POSE_GOAL_ZERO_STOP
+                        ) or (
+                            docking_decision is None
+                            and distance <= arrival_trigger_radius_m
+                        )
+                        else MotionStatus.ACTIVE
+                    ),
                     reset_gate_pass=True,
                     standing_gate_pass=True,
                     source_mode_handshake_pass=True,
@@ -3586,11 +3776,13 @@ class FocusedM1Diagnostic(Node):
 
             route_total_nonzero_s = 0.0
             transit_window_limit = (
+                3 if route_config_mode else
                 CURVED_PATH_MAX_WINDOWS if curved_path_diagnostic else
                 WAYPOINT_B_EXTENDED_DIAGNOSTIC_MAX_WINDOWS
                 if waypoint_b_extended_diagnostic else WAYPOINT_B_MAX_WINDOWS
             )
             transit_aggregate_limit_s = (
+                15.0 if route_config_mode else
                 CURVED_PATH_AGGREGATE_NONZERO_MAX_S if curved_path_diagnostic else
                 WAYPOINT_B_EXTENDED_DIAGNOSTIC_AGGREGATE_TRANSIT_MAX_S
                 if waypoint_b_extended_diagnostic else WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S
@@ -3602,7 +3794,7 @@ class FocusedM1Diagnostic(Node):
                 segment_id: str,
             ) -> dict[str, Any]:
                 """Run bounded 5 s windows, re-planning only after measured stop."""
-                nonlocal route_fault, route_stop_reason, route_total_nonzero_s, latest_transit_snapshot
+                nonlocal route_fault, route_stop_reason, route_total_nonzero_s, latest_transit_snapshot, set_action
                 nonlocal active_window_gate
                 current_directive = initial_directive
                 current_plan = initial_plan
@@ -3611,6 +3803,15 @@ class FocusedM1Diagnostic(Node):
                 window_index = 0
                 segment_nonzero_s = 0.0
                 while True:
+                    if route_config_mode and len(result["segments"]) >= 3:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": "configured_route_total_window_budget_exhausted",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                            "segment_nonzero_command_time_s": segment_nonzero_s,
+                        }
                     if window_index >= transit_window_limit:
                         return {
                             "status": "BLOCKED",
@@ -3659,7 +3860,9 @@ class FocusedM1Diagnostic(Node):
                             }
                         set_action = next_set_action
                         self.activation_lifecycle = lifecycle
-                    remaining_route_s = 30.0 - route_total_nonzero_s
+                    remaining_route_s = (
+                        15.0 if route_config_mode else 30.0
+                    ) - route_total_nonzero_s
                     remaining_transit_s = transit_aggregate_limit_s - segment_nonzero_s
                     window_cap_s = min(
                         float(current_plan.maximum_duration_s),
@@ -3725,6 +3928,46 @@ class FocusedM1Diagnostic(Node):
                                         "angular_velocity_rad_s": angular,
                                         "raw_angular_velocity_rad_s": angular,
                                         "duplicate_odom_feedback_reused": True,
+                                        "locomotion_handshake_confirmed": True,
+                                    })
+                                elif (
+                                    route_config_mode
+                                    and active.yaw_policy is YawPolicy.EXPLICIT
+                                    and configured_docking_control.get("phase_controller") is not None
+                                    and configured_docking_control["phase_controller"].phase == TERMINAL_POSE_CONTROL
+                                ):
+                                    yaw_rate_feedback = configured_docking_control.get("yaw_rate_feedback")
+                                    try:
+                                        measured = fresh_yaw_rate_feedback(
+                                            yaw_rate_feedback,
+                                            sample_monotonic_s=float(snapshot["sample_monotonic_s"]),
+                                            maximum_age_s=MAX_POSE_AGE_S,
+                                        )
+                                        terminal = terminal_yaw_rate_command(
+                                            current_yaw_rad=float(pose["yaw"]),
+                                            target_yaw_rad=float(active.yaw_rad),
+                                            measured_yaw_rate_rad_s=float(measured["signed_yaw_rate_rad_s"]),
+                                            maximum_angular_rad_s=float(active.max_angular_rad_s),
+                                            final_yaw_tolerance_rad=float(active.yaw_tolerance_rad),
+                                        )
+                                    except (KeyError, TypeError, ValueError) as exc:
+                                        window_control["feedback_fault"] = (
+                                            f"docking_terminal_yaw_feedback:{type(exc).__name__}:{exc}"
+                                        )
+                                        self._publish(0.0, 0.0, 0.0)
+                                        return
+                                    forward = 0.0
+                                    angular = float(terminal["command_yaw_rate_rad_s"])
+                                    control_row.update({
+                                        "forward_velocity_m_s": 0.0,
+                                        "control_phase": "DOCKING_TERMINAL_POSE_CONTROL",
+                                        "target_yaw_rad": float(active.yaw_rad),
+                                        "current_yaw_rad": float(pose["yaw"]),
+                                        "yaw_error_rad": float(terminal["yaw_error_rad"]),
+                                        "measured_yaw_rate_rad_s": float(measured["signed_yaw_rate_rad_s"]),
+                                        "measured_yaw_rate_age_s": float(measured["age_s"]),
+                                        "raw_angular_velocity_rad_s": float(terminal["raw_yaw_rate_command_rad_s"]),
+                                        "saturated": abs(float(terminal["raw_yaw_rate_command_rad_s"])) > float(active.max_angular_rad_s),
                                         "locomotion_handshake_confirmed": True,
                                     })
                                 elif curved_path_diagnostic:
@@ -3796,7 +4039,12 @@ class FocusedM1Diagnostic(Node):
                             steering_samples.append(control_row)
                         elif forward > 0.0:
                             window_control["last_route_angular_command_rad_s"] = 0.0
-                        self._publish(forward, 0.0, angular if forward > 0.0 else 0.0)
+                        terminal_rotation = control_row.get("control_phase") == "DOCKING_TERMINAL_POSE_CONTROL"
+                        self._publish(
+                            forward,
+                            0.0,
+                            angular if forward > 0.0 or terminal_rotation else 0.0,
+                        )
 
                     last_result = run_first_motion_window(
                         sample=self.sample_for_first_motion,
@@ -3813,7 +4061,8 @@ class FocusedM1Diagnostic(Node):
                         extra_post_stop_observe_s=float(self.args.extra_stop_observation),
                         extra_post_stop_observe_limit_s=(
                             MAX_EXTRA_POST_STOP_OBSERVE_S
-                            if getattr(self.args, "route_waypoint_b_post_locomotion_convergence", False)
+                            if route_config_mode
+                            or getattr(self.args, "route_waypoint_b_post_locomotion_convergence", False)
                             else 5.0
                         ),
                         after_zero_stop=self.request_postwalk_stand_once,
@@ -4055,6 +4304,15 @@ class FocusedM1Diagnostic(Node):
                     )
                     distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
                     arrived_after_stop = distance <= active.position_tolerance_m
+                    poststop_yaw_error = None
+                    if active.yaw_policy is YawPolicy.EXPLICIT:
+                        poststop_yaw_error = math.atan2(
+                            math.sin(float(active.yaw_rad) - pose.yaw_rad),
+                            math.cos(float(active.yaw_rad) - pose.yaw_rad),
+                        )
+                        arrived_after_stop = arrived_after_stop and abs(poststop_yaw_error) <= float(
+                            active.yaw_tolerance_rad
+                        )
                     source_readback_passed = fresh_input_source_readback_valid(
                         snapshot,
                         expected_source=self.source,
@@ -4237,7 +4495,8 @@ class FocusedM1Diagnostic(Node):
                             "zero_plan": dict(zero_plan.__dict__),
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
-                    if route_total_nonzero_s >= 30.0:
+                    route_total_limit_s = 15.0 if route_config_mode else 30.0
+                    if route_total_nonzero_s >= route_total_limit_s:
                         return {
                             "status": "BLOCKED",
                             "fault": "route_total_nonzero_command_budget_exhausted",
@@ -4263,6 +4522,299 @@ class FocusedM1Diagnostic(Node):
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
                     current_directive = directive_after_stop
+
+            if route_config_mode:
+                route_step_results: list[dict[str, Any]] = []
+                current_directive = current_directive
+                current_plan = transit_plan
+                baseline_displacements = [
+                    float(window["forward_displacement_m"])
+                    for window in (stationary_baseline or {}).get("windows", [])
+                ]
+                for step_index, configured_step in enumerate(route.steps):
+                    active = executor.active_step
+                    if active is None or active.waypoint_id != configured_step.waypoint_id:
+                        result.update({
+                            "status": "BLOCKED",
+                            "fault": "configured_route_step_order_changed",
+                            "route_events": route_events + route_motion.events,
+                            "route_step_results": route_step_results,
+                        })
+                        return result
+                    if step_index > 0:
+                        lifecycle, next_set_action, activation_gate = self.begin_zero_only_locomotion_activation(
+                            registration=registration,
+                            phase=f"configured-route-{configured_step.waypoint_id.lower()}-activation",
+                        )
+                        result.setdefault("activation_rearms", []).append({
+                            "step_id": configured_step.waypoint_id,
+                            "set_mc_action_ld": next_set_action,
+                            "activation_gate": activation_gate,
+                            "lifecycle_after_activation": lifecycle.snapshot(),
+                        })
+                        if activation_gate.get("status") != "PASS":
+                            recovery = self.recover_activation_to_stand(
+                                lifecycle=lifecycle,
+                                registration=registration,
+                                set_action=next_set_action,
+                                baseline=stationary_baseline,
+                                reason=str(activation_gate.get("fault") or "route step activation was not confirmed"),
+                                phase=f"configured-route-{configured_step.waypoint_id.lower()}-activation-recovery",
+                            )
+                            result["activation_rearms"][-1]["stand_recovery"] = recovery
+                            result.update({
+                                "status": "BLOCKED",
+                                "fault": "configured_route_step_locomotion_reactivation_not_confirmed",
+                                "route_events": route_events + route_motion.events,
+                                "route_step_results": route_step_results,
+                            })
+                            return result
+                        self.activation_lifecycle = lifecycle
+                        set_action = next_set_action
+                        fresh = self.sample_for_first_motion()
+                        try:
+                            pose = pose_provider.update(fresh)
+                        except (KeyError, TypeError, ValueError) as exc:
+                            result.update({
+                                "status": "BLOCKED",
+                                "fault": f"configured_route_rearm_pose:{type(exc).__name__}:{exc}",
+                                "route_events": route_events + route_motion.events,
+                                "route_step_results": route_step_results,
+                            })
+                            return result
+                        safety_provider.update(fresh, configured_step.waypoint_id)
+                        fault = snapshot_fault(
+                            fresh,
+                            self.joint_limits,
+                            state_timeout_s=self.args.state_timeout,
+                            min_root_z=self.args.min_root_z,
+                            max_tilt_deg=self.args.max_tilt_deg,
+                            max_observed_planar_speed_m_s=0.2,
+                        )
+                        if fault or not fresh_stand_mode_readback_valid(
+                            fresh, maximum_age_s=float(self.args.state_timeout),
+                        ):
+                            result.update({
+                                "status": "BLOCKED",
+                                "fault": f"configured_route_rearm_safety_or_stand_readback:{fault or 'STALE_STAND'}",
+                                "route_events": route_events + route_motion.events,
+                                "route_step_results": route_step_results,
+                            })
+                            return result
+                        route_segment_origin["x_m"] = pose.x_m
+                        route_segment_origin["y_m"] = pose.y_m
+                        readiness = readiness_from_snapshot(fresh)
+                        current_plan = bridge.plan_next(
+                            current_directive,
+                            pose,
+                            readiness,
+                            now_steady_s=float(fresh["sample_monotonic_s"]),
+                        )
+                        if current_plan.status != "PROPOSAL_ONLY" or current_plan.forward_m_s <= 0.0:
+                            result.update({
+                                "status": "BLOCKED",
+                                "fault": f"configured_route_bridge_refused_step:{current_plan.status}:{current_plan.reason}",
+                                "route_events": route_events + route_motion.events,
+                                "route_step_results": route_step_results,
+                            })
+                            return result
+
+                    result["active_configured_route_step"] = configured_step.waypoint_id
+                    transit_summary = run_transit_windows(
+                        current_directive,
+                        current_plan,
+                        configured_step.waypoint_id,
+                    )
+                    last_result = transit_summary.get("last_result") or {}
+                    last_gate = transit_summary.get("last_gate") or {}
+                    if (
+                        transit_summary.get("status") not in (
+                            "ARRIVAL_DURING_WINDOW", "ARRIVAL_AFTER_VERIFIED_STOP",
+                        )
+                        or last_result.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
+                        or last_gate.get("status") != "PASS"
+                        or route_fault
+                    ):
+                        result.update({
+                            "status": "BLOCKED",
+                            "fault": transit_summary.get("fault") or route_fault or last_result.get("fault") or "configured_route_step_or_stop_gate_failed",
+                            "route_events": route_events + route_motion.events,
+                            "route_step_results": route_step_results,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        })
+                        return result
+
+                    after = transit_summary.get("next_directive")
+                    final_snapshot = transit_summary.get("final_snapshot")
+                    stop_rearmed = bool(transit_summary.get("bridge_stop_rearmed"))
+                    evidence = stop_mapping(last_gate)
+                    zero_start = float(last_gate.get("zero_start_monotonic_s", 0.0))
+                    if not stop_rearmed:
+                        bridge.zero_window(
+                            route_motion.latest,
+                            now_steady_s=time.monotonic(),
+                            reason=f"{configured_step.waypoint_id} arrived; consume its existing composite stop",
+                            physical_stop_gate_required=True,
+                        )
+                        stop_rearmed = bridge.confirm_physical_stop(
+                            evidence,
+                            zero_request_started_s=zero_start,
+                            now_steady_s=time.monotonic(),
+                            expected_generation=str(self.args.attempt_id),
+                        )
+                        if not stop_rearmed:
+                            result.update({
+                                "status": "BLOCKED",
+                                "fault": f"configured_route_step_stop_rearm_failed:{configured_step.waypoint_id}",
+                                "route_events": route_events + route_motion.events,
+                                "route_step_results": route_step_results,
+                            })
+                            return result
+                        final_snapshot = self.sample_for_first_motion()
+                        try:
+                            pose = pose_provider.update(final_snapshot)
+                        except (KeyError, TypeError, ValueError) as exc:
+                            result.update({
+                                "status": "BLOCKED",
+                                "fault": f"configured_route_poststop_pose:{type(exc).__name__}:{exc}",
+                                "route_events": route_events + route_motion.events,
+                                "route_step_results": route_step_results,
+                            })
+                            return result
+                        safety_provider.update(final_snapshot, configured_step.waypoint_id)
+                        fault = snapshot_fault(
+                            final_snapshot,
+                            self.joint_limits,
+                            state_timeout_s=self.args.state_timeout,
+                            min_root_z=self.args.min_root_z,
+                            max_tilt_deg=self.args.max_tilt_deg,
+                            max_observed_planar_speed_m_s=0.2,
+                        )
+                        stand_ok = fresh_stand_mode_readback_valid(
+                            final_snapshot, maximum_age_s=float(self.args.state_timeout),
+                        )
+                        source_ok = fresh_input_source_readback_valid(
+                            final_snapshot,
+                            expected_source=self.source,
+                            maximum_age_s=float(self.args.state_timeout),
+                        )
+                        if fault or not stand_ok or not source_ok:
+                            result.update({
+                                "status": "BLOCKED",
+                                "fault": f"configured_route_poststop_readback_or_safety:stand={stand_ok},source={source_ok},fault={fault}",
+                                "route_events": route_events + route_motion.events,
+                                "route_step_results": route_step_results,
+                            })
+                            return result
+                        stop_evidence = PhysicalStopEvidence(
+                            status=PhysicalStopStatus.PASS,
+                            window_start_steady_s=float(evidence["window_start_steady_s"]),
+                            window_end_steady_s=float(evidence["window_end_steady_s"]),
+                            sample_count=int(evidence["sample_count"]),
+                            maximum_sample_gap_s=float(evidence["maximum_sample_gap_s"]),
+                            maximum_state_age_s=float(evidence["maximum_state_age_s"]),
+                            generation=str(self.args.attempt_id),
+                        )
+                        after = executor.accept_arrival_after_verified_stop(
+                            float(final_snapshot["sample_monotonic_s"]),
+                            MotionFeedback(
+                                status=MotionStatus.ARRIVED,
+                                physical_stop_evidence=stop_evidence,
+                                reset_gate_pass=True,
+                                standing_gate_pass=True,
+                                source_mode_handshake_pass=False,
+                                safety_gates_pass=True,
+                                stand_readback_pass=stand_ok,
+                                input_source_readback_pass=source_ok,
+                            ),
+                            zero_request_started_s=zero_start,
+                            bridge_rearmed=True,
+                        )
+                    if after is None or after.kind is DirectiveKind.STOP_AND_ABORT:
+                        result.update({
+                            "status": "BLOCKED",
+                            "fault": getattr(after, "reason", "configured_route_executor_did_not_advance"),
+                            "route_events": route_events + route_motion.events,
+                            "route_step_results": route_step_results,
+                        })
+                        return result
+                    pose = pose_provider.pose
+                    if pose is None:
+                        result.update({
+                            "status": "BLOCKED",
+                            "fault": "configured_route_poststop_pose_missing",
+                            "route_events": route_events + route_motion.events,
+                            "route_step_results": route_step_results,
+                        })
+                        return result
+                    position_error = math.hypot(configured_step.x_m - pose.x_m, configured_step.y_m - pose.y_m)
+                    yaw_error = None
+                    if configured_step.yaw_policy is YawPolicy.EXPLICIT:
+                        yaw_error = math.atan2(
+                            math.sin(float(configured_step.yaw_rad) - pose.yaw_rad),
+                            math.cos(float(configured_step.yaw_rad) - pose.yaw_rad),
+                        )
+                    route_step_results.append({
+                        "step_id": configured_step.waypoint_id,
+                        "measured_pose": {"x_m": pose.x_m, "y_m": pose.y_m, "yaw_rad": pose.yaw_rad},
+                        "position_error_m": position_error,
+                        "position_tolerance_m": configured_step.position_tolerance_m,
+                        "yaw_error_rad": yaw_error,
+                        "yaw_tolerance_rad": configured_step.yaw_tolerance_rad,
+                        "physical_stop_gate": last_gate.get("status"),
+                        "zero_receipt_ack": last_gate.get("mc_zero_receipt_ack", False),
+                        "pose_goal_terminal_decision": (
+                            configured_docking_control.get("last_decision")
+                            if configured_step.profile is Profile.DOCKING else None
+                        ),
+                        "route_executor_state": executor.state.value,
+                        "no_duplicate_stop_request": True,
+                    })
+                    if position_error > configured_step.position_tolerance_m or (
+                        yaw_error is not None and abs(yaw_error) > float(configured_step.yaw_tolerance_rad)
+                    ):
+                        result.update({
+                            "status": "BLOCKED",
+                            "fault": f"configured_route_settled_pose_outside_tolerance:{configured_step.waypoint_id}",
+                            "route_events": route_events + route_motion.events,
+                            "route_step_results": route_step_results,
+                        })
+                        return result
+                    route_segment_origin["x_m"] = pose.x_m
+                    route_segment_origin["y_m"] = pose.y_m
+                    current_directive = after
+
+                final_route_pass = (
+                    executor.state is RouteState.WAITING_FOR_DOCKING
+                    and current_directive.kind is DirectiveKind.WAIT
+                    and len(route_step_results) == 2
+                    and all(step["physical_stop_gate"] == "PASS" for step in route_step_results)
+                )
+                result.update({
+                    "status": "PASS" if final_route_pass else "BLOCKED",
+                    "classification": "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_PASS" if final_route_pass else "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED",
+                    "acceptance_scope": "GROUND_TRUTH_WAYPOINT_AND_DOCKING_POSE_WITH_PHYSICAL_STOP",
+                    "route_lifecycle_completion": "WAITING_FOR_DOCKING_NO_MANIPULATOR_HANDOFF" if final_route_pass else executor.state.value,
+                    "route_manager_state": {
+                        "status": executor.state.value,
+                        "active_step": executor.active_step.waypoint_id if executor.active_step else None,
+                        "phase": executor.phase.value,
+                        "steps_completed": executor.step_index,
+                    },
+                    "route_step_results": route_step_results,
+                    "route_events": route_events + route_motion.events,
+                    "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                    "route_total_windows": len(result["segments"]),
+                    "route_window_limit": 3,
+                    "aggregate_nonzero_limit_s": 15.0,
+                    "cross_track_limit_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
+                    "maximum_cross_track_m": route_progress_monitor["maximum_abs_cross_track_m"],
+                    "manipulator_handoff": "NOT_REQUESTED",
+                    "mc_zero_receipt_ack_available": False,
+                })
+                if not final_route_pass:
+                    result["fault"] = "configured_route_did_not_reach_stopped_TABLE_DOCKING"
+                return result
 
             baseline_displacements = [
                 float(window["forward_displacement_m"])
@@ -6027,15 +6579,65 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         and getattr(args, "route_waypoint_b_extended_diagnostic", False)
     ):
         raise ValueError("post-locomotion convergence observation requires extended waypoint-B route integration")
+    configured_route = bool(getattr(args, "route_config", None))
+    configured_route_observation = bool(
+        getattr(args, "route_config_post_stand_observation", False)
+    )
+    if configured_route_observation and not configured_route:
+        raise ValueError("configured-route post-STAND observation requires --route-config")
+    if configured_route:
+        if not getattr(args, "route_integration", False):
+            raise ValueError("--route-config requires --route-integration")
+        if any((
+            args.route_curved_path_diagnostic,
+            args.route_waypoint_b_only,
+            args.route_waypoint_b_short_diagnostic,
+            args.route_waypoint_b_extended_diagnostic,
+            args.route_waypoint_b_post_locomotion_convergence,
+            args.route_turn_qualification_evidence,
+        )):
+            raise ValueError("--route-config cannot be combined with built-in B, curve, or turn profiles")
+        if not configured_route_observation or abs(float(args.extra_stop_observation) - 7.0) > 1e-9:
+            raise ValueError("configured route requires the explicit bounded 7 s post-STAND observation")
+        if (
+            args.max_observed_planar_speed_m_s != 0.2
+            or args.zero_until_stand_timeout_s != 3.5
+            or not args.zero_only_stop
+            or args.ramp_duration_s != 0.0
+            or args.ramp_start_speed is not None
+            or args.deceleration_duration_s != 0.0
+            or args.deceleration_end_speed_m_s != 0.0
+            or args.startup_speed is not None
+            or args.startup_transition_displacement is not None
+            or args.startup_transition_timeout_s != 0.0
+        ):
+            raise ValueError("configured route must retain the existing speed, zero-stop, and watchdog profile")
+        route_input = load_waypoint_docking_pose_input(args.route_config)
+        profile_route = {
+            "status": "VALIDATED_NO_RUNTIME",
+            "route_id": route_input["route_id"],
+            "frame_id": route_input["frame_id"],
+            "start_anchor": route_input["start"],
+            "step_ids": ["WAYPOINT", "TABLE_DOCKING"],
+            "maximum_windows_total": 3,
+            "aggregate_nonzero_limit_s": 15.0,
+            "post_stand_observation_s": 7.0,
+        }
+    else:
+        profile_route = None
     profile: dict[str, Any] = {
         "point_goal": False,
         "zero_only_activation_verification": zero_only_verification,
         "activation_probe_qualification": activation_probe,
     }
+    if profile_route is not None:
+        profile["configured_waypoint_docking_route"] = profile_route
     if activation_probe:
         profile["activation_probe_prerequisite_attempt_id"] = args.activation_probe_prerequisite_attempt_id
     if getattr(args, "route_integration", False):
         profile["route_integration"] = True
+        if configured_route:
+            return {**profile, "route_integration": True}
         curved_path_diagnostic = bool(getattr(args, "route_curved_path_diagnostic", False))
         profile["route_curved_path_diagnostic"] = curved_path_diagnostic
         waypoint_b_only = bool(getattr(args, "route_waypoint_b_only", False))
@@ -6362,6 +6964,12 @@ def main() -> int:
     first.add_argument("--route-waypoint-b-extended-diagnostic", action="store_true")
     first.add_argument("--route-waypoint-b-post-locomotion-convergence", action="store_true")
     first.add_argument("--route-turn-qualification-evidence", default=None)
+    first.add_argument(
+        "--route-config",
+        default=None,
+        help="Local01 odom-frame START/WAYPOINT/TABLE_DOCKING x/y/yaw pose JSON",
+    )
+    first.add_argument("--route-config-post-stand-observation", action="store_true")
     first.add_argument("--point-goal-diagnostic", action="store_true")
     first.add_argument("--heading-change-rad", type=float, default=0.0)
     first.add_argument("--final-yaw-tolerance-rad", type=float, default=None)

@@ -22,6 +22,7 @@ from issue80_m1_auto_reset_run import (
     assess_container_absence, build_m1_child_command, classify_activation_probe_outcome,
     classify_first_motion_outcome, classify_run38_diagnostic_outcome,
     assess_activation_probe_prerequisite, decode_m1_child_result, inspect_route_workcell_geometry,
+    validate_waypoint_docking_route_input,
 )
 
 
@@ -377,6 +378,77 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--route-waypoint-b-post-locomotion-convergence", convergence_command)
         self.assertEqual(option(convergence_command, "--extra-stop-observation"), "7.0")
 
+        args.run65_waypoint_b_extended_diagnostic = False
+        args.extra_stop_observation = 5.0
+        args.post_locomotion_convergence_observation_s = None
+        args.route_config = "/offline/route_config.json"
+        configured_command = shlex.split(
+            build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--route-integration", configured_command)
+        self.assertIn("--route-config-post-stand-observation", configured_command)
+        route_index = configured_command.index("--route-config")
+        self.assertEqual(configured_command[route_index + 1], "/workspace/evidence/route_config.json")
+        self.assertEqual(option(configured_command, "--extra-stop-observation"), "7.0")
+        self.assertIn("--zero-only-stop", configured_command)
+
+    def test_bounded_run_stages_validated_route_config_immutably(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            source = root / "local01-route.json"
+            route_config = {
+                "schema_version": "robotsim.issue80.waypoint-docking-poses.v1",
+                "route_id": "local01-waypoint-docking-fixture",
+                "frame_id": "odom",
+                "start": {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0},
+                "waypoint": {"x_m": 0.25, "y_m": 0.0, "yaw_rad": 0.0},
+                "table_docking": {"x_m": 0.6, "y_m": 0.1, "yaw_rad": 0.1},
+            }
+            payload = json.dumps(route_config, indent=2) + "\n"
+            source.write_text(payload, encoding="utf-8")
+            args = argparse.Namespace(
+                evidence_dir=str(evidence),
+                route_config=str(source),
+                container="offline-route-test",
+                max_runtime_s=180.0,
+            )
+            run = BoundedRun(args)
+            staged = evidence / "route_config.json"
+            manifest = evidence / "route_config_input.json"
+            self.assertEqual(staged.read_text(encoding="utf-8"), payload)
+            record = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(record["classification"], "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE")
+            self.assertEqual(record["source_sha256"], hashlib.sha256(payload.encode()).hexdigest())
+
+    def test_waypoint_docking_route_is_checked_against_the_pinned_scene_before_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "route.json"
+            source.write_text(
+                json.dumps({
+                    "schema_version": "robotsim.issue80.waypoint-docking-poses.v1",
+                    "route_id": "local01-waypoint-docking-fixture",
+                    "frame_id": "odom",
+                    "start": {"x_m": 0.0, "y_m": 0.0, "yaw_rad": 0.0},
+                    "waypoint": {"x_m": 0.25, "y_m": 0.0, "yaw_rad": 0.0},
+                    "table_docking": {"x_m": 0.6, "y_m": 0.1, "yaw_rad": 0.1},
+                }),
+                encoding="utf-8",
+            )
+            expected_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+            workcell = {
+                "status": "PASS",
+                "robot_collision_footprint_radial_upper_bound_m": 0.41565748847422734,
+                "verified_local_clear_radius_m": 2.0,
+            }
+            with patch("issue80_m1_auto_reset_run.inspect_route_workcell_geometry", return_value=workcell):
+                result = validate_waypoint_docking_route_input(source)
+        self.assertEqual(result["route"].route_id, "local01-waypoint-docking-fixture")
+        self.assertEqual(result["workcell"]["status"], "PASS")
+        self.assertEqual(result["clearance"]["status"], "PASS")
+        self.assertEqual(result["source_sha256"], expected_sha)
+
     def test_route_workcell_preflight_accepts_only_pinned_infinite_floor_scene(self):
         from issue80_m1_auto_reset_run import ROUTE_SCENE_RELATIVE, ROUTE_X2_RELATIVE
 
@@ -426,6 +498,14 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(
             classify_run38_diagnostic_outcome("SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED"),
             "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED",
+        )
+        self.assertEqual(
+            classify_run38_diagnostic_outcome("SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_PASS"),
+            "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_PASS",
+        )
+        self.assertEqual(
+            classify_run38_diagnostic_outcome("SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED"),
+            "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED",
         )
 
     def make_runner(self, evidence: Path) -> BoundedRun:
