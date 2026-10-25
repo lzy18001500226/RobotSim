@@ -64,13 +64,38 @@ Known limitations must remain explicit:
   Namespace repair changes neither. Results with that overlay are not
   unmodified-vendor-configuration acceptance.
 
-The next proposed live check is one separately authorized Reset-only telemetry
-episode: load the corrected wrapper, verify native name lookups and live
-joint/sensor traffic, dispatch one verified native Reset, and compare fresh
-odom/IMU/leg samples against the physical pelvis pose immediately after Reset.
-Record whether XY/yaw is scene-world or Reset-local and whether z tracks body
-height; stop after a bounded capture and cleanup. No SD/LD request, velocity
-publisher, waypoint execution, or retries are part of that proposal. The current
-route CLI requires first-motion authorization and is not a Reset-only command;
-do not invoke it under Reset-only authority. A dedicated capture-only launch
-must be reviewed before that episode, including the existing timestep mismatch.
+The dedicated runner is
+`scripts/research/issue80_raicom_reset_only.py`; its companion
+`issue80_raicom_reset_only_observer.py` subscribes to state topics only. It
+starts the existing bridge-isolated simulator/MC environment with the runtime
+tree mounted read-only, checks the pinned scene and native names, and permits
+one verified native Simulation/Reset click. Its 30 s wall cap is backed by a
+26 s container-stop watchdog. It has no route, MC action service client, source
+registration client, or velocity publisher. A Reset-only result is not a
+standing or locomotion qualification.
+
+The single authorized attempt `50ef59e2-f262-4ef8-a964-406ae122df1e` loaded
+the corrected RAICOM scene wrapper and passed runtime config/name checks, but
+the ROS observer failed during construction because it assigned to rclpy's
+read-only `Node.subscriptions` attribute. The container watchdog stopped the
+run before readiness; `native_reset_dispatch_count=0`, no Reset event exists,
+and no odometry/IMU/joint trace was captured. Container absence was verified.
+The observer startup error path is now recorded and fail-fast in code, but this
+attempt's live authorization is spent. Any further simulator/Reset run needs a
+new explicit authorization. Do not use the first-motion route CLI for a
+Reset-only task.
+
+A verified button click and upright odometry alone cannot yield a Reset-only
+PASS. The next authorized capture must observe either a post-Reset odometry
+generation/timestamp rebase or a measured pelvis-pose discontinuity from the
+fresh pre-Reset snapshot; otherwise it reports `RESET_EFFECT_UNCONFIRMED`.
+
+For a separately authorized future attempt, the command shape is:
+
+```bash
+DISPLAY=:0 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python \
+  /home/lzy18001500226/robotsim-issue80-x2-navigation-20261019/scripts/research/issue80_raicom_reset_only.py \
+  --attempt-id <fresh-uuid> \
+  --local01-scene-world-poses /home/lzy18001500226/robotsim-issue77-raicom-x2-reuse/simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json \
+  --evidence-parent /home/lzy18001500226/projects/RobotSim/reviews/issue-80
+```

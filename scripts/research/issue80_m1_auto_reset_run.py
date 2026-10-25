@@ -335,6 +335,12 @@ def validate_reserved_evidence_directory(path: str | os.PathLike[str]) -> Path:
     return location.native_path
 
 
+def build_runtime_bind_mount(runtime_root: Path, *, readonly: bool = False) -> str:
+    """Build the existing runtime bind mount; capture-only callers may lock it read-only."""
+    mount = f"type=bind,source={runtime_root},target=/workspace/raicom2026"
+    return mount + (",readonly" if readonly else "")
+
+
 def inspect_route_workcell_geometry(runtime_root: Path) -> dict[str, Any]:
     """Fail closed unless the pinned route scene is the verified open-floor workcell."""
     scene_path = runtime_root / ROUTE_SCENE_RELATIVE
@@ -2139,7 +2145,10 @@ class BoundedRun:
             "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m",
             "--tmpfs", "/agibot/data/var:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0770,size=64m",
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user=1000:1000",
-            "--mount", f"type=bind,source={RUNTIME},target=/workspace/raicom2026",
+            "--mount", build_runtime_bind_mount(
+                RUNTIME,
+                readonly=bool(getattr(self.args, "runtime_readonly", False)),
+            ),
             "--mount", f"type=bind,source={self.evidence},target=/workspace/evidence",
             "--mount", "type=bind,source=/tmp/.X11-unix,target=/tmp/.X11-unix,readonly",
         ]
