@@ -3428,6 +3428,15 @@ class FocusedM1Diagnostic(Node):
                         "fresh_mode_source_handshake_required_before_steering": True,
                         "handshake_state": dict(window_control),
                         "sample_count": len(steering_samples),
+                        "zero_order_hold_duplicate_odom_sample_count": sum(
+                            1 for row in steering_samples
+                            if row.get("duplicate_odom_feedback_reused") is True
+                        ),
+                        "maximum_odom_receive_age_s": max(
+                            (float(row["odom_receive_age_s"]) for row in steering_samples
+                             if row.get("odom_receive_age_s") is not None),
+                            default=None,
+                        ),
                         "angular_command_min_rad_s": min(angular_values) if angular_values else None,
                         "angular_command_max_rad_s": max(angular_values) if angular_values else None,
                         "samples": steering_samples,
