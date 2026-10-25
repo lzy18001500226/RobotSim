@@ -438,6 +438,210 @@ def _world_geom_aabb(model: Any, data: Any, geom_id: int, np: Any) -> tuple[Any,
     return center_world - half_world, center_world + half_world
 
 
+def native_name_scene_tree(scene_path: str | Path) -> ET.Element:
+    """Resolve include paths and change exactly the X2 attach namespace.
+
+    The vendor X2 file and Local01 input remain immutable. Environment prefixes
+    and every frame, joint, geom, and physical setting are left untouched.
+    """
+    path = Path(scene_path).resolve(strict=True)
+    tree = ET.parse(path).getroot()
+    for item in tree.findall("./asset/model"):
+        item.set("file", str((path.parent / item.attrib["file"]).resolve(strict=True)))
+    attach = tree.findall("./worldbody/frame/attach[@model='x2_mc_runtime']")
+    if len(attach) != 1 or attach[0].get("prefix") != "x2_":
+        raise Local01SceneRouteError("expected exactly one source X2 attach with prefix x2_")
+    attach[0].set("prefix", "")
+    return tree
+
+
+def audit_runtime_name_contract(native: Any, candidate: Any, config_path: Path) -> dict[str, Any]:
+    """Enumerate the full native inventory plus actual model-manager YAML lookups."""
+    import mujoco
+    import yaml
+
+    groups = {"body": "nbody", "joint": "njnt", "actuator": "nu", "sensor": "nsensor"}
+    inventory: dict[str, Any] = {}
+    missing: dict[str, list[str]] = {}
+    for kind, count in groups.items():
+        obj = getattr(mujoco.mjtObj, "mjOBJ_" + kind.upper())
+        names = [mujoco.mj_id2name(native, obj, i) for i in range(getattr(native, count))]
+        names = [name for name in names if name and name != "world"]
+        inventory[kind] = names
+        missing[kind] = [name for name in names if mujoco.mj_name2id(candidate, obj, name) < 0]
+        actual = [mujoco.mj_id2name(candidate, obj, i) for i in range(getattr(candidate, count))]
+        named = [name for name in actual if name]
+        if len(named) != len(set(named)):
+            raise Local01SceneRouteError(f"duplicate compiled names in {kind} namespace")
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    configured_joints = [name for group in cfg["actual"]["active_joint_name"] for name in group]
+    configured_sensor_groups = dict(zip(cfg["sensor"]["sensor_frame_type"], cfg["sensor"]["sensor_name"]))
+    baseline_missing_sensors = [
+        name for frame, names in configured_sensor_groups.items() if frame != "odom"
+        for name in names if mujoco.mj_name2id(native, mujoco.mjtObj.mjOBJ_SENSOR, name) < 0
+    ]
+    missing_configured = {
+        "joint": [name for name in configured_joints
+                  if mujoco.mj_name2id(candidate, mujoco.mjtObj.mjOBJ_JOINT, name) < 0],
+        "odom_body": [name for name in configured_sensor_groups.get("odom", [])
+                      if mujoco.mj_name2id(candidate, mujoco.mjtObj.mjOBJ_BODY, name) < 0],
+        "sensor_present_in_native": [
+            name for frame, names in configured_sensor_groups.items() if frame != "odom"
+            for name in names if name not in baseline_missing_sensors
+            and mujoco.mj_name2id(candidate, mujoco.mjtObj.mjOBJ_SENSOR, name) < 0
+        ],
+    }
+    free_joints = [
+        mujoco.mj_id2name(native, mujoco.mjtObj.mjOBJ_JOINT, i)
+        for i in range(native.njnt) if native.jnt_type[i] == mujoco.mjtJoint.mjJNT_FREE
+    ]
+    return {
+        "status": ("PASS_NATIVE_RUNTIME_NAMES" if not any(missing.values())
+                   and not any(missing_configured.values()) else "FAIL_NATIVE_RUNTIME_NAMES"),
+        "native_inventory": inventory,
+        "original_to_corrected_names": {
+            kind: [{"original": "x2_" + name, "corrected": name} for name in names]
+            for kind, names in inventory.items()
+        },
+        "missing_native_names": missing,
+        "native_freejoint_names": free_joints,
+        "configured_active_joints": configured_joints,
+        "configured_sensor_groups": configured_sensor_groups,
+        "missing_configured_native_lookups": missing_configured,
+        "preexisting_configured_sensors_absent_from_native_model": baseline_missing_sensors,
+        "duplicate_names_by_namespace": [],
+        "scope": "all compiled native bodies/joints/actuators/sensors; YAML is the documented model-manager lookup contract, not proprietary implementation source",
+    }
+
+
+def assert_scene_name_only_equivalence(original: Any, corrected: Any) -> dict[str, Any]:
+    """Compare every public numeric compiled-model array, excluding name addresses.
+
+    Object ordering must remain identical. This includes robot and environment
+    meshes, inertias, limits, actuators, sensors, contacts, qpos0 and solver data.
+    Forward kinematics is sampled without any integration.
+    """
+    import mujoco
+    import numpy as np
+
+    checked = []
+    for field in dir(original):
+        if (field.startswith("_") or field.startswith("name_")
+                or field == "names_map" or field.endswith("_pathadr")):
+            continue
+        value = getattr(original, field)
+        if isinstance(value, np.ndarray) and value.dtype.kind in "biufc":
+            other = getattr(corrected, field)
+            if not np.array_equal(value, other, equal_nan=True):
+                raise Local01SceneRouteError(f"name-only wrapper changed compiled physical array {field}")
+            checked.append(field)
+    for count in ("nq", "nv", "nu", "nbody", "njnt", "ngeom", "nmesh", "nsensor", "nsite", "neq"):
+        if getattr(original, count) != getattr(corrected, count):
+            raise Local01SceneRouteError(f"name-only wrapper changed {count}")
+    for field in dir(original.opt):
+        if field.startswith("_"):
+            continue
+        value, other = getattr(original.opt, field), getattr(corrected.opt, field)
+        if isinstance(value, (int, float, np.ndarray)) and not np.array_equal(value, other):
+            raise Local01SceneRouteError(f"name-only wrapper changed solver option {field}")
+    a, b = mujoco.MjData(original), mujoco.MjData(corrected)
+    max_residual = 0.0
+    for fraction in (None, 0.25, 0.50, 0.75):
+        mujoco.mj_resetData(original, a)
+        mujoco.mj_resetData(corrected, b)
+        if fraction is not None:
+            for j in range(original.njnt):
+                if original.jnt_type[j] == mujoco.mjtJoint.mjJNT_HINGE and original.jnt_limited[j]:
+                    lo, hi = original.jnt_range[j]
+                    q = lo + fraction * (hi - lo)
+                    a.qpos[original.jnt_qposadr[j]] = q
+                    b.qpos[corrected.jnt_qposadr[j]] = q
+        mujoco.mj_forward(original, a)
+        mujoco.mj_forward(corrected, b)
+        for field in ("xpos", "xmat", "geom_xpos", "geom_xmat", "site_xpos", "site_xmat"):
+            if not getattr(a, field).size:
+                continue
+            residual = float(np.max(np.abs(getattr(a, field) - getattr(b, field))))
+            max_residual = max(max_residual, residual)
+        if max_residual > 1e-12:
+            raise Local01SceneRouteError("name-only wrapper changed forward kinematics")
+    return {
+        "status": "PASS_COMPILED_PHYSICS_EQUIVALENT",
+        "numeric_arrays_equal": checked,
+        "numeric_array_count": len(checked),
+        "options_equal": True,
+        "static_fk_samples": 4,
+        "maximum_fk_residual": max_residual,
+        "initial_qpos_equal": True,
+        "environment_geometry_and_placements_equal": True,
+        "mj_step_calls": 0,
+    }
+
+
+def assert_native_robot_equivalence(native: Any, combined: Any) -> dict[str, Any]:
+    """Check native robot inertias/limits/actuators and FK under the START frame."""
+    import mujoco
+    import numpy as np
+
+    groups = {
+        "body": ("nbody", ("body_mass", "body_inertia", "body_ipos", "body_iquat")),
+        "joint": ("njnt", ("jnt_type", "jnt_pos", "jnt_axis", "jnt_range", "jnt_limited", "jnt_actfrcrange")),
+        "actuator": ("nu", ("actuator_gear", "actuator_gainprm", "actuator_biasprm", "actuator_dynprm", "actuator_ctrlrange", "actuator_forcerange", "actuator_ctrllimited", "actuator_forcelimited", "actuator_trntype")),
+        "sensor": ("nsensor", ("sensor_type", "sensor_dim", "sensor_noise", "sensor_cutoff", "sensor_datatype")),
+    }
+    mappings: dict[str, list[tuple[int, int]]] = {}
+    for kind, (count, fields) in groups.items():
+        obj = getattr(mujoco.mjtObj, "mjOBJ_" + kind.upper())
+        mappings[kind] = []
+        for i in range(getattr(native, count)):
+            name = mujoco.mj_id2name(native, obj, i)
+            if not name or name == "world":
+                continue
+            j = mujoco.mj_name2id(combined, obj, name)
+            if j < 0:
+                raise Local01SceneRouteError(f"missing native {kind}: {name}")
+            mappings[kind].append((i, j))
+            for field in fields:
+                if not np.allclose(getattr(native, field)[i], getattr(combined, field)[j], rtol=0, atol=1e-12):
+                    raise Local01SceneRouteError(f"native robot changed {name}: {field}")
+    for i, j in mappings["actuator"]:
+        ni, cj = int(native.actuator_trnid[i, 0]), int(combined.actuator_trnid[j, 0])
+        if mujoco.mj_id2name(native, mujoco.mjtObj.mjOBJ_JOINT, ni) != mujoco.mj_id2name(combined, mujoco.mjtObj.mjOBJ_JOINT, cj):
+            raise Local01SceneRouteError("native actuator joint transmission changed")
+    a, b = mujoco.MjData(native), mujoco.MjData(combined)
+    mujoco.mj_forward(native, a)
+    mujoco.mj_forward(combined, b)
+    pelvis_a = mujoco.mj_name2id(native, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    pelvis_b = mujoco.mj_name2id(combined, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    rotation = b.xmat[pelvis_b].reshape(3, 3) @ a.xmat[pelvis_a].reshape(3, 3).T
+    translation = b.xpos[pelvis_b] - rotation @ a.xpos[pelvis_a]
+    max_position, max_orientation = 0.0, 0.0
+    for fraction in (None, 0.25, 0.5, 0.75):
+        mujoco.mj_resetData(native, a)
+        mujoco.mj_resetData(combined, b)
+        if fraction is not None:
+            for i, j in mappings["joint"]:
+                if native.jnt_type[i] == mujoco.mjtJoint.mjJNT_HINGE and native.jnt_limited[i]:
+                    lo, hi = native.jnt_range[i]
+                    a.qpos[native.jnt_qposadr[i]] = b.qpos[combined.jnt_qposadr[j]] = lo + fraction * (hi - lo)
+        mujoco.mj_forward(native, a)
+        mujoco.mj_forward(combined, b)
+        for i, j in mappings["body"]:
+            max_position = max(max_position, float(np.max(np.abs(b.xpos[j] - (rotation @ a.xpos[i] + translation)))))
+            max_orientation = max(max_orientation, float(np.max(np.abs(b.xmat[j].reshape(3, 3) - rotation @ a.xmat[i].reshape(3, 3)))))
+    if max_position > 1e-12 or max_orientation > 1e-12:
+        raise Local01SceneRouteError("native X2 kinematics differ beyond the existing scene START transform")
+    return {
+        "status": "PASS_NATIVE_ROBOT_UNDER_SCENE_START_TRANSFORM",
+        "checked_object_counts": {kind: len(pairs) for kind, pairs in mappings.items()},
+        "physical_fields": {kind: list(fields) for kind, (_, fields) in groups.items()},
+        "static_fk_samples": 4,
+        "maximum_body_position_residual_m": max_position,
+        "maximum_body_rotation_matrix_residual": max_orientation,
+        "mj_step_calls": 0,
+    }
+
+
 def validate_short_route_static_scene(
     scene_root: str | Path,
     route: Mapping[str, Any],
@@ -460,7 +664,17 @@ def validate_short_route_static_scene(
     if mujoco.__version__ != "3.3.6":
         raise Local01SceneRouteError(f"static scene preflight requires MuJoCo 3.3.6, got {mujoco.__version__}")
     try:
-        model = mujoco.MjModel.from_xml_path(str(scene_path))
+        original = mujoco.MjModel.from_xml_path(str(scene_path))
+        scene_tree = native_name_scene_tree(scene_path)
+        model = mujoco.MjModel.from_xml_string(ET.tostring(scene_tree, encoding="unicode"))
+        x2_source = Path(scene_tree.find("./asset/model[@name='x2_mc_runtime']").attrib["file"])
+        native = mujoco.MjModel.from_xml_path(str(x2_source.with_name("scene.xml")))
+        name_contract = audit_runtime_name_contract(native, model, x2_source.with_name("default.yaml"))
+        original_contract = audit_runtime_name_contract(native, original, x2_source.with_name("default.yaml"))
+        if name_contract["status"] != "PASS_NATIVE_RUNTIME_NAMES":
+            raise Local01SceneRouteError("compiled RAICOM scene does not satisfy native X2 name lookups")
+        equivalence = assert_scene_name_only_equivalence(original, model)
+        native_equivalence = assert_native_robot_equivalence(native, model)
         data = mujoco.MjData(model)
         mujoco.mj_resetData(model, data)
         mujoco.mj_forward(model, data)
@@ -468,8 +682,8 @@ def validate_short_route_static_scene(
         raise Local01SceneRouteError(f"RAICOM scene failed MuJoCo static load: {type(exc).__name__}: {exc}") from exc
     if int(model.nq) < 7:
         raise Local01SceneRouteError("compiled RAICOM scene does not contain a free root pose")
-    root_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "x2_pelvis")
-    root_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "x2_floating_base_joint")
+    root_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    root_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
     if root_body < 0 or root_joint < 0:
         raise Local01SceneRouteError("compiled scene is missing the expected X2 runtime base/freejoint")
     source_start = route["scene_world_poses"]["start"]
@@ -492,6 +706,10 @@ def validate_short_route_static_scene(
         for key in ("start", "waypoint", "short_route_end")
     ]
     cross_track_inflation = float(route["limits"]["max_cross_track_m"])
+    robot_bodies = {root_body}
+    for body_id in range(root_body + 1, model.nbody):
+        if int(model.body_parentid[body_id]) in robot_bodies:
+            robot_bodies.add(body_id)
     robot_geoms: list[int] = []
     scene_geoms: list[int] = []
     for geom_id in range(model.ngeom):
@@ -499,7 +717,7 @@ def validate_short_route_static_scene(
             continue
         body_id = int(model.geom_bodyid[geom_id])
         body_name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id) or ""
-        if body_name.startswith("x2_"):
+        if body_id in robot_bodies:
             robot_geoms.append(geom_id)
         elif body_name.startswith(("raicom_", "mug_")):
             scene_geoms.append(geom_id)
@@ -545,8 +763,10 @@ def validate_short_route_static_scene(
                 geom1, geom2 = int(contact.geom1), int(contact.geom2)
                 body1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[geom1])) or ""
                 body2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[geom2])) or ""
-                if (body1.startswith("x2_") and body2.startswith(("raicom_", "mug_"))) or (
-                    body2.startswith("x2_") and body1.startswith(("raicom_", "mug_"))
+                robot1 = int(model.geom_bodyid[geom1]) in robot_bodies
+                robot2 = int(model.geom_bodyid[geom2]) in robot_bodies
+                if (robot1 and body2.startswith(("raicom_", "mug_"))) or (
+                    robot2 and body1.startswith(("raicom_", "mug_"))
                 ):
                     all_external_contacts.append({
                         "segment_index": segment_index,
@@ -555,7 +775,7 @@ def validate_short_route_static_scene(
                         "body2": body2,
                         "sample_index": sample_index,
                     })
-                elif body1.startswith("x2_") and body2.startswith("x2_"):
+                elif robot1 and robot2:
                     all_self_contacts.append({
                         "segment_index": segment_index,
                         "distance_m": float(contact.dist),
@@ -616,6 +836,14 @@ def validate_short_route_static_scene(
         "source_local01_commit": route.get("source_local01_commit"),
         "source_scene_world_poses_sha256": route.get("source_pose_sha256"),
         "scene_workspace_sha256": _sha256(scene_path),
+        "scene_wrapper_change_classification": "X2_ATTACH_PREFIX_ONLY_AND_MODEL_FILE_PATHS",
+        "native_runtime_name_contract": name_contract,
+        "original_prefixed_name_contract": original_contract,
+        "compiled_name_only_equivalence": equivalence,
+        "native_robot_equivalence": native_equivalence,
+        "native_timestep_s": float(native.opt.timestep),
+        "combined_scene_timestep_s": float(model.opt.timestep),
+        "native_timestep_matches_combined_scene": bool(native.opt.timestep == model.opt.timestep),
         "compiled_root_pose_matches_scene_world_START": True,
         "robot_collision_geom_count": len(robot_geoms),
         "scene_collision_geom_count": len(scene_geoms),
@@ -631,6 +859,8 @@ def validate_short_route_static_scene(
         "active_robot_scene_contacts": all_external_contacts,
         "active_robot_self_contacts": all_self_contacts,
         "limitations": [
+            "The combined scene's unchanged 0.002 s timestep differs from the native runtime scene's 0.001 s; namespace compatibility is not complete runtime qualification.",
+            "Five configured imu_1 sensors are already absent in the untouched native model; no sensors were fabricated.",
             "Static collision geometry only; does not validate dynamic tracking or post-Reset ROS odometry.",
             "The short route ends before the table and is not TABLE_DOCKING; full-distance docking remains NOT RUN.",
             "The configured odom reset anchor is statically derived; a live Reset/odom sample is required before motion starts.",
@@ -644,7 +874,7 @@ def prepare_local01_scene_runtime_bundle(
     *,
     runtime_root: str | Path,
 ) -> dict[str, Any]:
-    """Copy the source scene inputs and derive path-only container wrappers."""
+    """Copy immutable inputs; resolve paths and preserve the native X2 namespace."""
     evidence = Path(evidence_directory)
     runtime_x2_path = (
         Path(runtime_root)
@@ -692,19 +922,24 @@ def prepare_local01_scene_runtime_bundle(
         if name not in model_paths:
             raise Local01SceneRouteError(f"unrecognized Local01 scene model include: {name}")
         model_elem.set("file", model_paths[name])
-    # The runtime wrapper is allowed to change only the three resolved file
-    # paths. All model/geom/joint transforms and collision attributes remain
-    # byte-for-byte equivalent at the parsed XML element level.
+    attaches = scene_root.findall("./worldbody/frame/attach[@model='x2_mc_runtime']")
+    if len(attaches) != 1 or attaches[0].get("prefix") != "x2_":
+        raise Local01SceneRouteError("source scene must contain exactly one x2_ robot attachment")
+    attaches[0].set("prefix", "")
+    # Restore the allowed deltas and compare the entire parsed XML tree.
+    # Environment names, placements and every physical setting must be equal.
     source_models = {item.get("name"): item.get("file") for item in source_scene_root.findall("./asset/model")}
     runtime_models = {item.get("name"): item.get("file") for item in scene_root.findall("./asset/model")}
     if set(source_models) != set(model_paths) or runtime_models != model_paths:
         raise Local01SceneRouteError("Local01 runtime scene wrapper did not resolve exactly the three scene model files")
     for item in scene_root.findall("./asset/model"):
         item.set("file", source_models[item.get("name")])
+    attaches[0].set("prefix", "x2_")
     if ET.tostring(scene_root) != ET.tostring(source_scene_root):
         raise Local01SceneRouteError("Local01 runtime scene wrapper changed scene content beyond model file paths")
     for item in scene_root.findall("./asset/model"):
         item.set("file", model_paths[item.get("name")])
+    attaches[0].set("prefix", "")
     scene_runtime = bundle / "scene_workspace_runtime.xml"
     ET.ElementTree(scene_root).write(scene_runtime, encoding="utf-8", xml_declaration=True)
 
@@ -790,6 +1025,30 @@ def prepare_local01_scene_runtime_bundle(
     if runtime_simulation_model != scene_runtime.resolve():
         raise Local01SceneRouteError("runtime simulator config scene path does not resolve to the staged scene wrapper")
 
+    # Compile the actual generated wrapper with the three declared mounts
+    # resolved on the host. The staged mug XML is passed through MuJoCo's VFS,
+    # changing only its asset search paths for this offline compilation.
+    import mujoco
+    host_scene = ET.fromstring(ET.tostring(runtime_scene_root))
+    host_mug = ET.fromstring(ET.tostring(runtime_mug_root))
+    for attr in ("meshdir", "texturedir"):
+        host_mug.find("compiler").set(attr, str(resolve_container_path(host_mug.find("compiler").attrib[attr])))
+    for item in host_scene.findall("./asset/model"):
+        item.set("file", "offline_mug.xml" if item.get("name") == "raicom_mug"
+                 else str(resolve_container_path(item.attrib["file"])))
+    generated_model = mujoco.MjModel.from_xml_string(
+        ET.tostring(host_scene, encoding="unicode"),
+        assets={"offline_mug.xml": ET.tostring(host_mug)},
+    )
+    corrected_source_model = mujoco.MjModel.from_xml_string(
+        ET.tostring(native_name_scene_tree(source_root / LOCAL01_SCENE_RELATIVE), encoding="unicode")
+    )
+    generated_equivalence = assert_scene_name_only_equivalence(corrected_source_model, generated_model)
+    native_model = mujoco.MjModel.from_xml_path(str(runtime_x2_path.with_name("scene.xml")))
+    generated_contract = audit_runtime_name_contract(native_model, generated_model, runtime_x2_path.with_name("default.yaml"))
+    if generated_contract["status"] != "PASS_NATIVE_RUNTIME_NAMES":
+        raise Local01SceneRouteError("generated runtime wrapper lost native X2 names")
+
     records = {
         "schema": "robotsim.issue80.local01-scene-runtime-bundle.v1",
         "classification": "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER",
@@ -808,7 +1067,10 @@ def prepare_local01_scene_runtime_bundle(
             "from": old_model_line.split(": ", 1)[1],
             "to": "/workspace/evidence/local01_scene/scene_workspace_runtime.xml",
         },
-        "scene_wrapper_change_classification": "MODEL_FILE_PATHS_ONLY",
+        "scene_wrapper_change_classification": "X2_ATTACH_PREFIX_ONLY_AND_MODEL_FILE_PATHS",
+        "x2_attach_prefix_change": {"source": "x2_", "runtime": ""},
+        "generated_runtime_name_contract": generated_contract,
+        "generated_wrapper_physics_equivalence": generated_equivalence,
         "mug_wrapper_change_classification": "COMPILER_ASSET_SEARCH_PATHS_ONLY",
         "reference_scene_mount_target": "/workspace/raicom_scene_source",
         "runtime_simulator_config_path": "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml",
@@ -824,3 +1086,66 @@ def prepare_local01_scene_runtime_bundle(
         json.dump(records, stream, indent=2, sort_keys=True)
         stream.write("\n")
     return records
+
+
+def main() -> int:
+    """Generate offline namespace/physics evidence, never start a runtime."""
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Offline Local01 namespace and compiled-physics audit; no mj_step/runtime")
+    parser.add_argument("--poses", required=True)
+    parser.add_argument("--runtime-root", required=True)
+    parser.add_argument("--output-parent", required=True)
+    args = parser.parse_args()
+    source = load_local01_scene_inputs(args.poses)
+    route = build_short_route_config(source)
+    static = validate_short_route_static_scene(
+        Path(source["repository_root"]) / "simulation/mujoco/scenes/raicom2026", route,
+    )
+    if static["status"] != "PASS_STATIC_SCENE_CLEARANCE":
+        raise Local01SceneRouteError("corrected static corridor did not pass")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
+    from path_governance import create_unique_output_directory, write_artifact_manifest
+
+    output = create_unique_output_directory(args.output_parent, prefix="local01-native-names").native_path
+    bundle = prepare_local01_scene_runtime_bundle(source, output, runtime_root=args.runtime_root)
+    # Reuse the established pure overlay builder; inspect bytes only. Do not
+    # install an overlay or alter any vendor/runtime configuration.
+    from issue80_m1_auto_reset_run import (
+        FOUNDATIONWALK_CONFIG_RELATIVE, RUN38_FOUNDATIONWALK_CONFIG_SHA256,
+        build_run41_foundationwalk_min_run_overlay,
+    )
+    foundationwalk = Path(args.runtime_root) / FOUNDATIONWALK_CONFIG_RELATIVE
+    if _sha256(foundationwalk) != RUN38_FOUNDATIONWALK_CONFIG_SHA256:
+        raise Local01SceneRouteError("FoundationWalk source configuration hash changed")
+    _, overlay_audit = build_run41_foundationwalk_min_run_overlay(foundationwalk.read_bytes())
+    overlay_audit["builder_default_command_speed_m_s"] = overlay_audit.pop("command_speed_m_s")
+    overlay_audit["selected_route_command_speed_m_s"] = route["limits"]["forward_m_s"]
+    report = {
+        "schema": "robotsim.issue80.native-scene-name-audit.v1",
+        "status": "PASS_OFFLINE_NAME_AND_PHYSICS_EQUIVALENCE_NOT_RUNTIME_QUALIFICATION",
+        "source_commit": source["source_commit"],
+        "source_hashes": source["source_hashes"],
+        "static_preflight": static,
+        "runtime_bundle": bundle,
+        "foundationwalk_overlay_audit": overlay_audit,
+        "foundationwalk_profile_conclusion": "existing SIMULATION_ONLY profile unchanged; not unmodified vendor parameter acceptance",
+        "runtime_or_reset_attempted": False,
+        "mj_step_calls": 0,
+    }
+    (output / "name_audit.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    after = load_local01_scene_inputs(args.poses)
+    if after["source_hashes"] != source["source_hashes"]:
+        raise Local01SceneRouteError("immutable Local01 sources changed during audit")
+    manifest = write_artifact_manifest(output)
+    print(json.dumps({
+        "status": report["status"], "output_directory": str(output),
+        "manifest": manifest["manifest"], "static_clearance_m": static["minimum_swept_aabb_clearance_lower_bound_m"],
+        "runtime_validation": "NOT_RUN",
+    }, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

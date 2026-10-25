@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from issue80_local01_scene_route import (
@@ -17,6 +18,9 @@ from issue80_local01_scene_route import (
     load_local01_scene_inputs,
     prepare_local01_scene_runtime_bundle,
     validate_short_route_static_scene,
+    native_name_scene_tree,
+    audit_runtime_name_contract,
+    assert_scene_name_only_equivalence,
 )
 from issue80_waypoint_route import (
     build_local01_short_scene_route,
@@ -116,6 +120,20 @@ class Local01SceneRouteTests(unittest.TestCase):
         self.assertEqual(result["status"], "PASS_STATIC_SCENE_CLEARANCE")
         self.assertEqual(result["mujoco_version"], "3.3.6")
         self.assertEqual(result["mj_step_calls"], 0)
+        contract = result["native_runtime_name_contract"]
+        self.assertEqual(contract["status"], "PASS_NATIVE_RUNTIME_NAMES")
+        self.assertEqual(contract["native_freejoint_names"], ["floating_base_joint"])
+        self.assertEqual({k: len(v) for k, v in contract["native_inventory"].items()},
+                         {"body": 32, "joint": 32, "actuator": 31, "sensor": 67})
+        self.assertTrue(all(not v for v in contract["missing_native_names"].values()))
+        self.assertEqual(len(contract["preexisting_configured_sensors_absent_from_native_model"]), 5)
+        self.assertTrue(all(result["original_prefixed_name_contract"]["missing_native_names"].values()))
+        eq = result["compiled_name_only_equivalence"]
+        self.assertEqual(eq["status"], "PASS_COMPILED_PHYSICS_EQUIVALENT")
+        self.assertGreater(eq["numeric_array_count"], 350)
+        self.assertEqual(eq["maximum_fk_residual"], 0.0)
+        self.assertEqual(result["native_robot_equivalence"]["status"], "PASS_NATIVE_ROBOT_UNDER_SCENE_START_TRANSFORM")
+        self.assertEqual((result["native_timestep_s"], result["combined_scene_timestep_s"]), (0.001, 0.002))
         self.assertEqual(result["cross_track_guard_inflation_m"], 0.05)
         self.assertGreaterEqual(result["minimum_swept_aabb_clearance_lower_bound_m"], 0.05)
         self.assertEqual(result["active_robot_scene_contacts"], [])
@@ -132,12 +150,55 @@ class Local01SceneRouteTests(unittest.TestCase):
             bundle = prepare_local01_scene_runtime_bundle(source, evidence, runtime_root=runtime_root)
             local_scene = evidence / "local01_scene"
             self.assertEqual(bundle["classification"], "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER")
-            self.assertEqual(bundle["scene_wrapper_change_classification"], "MODEL_FILE_PATHS_ONLY")
+            self.assertEqual(bundle["scene_wrapper_change_classification"], "X2_ATTACH_PREFIX_ONLY_AND_MODEL_FILE_PATHS")
+            self.assertEqual(bundle["x2_attach_prefix_change"], {"source": "x2_", "runtime": ""})
             self.assertEqual(bundle["mug_wrapper_change_classification"], "COMPILER_ASSET_SEARCH_PATHS_ONLY")
             self.assertEqual(bundle["runtime_x2_sha256"], "3ff43f05beb57412a804ba9fe05cd9adcdfce78e9ce73a95a71ac58ad20d91a3")
             self.assertTrue((local_scene / "scene_workspace_runtime.xml").is_file())
             self.assertTrue((local_scene / "mug_portable_runtime.xml").is_file())
             self.assertTrue((local_scene / "simulator_default_local01_scene.yaml").is_file())
+            self.assertEqual(bundle["generated_runtime_name_contract"]["status"], "PASS_NATIVE_RUNTIME_NAMES")
+            self.assertEqual(bundle["generated_wrapper_physics_equivalence"]["status"], "PASS_COMPILED_PHYSICS_EQUIVALENT")
+            runtime_tree = ET.parse(local_scene / "scene_workspace_runtime.xml").getroot()
+            self.assertEqual(runtime_tree.find("./worldbody/frame/attach[@model='x2_mc_runtime']").get("prefix"), "")
+            self.assertEqual(runtime_tree.find("./worldbody/frame/attach[@model='raicom_room']").get("prefix"), "raicom_")
+            self.assertEqual(runtime_tree.find("./worldbody/frame/attach[@model='raicom_mug']").get("prefix"), "mug_")
+
+    def test_native_name_wrapper_rejects_unexpected_source_prefix(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "scene.xml"
+            path.write_text('<mujoco><worldbody><frame><attach model="x2_mc_runtime" prefix="other_"/></frame></worldbody></mujoco>')
+            with self.assertRaisesRegex(ValueError, "exactly one source X2 attach"):
+                native_name_scene_tree(path)
+
+    def test_physics_equivalence_rejects_inertial_and_actuator_changes(self):
+        import mujoco
+        xml = '<mujoco><worldbody><body name="pelvis"><joint name="j"/><geom type="sphere" size=".1"/></body></worldbody><actuator><motor name="motor_j" joint="j"/></actuator></mujoco>'
+        a = mujoco.MjModel.from_xml_string(xml)
+        b = mujoco.MjModel.from_xml_string(xml)
+        assert_scene_name_only_equivalence(a, b)
+        b.body_mass[1] *= 2
+        with self.assertRaisesRegex(ValueError, "changed compiled physical array"):
+            assert_scene_name_only_equivalence(a, b)
+        b.body_mass[:] = a.body_mass
+        b.actuator_gear[0, 0] = 2
+        with self.assertRaisesRegex(ValueError, "actuator_gear"):
+            assert_scene_name_only_equivalence(a, b)
+
+    def test_runtime_contract_rejects_missing_joint_sensor_or_odom_body(self):
+        import mujoco
+        native = mujoco.MjModel.from_xml_string('<mujoco><worldbody><body name="pelvis"><joint name="j"/><geom type="sphere" size=".1"/></body></worldbody><sensor><jointpos name="q" joint="j"/></sensor></mujoco>')
+        broken = mujoco.MjModel.from_xml_string('<mujoco><worldbody><body name="x2_pelvis"><joint name="x2_j"/><geom type="sphere" size=".1"/></body></worldbody><sensor><jointpos name="x2_q" joint="x2_j"/></sensor></mujoco>')
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "default.yaml"
+            cfg.write_text('actual:\n  active_joint_name: [[j]]\nsensor:\n  sensor_frame_type: [imu, odom]\n  sensor_name: [[q], [pelvis]]\n')
+            good = audit_runtime_name_contract(native, native, cfg)
+            bad = audit_runtime_name_contract(native, broken, cfg)
+            self.assertEqual(good["status"], "PASS_NATIVE_RUNTIME_NAMES")
+            self.assertEqual(bad["status"], "FAIL_NATIVE_RUNTIME_NAMES")
+            self.assertEqual(bad["missing_configured_native_lookups"], {
+                "joint": ["j"], "odom_body": ["pelvis"], "sensor_present_in_native": ["q"],
+            })
 
     @unittest.skipUnless(LOCAL01_POSES_PATH.is_file(), "Local01 source worktree is unavailable")
     def test_local01_runtime_bundle_rejects_x2_model_different_from_static_preflight(self):

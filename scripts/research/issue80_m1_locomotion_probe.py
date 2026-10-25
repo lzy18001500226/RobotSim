@@ -2780,6 +2780,11 @@ class FocusedM1Diagnostic(Node):
                 route_config_hash = hashlib.sha256(route_config_path.read_bytes()).hexdigest()
                 if (
                     static_scene.get("status") != "PASS_STATIC_SCENE_CLEARANCE"
+                    or static_scene.get("native_runtime_name_contract", {}).get("status") != "PASS_NATIVE_RUNTIME_NAMES"
+                    or static_scene.get("compiled_name_only_equivalence", {}).get("status") != "PASS_COMPILED_PHYSICS_EQUIVALENT"
+                    or scene_bundle.get("x2_attach_prefix_change") != {"source": "x2_", "runtime": ""}
+                    or scene_bundle.get("generated_runtime_name_contract", {}).get("status") != "PASS_NATIVE_RUNTIME_NAMES"
+                    or scene_bundle.get("generated_wrapper_physics_equivalence", {}).get("status") != "PASS_COMPILED_PHYSICS_EQUIVALENT"
                     or static_scene.get("mj_step_calls") != 0
                     or static_scene.get("source_local01_commit") != input_manifest.get("source_local01_commit")
                     or static_scene.get("source_scene_world_poses_sha256") != input_manifest.get("source_scene_world_poses_sha256")
