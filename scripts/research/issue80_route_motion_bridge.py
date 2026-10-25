@@ -245,6 +245,69 @@ def active_locomotion_source_readbacks_valid(
     )
 
 
+def fresh_stand_mode_readback_valid(
+    snapshot: Mapping[str, object], *, maximum_age_s: float,
+) -> bool:
+    """Require fresh, positive STAND service/CommonState/FSM/body readbacks."""
+    try:
+        now = float(snapshot["sample_monotonic_s"])
+        maximum_age = float(maximum_age_s)
+        readback_time = float(snapshot["readback_monotonic_s"]["get_mode"])
+        mode_age = now - readback_time
+        common_age = float(snapshot["state_age_s"]["common"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if (
+        not all(math.isfinite(value) for value in (now, maximum_age, mode_age, common_age))
+        or maximum_age <= 0.0
+        or not (0.0 <= mode_age <= maximum_age)
+        or not (0.0 <= common_age <= maximum_age)
+    ):
+        return False
+    return bool(
+        snapshot.get("get_mode_header_code") == 0
+        and snapshot.get("get_mode_status_value") == 100
+        and snapshot.get("get_mode_desc") == "STAND_DEFAULT"
+        and snapshot.get("common_mode_status_value") == 100
+        and snapshot.get("common_mode_desc") == "STAND_DEFAULT"
+        and snapshot.get("fsm_state") == 4
+        and snapshot.get("body_status") == 1
+        and snapshot.get("get_mode_readback_fault") is None
+        and snapshot.get("readback_fault") is None
+    )
+
+
+def fresh_input_source_readback_valid(
+    snapshot: Mapping[str, object],
+    *,
+    expected_source: str,
+    maximum_age_s: float,
+) -> bool:
+    """Require a fresh selected-source service result agreeing with CommonState."""
+    try:
+        now = float(snapshot["sample_monotonic_s"])
+        maximum_age = float(maximum_age_s)
+        readback_time = float(snapshot["readback_monotonic_s"]["get_source"])
+        source_age = now - readback_time
+        common_age = float(snapshot["state_age_s"]["common"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if (
+        not all(math.isfinite(value) for value in (now, maximum_age, source_age, common_age))
+        or maximum_age <= 0.0
+        or not (0.0 <= source_age <= maximum_age)
+        or not (0.0 <= common_age <= maximum_age)
+    ):
+        return False
+    return bool(
+        snapshot.get("get_source_header_code") == 0
+        and snapshot.get("get_source_name") == expected_source
+        and snapshot.get("common_source_name") == expected_source
+        and snapshot.get("get_source_readback_fault") is None
+        and snapshot.get("readback_fault") is None
+    )
+
+
 @dataclass
 class TransitSteeringGate:
     """Allow steering only after straight warmup and a same-sample MC handshake."""

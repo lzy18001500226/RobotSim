@@ -115,6 +115,8 @@ from issue80_route_motion_bridge import (
     waypoint_b_cross_track_guard_reached,
     TransitSteeringGate,
     active_locomotion_source_readbacks_valid,
+    fresh_stand_mode_readback_valid,
+    fresh_input_source_readback_valid,
 )
 
 VELOCITY_TOPIC = COMMAND_PUBLISHER_TOPIC
@@ -3316,19 +3318,15 @@ class FocusedM1Diagnostic(Node):
                     )
                     distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
                     arrived_after_stop = distance <= active.position_tolerance_m
-                    try:
-                        source_age = float(snapshot["sample_monotonic_s"]) - float(
-                            snapshot["readback_monotonic_s"]["get_source"]
-                        )
-                    except (KeyError, TypeError, ValueError):
-                        source_age = math.inf
-                    source_readback_passed = bool(
-                        snapshot.get("get_source_header_code") == 0
-                        and snapshot.get("get_source_name") == self.source
-                        and snapshot.get("common_source_name") == self.source
-                        and 0.0 <= source_age <= float(self.args.state_timeout)
+                    source_readback_passed = fresh_input_source_readback_valid(
+                        snapshot,
+                        expected_source=self.source,
+                        maximum_age_s=float(self.args.state_timeout),
                     )
-                    stand_readback_passed = stand_mode_readback_confirmed(snapshot)
+                    stand_readback_passed = fresh_stand_mode_readback_valid(
+                        snapshot,
+                        maximum_age_s=float(self.args.state_timeout),
+                    )
                     arrival_after_verified_stop = waypoint_b_arrival_after_verified_stop_passes(
                         distance,
                         distance,

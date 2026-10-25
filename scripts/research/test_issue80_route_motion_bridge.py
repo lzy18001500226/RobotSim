@@ -46,6 +46,8 @@ from issue80_route_motion_bridge import (
     waypoint_bearing_angular_command,
     TransitSteeringGate,
     active_locomotion_source_readbacks_valid,
+    fresh_stand_mode_readback_valid,
+    fresh_input_source_readback_valid,
     validate_physical_stop_evidence,
     waypoint_b_window_budget_passes,
 )
@@ -180,6 +182,53 @@ class RouteMotionBridgeTests(unittest.TestCase):
         conflict["common_source_name"] = "another.source"
         self.assertFalse(active_locomotion_source_readbacks_valid(
             conflict, expected_source=VELOCITY_SOURCE_NAME, maximum_age_s=0.5,
+        ))
+
+    def test_poststop_stand_and_source_readbacks_must_be_fresh_and_consistent(self):
+        stand = {
+            "sample_monotonic_s": 20.0,
+            "readback_monotonic_s": {"get_mode": 19.8, "get_source": 19.8},
+            "state_age_s": {"common": 0.02},
+            "get_mode_header_code": 0,
+            "get_mode_status_value": 100,
+            "get_mode_desc": "STAND_DEFAULT",
+            "common_mode_status_value": 100,
+            "common_mode_desc": "STAND_DEFAULT",
+            "fsm_state": 4,
+            "body_status": 1,
+            "get_mode_readback_fault": None,
+            "readback_fault": None,
+        }
+        self.assertTrue(fresh_stand_mode_readback_valid(stand, maximum_age_s=0.5))
+        stale_stand = dict(stand)
+        stale_stand["readback_monotonic_s"] = {"get_mode": 19.4, "get_source": 19.8}
+        self.assertFalse(fresh_stand_mode_readback_valid(stale_stand, maximum_age_s=0.5))
+        unsafe_stand = dict(stand)
+        unsafe_stand["fsm_state"] = 2
+        self.assertFalse(fresh_stand_mode_readback_valid(unsafe_stand, maximum_age_s=0.5))
+
+        source = {
+            "sample_monotonic_s": 20.0,
+            "readback_monotonic_s": {"get_mode": 19.8, "get_source": 19.79},
+            "state_age_s": {"common": 0.02},
+            "get_source_header_code": 0,
+            "get_source_name": VELOCITY_SOURCE_NAME,
+            "common_source_name": VELOCITY_SOURCE_NAME,
+            "get_source_readback_fault": None,
+            "readback_fault": None,
+        }
+        self.assertTrue(fresh_input_source_readback_valid(
+            source, expected_source=VELOCITY_SOURCE_NAME, maximum_age_s=0.5,
+        ))
+        stale_source = dict(source)
+        stale_source["readback_monotonic_s"] = {"get_mode": 19.8, "get_source": 19.4}
+        self.assertFalse(fresh_input_source_readback_valid(
+            stale_source, expected_source=VELOCITY_SOURCE_NAME, maximum_age_s=0.5,
+        ))
+        conflict_source = dict(source)
+        conflict_source["common_source_name"] = "another.source"
+        self.assertFalse(fresh_input_source_readback_valid(
+            conflict_source, expected_source=VELOCITY_SOURCE_NAME, maximum_age_s=0.5,
         ))
 
     def test_steering_gate_fails_closed_when_handshake_is_missing_at_warmup_deadline(self):
