@@ -3541,8 +3541,8 @@ def main() -> int:
         or args.capture_mc_rl_debug
         or args.ramp_duration_s != 0.0
         or args.ramp_start_speed is not None
-        or args.deceleration_duration_s != 0.0
-        or args.deceleration_end_speed_m_s != 0.0
+        or float(getattr(args, "deceleration_duration_s", 0.0)) != 0.0
+        or float(getattr(args, "deceleration_end_speed_m_s", 0.0)) != 0.0
         or args.startup_speed is not None
         or args.startup_transition_displacement is not None
         or args.startup_transition_timeout_s != 0.0

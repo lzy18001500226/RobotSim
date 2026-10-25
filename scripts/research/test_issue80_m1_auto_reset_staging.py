@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+import issue80_m1_auto_reset_run
 from issue80_m1_auto_reset_run import (
     BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, MC_RL_DEBUG_CAPTURE,
     POSE_GOAL_CONTROLLER,
@@ -928,6 +929,35 @@ class ResearchScriptStagingTests(unittest.TestCase):
             runner.run_m1()
             self.assertEqual(captured, [])
             self.assertEqual(runner.m1_result["status"], "BLOCKED")
+
+    def test_activation_probe_cli_reaches_offline_runner_without_undefined_profile_fields(self) -> None:
+        class OfflineRunner:
+            def __init__(self, args: argparse.Namespace):
+                self.args = args
+
+            def execute(self) -> dict[str, str]:
+                return {"status": "BLOCKED", "fault": "offline runner sentinel"}
+
+        argv = [
+            "issue80_m1_auto_reset_run.py",
+            "--evidence-dir", "/tmp/reserved-evidence",
+            "--container", "issue80-activation-probe-test",
+            "--attempt-id", "activation-probe-cli-test",
+            "--maintainer-authorized-activation-probe",
+            "--activation-probe-prerequisite-evidence", "/tmp/prerequisite",
+        ]
+        prerequisite = {"status": "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED"}
+        with (
+            patch.object(issue80_m1_auto_reset_run.sys, "argv", argv),
+            patch.object(
+                issue80_m1_auto_reset_run,
+                "validate_activation_probe_prerequisite",
+                return_value=prerequisite,
+            ),
+            patch.object(issue80_m1_auto_reset_run, "validate_reserved_evidence_directory"),
+            patch.object(issue80_m1_auto_reset_run, "BoundedRun", OfflineRunner),
+        ):
+            self.assertEqual(issue80_m1_auto_reset_run.main(), 2)
 
     def test_parent_does_not_start_container_without_first_motion_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
