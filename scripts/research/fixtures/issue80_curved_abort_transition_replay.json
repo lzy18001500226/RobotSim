@@ -4,6 +4,7 @@
   "source_trace": "issue80-curved-route-run-20261025T033414Z/m1_first_motion_trace.jsonl",
   "source_trace_sha256": "1767cab680b0f8124a4d67f4f479ad6d6553c78d3874647a707a002a8b581d11",
   "source_result_sha256": "dc02f4b8e3b1640759ed69e8cbd568e147a938e545c8ade20be401eb486eaf78",
+  "source_parent_result_sha256": "2ff9c0d2e3fadf3704f5892d9e07fbdf60e264a1609d877e5db91402ac1d5ff0",
   "timing_origin": "first nonzero velocity publication",
   "request_timeline": {
     "set_mc_input_source_add": {
@@ -34,7 +35,13 @@
   },
   "command_timeline": {
     "first_nonzero_wall_utc": "2026-10-25T03:35:09.981218+00:00",
+    "first_nonzero_forward_velocity_m_s": 0.12,
+    "first_nonzero_lateral_velocity_m_s": 0.0,
+    "first_nonzero_angular_velocity_rad_s": 0.0,
     "last_nonzero_wall_utc": "2026-10-25T03:35:10.505579+00:00",
+    "last_nonzero_forward_velocity_m_s": 0.12,
+    "last_nonzero_lateral_velocity_m_s": 0.0,
+    "last_nonzero_angular_velocity_rad_s": 0.0,
     "nonzero_publish_calls_returned": 14,
     "first_zero_wall_utc": "2026-10-25T03:35:10.555860+00:00",
     "post_stop_stand_callback_invoked": false,
@@ -46,6 +53,16 @@
     },
     "physical_stop_gate": "NOT_PASSED",
     "mc_zero_receipt_confirmed": false
+  },
+  "installed_runtime_nonzero_activation_evidence": {
+    "selected_source_observation_offset_s": 0.023649,
+    "selected_source_get_service": "node.locomotion_velocity",
+    "selected_source_common_state": "node.locomotion_velocity",
+    "common_state_locomotion_offset_s": 0.380972,
+    "get_mc_action_transition_offset_s": 0.569158,
+    "get_mc_action_transition_status_value": 200,
+    "get_mc_action_locomotion_offset_s": 1.784649,
+    "meaning": "A nonzero 0.12 m/s command selected the source; CommonState then reported LOCOMOTION while GetMcAction was still STAND/TRANSITION. This is evidence of an installed-runtime transition path, not a safe completed activation or walking PASS."
   },
   "observations": [
     {

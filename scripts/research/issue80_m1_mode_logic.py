@@ -22,7 +22,10 @@ STAND_VERIFIED = "STAND_VERIFIED"
 LOCOMOTION_REQUESTED = "LOCOMOTION_REQUESTED"
 LOCOMOTION_CONFIRMED = "LOCOMOTION_CONFIRMED"
 MOTION_ACTIVE = "MOTION_ACTIVE"
+ACTIVATION_PROBE = "ACTIVATION_PROBE"
 ZERO_AND_STOP_REQUESTED = "ZERO_AND_STOP_REQUESTED"
+ACTIVATION_PROBE_FORWARD_M_S = 0.12
+ACTIVATION_PROBE_DURATION_S = 1.8
 TASK_STATES = {
     0: "UNKNOWN",
     1: "SUCCESS",
@@ -295,7 +298,8 @@ class MCLocomotionAbortLifecycle:
     _ALLOWED: dict[str, set[str]] = field(default_factory=lambda: {
         "UNINITIALIZED": {STAND_VERIFIED, ZERO_AND_STOP_REQUESTED},
         STAND_VERIFIED: {LOCOMOTION_REQUESTED, ZERO_AND_STOP_REQUESTED},
-        LOCOMOTION_REQUESTED: {LOCOMOTION_CONFIRMED, ZERO_AND_STOP_REQUESTED},
+        LOCOMOTION_REQUESTED: {ACTIVATION_PROBE, LOCOMOTION_CONFIRMED, ZERO_AND_STOP_REQUESTED},
+        ACTIVATION_PROBE: {LOCOMOTION_CONFIRMED, ZERO_AND_STOP_REQUESTED},
         LOCOMOTION_CONFIRMED: {MOTION_ACTIVE, ZERO_AND_STOP_REQUESTED},
         MOTION_ACTIVE: {ZERO_AND_STOP_REQUESTED},
         ZERO_AND_STOP_REQUESTED: {STAND_VERIFIED},
@@ -304,6 +308,10 @@ class MCLocomotionAbortLifecycle:
     @property
     def nonzero_motion_allowed(self) -> bool:
         return self.state == MOTION_ACTIVE
+
+    @property
+    def activation_probe_command_allowed(self) -> bool:
+        return self.state == ACTIVATION_PROBE
 
     def _transition(self, target: str, *, now_s: float, reason: str) -> None:
         if target not in self._ALLOWED.get(self.state, set()):
@@ -348,7 +356,7 @@ class MCLocomotionAbortLifecycle:
         self, observation: Mapping[str, Any], *, now_s: float,
     ) -> str:
         classification = str(observation.get("classification", "PENDING_READBACK_UNAVAILABLE"))
-        if self.state == LOCOMOTION_REQUESTED:
+        if self.state in {LOCOMOTION_REQUESTED, ACTIVATION_PROBE}:
             if classification == "LOCOMOTION_CONFIRMED":
                 self._transition(
                     LOCOMOTION_CONFIRMED, now_s=now_s,
@@ -379,8 +387,39 @@ class MCLocomotionAbortLifecycle:
             })
         return classification
 
+    def begin_activation_probe(
+        self,
+        *,
+        source_contract_supported: bool,
+        forward_command_m_s: float,
+        duration_s: float,
+        now_s: float,
+    ) -> None:
+        """Allow only the explicitly source-grounded, short activation qualification probe."""
+        if self.rearm_forbidden:
+            raise ValueError("activation abort is unresolved; a new lifecycle is required")
+        if self.state != LOCOMOTION_REQUESTED:
+            raise ValueError("activation probe requires LOCOMOTION_REQUESTED")
+        if not source_contract_supported:
+            raise ValueError("activation probe requires a source-supported startup contract")
+        if (
+            not math.isfinite(float(forward_command_m_s))
+            or not math.isfinite(float(duration_s))
+            or abs(float(forward_command_m_s) - ACTIVATION_PROBE_FORWARD_M_S) > 1e-9
+            or abs(float(duration_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
+        ):
+            raise ValueError("activation probe is fixed at 0.12 m/s for at most 1.80 s")
+        self._transition(
+            ACTIVATION_PROBE,
+            now_s=now_s,
+            reason=(
+                "source-grounded activation only: official startup threshold is about 0.1 m/s; "
+                "0.12 m/s is the prior installed-run value and duration is capped at 1.80 s"
+            ),
+        )
+
     def expire_activation(self, *, now_s: float, reason: str) -> None:
-        if self.state == LOCOMOTION_REQUESTED:
+        if self.state in {LOCOMOTION_REQUESTED, ACTIVATION_PROBE}:
             self.fault = str(reason)
             self.rearm_forbidden = True
             self._transition(
@@ -447,6 +486,7 @@ class MCLocomotionAbortLifecycle:
         return {
             "state": self.state,
             "nonzero_motion_allowed": self.nonzero_motion_allowed,
+            "activation_probe_command_allowed": self.activation_probe_command_allowed,
             "stand_request_count": self.stand_request_count,
             "late_locomotion_after_abort": self.late_locomotion_after_abort,
             "locomotion_confirmed_before_stop": self.locomotion_confirmed_before_stop,

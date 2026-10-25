@@ -9,6 +9,9 @@ import unittest
 from issue80_m1_mode_logic import (
     LOCOMOTION_CONFIRMED,
     LOCOMOTION_REQUESTED,
+    ACTIVATION_PROBE,
+    ACTIVATION_PROBE_DURATION_S,
+    ACTIVATION_PROBE_FORWARD_M_S,
     MOTION_ACTIVE,
     MODE_LD,
     MODE_SD,
@@ -188,6 +191,40 @@ class ActionResponseAndTransitionTests(unittest.TestCase):
 
 
 class ActivationAbortLifecycleTests(unittest.TestCase):
+    def test_activation_probe_is_separate_and_fixed_to_the_supported_startup_envelope(self) -> None:
+        lifecycle = MCLocomotionAbortLifecycle()
+        lifecycle.verify_initial_stand(confirmed=True, now_s=1.0)
+        lifecycle.request_locomotion(accepted=True, now_s=1.1)
+        lifecycle.begin_activation_probe(
+            source_contract_supported=True,
+            forward_command_m_s=ACTIVATION_PROBE_FORWARD_M_S,
+            duration_s=ACTIVATION_PROBE_DURATION_S,
+            now_s=1.2,
+        )
+        self.assertEqual(lifecycle.state, ACTIVATION_PROBE)
+        self.assertFalse(lifecycle.nonzero_motion_allowed)
+        self.assertTrue(lifecycle.activation_probe_command_allowed)
+        invalid_profile = MCLocomotionAbortLifecycle()
+        invalid_profile.verify_initial_stand(confirmed=True, now_s=0.0)
+        invalid_profile.request_locomotion(accepted=True, now_s=0.1)
+        with self.assertRaisesRegex(ValueError, "fixed at 0.12 m/s for at most 1.80 s"):
+            invalid_profile.begin_activation_probe(
+                source_contract_supported=True,
+                forward_command_m_s=0.2,
+                duration_s=0.5,
+                now_s=0.0,
+            )
+        unsupported = MCLocomotionAbortLifecycle()
+        unsupported.verify_initial_stand(confirmed=True, now_s=0.0)
+        unsupported.request_locomotion(accepted=True, now_s=0.1)
+        with self.assertRaisesRegex(ValueError, "source-supported startup contract"):
+            unsupported.begin_activation_probe(
+                source_contract_supported=False,
+                forward_command_m_s=ACTIVATION_PROBE_FORWARD_M_S,
+                duration_s=ACTIVATION_PROBE_DURATION_S,
+                now_s=0.2,
+            )
+
     def test_successful_set_action_does_not_advance_without_live_mode_and_source(self) -> None:
         lifecycle = MCLocomotionAbortLifecycle()
         self.assertTrue(lifecycle.verify_initial_stand(confirmed=True, now_s=20.0))
@@ -339,6 +376,12 @@ class ActivationAbortLifecycleTests(unittest.TestCase):
             command_timeline["first_measured_speed_guard_failure"]["planar_speed_m_s"],
             command_timeline["first_measured_speed_guard_failure"]["limit_m_s"],
         )
+        source_contract = fixture["installed_runtime_nonzero_activation_evidence"]
+        self.assertEqual(command_timeline["first_nonzero_forward_velocity_m_s"], 0.12)
+        self.assertEqual(command_timeline["last_nonzero_forward_velocity_m_s"], 0.12)
+        self.assertEqual(source_contract["selected_source_get_service"], OFFICIAL_VELOCITY_SOURCE)
+        self.assertEqual(source_contract["selected_source_common_state"], OFFICIAL_VELOCITY_SOURCE)
+        self.assertLess(source_contract["common_state_locomotion_offset_s"], 0.5)
         lifecycle = MCLocomotionAbortLifecycle()
         lifecycle.verify_initial_stand(confirmed=True, now_s=0.0)
         lifecycle.request_locomotion(accepted=True, now_s=0.0)

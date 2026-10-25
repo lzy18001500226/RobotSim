@@ -617,21 +617,179 @@ def run65_child_heading_policy(args: argparse.Namespace) -> str:
     )
 
 
+PRIOR_CURVED_ABORT_TRACE = (
+    REPO / "reviews/issue-80/issue80-curved-route-run-20261025T033414Z/m1_first_motion_trace.jsonl"
+)
+PRIOR_CURVED_ABORT_TRACE_SHA256 = "1767cab680b0f8124a4d67f4f479ad6d6553c78d3874647a707a002a8b581d11"
+ACTIVATION_PROBE_FORWARD_M_S = 0.12
+ACTIVATION_PROBE_DURATION_S = 1.8
+
+
+def assess_activation_probe_prerequisite(
+    reset_run: Mapping[str, Any],
+    zero_preflight: Mapping[str, Any],
+    prior_replay: Mapping[str, Any],
+    *,
+    current_runtime_image_digest: str = IMAGE_DIGEST,
+    current_mc_config_sha256: str = RUN38_MC_SIM_CONFIG_SHA256,
+) -> dict[str, Any]:
+    """Require safe zero-preflight recovery plus independent installed-run start evidence."""
+    if reset_run.get("reset_classification") != "AUTO_RESET_PASS":
+        raise ValueError("activation probe requires a preserved AUTO_RESET_PASS zero-only preflight")
+    if reset_run.get("runtime_image_digest") != current_runtime_image_digest:
+        raise ValueError("zero-only preflight runtime image differs from the selected simulation runtime")
+    child_attempt = zero_preflight.get("attempt_id")
+    if child_attempt != reset_run.get("attempt_id"):
+        raise ValueError("zero-only preflight parent/child attempt identities do not match")
+    if zero_preflight.get("simulation_only") is not True:
+        raise ValueError("activation probe prerequisite is not classified SIMULATION_ONLY")
+    if zero_preflight.get("installed_mc_sim_config_sha256") != current_mc_config_sha256:
+        raise ValueError("zero-only preflight MC config hash differs from the current installed config")
+    zero_result = zero_preflight.get("zero_only_activation_verification")
+    if not isinstance(zero_result, Mapping):
+        raise ValueError("zero-only activation result is missing")
+    if zero_result.get("activation_confirmation_pass") is not False:
+        raise ValueError("activation probe is only for a zero-only preflight that did not confirm LOCOMOTION")
+    if zero_result.get("stand_and_composite_stop_pass") is not True:
+        raise ValueError("activation probe requires completed STAND recovery and physical-stop PASS")
+    if zero_result.get("nonzero_publish_calls_returned") != 0:
+        raise ValueError("zero-only prerequisite unexpectedly published a nonzero command")
+    if zero_result.get("late_locomotion_after_abort") is True:
+        raise ValueError("zero-only preflight observed unresolved late LOCOMOTION after abort")
+
+    activation = zero_result.get("activation")
+    if not isinstance(activation, Mapping):
+        raise ValueError("zero-only activation trace is missing")
+    registration = activation.get("input_source_registration")
+    set_action = activation.get("set_mc_action_ld")
+    observations = activation.get("observations")
+    if not isinstance(registration, Mapping) or registration.get("accepted_by_service") is not True:
+        raise ValueError("zero-only preflight did not receive an accepted ADD operation")
+    if not isinstance(set_action, Mapping) or set_action.get("accepted_by_service") is not True:
+        raise ValueError("zero-only preflight did not receive an accepted SetMcAction LD response")
+    if not isinstance(observations, list) or not observations:
+        raise ValueError("zero-only preflight has no fresh activation observations")
+    if not all(
+        row.get("classification") == "PENDING_STAND_REMAINS_ACTIVE"
+        and row.get("get_mode_desc") == MODE_STAND
+        and row.get("common_mode_desc") == MODE_STAND
+        and row.get("get_source_name", "") == ""
+        and row.get("common_source_name", "") == ""
+        and not row.get("safety_fault")
+        for row in observations
+    ):
+        raise ValueError("zero-only preflight did not consistently remain in safe unselected STAND")
+
+    if prior_replay.get("source_trace_sha256") != PRIOR_CURVED_ABORT_TRACE_SHA256:
+        raise ValueError("offline replay fixture does not bind the preserved installed-runtime trace")
+    commands = prior_replay.get("command_timeline")
+    source_evidence = prior_replay.get("installed_runtime_nonzero_activation_evidence")
+    if not isinstance(commands, Mapping) or not isinstance(source_evidence, Mapping):
+        raise ValueError("offline replay lacks the prior source/mode activation evidence")
+    if (
+        commands.get("nonzero_publish_calls_returned") != 14
+        or commands.get("first_nonzero_forward_velocity_m_s") != ACTIVATION_PROBE_FORWARD_M_S
+        or commands.get("first_nonzero_lateral_velocity_m_s") != 0.0
+        or commands.get("first_nonzero_angular_velocity_rad_s") != 0.0
+        or commands.get("last_nonzero_forward_velocity_m_s") != ACTIVATION_PROBE_FORWARD_M_S
+        or commands.get("last_nonzero_lateral_velocity_m_s") != 0.0
+        or commands.get("last_nonzero_angular_velocity_rad_s") != 0.0
+        or source_evidence.get("selected_source_get_service") != "node.locomotion_velocity"
+        or source_evidence.get("selected_source_common_state") != "node.locomotion_velocity"
+        or float(source_evidence.get("common_state_locomotion_offset_s", 99.0)) >= 0.5
+        or float(source_evidence.get("get_mc_action_locomotion_offset_s", 99.0)) > ACTIVATION_PROBE_DURATION_S
+    ):
+        raise ValueError("preserved runtime trace does not support the fixed bounded activation-probe profile")
+
+    return {
+        "status": "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED",
+        "runtime_image_digest": current_runtime_image_digest,
+        "installed_mc_sim_config_sha256": current_mc_config_sha256,
+        "zero_only_preflight_attempt_id": child_attempt,
+        "zero_only_preflight_status": zero_result.get("status"),
+        "zero_only_recovery_physical_stop": "PASS",
+        "zero_only_source_registration_task_completion_confirmed": registration.get("task_completion_confirmed"),
+        "prior_installed_runtime_attempt_id": prior_replay.get("source_attempt_id"),
+        "prior_installed_runtime_trace_sha256": PRIOR_CURVED_ABORT_TRACE_SHA256,
+        "prior_nonzero_publish_count": commands.get("nonzero_publish_calls_returned"),
+        "prior_forward_velocity_m_s": ACTIVATION_PROBE_FORWARD_M_S,
+        "prior_source_selected_offset_s": source_evidence.get("selected_source_observation_offset_s"),
+        "prior_common_locomotion_offset_s": source_evidence.get("common_state_locomotion_offset_s"),
+        "prior_get_mc_action_locomotion_offset_s": source_evidence.get("get_mc_action_locomotion_offset_s"),
+        "activation_probe_forward_velocity_m_s": ACTIVATION_PROBE_FORWARD_M_S,
+        "activation_probe_max_duration_s": ACTIVATION_PROBE_DURATION_S,
+        "measured_speed_limit_m_s": 0.20,
+        "version_match_limitation": (
+            "online arbitration/start-threshold docs are AimDK_X2 1.1.0 and are not declared binary-version matched; "
+            "the preserved 2026-10-25 trace independently confirms this installed runtime selected the source and "
+            "reported CommonState LOCOMOTION after a 0.12 m/s input"
+        ),
+    }
+
+
+def validate_activation_probe_prerequisite(evidence_dir: str | os.PathLike[str]) -> dict[str, Any]:
+    """Load the reserved zero-only run and require the exact source-grounded probe gate."""
+    directory = validate_reserved_evidence_directory(evidence_dir)
+    reset_path = directory / "auto-reset-run-result.json"
+    child_path = directory / "m1_first_motion_result.json"
+    replay_path = Path(__file__).with_name("fixtures") / "issue80_curved_abort_transition_replay.json"
+    prior_parent_path = PRIOR_CURVED_ABORT_TRACE.parent / "auto-reset-run-result.json"
+    prior_child_path = PRIOR_CURVED_ABORT_TRACE.parent / "m1_first_motion_result.json"
+    if not all(
+        path.is_file() and not path.is_symlink()
+        for path in (
+            reset_path, child_path, replay_path, PRIOR_CURVED_ABORT_TRACE,
+            prior_parent_path, prior_child_path,
+        )
+    ):
+        raise ValueError("zero-only run results or installed-runtime replay fixture are missing/invalid")
+    if hashlib.sha256(PRIOR_CURVED_ABORT_TRACE.read_bytes()).hexdigest() != PRIOR_CURVED_ABORT_TRACE_SHA256:
+        raise ValueError("the preserved installed-runtime source-acquisition trace changed")
+    reset_run = json.loads(reset_path.read_text(encoding="utf-8"))
+    zero_preflight = json.loads(child_path.read_text(encoding="utf-8"))
+    prior_replay = json.loads(replay_path.read_text(encoding="utf-8"))
+    prior_parent = json.loads(prior_parent_path.read_text(encoding="utf-8"))
+    prior_child = json.loads(prior_child_path.read_text(encoding="utf-8"))
+    if (
+        hashlib.sha256(prior_parent_path.read_bytes()).hexdigest()
+        != prior_replay.get("source_parent_result_sha256")
+        or hashlib.sha256(prior_child_path.read_bytes()).hexdigest()
+        != prior_replay.get("source_result_sha256")
+        or prior_parent.get("runtime_image_digest") != IMAGE_DIGEST
+        or prior_parent.get("reset_classification") != "AUTO_RESET_PASS"
+        or prior_child.get("attempt_id") != prior_replay.get("source_attempt_id")
+        or prior_child.get("installed_mc_sim_config_sha256") != RUN38_MC_SIM_CONFIG_SHA256
+    ):
+        raise ValueError("prior installed-runtime activation trace lacks matching image/config/result provenance")
+    result = assess_activation_probe_prerequisite(reset_run, zero_preflight, prior_replay)
+    result["prior_runtime_image_digest"] = prior_parent.get("runtime_image_digest")
+    result["prior_mc_sim_config_sha256"] = prior_child.get("installed_mc_sim_config_sha256")
+    result["prior_m1_result_sha256"] = prior_replay.get("source_result_sha256")
+    result["prior_parent_result_sha256"] = prior_replay.get("source_parent_result_sha256")
+    return result
+
+
 def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str]:
     """Build the exact production Docker exec command for the M1 child runner."""
     zero_only_activation = bool(
         getattr(args, "maintainer_authorized_zero_only_activation", False)
     )
+    activation_probe = bool(getattr(args, "maintainer_authorized_activation_probe", False))
     child_authorization = (
         "--maintainer-authorized-zero-only-activation --zero-only-activation-verification"
-        if zero_only_activation else "--maintainer-authorized"
+        if zero_only_activation else
+        "--maintainer-authorized-activation-probe --activation-probe-qualification"
+        if activation_probe else "--maintainer-authorized"
     )
+    child_extra_stop = 5.0 if activation_probe else args.extra_stop_observation
+    child_pulse = ACTIVATION_PROBE_DURATION_S if activation_probe else args.pulse_duration
+    child_forward = 0.12 if activation_probe else args.forward_speed
     command = [
         "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", container, "bash", "-lc",
         "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion " + child_authorization + " --reset-gate-verified"
-        + " --extra-stop-observation " + str(args.extra_stop_observation)
-        + " --pulse-duration " + str(args.pulse_duration)
-        + " --forward-speed " + str(args.forward_speed)
+        + " --extra-stop-observation " + str(child_extra_stop)
+        + " --pulse-duration " + str(child_pulse)
+        + " --forward-speed " + str(child_forward)
         + " --attempt-id " + str(args.attempt_id)
         + " --robot-model-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim/robot_model.yaml"
         + " --mc-sim-config-path /workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
@@ -664,7 +822,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
     )
-    if zero_only_activation or any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
+    if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += " --max-observed-planar-speed-m-s 0.2"
     stand_timeout_diagnostics = (
         "run42_stop_confirmation_diagnostic", "run43_zero_only_stop_diagnostic",
@@ -676,7 +834,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_waypoint_b_short_diagnostic", "run65_waypoint_b_extended_diagnostic",
         "run65_curved_path_diagnostic",
     )
-    if zero_only_activation or any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
+    if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
     zero_only_diagnostics = (
         "run43_zero_only_stop_diagnostic", "run44_threshold_margin_diagnostic",
@@ -687,8 +845,16 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
     )
-    if zero_only_activation or any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
+    if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
+    if activation_probe:
+        prerequisite = getattr(args, "activation_probe_prerequisite", None)
+        if not isinstance(prerequisite, Mapping) or prerequisite.get("status") != "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED":
+            raise ValueError("controlled activation probe has no validated zero-only/source-contract prerequisite")
+        command[-1] += " --activation-probe-prerequisite-attempt-id " + str(
+            prerequisite["zero_only_preflight_attempt_id"]
+        )
+        command[-1] += " --activation-probe-prerequisite-path /workspace/evidence/activation_probe_prerequisite.json"
     if getattr(args, "run49_smoothstop_diagnostic", False):
         command[-1] += " --deceleration-duration-s 1.0"
     if getattr(args, "run50_threshold_respecting_smoothstop_diagnostic", False):
@@ -2489,12 +2655,27 @@ class BoundedRun:
         zero_only_activation = bool(
             getattr(self.args, "maintainer_authorized_zero_only_activation", False)
         )
-        if not self.args.maintainer_authorized_first_motion and not zero_only_activation:
+        activation_probe = bool(getattr(self.args, "maintainer_authorized_activation_probe", False))
+        if not self.args.maintainer_authorized_first_motion and not zero_only_activation and not activation_probe:
             self.m1_result = {
                 "status": "NOT_AUTHORIZED",
-                "reason": "a separate explicit first-motion or zero-only activation authorization is required",
+                "reason": "a separate explicit first-motion, zero-only activation, or activation-probe authorization is required",
             }
             return
+        if activation_probe and (
+            not isinstance(getattr(self.args, "activation_probe_prerequisite", None), Mapping)
+            or self.args.activation_probe_prerequisite.get("status") != "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED"
+        ):
+            self.m1_result = {
+                "status": "BLOCKED",
+                "reason": "activation-probe prerequisite evidence was not validated before runtime",
+            }
+            return
+        if activation_probe:
+            prerequisite_path = self.evidence / "activation_probe_prerequisite.json"
+            with prerequisite_path.open("x", encoding="utf-8") as stream:
+                json.dump(self.args.activation_probe_prerequisite, stream, indent=2)
+                stream.write("\n")
         if self.reset_classification != "AUTO_RESET_PASS":
             raise RuntimeError("first motion requires the unchanged post-Reset standing gate to pass")
         if self.remaining() < 35.0:
@@ -2504,7 +2685,7 @@ class BoundedRun:
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
         command = build_m1_child_command(self.args, self.container)
-        child_timeout_s = 30.0 if zero_only_activation else (
+        child_timeout_s = 30.0 if zero_only_activation or activation_probe else (
             75.0
             if getattr(self.args, "post_locomotion_convergence_observation_s", None) is not None
             else 45.0
@@ -2793,10 +2974,30 @@ class BoundedRun:
         zero_only_activation_authorized = bool(
             getattr(self.args, "maintainer_authorized_zero_only_activation", False)
         )
+        activation_probe_authorized = bool(
+            getattr(self.args, "maintainer_authorized_activation_probe", False)
+        )
         result["zero_only_activation_authorized"] = zero_only_activation_authorized
-        if not standing_only and not first_motion_authorized and not zero_only_activation_authorized:
-            result["fault"] = "explicit standing, zero-only activation, or first-motion authorization is required before runtime"
+        result["activation_probe_authorized"] = activation_probe_authorized
+        if not standing_only and not first_motion_authorized and not zero_only_activation_authorized and not activation_probe_authorized:
+            result["fault"] = "explicit standing, zero-only activation, activation-probe, or first-motion authorization is required before runtime"
             return result
+        if activation_probe_authorized:
+            try:
+                prerequisite = getattr(self.args, "activation_probe_prerequisite", None)
+                if not isinstance(prerequisite, Mapping):
+                    prerequisite = validate_activation_probe_prerequisite(
+                        getattr(self.args, "activation_probe_prerequisite_evidence", "")
+                    )
+                if prerequisite.get("status") != "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED":
+                    raise ValueError("activation-probe prerequisite is not source-supported")
+                self.args.activation_probe_prerequisite = dict(prerequisite)
+                result["activation_probe_prerequisite"] = dict(prerequisite)
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+                result["status"] = "BLOCKED"
+                result["m1_status"] = "NOT_RUN_ACTIVATION_PROBE_PREREQUISITE_FAILED"
+                result["fault"] = f"activation-probe prerequisite failed before runtime: {type(exc).__name__}: {exc}"
+                return result
         try:
             if (
                 getattr(self.args, "run65_right_turn_qualification", False)
@@ -3056,6 +3257,16 @@ def main() -> int:
         help="explicit authorization for one Reset-gated LD/zero-only/stand-recovery test; no nonzero command may be published",
     )
     parser.add_argument(
+        "--maintainer-authorized-activation-probe",
+        action="store_true",
+        help="explicit authorization for one evidence-gated 0.12 m/s, 1.80 s activation/abort qualification; no route motion",
+    )
+    parser.add_argument(
+        "--activation-probe-prerequisite-evidence",
+        default=None,
+        help="unique governed zero-only preflight run directory required before the one activation probe",
+    )
+    parser.add_argument(
         "--maintainer-authorized-standing-takeover",
         action="store_true",
         help="explicit human authorization for one simulation-only standing-takeover test; no LD or velocity command",
@@ -3229,8 +3440,47 @@ def main() -> int:
     )
     add_run65_point_goal_arguments(parser)
     args=parser.parse_args()
-    if args.maintainer_authorized_zero_only_activation and args.maintainer_authorized_first_motion:
-        parser.error("zero-only activation authorization must be separate from first-motion authorization")
+    if sum((
+        bool(args.maintainer_authorized_zero_only_activation),
+        bool(args.maintainer_authorized_activation_probe),
+        bool(args.maintainer_authorized_first_motion),
+    )) > 1:
+        parser.error("first-motion, zero-only activation, and activation-probe authorization are separate")
+    if args.maintainer_authorized_activation_probe:
+        if args.maintainer_authorized_standing_takeover or args.require_complete_stand_baseline:
+            parser.error("activation-probe qualification cannot be combined with standing-only authorization")
+        if any((
+            args.run38_knee_scale_diagnostic,
+            args.run41_min_run_diagnostic,
+            args.run42_stop_confirmation_diagnostic,
+            args.run43_zero_only_stop_diagnostic,
+            args.run44_threshold_margin_diagnostic,
+            args.run45_ten_second_gait_diagnostic,
+            args.run46_startup_cruise_threshold_diagnostic,
+            args.run48_low_cruise_baseline_diagnostic,
+            args.run49_smoothstop_diagnostic,
+            args.run50_threshold_respecting_smoothstop_diagnostic,
+            args.run53_turning_diagnostic,
+            args.run65_right_turn_qualification,
+            args.run65_route_integration,
+            args.run65_waypoint_b_only,
+            args.run65_waypoint_b_short_diagnostic,
+            args.run65_waypoint_b_extended_diagnostic,
+            args.run65_curved_path_diagnostic,
+            args.run65_ground_truth_point_goal,
+            args.capture_mc_rl_debug,
+        )):
+            parser.error("activation-probe qualification is isolated and cannot include a route/controller diagnostic profile")
+        if not args.activation_probe_prerequisite_evidence:
+            parser.error("activation-probe qualification requires the reviewed zero-only prerequisite evidence directory")
+        try:
+            args.activation_probe_prerequisite = validate_activation_probe_prerequisite(
+                args.activation_probe_prerequisite_evidence
+            )
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            parser.error(f"activation-probe prerequisite validation failed before runtime: {exc}")
+    elif args.activation_probe_prerequisite_evidence:
+        parser.error("activation-probe prerequisite path is only valid with its explicit authorization")
     if args.require_complete_stand_baseline and (
         not args.maintainer_authorized_standing_takeover
         or args.maintainer_authorized_first_motion
@@ -3286,6 +3536,18 @@ def main() -> int:
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
+    if args.maintainer_authorized_activation_probe and (
+        any(diagnostic_variants)
+        or args.capture_mc_rl_debug
+        or args.ramp_duration_s != 0.0
+        or args.ramp_start_speed is not None
+        or args.deceleration_duration_s != 0.0
+        or args.deceleration_end_speed_m_s != 0.0
+        or args.startup_speed is not None
+        or args.startup_transition_displacement is not None
+        or args.startup_transition_timeout_s != 0.0
+    ):
+        parser.error("activation-probe authorization is isolated and cannot be combined with route/controller tuning profiles")
     if any(diagnostic_variants):
         if not args.maintainer_authorized_first_motion and not (
             args.maintainer_authorized_zero_only_activation and args.run65_curved_path_diagnostic

@@ -19,11 +19,115 @@ from issue80_m1_auto_reset_run import (
     POSE_GOAL_CONTROLLER,
     SET_ACTION_CAPTURE, SIM_LAUNCH,
     assess_container_absence, build_m1_child_command, classify_first_motion_outcome, classify_run38_diagnostic_outcome,
-    decode_m1_child_result, inspect_route_workcell_geometry,
+    assess_activation_probe_prerequisite, decode_m1_child_result, inspect_route_workcell_geometry,
 )
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_activation_probe_requires_safe_zero_preflight_and_prior_nonzero_source_evidence(self) -> None:
+        fixture_path = Path(__file__).with_name("fixtures") / "issue80_curved_abort_transition_replay.json"
+        prior_replay = json.loads(fixture_path.read_text(encoding="utf-8"))
+        reset_run = {
+            "attempt_id": "zero-only-attempt",
+            "status": "BLOCKED",
+            "reset_classification": "AUTO_RESET_PASS",
+            "runtime_image_digest": "sha256:fed10384dea88322debb4586ffb218f888c184ca0bbc31b576d9b3a3b0adcd31",
+        }
+        observation = {
+            "classification": "PENDING_STAND_REMAINS_ACTIVE",
+            "get_mode_desc": "STAND_DEFAULT",
+            "common_mode_desc": "STAND_DEFAULT",
+            "get_source_name": "",
+            "common_source_name": "",
+            "safety_fault": None,
+        }
+        zero_preflight = {
+            "attempt_id": "zero-only-attempt",
+            "simulation_only": True,
+            "installed_mc_sim_config_sha256": "999d75f0caed5f20479c670fb95b624910c66722b47d37b60217717a3fe34b60",
+            "source_registration": {
+                "success": True,
+                "accepted_by_service": True,
+                "task_completion_confirmed": False,
+                "task_state_value": 0,
+            },
+            "set_mc_action_ld": {"accepted_by_service": True},
+            "zero_only_activation_verification": {
+                "status": "BLOCKED",
+                "activation_confirmation_pass": False,
+                "stand_and_composite_stop_pass": True,
+                "late_locomotion_after_abort": False,
+                "nonzero_publish_calls_returned": 0,
+                "activation": {
+                    "input_source_registration": {
+                        "accepted_by_service": True,
+                        "task_completion_confirmed": False,
+                        "task_state_value": 0,
+                        "task_id": 1,
+                        "selected_action": "ADD",
+                    },
+                    "set_mc_action_ld": {"accepted_by_service": True},
+                    "observations": [observation],
+                },
+            },
+        }
+        result = assess_activation_probe_prerequisite(reset_run, zero_preflight, prior_replay)
+        self.assertEqual(result["status"], "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED")
+        self.assertEqual(result["prior_nonzero_publish_count"], 14)
+        self.assertEqual(result["activation_probe_forward_velocity_m_s"], 0.12)
+        self.assertEqual(result["activation_probe_max_duration_s"], 1.8)
+
+        unsafe = json.loads(json.dumps(zero_preflight))
+        unsafe["zero_only_activation_verification"]["stand_and_composite_stop_pass"] = False
+        with self.assertRaisesRegex(ValueError, "physical-stop PASS"):
+            assess_activation_probe_prerequisite(reset_run, unsafe, prior_replay)
+
+        no_source_evidence = json.loads(json.dumps(prior_replay))
+        no_source_evidence["installed_runtime_nonzero_activation_evidence"]["selected_source_get_service"] = ""
+        with self.assertRaisesRegex(ValueError, "preserved runtime trace"):
+            assess_activation_probe_prerequisite(reset_run, zero_preflight, no_source_evidence)
+
+    def test_activation_probe_child_command_is_separate_and_uses_fixed_profile(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.2,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="activation-probe-cli-test",
+            maintainer_authorized_first_motion=False,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=True,
+            activation_probe_prerequisite={
+                "status": "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED",
+                "zero_only_preflight_attempt_id": "zero-preflight-id",
+            },
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "activation-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--maintainer-authorized-activation-probe", child)
+        self.assertIn("--activation-probe-qualification", child)
+        self.assertIn("--activation-probe-prerequisite-attempt-id", child)
+        self.assertEqual(child[child.index("--activation-probe-prerequisite-attempt-id") + 1], "zero-preflight-id")
+        self.assertIn("--activation-probe-prerequisite-path", child)
+        self.assertEqual(
+            child[child.index("--activation-probe-prerequisite-path") + 1],
+            "/workspace/evidence/activation_probe_prerequisite.json",
+        )
+        self.assertEqual(child[child.index("--forward-speed") + 1], "0.12")
+        self.assertEqual(child[child.index("--pulse-duration") + 1], "1.8")
+        self.assertEqual(child[child.index("--extra-stop-observation") + 1], "5.0")
+        self.assertEqual(child[child.index("--max-observed-planar-speed-m-s") + 1], "0.2")
+        self.assertIn("--zero-only-stop", child)
+        self.assertNotIn("--route-integration", child)
+        self.assertNotIn("--maintainer-authorized", child)
+
     def test_zero_only_activation_command_has_separate_authority_and_no_motion_profile(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=0.0,
@@ -793,6 +897,37 @@ class ResearchScriptStagingTests(unittest.TestCase):
             self.assertNotIn("--maintainer-authorized", child)
             self.assertNotIn("--route-integration", child)
             self.assertNotIn("--route-curved-path-diagnostic", child)
+
+    def test_runner_accepts_only_prerequisite_validated_activation_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(Path(temp_dir))
+            runner.args.maintainer_authorized_first_motion = False
+            runner.args.maintainer_authorized_activation_probe = True
+            runner.args.activation_probe_prerequisite = {
+                "status": "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED",
+                "zero_only_preflight_attempt_id": "zero-preflight-id",
+            }
+            runner.reset_classification = "AUTO_RESET_PASS"
+            runner.network_mode = "bridge"
+            runner.remaining = lambda: 60.0
+            captured: list[list[str]] = []
+
+            def fake_run(name: str, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                captured.append(command)
+                return subprocess.CompletedProcess(command, 2, "", "")
+
+            runner.run = fake_run
+            runner.run_m1()
+            self.assertEqual(len(captured), 1)
+            child = shlex.split(captured[0][-1].rsplit(" && ", 1)[1])
+            self.assertIn("--maintainer-authorized-activation-probe", child)
+            self.assertIn("--activation-probe-qualification", child)
+
+            runner.args.activation_probe_prerequisite = {"status": "BLOCKED"}
+            captured.clear()
+            runner.run_m1()
+            self.assertEqual(captured, [])
+            self.assertEqual(runner.m1_result["status"], "BLOCKED")
 
     def test_parent_does_not_start_container_without_first_motion_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

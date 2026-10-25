@@ -1086,6 +1086,86 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertNotEqual(result["physical_stop_gate"]["status"], "PASS")
         self.assertGreater(sample_count, 0)
 
+    def test_bounded_activation_probe_confirms_then_aborts_without_entering_route_motion(self):
+        from issue80_m1_first_motion import run_first_motion_window
+        from issue80_m1_mode_logic import (
+            ACTIVATION_PROBE_DURATION_S,
+            ACTIVATION_PROBE_FORWARD_M_S,
+            MCLocomotionAbortLifecycle,
+        )
+
+        clock = FakeClock()
+        sample_state = self.snapshot(
+            pose={"x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+                  "vx": 0.0, "vy": 0.0, "vz": 0.0, "wz": 0.0},
+        )
+        lifecycle = MCLocomotionAbortLifecycle()
+        lifecycle.verify_initial_stand(confirmed=True, now_s=clock.now())
+        lifecycle.request_locomotion(accepted=True, now_s=clock.now())
+        commands: list[float] = []
+
+        def read_sample():
+            now = clock.now()
+            row = dict(sample_state)
+            row["sample_monotonic_s"] = now
+            row["readback_monotonic_s"] = {"get_mode": now, "get_source": now}
+            return row
+
+        def publish(value):
+            commands.append(value)
+            if value == ACTIVATION_PROBE_FORWARD_M_S:
+                sample_state.update({
+                    "get_mode_desc": "LOCOMOTION_DEFAULT",
+                    "common_mode_desc": "LOCOMOTION_DEFAULT",
+                    "get_source_name": VELOCITY_SOURCE_NAME,
+                    "common_source_name": VELOCITY_SOURCE_NAME,
+                    "fsm_state": int(McFsmStateCode.MOVING),
+                    "get_mode_status_value": 100,
+                    "common_mode_status_value": 100,
+                })
+            elif value == 0.0:
+                sample_state.update({
+                    "get_mode_desc": "STAND_DEFAULT",
+                    "common_mode_desc": "STAND_DEFAULT",
+                    "fsm_state": MC_FSM_STABLE,
+                })
+
+        result = run_first_motion_window(
+            sample=read_sample,
+            publish=publish,
+            registration={"success": True},
+            set_action={"request_sent": True, "accepted_by_service": True},
+            joint_limits=LIMITS,
+            baseline_forward_displacements_m=[0.0, 0.0, 0.0],
+            authorized=True,
+            forward_command_m_s=ACTIVATION_PROBE_FORWARD_M_S,
+            pulse_duration_s=ACTIVATION_PROBE_DURATION_S,
+            max_pulse_duration_s=ACTIVATION_PROBE_DURATION_S,
+            extra_post_stop_observe_s=0.0,
+            after_zero_abort=lambda: {
+                "success": True,
+                "mode_readback_after_request": {
+                    "action_desc": "STAND_DEFAULT",
+                    "status_value": 100,
+                },
+            },
+            zero_until_stand_timeout_s=3.5,
+            max_observed_planar_speed_m_s=0.2,
+            activation_lifecycle=lifecycle,
+            activation_probe_only=True,
+            source_contract_supported=True,
+            require_locomotion_confirmation=False,
+            clock=clock.now,
+            sleep=clock.sleep,
+        )
+        self.assertTrue(result["activation_probe"]["mode_source_confirmed"])
+        self.assertEqual(result["activation_probe"]["nonzero_publish_calls_returned"], 1)
+        self.assertEqual(result["nonzero_publish_calls_returned"], 1)
+        self.assertEqual(result["last_nonzero_command_offset_s"], 0.0)
+        self.assertTrue(any(value == 0.0 for value in commands))
+        self.assertFalse(lifecycle.nonzero_motion_allowed)
+        self.assertTrue(lifecycle.rearm_forbidden)
+
     def test_reviewed_ten_second_pulse_remains_continuous_and_stops_at_deadline(self):
         commands = []
         result = self.run_protocol(

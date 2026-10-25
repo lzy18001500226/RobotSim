@@ -91,6 +91,8 @@ from issue80_coordinated_pose_goal import (
     terminal_yaw_rate_command,
 )
 from issue80_m1_mode_logic import (
+    ACTIVATION_PROBE_DURATION_S,
+    ACTIVATION_PROBE_FORWARD_M_S,
     MCLocomotionAbortLifecycle,
     classify_locomotion_activation_readbacks,
     classify_set_mc_action_response,
@@ -239,15 +241,23 @@ class FocusedM1Diagnostic(Node):
             getattr(args, "zero_only_activation_verification", False)
             and getattr(args, "maintainer_authorized_zero_only_activation", False)
         )
+        activation_probe_authorized = bool(
+            getattr(args, "activation_probe_qualification", False)
+            and getattr(args, "maintainer_authorized_activation_probe", False)
+        )
         if bool(getattr(args, "zero_only_activation_verification", False)) != bool(
             getattr(args, "maintainer_authorized_zero_only_activation", False)
         ):
             raise ValueError("zero-only activation verification requires its separate authorization flag")
-        if zero_only_authorized and args.maintainer_authorized:
-            raise ValueError("zero-only activation authorization must not be combined with motion authorization")
+        if bool(getattr(args, "activation_probe_qualification", False)) != bool(
+            getattr(args, "maintainer_authorized_activation_probe", False)
+        ):
+            raise ValueError("activation probe requires its separate authorization flag")
+        if sum((bool(args.maintainer_authorized), zero_only_authorized, activation_probe_authorized)) > 1:
+            raise ValueError("first-motion, zero-only activation, and activation-probe authorizations are separate")
         validate_first_motion_authorization(
             reset_gate_verified=args.reset_gate_verified,
-            maintainer_authorized=bool(args.maintainer_authorized or zero_only_authorized),
+            maintainer_authorized=bool(args.maintainer_authorized or zero_only_authorized or activation_probe_authorized),
             network_mode=verified_network_mode,
         )
         if not 0.0 < args.pulse_duration <= MAX_AUTHORIZED_PULSE_S:
@@ -810,6 +820,94 @@ class FocusedM1Diagnostic(Node):
     def _activation_speed_cap(self) -> float:
         configured = getattr(self.args, "max_observed_planar_speed_m_s", None)
         return 0.2 if configured is None else float(configured)
+
+    def begin_locomotion_activation_probe_request(
+        self,
+        *,
+        registration: Mapping[str, Any],
+        phase: str,
+    ) -> tuple[MCLocomotionAbortLifecycle, dict[str, Any], dict[str, Any]]:
+        """Prepare one source-grounded activation probe from a fresh STAND state."""
+        initial = self.sample_for_first_motion()
+        initial_fault = snapshot_fault(
+            initial,
+            self.joint_limits,
+            state_timeout_s=self.args.state_timeout,
+            min_root_z=self.args.min_root_z,
+            max_tilt_deg=self.args.max_tilt_deg,
+            max_observed_planar_speed_m_s=self._activation_speed_cap(),
+        )
+        self._trace_first_motion_sample(f"{phase}-stand-before-ld", initial)
+        stand_confirmed = (
+            initial_fault is None
+            and stand_mode_readback_confirmed(initial)
+            and initial.get("get_mode_status_value") == 100
+            and initial.get("common_mode_status_value") == 100
+            and initial.get("fsm_state") == MC_FSM_STABLE
+            and initial.get("body_status") == 1
+        )
+        lifecycle = MCLocomotionAbortLifecycle()
+        if not lifecycle.verify_initial_stand(confirmed=stand_confirmed, now_s=time.monotonic()):
+            result = {
+                "status": "BLOCKED",
+                "classification": "INITIAL_STAND_NOT_FRESHLY_VERIFIED",
+                "fault": initial_fault or "fresh STAND/FSM/body readback did not pass",
+                "initial_snapshot": initial,
+                "set_mc_action_sent": False,
+                "nonzero_publish_calls_returned": 0,
+                "final_lifecycle": lifecycle.snapshot(),
+            }
+            return lifecycle, {"request_sent": False, "accepted_by_service": False}, result
+
+        set_action = self.request_ld_once()
+        lifecycle.request_locomotion(
+            accepted=set_action.get("accepted_by_service") is True,
+            now_s=time.monotonic(),
+        )
+        result = {
+            "classification": "SIMULATION_ONLY_SOURCE_GROUNDED_ACTIVATION_ABORT_PROBE",
+            "status": "READY" if set_action.get("accepted_by_service") is True else "BLOCKED",
+            "initial_snapshot": initial,
+            "input_source_registration": {
+                "accepted_by_service": registration.get("accepted_by_service"),
+                "task_completion_confirmed": registration.get("task_completion_confirmed"),
+                "task_state_value": registration.get("task_state_value"),
+                "task_id": registration.get("task_id"),
+                "selected_action": registration.get("selected_action"),
+            },
+            "set_mc_action_ld": set_action,
+            "source_contract_evidence": {
+                "official_arbitration_docs": "AimDK_X2 1.1.0: new source requires a valid nonzero command to acquire arbitration",
+                "official_arbitration_docs_url": "https://x2-aimdk.agibot.com/zh-cn/latest/Interface/control_mod/MC_control.html",
+                "official_initial_step_docs": "AimDK_X2 1.1.0: forward startup threshold is approximately 0.1 m/s and model dependent",
+                "official_initial_step_docs_url": "https://x2-aimdk.agibot.com/zh-cn/latest/Interface/control_mod/locomotion.html",
+                "installed_trace": "prior installed-runtime attempt published 0.12 m/s, selected the source within 0.024 s, and reported GetMcAction LOCOMOTION at 1.785 s; this probe uses 0.12 m/s for no more than 1.80 s",
+                "installed_mc_runtime_identity": (
+                    self.mc_runtime_identity.as_dict() if self.mc_runtime_identity else None
+                ),
+                "installed_mc_app_binary_sha256": (
+                    hashlib.sha256(Path(self.mc_runtime_identity.process_executable).read_bytes()).hexdigest()
+                    if self.mc_runtime_identity and Path(self.mc_runtime_identity.process_executable).is_file()
+                    else None
+                ),
+                "installed_mc_sim_config_sha256": self.mc_sim_config_sha256,
+                "zero_only_preflight_attempt_id": getattr(
+                    self.args, "activation_probe_prerequisite_attempt_id", None
+                ),
+            },
+            "probe_command": {
+                "forward_velocity_m_s": 0.12,
+                "lateral_velocity_m_s": 0.0,
+                "angular_velocity_rad_s": 0.0,
+                "publish_hz": PUBLISH_HZ,
+                "maximum_duration_s": ACTIVATION_PROBE_DURATION_S,
+                "measured_planar_speed_limit_m_s": 0.20,
+            },
+            "route_motion_authorized": False,
+            "initial_lifecycle": lifecycle.snapshot(),
+        }
+        self.events.append({"event": "controlled_activation_probe_prepared", "phase": phase, **result})
+        return lifecycle, set_action, result
 
     def begin_zero_only_locomotion_activation(
         self,
@@ -5162,6 +5260,15 @@ class FocusedM1Diagnostic(Node):
             "zero_only_activation_verification": bool(
                 getattr(self.args, "zero_only_activation_verification", False)
             ),
+            "activation_probe_authorized": bool(
+                getattr(self.args, "maintainer_authorized_activation_probe", False)
+            ),
+            "activation_probe_qualification": bool(
+                getattr(self.args, "activation_probe_qualification", False)
+            ),
+            "activation_probe_prerequisite_attempt_id": getattr(
+                self.args, "activation_probe_prerequisite_attempt_id", None
+            ),
             "reset_gate_verified_by_parent": bool(self.args.reset_gate_verified),
             "status": "NOT_RUN",
             "source": self.source,
@@ -5239,10 +5346,16 @@ class FocusedM1Diagnostic(Node):
                 # The stationary baseline belongs to verified STAND, before the
                 # locomotion action is requested. It is also command-free.
                 stationary_baseline = self.collect_stationary_odom_baseline()
-                lifecycle, set_action, activation_gate = self.begin_zero_only_locomotion_activation(
-                    registration=registration,
-                    phase="initial",
-                )
+                if getattr(self.args, "activation_probe_qualification", False):
+                    lifecycle, set_action, activation_gate = self.begin_locomotion_activation_probe_request(
+                        registration=registration,
+                        phase="controlled-activation-probe",
+                    )
+                else:
+                    lifecycle, set_action, activation_gate = self.begin_zero_only_locomotion_activation(
+                        registration=registration,
+                        phase="initial",
+                    )
             else:
                 lifecycle = None
                 activation_gate = {
@@ -5319,7 +5432,8 @@ class FocusedM1Diagnostic(Node):
                     "final_lifecycle": final_lifecycle,
                 }
                 result["acceptance_gates"] = {
-                    "MC_ACTIVATION_RECOVERY": "PASS" if activation_pass and recovery_pass else "BLOCKED",
+                    "ZERO_ONLY_MODE_TRANSITION": "PASS" if activation_pass else "NOT_CONFIRMED",
+                    "MC_ACTIVATION_RECOVERY": "PASS" if recovery_pass else "BLOCKED",
                     "LATE_LOCOMOTION_ABORT": (
                         "RECOVERED_NO_REARM" if late_locomotion and recovery_pass
                         else "UNRESOLVED" if late_locomotion
@@ -5348,6 +5462,127 @@ class FocusedM1Diagnostic(Node):
                     or activation_gate.get("terminal_reason")
                     or "zero-only activation or its physical cancellation gate did not pass"
                 )
+                return result
+
+            if getattr(self.args, "activation_probe_qualification", False):
+                probe_result = None
+                if (
+                    lifecycle is not None
+                    and activation_gate.get("status") == "READY"
+                    and set_action.get("accepted_by_service") is True
+                ):
+                    probe_result = run_first_motion_window(
+                        sample=self.sample_for_first_motion,
+                        publish=self._publish,
+                        sleep=self._spin_for,
+                        registration=registration,
+                        set_action=set_action,
+                        joint_limits=self.joint_limits,
+                        baseline_forward_displacements_m=[
+                            float(window["forward_displacement_m"])
+                            for window in stationary_baseline.get("windows", [])
+                        ],
+                        baseline_state_summary=stationary_baseline.get("physical_state_summary"),
+                        authorized=True,
+                        forward_command_m_s=ACTIVATION_PROBE_FORWARD_M_S,
+                        pulse_duration_s=ACTIVATION_PROBE_DURATION_S,
+                        max_pulse_duration_s=ACTIVATION_PROBE_DURATION_S,
+                        extra_post_stop_observe_s=5.0,
+                        extra_post_stop_observe_limit_s=5.0,
+                        after_zero_abort=self.request_postwalk_stand_once,
+                        shutdown_event=self.interrupted,
+                        on_sample=lambda sample_phase, snapshot: self._trace_first_motion_sample(
+                            f"activation-probe-{sample_phase}", dict(snapshot),
+                        ),
+                        state_timeout_s=self.args.state_timeout,
+                        min_root_z=self.args.min_root_z,
+                        max_tilt_deg=self.args.max_tilt_deg,
+                        max_observed_planar_speed_m_s=self._activation_speed_cap(),
+                        zero_until_stand_timeout_s=3.5,
+                        require_locomotion_confirmation=False,
+                        activation_lifecycle=lifecycle,
+                        activation_probe_only=True,
+                        source_contract_supported=(
+                            (getattr(self.args, "activation_probe_prerequisite", None) or {}).get("status")
+                            == "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED"
+                        ),
+                    )
+                else:
+                    probe_result = self.recover_activation_to_stand(
+                        lifecycle=lifecycle or MCLocomotionAbortLifecycle(),
+                        registration=registration,
+                        set_action=set_action,
+                        baseline=stationary_baseline,
+                        reason=str(activation_gate.get("fault") or "activation probe prerequisites did not pass"),
+                        phase="activation-probe-preflight-recovery",
+                    )
+                self.pulse_result = probe_result
+                probe = probe_result.get("activation_probe", {}) if isinstance(probe_result, Mapping) else {}
+                stand_gate = probe_result.get("physical_stop_gate") if isinstance(probe_result, Mapping) else None
+                stand_confirmation = probe_result.get("stop_transition_confirmation") if isinstance(probe_result, Mapping) else None
+                final_lifecycle = (
+                    probe_result.get("activation_lifecycle") if isinstance(probe_result, Mapping) else None
+                )
+                mode_source_activation_pass = probe.get("mode_source_confirmed") is True
+                physical_stop_pass = (
+                    isinstance(stand_gate, Mapping)
+                    and stand_gate.get("status") == "PASS"
+                    and isinstance(stand_confirmation, Mapping)
+                    and stand_confirmation.get("stand_confirmed") is True
+                    and isinstance(probe_result.get("after_zero_stop_action"), Mapping)
+                    and probe_result["after_zero_stop_action"].get("success") is True
+                    and probe_result.get("post_stop_fault") is None
+                    and isinstance(final_lifecycle, Mapping)
+                    and final_lifecycle.get("state") == "STAND_VERIFIED"
+                    and int(probe_result.get("nonzero_publish_calls_returned", 0) or 0) <= 25
+                    and isinstance(probe_result.get("zero_stop"), Mapping)
+                    and int(probe_result["zero_stop"].get("zero_publish_calls_returned", 0) or 0) > 0
+                )
+                late_locomotion = bool(
+                    isinstance(final_lifecycle, Mapping)
+                    and final_lifecycle.get("late_locomotion_after_abort") is True
+                )
+                result["activation_probe_qualification"] = {
+                    "classification": "SIMULATION_ONLY_SOURCE_GROUNDED_ACTIVATION_ABORT_PROBE",
+                    "status": "PASS" if mode_source_activation_pass and physical_stop_pass and not late_locomotion else "BLOCKED",
+                    "preflight": activation_gate,
+                    "probe": probe_result,
+                    "mode_source_activation_pass": mode_source_activation_pass,
+                    "safe_stand_and_physical_stop_pass": physical_stop_pass,
+                    "late_locomotion_after_abort": late_locomotion,
+                    "route_motion_authorized": False,
+                    "final_lifecycle": final_lifecycle,
+                }
+                result["acceptance_gates"] = {
+                    "MC_ACTIVATION_RECOVERY": "PASS" if physical_stop_pass else "BLOCKED",
+                    "MC_MODE_SOURCE_ACTIVATION": "PASS" if mode_source_activation_pass else "BLOCKED",
+                    "LATE_LOCOMOTION_ABORT": (
+                        "RECOVERED_NO_REARM" if late_locomotion and physical_stop_pass
+                        else "UNRESOLVED" if late_locomotion
+                        else "NOT_OBSERVED"
+                    ),
+                    "PHYSICAL_STOP": "PASS" if physical_stop_pass else "FAIL",
+                    "IN_PLACE_ROTATION_SUPPORTED": "NOT_RUN",
+                    "ROTATE_TO_YAW": "NOT_RUN",
+                    "STRAIGHT_LINE_TRACKING": "NOT_RUN",
+                    "GO_TO_POSE_POSITION": "NOT_RUN",
+                    "GO_TO_POSE_FINAL_YAW": "NOT_RUN",
+                    "GO_TO_POSE_RUNTIME": "NOT_RUN",
+                    "HUMAN_VISUAL_REVIEW": "PENDING_USER_REVIEW",
+                }
+                result["nonzero_publish_calls_returned"] = int(
+                    probe_result.get("nonzero_publish_calls_returned", 0) or 0
+                ) if isinstance(probe_result, Mapping) else 0
+                result["zero_publish_calls_returned"] = int(self.zero_publish_calls_returned)
+                result["get_mc_action_final"] = self.read_mode("final_activation_probe")
+                result["get_current_input_source_final"] = self.read_input_source("final_activation_probe")
+                result["final_common_state"] = _json_safe(self.latest.get("common"))
+                result["final_odometry"] = self._pose()
+                result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
+                result["status"] = result["activation_probe_qualification"]["status"]
+                result["fault"] = None if result["status"] == "PASS" else (
+                    probe_result.get("fault") if isinstance(probe_result, Mapping) else None
+                ) or "activation probe mode/source or physical-stop gate did not pass"
                 return result
 
             if activation_gate.get("status") != "PASS" or lifecycle is None:
@@ -5648,6 +5883,7 @@ def _focused_diagnostic_command(args: argparse.Namespace) -> int:
         maintainer_authorized=bool(
             args.maintainer_authorized
             or getattr(args, "maintainer_authorized_zero_only_activation", False)
+            or getattr(args, "maintainer_authorized_activation_probe", False)
         ),
         network_mode=os.environ.get("ROBOTSIM_VERIFIED_NETWORK_MODE"),
     )
@@ -5716,9 +5952,17 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     """Validate the complete child CLI profile without initializing ROS or the simulator."""
     zero_only_verification = bool(getattr(args, "zero_only_activation_verification", False))
     zero_only_authorized = bool(getattr(args, "maintainer_authorized_zero_only_activation", False))
+    activation_probe = bool(getattr(args, "activation_probe_qualification", False))
+    activation_probe_authorized = bool(getattr(args, "maintainer_authorized_activation_probe", False))
     if zero_only_verification != zero_only_authorized:
         raise ValueError("zero-only activation verification requires its separate authorization flag")
-    if not args.reset_gate_verified or not (args.maintainer_authorized or zero_only_authorized):
+    if activation_probe != activation_probe_authorized:
+        raise ValueError("activation probe requires its separate authorization flag")
+    if sum((bool(args.maintainer_authorized), zero_only_authorized, activation_probe_authorized)) > 1:
+        raise ValueError("first-motion, zero-only activation, and activation-probe authorizations are separate")
+    if not args.reset_gate_verified or not (
+        args.maintainer_authorized or zero_only_authorized or activation_probe_authorized
+    ):
         raise ValueError("a verified Reset and matching explicit authorization are required")
     if zero_only_verification and (
         args.maintainer_authorized
@@ -5727,6 +5971,52 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         or getattr(args, "right_turn_qualification", False)
     ):
         raise ValueError("zero-only activation verification cannot include a nonzero-motion authorization")
+    if activation_probe:
+        if (
+            args.turning_diagnostic
+            or args.point_goal_diagnostic
+            or getattr(args, "right_turn_qualification", False)
+            or getattr(args, "route_integration", False)
+            or args.forward_speed != ACTIVATION_PROBE_FORWARD_M_S
+            or args.pulse_duration != ACTIVATION_PROBE_DURATION_S
+            or args.ramp_duration_s != 0.0
+            or args.ramp_start_speed is not None
+            or args.deceleration_duration_s != 0.0
+            or args.startup_speed is not None
+            or args.startup_transition_displacement is not None
+            or args.startup_transition_timeout_s != 0.0
+            or args.max_observed_planar_speed_m_s != 0.2
+            or args.zero_until_stand_timeout_s != 3.5
+            or not args.zero_only_stop
+            or args.extra_stop_observation != 5.0
+            or not getattr(args, "activation_probe_prerequisite_attempt_id", None)
+        ):
+            raise ValueError(
+                "activation-probe qualification is fixed to 0.12 m/s for 1.80 s, "
+                "zero lateral/yaw, 0.20 m/s measured-speed gate, 3.5 s STAND wait, "
+                "and the existing 5 s post-stop window"
+            )
+        prerequisite_path = Path(str(getattr(args, "activation_probe_prerequisite_path", "")))
+        if prerequisite_path.is_symlink() or not prerequisite_path.is_file():
+            raise ValueError("activation-probe prerequisite summary is missing or is not a regular file")
+        try:
+            prerequisite = json.loads(prerequisite_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"activation-probe prerequisite summary is unreadable: {type(exc).__name__}: {exc}") from exc
+        if (
+            not isinstance(prerequisite, Mapping)
+            or prerequisite.get("status") != "SOURCE_GROUNDED_ACTIVATION_PROBE_SUPPORTED"
+            or prerequisite.get("zero_only_preflight_attempt_id")
+                != args.activation_probe_prerequisite_attempt_id
+        ):
+            raise ValueError("activation-probe prerequisite summary status/attempt identity is invalid")
+        try:
+            current_config_sha256 = hashlib.sha256(Path(args.mc_sim_config_path).read_bytes()).hexdigest()
+        except OSError as exc:
+            raise ValueError(f"activation-probe MC config is unreadable: {exc}") from exc
+        if prerequisite.get("installed_mc_sim_config_sha256") != current_config_sha256:
+            raise ValueError("activation-probe prerequisite MC config hash does not match this runtime")
+        args.activation_probe_prerequisite = dict(prerequisite)
     selected_motion_modes = sum((
         args.turning_diagnostic,
         args.point_goal_diagnostic,
@@ -5744,7 +6034,10 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     profile: dict[str, Any] = {
         "point_goal": False,
         "zero_only_activation_verification": zero_only_verification,
+        "activation_probe_qualification": activation_probe,
     }
+    if activation_probe:
+        profile["activation_probe_prerequisite_attempt_id"] = args.activation_probe_prerequisite_attempt_id
     if getattr(args, "route_integration", False):
         profile["route_integration"] = True
         curved_path_diagnostic = bool(getattr(args, "route_curved_path_diagnostic", False))
@@ -6037,7 +6330,11 @@ def main() -> int:
     )
     first.add_argument("--maintainer-authorized", action="store_true")
     first.add_argument("--maintainer-authorized-zero-only-activation", action="store_true")
+    first.add_argument("--maintainer-authorized-activation-probe", action="store_true")
     first.add_argument("--zero-only-activation-verification", action="store_true")
+    first.add_argument("--activation-probe-qualification", action="store_true")
+    first.add_argument("--activation-probe-prerequisite-attempt-id", default=None)
+    first.add_argument("--activation-probe-prerequisite-path", default=None)
     first.add_argument("--reset-gate-verified", action="store_true")
     first.add_argument("--attempt-id", required=True)
     first.add_argument("--output-dir", required=True)
@@ -6087,6 +6384,7 @@ def main() -> int:
         if not args.reset_gate_verified or not (
             args.maintainer_authorized
             or getattr(args, "maintainer_authorized_zero_only_activation", False)
+            or getattr(args, "maintainer_authorized_activation_probe", False)
         ):
             print("BLOCKED: validation-only invocation must carry the production authorization flags", file=sys.stderr)
             return 2
