@@ -20,4 +20,5 @@ export SIM_RESOURCE_MODEL_PATH="$install_dir/resource/model"
 
 mkdir -p /workspace/evidence/log /workspace/evidence/cfg/tmp
 cd /workspace/evidence
-exec "$current_dir/aima-sim-app" --cfg_file_path="$SIM_ROBOT_PATH/simulator/default.yaml"
+simulator_config="${ROBOTSIM_SIMULATOR_CFG_OVERRIDE:-$SIM_ROBOT_PATH/simulator/default.yaml}"
+exec "$current_dir/aima-sim-app" --cfg_file_path="$simulator_config"

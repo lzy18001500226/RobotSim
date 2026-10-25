@@ -15,6 +15,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 import issue80_m1_auto_reset_run
+from issue80_local01_scene_route import build_short_route_config
 from issue80_m1_auto_reset_run import (
     BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, MC_RL_DEBUG_CAPTURE,
     POSE_GOAL_CONTROLLER,
@@ -23,10 +24,64 @@ from issue80_m1_auto_reset_run import (
     classify_first_motion_outcome, classify_run38_diagnostic_outcome,
     assess_activation_probe_prerequisite, decode_m1_child_result, inspect_route_workcell_geometry,
     validate_waypoint_docking_route_input,
+    validate_configured_route_motion_profile,
+    validate_stand_convergence_arguments,
 )
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_configured_local01_route_can_require_existing_stand_warmup_gate(self) -> None:
+        args = argparse.Namespace(
+            require_stand_warmup_composite=True,
+            maintainer_authorized_first_motion=True,
+            run65_waypoint_b_extended_diagnostic=False,
+            local01_scene_world_poses="/pinned/local01/scene_world_poses.json",
+            route_config=None,
+            post_locomotion_convergence_observation_s=None,
+            extra_stop_observation=0.0,
+        )
+        profile = validate_stand_convergence_arguments(args)
+        self.assertEqual(profile["status"], "SIMULATION_ONLY_STAND_WARMUP_COMPOSITE")
+        self.assertTrue(profile["existing_composite_stop_gate_unchanged"])
+
+        args.maintainer_authorized_first_motion = False
+        with self.assertRaisesRegex(ValueError, "requires authorized extended-B or configured-route"):
+            validate_stand_convergence_arguments(args)
+
+    def test_extended_b_still_requires_its_explicit_post_locomotion_observation(self) -> None:
+        args = argparse.Namespace(
+            require_stand_warmup_composite=True,
+            maintainer_authorized_first_motion=True,
+            run65_waypoint_b_extended_diagnostic=True,
+            route_config=None,
+            local01_scene_world_poses=None,
+            post_locomotion_convergence_observation_s=None,
+            extra_stop_observation=0.0,
+        )
+        with self.assertRaisesRegex(ValueError, "explicit post-locomotion observation horizon"):
+            validate_stand_convergence_arguments(args)
+
+    def test_configured_route_profile_uses_route_caps_and_existing_stop_observation(self) -> None:
+        args = argparse.Namespace(
+            route_config=None,
+            local01_scene_world_poses="/pinned/local01/scene_world_poses.json",
+            forward_speed=0.12,
+            pulse_duration=1.0,
+            extra_stop_observation=7.0,
+            ramp_duration_s=0.0,
+            ramp_start_speed=None,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+            capture_mc_rl_debug=False,
+            route_turn_evidence=None,
+        )
+        validate_configured_route_motion_profile(args)
+
+        args.forward_speed = 0.13
+        with self.assertRaisesRegex(ValueError, "configured route requires 0.12 m/s"):
+            validate_configured_route_motion_profile(args)
+
     def test_activation_probe_requires_safe_zero_preflight_and_prior_nonzero_source_evidence(self) -> None:
         fixture_path = Path(__file__).with_name("fixtures") / "issue80_curved_abort_transition_replay.json"
         prior_replay = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -219,6 +274,47 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertNotIn("--route-turn-qualification-evidence", child)
         self.assertEqual(child[child.index("--extra-stop-observation") + 1], "5.0")
 
+    def test_parent_child_local01_short_scene_route_propagates_bounded_profile(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.12,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="local01-short-route-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            route_config=None,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "local01-route-test")[-1].rsplit(" && ", 1)[1]
+        )
+
+        def option(name: str) -> str:
+            return child[child.index(name) + 1]
+
+        self.assertIn("--maintainer-authorized", child)
+        self.assertIn("--route-integration", child)
+        self.assertIn("--route-config", child)
+        self.assertEqual(option("--route-config"), "/workspace/evidence/route_config.json")
+        self.assertIn("--short-scene-route", child)
+        self.assertIn("--route-config-post-stand-observation", child)
+        self.assertEqual(option("--extra-stop-observation"), "7.0")
+        self.assertEqual(option("--forward-speed"), "0.12")
+        self.assertEqual(option("--pulse-duration"), "1.0")
+        self.assertEqual(option("--max-observed-planar-speed-m-s"), "0.2")
+        self.assertEqual(option("--zero-until-stand-timeout-s"), "3.5")
+        self.assertIn("--zero-only-stop", child)
+        self.assertNotIn("--route-curved-path-diagnostic", child)
+        self.assertNotIn("--route-waypoint-b-only", child)
+
     def test_parent_child_point_goal_invocation_propagates_runtime_profile(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=7.0,
@@ -392,6 +488,21 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(option(configured_command, "--extra-stop-observation"), "7.0")
         self.assertIn("--zero-only-stop", configured_command)
 
+        args.route_config = None
+        args.local01_scene_world_poses = "/pinned/local01/scene_world_poses.json"
+        local01_command = shlex.split(
+            build_m1_child_command(args, "route-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--route-integration", local01_command)
+        self.assertIn("--short-scene-route", local01_command)
+        self.assertIn("--route-config-post-stand-observation", local01_command)
+        route_index = local01_command.index("--route-config")
+        self.assertEqual(local01_command[route_index + 1], "/workspace/evidence/route_config.json")
+        self.assertEqual(option(local01_command, "--extra-stop-observation"), "7.0")
+        self.assertIn("--max-observed-planar-speed-m-s", local01_command)
+        self.assertIn("--zero-until-stand-timeout-s", local01_command)
+        self.assertIn("--zero-only-stop", local01_command)
+
     def test_bounded_run_stages_validated_route_config_immutably(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -448,6 +559,63 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(result["workcell"]["status"], "PASS")
         self.assertEqual(result["clearance"]["status"], "PASS")
         self.assertEqual(result["source_sha256"], expected_sha)
+
+    def test_bounded_run_stages_local01_scene_and_short_route_with_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            pose_source = root / "scene_world_poses.json"
+            pose_source.write_text("{}\n", encoding="utf-8")
+            source_sha = hashlib.sha256(pose_source.read_bytes()).hexdigest()
+            source = {
+                "source_commit": "95d76d82ea7def0dd719da4ebe07f9654044415e",
+                "source_hashes": {"scene_world_poses": source_sha},
+            }
+            route_input = build_short_route_config({
+                **source,
+                "scene_world_poses": {"poses": {
+                    "START": {"xyz_m": [-1.5, -1.5, 0.68], "yaw_rad": 1.5707963267948966},
+                    "TABLE_DOCKING": {"xyz_m": [1.0, -1.5, 0.68], "yaw_rad": 0.0},
+                }},
+                "odom_from_scene": {
+                    "translation_xyz_m": [1.5, -1.5, 0.0], "yaw_rad": -1.5707963267948966,
+                },
+                "reset_anchor": {"base_pose_in_odom_after_reset": {
+                    "xyz_m": [0.0, 0.0, 0.68], "yaw_rad": 0.0,
+                }},
+            })
+            preflight = {
+                "source": source,
+                "route_input": route_input,
+                "route": None,
+                "source_sha256": source_sha,
+                "static_scene_preflight": {"status": "PASS_STATIC_SCENE_CLEARANCE", "mj_step_calls": 0},
+            }
+            bundle = {
+                "classification": "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER",
+                "source_local01_commit": source["source_commit"],
+            }
+            args = argparse.Namespace(
+                evidence_dir=str(evidence),
+                route_config=None,
+                local01_scene_world_poses=str(pose_source),
+                configured_local01_scene_preflight=preflight,
+                container="local01-route-test",
+                max_runtime_s=180.0,
+            )
+            with patch("issue80_m1_auto_reset_run.load_local01_scene_inputs", return_value=source), patch(
+                "issue80_m1_auto_reset_run.prepare_local01_scene_runtime_bundle", return_value=bundle
+            ):
+                run = BoundedRun(args)
+            staged = evidence / "route_config.json"
+            manifest = json.loads((evidence / "route_config_input.json").read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(staged.read_text(encoding="utf-8"))["route_kind"],
+                             "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING")
+            self.assertEqual(manifest["source_local01_commit"], source["source_commit"])
+            self.assertEqual(manifest["source_scene_world_poses_sha256"], source_sha)
+            self.assertEqual(manifest["derived_route_sha256"], hashlib.sha256(staged.read_bytes()).hexdigest())
+            self.assertEqual(run.route_config_sha256, hashlib.sha256(staged.read_bytes()).hexdigest())
 
     def test_route_workcell_preflight_accepts_only_pinned_infinite_floor_scene(self):
         from issue80_m1_auto_reset_run import ROUTE_SCENE_RELATIVE, ROUTE_X2_RELATIVE
@@ -958,6 +1126,9 @@ class ResearchScriptStagingTests(unittest.TestCase):
                 staged = evidence / staged_name
                 self.assertEqual(staged.read_bytes(), source.read_bytes())
                 self.assertEqual(by_name[staged_name]["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
+            sim_script = (evidence / "launch_sim.sh").read_text(encoding="utf-8")
+            self.assertIn("ROBOTSIM_SIMULATOR_CFG_OVERRIDE", sim_script)
+            self.assertIn("$SIM_ROBOT_PATH/simulator/default.yaml", sim_script)
 
     def test_refuses_to_overwrite_a_stale_staged_module(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1116,6 +1287,93 @@ class ResearchScriptStagingTests(unittest.TestCase):
                 runner.start_container()
             self.assertTrue(runner.container_created)
             self.assertIn("--network=bridge", calls[0])
+
+    def test_local01_reference_scene_is_mounted_read_only_from_its_narrow_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            evidence = root / "evidence"
+            reference = root / "raicom2026-x2-mujoco-scene"
+            evidence.mkdir()
+            reference.mkdir()
+            local01_scene = evidence / "local01_scene"
+            local01_scene.mkdir()
+            pose_input = local01_scene / "scene_world_poses.json"
+            pose_input.write_text("{}\n", encoding="utf-8")
+            runner = self.make_runner(evidence)
+            runner.local01_scene_bundle = {"classification": "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER"}
+            runner.local01_scene_source = {"reference_root": str(reference)}
+            runner.local01_scene_readonly_mounts = [
+                (pose_input, "/workspace/evidence/local01_scene/scene_world_poses.json")
+            ]
+            commands = []
+
+            def fake_run(name, command, **kwargs):
+                commands.append(command)
+                if name == "docker_run":
+                    return subprocess.CompletedProcess(command, 0, "container-id", "")
+                mounts = [{
+                    "Destination": "/workspace/raicom_scene_source",
+                    "Source": str(reference),
+                    "Type": "bind",
+                    "RW": False,
+                }, {
+                    "Destination": "/workspace/evidence/local01_scene/scene_world_poses.json",
+                    "Source": str(pose_input),
+                    "Type": "bind",
+                    "RW": False,
+                }]
+                return subprocess.CompletedProcess(command, 0, json.dumps([{
+                    "Id": "a" * 64,
+                    "HostConfig": {"NetworkMode": "bridge"},
+                    "Config": {"Env": ["ROS_DOMAIN_ID=20", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp"]},
+                    "Mounts": mounts,
+                }]), "")
+
+            runner.run = fake_run
+            runner.start_container()
+            self.assertTrue(runner.container_created)
+            self.assertIn(
+                "type=bind,source=" + str(reference) + ",target=/workspace/raicom_scene_source,readonly",
+                commands[0],
+            )
+            self.assertIn(
+                "type=bind,source=" + str(pose_input)
+                + ",target=/workspace/evidence/local01_scene/scene_world_poses.json,readonly",
+                commands[0],
+            )
+            self.assertEqual(runner.container_id, "a" * 64)
+
+    def test_local01_scene_startup_uses_the_staged_simulator_config_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            local01 = evidence / "local01_scene"
+            local01.mkdir()
+            scene = local01 / "scene_workspace_runtime.xml"
+            simulator_config = local01 / "simulator_default_local01_scene.yaml"
+            scene.write_text("<mujoco model='test'/>", encoding="utf-8")
+            simulator_config.write_text("simulation_model: scene.xml\n", encoding="utf-8")
+            runner = self.make_runner(evidence)
+            runner.local01_scene_bundle = {
+                "runtime_files_sha256": {
+                    "scene_workspace_runtime.xml": hashlib.sha256(scene.read_bytes()).hexdigest(),
+                    "simulator_default_local01_scene.yaml": hashlib.sha256(simulator_config.read_bytes()).hexdigest(),
+                }
+            }
+            calls = []
+
+            def fake_exec(name, command, **kwargs):
+                calls.append((name, command))
+                if name in {"verify_local01_runtime_scene_wrapper_sha256", "verify_local01_simulator_config_sha256"}:
+                    target = scene if name == "verify_local01_runtime_scene_wrapper_sha256" else simulator_config
+                    return subprocess.CompletedProcess(command, 0, hashlib.sha256(target.read_bytes()).hexdigest() + "  staged\n", "")
+                return subprocess.CompletedProcess(command, 0, "MujocoSimModule Started Succeeded\n", "")
+
+            runner.docker_exec = fake_exec
+            runner.start_sim_first()
+        launch = calls[0][1]
+        self.assertIn("ROBOTSIM_SIMULATOR_CFG_OVERRIDE=/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml", launch)
+        self.assertTrue(any(name == "verify_local01_runtime_scene_wrapper_sha256" for name, _ in calls))
+        self.assertTrue(any(name == "verify_local01_simulator_config_sha256" for name, _ in calls))
 
     def test_cleanup_records_normal_teardown_and_process_crash_limitation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

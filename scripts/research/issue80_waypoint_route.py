@@ -9,7 +9,7 @@ command, zero-stop, and measured physical-stop gates.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 import json
 import math
@@ -19,6 +19,15 @@ from typing import Any, Mapping, Protocol, Sequence
 
 SCHEMA_VERSION = "robotsim.issue80.waypoint-route.v1"
 WAYPOINT_DOCKING_POSE_SCHEMA_VERSION = "robotsim.issue80.waypoint-docking-poses.v1"
+LOCAL01_SHORT_SCENE_ROUTE_SCHEMA_VERSION = "robotsim.issue80.local01-short-scene-route.v1"
+LOCAL01_SHORT_ROUTE_STEP_M = 0.20
+LOCAL01_SHORT_ROUTE_POSITION_TOLERANCE_M = 0.15
+LOCAL01_SHORT_ROUTE_MAX_WINDOWS = 2
+LOCAL01_SHORT_ROUTE_MAX_WINDOW_S = 5.0
+LOCAL01_SHORT_ROUTE_MAX_AGGREGATE_S = 10.0
+LOCAL01_SHORT_ROUTE_FORWARD_M_S = 0.12
+LOCAL01_SHORT_ROUTE_ANGULAR_RAD_S = 0.075
+LOCAL01_SHORT_ROUTE_MAX_CROSS_TRACK_M = 0.05
 MAX_FORWARD_M_S = 0.14
 MAX_ANGULAR_RAD_S = 0.075
 MIN_EFFECTIVE_FORWARD_M_S = 0.12
@@ -658,6 +667,136 @@ def validate_waypoint_docking_scene_clearance(
         "maximum_corridor_center_radius_m": maximum_center_radius,
         "maximum_corridor_vertex_radius_from_start_m": maximum_vertex_radius,
     }
+
+
+def validate_local01_reset_odom_pose(
+    expected_odom_pose: Mapping[str, Any],
+    observed_odom_pose: Mapping[str, Any],
+    *,
+    maximum_position_error_m: float = 0.02,
+    maximum_yaw_error_rad: float = 0.02,
+) -> dict[str, Any]:
+    """Fail closed unless a fresh Reset observation matches the pinned scene anchor.
+
+    This compares an expected pose derived from Local01's explicit
+    ``odom_from_scene_world`` transform with an actual odometry sample. It is
+    intentionally separate from the static transform/inverse algebra test.
+    """
+    try:
+        expected = tuple(float(expected_odom_pose[key]) for key in ("x_m", "y_m", "z_m", "yaw_rad"))
+        observed = tuple(float(observed_odom_pose[key]) for key in ("x_m", "y_m", "z_m", "yaw_rad"))
+        position_limit = float(maximum_position_error_m)
+        yaw_limit = float(maximum_yaw_error_rad)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RouteError("Reset/odom anchor comparison requires finite expected and observed poses") from exc
+    if not all(math.isfinite(value) for value in (*expected, *observed, position_limit, yaw_limit)):
+        raise RouteError("Reset/odom anchor comparison contains non-finite values")
+    if position_limit <= 0.0 or yaw_limit <= 0.0:
+        raise RouteError("Reset/odom anchor tolerances must be positive")
+    position_error = math.sqrt(sum((observed[i] - expected[i]) ** 2 for i in range(3)))
+    yaw_error = abs(wrap_angle(observed[3] - expected[3]))
+    passed = position_error <= position_limit and yaw_error <= yaw_limit
+    return {
+        "schema": "robotsim.issue80.local01-reset-odom-frame-gate.v1",
+        "status": "PASS" if passed else "FAIL",
+        "expected_odom_pose": dict(expected_odom_pose),
+        "observed_reset_odom_pose": dict(observed_odom_pose),
+        "position_error_m": position_error,
+        "yaw_error_rad": yaw_error,
+        "maximum_position_error_m": position_limit,
+        "maximum_yaw_error_rad": yaw_limit,
+        "permission_to_publish_motion": passed,
+        "basis": "live odometry comparison against the committed scene-world Reset-anchor transform",
+    }
+
+
+def validate_local01_short_scene_route_input(route_input: Mapping[str, Any]) -> None:
+    """Validate a two-step short diagnostic route derived from Local01 START.
+
+    The terminal is a short stop point along the Reset heading. It is not the
+    authoritative RAICOM TABLE_DOCKING pose.
+    """
+    if route_input.get("schema_version") != LOCAL01_SHORT_SCENE_ROUTE_SCHEMA_VERSION:
+        raise RouteError("unsupported Local01 short-scene route schema_version")
+    if route_input.get("route_kind") != "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING":
+        raise RouteError("Local01 short route must remain explicitly non-docking")
+    if route_input.get("frame_id") != "odom" or route_input.get("source_frame_id") != "raicom_scene_world":
+        raise RouteError("Local01 short route frame contract is invalid")
+    for key in ("start", "waypoint", "short_route_end"):
+        pose = route_input.get(key)
+        if not isinstance(pose, Mapping):
+            raise RouteError(f"Local01 short route is missing pose {key}")
+        values = tuple(_number(pose, field) for field in ("x_m", "y_m", "z_m", "yaw_rad"))
+        if not all(math.isfinite(value) for value in values):
+            raise RouteError(f"Local01 short route pose {key} must be finite")
+    start = route_input["start"]
+    waypoint = route_input["waypoint"]
+    endpoint = route_input["short_route_end"]
+    segment_distances = (
+        math.hypot(waypoint["x_m"] - start["x_m"], waypoint["y_m"] - start["y_m"]),
+        math.hypot(endpoint["x_m"] - waypoint["x_m"], endpoint["y_m"] - waypoint["y_m"]),
+    )
+    if any(abs(value - 0.20) > 1e-6 for value in segment_distances):
+        raise RouteError("Local01 short diagnostic route requires two 0.20 m segments")
+    if any(abs(wrap_angle(pose["yaw_rad"] - start["yaw_rad"])) > 1e-6 for pose in (waypoint, endpoint)):
+        raise RouteError("Local01 short diagnostic route must preserve the Reset start heading")
+    if route_input.get("runtime_reset_odom_observed") is not False:
+        raise RouteError("static route input must not claim a live Reset/odom observation")
+    limits = route_input.get("limits")
+    if not isinstance(limits, Mapping) or (
+        limits.get("forward_m_s") != 0.12
+        or limits.get("angular_rad_s") != 0.075
+        or limits.get("max_cross_track_m") != 0.05
+        or limits.get("max_windows") != 2
+        or limits.get("max_window_s") != 5.0
+        or limits.get("max_aggregate_nonzero_s") != 10.0
+    ):
+        raise RouteError("Local01 short route must keep two 5 s windows within the 15 s validated cap")
+    table_reference = route_input.get("safe_table_docking_reference")
+    if not isinstance(table_reference, Mapping) or table_reference.get("status") != "STATIC_BASELINE_ONLY_NOT_TARGETED_BY_SHORT_ROUTE":
+        raise RouteError("short diagnostic route must retain but not relabel the safe table-docking reference")
+
+
+def build_local01_short_scene_route(
+    route_input: Mapping[str, Any],
+    *,
+    runtime_robot_footprint_radius_m: float,
+    verified_local_clear_radius_m: float = 2.0,
+) -> RouteSpec:
+    """Build the existing RouteSpec/WaypointRouteExecutor input for the short route."""
+    validate_local01_short_scene_route_input(route_input)
+    converted = {
+        "schema_version": WAYPOINT_DOCKING_POSE_SCHEMA_VERSION,
+        "route_id": str(route_input["route_id"]),
+        "frame_id": "odom",
+        "start": {key: route_input["start"][key] for key in ("x_m", "y_m", "yaw_rad")},
+        "waypoint": {key: route_input["waypoint"][key] for key in ("x_m", "y_m", "yaw_rad")},
+        "table_docking": {key: route_input["short_route_end"][key] for key in ("x_m", "y_m", "yaw_rad")},
+    }
+    docking_shape = build_waypoint_docking_route_from_poses(
+        converted,
+        runtime_robot_footprint_radius_m=runtime_robot_footprint_radius_m,
+        verified_local_clear_radius_m=verified_local_clear_radius_m,
+    )
+    short_endpoint = replace(
+        docking_shape.steps[1],
+        waypoint_id="SHORT_ROUTE_END",
+        profile=Profile.TRANSIT,
+        position_tolerance_m=LOCAL01_SHORT_ROUTE_POSITION_TOLERANCE_M,
+    )
+    short_waypoint = replace(
+        docking_shape.steps[0],
+        position_tolerance_m=LOCAL01_SHORT_ROUTE_POSITION_TOLERANCE_M,
+    )
+    route = replace(
+        docking_shape,
+        route_id=str(route_input["route_id"]),
+        steps=(short_waypoint, short_endpoint),
+    )
+    route.validate()
+    if tuple(step.waypoint_id for step in route.steps) != ("WAYPOINT", "SHORT_ROUTE_END"):
+        raise RouteError("Local01 short route generated an unexpected waypoint sequence")
+    return route
 
 
 def _number(raw: Mapping[str, Any], key: str) -> float:

@@ -30,6 +30,9 @@ from issue80_waypoint_route import (
     load_waypoint_docking_pose_input,
     validate_waypoint_docking_scene_clearance,
     validate_waypoint_docking_route,
+    validate_local01_short_scene_route_input,
+    build_local01_short_scene_route,
+    validate_local01_reset_odom_pose,
 )
 from issue80_route_motion_bridge import (
     build_curved_waypoint_route,
@@ -40,6 +43,11 @@ from issue80_coordinated_pose_goal import (
     TERMINAL_POSE_CONTROL,
     ZERO_STOP,
     terminal_yaw_rate_command,
+)
+from issue80_local01_scene_route import (
+    build_short_route_config,
+    LOCAL01_COMMIT,
+    LOCAL01_POSES_SHA256,
 )
 
 
@@ -171,6 +179,87 @@ def one_docking_route() -> RouteSpec:
 
 
 class RouteConfigTests(unittest.TestCase):
+    @staticmethod
+    def local01_scene_source_fixture():
+        return {
+            "source_commit": LOCAL01_COMMIT,
+            "source_hashes": {"scene_world_poses": LOCAL01_POSES_SHA256},
+            "scene_world_poses": {
+                "poses": {
+                    "START": {"xyz_m": [-1.5, -1.5, 0.68], "yaw_rad": math.pi / 2.0},
+                    "TABLE_DOCKING": {"xyz_m": [1.0, -1.5, 0.68], "yaw_rad": 0.0},
+                }
+            },
+            "odom_from_scene": {
+                "parent_frame": "odom", "child_frame": "raicom_scene_world",
+                "translation_xyz_m": [1.5, -1.5, 0.0], "yaw_rad": -math.pi / 2.0,
+            },
+            "reset_anchor": {"base_pose_in_odom_after_reset": {
+                "xyz_m": [0.0, 0.0, 0.68], "yaw_rad": 0.0,
+            }},
+        }
+
+    @classmethod
+    def local01_short_route_input(cls):
+        return build_short_route_config(cls.local01_scene_source_fixture())
+
+    @classmethod
+    def local01_short_route(cls):
+        return build_local01_short_scene_route(
+            cls.local01_short_route_input(),
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+        )
+
+    def test_local01_short_route_is_transformed_bounded_and_not_mislabeled_as_docking(self) -> None:
+        raw = self.local01_short_route_input()
+        validate_local01_short_scene_route_input(raw)
+        route = build_local01_short_scene_route(
+            raw,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+        )
+        self.assertEqual([step.waypoint_id for step in route.steps], ["WAYPOINT", "SHORT_ROUTE_END"])
+        self.assertTrue(all(step.profile is Profile.TRANSIT for step in route.steps))
+        self.assertTrue(all(step.stop_behavior is StopBehavior.VERIFY_PHYSICAL_STOP for step in route.steps))
+        self.assertTrue(all(step.recovery_limit == 0 for step in route.steps))
+        self.assertAlmostEqual(route.start_x_m, 0.0)
+        self.assertAlmostEqual(route.steps[0].x_m, 0.2)
+        self.assertAlmostEqual(route.steps[1].x_m, 0.4)
+        self.assertFalse(any(step.waypoint_id == "TABLE_DOCKING" for step in route.steps))
+        self.assertEqual(raw["safe_table_docking_reference"]["status"], "STATIC_BASELINE_ONLY_NOT_TARGETED_BY_SHORT_ROUTE")
+
+    def test_local01_short_route_rejects_overbudget_or_nonforward_targets(self) -> None:
+        raw = self.local01_short_route_input()
+        raw["limits"]["max_aggregate_nonzero_s"] = 15.1
+        with self.assertRaisesRegex(ValueError, "two 5 s windows"):
+            validate_local01_short_scene_route_input(raw)
+        raw = self.local01_short_route_input()
+        raw["short_route_end"]["x_m"] = 0.5
+        with self.assertRaisesRegex(ValueError, "two 0.20 m segments"):
+            validate_local01_short_scene_route_input(raw)
+
+    def test_local01_reset_odom_gate_compares_actual_sample_and_fails_closed(self) -> None:
+        expected = {"x_m": 0.0, "y_m": 0.0, "z_m": 0.68, "yaw_rad": 0.0}
+        passed = validate_local01_reset_odom_pose(expected, dict(expected))
+        self.assertEqual(passed["status"], "PASS")
+        self.assertTrue(passed["permission_to_publish_motion"])
+        mismatch = validate_local01_reset_odom_pose(
+            expected, {"x_m": -1.5, "y_m": -1.5, "z_m": 0.68, "yaw_rad": 1.5707963267948966}
+        )
+        self.assertEqual(mismatch["status"], "FAIL")
+        self.assertFalse(mismatch["permission_to_publish_motion"])
+
+    def test_local01_source_pose_converts_to_two_short_targets_not_full_table_goal(self) -> None:
+        route_input = self.local01_short_route_input()
+        validate_local01_short_scene_route_input(route_input)
+        self.assertAlmostEqual(route_input["start"]["x_m"], 0.0, places=9)
+        self.assertAlmostEqual(route_input["start"]["y_m"], 0.0, places=9)
+        self.assertAlmostEqual(route_input["waypoint"]["x_m"], 0.2, places=9)
+        self.assertAlmostEqual(route_input["short_route_end"]["x_m"], 0.4, places=9)
+        self.assertAlmostEqual(route_input["safe_table_docking_reference"]["distance_from_start_m"], 2.5)
+        self.assertEqual(route_input["full_table_route_budget"]["status"], "CANNOT_REACH_ENDPOINT_WITH_EXISTING_BUDGET")
+
     @staticmethod
     def waypoint_docking_config():
         return {
@@ -988,6 +1077,74 @@ class RouteExecutionTests(unittest.TestCase):
         ))
         self.assertEqual(terminal.kind, DirectiveKind.WAIT)
         self.assertEqual(runner.state, RouteState.WAITING_FOR_DOCKING)
+        self.assertEqual(len(motion.stop_reasons), 2)
+        self.assertFalse(any(d.kind is DirectiveKind.DOCKING_HANDOFF for d in motion.directives))
+
+    def test_local01_short_route_uses_existing_stop_rearm_and_completes_without_docking_claim(self) -> None:
+        route = RouteConfigTests.local01_short_route()
+
+        class OdomStore:
+            def __init__(self):
+                self.pose = PoseEstimate(
+                    frame_id="odom", child_frame_id="base_link", x_m=0.0, y_m=0.0, yaw_rad=0.0,
+                    stamp_ns=1_000_000_000, received_steady_s=0.0, generation="epoch-1",
+                    source="MUJOCO_GROUND_TRUTH", position_std_m=0.0, yaw_std_rad=0.0,
+                    transform_chain=("odom->base_link",), transform_age_s=0.01,
+                )
+
+            def latest_pose(self, target_frame, now_steady_s):
+                return self.pose if target_frame == "odom" else None
+
+            def set(self, x, y, now, stamp):
+                self.pose = PoseEstimate(
+                    frame_id="odom", child_frame_id="base_link", x_m=x, y_m=0.0, yaw_rad=0.0,
+                    stamp_ns=stamp, received_steady_s=now, generation="epoch-1",
+                    source="MUJOCO_GROUND_TRUTH", position_std_m=0.0, yaw_std_rad=0.0,
+                    transform_chain=("odom->base_link",), transform_age_s=0.01,
+                )
+
+        pose = OdomStore()
+        motion = FakeMotionAdapter()
+        runner = WaypointRouteExecutor(route, pose, FakeSafetyProvider(), motion)
+        first = runner.start(0.0, startup_feedback())
+        self.assertEqual(first.waypoint_id, "WAYPOINT")
+
+        pose.set(0.2, 0.0, 1.0, 2_000_000_000)
+        stop_first = runner.tick(1.0, startup_feedback(status=MotionStatus.ARRIVED))
+        self.assertEqual(stop_first.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
+        self.assertEqual(len(motion.stop_reasons), 1)
+
+        pose.set(0.2, 0.0, 3.0, 3_000_000_000)
+        second = runner.tick(
+            3.0,
+            startup_feedback(
+                physical_stop_evidence=stop_evidence(1.0),
+                source_mode_handshake_pass=False,
+                stand_readback_pass=True,
+                input_source_readback_pass=True,
+            ),
+        )
+        self.assertEqual(second.kind, DirectiveKind.FOLLOW_WAYPOINT)
+        self.assertEqual(runner.active_step.waypoint_id, "SHORT_ROUTE_END")
+        self.assertEqual(len(motion.stop_reasons), 1)
+
+        pose.set(0.4, 0.0, 4.0, 4_000_000_000)
+        stop_second = runner.tick(4.0, startup_feedback(status=MotionStatus.ARRIVED))
+        self.assertEqual(stop_second.kind, DirectiveKind.REQUEST_PHYSICAL_STOP)
+        self.assertEqual(len(motion.stop_reasons), 2)
+
+        pose.set(0.4, 0.0, 6.0, 5_000_000_000)
+        complete = runner.tick(
+            6.0,
+            startup_feedback(
+                physical_stop_evidence=stop_evidence(4.0),
+                source_mode_handshake_pass=False,
+                stand_readback_pass=True,
+                input_source_readback_pass=True,
+            ),
+        )
+        self.assertEqual(complete.kind, DirectiveKind.COMPLETE)
+        self.assertEqual(runner.state, RouteState.COMPLETE)
         self.assertEqual(len(motion.stop_reasons), 2)
         self.assertFalse(any(d.kind is DirectiveKind.DOCKING_HANDOFF for d in motion.directives))
 

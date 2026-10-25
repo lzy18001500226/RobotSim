@@ -62,9 +62,17 @@ from issue80_route_motion_bridge import (
     waypoint_b_arrival_trigger_radius_m,
 )
 from issue80_waypoint_route import (
+    build_local01_short_scene_route,
     build_waypoint_docking_route_from_poses,
     load_waypoint_docking_pose_input,
     validate_waypoint_docking_scene_clearance,
+)
+from issue80_local01_scene_route import (
+    LOCAL01_COMMIT,
+    build_short_route_config,
+    load_local01_scene_inputs,
+    prepare_local01_scene_runtime_bundle,
+    validate_short_route_static_scene,
 )
 
 
@@ -228,18 +236,32 @@ def standing_warmup_composite_result(
 
 
 def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, Any]:
-    """Validate the single extended-B post-locomotion observation profile before runtime."""
+    """Validate pre-motion standing and the separate extended-B observation profile."""
     require_warmup = bool(getattr(args, "require_stand_warmup_composite", False))
     extended_b = bool(getattr(args, "run65_waypoint_b_extended_diagnostic", False))
+    configured_route = bool(
+        getattr(args, "route_config", None)
+        or getattr(args, "local01_scene_world_poses", None)
+    )
     post_observation = getattr(args, "post_locomotion_convergence_observation_s", None)
     if require_warmup and (
-        not getattr(args, "maintainer_authorized_first_motion", False) or not extended_b
+        not getattr(args, "maintainer_authorized_first_motion", False)
+        or not (extended_b or configured_route)
     ):
-        raise ValueError("composite stand warmup gate is limited to the authorized extended-B run")
+        raise ValueError(
+            "composite stand warmup gate requires authorized extended-B or configured-route motion"
+        )
     if post_observation is None:
-        if require_warmup:
+        if require_warmup and not configured_route:
             raise ValueError("composite stand warmup diagnostic requires the explicit post-locomotion observation horizon")
-        return {"status": "STANDARD_PROFILE", "extra_stop_observation_s": args.extra_stop_observation}
+        return {
+            "status": (
+                "SIMULATION_ONLY_STAND_WARMUP_COMPOSITE"
+                if require_warmup else "STANDARD_PROFILE"
+            ),
+            "extra_stop_observation_s": getattr(args, "extra_stop_observation", 0.0),
+            "existing_composite_stop_gate_unchanged": require_warmup,
+        }
     if not extended_b or not require_warmup:
         raise ValueError("post-locomotion convergence observation requires extended-B and the composite warmup gate")
     if (
@@ -258,6 +280,30 @@ def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, 
         "maximum_extra_observation_s": MAX_EXTRA_POST_STOP_OBSERVE_S,
         "existing_composite_stop_gate_unchanged": True,
     }
+
+
+def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
+    """Keep configured routes on the existing bounded transit and stop profile."""
+    if not (getattr(args, "route_config", None) or getattr(args, "local01_scene_world_poses", None)):
+        return
+    if (
+        abs(float(args.forward_speed) - 0.12) > 1e-9
+        or abs(float(args.pulse_duration) - 1.0) > 1e-9
+        or abs(float(args.extra_stop_observation) - 7.0) > 1e-9
+        or float(args.ramp_duration_s) != 0.0
+        or args.ramp_start_speed is not None
+        or args.startup_speed is not None
+        or args.startup_transition_displacement is not None
+        or float(args.startup_transition_timeout_s) != 0.0
+        or float(getattr(args, "deceleration_duration_s", 0.0)) != 0.0
+        or float(getattr(args, "deceleration_end_speed_m_s", 0.0)) != 0.0
+        or bool(getattr(args, "capture_mc_rl_debug", False))
+        or getattr(args, "route_turn_evidence", None) is not None
+    ):
+        raise ValueError(
+            "configured route requires 0.12 m/s, the default generic pulse fields, "
+            "7 s existing post-STAND observation, and no ramp/debug/turn overlays"
+        )
 
 
 class RunDeadline(TimeoutError):
@@ -804,6 +850,38 @@ def validate_waypoint_docking_route_input(route_path: str | os.PathLike[str]) ->
     }
 
 
+def validate_local01_scene_route_input(poses_path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Pin Local01's scene config, derive a short odom route, and check its real scene."""
+    source = load_local01_scene_inputs(poses_path, require_clean_commit=True)
+    route_input = build_short_route_config(source)
+    static = validate_short_route_static_scene(
+        Path(source["repository_root"]) / "simulation/mujoco/scenes/raicom2026",
+        route_input,
+    )
+    if static.get("status") != "PASS_STATIC_SCENE_CLEARANCE":
+        raise ValueError(
+            f"Local01 short route failed the actual RAICOM scene static preflight: {static.get('status')}"
+        )
+    if abs(
+        float(static["robot_collision_footprint_radial_upper_bound_m"])
+        - ROUTE_QPOS0_FOOTPRINT_BOUND_M
+    ) > 1e-9:
+        raise ValueError("Local01 scene compiled robot footprint differs from the pinned X2 runtime bound")
+    route = build_local01_short_scene_route(
+        route_input,
+        runtime_robot_footprint_radius_m=float(static["robot_collision_footprint_radial_upper_bound_m"]),
+        verified_local_clear_radius_m=float(static["verified_local_clear_radius_m"]),
+    )
+    return {
+        "source": source,
+        "route_input": route_input,
+        "route": route,
+        "static_scene_preflight": static,
+        "source_sha256": source["source_hashes"]["scene_world_poses"],
+        "source_commit": LOCAL01_COMMIT,
+    }
+
+
 def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str]:
     """Build the exact production Docker exec command for the M1 child runner."""
     zero_only_activation = bool(
@@ -816,7 +894,11 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "--maintainer-authorized-activation-probe --activation-probe-qualification"
         if activation_probe else "--maintainer-authorized"
     )
-    configured_waypoint_route = bool(getattr(args, "route_config", None))
+    configured_waypoint_route = bool(
+        getattr(args, "route_config", None)
+        or getattr(args, "local01_scene_world_poses", None)
+    )
+    local01_short_route = bool(getattr(args, "local01_scene_world_poses", None))
     child_extra_stop = (
         5.0 if activation_probe else 7.0 if configured_waypoint_route
         else args.extra_stop_observation
@@ -860,7 +942,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_right_turn_qualification", "run65_route_integration",
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
-        "route_config",
+        "route_config", "local01_scene_world_poses",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += " --max-observed-planar-speed-m-s 0.2"
@@ -872,7 +954,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run53_turning_diagnostic", "run65_right_turn_qualification",
         "run65_route_integration", "run65_waypoint_b_only",
         "run65_waypoint_b_short_diagnostic", "run65_waypoint_b_extended_diagnostic",
-        "run65_curved_path_diagnostic", "route_config",
+        "run65_curved_path_diagnostic", "route_config", "local01_scene_world_poses",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
@@ -884,7 +966,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_right_turn_qualification", "run65_route_integration",
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
-        "route_config",
+        "route_config", "local01_scene_world_poses",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
@@ -930,6 +1012,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             " --route-integration --route-config /workspace/evidence/route_config.json"
             " --route-config-post-stand-observation"
         )
+        if local01_short_route:
+            command[-1] += " --short-scene-route"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -1360,6 +1444,8 @@ def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
         "SIMULATION_ONLY_GROUND_TRUTH_POINT_GOAL_BLOCKED",
         "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_PASS",
         "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED",
+        "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_DIAGNOSTIC_PASS",
+        "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_DIAGNOSTIC_BLOCKED",
     ):
         return baseline_classification
     if baseline_classification == "FIRST_PHYSICAL_WALKING_PASS":
@@ -1462,6 +1548,10 @@ class BoundedRun:
         self.args = args
         self.evidence = Path(args.evidence_dir).resolve(strict=True)
         self.route_config_sha256: str | None = None
+        self.local01_scene_mode = bool(getattr(args, "local01_scene_world_poses", None))
+        self.local01_scene_bundle: dict[str, Any] | None = None
+        self.local01_scene_source: dict[str, Any] | None = None
+        self.local01_scene_readonly_mounts: list[tuple[Path, str]] = []
         if getattr(args, "route_config", None):
             source = Path(args.route_config)
             if source.is_symlink() or not source.is_file():
@@ -1488,6 +1578,63 @@ class BoundedRun:
             with (self.evidence / "route_config_input.json").open("x", encoding="utf-8") as stream:
                 json.dump(route_input, stream, indent=2)
                 stream.write("\n")
+        elif self.local01_scene_mode:
+            local01 = getattr(self.args, "configured_local01_scene_preflight", None)
+            if not isinstance(local01, Mapping):
+                raise ValueError("Local01 scene route lacks its pinned static preflight result")
+            source_path = Path(self.args.local01_scene_world_poses)
+            if source_path.is_symlink() or not source_path.is_file():
+                raise ValueError("Local01 scene pose source is missing or unsafe")
+            source = load_local01_scene_inputs(source_path, require_clean_commit=True)
+            self.local01_scene_source = source
+            if source["source_hashes"]["scene_world_poses"] != local01.get("source_sha256"):
+                raise ValueError("Local01 scene pose source changed after static preflight")
+            route_input = local01.get("route_input")
+            if not isinstance(route_input, Mapping):
+                raise ValueError("Local01 preflight did not produce a short route input")
+            validate_route_input = dict(route_input)
+            route_bytes = (
+                json.dumps(validate_route_input, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
+                + "\n"
+            ).encode("utf-8")
+            staged = self.evidence / "route_config.json"
+            with staged.open("xb") as stream:
+                stream.write(route_bytes)
+            self.route_config_sha256 = hashlib.sha256(route_bytes).hexdigest()
+            self.local01_scene_bundle = prepare_local01_scene_runtime_bundle(
+                source, self.evidence, runtime_root=RUNTIME,
+            )
+            with (self.evidence / "local01_scene_static_preflight.json").open("x", encoding="utf-8") as stream:
+                json.dump(local01["static_scene_preflight"], stream, indent=2, allow_nan=False)
+                stream.write("\n")
+            route_manifest = {
+                "schema": "robotsim.issue80.local01-short-route-input.v1",
+                "classification": "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING",
+                "source_local01_commit": source["source_commit"],
+                "source_scene_world_poses_sha256": source["source_hashes"]["scene_world_poses"],
+                "derived_route_sha256": self.route_config_sha256,
+                "staged_route_path": str(staged),
+                "scene_bundle_classification": self.local01_scene_bundle["classification"],
+                "runtime_reset_odom_observed": False,
+                "first_nonzero_command_gate": "fresh reset odometry must match transformed START within 0.02 m/rad",
+                "physical_table_docking": "NOT_TARGETED_BY_THIS_SHORT_ROUTE",
+            }
+            with (self.evidence / "route_config_input.json").open("x", encoding="utf-8") as stream:
+                json.dump(route_manifest, stream, indent=2, allow_nan=False)
+                stream.write("\n")
+            self.local01_scene_readonly_mounts = [
+                (self.evidence / "route_config.json", "/workspace/evidence/route_config.json"),
+                (self.evidence / "route_config_input.json", "/workspace/evidence/route_config_input.json"),
+                (self.evidence / "local01_scene/scene_world_poses.json", "/workspace/evidence/local01_scene/scene_world_poses.json"),
+                (self.evidence / "local01_scene/route_waypoints.json", "/workspace/evidence/local01_scene/route_waypoints.json"),
+                (self.evidence / "local01_scene/scene_workspace.xml", "/workspace/evidence/local01_scene/scene_workspace.xml"),
+                (self.evidence / "local01_scene/mug_portable.xml", "/workspace/evidence/local01_scene/mug_portable.xml"),
+                (self.evidence / "local01_scene/scene_workspace_runtime.xml", "/workspace/evidence/local01_scene/scene_workspace_runtime.xml"),
+                (self.evidence / "local01_scene/mug_portable_runtime.xml", "/workspace/evidence/local01_scene/mug_portable_runtime.xml"),
+                (self.evidence / "local01_scene/simulator_default_local01_scene.yaml", "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml"),
+                (self.evidence / "local01_scene/runtime_bundle_manifest.json", "/workspace/evidence/local01_scene/runtime_bundle_manifest.json"),
+                (self.evidence / "local01_scene/static_scene_preflight.json", "/workspace/evidence/local01_scene/static_scene_preflight.json"),
+            ]
         self.container = args.container
         self.source = "node.locomotion_velocity"
         self.started = time.monotonic()
@@ -1598,7 +1745,11 @@ class BoundedRun:
             getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
         )
         run65_curved_path = bool(getattr(self.args, "run65_curved_path_diagnostic", False))
-        run65_waypoint_docking = bool(getattr(self.args, "route_config", None))
+        run65_waypoint_docking = bool(
+            getattr(self.args, "route_config", None)
+            or getattr(self.args, "local01_scene_world_poses", None)
+        )
+        run65_local01_short_route = bool(getattr(self.args, "local01_scene_world_poses", None))
         run65_waypoint_b_mode = (
             run65_waypoint_b_only or run65_waypoint_b_short or run65_waypoint_b_extended
         )
@@ -1808,23 +1959,50 @@ class BoundedRun:
                 "final_yaw_target": None,
             }
         elif run65_waypoint_docking:
-            route = getattr(self.args, "configured_waypoint_docking_route", None)
-            manifest["command_profile"] = {
-                "shape": "ground-truth-two-step-waypoint-and-table-docking-route",
-                "classification": "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE",
-                "route_id": route.route_id if route is not None else None,
-                "frame_id": "odom",
-                "step_ids": [step.waypoint_id for step in route.steps] if route is not None else [],
-                "forward_m_s": 0.12,
-                "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
-                "maximum_windows_total": 3,
-                "maximum_window_s": 5.0,
-                "aggregate_nonzero_limit_s": 15.0,
-                "maximum_cross_track_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
-                "zero_stop_gate": "unchanged composite physical and joint-target gate after fresh STAND",
-                "post_stand_observation_s": 7.0,
-                "terminal_state": "WAITING_FOR_DOCKING_WITHOUT_MANIPULATOR_HANDOFF",
-            }
+            route = (
+                getattr(self.args, "configured_local01_short_route", None)
+                if run65_local01_short_route
+                else getattr(self.args, "configured_waypoint_docking_route", None)
+            )
+            if run65_local01_short_route:
+                manifest["command_profile"] = {
+                    "shape": "local01-start-heading-two-target-short-forward-route",
+                    "classification": "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING",
+                    "route_id": route.route_id if route is not None else None,
+                    "frame_id": "odom",
+                    "source_frame_id": "raicom_scene_world",
+                    "source_local01_commit": self.args.local01_scene_source["source_commit"],
+                    "step_ids": [step.waypoint_id for step in route.steps] if route is not None else [],
+                    "forward_m_s": 0.12,
+                    "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                    "maximum_windows_total": 2,
+                    "maximum_window_s": 5.0,
+                    "aggregate_nonzero_limit_s": 10.0,
+                    "validated_envelope_ceiling_windows": 3,
+                    "validated_envelope_ceiling_aggregate_nonzero_s": 15.0,
+                    "maximum_cross_track_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
+                    "zero_stop_gate": "unchanged composite physical and joint-target gate after fresh STAND",
+                    "post_stand_observation_s": 7.0,
+                    "terminal_state": "SHORT_ROUTE_STOPPED_WITHOUT_TABLE_OR_MANIPULATOR_HANDOFF",
+                    "safe_table_docking_reference": self.args.configured_local01_short_route_input["safe_table_docking_reference"],
+                }
+            else:
+                manifest["command_profile"] = {
+                    "shape": "ground-truth-two-step-waypoint-and-table-docking-route",
+                    "classification": "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE",
+                    "route_id": route.route_id if route is not None else None,
+                    "frame_id": "odom",
+                    "step_ids": [step.waypoint_id for step in route.steps] if route is not None else [],
+                    "forward_m_s": 0.12,
+                    "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                    "maximum_windows_total": 3,
+                    "maximum_window_s": 5.0,
+                    "aggregate_nonzero_limit_s": 15.0,
+                    "maximum_cross_track_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
+                    "zero_stop_gate": "unchanged composite physical and joint-target gate after fresh STAND",
+                    "post_stand_observation_s": 7.0,
+                    "terminal_state": "WAITING_FOR_DOCKING_WITHOUT_MANIPULATOR_HANDOFF",
+                }
         elif run65_waypoint_b_short:
             manifest["command_profile"] = {
                 "shape": "short-waypoint-diagnostic-only",
@@ -1965,6 +2143,25 @@ class BoundedRun:
             "--mount", f"type=bind,source={self.evidence},target=/workspace/evidence",
             "--mount", "type=bind,source=/tmp/.X11-unix,target=/tmp/.X11-unix,readonly",
         ]
+        if self.local01_scene_bundle is not None:
+            if not isinstance(self.local01_scene_source, Mapping):
+                raise RuntimeError("Local01 scene bundle lacks pinned source provenance")
+            reference_root = Path(str(self.local01_scene_source["reference_root"]))
+            if reference_root.is_symlink() or not reference_root.is_dir():
+                raise RuntimeError("pinned RAICOM scene asset root is missing or unsafe to mount")
+            cmd += [
+                "--mount",
+                "type=bind,source=" + str(reference_root)
+                + ",target=/workspace/raicom_scene_source,readonly",
+            ]
+            for source_path, container_path in self.local01_scene_readonly_mounts:
+                if source_path.is_symlink() or not source_path.is_file() or source_path.parent != self.evidence and self.evidence not in source_path.parents:
+                    raise RuntimeError(f"Local01 runtime input is missing, unsafe, or outside evidence: {source_path.name}")
+                cmd += [
+                    "--mount",
+                    "type=bind,source=" + str(source_path)
+                    + ",target=" + container_path + ",readonly",
+                ]
         if self.foundationwalk_config_overlay is not None:
             if (
                 self.foundationwalk_config_overlay.is_symlink()
@@ -2041,13 +2238,45 @@ class BoundedRun:
                 or mount.get("Type") != "bind"
             ):
                 raise RuntimeError("McRLDebug install overlay mount source/type/read-only state is invalid")
+        if self.local01_scene_bundle is not None:
+            scene_mounts = [
+                mount for mount in container.get("Mounts", [])
+                if mount.get("Destination") == "/workspace/raicom_scene_source"
+            ]
+            expected_reference = Path(str(self.local01_scene_source["reference_root"])).resolve()
+            if (
+                len(scene_mounts) != 1
+                or Path(str(scene_mounts[0].get("Source", ""))).resolve() != expected_reference
+                or scene_mounts[0].get("RW") is not False
+                or scene_mounts[0].get("Type") != "bind"
+            ):
+                raise RuntimeError("RAICOM scene source mount is missing, writable, or does not match the pinned root")
+            for source_path, container_path in self.local01_scene_readonly_mounts:
+                matches = [
+                    mount for mount in container.get("Mounts", [])
+                    if mount.get("Destination") == container_path
+                ]
+                if (
+                    len(matches) != 1
+                    or Path(str(matches[0].get("Source", ""))).resolve() != source_path.resolve()
+                    or matches[0].get("RW") is not False
+                    or matches[0].get("Type") != "bind"
+                ):
+                    raise RuntimeError(f"Local01 runtime input mount is not uniquely read-only: {container_path}")
         with (self.evidence / "container-inspect-start.json").open("x", encoding="utf-8") as f:
             f.write(inspect.stdout)
 
     def start_sim_first(self) -> None:
+        launch_command = "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
+        if self.local01_scene_bundle is not None:
+            launch_command = (
+                "ROBOTSIM_SIMULATOR_CFG_OVERRIDE="
+                "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml "
+                + launch_command
+            )
         self.docker_exec(
             "launch_simulator",
-            "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1",
+            launch_command,
             timeout_s=4.0,
             detached=True,
         )
@@ -2063,6 +2292,26 @@ class BoundedRun:
             "timeout 25s bash -lc 'until grep -q \"MujocoSimModule Started Succeeded\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
             timeout_s=26.0,
         )
+        if self.local01_scene_bundle is not None:
+            expected_scene = str(self.local01_scene_bundle["runtime_files_sha256"]["scene_workspace_runtime.xml"])
+            checked = self.docker_exec(
+                "verify_local01_runtime_scene_wrapper_sha256",
+                "sha256sum /workspace/evidence/local01_scene/scene_workspace_runtime.xml",
+                timeout_s=4.0,
+            )
+            actual_scene = checked.stdout.split()[0] if checked.stdout.split() else ""
+            if actual_scene != expected_scene:
+                raise RuntimeError("container scene wrapper differs from the statically validated Local01 scene")
+            config_path = "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml"
+            checked = self.docker_exec(
+                "verify_local01_simulator_config_sha256",
+                "sha256sum " + shlex.quote(config_path),
+                timeout_s=4.0,
+            )
+            actual_config = checked.stdout.split()[0] if checked.stdout.split() else ""
+            expected_config = str(self.local01_scene_bundle["runtime_files_sha256"]["simulator_default_local01_scene.yaml"])
+            if actual_config != expected_config:
+                raise RuntimeError("container simulator config differs from the validated Local01 scene overlay")
         if self.foundationwalk_config_overlay is not None:
             expected = str(self.foundationwalk_config_overlay_manifest["overlay_sha256"])
             checked = self.docker_exec(
@@ -3118,13 +3367,33 @@ class BoundedRun:
                 or getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
                 or getattr(self.args, "run65_curved_path_diagnostic", False)
                 or bool(getattr(self.args, "route_config", None))
+                or bool(getattr(self.args, "local01_scene_world_poses", None))
             ):
-                workcell = inspect_route_workcell_geometry(RUNTIME)
-                geometry_path = self.evidence / "workcell_geometry_preflight.json"
-                with geometry_path.open("x", encoding="utf-8") as stream:
-                    json.dump(workcell, stream, indent=2)
-                    stream.write("\n")
-                result["workcell_geometry_preflight"] = workcell
+                if getattr(self.args, "local01_scene_world_poses", None):
+                    local01_static = self.args.local01_scene_static_preflight
+                    if local01_static.get("status") != "PASS_STATIC_SCENE_CLEARANCE":
+                        raise RuntimeError("Local01 actual-scene static clearance preflight did not pass")
+                    with (self.evidence / "local01_scene" / "static_scene_preflight.json").open("x", encoding="utf-8") as stream:
+                        json.dump(local01_static, stream, indent=2, allow_nan=False)
+                        stream.write("\n")
+                    result["local01_scene_static_preflight"] = local01_static
+                    result["local01_scene_route_input"] = {
+                        "source_local01_commit": self.args.local01_scene_source["source_commit"],
+                        "source_scene_world_poses_sha256": self.args.local01_scene_config_sha256,
+                        "derived_route_sha256": self.route_config_sha256,
+                        "route_kind": "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING",
+                        "route_id": self.args.configured_local01_short_route_input["route_id"],
+                        "expected_reset_odom_pose": self.args.configured_local01_short_route_input["reset_anchor_expected_odom"],
+                        "runtime_reset_odom_observed": False,
+                        "full_table_docking_reference": self.args.configured_local01_short_route_input["safe_table_docking_reference"],
+                    }
+                else:
+                    workcell = inspect_route_workcell_geometry(RUNTIME)
+                    geometry_path = self.evidence / "workcell_geometry_preflight.json"
+                    with geometry_path.open("x", encoding="utf-8") as stream:
+                        json.dump(workcell, stream, indent=2)
+                        stream.write("\n")
+                    result["workcell_geometry_preflight"] = workcell
                 if getattr(self.args, "route_config", None):
                     result["route_config_input"] = {
                         "sha256": self.route_config_sha256,
@@ -3148,6 +3417,18 @@ class BoundedRun:
             self.start_sim_first()
             self.capture_service_topic_inventory()
             pid, title, window_id = self.inspect_window()
+            if self.local01_scene_mode:
+                title_matches = "RAICOM X2 room workspace" in title
+                result["scene_window_verification"] = {
+                    "status": "PASS" if title_matches else "FAIL",
+                    "expected_scene_model_title_fragment": "RAICOM X2 room workspace",
+                    "observed_window_title": title,
+                    "scene_runtime_bundle_sha256": hashlib.sha256(
+                        (self.evidence / "local01_scene/scene_workspace_runtime.xml").read_bytes()
+                    ).hexdigest(),
+                }
+                if not title_matches:
+                    raise RuntimeError("MuJoCo window does not identify the configured Local01 RAICOM scene")
             self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
             self.start_observer()
             self.dispatch_native_reset_button(pid, title, window_id)
@@ -3309,6 +3590,7 @@ class BoundedRun:
                 or getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
                 or getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
                 or bool(getattr(self.args, "route_config", None))
+                or bool(getattr(self.args, "local01_scene_world_poses", None))
             ):
                 route = m1.get("route_integration")
                 result["route_integration"] = route
@@ -3322,6 +3604,8 @@ class BoundedRun:
                     if getattr(self.args, "run65_waypoint_b_extended_diagnostic", False)
                     else "SIMULATION_ONLY_SHORT_WAYPOINT_DIAGNOSTIC_BLOCKED"
                     if getattr(self.args, "run65_waypoint_b_short_diagnostic", False)
+                    else "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_DIAGNOSTIC_BLOCKED"
+                    if getattr(self.args, "local01_scene_world_poses", None)
                     else "SIMULATION_ONLY_WAYPOINT_DOCKING_ROUTE_BLOCKED"
                     if getattr(self.args, "route_config", None)
                     else "SIMULATION_ONLY_WAYPOINT_B_AND_PHYSICAL_STOP_BLOCKED"
@@ -3637,7 +3921,15 @@ def main() -> int:
     parser.add_argument(
         "--route-config",
         default=None,
-        help="Local01-provided odom-frame START/WAYPOINT/TABLE_DOCKING x/y/yaw JSON",
+        help="generic odom-frame START/WAYPOINT/TABLE_DOCKING JSON for the pinned open-floor workcell; not RAICOM table-clearance validation",
+    )
+    parser.add_argument(
+        "--local01-scene-world-poses",
+        default=None,
+        help=(
+            "pinned Local01 scene_world_poses.json; derives a 0.40 m two-target route along "
+            "the Reset heading and validates/loads the RAICOM room/table/chair/mug scene; not table docking"
+        ),
     )
     add_run65_point_goal_arguments(parser)
     args=parser.parse_args()
@@ -3735,6 +4027,7 @@ def main() -> int:
         args.run65_curved_path_diagnostic,
         args.run65_ground_truth_point_goal,
         bool(args.route_config),
+        bool(args.local01_scene_world_poses),
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
@@ -3755,6 +4048,26 @@ def main() -> int:
             parser.error(f"configured waypoint-docking route rejected before runtime: {exc}")
         # This route uses the already bounded post-STAND observation allowance;
         # it does not relax the composite physical/controller-target gate.
+        args.extra_stop_observation = 7.0
+    if args.route_config and args.local01_scene_world_poses:
+        parser.error("select either the generic odom route JSON or the pinned Local01 scene-world route")
+    if args.local01_scene_world_poses:
+        if not args.maintainer_authorized_first_motion:
+            parser.error("Local01 scene route requires separate explicit first-motion authorization")
+        if not args.require_stand_warmup_composite:
+            parser.error("Local01 scene route requires the complete STAND warmup composite gate")
+        if args.route_turn_evidence is not None or args.capture_mc_rl_debug:
+            parser.error("Local01 short-route diagnostic cannot be combined with turn evidence or extra observers")
+        try:
+            local01_preflight = validate_local01_scene_route_input(args.local01_scene_world_poses)
+            args.configured_local01_scene_preflight = local01_preflight
+            args.configured_local01_short_route = local01_preflight["route"]
+            args.configured_local01_short_route_input = local01_preflight["route_input"]
+            args.local01_scene_source = local01_preflight["source"]
+            args.local01_scene_static_preflight = local01_preflight["static_scene_preflight"]
+            args.local01_scene_config_sha256 = local01_preflight["source_sha256"]
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
+            parser.error(f"Local01 scene-world route rejected before runtime: {type(exc).__name__}: {exc}")
         args.extra_stop_observation = 7.0
     if args.maintainer_authorized_activation_probe and (
         any(diagnostic_variants)
@@ -3872,6 +4185,11 @@ def main() -> int:
                     f"waypoint-B-only route requires its fixed {expected_b_observation_s:g}-second zero-stop observation "
                     "and default generic pulse fields"
                 )
+        elif args.route_config or args.local01_scene_world_poses:
+            try:
+                validate_configured_route_motion_profile(args)
+            except (TypeError, ValueError) as exc:
+                parser.error(str(exc))
         else:
             if args.run44_threshold_margin_diagnostic or args.run45_ten_second_gait_diagnostic or args.run49_smoothstop_diagnostic or args.run50_threshold_respecting_smoothstop_diagnostic:
                 target_speed = 0.14

@@ -106,6 +106,11 @@ from issue80_waypoint_route import (
     SafetyObservation, WaypointRouteExecutor, YawPolicy,
     build_waypoint_docking_route_from_poses, load_waypoint_docking_pose_input,
     validate_waypoint_docking_scene_clearance,
+    build_local01_short_scene_route, validate_local01_short_scene_route_input,
+    validate_local01_reset_odom_pose,
+    LOCAL01_SHORT_ROUTE_MAX_WINDOWS as SHORT_ROUTE_MAX_WINDOWS,
+    LOCAL01_SHORT_ROUTE_MAX_WINDOW_S as SHORT_ROUTE_MAX_WINDOW_S,
+    LOCAL01_SHORT_ROUTE_MAX_AGGREGATE_S as SHORT_ROUTE_MAX_AGGREGATE_S,
 )
 from issue80_route_motion_bridge import (
     ROUTE_WINDOW_ZERO_MARGIN_S, WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
@@ -2703,6 +2708,7 @@ class FocusedM1Diagnostic(Node):
             getattr(self.args, "route_waypoint_b_extended_diagnostic", False)
         )
         route_config_mode = bool(getattr(self.args, "route_config", None))
+        short_scene_route_mode = bool(getattr(self.args, "short_scene_route", False))
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -2711,6 +2717,8 @@ class FocusedM1Diagnostic(Node):
         )
         result: dict[str, Any] = {
             "classification": (
+                "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING"
+                if short_scene_route_mode else
                 "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE"
                 if route_config_mode else
                 "SIMULATION_ONLY_CURVED_PATH_DIAGNOSTIC"
@@ -2726,6 +2734,8 @@ class FocusedM1Diagnostic(Node):
             "route_attempt_id": self.args.attempt_id,
             "segments": [],
             "route_scope": (
+                "LOCAL01_START_HEADING_TWO_TARGET_SHORT_ROUTE"
+                if short_scene_route_mode else
                 "CONFIGURED_START_WAYPOINT_TABLE_DOCKING"
                 if route_config_mode else
                 "SHALLOW_CURVED_FIXED_POINT_ENDPOINT"
@@ -2737,6 +2747,8 @@ class FocusedM1Diagnostic(Node):
                 "WAYPOINT_B_ONLY" if waypoint_b_only else "B_RIGHT_TURN_C"
             ),
             "acceptance_scope": (
+                "STATIC_SCENE_VALIDATED_SHORT_ROUTE_AND_RESET_ODOM_GATE_ONLY_NOT_TABLE_DOCKING"
+                if short_scene_route_mode else
                 "LOCAL01_CONFIGURED_WAYPOINT_AND_TABLE_DOCKING_POSE"
                 if route_config_mode else
                 "CURVED_PATH_ROUTE_LIFECYCLE_DIAGNOSTIC"
@@ -2750,22 +2762,81 @@ class FocusedM1Diagnostic(Node):
             "fault": None,
         }
         evidence_root = Path(self.args.output_dir)
+        local01_route_input: Mapping[str, Any] | None = None
         workcell_path = evidence_root / "workcell_geometry_preflight.json"
         try:
-            if workcell_path.is_symlink() or not workcell_path.is_file():
-                raise ValueError("host workcell geometry preflight is missing")
-            workcell = json.loads(workcell_path.read_text(encoding="utf-8"))
-            if workcell.get("status") != "PASS":
-                raise ValueError("host workcell geometry preflight did not pass")
+            if short_scene_route_mode:
+                static_path = evidence_root / "local01_scene" / "static_scene_preflight.json"
+                bundle_path = evidence_root / "local01_scene" / "runtime_bundle_manifest.json"
+                route_config_path = Path(self.args.route_config)
+                manifest_path = evidence_root / "route_config_input.json"
+                if any(path.is_symlink() or not path.is_file() for path in (
+                    static_path, bundle_path, route_config_path, manifest_path,
+                )):
+                    raise ValueError("Local01 scene route inputs/preflight manifests are missing or unsafe")
+                static_scene = json.loads(static_path.read_text(encoding="utf-8"))
+                scene_bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+                input_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                route_config_hash = hashlib.sha256(route_config_path.read_bytes()).hexdigest()
+                if (
+                    static_scene.get("status") != "PASS_STATIC_SCENE_CLEARANCE"
+                    or static_scene.get("mj_step_calls") != 0
+                    or static_scene.get("source_local01_commit") != input_manifest.get("source_local01_commit")
+                    or static_scene.get("source_scene_world_poses_sha256") != input_manifest.get("source_scene_world_poses_sha256")
+                    or static_scene.get("scene_workspace_sha256")
+                        != scene_bundle.get("source_files_sha256", {}).get("scene_workspace.xml")
+                    or scene_bundle.get("source_local01_commit") != input_manifest.get("source_local01_commit")
+                    or scene_bundle.get("classification") != "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER"
+                    or input_manifest.get("derived_route_sha256") != route_config_hash
+                ):
+                    raise ValueError("Local01 actual-scene preflight, runtime wrapper, or derived route hash did not match")
+                route_input = json.loads(route_config_path.read_text(encoding="utf-8"))
+                validate_local01_short_scene_route_input(route_input)
+                local01_route_input = route_input
+                workcell = {
+                    "status": "PASS",
+                    "classification": "STATIC_RAICOM_ROOM_TABLE_CHAIR_MUG_SCENE; no dynamic collision observer",
+                    "robot_collision_footprint_radial_upper_bound_m": float(
+                        static_scene["robot_collision_footprint_radial_upper_bound_m"]
+                    ),
+                    "verified_local_clear_radius_m": float(static_scene["verified_local_clear_radius_m"]),
+                    "minimum_swept_aabb_clearance_lower_bound_m": float(
+                        static_scene["minimum_swept_aabb_clearance_lower_bound_m"]
+                    ),
+                    "active_world_obstacles": ["RAICOM room walls", "table", "chair", "mug"],
+                    "static_preflight_path": str(static_path),
+                    "scene_bundle_path": str(bundle_path),
+                }
+                result["local01_scene_static_preflight"] = static_scene
+                result["local01_scene_runtime_bundle"] = scene_bundle
+                result["route_config_input"] = {
+                    "sha256": route_config_hash,
+                    "source_local01_commit": input_manifest.get("source_local01_commit"),
+                    "source_scene_world_poses_sha256": input_manifest.get("source_scene_world_poses_sha256"),
+                    "route_id": route_input.get("route_id"),
+                    "route_kind": route_input.get("route_kind"),
+                    "frame_id": route_input.get("frame_id"),
+                    "staged_path": str(route_config_path),
+                    "parent_manifest_verified": True,
+                }
+            else:
+                if workcell_path.is_symlink() or not workcell_path.is_file():
+                    raise ValueError("host workcell geometry preflight is missing")
+                workcell = json.loads(workcell_path.read_text(encoding="utf-8"))
+                if workcell.get("status") != "PASS":
+                    raise ValueError("host workcell geometry preflight did not pass")
             turn_provenance = None
             if not waypoint_b_only and not route_config_mode:
                 turn_provenance = validate_route_turn_qualification_evidence(
                     self.args.route_turn_qualification_evidence
                 )
-            result["workcell_geometry_preflight"] = workcell
+            if short_scene_route_mode:
+                result["scene_geometry_preflight"] = workcell
+            else:
+                result["workcell_geometry_preflight"] = workcell
             if turn_provenance is not None:
                 result["qualified_right_turn_evidence"] = turn_provenance
-            if route_config_mode:
+            if route_config_mode and not short_scene_route_mode:
                 route_config_path = Path(self.args.route_config)
                 manifest_path = evidence_root / "route_config_input.json"
                 if (
@@ -2783,7 +2854,7 @@ class FocusedM1Diagnostic(Node):
                     "staged_path": str(route_config_path),
                     "parent_manifest_verified": True,
                 }
-        except (OSError, ValueError, json.JSONDecodeError, TypeError) as exc:
+        except (OSError, ValueError, json.JSONDecodeError, TypeError, KeyError) as exc:
             result["status"] = "BLOCKED"
             result["fault"] = f"route_preflight:{type(exc).__name__}:{exc}"
             return result
@@ -2859,7 +2930,11 @@ class FocusedM1Diagnostic(Node):
                     max_observed_planar_speed_m_s=0.2,
                 )
                 self.robot_safe = fault is None
-                self.reason = fault or "pinned open-floor scene has no obstacle geoms inside the local corridor"
+                self.reason = fault or (
+                    "pinned Local01 RAICOM room/table/chair/mug static route corridor passed; no live obstacle sensor"
+                    if short_scene_route_mode else
+                    "pinned open-floor scene has no obstacle geoms inside the local corridor"
+                )
 
             def latest_observation(self, segment_id: str, frame_id: str, now_steady_s: float) -> SafetyObservation | None:
                 if frame_id != "odom" or segment_id != self.segment_id:
@@ -2870,7 +2945,11 @@ class FocusedM1Diagnostic(Node):
                     received_steady_s=self.received_s,
                     clear=True,
                     robot_safe=self.robot_safe,
-                    minimum_obstacle_clearance_m=float(workcell["verified_local_clear_radius_m"]),
+                    minimum_obstacle_clearance_m=float(
+                        workcell["minimum_swept_aabb_clearance_lower_bound_m"]
+                        if short_scene_route_mode
+                        else workcell["verified_local_clear_radius_m"]
+                    ),
                     reason=self.reason,
                 )
 
@@ -2912,13 +2991,74 @@ class FocusedM1Diagnostic(Node):
             if initial_fault or not stand_mode_readback_confirmed(initial):
                 raise ValueError(f"route requires fresh stable STAND preflight: {initial_fault or 'STAND_READBACK_MISSING'}")
             start_pose = pose_from_snapshot(initial)
+            if short_scene_route_mode:
+                if not isinstance(local01_route_input, Mapping):
+                    raise ValueError("Local01 short route input was not retained after preflight")
+                reset_pose_path = evidence_root / "reset_immediate_posture.json"
+                if reset_pose_path.is_symlink() or not reset_pose_path.is_file():
+                    raise ValueError("immediate post-Reset odometry evidence is missing")
+                reset_record = json.loads(reset_pose_path.read_text(encoding="utf-8"))
+                if (
+                    reset_record.get("status") != "POST_RESET_UPRIGHT_OBSERVED"
+                    or reset_record.get("fresh_all_required_topics") is not True
+                    or float(reset_record.get("state_ages_s", {}).get("odom", float("inf"))) > 0.5
+                ):
+                    raise ValueError("immediate post-Reset odometry is not fresh and upright")
+                latest_reset_odom = reset_record.get("latest_odom")
+                reset_data = latest_reset_odom.get("data") if isinstance(latest_reset_odom, Mapping) else None
+                if not isinstance(reset_data, Mapping):
+                    raise ValueError("immediate post-Reset odometry sample has no decoded pose")
+                reset_observed = {
+                    "x_m": float(reset_data["x"]),
+                    "y_m": float(reset_data["y"]),
+                    "z_m": float(reset_data["z"]),
+                    "yaw_rad": float(reset_data["yaw_rad"]),
+                }
+                reset_frame_gate = validate_local01_reset_odom_pose(
+                    local01_route_input["reset_anchor_expected_odom"], reset_observed,
+                )
+                result["scene_world_to_odom_reset_gate"] = {
+                    "status": (
+                        "PASS" if reset_frame_gate["status"] == "PASS" else "BLOCKED"
+                    ),
+                    "basis": "actual fresh post-Reset /aima/hal/odom/state sample compared to Local01's static Reset anchor; the unchanged RouteSpec start XY/yaw gate is checked again after STAND",
+                    "expected": local01_route_input["reset_anchor_expected_odom"],
+                    "immediate_post_reset": reset_frame_gate,
+                    "runtime_reset_odom_observed": True,
+                    "post_stand_start_anchor_still_checked_by_route_manager": True,
+                    "nonzero_motion_allowed": reset_frame_gate["status"] == "PASS",
+                }
+                if result["scene_world_to_odom_reset_gate"]["status"] != "PASS":
+                    result.update({
+                        "status": "BLOCKED",
+                        "fault": "LOCAL01_SCENE_WORLD_TO_ODOM_RESET_ANCHOR_MISMATCH",
+                        "route_manager_motion_calls": 0,
+                        "nonzero_publish_calls_returned": 0,
+                    })
+                    return result
             footprint = float(workcell["robot_collision_footprint_radial_upper_bound_m"])
             clear_radius = float(workcell["verified_local_clear_radius_m"])
             curved_reference = (
                 build_shallow_curved_path_reference(start_pose)
                 if curved_path_diagnostic else None
             )
-            if route_config_mode:
+            if short_scene_route_mode:
+                if local01_route_input is None:
+                    raise ValueError("Local01 short route config is unavailable")
+                route = build_local01_short_scene_route(
+                    local01_route_input,
+                    runtime_robot_footprint_radius_m=footprint,
+                    verified_local_clear_radius_m=clear_radius,
+                )
+                result["route_config_preflight"] = {
+                    "status": "PASS_STATIC_SCENE_CLEARANCE",
+                    "classification": "STATIC_MUJOCO_FORWARD_ONLY_NOT_TABLE_DOCKING_VALIDATION",
+                    "static_clearance_lower_bound_m": workcell["minimum_swept_aabb_clearance_lower_bound_m"],
+                    "static_samples": workcell["static_sample_count"],
+                    "mj_step_calls": workcell["mj_step_calls"],
+                    "full_table_docking_reference": local01_route_input["safe_table_docking_reference"],
+                }
+            elif route_config_mode:
                 route = build_waypoint_docking_route_from_poses(
                     load_waypoint_docking_pose_input(self.args.route_config),
                     runtime_robot_footprint_radius_m=footprint,
@@ -3776,12 +3916,14 @@ class FocusedM1Diagnostic(Node):
 
             route_total_nonzero_s = 0.0
             transit_window_limit = (
+                SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                 3 if route_config_mode else
                 CURVED_PATH_MAX_WINDOWS if curved_path_diagnostic else
                 WAYPOINT_B_EXTENDED_DIAGNOSTIC_MAX_WINDOWS
                 if waypoint_b_extended_diagnostic else WAYPOINT_B_MAX_WINDOWS
             )
             transit_aggregate_limit_s = (
+                SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode else
                 15.0 if route_config_mode else
                 CURVED_PATH_AGGREGATE_NONZERO_MAX_S if curved_path_diagnostic else
                 WAYPOINT_B_EXTENDED_DIAGNOSTIC_AGGREGATE_TRANSIT_MAX_S
@@ -3803,7 +3945,9 @@ class FocusedM1Diagnostic(Node):
                 window_index = 0
                 segment_nonzero_s = 0.0
                 while True:
-                    if route_config_mode and len(result["segments"]) >= 3:
+                    if route_config_mode and len(result["segments"]) >= (
+                        SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else 3
+                    ):
                         return {
                             "status": "BLOCKED",
                             "fault": "configured_route_total_window_budget_exhausted",
@@ -3861,12 +4005,14 @@ class FocusedM1Diagnostic(Node):
                         set_action = next_set_action
                         self.activation_lifecycle = lifecycle
                     remaining_route_s = (
+                        SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode else
                         15.0 if route_config_mode else 30.0
                     ) - route_total_nonzero_s
                     remaining_transit_s = transit_aggregate_limit_s - segment_nonzero_s
                     window_cap_s = min(
                         float(current_plan.maximum_duration_s),
-                            CURVED_PATH_MAX_WINDOW_S if curved_path_diagnostic else WAYPOINT_B_WINDOW_MAX_S,
+                        SHORT_ROUTE_MAX_WINDOW_S if short_scene_route_mode else
+                        CURVED_PATH_MAX_WINDOW_S if curved_path_diagnostic else WAYPOINT_B_WINDOW_MAX_S,
                         remaining_transit_s,
                         remaining_route_s,
                     )
@@ -4495,7 +4641,10 @@ class FocusedM1Diagnostic(Node):
                             "zero_plan": dict(zero_plan.__dict__),
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
-                    route_total_limit_s = 15.0 if route_config_mode else 30.0
+                    route_total_limit_s = (
+                        SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode
+                        else 15.0 if route_config_mode else 30.0
+                    )
                     if route_total_nonzero_s >= route_total_limit_s:
                         return {
                             "status": "BLOCKED",
@@ -4785,16 +4934,42 @@ class FocusedM1Diagnostic(Node):
                     current_directive = after
 
                 final_route_pass = (
-                    executor.state is RouteState.WAITING_FOR_DOCKING
-                    and current_directive.kind is DirectiveKind.WAIT
-                    and len(route_step_results) == 2
+                    len(route_step_results) == 2
                     and all(step["physical_stop_gate"] == "PASS" for step in route_step_results)
+                    and (
+                        (
+                            short_scene_route_mode
+                            and executor.state is RouteState.COMPLETE
+                            and current_directive.kind is DirectiveKind.COMPLETE
+                        )
+                        or (
+                            not short_scene_route_mode
+                            and executor.state is RouteState.WAITING_FOR_DOCKING
+                            and current_directive.kind is DirectiveKind.WAIT
+                        )
+                    )
                 )
                 result.update({
                     "status": "PASS" if final_route_pass else "BLOCKED",
-                    "classification": "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_PASS" if final_route_pass else "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED",
-                    "acceptance_scope": "GROUND_TRUTH_WAYPOINT_AND_DOCKING_POSE_WITH_PHYSICAL_STOP",
-                    "route_lifecycle_completion": "WAITING_FOR_DOCKING_NO_MANIPULATOR_HANDOFF" if final_route_pass else executor.state.value,
+                    "classification": (
+                        "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_DIAGNOSTIC_PASS"
+                        if final_route_pass and short_scene_route_mode else
+                        "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_DIAGNOSTIC_BLOCKED"
+                        if short_scene_route_mode else
+                        "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_PASS"
+                        if final_route_pass else
+                        "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED"
+                    ),
+                    "acceptance_scope": (
+                        "LOCAL01_SCENE_START_HEADING_SHORT_FORWARD_ROUTE_NOT_TABLE_DOCKING"
+                        if short_scene_route_mode else "GROUND_TRUTH_WAYPOINT_AND_DOCKING_POSE_WITH_PHYSICAL_STOP"
+                    ),
+                    "route_lifecycle_completion": (
+                        "SHORT_ROUTE_STOPPED_NO_TABLE_OR_MANIPULATOR_HANDOFF"
+                        if final_route_pass and short_scene_route_mode else
+                        "WAITING_FOR_DOCKING_NO_MANIPULATOR_HANDOFF"
+                        if final_route_pass else executor.state.value
+                    ),
                     "route_manager_state": {
                         "status": executor.state.value,
                         "active_step": executor.active_step.waypoint_id if executor.active_step else None,
@@ -4805,15 +4980,18 @@ class FocusedM1Diagnostic(Node):
                     "route_events": route_events + route_motion.events,
                     "route_total_nonzero_command_time_s": route_total_nonzero_s,
                     "route_total_windows": len(result["segments"]),
-                    "route_window_limit": 3,
-                    "aggregate_nonzero_limit_s": 15.0,
+                    "route_window_limit": SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else 3,
+                    "aggregate_nonzero_limit_s": SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode else 15.0,
                     "cross_track_limit_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
                     "maximum_cross_track_m": route_progress_monitor["maximum_abs_cross_track_m"],
                     "manipulator_handoff": "NOT_REQUESTED",
                     "mc_zero_receipt_ack_available": False,
                 })
                 if not final_route_pass:
-                    result["fault"] = "configured_route_did_not_reach_stopped_TABLE_DOCKING"
+                    result["fault"] = (
+                        "configured_local01_short_route_did_not_stop_at_SHORT_ROUTE_END"
+                        if short_scene_route_mode else "configured_route_did_not_reach_stopped_TABLE_DOCKING"
+                    )
                 return result
 
             baseline_displacements = [
@@ -5793,6 +5971,8 @@ class FocusedM1Diagnostic(Node):
             "acceptance_scope": (
                 "SIMULATION_ONLY direct MuJoCo ground-truth point-goal; not Nav2, localization, LiDAR, or manufacturer-original acceptance"
                 if getattr(self.args, "point_goal_diagnostic", False)
+                else "SIMULATION_ONLY Local01 start-heading short two-target route; not table docking, full-distance route, Nav2, or manufacturer-original acceptance"
+                if getattr(self.args, "short_scene_route", False)
                 else "SIMULATION_ONLY 0.20 m short-waypoint diagnostic only; not original 0.40 m waypoint-B acceptance"
                 if getattr(self.args, "route_waypoint_b_short_diagnostic", False)
                 else "SIMULATION_ONLY measured waypoint-B transit and physical stop only; no turn, C waypoint, or Nav2 acceptance"
@@ -5870,6 +6050,11 @@ class FocusedM1Diagnostic(Node):
             result["total_turn_command_window_s"] = TURN_FORWARD_WARMUP_S + TURN_PULSE_S
         if getattr(self.args, "route_integration", False):
             result["forward_command_m_s"] = TURN_FORWARD_COMMAND_M_S
+            if getattr(self.args, "short_scene_route", False):
+                result["route_transit_nonzero_limit_s"] = SHORT_ROUTE_MAX_AGGREGATE_S
+                result["route_transit_maximum_windows"] = SHORT_ROUTE_MAX_WINDOWS
+                result["route_action_window_limit_s"] = SHORT_ROUTE_MAX_WINDOW_S
+                result["route_classification"] = "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING"
             waypoint_b_only = bool(getattr(self.args, "route_waypoint_b_only", False))
             waypoint_b_extended = bool(
                 getattr(self.args, "route_waypoint_b_extended_diagnostic", False)
@@ -5893,6 +6078,53 @@ class FocusedM1Diagnostic(Node):
             result["transport_scope"] = self.check_transport_scope()
             self.wait_for_standing()
             result["standing_preflight"] = "FRESH_STAND_DEFAULT_BODY_STAND"
+            if getattr(self.args, "short_scene_route", False):
+                reset_path = Path(self.args.output_dir) / "reset_immediate_posture.json"
+                route_path = Path(self.args.route_config)
+                if any(path.is_symlink() or not path.is_file() for path in (reset_path, route_path)):
+                    raise ValueError("Local01 route requires staged route config and immediate Reset evidence")
+                reset_record = json.loads(reset_path.read_text(encoding="utf-8"))
+                route_input = json.loads(route_path.read_text(encoding="utf-8"))
+                validate_local01_short_scene_route_input(route_input)
+                reset_odom = reset_record.get("latest_odom")
+                reset_data = reset_odom.get("data") if isinstance(reset_odom, Mapping) else None
+                state_ages = reset_record.get("state_ages_s")
+                if (
+                    reset_record.get("status") != "POST_RESET_UPRIGHT_OBSERVED"
+                    or reset_record.get("fresh_all_required_topics") is not True
+                    or not isinstance(state_ages, Mapping)
+                    or state_ages.get("odom") is None
+                    or float(state_ages["odom"]) > self.args.state_timeout
+                    or not isinstance(reset_odom, Mapping)
+                    or reset_odom.get("topic_key") != "odom"
+                    or not isinstance(reset_data, Mapping)
+                ):
+                    raise ValueError("Local01 route Reset odometry sample is missing, stale, or not upright/fresh")
+                actual_reset_odom = {
+                    "x_m": float(reset_data["x"]),
+                    "y_m": float(reset_data["y"]),
+                    "z_m": float(reset_data["z"]),
+                    "yaw_rad": float(reset_data["yaw_rad"]),
+                }
+                frame_gate = validate_local01_reset_odom_pose(
+                    route_input["reset_anchor_expected_odom"], actual_reset_odom,
+                )
+                result["scene_world_to_odom_reset_gate"] = {
+                    **frame_gate,
+                    "reset_dispatch_monotonic_ns": reset_record.get("dispatch_monotonic_ns"),
+                    "reset_to_odom_sample_monotonic_ns": reset_odom.get("wall_monotonic_ns"),
+                    "reset_odom_sample_age_s": state_ages["odom"],
+                    "live_reset_odom_sample_source": "parent reset_state_trace.jsonl /aima/hal/odom/state",
+                    "navigation_command_published_before_gate": False,
+                }
+                if frame_gate.get("status") != "PASS":
+                    result.update({
+                        "status": "BLOCKED",
+                        "fault": "LOCAL01_SCENE_WORLD_TO_ODOM_RESET_ANCHOR_MISMATCH",
+                        "route_motion": "NOT_STARTED",
+                        "nonzero_publish_calls_returned": 0,
+                    })
+                    return result
             result["source_before_registration"] = self._source_response_before_motion()
             registration = self.register_source()
             result["source_registration"] = registration
@@ -6580,9 +6812,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise ValueError("post-locomotion convergence observation requires extended waypoint-B route integration")
     configured_route = bool(getattr(args, "route_config", None))
+    short_scene_route = bool(getattr(args, "short_scene_route", False))
     configured_route_observation = bool(
         getattr(args, "route_config_post_stand_observation", False)
     )
+    if short_scene_route and not configured_route:
+        raise ValueError("--short-scene-route requires --route-config")
     if configured_route_observation and not configured_route:
         raise ValueError("configured-route post-STAND observation requires --route-config")
     if configured_route:
@@ -6612,17 +6847,35 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             or args.startup_transition_timeout_s != 0.0
         ):
             raise ValueError("configured route must retain the existing speed, zero-stop, and watchdog profile")
-        route_input = load_waypoint_docking_pose_input(args.route_config)
-        profile_route = {
-            "status": "VALIDATED_NO_RUNTIME",
-            "route_id": route_input["route_id"],
-            "frame_id": route_input["frame_id"],
-            "start_anchor": route_input["start"],
-            "step_ids": ["WAYPOINT", "TABLE_DOCKING"],
-            "maximum_windows_total": 3,
-            "aggregate_nonzero_limit_s": 15.0,
-            "post_stand_observation_s": 7.0,
-        }
+        if short_scene_route:
+            route_input = json.loads(Path(args.route_config).read_text(encoding="utf-8"))
+            validate_local01_short_scene_route_input(route_input)
+            profile_route = {
+                "status": "VALIDATED_NO_RUNTIME",
+                "route_kind": route_input["route_kind"],
+                "route_id": route_input["route_id"],
+                "frame_id": route_input["frame_id"],
+                "source_frame_id": route_input["source_frame_id"],
+                "start_anchor": route_input["start"],
+                "step_ids": ["WAYPOINT", "SHORT_ROUTE_END"],
+                "maximum_windows_total": 2,
+                "aggregate_nonzero_limit_s": 10.0,
+                "post_stand_observation_s": 7.0,
+                "runtime_reset_odom_observed": False,
+            }
+        else:
+            route_input = load_waypoint_docking_pose_input(args.route_config)
+            profile_route = {
+                "status": "VALIDATED_NO_RUNTIME",
+                "route_kind": "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE",
+                "route_id": route_input["route_id"],
+                "frame_id": route_input["frame_id"],
+                "start_anchor": route_input["start"],
+                "step_ids": ["WAYPOINT", "TABLE_DOCKING"],
+                "maximum_windows_total": 3,
+                "aggregate_nonzero_limit_s": 15.0,
+                "post_stand_observation_s": 7.0,
+            }
     else:
         profile_route = None
     profile: dict[str, Any] = {
@@ -6631,7 +6884,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         "activation_probe_qualification": activation_probe,
     }
     if profile_route is not None:
-        profile["configured_waypoint_docking_route"] = profile_route
+        profile["configured_local01_short_route" if short_scene_route else "configured_waypoint_docking_route"] = profile_route
     if activation_probe:
         profile["activation_probe_prerequisite_attempt_id"] = args.activation_probe_prerequisite_attempt_id
     if getattr(args, "route_integration", False):
@@ -6968,6 +7221,11 @@ def main() -> int:
         "--route-config",
         default=None,
         help="Local01 odom-frame START/WAYPOINT/TABLE_DOCKING x/y/yaw pose JSON",
+    )
+    first.add_argument(
+        "--short-scene-route",
+        action="store_true",
+        help="interpret --route-config as the two-target Local01 short diagnostic, not table docking",
     )
     first.add_argument("--route-config-post-stand-observation", action="store_true")
     first.add_argument("--point-goal-diagnostic", action="store_true")
