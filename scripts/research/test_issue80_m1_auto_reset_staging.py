@@ -19,7 +19,8 @@ from issue80_m1_auto_reset_run import (
     BoundedRun, MC_LAUNCH, M1_FIRST_MOTION_LOGIC, M1_MODE_LOGIC, MC_RL_DEBUG_CAPTURE,
     POSE_GOAL_CONTROLLER,
     SET_ACTION_CAPTURE, SIM_LAUNCH,
-    assess_container_absence, build_m1_child_command, classify_first_motion_outcome, classify_run38_diagnostic_outcome,
+    assess_container_absence, build_m1_child_command, classify_activation_probe_outcome,
+    classify_first_motion_outcome, classify_run38_diagnostic_outcome,
     assess_activation_probe_prerequisite, decode_m1_child_result, inspect_route_workcell_geometry,
 )
 
@@ -87,6 +88,37 @@ class ResearchScriptStagingTests(unittest.TestCase):
         no_source_evidence["installed_runtime_nonzero_activation_evidence"]["selected_source_get_service"] = ""
         with self.assertRaisesRegex(ValueError, "preserved runtime trace"):
             assess_activation_probe_prerequisite(reset_run, zero_preflight, no_source_evidence)
+
+    def test_activation_probe_result_separates_mode_confirmation_from_stop_failure(self) -> None:
+        blocked = {
+            "status": "BLOCKED",
+            "mode_source_activation_pass": True,
+            "safe_stand_and_physical_stop_pass": False,
+            "late_locomotion_after_abort": False,
+        }
+        self.assertEqual(
+            classify_activation_probe_outcome(blocked),
+            "SIMULATION_ONLY_ACTIVATION_ABORT_PHYSICAL_STOP_FAIL",
+        )
+        passed = {
+            "status": "PASS",
+            "mode_source_activation_pass": True,
+            "safe_stand_and_physical_stop_pass": True,
+            "late_locomotion_after_abort": False,
+        }
+        self.assertEqual(
+            classify_activation_probe_outcome(passed),
+            "SIMULATION_ONLY_ACTIVATION_ABORT_AND_PHYSICAL_STOP_PASS",
+        )
+        passed_with_late_transition = dict(passed, late_locomotion_after_abort=True)
+        self.assertEqual(
+            classify_activation_probe_outcome(passed_with_late_transition),
+            "SIMULATION_ONLY_ACTIVATION_ABORT_LATE_LOCOMOTION",
+        )
+        self.assertEqual(
+            classify_activation_probe_outcome(None),
+            "SIMULATION_ONLY_ACTIVATION_PROBE_EVIDENCE_MISSING",
+        )
 
     def test_activation_probe_child_command_is_separate_and_uses_fixed_profile(self) -> None:
         args = argparse.Namespace(

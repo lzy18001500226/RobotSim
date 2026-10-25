@@ -4504,7 +4504,22 @@ def run_first_motion_window(
                 ),
             }
         result["post_stop_first_observation"] = post_stop_first_observation
-        post_stop_end = clock() + POST_STOP_OBSERVE_S + (extra_post_stop_observe_s if pulse_fault is None else 0.0)
+        # Completing this qualification intentionally sets pulse_fault to enter
+        # the abort path. It must not suppress the already authorized bounded
+        # observation tail: STAND may arrive late, and the strict physical-stop
+        # evaluator needs a complete fresh hold after that readback.
+        intentional_activation_probe_abort = (
+            activation_probe_only
+            and result["activation_probe"].get("mode_source_confirmed") is True
+            and pulse_fault == "activation_probe_complete_abort_to_stand"
+        )
+        post_stop_extra_applied_s = (
+            extra_post_stop_observe_s
+            if pulse_fault is None or intentional_activation_probe_abort
+            else 0.0
+        )
+        result["post_stop_extra_observation_applied_s"] = post_stop_extra_applied_s
+        post_stop_end = clock() + POST_STOP_OBSERVE_S + post_stop_extra_applied_s
         post_stop_samples = 0
         while clock() < post_stop_end:
             now = clock()

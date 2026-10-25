@@ -1098,7 +1098,10 @@ class FirstMotionSafetyTests(unittest.TestCase):
         sample_state = self.snapshot(
             pose={"x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
                   "vx": 0.0, "vy": 0.0, "vz": 0.0, "wz": 0.0},
+            leg_states=[{"name": "left_hip_pitch_joint", "position": 0.0, "velocity": 0.0, "error_code": 0}],
+            mc_leg_command={"joints": [{"name": "left_hip_pitch_joint", "position": 0.0}]},
         )
+        stand_request_monotonic_s: float | None = None
         lifecycle = MCLocomotionAbortLifecycle()
         lifecycle.verify_initial_stand(confirmed=True, now_s=clock.now())
         lifecycle.request_locomotion(accepted=True, now_s=clock.now())
@@ -1106,6 +1109,23 @@ class FirstMotionSafetyTests(unittest.TestCase):
 
         def read_sample():
             now = clock.now()
+            if stand_request_monotonic_s is not None:
+                if now - stand_request_monotonic_s >= 1.2:
+                    sample_state.update({
+                        "get_mode_desc": "STAND_DEFAULT",
+                        "common_mode_desc": "STAND_DEFAULT",
+                        "fsm_state": MC_FSM_STABLE,
+                        "get_mode_status_value": 100,
+                        "common_mode_status_value": 100,
+                    })
+                else:
+                    sample_state.update({
+                        "get_mode_desc": "LOCOMOTION_DEFAULT",
+                        "common_mode_desc": "LOCOMOTION_DEFAULT",
+                        "fsm_state": int(McFsmStateCode.MOVING),
+                        "get_mode_status_value": 200,
+                        "common_mode_status_value": 200,
+                    })
             row = dict(sample_state)
             row["sample_monotonic_s"] = now
             row["readback_monotonic_s"] = {"get_mode": now, "get_source": now}
@@ -1123,12 +1143,24 @@ class FirstMotionSafetyTests(unittest.TestCase):
                     "get_mode_status_value": 100,
                     "common_mode_status_value": 100,
                 })
-            elif value == 0.0:
-                sample_state.update({
-                    "get_mode_desc": "STAND_DEFAULT",
-                    "common_mode_desc": "STAND_DEFAULT",
-                    "fsm_state": MC_FSM_STABLE,
-                })
+
+        def request_stand_after_abort():
+            nonlocal stand_request_monotonic_s
+            stand_request_monotonic_s = clock.now()
+            sample_state.update({
+                "get_mode_desc": "LOCOMOTION_DEFAULT",
+                "common_mode_desc": "LOCOMOTION_DEFAULT",
+                "fsm_state": int(McFsmStateCode.MOVING),
+                "get_mode_status_value": 200,
+                "common_mode_status_value": 200,
+            })
+            return {
+                "success": True,
+                "mode_readback_after_request": {
+                    "action_desc": "LOCOMOTION_DEFAULT",
+                    "status_value": 200,
+                },
+            }
 
         result = run_first_motion_window(
             sample=read_sample,
@@ -1141,14 +1173,9 @@ class FirstMotionSafetyTests(unittest.TestCase):
             forward_command_m_s=ACTIVATION_PROBE_FORWARD_M_S,
             pulse_duration_s=ACTIVATION_PROBE_DURATION_S,
             max_pulse_duration_s=ACTIVATION_PROBE_DURATION_S,
-            extra_post_stop_observe_s=0.0,
-            after_zero_abort=lambda: {
-                "success": True,
-                "mode_readback_after_request": {
-                    "action_desc": "STAND_DEFAULT",
-                    "status_value": 100,
-                },
-            },
+            extra_post_stop_observe_s=5.0,
+            extra_post_stop_observe_limit_s=5.0,
+            after_zero_abort=request_stand_after_abort,
             zero_until_stand_timeout_s=3.5,
             max_observed_planar_speed_m_s=0.2,
             activation_lifecycle=lifecycle,
@@ -1158,13 +1185,24 @@ class FirstMotionSafetyTests(unittest.TestCase):
             clock=clock.now,
             sleep=clock.sleep,
         )
-        self.assertTrue(result["activation_probe"]["mode_source_confirmed"])
+        self.assertTrue(
+            result["activation_probe"]["mode_source_confirmed"],
+            json.dumps(result["activation_probe"], sort_keys=True),
+        )
         self.assertEqual(result["activation_probe"]["nonzero_publish_calls_returned"], 1)
         self.assertEqual(result["nonzero_publish_calls_returned"], 1)
         self.assertEqual(result["last_nonzero_command_offset_s"], 0.0)
         self.assertTrue(any(value == 0.0 for value in commands))
         self.assertFalse(lifecycle.nonzero_motion_allowed)
         self.assertTrue(lifecycle.rearm_forbidden)
+        self.assertEqual(result["post_stop_extra_observation_applied_s"], 5.0)
+        self.assertEqual(
+            result["physical_stop_gate"]["status"], "PASS",
+            json.dumps(result["physical_stop_gate"], sort_keys=True),
+        )
+        self.assertGreaterEqual(
+            result["physical_stop_gate"]["final_window"]["duration_s"], 1.9,
+        )
 
     def test_reviewed_ten_second_pulse_remains_continuous_and_stops_at_deadline(self):
         commands = []

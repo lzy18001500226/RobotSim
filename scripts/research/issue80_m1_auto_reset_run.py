@@ -1039,6 +1039,23 @@ def classify_first_motion_outcome(activation: Mapping[str, Any] | None) -> str:
     return "FIRST_PHYSICAL_WALKING_FAIL"
 
 
+def classify_activation_probe_outcome(qualification: Mapping[str, Any] | None) -> str:
+    """Report activation and abort-stop evidence independently of the intentional abort marker."""
+    if not isinstance(qualification, Mapping):
+        return "SIMULATION_ONLY_ACTIVATION_PROBE_EVIDENCE_MISSING"
+    if qualification.get("late_locomotion_after_abort") is True:
+        return "SIMULATION_ONLY_ACTIVATION_ABORT_LATE_LOCOMOTION"
+    if (
+        qualification.get("mode_source_activation_pass") is True
+        and qualification.get("safe_stand_and_physical_stop_pass") is True
+        and qualification.get("status") == "PASS"
+    ):
+        return "SIMULATION_ONLY_ACTIVATION_ABORT_AND_PHYSICAL_STOP_PASS"
+    if qualification.get("mode_source_activation_pass") is True:
+        return "SIMULATION_ONLY_ACTIVATION_ABORT_PHYSICAL_STOP_FAIL"
+    return "SIMULATION_ONLY_ACTIVATION_NOT_CONFIRMED"
+
+
 def assess_container_absence(
     *,
     inspect_returncode: int,
@@ -3076,6 +3093,73 @@ class BoundedRun:
             if isinstance(child_fault, str) and child_fault:
                 result["fault"] = child_fault
             m1 = self.m1_result or {}
+            if getattr(self.args, "maintainer_authorized_activation_probe", False):
+                qualification = m1.get("activation_probe_qualification")
+                outcome = classify_activation_probe_outcome(
+                    qualification if isinstance(qualification, Mapping) else None
+                )
+                probe = (
+                    qualification.get("probe")
+                    if isinstance(qualification, Mapping)
+                    and isinstance(qualification.get("probe"), Mapping)
+                    else {}
+                )
+                physical_stop = probe.get("physical_stop_gate")
+                result["activation_probe_qualification"] = {
+                    "classification": outcome,
+                    "status": qualification.get("status") if isinstance(qualification, Mapping) else None,
+                    "mode_source_activation_pass": (
+                        qualification.get("mode_source_activation_pass")
+                        if isinstance(qualification, Mapping) else False
+                    ),
+                    "safe_stand_and_physical_stop_pass": (
+                        qualification.get("safe_stand_and_physical_stop_pass")
+                        if isinstance(qualification, Mapping) else False
+                    ),
+                    "late_locomotion_after_abort": (
+                        qualification.get("late_locomotion_after_abort")
+                        if isinstance(qualification, Mapping) else None
+                    ),
+                    "route_motion_authorized": False,
+                    "physical_stop_gate": (
+                        {
+                            "status": physical_stop.get("status"),
+                            "reason": physical_stop.get("reason"),
+                            "final_window": physical_stop.get("final_window"),
+                            "final_window_violations": physical_stop.get("final_window_violations"),
+                            "braking_travel_from_last_in_pulse_pose": physical_stop.get(
+                                "braking_travel_from_last_in_pulse_pose"
+                            ),
+                        }
+                        if isinstance(physical_stop, Mapping) else None
+                    ),
+                }
+                self.outcome_classification = outcome
+                result["outcome_classification"] = outcome
+                if outcome == "SIMULATION_ONLY_ACTIVATION_ABORT_PHYSICAL_STOP_FAIL":
+                    reason = (
+                        physical_stop.get("reason")
+                        if isinstance(physical_stop, Mapping) else "physical stop evidence unavailable"
+                    )
+                    result["fault"] = (
+                        "LOCOMOTION mode/source activation was confirmed, but the independent "
+                        f"STAND/physical-stop gate failed: {reason}"
+                    )
+                elif outcome == "SIMULATION_ONLY_ACTIVATION_NOT_CONFIRMED":
+                    result["fault"] = "fresh synchronized LOCOMOTION/source activation was not confirmed"
+                elif outcome == "SIMULATION_ONLY_ACTIVATION_ABORT_LATE_LOCOMOTION":
+                    result["fault"] = "LOCOMOTION was observed after abort; rearm remains forbidden"
+                result["status"] = (
+                    "PASS"
+                    if outcome == "SIMULATION_ONLY_ACTIVATION_ABORT_AND_PHYSICAL_STOP_PASS"
+                    else "BLOCKED"
+                )
+                result["next_motion_stage"] = (
+                    "NOT_RUN_REQUIRES_SEPARATE_ROTATION_QUALIFICATION"
+                    if result["status"] == "PASS"
+                    else "NOT_RUN_ACTIVATION_ABORT_OR_PHYSICAL_STOP_GATE_FAILED"
+                )
+                return result
             if getattr(self.args, "run53_turning_diagnostic", False):
                 turning = m1.get("turning_diagnostic")
                 result["turning_diagnostic"] = turning
