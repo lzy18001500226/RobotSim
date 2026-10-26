@@ -328,6 +328,46 @@ class Local01SceneRouteTests(unittest.TestCase):
             self.assertEqual(ET.parse(source_scene).getroot().find("./worldbody/frame[@name='x2_start_frame']").get("quat"), source_frame.get("quat"))
 
     @unittest.skipUnless(LOCAL01_POSES_PATH.is_file(), "Local01 source worktree is unavailable")
+    def test_aligned_start_native_x2_timestep_wrapper_changes_only_the_explicit_parent_option(self):
+        source = load_local01_scene_inputs(LOCAL01_POSES_PATH, require_clean_commit=True)
+        runtime_root = ROBOTSIM_ROOT / "simulation/mujoco/raicom2026"
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / "evidence"
+            evidence.mkdir()
+            bundle = prepare_local01_scene_runtime_bundle(
+                source,
+                evidence,
+                runtime_root=runtime_root,
+                aligned_start=True,
+                native_x2_timestep=True,
+            )
+            self.assertEqual(
+                bundle["classification"],
+                "SIMULATION_ONLY_ALIGNED_START_NATIVE_X2_TIMESTEP_SCENE_WRAPPER_V1",
+            )
+            self.assertEqual(
+                bundle["runtime_scene_filename"],
+                "scene_workspace_aligned_start_v1_native_x2_timestep_runtime.xml",
+            )
+            self.assertEqual(
+                bundle["runtime_simulator_config_filename"],
+                "simulator_default_local01_aligned_start_v1_native_x2_timestep.yaml",
+            )
+            timing = bundle["native_x2_timestep"]
+            self.assertTrue(timing["enabled"])
+            self.assertEqual(timing["native_x2_source_timestep_s"], 0.001)
+            equivalence = bundle["generated_wrapper_physics_equivalence"]
+            self.assertEqual(
+                equivalence["status"],
+                "PASS_ALIGNED_START_NATIVE_TIMESTEP_PHYSICAL_INVARIANTS",
+            )
+            self.assertEqual((equivalence["timestep_before_s"], equivalence["timestep_after_s"]), (0.002, 0.001))
+            runtime_tree = ET.parse(evidence / "local01_scene" / bundle["runtime_scene_filename"]).getroot()
+            option = runtime_tree.find("./option")
+            self.assertIsNotNone(option)
+            self.assertEqual(option.get("timestep"), "0.001")
+
+    @unittest.skipUnless(LOCAL01_POSES_PATH.is_file(), "Local01 source worktree is unavailable")
     def test_synchronized_nominal_keyframe_is_source_mc_derived_and_physics_invariant(self):
         source = load_local01_scene_inputs(LOCAL01_POSES_PATH, require_clean_commit=True)
         runtime_root = ROBOTSIM_ROOT / "simulation/mujoco/raicom2026"

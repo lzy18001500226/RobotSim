@@ -1414,6 +1414,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --table-approach-mission"
             if getattr(args, "aligned_start_table_approach", False):
                 command[-1] += " --aligned-start-table-approach"
+            if getattr(args, "native_x2_timestep", False):
+                command[-1] += " --native-x2-timestep"
         if getattr(args, "raicom_low_cruise_profile", False):
             command[-1] += " --raicom-low-cruise-profile"
     if run65_point_goal_enabled(args):
@@ -1957,6 +1959,7 @@ class BoundedRun:
         self.aligned_start_table_approach = bool(
             getattr(args, "aligned_start_table_approach", False)
         )
+        self.native_x2_timestep = bool(getattr(args, "native_x2_timestep", False))
         self.synchronized_paused_initialization = bool(
             getattr(args, "synchronized_paused_initialization", False)
         )
@@ -1999,6 +2002,7 @@ class BoundedRun:
                 self.evidence,
                 runtime_root=RUNTIME,
                 aligned_start=self.aligned_start_table_approach,
+                native_x2_timestep=self.native_x2_timestep,
                 synchronized_nominal_initialization=self.synchronized_paused_initialization,
                 static_nominal_start_initialization=self.static_nominal_start_initialization,
             )
@@ -2038,6 +2042,7 @@ class BoundedRun:
                     "scene_wrapper_change_classification": self.local01_scene_bundle[
                         "scene_wrapper_change_classification"
                     ],
+                    "native_x2_timestep": self.local01_scene_bundle["native_x2_timestep"],
                     # The aligned wrapper is compiled-equivalent in all robot
                     # collision geometry except the pre-physics root yaw. The
                     # established bound therefore remains applicable, while
@@ -2075,6 +2080,7 @@ class BoundedRun:
                 "schema": "robotsim.issue80.table-approach-mission-input.v1",
                 "classification": mission["classification"],
                 "aligned_start_table_approach": self.aligned_start_table_approach,
+                "native_x2_timestep": self.native_x2_timestep,
                 "source_local01_commit": source["source_commit"],
                 "source_scene_world_poses_sha256": source["source_hashes"]["scene_world_poses"],
                 "derived_route_sha256": self.route_config_sha256,
@@ -5466,6 +5472,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--native-x2-timestep",
+        action="store_true",
+        help=(
+            "simulation-only aligned TABLE_APPROACH wrapper: set the parent scene to the pinned "
+            "native X2 0.001 s MuJoCo timestep before physics; no robot or controller field changes"
+        ),
+    )
+    parser.add_argument(
         "--synchronized-paused-initialization",
         action="store_true",
         help=(
@@ -5674,6 +5688,22 @@ def main() -> int:
         args.extra_stop_observation = 7.0
     elif args.aligned_start_table_approach:
         parser.error("--aligned-start-table-approach requires --table-approach-mission")
+    if args.native_x2_timestep:
+        if not (
+            args.table_approach_mission
+            and args.aligned_start_table_approach
+            and args.direct_stand_from_passive
+            and args.maintainer_authorized_first_motion
+            and args.require_stand_warmup_composite
+            and args.native_mjdata_capture
+            and args.raicom_low_cruise_profile
+            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        ):
+            parser.error(
+                "native X2 timestep synchronization requires direct-stand, the aligned-start "
+                "TABLE_APPROACH mission, native capture, the explicit 0.105 m/s low-cruise profile, "
+                "and first-motion authorization"
+            )
     if args.synchronized_paused_initialization:
         if not (
             args.table_approach_mission

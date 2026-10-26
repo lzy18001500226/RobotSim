@@ -63,6 +63,9 @@ ALIGNED_START_TABLE_APPROACH_CLASSIFICATION = (
     "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
 )
 ALIGNED_START_SCENE_VERSION = "aligned-start-v1"
+NATIVE_X2_TIMESTEP_SCENE_VERSION = "native-x2-timestep-v1"
+NATIVE_X2_TIMESTEP_S = 0.001
+COMBINED_SCENE_DEFAULT_TIMESTEP_S = 0.002
 SYNCHRONIZED_NOMINAL_KEYFRAME_VERSION = "nominal-keyframe-v1"
 SYNCHRONIZED_NOMINAL_KEYFRAME_NAME = "issue80_nominal_stand_v1"
 STATIC_NOMINAL_START_VERSION = "static-nominal-start-v1"
@@ -1204,6 +1207,38 @@ def aligned_start_scene_tree(scene_path: str | Path) -> ET.Element:
     return tree
 
 
+def set_native_x2_timestep(scene_root: ET.Element) -> dict[str, Any]:
+    """Set only the top-level scene timestep to the pinned X2 source rate.
+
+    Attached MuJoCo models do not propagate their ``<option>`` into the parent
+    scene. The Local01 workspace therefore compiles at MuJoCo's 0.002 s default
+    although the pinned runtime X2 source declares 0.001 s. This wrapper delta
+    changes no robot or environment geometry, contact, actuator, or controller
+    value; it makes the parent scene inherit the source robot's physics rate.
+    """
+    option = scene_root.find("./option")
+    if option is not None:
+        raise Local01SceneRouteError(
+            "Local01 scene unexpectedly declares a top-level option; native timestep delta is ambiguous"
+        )
+    option = ET.Element("option", {"timestep": f"{NATIVE_X2_TIMESTEP_S:.3f}"})
+    # Keep the stable visual/asset ordering intact and insert after optional
+    # statistic/visual blocks, before the asset section.
+    insert_at = next(
+        (index for index, child in enumerate(list(scene_root)) if child.tag == "asset"),
+        len(scene_root),
+    )
+    scene_root.insert(insert_at, option)
+    return {
+        "enabled": True,
+        "version": NATIVE_X2_TIMESTEP_SCENE_VERSION,
+        "parent_scene_default_timestep_s": COMBINED_SCENE_DEFAULT_TIMESTEP_S,
+        "native_x2_source_timestep_s": NATIVE_X2_TIMESTEP_S,
+        "applies_before_physics": True,
+        "active_simulation_qpos_write": False,
+    }
+
+
 def audit_runtime_name_contract(native: Any, candidate: Any, config_path: Path) -> dict[str, Any]:
     """Enumerate the full native inventory plus actual model-manager YAML lookups."""
     import mujoco
@@ -1327,7 +1362,12 @@ def assert_scene_name_only_equivalence(original: Any, corrected: Any) -> dict[st
     }
 
 
-def assert_aligned_start_scene_equivalence(original: Any, aligned: Any) -> dict[str, Any]:
+def assert_aligned_start_scene_equivalence(
+    original: Any,
+    aligned: Any,
+    *,
+    native_x2_timestep: bool = False,
+) -> dict[str, Any]:
     """Verify the documented pre-physics frame rotation changed nothing else.
 
     A MuJoCo frame rotation necessarily changes pose-derived compiled arrays
@@ -1376,12 +1416,26 @@ def assert_aligned_start_scene_equivalence(original: Any, aligned: Any) -> dict[
     for count in ("nq", "nv", "nu", "nbody", "njnt", "ngeom", "nmesh", "nsensor", "nsite", "neq"):
         if getattr(original, count) != getattr(aligned, count):
             raise Local01SceneRouteError(f"aligned-start wrapper changed {count}")
+    changed_options: dict[str, tuple[float, float]] = {}
     for field in dir(original.opt):
         if field.startswith("_"):
             continue
         value, other = getattr(original.opt, field), getattr(aligned.opt, field)
         if isinstance(value, (int, float, np.ndarray)) and not np.array_equal(value, other):
+            if (
+                native_x2_timestep
+                and field == "timestep"
+                and math.isclose(float(value), COMBINED_SCENE_DEFAULT_TIMESTEP_S, abs_tol=1e-12)
+                and math.isclose(float(other), NATIVE_X2_TIMESTEP_S, abs_tol=1e-12)
+            ):
+                changed_options[field] = (float(value), float(other))
+                continue
             raise Local01SceneRouteError(f"aligned-start wrapper changed solver option {field}")
+    if native_x2_timestep:
+        if changed_options != {"timestep": (COMBINED_SCENE_DEFAULT_TIMESTEP_S, NATIVE_X2_TIMESTEP_S)}:
+            raise Local01SceneRouteError("native timestep wrapper changed an unexpected solver option set")
+    elif changed_options:
+        raise Local01SceneRouteError("aligned-start wrapper changed solver options")
 
     root_a = mujoco.mj_name2id(original, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
     root_b = mujoco.mj_name2id(aligned, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
@@ -1443,10 +1497,16 @@ def assert_aligned_start_scene_equivalence(original: Any, aligned: Any) -> dict[
         if not np.array_equal(data_original.geom_xmat[geom_id], data_aligned.geom_xmat[geom_id]):
             raise Local01SceneRouteError("aligned-start wrapper rotated an environment geom")
     return {
-        "status": "PASS_ALIGNED_START_PHYSICAL_INVARIANTS",
+        "status": (
+            "PASS_ALIGNED_START_NATIVE_TIMESTEP_PHYSICAL_INVARIANTS"
+            if native_x2_timestep else "PASS_ALIGNED_START_PHYSICAL_INVARIANTS"
+        ),
         "expected_pose_derived_changed_arrays": sorted(expected_pose_derived_deltas),
         "observed_changed_arrays": sorted(changed),
-        "solver_options_equal": True,
+        "solver_options_equal": not native_x2_timestep,
+        "solver_options_equal_except_native_timestep": native_x2_timestep,
+        "timestep_before_s": float(original.opt.timestep),
+        "timestep_after_s": float(aligned.opt.timestep),
         "root_position_unchanged": True,
         "root_quaternion_before": original.qpos0[qadr_a + 3:qadr_a + 7].tolist(),
         "root_quaternion_after": aligned.qpos0[qadr_b + 3:qadr_b + 7].tolist(),
@@ -1960,6 +2020,7 @@ def prepare_local01_scene_runtime_bundle(
     *,
     runtime_root: str | Path,
     aligned_start: bool = False,
+    native_x2_timestep: bool = False,
     synchronized_nominal_initialization: bool = False,
     static_nominal_start_initialization: bool = False,
 ) -> dict[str, Any]:
@@ -1987,6 +2048,16 @@ def prepare_local01_scene_runtime_bundle(
     if synchronized_nominal_initialization and static_nominal_start_initialization:
         raise Local01SceneRouteError(
             "keyframe and static nominal-start initialization are mutually exclusive"
+        )
+    if native_x2_timestep and not aligned_start:
+        raise Local01SceneRouteError(
+            "native X2 timestep synchronization requires the separately reviewed aligned-start scene"
+        )
+    if native_x2_timestep and (
+        synchronized_nominal_initialization or static_nominal_start_initialization
+    ):
+        raise Local01SceneRouteError(
+            "native X2 timestep synchronization is a separate direct-stand experiment and cannot combine with keyframe or static-nominal initialization"
         )
     runtime_x2_path = (
         Path(runtime_root)
@@ -2030,6 +2101,14 @@ def prepare_local01_scene_runtime_bundle(
     source_scene_root = ET.parse(bundle / "scene_workspace.xml").getroot()
     source_start_frame = _x2_start_frame(source_scene_root)
     _validate_source_x2_start_frame(source_start_frame)
+    native_timestep = set_native_x2_timestep(scene_root) if native_x2_timestep else {
+        "enabled": False,
+        "version": None,
+        "parent_scene_default_timestep_s": COMBINED_SCENE_DEFAULT_TIMESTEP_S,
+        "native_x2_source_timestep_s": NATIVE_X2_TIMESTEP_S,
+        "applies_before_physics": False,
+        "active_simulation_qpos_write": False,
+    }
     model_paths = {
         "x2_mc_runtime": runtime_x2,
         "raicom_room": room_xml,
@@ -2054,6 +2133,11 @@ def prepare_local01_scene_runtime_bundle(
     attaches[0].set("prefix", "x2_")
     if aligned_start:
         _x2_start_frame(scene_root).set("quat", source_start_frame.get("quat", ""))
+    if native_x2_timestep:
+        option = scene_root.find("./option")
+        if option is None:
+            raise Local01SceneRouteError("native timestep wrapper lost its top-level option before source comparison")
+        scene_root.remove(option)
     if ET.tostring(scene_root) != ET.tostring(source_scene_root):
         raise Local01SceneRouteError(
             "Local01 runtime scene wrapper changed content beyond allowed model paths, namespace, or aligned start quaternion"
@@ -2063,11 +2147,15 @@ def prepare_local01_scene_runtime_bundle(
     attaches[0].set("prefix", "")
     if aligned_start:
         _x2_start_frame(scene_root).set("quat", _format_xml_vector(X2_ALIGNED_START_QUAT_WXYZ))
+    if native_x2_timestep:
+        set_native_x2_timestep(scene_root)
     scene_runtime_name = (
         "scene_workspace_aligned_start_v3_static_nominal_runtime.xml"
         if static_nominal_start_initialization else
         "scene_workspace_aligned_start_v2_nominal_keyframe_runtime.xml"
         if synchronized_nominal_initialization else
+        "scene_workspace_aligned_start_v1_native_x2_timestep_runtime.xml"
+        if native_x2_timestep else
         "scene_workspace_aligned_start_v1_runtime.xml"
         if aligned_start else "scene_workspace_runtime.xml"
     )
@@ -2109,6 +2197,8 @@ def prepare_local01_scene_runtime_bundle(
         if static_nominal_start_initialization else
         "simulator_default_local01_aligned_start_v2_nominal_keyframe.yaml"
         if synchronized_nominal_initialization else
+        "simulator_default_local01_aligned_start_v1_native_x2_timestep.yaml"
+        if native_x2_timestep else
         "simulator_default_local01_aligned_start_v1.yaml"
         if aligned_start else "simulator_default_local01_scene.yaml"
     )
@@ -2190,7 +2280,11 @@ def prepare_local01_scene_runtime_bundle(
     )
     native_model = mujoco.MjModel.from_xml_path(str(runtime_x2_path.with_name("scene.xml")))
     base_equivalence = (
-        assert_aligned_start_scene_equivalence(corrected_source_model, generated_model)
+        assert_aligned_start_scene_equivalence(
+            corrected_source_model,
+            generated_model,
+            native_x2_timestep=native_x2_timestep,
+        )
         if aligned_start else assert_scene_name_only_equivalence(corrected_source_model, generated_model)
     )
     static_nominal_start: dict[str, Any] | None = None
@@ -2329,6 +2423,8 @@ def prepare_local01_scene_runtime_bundle(
             if static_nominal_start_initialization else
             "SIMULATION_ONLY_ALIGNED_START_KEYFRAME_SYNCHRONIZED_INITIALIZATION_V1"
             if synchronized_nominal_initialization else
+            "SIMULATION_ONLY_ALIGNED_START_NATIVE_X2_TIMESTEP_SCENE_WRAPPER_V1"
+            if native_x2_timestep else
             "SIMULATION_ONLY_ALIGNED_START_SCENE_WRAPPER_V1"
             if aligned_start else "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER"
         ),
@@ -2356,6 +2452,8 @@ def prepare_local01_scene_runtime_bundle(
             if static_nominal_start_initialization else
             "X2_ATTACH_PREFIX_ALIGNED_START_QUATERNION_AND_SOURCE_MC_NOMINAL_KEYFRAME_V1"
             if synchronized_nominal_initialization else
+            "X2_ATTACH_PREFIX_ALIGNED_START_QUATERNION_NATIVE_X2_TIMESTEP_V1_AND_MODEL_FILE_PATHS"
+            if native_x2_timestep else
             "X2_ATTACH_PREFIX_AND_ALIGNED_START_QUATERNION_V1_AND_MODEL_FILE_PATHS"
             if aligned_start else "X2_ATTACH_PREFIX_ONLY_AND_MODEL_FILE_PATHS"
         ),
@@ -2370,6 +2468,7 @@ def prepare_local01_scene_runtime_bundle(
             "applies_before_physics": aligned_start,
             "active_simulation_qpos_write": False,
         },
+        "native_x2_timestep": native_timestep,
         "synchronized_nominal_initialization": {
             "enabled": synchronized_nominal_initialization,
             "keyframe": synchronized_keyframe,

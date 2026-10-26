@@ -2982,6 +2982,7 @@ class FocusedM1Diagnostic(Node):
         aligned_start_table_approach_mode = bool(
             getattr(self.args, "aligned_start_table_approach", False)
         )
+        native_x2_timestep_mode = bool(getattr(self.args, "native_x2_timestep", False))
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -3050,6 +3051,28 @@ class FocusedM1Diagnostic(Node):
         local01_route_input: Mapping[str, Any] | None = None
         workcell_path = evidence_root / "workcell_geometry_preflight.json"
         try:
+            if native_x2_timestep_mode:
+                capture_path = evidence_root / "set_action_capture_result.json"
+                if capture_path.is_symlink() or not capture_path.is_file():
+                    raise ValueError("native timestep runtime gate lacks the direct-stand capture result")
+                capture = json.loads(capture_path.read_text(encoding="utf-8"))
+                try:
+                    observed_timestep_s = float(
+                        capture["native_mjdata"]["support"]["sample"]["timestep_s"]
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError("native timestep runtime gate lacks a finite MjData timestep sample") from exc
+                if not math.isclose(observed_timestep_s, 0.001, abs_tol=1e-12):
+                    raise ValueError(
+                        f"native timestep runtime gate expected 0.001 s, observed {observed_timestep_s:.9f} s"
+                    )
+                result["native_x2_timestep_runtime_gate"] = {
+                    "status": "PASS",
+                    "observed_mjdata_timestep_s": observed_timestep_s,
+                    "expected_native_x2_timestep_s": 0.001,
+                    "source": str(capture_path),
+                    "before_nonzero_motion": True,
+                }
             if short_scene_route_mode:
                 static_path = evidence_root / "local01_scene" / "static_scene_preflight.json"
                 bundle_path = evidence_root / "local01_scene" / "runtime_bundle_manifest.json"
@@ -3132,11 +3155,15 @@ class FocusedM1Diagnostic(Node):
                 else:
                     validate_runtime_raw_odom_table_approach_mission(mission)
                 expected_bundle_classification = (
+                    "SIMULATION_ONLY_ALIGNED_START_NATIVE_X2_TIMESTEP_SCENE_WRAPPER_V1"
+                    if native_x2_timestep_mode else
                     "SIMULATION_ONLY_ALIGNED_START_SCENE_WRAPPER_V1"
                     if aligned_start_table_approach_mode
                     else "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER"
                 )
                 expected_equivalence_status = (
+                    "PASS_ALIGNED_START_NATIVE_TIMESTEP_PHYSICAL_INVARIANTS"
+                    if native_x2_timestep_mode else
                     "PASS_ALIGNED_START_PHYSICAL_INVARIANTS"
                     if aligned_start_table_approach_mode
                     else "PASS_COMPILED_PHYSICS_EQUIVALENT"
@@ -3155,6 +3182,11 @@ class FocusedM1Diagnostic(Node):
                     or scene_bundle.get("generated_wrapper_physics_equivalence", {}).get("status") != expected_equivalence_status
                     or scene_bundle.get("generated_native_robot_equivalence", {}).get("status") != "PASS_NATIVE_ROBOT_UNDER_SCENE_START_TRANSFORM"
                     or bool(scene_bundle.get("aligned_start", {}).get("enabled")) != aligned_start_table_approach_mode
+                    or bool(scene_bundle.get("native_x2_timestep", {}).get("enabled")) != native_x2_timestep_mode
+                    or (
+                        native_x2_timestep_mode
+                        and scene_bundle.get("native_x2_timestep", {}).get("native_x2_source_timestep_s") != 0.001
+                    )
                     or table_plan.get("status") != expected_plan_status
                     or table_plan.get("safe_table_approach_mission", {}).get("classification") != mission.get("classification")
                     or table_plan.get("safe_table_approach_mission", {}).get("table_docking_reference_unchanged") is not True
@@ -3204,6 +3236,7 @@ class FocusedM1Diagnostic(Node):
                     "static_preflight_path": str(table_plan_path),
                     "scene_bundle_path": str(bundle_path),
                     "aligned_start_table_approach": aligned_start_table_approach_mode,
+                    "native_x2_timestep": native_x2_timestep_mode,
                 }
                 result["local01_scene_static_preflight"] = static_scene
                 result["local01_scene_runtime_bundle"] = scene_bundle
@@ -3793,6 +3826,8 @@ class FocusedM1Diagnostic(Node):
                         Path(self.args.route_config).read_bytes()
                     ).hexdigest(),
                     "route_motion_profile": (
+                        "SIMULATION_ONLY_ALIGNED_START_NATIVE_X2_TIMESTEP_LOW_CRUISE_TABLE_APPROACH_RECOVERY"
+                        if native_x2_timestep_mode else
                         "SIMULATION_ONLY_ALIGNED_START_LOW_CRUISE_TABLE_APPROACH_RECOVERY"
                         if bool(getattr(self.args, "raicom_low_cruise_profile", False)) else
                         "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
@@ -7511,6 +7546,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     aligned_start_table_approach = bool(
         getattr(args, "aligned_start_table_approach", False)
     )
+    native_x2_timestep = bool(getattr(args, "native_x2_timestep", False))
     configured_route_observation = bool(
         getattr(args, "route_config_post_stand_observation", False)
     )
@@ -7540,6 +7576,15 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("table-approach mission cannot be combined with the short-scene route")
     if aligned_start_table_approach and not table_approach_mission:
         raise ValueError("--aligned-start-table-approach requires --table-approach-mission")
+    if native_x2_timestep and not (
+        table_approach_mission
+        and aligned_start_table_approach
+        and low_cruise_profile
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    ):
+        raise ValueError(
+            "native X2 timestep requires the aligned-start TABLE_APPROACH low-cruise profile"
+        )
     if configured_route_observation and not configured_route:
         raise ValueError("configured-route post-STAND observation requires --route-config")
     if configured_route:
@@ -7585,6 +7630,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "aggregate_nonzero_limit_s": float(route_input["limits"]["max_aggregate_nonzero_s"]),
                 "initial_yaw_alignment": dict(route_input["initial_alignment"]),
                 "aligned_start_table_approach": aligned_start_table_approach,
+                "native_x2_timestep": native_x2_timestep,
                 "command_forward_m_s": float(args.forward_speed),
                 "raicom_low_cruise_profile": low_cruise_profile,
                 "runtime_reset_odom_observed": False,
@@ -8000,6 +8046,11 @@ def main() -> int:
             "require the versioned SIMULATION_ONLY pre-physics yaw-zero scene; "
             "it does not qualify the original START yaw alignment"
         ),
+    )
+    first.add_argument(
+        "--native-x2-timestep",
+        action="store_true",
+        help="require the parent-staged aligned scene whose top-level MuJoCo timestep matches native X2 at 0.001 s",
     )
     first.add_argument("--route-config-post-stand-observation", action="store_true")
     first.add_argument("--point-goal-diagnostic", action="store_true")
