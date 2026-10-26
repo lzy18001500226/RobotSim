@@ -54,6 +54,7 @@ LOCAL01_MUG_OBJ_SHA256 = "656bfc987a038c90417ec98c671ab481e6a3ebe35a17d3b92e2ec0
 LOCAL01_MUG_PNG_SHA256 = "8bee0ad778cda4459b486a3fe97d49196d3583abf041020eb1a54ef840e95318"
 
 SHORT_ROUTE_SCHEMA = "robotsim.issue80.local01-short-scene-route.v1"
+TABLE_APPROACH_MISSION_SCHEMA = "robotsim.issue80.local01-table-approach-mission.v1"
 SHORT_ROUTE_STEP_M = LOCAL01_SHORT_ROUTE_STEP_M
 SHORT_ROUTE_TARGETS_M = (SHORT_ROUTE_STEP_M, 2.0 * SHORT_ROUTE_STEP_M)
 SHORT_ROUTE_MAX_WINDOWS = LOCAL01_SHORT_ROUTE_MAX_WINDOWS
@@ -70,6 +71,23 @@ RUNTIME_RAW_ODOM_START_POSITION_ENVELOPE_M = 0.025
 RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD = 0.075
 RUNTIME_RAW_ODOM_START_Z_MIN_M = 0.64
 RUNTIME_RAW_ODOM_START_Z_MAX_M = 0.69
+
+# This is a separately named navigation objective.  It intentionally stops
+# 100 mm before Local01's immutable TABLE_DOCKING pose; it is not a docking or
+# manipulation acceptance pose.  The window budget follows the measured
+# 0.171312 m maximum-progress evidence from the existing 5 s M1 transit
+# profile: 2.40 m needs 15 such bounded windows in the conservative case.
+TABLE_APPROACH_X_M = 0.90
+TABLE_APPROACH_Y_M = -1.50
+TABLE_APPROACH_YAW_RAD = 0.0
+TABLE_APPROACH_MAX_WINDOWS = 15
+TABLE_APPROACH_MAX_WINDOW_S = 5.0
+TABLE_APPROACH_MAX_AGGREGATE_NONZERO_S = (
+    TABLE_APPROACH_MAX_WINDOWS * TABLE_APPROACH_MAX_WINDOW_S
+)
+TABLE_APPROACH_HISTORICAL_PROGRESS_PER_WINDOW_M = 0.171312
+TABLE_APPROACH_ALIGNMENT_MAX_WINDOWS = 8
+TABLE_APPROACH_ALIGNMENT_MAX_DISPLACEMENT_M = 0.05
 
 
 class Local01SceneRouteError(ValueError):
@@ -467,6 +485,186 @@ def build_runtime_raw_odom_short_route_config(source: Mapping[str, Any]) -> dict
         },
     })
     return raw
+
+
+def build_runtime_raw_odom_table_approach_mission(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the source-pinned RAICOM table-approach mission definition.
+
+    This is an offline mission contract, not a claim that the current MC can
+    perform the required initial yaw-only alignment.  The native simulator's
+    observed numeric ``odom`` convention is scene-world after Reset; retain
+    Local01's planned-local transform separately as source documentation.
+    """
+    config = source.get("scene_world_poses")
+    if not isinstance(config, Mapping) or not isinstance(config.get("poses"), Mapping):
+        raise Local01SceneRouteError("Local01 authoritative pose table is missing")
+    poses = config["poses"]
+    required = ("START", "START_ALIGN", "WAYPOINT", "TABLE_DOCKING")
+    if any(not isinstance(poses.get(name), Mapping) for name in required):
+        raise Local01SceneRouteError("Local01 table mission is missing a required source pose")
+
+    start_x, start_y, start_z, start_yaw = _pose_xyz_yaw(poses["START"], "START")
+    align_x, align_y, align_z, align_yaw = _pose_xyz_yaw(poses["START_ALIGN"], "START_ALIGN")
+    waypoint_x, waypoint_y, waypoint_z, waypoint_yaw = _pose_xyz_yaw(
+        poses["WAYPOINT"], "WAYPOINT"
+    )
+    dock_x, dock_y, dock_z, dock_yaw = _pose_xyz_yaw(poses["TABLE_DOCKING"], "TABLE_DOCKING")
+    if (
+        math.dist((start_x, start_y, start_z), (align_x, align_y, align_z)) > 1e-9
+        or abs(_wrap(align_yaw - TABLE_APPROACH_YAW_RAD)) > 1e-9
+    ):
+        raise Local01SceneRouteError("START_ALIGN must preserve START xyz and set the source table heading")
+    if (
+        math.dist((waypoint_x, waypoint_y, waypoint_z), (-0.25, -1.50, start_z)) > 1e-9
+        or abs(_wrap(waypoint_yaw - TABLE_APPROACH_YAW_RAD)) > 1e-9
+    ):
+        raise Local01SceneRouteError("Local01 WAYPOINT does not match the pinned table corridor")
+    if (
+        math.dist((dock_x, dock_y, dock_z), (1.00, -1.50, start_z)) > 1e-9
+        or abs(_wrap(dock_yaw - TABLE_APPROACH_YAW_RAD)) > 1e-9
+    ):
+        raise Local01SceneRouteError("Local01 TABLE_DOCKING differs from the pinned source pose")
+
+    approach = {
+        "x_m": TABLE_APPROACH_X_M,
+        "y_m": TABLE_APPROACH_Y_M,
+        "z_m": start_z,
+        "yaw_rad": TABLE_APPROACH_YAW_RAD,
+    }
+    start = {"x_m": start_x, "y_m": start_y, "z_m": start_z, "yaw_rad": start_yaw}
+    start_align = {"x_m": align_x, "y_m": align_y, "z_m": align_z, "yaw_rad": align_yaw}
+    waypoint = {"x_m": waypoint_x, "y_m": waypoint_y, "z_m": waypoint_z, "yaw_rad": waypoint_yaw}
+    docking = {"x_m": dock_x, "y_m": dock_y, "z_m": dock_z, "yaw_rad": dock_yaw}
+    translation_distance = math.hypot(waypoint_x - align_x, waypoint_y - align_y) + math.hypot(
+        TABLE_APPROACH_X_M - waypoint_x, TABLE_APPROACH_Y_M - waypoint_y
+    )
+    expected_windows = math.ceil(
+        translation_distance / TABLE_APPROACH_HISTORICAL_PROGRESS_PER_WINDOW_M
+    )
+    return {
+        "schema_version": TABLE_APPROACH_MISSION_SCHEMA,
+        "mission_id": "local01-raicom-safe-table-approach-raw-world-odom",
+        "classification": "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION",
+        "frame_id": "odom",
+        "source_frame_id": "raicom_scene_world",
+        "source_local01_commit": source.get("source_commit"),
+        "source_pose_sha256": source.get("source_hashes", {}).get("scene_world_poses"),
+        "runtime_reset_odom_observed": False,
+        "runtime_coordinate_contract": {
+            "published_frame_id": "odom",
+            "numeric_coordinate_convention": "RAICOM_SCENE_WORLD_AFTER_LIVE_RESET_GATE",
+            "static_scene_start": start,
+            "maximum_start_position_deviation_m": RUNTIME_RAW_ODOM_START_POSITION_ENVELOPE_M,
+            "maximum_start_yaw_deviation_rad": RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,
+            "minimum_start_z_m": RUNTIME_RAW_ODOM_START_Z_MIN_M,
+            "maximum_start_z_m": RUNTIME_RAW_ODOM_START_Z_MAX_M,
+            "static_transform_retained_as_reference_only": dict(source["odom_from_scene"]),
+        },
+        "poses": {
+            "START": start,
+            "START_ALIGN": start_align,
+            "WAYPOINT": waypoint,
+            "TABLE_APPROACH": approach,
+            "TABLE_DOCKING_REFERENCE_UNCHANGED": docking,
+        },
+        "execution_order": ["START", "START_ALIGN", "WAYPOINT", "TABLE_APPROACH"],
+        "initial_alignment": {
+            "requested_signed_yaw_change_rad": _wrap(TABLE_APPROACH_YAW_RAD - start_yaw),
+            "target_yaw_rad": TABLE_APPROACH_YAW_RAD,
+            "target_yaw_tolerance_rad": RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,
+            "max_turn_windows": TABLE_APPROACH_ALIGNMENT_MAX_WINDOWS,
+            "max_total_planar_displacement_m": TABLE_APPROACH_ALIGNMENT_MAX_DISPLACEMENT_M,
+            "static_status": "PASS_ONLY_IF_FULL_BODY_SWEEP_PASSES_SEPARATELY",
+            "zero_forward_angular_mc_status": "NOT_QUALIFIED_REQUIRES_BOUNDED_LIVE_EVIDENCE",
+            "moving_turn_status": "NOT_SUBSTITUTED_FOR_START_ALIGN; must remain in its own collision-checked corridor",
+        },
+        "limits": {
+            "forward_m_s": SHORT_ROUTE_FORWARD_M_S,
+            "angular_rad_s": SHORT_ROUTE_ANGULAR_RAD_S,
+            "max_cross_track_m": SHORT_ROUTE_MAX_CROSS_TRACK_M,
+            "max_window_s": TABLE_APPROACH_MAX_WINDOW_S,
+            "max_windows": TABLE_APPROACH_MAX_WINDOWS,
+            "max_aggregate_nonzero_s": TABLE_APPROACH_MAX_AGGREGATE_NONZERO_S,
+        },
+        "bounded_runtime_budget": {
+            "translation_distance_m": translation_distance,
+            "ideal_translation_minimum_s_at_speed_cap": translation_distance / SHORT_ROUTE_FORWARD_M_S,
+            "historical_progress_per_5_s_window_m": TABLE_APPROACH_HISTORICAL_PROGRESS_PER_WINDOW_M,
+            "historical_windows_required": expected_windows,
+            "configured_windows_available": TABLE_APPROACH_MAX_WINDOWS,
+            "translation_nonzero_budget_s": TABLE_APPROACH_MAX_AGGREGATE_NONZERO_S,
+            "post_window_physical_stop": "unchanged full STAND/readback/composite physical-stop gate",
+            "mission_runtime_requires_explicit_parent_watchdog_budget": True,
+        },
+        "table_docking_reference": {
+            "pose": docking,
+            "distance_from_table_approach_m": math.hypot(dock_x - TABLE_APPROACH_X_M, dock_y - TABLE_APPROACH_Y_M),
+            "source_pose_unchanged": True,
+            "dynamic_docking_status": "NOT_AUTHORIZED_BY_TABLE_APPROACH_MISSION",
+            "manipulation_handoff": "PENDING_LOCAL04_REACHABILITY_AND_SOURCE_FAITHFUL_GRASP_VALIDATION",
+        },
+    }
+
+
+def validate_runtime_raw_odom_table_approach_mission(mission: Mapping[str, Any]) -> None:
+    """Validate the explicit non-docking table-approach mission contract."""
+    if mission.get("schema_version") != TABLE_APPROACH_MISSION_SCHEMA:
+        raise Local01SceneRouteError("unsupported table-approach mission schema")
+    if mission.get("classification") != "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION":
+        raise Local01SceneRouteError("table approach must remain explicitly non-docking")
+    if mission.get("frame_id") != "odom" or mission.get("source_frame_id") != "raicom_scene_world":
+        raise Local01SceneRouteError("table-approach mission frame contract is invalid")
+    if mission.get("runtime_reset_odom_observed") is not False:
+        raise Local01SceneRouteError("static table-approach mission must not claim live Reset evidence")
+    if mission.get("execution_order") != ["START", "START_ALIGN", "WAYPOINT", "TABLE_APPROACH"]:
+        raise Local01SceneRouteError("table-approach mission step order is invalid")
+    poses = mission.get("poses")
+    if not isinstance(poses, Mapping):
+        raise Local01SceneRouteError("table-approach mission poses are missing")
+    required = ("START", "START_ALIGN", "WAYPOINT", "TABLE_APPROACH", "TABLE_DOCKING_REFERENCE_UNCHANGED")
+    if any(not isinstance(poses.get(name), Mapping) for name in required):
+        raise Local01SceneRouteError("table-approach mission has a missing pose")
+    parsed = {name: _pose_xyz_yaw(poses[name], name) for name in required}
+    start, align, waypoint, approach, docking = (parsed[name] for name in required)
+    if math.dist(start[:3], align[:3]) > 1e-9 or abs(_wrap(align[3])) > 1e-9:
+        raise Local01SceneRouteError("START_ALIGN must be the source start position at yaw zero")
+    if (
+        math.dist(approach[:3], (TABLE_APPROACH_X_M, TABLE_APPROACH_Y_M, start[2])) > 1e-9
+        or abs(_wrap(approach[3] - TABLE_APPROACH_YAW_RAD)) > 1e-9
+    ):
+        raise Local01SceneRouteError("TABLE_APPROACH differs from the reviewed source-derived standoff")
+    if (
+        math.dist(docking[:3], (1.00, -1.50, start[2])) > 1e-9
+        or abs(_wrap(docking[3] - TABLE_APPROACH_YAW_RAD)) > 1e-9
+    ):
+        raise Local01SceneRouteError("TABLE_DOCKING reference must remain unchanged")
+    if not math.isclose(math.hypot(docking[0] - approach[0], docking[1] - approach[1]), 0.10, abs_tol=1e-9):
+        raise Local01SceneRouteError("table approach must remain exactly 100 mm short of TABLE_DOCKING")
+    if not math.isclose(waypoint[1], start[1], abs_tol=1e-9) or not math.isclose(approach[1], start[1], abs_tol=1e-9):
+        raise Local01SceneRouteError("table-approach translation corridor must retain the pinned y coordinate")
+    alignment = mission.get("initial_alignment")
+    if not isinstance(alignment, Mapping) or alignment.get("zero_forward_angular_mc_status") != "NOT_QUALIFIED_REQUIRES_BOUNDED_LIVE_EVIDENCE":
+        raise Local01SceneRouteError("initial yaw alignment must remain dynamically unqualified before live evidence")
+    if (
+        alignment.get("max_turn_windows") != TABLE_APPROACH_ALIGNMENT_MAX_WINDOWS
+        or abs(float(alignment.get("max_total_planar_displacement_m", float("nan"))) - TABLE_APPROACH_ALIGNMENT_MAX_DISPLACEMENT_M) > 1e-12
+        or abs(float(alignment.get("target_yaw_tolerance_rad", float("nan"))) - RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD) > 1e-12
+    ):
+        raise Local01SceneRouteError("table-approach initial alignment exceeds the reviewed bounded envelope")
+    limits = mission.get("limits")
+    expected_limits = {
+        "forward_m_s": SHORT_ROUTE_FORWARD_M_S,
+        "angular_rad_s": SHORT_ROUTE_ANGULAR_RAD_S,
+        "max_cross_track_m": SHORT_ROUTE_MAX_CROSS_TRACK_M,
+        "max_window_s": TABLE_APPROACH_MAX_WINDOW_S,
+        "max_windows": TABLE_APPROACH_MAX_WINDOWS,
+        "max_aggregate_nonzero_s": TABLE_APPROACH_MAX_AGGREGATE_NONZERO_S,
+    }
+    if not isinstance(limits, Mapping) or any(limits.get(key) != value for key, value in expected_limits.items()):
+        raise Local01SceneRouteError("table-approach mission exceeds the approved bounded motion envelope")
+    reference = mission.get("table_docking_reference")
+    if not isinstance(reference, Mapping) or reference.get("source_pose_unchanged") is not True:
+        raise Local01SceneRouteError("table-approach mission must preserve the source docking reference")
 
 
 def validate_short_route_config(route: Mapping[str, Any]) -> None:

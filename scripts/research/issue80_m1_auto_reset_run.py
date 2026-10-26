@@ -70,9 +70,11 @@ from issue80_waypoint_route import (
 from issue80_local01_scene_route import (
     LOCAL01_COMMIT,
     build_runtime_raw_odom_short_route_config,
+    build_runtime_raw_odom_table_approach_mission,
     load_local01_scene_inputs,
     prepare_local01_scene_runtime_bundle,
     validate_short_route_static_scene,
+    validate_runtime_raw_odom_table_approach_mission,
 )
 
 
@@ -86,6 +88,7 @@ POSE_GOAL_CONTROLLER = Path(__file__).with_name("issue80_coordinated_pose_goal.p
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 M1_FIRST_MOTION_LOGIC = Path(__file__).with_name("issue80_m1_first_motion.py")
 WAYPOINT_ROUTE = Path(__file__).with_name("issue80_waypoint_route.py")
+LOCAL01_SCENE_ROUTE = Path(__file__).with_name("issue80_local01_scene_route.py")
 ROUTE_MOTION_BRIDGE = Path(__file__).with_name("issue80_route_motion_bridge.py")
 SET_ACTION_CAPTURE = Path(__file__).with_name("issue80_m1_set_action_capture.py")
 MC_RL_DEBUG_CAPTURE = Path(__file__).with_name("issue80_mc_rl_debug_capture.py")
@@ -127,6 +130,8 @@ POINT_GOAL_POST_STOP_DRIFT_OBSERVATIONS_RAD = (
 POINT_GOAL_ENDPOINT_RESPONSE_INTERCEPT_M = 0.00347654
 POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
+TABLE_APPROACH_CHILD_TIMEOUT_S = 410.0
+TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
 POINT_GOAL_ANGULAR_TAPER_START_ERROR_M = 0.25
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
@@ -895,6 +900,60 @@ def validate_local01_scene_route_input(poses_path: str | os.PathLike[str]) -> di
     }
 
 
+def validate_local01_table_approach_mission_input(
+    poses_path: str | os.PathLike[str], mission_path: str | os.PathLike[str],
+    static_plan_path: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Validate the non-docking mission against the pinned source and static plan.
+
+    This remains an L0/L1 preflight.  The saved plan contains only mj_forward
+    geometry evidence and cannot make the yaw alignment or gait dynamic PASS.
+    """
+    source = load_local01_scene_inputs(poses_path, require_clean_commit=True)
+    mission_file = Path(mission_path)
+    plan_file = Path(static_plan_path)
+    if any(path.is_symlink() or not path.is_file() for path in (mission_file, plan_file)):
+        raise ValueError("table-approach mission and static plan must be regular files")
+    try:
+        mission = json.loads(mission_file.read_text(encoding="utf-8"))
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"table-approach mission or static plan is unreadable: {type(exc).__name__}") from exc
+    if not isinstance(mission, Mapping) or not isinstance(plan, Mapping):
+        raise ValueError("table-approach mission and static plan must be JSON objects")
+    validate_runtime_raw_odom_table_approach_mission(mission)
+    expected = build_runtime_raw_odom_table_approach_mission(source)
+    if mission != expected:
+        raise ValueError("table-approach mission differs from the pinned source-derived contract")
+    if (
+        plan.get("status") != "STATIC_GEOMETRY_REVIEW_ONLY_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED"
+        or plan.get("source_commit") != source["source_commit"]
+        or plan.get("source_hashes") != source["source_hashes"]
+        or plan.get("safe_table_approach_mission", {}).get("classification")
+            != mission.get("classification")
+        or plan.get("safe_table_approach_mission", {}).get("table_docking_reference_unchanged") is not True
+    ):
+        raise ValueError("table-approach static plan does not match the pinned source/mission")
+    required_segments = {
+        ("START", "START_ALIGN"), ("START_ALIGN", "WAYPOINT"),
+        ("WAYPOINT", "TABLE_APPROACH"),
+    }
+    observed = {
+        (str(item.get("from")), str(item.get("to")))
+        for item in plan.get("segments", []) if isinstance(item, Mapping)
+        and item.get("status") == "PASS_STATIC_ONLY"
+    }
+    if not required_segments.issubset(observed):
+        raise ValueError("table-approach static plan lacks a passing full safe-prefix segment")
+    return {
+        "source": source,
+        "mission": mission,
+        "plan": plan,
+        "mission_sha256": hashlib.sha256(mission_file.read_bytes()).hexdigest(),
+        "plan_sha256": hashlib.sha256(plan_file.read_bytes()).hexdigest(),
+    }
+
+
 def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str]:
     """Build the exact production Docker exec command for the M1 child runner."""
     zero_only_activation = bool(
@@ -910,8 +969,12 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
     configured_waypoint_route = bool(
         getattr(args, "route_config", None)
         or getattr(args, "local01_scene_world_poses", None)
+        or getattr(args, "table_approach_mission", None)
     )
-    local01_short_route = bool(getattr(args, "local01_scene_world_poses", None))
+    local01_short_route = bool(
+        getattr(args, "local01_scene_world_poses", None)
+        and not getattr(args, "table_approach_mission", None)
+    )
     child_extra_stop = (
         5.0 if activation_probe else 7.0 if configured_waypoint_route
         else args.extra_stop_observation
@@ -1027,6 +1090,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         )
         if local01_short_route:
             command[-1] += " --short-scene-route"
+        if getattr(args, "table_approach_mission", None):
+            command[-1] += " --table-approach-mission"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -1569,7 +1634,71 @@ class BoundedRun:
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
         self.runtime_writeback_mounts: list[tuple[Path, str]] = []
-        if getattr(args, "route_config", None):
+        if getattr(args, "table_approach_mission", None):
+            preflight = getattr(args, "configured_table_approach_preflight", None)
+            if not isinstance(preflight, Mapping) or not self.local01_scene_mode:
+                raise ValueError("table-approach mission requires its pinned Local01 scene preflight")
+            source = preflight.get("source")
+            mission = preflight.get("mission")
+            if not isinstance(source, Mapping) or not isinstance(mission, Mapping):
+                raise ValueError("table-approach preflight did not retain source and mission mappings")
+            self.local01_scene_source = dict(source)
+            route_bytes = (
+                json.dumps(mission, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n"
+            ).encode("utf-8")
+            staged = self.evidence / "route_config.json"
+            with staged.open("xb") as stream:
+                stream.write(route_bytes)
+            self.route_config_sha256 = hashlib.sha256(route_bytes).hexdigest()
+            plan_source = Path(str(getattr(args, "table_approach_static_plan", "")))
+            staged_plan = self.evidence / "table_approach_static_plan.json"
+            shutil.copyfile(plan_source, staged_plan)
+            self.local01_scene_bundle = prepare_local01_scene_runtime_bundle(
+                self.local01_scene_source, self.evidence, runtime_root=RUNTIME,
+            )
+            # Retain the existing name/physics-equivalence evidence used by
+            # the Local01 runtime wrapper.  The separate full table-plan file
+            # remains the authority for the longer safe-prefix geometry.
+            short_static = validate_short_route_static_scene(
+                Path(str(source["repository_root"])) / "simulation/mujoco/scenes/raicom2026",
+                build_runtime_raw_odom_short_route_config(source),
+            )
+            if short_static.get("status") != "PASS_STATIC_SCENE_CLEARANCE":
+                raise ValueError("Local01 wrapper short static preflight no longer passes")
+            with (self.evidence / "local01_scene/static_scene_preflight.json").open("x", encoding="utf-8") as stream:
+                json.dump(short_static, stream, indent=2, allow_nan=False)
+                stream.write("\n")
+            route_manifest = {
+                "schema": "robotsim.issue80.table-approach-mission-input.v1",
+                "classification": mission["classification"],
+                "source_local01_commit": source["source_commit"],
+                "source_scene_world_poses_sha256": source["source_hashes"]["scene_world_poses"],
+                "derived_route_sha256": self.route_config_sha256,
+                "source_static_plan_sha256": preflight["plan_sha256"],
+                "staged_route_path": str(staged),
+                "staged_static_plan_path": str(staged_plan),
+                "scene_bundle_classification": self.local01_scene_bundle["classification"],
+                "runtime_reset_odom_observed": False,
+                "physical_table_docking": "NOT_TARGETED_BY_THIS_TABLE_APPROACH_MISSION",
+            }
+            with (self.evidence / "route_config_input.json").open("x", encoding="utf-8") as stream:
+                json.dump(route_manifest, stream, indent=2, allow_nan=False)
+                stream.write("\n")
+            self.local01_scene_readonly_mounts = [
+                (self.evidence / "route_config.json", "/workspace/evidence/route_config.json"),
+                (self.evidence / "route_config_input.json", "/workspace/evidence/route_config_input.json"),
+                (staged_plan, "/workspace/evidence/table_approach_static_plan.json"),
+                (self.evidence / "local01_scene/scene_world_poses.json", "/workspace/evidence/local01_scene/scene_world_poses.json"),
+                (self.evidence / "local01_scene/route_waypoints.json", "/workspace/evidence/local01_scene/route_waypoints.json"),
+                (self.evidence / "local01_scene/scene_workspace.xml", "/workspace/evidence/local01_scene/scene_workspace.xml"),
+                (self.evidence / "local01_scene/mug_portable.xml", "/workspace/evidence/local01_scene/mug_portable.xml"),
+                (self.evidence / "local01_scene/scene_workspace_runtime.xml", "/workspace/evidence/local01_scene/scene_workspace_runtime.xml"),
+                (self.evidence / "local01_scene/mug_portable_runtime.xml", "/workspace/evidence/local01_scene/mug_portable_runtime.xml"),
+                (self.evidence / "local01_scene/simulator_default_local01_scene.yaml", "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml"),
+                (self.evidence / "local01_scene/runtime_bundle_manifest.json", "/workspace/evidence/local01_scene/runtime_bundle_manifest.json"),
+                (self.evidence / "local01_scene/static_scene_preflight.json", "/workspace/evidence/local01_scene/static_scene_preflight.json"),
+            ]
+        elif getattr(args, "route_config", None):
             source = Path(args.route_config)
             if source.is_symlink() or not source.is_file():
                 raise ValueError("route config must be a regular, non-symlink input file")
@@ -1768,8 +1897,12 @@ class BoundedRun:
         run65_waypoint_docking = bool(
             getattr(self.args, "route_config", None)
             or getattr(self.args, "local01_scene_world_poses", None)
+            or getattr(self.args, "table_approach_mission", None)
         )
-        run65_local01_short_route = bool(getattr(self.args, "local01_scene_world_poses", None))
+        run65_local01_short_route = bool(
+            getattr(self.args, "local01_scene_world_poses", None)
+            and not getattr(self.args, "table_approach_mission", None)
+        )
         run65_waypoint_b_mode = (
             run65_waypoint_b_only or run65_waypoint_b_short or run65_waypoint_b_extended
         )
@@ -1984,7 +2117,30 @@ class BoundedRun:
                 if run65_local01_short_route
                 else getattr(self.args, "configured_waypoint_docking_route", None)
             )
-            if run65_local01_short_route:
+            if getattr(self.args, "table_approach_mission", None):
+                mission = self.args.configured_table_approach_preflight["mission"]
+                manifest["command_profile"] = {
+                    "shape": "source-grounded-zero-forward-start-alignment-then-two-step-table-approach",
+                    "classification": mission["classification"],
+                    "mission_id": mission["mission_id"],
+                    "frame_id": "odom",
+                    "source_frame_id": "raicom_scene_world",
+                    "source_local01_commit": self.args.local01_scene_source["source_commit"],
+                    "step_ids": mission["execution_order"],
+                    "forward_m_s": mission["limits"]["forward_m_s"],
+                    "maximum_angular_rad_s": mission["limits"]["angular_rad_s"],
+                    "maximum_windows_total": mission["limits"]["max_windows"],
+                    "maximum_window_s": mission["limits"]["max_window_s"],
+                    "aggregate_nonzero_limit_s": mission["limits"]["max_aggregate_nonzero_s"],
+                    "child_runtime_timeout_s": TABLE_APPROACH_CHILD_TIMEOUT_S,
+                    "minimum_parent_runtime_s": TABLE_APPROACH_MIN_PARENT_RUNTIME_S,
+                    "zero_forward_alignment": mission["initial_alignment"],
+                    "zero_stop_gate": "unchanged composite physical and joint-target gate after every bounded window",
+                    "post_stand_observation_s": 7.0,
+                    "terminal_state": "TABLE_APPROACH_STOPPED_NO_TABLE_DOCKING_OR_MANIPULATOR_HANDOFF",
+                    "table_docking_reference": mission["table_docking_reference"],
+                }
+            elif run65_local01_short_route:
                 manifest["command_profile"] = {
                     "shape": "local01-start-heading-two-target-short-forward-route",
                     "classification": "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING",
@@ -2101,6 +2257,7 @@ class BoundedRun:
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
             (WAYPOINT_ROUTE, WAYPOINT_ROUTE.name),
+            (LOCAL01_SCENE_ROUTE, LOCAL01_SCENE_ROUTE.name),
             (ROUTE_MOTION_BRIDGE, ROUTE_MOTION_BRIDGE.name),
             (SET_ACTION_CAPTURE, SET_ACTION_CAPTURE.name),
             (MC_RL_DEBUG_CAPTURE, MC_RL_DEBUG_CAPTURE.name),
@@ -3091,14 +3248,20 @@ class BoundedRun:
                 stream.write("\n")
         if self.reset_classification != "AUTO_RESET_PASS":
             raise RuntimeError("first motion requires the unchanged post-Reset standing gate to pass")
-        if self.remaining() < 35.0:
-            raise RunDeadline("fewer than 35 seconds remain after AUTO_RESET_PASS; M1 was not started")
+        required_remaining_s = (
+            TABLE_APPROACH_CHILD_TIMEOUT_S
+            if getattr(self.args, "table_approach_mission", None) else 35.0
+        )
+        if self.remaining() < required_remaining_s:
+            raise RunDeadline(
+                f"fewer than {required_remaining_s:g} seconds remain after AUTO_RESET_PASS; M1 was not started"
+            )
         if self.network_mode != "bridge":
             raise RuntimeError("verified bridge isolation is required before M1")
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
         command = build_m1_child_command(self.args, self.container)
-        child_timeout_s = 30.0 if zero_only_activation or activation_probe else (
+        child_timeout_s = TABLE_APPROACH_CHILD_TIMEOUT_S if getattr(self.args, "table_approach_mission", None) else 30.0 if zero_only_activation or activation_probe else (
             75.0
             if getattr(self.args, "post_locomotion_convergence_observation_s", None) is not None
             else 45.0
@@ -3422,7 +3585,24 @@ class BoundedRun:
                 or bool(getattr(self.args, "route_config", None))
                 or bool(getattr(self.args, "local01_scene_world_poses", None))
             ):
-                if getattr(self.args, "local01_scene_world_poses", None):
+                if getattr(self.args, "table_approach_mission", None):
+                    preflight = self.args.configured_table_approach_preflight
+                    staged_static_path = self.evidence / "local01_scene" / "static_scene_preflight.json"
+                    if staged_static_path.is_symlink() or not staged_static_path.is_file():
+                        raise RuntimeError("staged Local01 wrapper static preflight is missing or unsafe")
+                    local01_static = json.loads(staged_static_path.read_text(encoding="utf-8"))
+                    if local01_static.get("status") != "PASS_STATIC_SCENE_CLEARANCE":
+                        raise RuntimeError("Local01 wrapper static clearance preflight did not pass")
+                    result["local01_scene_static_preflight"] = local01_static
+                    result["table_approach_mission_input"] = {
+                        "source_local01_commit": preflight["source"]["source_commit"],
+                        "source_scene_world_poses_sha256": preflight["source"]["source_hashes"]["scene_world_poses"],
+                        "mission_sha256": preflight["mission_sha256"],
+                        "static_plan_sha256": preflight["plan_sha256"],
+                        "classification": preflight["mission"]["classification"],
+                        "execution_status": "INPUT_PREFLIGHT_ONLY",
+                    }
+                elif getattr(self.args, "local01_scene_world_poses", None):
                     local01_static = self.args.local01_scene_static_preflight
                     if local01_static.get("status") != "PASS_STATIC_SCENE_CLEARANCE":
                         raise RuntimeError("Local01 actual-scene static clearance preflight did not pass")
@@ -3651,6 +3831,8 @@ class BoundedRun:
                 self.outcome_classification = (
                     str(route.get("classification"))
                     if route_pass and isinstance(route, Mapping)
+                    else "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION_BLOCKED"
+                    if getattr(self.args, "table_approach_mission", None)
                     else "SIMULATION_ONLY_CURVED_PATH_DIAGNOSTIC_BLOCKED"
                     if getattr(self.args, "run65_curved_path_diagnostic", False)
                     else "SIMULATION_ONLY_EXTENDED_B_DIAGNOSTIC_BLOCKED"
@@ -3977,6 +4159,16 @@ def main() -> int:
         help="generic odom-frame START/WAYPOINT/TABLE_DOCKING JSON for the pinned open-floor workcell; not RAICOM table-clearance validation",
     )
     parser.add_argument(
+        "--table-approach-mission",
+        default=None,
+        help="pinned non-docking Local01 START_ALIGN→WAYPOINT→TABLE_APPROACH mission JSON",
+    )
+    parser.add_argument(
+        "--table-approach-static-plan",
+        default=None,
+        help="matching read-only RAICOM static table-plan JSON with safe-prefix evidence",
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -4082,10 +4274,38 @@ def main() -> int:
         args.run65_curved_path_diagnostic,
         args.run65_ground_truth_point_goal,
         bool(args.route_config),
-        bool(args.local01_scene_world_poses),
+        bool(args.local01_scene_world_poses and not args.table_approach_mission),
+        bool(args.table_approach_mission),
     )
     if sum(diagnostic_variants) > 1:
         parser.error("select only one FoundationWalk diagnostic config variant")
+    if args.table_approach_mission:
+        if args.route_config:
+            parser.error("table-approach mission owns its route input; do not also pass --route-config")
+        if not args.local01_scene_world_poses or not args.table_approach_static_plan:
+            parser.error("table-approach mission requires Local01 scene poses and its matching static plan")
+        if not args.maintainer_authorized_first_motion:
+            parser.error("table-approach mission requires explicit first-motion authorization")
+        if not args.require_stand_warmup_composite:
+            parser.error("table-approach mission requires the complete STAND warmup composite gate")
+        if args.route_turn_evidence is not None or args.capture_mc_rl_debug:
+            parser.error("table-approach mission uses its own source-grounded yaw-alignment contract")
+        if args.max_runtime_s < TABLE_APPROACH_MIN_PARENT_RUNTIME_S:
+            parser.error(
+                f"table-approach mission requires at least {TABLE_APPROACH_MIN_PARENT_RUNTIME_S:g} s "
+                "for bounded turn, transit, stop, and teardown windows"
+            )
+        try:
+            table_preflight = validate_local01_table_approach_mission_input(
+                args.local01_scene_world_poses,
+                args.table_approach_mission,
+                args.table_approach_static_plan,
+            )
+            args.configured_table_approach_preflight = table_preflight
+            args.local01_scene_source = table_preflight["source"]
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
+            parser.error(f"table-approach mission rejected before runtime: {type(exc).__name__}: {exc}")
+        args.extra_stop_observation = 7.0
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
@@ -4106,7 +4326,7 @@ def main() -> int:
         args.extra_stop_observation = 7.0
     if args.route_config and args.local01_scene_world_poses:
         parser.error("select either the generic odom route JSON or the pinned Local01 scene-world route")
-    if args.local01_scene_world_poses:
+    if args.local01_scene_world_poses and not args.table_approach_mission:
         if not args.maintainer_authorized_first_motion:
             parser.error("Local01 scene route requires separate explicit first-motion authorization")
         if not args.require_stand_warmup_composite:

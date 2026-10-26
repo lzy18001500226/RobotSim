@@ -16,14 +16,17 @@ from issue80_local01_scene_route import (
     LOCAL01_RUNTIME_X2_SHA256,
     build_short_route_config,
     build_runtime_raw_odom_short_route_config,
+    build_runtime_raw_odom_table_approach_mission,
     load_local01_scene_inputs,
     prepare_local01_scene_runtime_bundle,
+    validate_runtime_raw_odom_table_approach_mission,
     validate_short_route_static_scene,
     native_name_scene_tree,
     audit_runtime_name_contract,
     assert_scene_name_only_equivalence,
 )
 from issue80_waypoint_route import (
+    build_table_approach_route_from_mission,
     build_local01_short_scene_route,
     validate_local01_reset_odom_pose,
     validate_local01_short_scene_route_input,
@@ -44,6 +47,8 @@ def local01_source_fixture():
         "scene_world_poses": {
             "poses": {
                 "START": {"xyz_m": [-1.5, -1.5, 0.68], "yaw_rad": math.pi / 2.0},
+                "START_ALIGN": {"xyz_m": [-1.5, -1.5, 0.68], "yaw_rad": 0.0},
+                "WAYPOINT": {"xyz_m": [-0.25, -1.5, 0.68], "yaw_rad": 0.0},
                 "TABLE_DOCKING": {"xyz_m": [1.0, -1.5, 0.68], "yaw_rad": 0.0},
             }
         },
@@ -60,6 +65,50 @@ def local01_source_fixture():
 
 
 class Local01SceneRouteTests(unittest.TestCase):
+    def test_table_approach_mission_preserves_docking_and_declares_turn_gate(self):
+        mission = build_runtime_raw_odom_table_approach_mission(local01_source_fixture())
+        validate_runtime_raw_odom_table_approach_mission(mission)
+        self.assertEqual(
+            mission["classification"],
+            "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION",
+        )
+        self.assertEqual(
+            mission["execution_order"],
+            ["START", "START_ALIGN", "WAYPOINT", "TABLE_APPROACH"],
+        )
+        self.assertEqual(mission["poses"]["TABLE_APPROACH"], {
+            "x_m": 0.9, "y_m": -1.5, "z_m": 0.68, "yaw_rad": 0.0,
+        })
+        self.assertEqual(mission["poses"]["TABLE_DOCKING_REFERENCE_UNCHANGED"], {
+            "x_m": 1.0, "y_m": -1.5, "z_m": 0.68, "yaw_rad": 0.0,
+        })
+        self.assertEqual(
+            mission["initial_alignment"]["zero_forward_angular_mc_status"],
+            "NOT_QUALIFIED_REQUIRES_BOUNDED_LIVE_EVIDENCE",
+        )
+        self.assertEqual(mission["limits"]["max_windows"], 15)
+        self.assertEqual(mission["limits"]["max_aggregate_nonzero_s"], 75.0)
+
+    def test_table_approach_mission_rejects_relabelled_docking_pose(self):
+        mission = build_runtime_raw_odom_table_approach_mission(local01_source_fixture())
+        mission["poses"]["TABLE_DOCKING_REFERENCE_UNCHANGED"]["x_m"] = 0.9
+        with self.assertRaisesRegex(ValueError, "TABLE_DOCKING reference"):
+            validate_runtime_raw_odom_table_approach_mission(mission)
+
+    def test_table_approach_route_reuses_route_spec_without_manipulator_handoff(self):
+        mission = build_runtime_raw_odom_table_approach_mission(local01_source_fixture())
+        route = build_table_approach_route_from_mission(
+            mission,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+        )
+        self.assertEqual([step.waypoint_id for step in route.steps], ["WAYPOINT", "TABLE_APPROACH"])
+        self.assertEqual([step.profile.value for step in route.steps], ["TRANSIT", "TRANSIT"])
+        self.assertTrue(all(step.stop_behavior.value == "VERIFY_PHYSICAL_STOP" for step in route.steps))
+        self.assertAlmostEqual(route.start_yaw_rad, 0.0)
+        self.assertAlmostEqual(route.start_position_tolerance_m, 0.05)
+        self.assertAlmostEqual(route.start_yaw_tolerance_rad, 0.075)
+
     def test_runtime_raw_odom_route_uses_scene_numeric_start_and_static_envelope(self):
         route_input = build_runtime_raw_odom_short_route_config(local01_source_fixture())
         validate_local01_short_scene_route_input(route_input)

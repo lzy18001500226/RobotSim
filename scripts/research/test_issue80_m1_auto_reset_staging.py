@@ -315,6 +315,35 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertNotIn("--route-curved-path-diagnostic", child)
         self.assertNotIn("--route-waypoint-b-only", child)
 
+    def test_parent_child_table_approach_profile_never_requests_table_docking(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.12,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="table-approach-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/table-approach.json",
+            route_config=None,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(build_m1_child_command(args, "table-approach-test")[-1].rsplit(" && ", 1)[1])
+        self.assertIn("--route-integration", child)
+        self.assertIn("--table-approach-mission", child)
+        self.assertIn("--route-config", child)
+        self.assertNotIn("--short-scene-route", child)
+        self.assertNotIn("--route-waypoint-b-only", child)
+        self.assertEqual(child[child.index("--route-config") + 1], "/workspace/evidence/route_config.json")
+        self.assertEqual(child[child.index("--extra-stop-observation") + 1], "7.0")
+
     def test_route_windows_use_source_grounded_nonzero_activation_not_zero_only(self) -> None:
         probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"

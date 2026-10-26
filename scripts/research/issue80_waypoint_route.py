@@ -558,6 +558,75 @@ def build_waypoint_docking_route_from_poses(
     return validate_waypoint_docking_route(route)
 
 
+def build_table_approach_route_from_mission(
+    mission: Mapping[str, Any],
+    *,
+    runtime_robot_footprint_radius_m: float,
+    verified_local_clear_radius_m: float,
+) -> RouteSpec:
+    """Adapt the explicit Local01 table-approach mission to RouteSpec.
+
+    The mission validator belongs with the pinned scene adapter.  This generic
+    route module only consumes its already-verified map and deliberately
+    converts ``TABLE_APPROACH`` into a final TRANSIT step: physical stopping
+    is still mandatory, while no manipulation handoff or TABLE_DOCKING claim
+    can be emitted from this route.
+    """
+    try:
+        if mission.get("classification") != "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION":
+            raise RouteError("table-approach mission classification is invalid")
+        if mission.get("frame_id") != "odom":
+            raise RouteError("table-approach mission must use odom")
+        poses = mission["poses"]
+        if not isinstance(poses, Mapping):
+            raise RouteError("table-approach mission poses are missing")
+        start = poses["START_ALIGN"]
+        waypoint = poses["WAYPOINT"]
+        approach = poses["TABLE_APPROACH"]
+        dock = poses["TABLE_DOCKING_REFERENCE_UNCHANGED"]
+        values = {
+            "start": {name: float(start[name]) for name in ("x_m", "y_m", "yaw_rad")},
+            "waypoint": {name: float(waypoint[name]) for name in ("x_m", "y_m", "yaw_rad")},
+            "approach": {name: float(approach[name]) for name in ("x_m", "y_m", "yaw_rad")},
+            "dock": {name: float(dock[name]) for name in ("x_m", "y_m", "yaw_rad")},
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RouteError("table-approach mission is malformed") from exc
+    if not all(math.isfinite(value) for pose in values.values() for value in pose.values()):
+        raise RouteError("table-approach mission contains non-finite poses")
+    if abs(values["dock"]["x_m"] - values["approach"]["x_m"] - 0.10) > 1e-9:
+        raise RouteError("table-approach mission must remain 100 mm short of docking")
+    converted = {
+        "schema_version": WAYPOINT_DOCKING_POSE_SCHEMA_VERSION,
+        "route_id": str(mission.get("mission_id", "")) + "-route-spec",
+        "frame_id": "odom",
+        "start": values["start"],
+        "waypoint": values["waypoint"],
+        "table_docking": values["approach"],
+    }
+    base = build_waypoint_docking_route_from_poses(
+        converted,
+        runtime_robot_footprint_radius_m=runtime_robot_footprint_radius_m,
+        verified_local_clear_radius_m=verified_local_clear_radius_m,
+    )
+    route = replace(
+        base,
+        route_id=str(mission.get("mission_id")),
+        start_position_tolerance_m=0.05,
+        start_yaw_tolerance_rad=0.075,
+        steps=(
+            replace(base.steps[0], waypoint_id="WAYPOINT", profile=Profile.TRANSIT,
+                    position_tolerance_m=0.15),
+            replace(base.steps[1], waypoint_id="TABLE_APPROACH", profile=Profile.TRANSIT,
+                    position_tolerance_m=0.15),
+        ),
+    )
+    route.validate()
+    if tuple(step.waypoint_id for step in route.steps) != ("WAYPOINT", "TABLE_APPROACH"):
+        raise RouteError("table-approach route generated an unexpected step sequence")
+    return route
+
+
 def load_waypoint_docking_pose_input(path: str | Path) -> dict[str, Any]:
     """Load the minimal Local01 pose input without inventing route coordinates."""
     route_path = Path(path)

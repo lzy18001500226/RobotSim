@@ -1,12 +1,37 @@
 """Offline geometry sampling checks; no physics integration."""
+import json
 import math
+import tempfile
 import unittest
+from pathlib import Path
 
-from issue80_raicom_table_plan import sample_segment, build_raw_world_odom_route_config
+import mujoco
+
+from issue80_raicom_table_plan import (
+    _load_native_standing_qpos, sample_segment, build_raw_world_odom_route_config,
+)
 from issue80_local01_scene_route import RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD
 
 
 class TablePlanTests(unittest.TestCase):
+    def test_native_trace_loader_accepts_only_a_truncated_final_record(self):
+        model = mujoco.MjModel.from_xml_string(
+            '<mujoco><worldbody><body><freejoint/><geom type="sphere" size=".1"/></body></worldbody></mujoco>'
+        )
+        metadata = {
+            "event": "model_metadata", "nq": model.nq, "nv": model.nv,
+            "nu": model.nu, "nbody": model.nbody, "ngeom": model.ngeom,
+            "mujoco_runtime_version": "3.3.7", "timestep_s": 0.002,
+        }
+        sample = {"event": "post_step", "generation": 1, "sim_time_s": 1.0,
+                  "qpos": [0.0] * model.nq}
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace.jsonl"
+            trace.write_text(json.dumps(metadata) + "\n" + json.dumps(sample) + "\n{\"truncated")
+            qpos, provenance = _load_native_standing_qpos(trace, model)
+        self.assertEqual(qpos, [0.0] * model.nq)
+        self.assertTrue(provenance["truncated_final_record_ignored"])
+
     def test_raw_odom_config_never_uses_planned_local_coordinates(self):
         poses = [
             {"name":"START","scene_world":{"xyz_m":[-1.5,-1.5,.68],"yaw_rad":math.pi/2},
