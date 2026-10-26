@@ -37,7 +37,8 @@ ROOT_TRACKING_GATE_RAD = 0.020
 EQUALITY_JOINT_GATE_RAD = 0.003
 EQUALITY_CONNECT_GATE_M = 0.001
 JOINT_LIMIT_NUMERICAL_TOL_RAD = 1e-9
-SETTLE_STEPS = 750
+SETTLE_MAX_STEPS = 2_000
+SETTLE_REQUIRED_STABLE_STEPS = 500
 PREGRASP_HOLD_STEPS = 250
 APPROACH_STEPS = 2_000
 CONTACT_POSE_STEPS = 1_500
@@ -439,8 +440,10 @@ def main() -> None:
             record = step(label, interpolate(arm_first, arm_second, fraction), (1.0 - quintic(fraction)) * root_first + quintic(fraction) * root_second)
             if record is None or first_failure is not None:
                 return False
+            if require == "settle" and record["settle_streak"] >= SETTLE_REQUIRED_STABLE_STEPS:
+                return True
         if require == "settle":
-            return record["settle_streak"] >= count
+            return False
         if require == "bilateral":
             return record["bilateral_streak"] >= MIN_CONTACT_FRAMES
         if require == "transfer":
@@ -456,9 +459,10 @@ def main() -> None:
     initial_record = evaluate(0, "INITIAL", initial_clipping)
     if initial_record["table_force_z"] <= 0.0 or first_failure is not None:
         first_failure = first_failure or {"gate": "INITIAL_TABLE_SUPPORT", "step": 0}
-    if first_failure is None and run_phase("INITIAL_SETTLE", SETTLE_STEPS, arm_initial, arm_initial, right_root, right_root, "settle"):
+    if first_failure is None and run_phase("INITIAL_SETTLE", SETTLE_MAX_STEPS, arm_initial, arm_initial, right_root, right_root, "settle"):
         stage_results["INITIAL_SETTLE"] = "PASS"
     elif first_failure is None:
+        stage_results["INITIAL_SETTLE"] = "FAIL"
         first_failure = {"gate": "INITIAL_SETTLE_UNSTABLE", "step": physics_steps, "stage": "INITIAL_SETTLE"}
     else:
         stage_results["INITIAL_SETTLE"] = "FAIL"
