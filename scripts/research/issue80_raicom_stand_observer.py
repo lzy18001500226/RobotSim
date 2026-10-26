@@ -26,17 +26,26 @@ JD_READY_TIMEOUT_S = 1.0
 SD_READY_TIMEOUT_S = 2.0
 
 
-def safe_posture(pose):
+def posture_safety_reason(pose):
     try:
         values = [float(pose[k]) for k in ('z_m','roll_rad','pitch_rad')]
         frame_values = [float(pose[k]) for k in ('x_m','y_m','yaw_rad')]
         velocity = [float(v) for v in pose['linear_velocity_m_s']]
-        return (all(math.isfinite(v) for v in values+velocity+frame_values)
-                and values[0] >= MIN_ROOT_Z_M
-                and max(abs(values[1]),abs(values[2])) < MAX_ABS_TILT_RAD
-                and math.hypot(*velocity[:2]) <= MAX_PLANAR_SPEED_M_S)
+        if not all(math.isfinite(v) for v in values+velocity+frame_values):
+            return 'NONFINITE_POSTURE_OR_TWIST'
+        if values[0] < MIN_ROOT_Z_M:
+            return 'ROOT_HEIGHT_BELOW_MINIMUM'
+        if max(abs(values[1]),abs(values[2])) >= MAX_ABS_TILT_RAD:
+            return 'ROLL_OR_PITCH_LIMIT'
+        if math.hypot(*velocity[:2]) > MAX_PLANAR_SPEED_M_S:
+            return 'PLANAR_SPEED_LIMIT'
+        return None
     except (KeyError,TypeError,ValueError):
-        return False
+        return 'MALFORMED_POSTURE_OR_TWIST'
+
+
+def safe_posture(pose):
+    return posture_safety_reason(pose) is None
 
 
 def request_allowed(*, reset_verified, reset_effect, fresh, pose, advancing, count):
@@ -331,7 +340,7 @@ class StandObserver(ResetOnlyObserver):
             if action=='JOINT_DEFAULT':self.jd_future=future
             else:self.sd_future=future
         if self.first_upright_ns is not None and not safe_posture(pose):
-            self.failure = 'TAKEOVER_TOO_LATE_OR_ACTIVE_POSTURE_UNSAFE'
+            self.failure = 'POST_RESET_UNSAFE_' + str(posture_safety_reason(pose))
             return
         common = self.latest_messages.get('common')
         commands = _safe(self.latest_messages.get('leg_command'))

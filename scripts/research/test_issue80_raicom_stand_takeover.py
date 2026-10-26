@@ -12,6 +12,7 @@ def pure(name):
     env={'math':math,'MIN_ROOT_Z_M':.52,'MAX_ABS_TILT_RAD':math.radians(15),
          'MAX_PLANAR_SPEED_M_S':.2,'JD_READY_TIMEOUT_S':1.,'SD_READY_TIMEOUT_S':2.}
     if name=='request_allowed':env['safe_posture']=pure('safe_posture')
+    if name=='safe_posture':env['posture_safety_reason']=pure('posture_safety_reason')
     if name=='native_transition_state':env['active_mode_agrees']=pure('active_mode_agrees')
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),str(OBSERVER),'exec'),env)
     return env[name]
@@ -30,6 +31,17 @@ class StandingTests(unittest.TestCase):
         self.assertFalse(allowed(**dict(args,count=1)))
         for key,value in (('z_m',.1),('pitch_rad',.3),('roll_rad',float('nan')),('yaw_rad',float('nan'))):
             self.assertFalse(allowed(**dict(args,pose=dict(args['pose'],**{key:value}))))
+
+    def test_posture_failure_reason_preserves_each_existing_gate(self):
+        reason=pure('posture_safety_reason')
+        pose={'x_m':-1.5,'y_m':-1.5,'yaw_rad':0.,'z_m':.68,
+              'roll_rad':0.,'pitch_rad':0.,'linear_velocity_m_s':[0.,0.,0.]}
+        self.assertIsNone(reason(pose))
+        self.assertEqual(reason(dict(pose,z_m=.519)),'ROOT_HEIGHT_BELOW_MINIMUM')
+        self.assertEqual(reason(dict(pose,pitch_rad=math.radians(15))),'ROLL_OR_PITCH_LIMIT')
+        self.assertEqual(reason(dict(pose,linear_velocity_m_s=[.201,0.,0.])),
+                         'PLANAR_SPEED_LIMIT')
+        self.assertEqual(reason(dict(pose,yaw_rad=float('nan'))),'NONFINITE_POSTURE_OR_TWIST')
 
     def test_request_path_is_sd_only_no_publishers_and_no_retry(self):
         tree=ast.parse(OBSERVER.read_text())

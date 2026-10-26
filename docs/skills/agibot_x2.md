@@ -277,6 +277,21 @@ before observer launch can positively report zero action requests; a missing
 summary after launch remains UNKNOWN instead of inventing zero. Both semantics
 have offline regressions. Any next JD-SD physics episode needs new authorization.
 
+The replacement JD-SD episode `6e6b4b60-47de-4c62-9f3f-5a6e1c0fb7ef` verified
+the repaired rclpy graph path in the live isolated container: zero velocity
+publishers at READY and again immediately before JD/SD actions. Reset, one JD
+and one SD were dispatched. JD completed its observed gate in 300.726 ms;
+SD was accepted 6.395 ms after its request. The robot then exceeded the
+unchanged 0.20 m/s planar-speed safety bound (0.209026 m/s) 41.990 ms after
+the SD request, before a new CommonState could establish SD readiness. z,
+roll/pitch and source joint position/velocity limits were still valid; this is
+not a measured fall, but it is a real physical safety-gate failure. The
+qualified active hold is 0.0 s, so the result is BLOCKED and no locomotion may
+follow. `posture_safety_reason` now records this future condition as
+`PLANAR_SPEED_LIMIT` without changing the threshold. Do not retry under that
+authorization or attribute the speed rise to timing warnings without further
+evidence.
+
 For a separately authorized future attempt, the command shape is:
 
 ```bash
