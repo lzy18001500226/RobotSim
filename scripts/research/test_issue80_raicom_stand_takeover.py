@@ -149,6 +149,16 @@ class StandingTests(unittest.TestCase):
         self.assertEqual(snapshot(graph)['status'],'BLOCKED_VELOCITY_PUBLISHER')
         self.assertEqual(graph.topic,'/aima/mc/locomotion/velocity')
 
+    def test_graph_errors_fail_closed_and_post_reset_readbacks_are_required(self):
+        source=OBSERVER.read_text()
+        self.assertIn('VELOCITY_GRAPH_INSPECTION_ERROR:',source)
+        self.assertIn("reason='READY'",source)
+        self.assertIn("reason='ACTION_GATE_' + action",source)
+        self.assertIn('self.get_result_request_ns >= self.reset_ns',source)
+        self.assertIn("self.received_ns.get('common', 0) >= self.reset_ns",source)
+        self.assertIn('GET_MC_ACTION_TIMEOUT',source)
+        self.assertNotIn('ros2 topic info --verbose',source)
+
     def test_jd_protocol_cannot_reset_without_observer_zero_publisher_proof(self):
         import argparse,tempfile
         from pathlib import Path

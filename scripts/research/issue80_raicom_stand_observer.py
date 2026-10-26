@@ -122,6 +122,8 @@ class StandObserver(ResetOnlyObserver):
         self.get_future = None
         self.get_result = None
         self.get_received_ns = None
+        self.get_pending_request_ns = None
+        self.get_result_request_ns = None
         self.next_get_ns = 0
         self.hold_start_ns = None
         self.last_hold_ns = None
@@ -140,9 +142,29 @@ class StandObserver(ResetOnlyObserver):
         self.transition_state='TRANSITION_PENDING'
         self.last_transition_state=None
         self.max_hold_s=0.
-        self.last_graph_check_ns=0
         self.velocity_graph=None
+        self.velocity_graph_error=None
         self.joint_limits = json.loads((output_dir/'standing_joint_limits.json').read_text())['limits']
+
+    def check_velocity_graph(self, *, reason):
+        """Record a graph result or fail closed; absence is never inferred."""
+        try:
+            snapshot = velocity_graph_snapshot(self)
+        except Exception as exc:
+            self.velocity_graph_error = f'{type(exc).__name__}: {exc}'
+            self._write({'event': 'VELOCITY_GRAPH_ERROR', 'reason': reason,
+                         'receipt_monotonic_ns': time.monotonic_ns(),
+                         'error': self.velocity_graph_error})
+            self.failure = 'VELOCITY_GRAPH_INSPECTION_ERROR:' + reason
+            return None
+        self.velocity_graph = snapshot
+        self._write({'event': 'VELOCITY_GRAPH', 'reason': reason,
+                     'receipt_monotonic_ns': time.monotonic_ns(),
+                     'snapshot': snapshot})
+        if snapshot['publisher_count'] != 0:
+            self.failure = 'VELOCITY_PUBLISHER_CONFLICT:' + reason
+            return None
+        return snapshot
 
     def _callback(self,key):
         receive=super()._callback(key)
@@ -241,7 +263,11 @@ class StandObserver(ResetOnlyObserver):
                 self.failure=phase+':'+state
                 return
             if state=='JD_READY' and gains_active and self._fresh(receipt_ns) and safe_posture(pose):
-                if self.get_received_ns is not None and 0<=(receipt_ns-self.get_received_ns)/1e9<=MAX_STATE_AGE_S:
+                if (self.get_received_ns is not None and self.get_result_request_ns is not None
+                    and self.reset_ns is not None and self.get_received_ns >= self.reset_ns
+                    and self.get_result_request_ns >= self.reset_ns
+                    and self.received_ns.get('common', 0) >= self.reset_ns
+                    and 0<=(receipt_ns-self.get_received_ns)/1e9<=MAX_STATE_AGE_S):
                     self.jd_ready_ns=self.jd_ready_ns or receipt_ns
                     qualified_jd=True
         action=None
@@ -259,10 +285,10 @@ class StandObserver(ResetOnlyObserver):
             fresh=self._fresh(receipt_ns),pose=pose,advancing=advancing,
             count=self.jd_count if action=='JOINT_DEFAULT' else self.sd_count,
         ):
-            if self.protocol=='jd-sd':
-                self.velocity_graph=velocity_graph_snapshot(self)
-                if self.velocity_graph['publisher_count']!=0:
-                    self.failure='VELOCITY_PUBLISHER_CONFLICT_AT_ACTION_GATE';return
+            if self.protocol == 'jd-sd' and self.check_velocity_graph(
+                reason='ACTION_GATE_' + action
+            ) is None:
+                return
             if not self.sd_client.service_is_ready():
                 self.failure = 'SD_SERVICE_DISAPPEARED_AT_SAFE_REQUEST_GATE'
                 return
@@ -271,7 +297,11 @@ class StandObserver(ResetOnlyObserver):
             if desc != expected:
                 self.failure = 'UNEXPECTED_PRE_SD_MODE:'+str(desc)
                 return
-            if (self.get_received_ns is None or not 0<=(receipt_ns-self.get_received_ns)/1e9<=MAX_STATE_AGE_S
+            if (self.get_received_ns is None or self.get_result_request_ns is None
+                or self.reset_ns is None or self.get_received_ns < self.reset_ns
+                or self.get_result_request_ns < self.reset_ns
+                or self.received_ns.get('common', 0) < self.reset_ns
+                or not 0<=(receipt_ns-self.get_received_ns)/1e9<=MAX_STATE_AGE_S
                 or (self.get_result or {}).get('info',{}).get('action_desc')!=expected
                 or (self.get_result or {}).get('info',{}).get('status',{}).get('value')!=100):
                 self.failure='UNQUALIFIED_PRE_ACTION_GET_READBACK';return
@@ -362,14 +392,21 @@ class StandObserver(ResetOnlyObserver):
             response = self.get_future.result()
             self.get_result = _safe(response)
             self.get_received_ns = now
+            self.get_result_request_ns = self.get_pending_request_ns
             self._write({'event':'GET_MC_ACTION','receipt_monotonic_ns':now,'response':self.get_result})
             self.get_future = None
+            self.get_pending_request_ns = None
             if response.header.code!=0:
                 self.failure='GET_MC_ACTION_REJECTED'
+        if (self.get_future is not None and self.get_pending_request_ns is not None
+                and now - self.get_pending_request_ns > int(MAX_STATE_AGE_S * 1e9)):
+            self.failure='GET_MC_ACTION_TIMEOUT'
+            return
         if self.get_future is None and now>=self.next_get_ns and self.get_client.service_is_ready():
             request = GetMcAction.Request()
             request.request.header.stamp = self.get_clock().now().to_msg()
             self.get_future = self.get_client.call_async(request)
+            self.get_pending_request_ns = now
             self.next_get_ns = now+50_000_000
         if self.jd_future is not None and self.jd_future.done() and self.jd_response is None:
             response=self.jd_future.result()
@@ -399,6 +436,7 @@ class StandObserver(ResetOnlyObserver):
             'transition_state':self.transition_state,'maximum_stable_hold_s':self.max_hold_s,
             'duplicate_topic_counts':self.duplicate_topic_counts,
             'velocity_graph':self.velocity_graph,
+            'velocity_graph_error':self.velocity_graph_error,
             'first_active_monotonic_ns':self.first_active_ns,
             'stable_hold_s':(self.last_hold_ns-self.hold_start_ns)/1e9
                 if self.last_hold_ns is not None and self.hold_start_ns is not None else 0.,
@@ -417,11 +455,6 @@ class StandObserver(ResetOnlyObserver):
             rclpy.spin_once(self,timeout_sec=.002)
             now=time.monotonic_ns()
             self.poll_services(now)
-            if self.protocol=='jd-sd' and now-self.last_graph_check_ns>=100_000_000:
-                self.last_graph_check_ns=now
-                self.velocity_graph=velocity_graph_snapshot(self)
-                if self.velocity_graph['publisher_count']!=0:
-                    self.failure='VELOCITY_PUBLISHER_CONFLICT'
             if self.ready_ns is None:
                 if (len(self.latest)==len(TOPIC_TYPES) and self._fresh(now)
                     and self.sd_client.service_is_ready() and self.get_client.service_is_ready()
@@ -429,6 +462,10 @@ class StandObserver(ResetOnlyObserver):
                     counts=self.interface_counts()
                     if counts['publishers']!=0 or counts['service_clients']!=2:
                         self._finish('BLOCKED','UNEXPECTED_OBSERVER_INTERFACE_SURFACE');break
+                    if self.protocol == 'jd-sd' and self.check_velocity_graph(
+                        reason='READY'
+                    ) is None:
+                        self._finish('BLOCKED',self.failure);break
                     if self.protocol=='jd-sd' and self.velocity_graph['status']!='PASS_ZERO_VELOCITY_PUBLISHERS':
                         self._finish('BLOCKED','VELOCITY_GRAPH_NOT_QUALIFIED');break
                     self.ready_ns=now
@@ -455,7 +492,7 @@ class StandObserver(ResetOnlyObserver):
                 self._finish('BLOCKED',self.failure);break
             post_limit_s=7.0 if self.protocol=='jd-sd' else 5.0
             if self.reset_ns is not None and now-self.reset_ns>int(post_limit_s*1e9):
-                self._finish('BLOCKED','ACTIVE_STANDING_NOT_QUALIFIED_WITHIN_5S');break
+                self._finish('BLOCKED','ACTIVE_STANDING_NOT_QUALIFIED_WITHIN_BOUNDED_WINDOW');break
             if now>=deadline:
                 self._finish('BLOCKED','BOUNDED_OBSERVER_DEADLINE');break
         return 0 if self.failure is None and self.complete else 2
