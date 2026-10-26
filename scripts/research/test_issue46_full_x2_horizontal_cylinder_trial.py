@@ -55,6 +55,11 @@ class PositionLimitTests(unittest.TestCase):
         result = MODULE.verify_endpoint_initialization(model, data, targets, source)
         self.assertTrue(result["pass"])
         self.assertEqual({item["joint"] for item in result["joints"]}, set(targets))
+        elbow = model.joint("left_elbow_joint").id
+        data.qpos[model.jnt_qposadr[elbow]] = -0.01
+        targets["left_elbow_joint"] = -0.01
+        guarded = MODULE.verify_endpoint_initialization(model, data, targets, source, -0.01)
+        self.assertTrue(guarded["pass"])
 
 
 if __name__ == "__main__":

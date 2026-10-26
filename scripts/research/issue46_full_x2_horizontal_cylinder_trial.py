@@ -120,6 +120,7 @@ def verify_endpoint_initialization(
     data: mujoco.MjData,
     motor_targets: dict[str, float],
     source: dict[str, dict[str, float | None]],
+    left_elbow_idle_guard_target_rad: float | None = None,
 ) -> dict[str, object]:
     """Verify the three source-limit endpoint joints before any mj_step call."""
     records = []
@@ -129,7 +130,10 @@ def verify_endpoint_initialization(
         address, dof = int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])
         qpos, qvel = float(data.qpos[address]), float(data.qvel[dof])
         lower, upper = map(float, model.jnt_range[joint])
-        expected = lower + ENDPOINT_INITIALIZATION_MARGIN_RAD if side == "lower" else upper - ENDPOINT_INITIALIZATION_MARGIN_RAD
+        if joint_name == "left_elbow_joint" and left_elbow_idle_guard_target_rad is not None:
+            expected = left_elbow_idle_guard_target_rad
+        else:
+            expected = lower + ENDPOINT_INITIALIZATION_MARGIN_RAD if side == "lower" else upper - ENDPOINT_INITIALIZATION_MARGIN_RAD
         source_range = source.get(joint_name, {})
         source_lower, source_upper = source_range.get("lower"), source_range.get("upper")
         record_pass = bool(
@@ -506,7 +510,8 @@ def main() -> None:
     # frozen root position servo otherwise starts with ctrl=0 and would make a
     # false ROOT_TRACKING_ERROR before any physics integration occurs.
     initial_clipping = apply_controller(arm_initial, right_root)
-    initialization_verification = verify_endpoint_initialization(model, data, motor_targets, source)
+    left_elbow_guard = config["controller_overlay"].get("left_elbow_idle_guard_target_rad")
+    initialization_verification = verify_endpoint_initialization(model, data, motor_targets, source, left_elbow_guard)
     if not initialization_verification["pass"]:
         first_failure = {"gate": "ENDPOINT_INITIALIZATION", "step": 0, "verification": initialization_verification}
     elif initial_clipping:

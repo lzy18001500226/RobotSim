@@ -168,16 +168,39 @@ def endpoint_initialization_records(model: mujoco.MjModel, data: mujoco.MjData) 
     return records
 
 
-def apply_static_state(preflight, model: mujoco.MjModel, data: mujoco.MjData, arm_q: np.ndarray, right: dict[str, float], left: dict[str, float], cylinder: np.ndarray | None) -> None:
+def apply_static_state(
+    preflight,
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    arm_q: np.ndarray,
+    right: dict[str, float],
+    left: dict[str, float],
+    cylinder: np.ndarray | None,
+    left_elbow_idle_guard_target_rad: float | None = None,
+) -> None:
     preflight.set_static_state(model, data, arm_q, right, left, cylinder)
     move_motor_endpoint_qpos_inside(model, data)
+    if left_elbow_idle_guard_target_rad is not None:
+        joint = model.joint("left_elbow_joint").id
+        lower, upper = map(float, model.jnt_range[joint])
+        if not lower < left_elbow_idle_guard_target_rad < upper:
+            raise ValueError("left-elbow idle guard must remain inside the source range")
+        data.qpos[model.jnt_qposadr[joint]] = left_elbow_idle_guard_target_rad
     data.qvel[:] = 0.0
     mujoco.mj_forward(model, data)
 
 
-def inverse_static_forces(preflight, model: mujoco.MjModel, arm_q: np.ndarray, right: dict[str, float], left: dict[str, float], cylinder: np.ndarray | None) -> mujoco.MjData:
+def inverse_static_forces(
+    preflight,
+    model: mujoco.MjModel,
+    arm_q: np.ndarray,
+    right: dict[str, float],
+    left: dict[str, float],
+    cylinder: np.ndarray | None,
+    left_elbow_idle_guard_target_rad: float | None = None,
+) -> mujoco.MjData:
     inverse = mujoco.MjData(model)
-    apply_static_state(preflight, model, inverse, arm_q, right, left, cylinder)
+    apply_static_state(preflight, model, inverse, arm_q, right, left, cylinder, left_elbow_idle_guard_target_rad)
     inverse.ctrl[:] = 0.0
     mujoco.mj_forward(model, inverse)
     inverse.qacc[:] = 0.0
@@ -266,6 +289,7 @@ def solve_hand_equilibrium(
     right_target: float,
     left_target: float,
     cylinder: np.ndarray | None,
+    left_elbow_idle_guard_target_rad: float | None = None,
 ) -> dict[str, object]:
     right_names = list(preflight.RIGHT_HAND_NAMES)
     left_names = [preflight.LEFT_FROM_RIGHT[item] for item in right_names]
@@ -279,8 +303,8 @@ def solve_hand_equilibrium(
     def residual(values: np.ndarray) -> np.ndarray:
         right = hand_state_from_vector(right_names, values[:len(right_names)])
         left = hand_state_from_vector(right_names, values[len(right_names):])
-        apply_static_state(preflight, model, data, arm_q, right, left, cylinder)
-        inverse = inverse_static_forces(preflight, model, arm_q, right, left, cylinder)
+        apply_static_state(preflight, model, data, arm_q, right, left, cylinder, left_elbow_idle_guard_target_rad)
+        inverse = inverse_static_forces(preflight, model, arm_q, right, left, cylinder, left_elbow_idle_guard_target_rad)
         targets = {
             name(model, mujoco.mjtObj.mjOBJ_JOINT, int(model.actuator_trnid[actuator, 0])):
             float(data.qpos[model.jnt_qposadr[int(model.actuator_trnid[actuator, 0])]])
@@ -293,8 +317,8 @@ def solve_hand_equilibrium(
     fit = least_squares(residual, initial, bounds=(lower, upper), max_nfev=4000, ftol=1e-13, xtol=1e-13, gtol=1e-13, x_scale="jac")
     right = hand_state_from_vector(right_names, fit.x[:len(right_names)])
     left = hand_state_from_vector(right_names, fit.x[len(right_names):])
-    apply_static_state(preflight, model, data, arm_q, right, left, cylinder)
-    inverse = inverse_static_forces(preflight, model, arm_q, right, left, cylinder)
+    apply_static_state(preflight, model, data, arm_q, right, left, cylinder, left_elbow_idle_guard_target_rad)
+    inverse = inverse_static_forces(preflight, model, arm_q, right, left, cylinder, left_elbow_idle_guard_target_rad)
     targets = {
         name(model, mujoco.mjtObj.mjOBJ_JOINT, int(model.actuator_trnid[actuator, 0])):
         float(data.qpos[model.jnt_qposadr[int(model.actuator_trnid[actuator, 0])]])
@@ -312,6 +336,7 @@ def solve_hand_equilibrium(
         "left_root_tracking_error_rad": abs(left_root - left_target),
         "motor_targets_rad": targets, "controls": controls,
         "endpoint_interior_initialization": endpoint_initialization_records(model, data),
+        "left_elbow_idle_guard_target_rad": left_elbow_idle_guard_target_rad,
         "equality": equality, "robot_qacc": robot_qacc(model, data),
         "contacts": classify_contacts(body_pair_contacts(model, data)),
         "data": data,
@@ -373,6 +398,7 @@ def main() -> None:
     parser.add_argument("--derived-scene", required=True, type=Path)
     parser.add_argument("--exception-preflight-result", required=True, type=Path)
     parser.add_argument("--fixture", required=True, type=Path)
+    parser.add_argument("--left-elbow-idle-guard-target-rad", type=float)
     args = parser.parse_args()
     output = pg.validate_output_path(args.output_dir, require_exists=True, expected_kind="directory", environment="wsl").native_path
     if (output / "result.json").exists():
@@ -394,6 +420,7 @@ def main() -> None:
     right_open = preflight.right_hand(fixture[preflight.OPEN_PERCENT])
     right_closed = preflight.right_hand(fixture[preflight.CLOSE_PERCENT])
     left_idle = preflight.right_hand(fixture[LEFT_IDLE_PERCENT])
+    left_elbow_guard = args.left_elbow_idle_guard_target_rad
     states = [
         ("INITIAL_SETTLE", np.asarray(preflight_result["waypoints"]["HORIZONTAL_PREGRASP"]["arm_q_rad"], dtype=float), right_open, None),
         ("HORIZONTAL_PREGRASP", np.asarray(preflight_result["waypoints"]["HORIZONTAL_PREGRASP"]["arm_q_rad"], dtype=float), right_open, None),
@@ -403,7 +430,11 @@ def main() -> None:
     ]
     static_states = []
     for state_name, arm_q, right_seed, cylinder in states:
-        solution = solve_hand_equilibrium(preflight, derived, arm_q, right_seed, left_idle, right_seed["right_claw_joint"], left_idle["right_claw_joint"], cylinder)
+        solution = solve_hand_equilibrium(
+            preflight, derived, arm_q, right_seed, left_idle,
+            right_seed["right_claw_joint"], left_idle["right_claw_joint"], cylinder,
+            left_elbow_guard,
+        )
         solution.pop("data")
         solution["phase"] = state_name
         static_states.append(solution)
@@ -415,7 +446,10 @@ def main() -> None:
         if state["phase"] == "CLOSE_75_PERCENT":
             model = derived
             data = mujoco.MjData(model)
-            apply_static_state(preflight, model, data, states[3][1], state["right_hand_qpos_rad"], state["left_hand_qpos_rad"], None)
+            apply_static_state(
+                preflight, model, data, states[3][1], state["right_hand_qpos_rad"],
+                state["left_hand_qpos_rad"], None, left_elbow_guard,
+            )
             source_bad = {
                 body: value for body, value in preflight.source_mesh_sample_check(model, data, np.asarray(preflight_result["cylinder"]["center_world_m"], dtype=float))["per_body"].items()
                 if value["sampled_surface_enters_cylinder"] and body not in preflight.PAD_BODIES
@@ -479,6 +513,7 @@ def main() -> None:
             "root_servo": "unchanged kp=0.5, kv=0.05, gear=1, ctrlrange [-1,0], forcerange [-0.5,0.5]",
             "endpoint_initialization": "source-limit endpoints for idle torque-motor joints are initialized 1e-5 rad inside their existing limits; source ranges are unchanged",
             "endpoint_interior_margin_rad": ENDPOINT_INTERIOR_MARGIN_RAD,
+            "left_elbow_idle_guard_target_rad": left_elbow_guard,
         },
         "static_states": [{key: value for key, value in state.items() if key not in {"contacts", "controls"}} for state in static_states],
         "right_root_open_target_rad": right_open["right_claw_joint"],
