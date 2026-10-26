@@ -1410,12 +1410,12 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         )
         if local01_short_route:
             command[-1] += " --short-scene-route"
-            if getattr(args, "raicom_low_cruise_profile", False):
-                command[-1] += " --raicom-low-cruise-profile"
         if getattr(args, "table_approach_mission", None):
             command[-1] += " --table-approach-mission"
             if getattr(args, "aligned_start_table_approach", False):
                 command[-1] += " --aligned-start-table-approach"
+        if getattr(args, "raicom_low_cruise_profile", False):
+            command[-1] += " --raicom-low-cruise-profile"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -5690,13 +5690,17 @@ def main() -> int:
         if not (
             args.direct_stand_from_passive
             and args.local01_scene_world_poses
-            and not args.table_approach_mission
             and args.maintainer_authorized_first_motion
             and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+            and (
+                not args.table_approach_mission
+                or args.aligned_start_table_approach
+            )
         ):
             parser.error(
-                "RAICOM low-cruise profile requires direct-stand, the Local01 short route, "
-                "first-motion authorization, and exactly 0.105 m/s"
+                "RAICOM low-cruise profile requires direct-stand, first-motion authorization, "
+                "exactly 0.105 m/s, and either the Local01 short route or its aligned-start "
+                "TABLE_APPROACH mission"
             )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:

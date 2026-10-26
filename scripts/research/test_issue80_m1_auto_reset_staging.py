@@ -549,6 +549,36 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--zero-only-stop", child)
         self.assertEqual(child[child.index("--route-config") + 1], "/workspace/evidence/route_config.json")
 
+    def test_parent_child_aligned_start_table_low_cruise_propagates_explicit_profile(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.105,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="aligned-start-table-low-cruise-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/aligned-start-table-approach.json",
+            aligned_start_table_approach=True,
+            route_config=None,
+            raicom_low_cruise_profile=True,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "aligned-start-table-low-cruise-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertEqual(child[child.index("--forward-speed") + 1], "0.105")
+        self.assertIn("--table-approach-mission", child)
+        self.assertIn("--aligned-start-table-approach", child)
+        self.assertIn("--raicom-low-cruise-profile", child)
+
     def test_synchronized_initialization_observer_requires_keyframe_and_release_barriers_not_reset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = BoundedRun(argparse.Namespace(

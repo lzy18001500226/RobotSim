@@ -3588,9 +3588,26 @@ class FocusedM1Diagnostic(Node):
                     runtime_robot_footprint_radius_m=footprint,
                     verified_local_clear_radius_m=clear_radius,
                 )
+                if bool(getattr(self.args, "raicom_low_cruise_profile", False)):
+                    route = replace(
+                        route,
+                        steps=tuple(
+                            replace(
+                                step,
+                                target_forward_m_s=RAICOM_LOW_CRUISE_FORWARD_M_S,
+                                max_forward_m_s=RAICOM_LOW_CRUISE_FORWARD_M_S,
+                            )
+                            for step in route.steps
+                        ),
+                    )
+                    route.validate()
                 result["route_config_preflight"] = {
                     "status": "PASS_STATIC_SAFE_PREFIX_ONLY",
-                    "classification": "TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION",
+                    "classification": (
+                        "SIMULATION_ONLY_ALIGNED_START_LOW_CRUISE_TABLE_APPROACH_RECOVERY"
+                        if bool(getattr(self.args, "raicom_low_cruise_profile", False))
+                        else "TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION"
+                    ),
                     "static_clearance_lower_bound_m": workcell["minimum_swept_aabb_clearance_lower_bound_m"],
                     "initial_alignment": result.get("initial_yaw_alignment"),
                     "table_docking_reference": local01_route_input["table_docking_reference"],
@@ -3775,6 +3792,8 @@ class FocusedM1Diagnostic(Node):
                         Path(self.args.route_config).read_bytes()
                     ).hexdigest(),
                     "route_motion_profile": (
+                        "SIMULATION_ONLY_ALIGNED_START_LOW_CRUISE_TABLE_APPROACH_RECOVERY"
+                        if bool(getattr(self.args, "raicom_low_cruise_profile", False)) else
                         "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
                         if aligned_start_table_approach_mode else
                         "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION"
@@ -3782,7 +3801,7 @@ class FocusedM1Diagnostic(Node):
                     "maximum_windows_total": int(limits["max_windows"]),
                     "maximum_window_s": float(limits["max_window_s"]),
                     "aggregate_nonzero_limit_s": float(limits["max_aggregate_nonzero_s"]),
-                    "maximum_forward_m_s": float(limits["forward_m_s"]),
+                    "maximum_forward_m_s": float(route.steps[0].max_forward_m_s),
                     "maximum_angular_rad_s": float(limits["angular_rad_s"]),
                     "maximum_segment_cross_track_m": float(limits["max_cross_track_m"]),
                     "post_stand_observation_s": 7.0,
@@ -7496,18 +7515,23 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     )
     if short_scene_route and not configured_route:
         raise ValueError("--short-scene-route requires --route-config")
+    low_cruise_supported_route = short_scene_route or (
+        table_approach_mission and aligned_start_table_approach
+    )
     if low_cruise_profile and not (
-        short_scene_route
+        low_cruise_supported_route
         and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
     ):
         raise ValueError(
-            "RAICOM low-cruise profile requires the short-scene route and exactly 0.105 m/s"
+            "RAICOM low-cruise profile requires the short-scene route or aligned-start "
+            "TABLE_APPROACH mission and exactly 0.105 m/s"
         )
-    if short_scene_route and not low_cruise_profile and (
+    if low_cruise_supported_route and not low_cruise_profile and (
         abs(float(args.forward_speed) - LOCAL01_SHORT_ROUTE_FORWARD_M_S) > 1e-9
     ):
         raise ValueError(
-            "short-scene route requires 0.12 m/s unless the explicit RAICOM low-cruise profile is selected"
+            "the short-scene route and aligned-start TABLE_APPROACH mission require 0.12 m/s "
+            "unless the explicit RAICOM low-cruise profile is selected"
         )
     if table_approach_mission and not configured_route:
         raise ValueError("--table-approach-mission requires --route-config")
@@ -7560,6 +7584,8 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "aggregate_nonzero_limit_s": float(route_input["limits"]["max_aggregate_nonzero_s"]),
                 "initial_yaw_alignment": dict(route_input["initial_alignment"]),
                 "aligned_start_table_approach": aligned_start_table_approach,
+                "command_forward_m_s": float(args.forward_speed),
+                "raicom_low_cruise_profile": low_cruise_profile,
                 "runtime_reset_odom_observed": False,
             }
         elif short_scene_route:
