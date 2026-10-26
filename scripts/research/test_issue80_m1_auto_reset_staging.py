@@ -30,6 +30,17 @@ from issue80_m1_auto_reset_run import (
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_passive_video_recorder_does_not_start_in_the_reset_to_jd_window(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_auto_reset_run.py").read_text(
+            encoding="utf-8"
+        )
+        execute = source[source.index("    def execute("):]
+        reset_dispatch = execute.index("self.dispatch_native_reset_button")
+        warmup = execute.index("self.evaluate_standing_warmup")
+        video = execute.index("self.start_verified_motion_video_capture")
+        self.assertLess(reset_dispatch, warmup)
+        self.assertLess(warmup, video)
+
     def test_configured_local01_route_can_require_existing_stand_warmup_gate(self) -> None:
         args = argparse.Namespace(
             require_stand_warmup_composite=True,

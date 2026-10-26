@@ -78,12 +78,25 @@ from issue80_local01_scene_route import (
     validate_runtime_raw_odom_table_approach_mission,
     validate_runtime_raw_odom_aligned_start_table_approach_mission,
 )
+from issue80_raicom_mjdata_capture import (
+    CAPTURE_SOURCE,
+    CAPTURE_SUMMARY_NAME,
+    CAPTURE_TRACE_NAME,
+    DEFAULT_INTERVAL_STEPS,
+    MjDataCaptureError,
+    prepare_mjdata_capture_overlay,
+    run_mjdata_capture_smoke,
+    summarize_mjdata_capture,
+    write_new_json as write_new_capture_json,
+)
 
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
 RUNTIME = REPO / "simulation/mujoco/raicom2026"
 X11_HELPER = Path(__file__).with_name("issue80_mujoco_x11_reset.py")
 X11_RECORDER = Path(__file__).with_name("issue80_mujoco_x11_record.py")
+MJDATA_CAPTURE = Path(__file__).with_name("issue80_raicom_mjdata_capture.py")
+MJDATA_CAPTURE_C = Path(__file__).with_name("issue80_mjdata_capture.c")
 WINDOWS_FOCUS_HELPER = Path(__file__).with_name("issue80_mujoco_windows_focus.ps1")
 ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
@@ -1899,6 +1912,12 @@ class BoundedRun:
         self.mc_rl_debug_capture: dict[str, Any] | None = None
         self.motion_video_process: subprocess.Popen[str] | None = None
         self.motion_video_capture: dict[str, Any] = {"status": "NOT_REQUESTED"}
+        self.native_mjdata_capture = bool(getattr(args, "native_mjdata_capture", False))
+        self.native_mjdata_capture_interval_steps = int(
+            getattr(args, "native_mjdata_capture_interval_steps", DEFAULT_INTERVAL_STEPS)
+        )
+        self.native_mjdata_overlay: dict[str, Any] | None = None
+        self.native_mjdata_smoke: dict[str, Any] | None = None
         self.foundationwalk_config_overlay: Path | None = None
         self.foundationwalk_config_overlay_manifest: dict[str, Any] | None = None
         self.mc_rl_debug_overlay_manifest: dict[str, Any] | None = None
@@ -2345,12 +2364,60 @@ class BoundedRun:
         self.mc_rl_debug_overlay_manifest = manifest
         self.mc_rl_debug_schema_verification = self.verify_mc_rl_debug_overlay()
 
+    def prepare_native_mjdata_capture(self) -> None:
+        """Stage the existing read-only native-MjData overlay for one run."""
+        if not self.native_mjdata_capture:
+            return
+        staged_launch = self.evidence / "launch_sim.sh"
+        self.native_mjdata_overlay = prepare_mjdata_capture_overlay(
+            self.evidence,
+            staged_launch_script=staged_launch,
+            interval_steps=self.native_mjdata_capture_interval_steps,
+        )
+        self.native_mjdata_smoke = run_mjdata_capture_smoke(
+            self.evidence,
+            overlay=self.native_mjdata_overlay,
+            runtime_root=RUNTIME,
+        )
+        write_new_capture_json(
+            self.evidence / "native_mjdata_capture_smoke_result.json",
+            self.native_mjdata_smoke,
+        )
+        write_new_capture_json(
+            self.evidence / "native_mjdata_capture_overlay.json",
+            self.native_mjdata_overlay,
+        )
+
+    def finalize_native_mjdata_capture(self) -> dict[str, Any] | None:
+        """Summarize captured native state only after the simulator has stopped."""
+        if not self.native_mjdata_capture:
+            return None
+        trace = self.evidence / CAPTURE_TRACE_NAME
+        try:
+            summary = summarize_mjdata_capture(
+                trace,
+                standing_trace=self.evidence / "reset_state_trace.jsonl",
+            )
+        except (MjDataCaptureError, OSError, ValueError) as exc:
+            summary = {
+                "schema": "robotsim.issue80.native-mjdata-capture-summary.v1",
+                "status": "BLOCKED_NATIVE_MJDATA_CAPTURE",
+                "failure_reasons": [f"{type(exc).__name__}: {exc}"],
+                "trace": str(trace),
+            }
+        summary_path = self.evidence / CAPTURE_SUMMARY_NAME
+        if not summary_path.exists():
+            write_new_capture_json(summary_path, summary)
+        return summary
+
     def stage_research_scripts(self) -> None:
         """Stage exact research code snapshots without overwriting evidence."""
         sources = (
             (Path(__file__), Path(__file__).name),
             (X11_HELPER, X11_HELPER.name),
             (X11_RECORDER, X11_RECORDER.name),
+            (MJDATA_CAPTURE, MJDATA_CAPTURE.name),
+            (MJDATA_CAPTURE_C, MJDATA_CAPTURE_C.name),
             (WINDOWS_FOCUS_HELPER, WINDOWS_FOCUS_HELPER.name),
             (ANALYZER, ANALYZER.name),
             (M1_RUNNER, M1_RUNNER.name),
@@ -2941,6 +3008,11 @@ class BoundedRun:
         )
 
     def start_observer(self) -> None:
+        native_capture_args = (
+            " --native-mjdata-trace /workspace/evidence/" + CAPTURE_TRACE_NAME
+            + " --require-native-reset-generation"
+            if self.native_mjdata_capture else ""
+        )
         self.docker_exec(
             "start_prearmed_standing_takeover_observer",
             "source /opt/ros/humble/setup.bash && "
@@ -2952,6 +3024,7 @@ class BoundedRun:
             f"--ready-timeout-s 3 --reset-wait-timeout-s 30 --upright-timeout-s {RESET_STARTUP_OBSERVATION_TIMEOUT_S:g} "
             "--joint-stand-timeout-s 4 --set-timeout-s 2 --get-timeout-s 0.75 "
             f"--duration-s {RESET_OBSERVER_DURATION_S:.1f} "
+            + native_capture_args + " "
             "> /workspace/evidence/takeover-capture-console.log 2>&1",
             timeout_s=4.0,
             detached=True,
@@ -3841,6 +3914,7 @@ class BoundedRun:
             self.prepare_foundationwalk_diagnostic_overlay()
             self.prepare_mc_rl_debug_overlay()
             self.stage_research_scripts()
+            self.prepare_native_mjdata_capture()
             self.start_container()
             self.start_sim_first()
             self.capture_service_topic_inventory()
@@ -3864,7 +3938,6 @@ class BoundedRun:
             self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
             self.start_observer()
             self.dispatch_native_reset_button(pid, title, window_id)
-            self.start_verified_motion_video_capture()
             result["reset_immediate_posture"] = self.wait_for_immediate_reset_pose()
             # The pre-armed node sends the source-supported PD -> JD -> SD
             # handoff; SD is gated on fresh upright telemetry and MC STAND state.
@@ -3887,6 +3960,12 @@ class BoundedRun:
                     result["fault"] = "original final two-second stand warmup composite did not pass"
                     result["next_motion_stage"] = "NOT_RUN_STAND_WARMUP_COMPOSITE_FAILED"
                     return result
+
+            # Video has no bearing on Reset/JD/SD readiness.  Start its passive
+            # trace-waiter only after the full standing gate has passed so it
+            # cannot contend with the time-critical takeover interval.
+            if first_motion_authorized:
+                self.start_verified_motion_video_capture()
 
             if standing_only and not first_motion_authorized:
                 # This authorization is limited to the standing takeover gate.
@@ -4126,6 +4205,9 @@ class BoundedRun:
             if self.reset_analysis:
                 result["reset_analysis"] = self.reset_analysis
             self.cleanup()
+            result["native_mjdata_capture"] = self.finalize_native_mjdata_capture()
+            result["native_mjdata_capture_overlay"] = self.native_mjdata_overlay
+            result["native_mjdata_capture_smoke"] = self.native_mjdata_smoke
             result["shutdown_classification"] = self.classify_mc_shutdown()
             self.apply_container_teardown_gate(result)
             if self.foundationwalk_config_overlay_manifest is not None:
@@ -4160,6 +4242,17 @@ def main() -> int:
         "--record-mujoco-video",
         action="store_true",
         help="passively record the already Reset-verified MuJoCo window after its first nonzero route command",
+    )
+    parser.add_argument(
+        "--native-mjdata-capture",
+        action="store_true",
+        help="enable the existing read-only native MuJoCo state/contact capture for this bounded run",
+    )
+    parser.add_argument(
+        "--native-mjdata-capture-interval-steps",
+        type=int,
+        default=DEFAULT_INTERVAL_STEPS,
+        help="native capture sample interval; must remain within the established overlay bounds",
     )
     parser.add_argument("--extra-stop-observation", type=float, default=0.0)
     parser.add_argument("--pulse-duration", type=float, default=1.0)
@@ -4461,6 +4554,8 @@ def main() -> int:
         )
     if not 0.0 < args.pulse_duration <= 10.0:
         parser.error("pulse duration must be positive and no greater than 10 seconds")
+    if not 1 <= args.native_mjdata_capture_interval_steps <= 1000:
+        parser.error("native MjData capture interval must be in [1, 1000]")
     if not 0.0 < args.forward_speed <= 0.2:
         parser.error("forward speed must be positive and no greater than 0.2 m/s")
     if not 0.0 <= args.ramp_duration_s <= args.pulse_duration:

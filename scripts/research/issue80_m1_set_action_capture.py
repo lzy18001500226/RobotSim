@@ -33,6 +33,75 @@ MAX_TILT_DEG = 15.0
 MAX_STATE_AGE_S = 0.5
 REQUIRED_UPRIGHT_ODOM_SAMPLES = 3
 REQUIRED_STAND_COMMON_SAMPLES = 3
+NATIVE_SUPPORT_REQUIRED_SAMPLES = 2
+
+
+def native_foot_support(sample: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify one captured native-MjData sample without inventing contacts.
+
+    The capture hook records only selected ankle-roll-link to floor contacts.
+    A supported sample requires at least one positive normal force on both
+    sides.  It is an initialization barrier, not a claim that force-plate
+    calibration or active standing has been validated.
+    """
+    contacts = sample.get("contacts")
+    side_normals = {"left": [], "right": []}
+    if isinstance(contacts, list):
+        for contact in contacts:
+            if not isinstance(contact, Mapping):
+                continue
+            try:
+                normal = float(contact.get("normal_force_n"))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(normal) or normal <= 0.0:
+                continue
+            for side in side_normals:
+                if contact.get(f"involves_selected_{side}_foot") is True:
+                    side_normals[side].append(normal)
+    return {
+        "supported": bool(side_normals["left"] and side_normals["right"]),
+        "left_normal_force_n": sum(side_normals["left"]),
+        "right_normal_force_n": sum(side_normals["right"]),
+        "left_contact_count": len(side_normals["left"]),
+        "right_contact_count": len(side_normals["right"]),
+        "captured_foot_floor_contact_count": sample.get("captured_foot_floor_contact_count"),
+        "contact_count": sample.get("contact_count"),
+    }
+
+
+def read_complete_native_capture_rows(
+    path: Path, offset: int,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Read newly completed append-only native capture rows once.
+
+    A partial final JSON record remains unread until the hook writes its
+    newline.  This prevents a Reset observer from treating an interrupted
+    append as a state-generation transition.
+    """
+    if offset < 0:
+        raise ValueError("native capture offset must be non-negative")
+    if not path.exists():
+        return offset, []
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("native capture trace is not a regular file")
+    with path.open("rb") as stream:
+        stream.seek(offset)
+        payload = stream.read()
+        next_offset = stream.tell()
+    rows: list[dict[str, Any]] = []
+    for raw in payload.splitlines(keepends=True):
+        if not raw.endswith(b"\n"):
+            next_offset -= len(raw)
+            break
+        try:
+            decoded = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("native capture contains an invalid complete JSON row") from exc
+        if not isinstance(decoded, dict):
+            raise ValueError("native capture contains a non-object row")
+        rows.append(decoded)
+    return next_offset, rows
 
 
 def standing_observation_window(
@@ -346,7 +415,12 @@ def summarize_takeover_timing(events: dict[str, Any]) -> dict[str, Any]:
     first_cmd_jd = events.get("first_effective_leg_command_after_jd_monotonic_ns")
     first_cmd_sd = events.get("first_effective_leg_command_after_sd_monotonic_ns")
     unsafe = events.get("first_unsafe_post_reset_monotonic_ns")
+    native_reset_ns = events.get("native_reset_generation_host_monotonic_ns")
+    native_support_ns = events.get("native_support_ready_host_monotonic_ns")
     return {
+        "reset_dispatch_to_native_generation_ms": elapsed_ms(reset_ns, native_reset_ns),
+        "native_generation_to_bilateral_support_ms": elapsed_ms(native_reset_ns, native_support_ns),
+        "native_support_to_JD_request_ms": elapsed_ms(native_support_ns, jd.get("wall_monotonic_ns_submitted")),
         "reset_to_first_valid_state_ms": elapsed_ms(reset_ns, first_valid_ns),
         "reset_to_first_upright_sample_ms": elapsed_ms(reset_ns, first_upright_ns),
         "reset_to_JD_request_ms": elapsed_ms(reset_ns, jd.get("wall_monotonic_ns_submitted")),
@@ -375,6 +449,15 @@ def main() -> int:
     parser.add_argument("--upright-timeout-s", type=float, default=4.0)
     parser.add_argument("--joint-stand-timeout-s", type=float, default=4.0)
     parser.add_argument("--duration-s", type=float, default=8.0)
+    parser.add_argument(
+        "--native-mjdata-trace", type=Path, default=None,
+        help="append-only read-only native MjData capture trace staged by the parent runner",
+    )
+    parser.add_argument(
+        "--require-native-reset-generation",
+        action="store_true",
+        help="require a fresh native reset generation and bilateral foot-floor support before JD",
+    )
     args = parser.parse_args()
     limits = (
         (args.set_timeout_s, 0.0, 4.0, "--set-timeout-s"),
@@ -390,6 +473,8 @@ def main() -> int:
             parser.error(f"{name} must be in ({lower}, {upper}]")
     if args.action != "STAND_DEFAULT":
         parser.error("this capture only supports the reviewed PD -> JD -> SD standing handoff")
+    if args.require_native_reset_generation and args.native_mjdata_trace is None:
+        parser.error("--require-native-reset-generation requires --native-mjdata-trace")
 
     import rclpy
     from rclpy.node import Node
@@ -430,6 +515,20 @@ def main() -> int:
             self.clocks: list[dict[str, Any]] = []
             self.reset_dispatch: dict[str, Any] | None = None
             self.reset_ns: int | None = None
+            self.post_reset_epoch_ns: int | None = None
+            self.native_trace_path = (
+                args.native_mjdata_trace.resolve(strict=False)
+                if args.native_mjdata_trace is not None else None
+            )
+            self.require_native_reset_generation = bool(args.require_native_reset_generation)
+            self.native_trace_offset = 0
+            self.native_baseline_generation: int | None = None
+            self.native_reset_generation: int | None = None
+            self.native_reset_host_monotonic_ns: int | None = None
+            self.native_reset_sample: dict[str, Any] | None = None
+            self.native_support_samples = 0
+            self.native_support_ready_ns: int | None = None
+            self.native_support_sample: dict[str, Any] | None = None
             self.first_valid_state_ns: int | None = None
             self.first_upright_ns: int | None = None
             self.first_unsafe_ns: int | None = None
@@ -474,6 +573,97 @@ def main() -> int:
             self.trace.write(json.dumps(row, allow_nan=False, separators=(",", ":")) + "\n")
             self.trace.flush()
 
+        def _post_reset_epoch(self) -> int | None:
+            return self.post_reset_epoch_ns if self.post_reset_epoch_ns is not None else self.reset_ns
+
+        def poll_native_capture(self) -> None:
+            """Consume only completed evidence-local native samples once."""
+            if self.native_trace_path is None:
+                return
+            self.native_trace_offset, rows = read_complete_native_capture_rows(
+                self.native_trace_path, self.native_trace_offset
+            )
+            for row in rows:
+                generation = row.get("generation")
+                host_ns = row.get("host_monotonic_ns")
+                if not isinstance(generation, int) or not isinstance(host_ns, int):
+                    continue
+                if self.reset_ns is None:
+                    if self.native_baseline_generation is None:
+                        self.native_baseline_generation = generation
+                    else:
+                        self.native_baseline_generation = max(self.native_baseline_generation, generation)
+                    continue
+                if self.native_baseline_generation is None:
+                    continue
+                if self.native_reset_generation is None and generation > self.native_baseline_generation:
+                    self.native_reset_generation = generation
+                    self.native_reset_host_monotonic_ns = host_ns
+                    self.native_reset_sample = row
+                    self.record_event(
+                        "native_reset_generation_observed",
+                        generation=generation,
+                        native_host_monotonic_ns=host_ns,
+                        sample=row,
+                    )
+                if generation != self.native_reset_generation:
+                    continue
+                support = native_foot_support(row)
+                if support["supported"]:
+                    self.native_support_samples += 1
+                    self.native_support_sample = {"sample": row, "support": support}
+                else:
+                    self.native_support_samples = 0
+                if (
+                    self.native_support_ready_ns is None
+                    and self.native_support_samples >= NATIVE_SUPPORT_REQUIRED_SAMPLES
+                ):
+                    self.native_support_ready_ns = host_ns
+                    self.post_reset_epoch_ns = host_ns
+                    self.upright_samples = 0
+                    self.stand_samples = 0
+                    self.first_valid_state_ns = None
+                    self.first_upright_ns = None
+                    self.first_unsafe_ns = None
+                    self.first_unsafe_row = None
+                    self.record_event(
+                        "native_bilateral_foot_support_ready",
+                        generation=generation,
+                        native_host_monotonic_ns=host_ns,
+                        required_samples=NATIVE_SUPPORT_REQUIRED_SAMPLES,
+                        support=self.native_support_sample,
+                    )
+
+        def native_reset_support_record(self) -> dict[str, Any]:
+            return {
+                "required": self.require_native_reset_generation,
+                "trace": str(self.native_trace_path) if self.native_trace_path else None,
+                "baseline_generation": self.native_baseline_generation,
+                "reset_generation": self.native_reset_generation,
+                "reset_host_monotonic_ns": self.native_reset_host_monotonic_ns,
+                "support_samples": self.native_support_samples,
+                "support_ready_host_monotonic_ns": self.native_support_ready_ns,
+                "support": self.native_support_sample,
+            }
+
+        def wait_for_native_reset_support(self, deadline: float) -> bool:
+            if not self.require_native_reset_generation:
+                return True
+            while rclpy.ok() and time.monotonic() < deadline:
+                self.spin_for(0.005)
+                try:
+                    self.poll_native_capture()
+                except (OSError, ValueError) as exc:
+                    self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                    return False
+                if self.native_support_ready_ns is not None:
+                    return True
+            if self.native_reset_generation is None:
+                self.error = "native MjData did not observe a post-dispatch reset generation"
+            else:
+                self.error = "native MjData did not observe consecutive bilateral foot support after reset"
+            return False
+
         def store(self, key: str, msg: Any) -> None:
             now_utc = datetime.now(timezone.utc).isoformat()
             now_ns = time.monotonic_ns()
@@ -489,7 +679,8 @@ def main() -> int:
             self.latest[key] = row
             self.counts[key] += 1
             self.write_trace(row)
-            if self.reset_ns is not None and now_ns > self.reset_ns and key == "odom":
+            epoch_ns = self._post_reset_epoch()
+            if epoch_ns is not None and now_ns > epoch_ns and key == "odom":
                 if pose_is_upright(data):
                     self.upright_samples += 1
                     if self.first_upright_ns is None:
@@ -501,7 +692,7 @@ def main() -> int:
                         self.first_unsafe_row = row
                 if self.first_valid_state_ns is None and self.fresh_topics_after_reset(now_ns):
                     self.first_valid_state_ns = now_ns
-            if self.reset_ns is not None and now_ns > self.reset_ns and key == "common":
+            if epoch_ns is not None and now_ns > epoch_ns and key == "common":
                 common = data
                 if (
                     common.get("action_info", {}).get("action_desc") == "JOINT_DEFAULT"
@@ -532,11 +723,12 @@ def main() -> int:
             self.write_trace(row)
 
         def _post_reset_latest(self) -> dict[str, dict[str, Any]]:
-            if self.reset_ns is None:
+            epoch_ns = self._post_reset_epoch()
+            if epoch_ns is None:
                 return {}
             return {
                 key: row for key, row in self.latest.items()
-                if int(row.get("wall_monotonic_ns", 0)) > self.reset_ns
+                if int(row.get("wall_monotonic_ns", 0)) > epoch_ns
             }
 
         def fresh_topics_after_reset(self, now_ns: int) -> bool:
@@ -720,6 +912,12 @@ def main() -> int:
             deadline = time.monotonic() + args.ready_timeout_s
             while rclpy.ok() and time.monotonic() < deadline:
                 self.spin_for(0.005)
+                if self.require_native_reset_generation:
+                    try:
+                        self.poll_native_capture()
+                    except (OSError, ValueError) as exc:
+                        self.error = f"native MjData pre-Reset baseline is unreadable: {type(exc).__name__}: {exc}"
+                        break
                 now_ns = time.monotonic_ns()
                 fresh = [
                     key for key, row in self.latest.items()
@@ -730,6 +928,8 @@ def main() -> int:
                 set_ready = bool(self.set_client.service_is_ready())
                 get_ready = bool(self.get_client.service_is_ready())
                 if not set_ready or not get_ready:
+                    continue
+                if self.require_native_reset_generation and self.native_baseline_generation is None:
                     continue
                 pre_mode = self.mode_readback(args.get_timeout_s)
                 if pre_mode.get("transport_state") != "RESPONSE_RECEIVED":
@@ -755,6 +955,7 @@ def main() -> int:
                     "get_mc_action_service_ready": get_ready,
                     "pre_reset_get_mc_action": pre_mode,
                     "raw_common_state": self.latest.get("common", {}).get("data"),
+                    "native_mjdata": self.native_reset_support_record(),
                     "error": self.error,
                 }
                 self.write_json_once(self.ready_path, ready)
@@ -781,6 +982,13 @@ def main() -> int:
                 time.monotonic() + args.upright_timeout_s,
             )
             last: dict[str, Any] = {"status": "POST_RESET_STATE_NOT_READY"}
+            if not self.wait_for_native_reset_support(deadline):
+                return {
+                    "status": "POST_RESET_NATIVE_GENERATION_OR_SUPPORT_NOT_CONFIRMED",
+                    "reset_dispatch_monotonic_ns": self.reset_ns,
+                    "native_mjdata": self.native_reset_support_record(),
+                    "error": self.error,
+                }
             while rclpy.ok() and time.monotonic() < deadline:
                 self.spin_for(0.005)
                 now_ns = time.monotonic_ns()
@@ -799,7 +1007,7 @@ def main() -> int:
                     now_monotonic_ns=now_ns,
                     upright_odom_samples=self.upright_samples,
                     service_ready=self.set_client.service_is_ready() and self.get_client.service_is_ready(),
-                    reset_dispatch_monotonic_ns=self.reset_ns,
+                    reset_dispatch_monotonic_ns=self._post_reset_epoch(),
                 )
                 common = latest.get("common", {}).get("data", {})
                 action = common.get("action_info", {})
@@ -807,6 +1015,8 @@ def main() -> int:
                 last = {
                     "status": "POST_RESET_UPRIGHT_NOT_YET_CONFIRMED",
                     "reset_dispatch_monotonic_ns": self.reset_ns,
+                    "post_reset_epoch_monotonic_ns": self._post_reset_epoch(),
+                    "native_mjdata": self.native_reset_support_record(),
                     "snapshot": gate,
                     "raw_action_desc": mode,
                     "raw_action_status": action.get("status", {}).get("value"),
@@ -875,7 +1085,7 @@ def main() -> int:
                 last = assess_joint_to_stand_state(
                     latest,
                     now_monotonic_ns=now_ns,
-                    reset_dispatch_monotonic_ns=self.reset_ns,
+                    reset_dispatch_monotonic_ns=self._post_reset_epoch() or self.reset_ns,
                     upright_odom_samples=self.upright_samples,
                     stand_common_samples=self.stand_samples,
                     set_service_ready=self.set_client.service_is_ready(),
@@ -887,6 +1097,7 @@ def main() -> int:
                 if last["eligible"]:
                     last["wall_utc"] = datetime.now(timezone.utc).isoformat()
                     last["wall_monotonic_ns"] = now_ns
+                    last["native_mjdata"] = self.native_reset_support_record()
                     return last
             self.error = "JOINT_DEFAULT did not produce fresh upright MC STAND status within its bounded window"
             if last is None:
@@ -906,6 +1117,8 @@ def main() -> int:
             sd = self.set_records.get("STAND_DEFAULT")
             timing_events = {
                 "reset_dispatch_monotonic_ns": self.reset_ns,
+                "native_reset_generation_host_monotonic_ns": self.native_reset_host_monotonic_ns,
+                "native_support_ready_host_monotonic_ns": self.native_support_ready_ns,
                 "first_valid_post_reset_state_monotonic_ns": self.first_valid_state_ns,
                 "first_upright_post_reset_monotonic_ns": self.first_upright_ns,
                 "joint_default": jd,
@@ -923,6 +1136,7 @@ def main() -> int:
                 "source": args.source,
                 "pre_reset_get_mc_action": pre_reset,
                 "reset_dispatch": self.reset_dispatch,
+                "native_mjdata": self.native_reset_support_record(),
                 "post_reset_upright_gate": upright_gate,
                 "joint_default_set_mc_action": jd,
                 "joint_default_get_mc_action_readbacks": [r for r in self.get_records if r.get("wall_monotonic_ns_submitted", 0) > (self.reset_ns or 0) and r.get("action_desc") == "JOINT_DEFAULT"],

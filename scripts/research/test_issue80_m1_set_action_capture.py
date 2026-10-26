@@ -14,6 +14,8 @@ from issue80_m1_set_action_capture import (
     assess_joint_to_stand_state,
     assess_pre_action_state,
     command_is_effective,
+    native_foot_support,
+    read_complete_native_capture_rows,
     installed_body_stand_value,
     _raw_fsm_state_value,
     set_action_record,
@@ -32,6 +34,40 @@ class FakeMessage:
 
 
 class SetActionCaptureTests(unittest.TestCase):
+    def test_native_support_requires_positive_contacts_on_both_selected_feet(self) -> None:
+        sample = {
+            "contact_count": 3,
+            "captured_foot_floor_contact_count": 2,
+            "contacts": [
+                {"involves_selected_left_foot": True, "normal_force_n": 42.0},
+                {"involves_selected_right_foot": True, "normal_force_n": 39.0},
+                {"involves_selected_left_foot": True, "normal_force_n": -1.0},
+            ],
+        }
+        support = native_foot_support(sample)
+        self.assertTrue(support["supported"])
+        self.assertEqual(support["left_contact_count"], 1)
+        self.assertEqual(support["right_contact_count"], 1)
+        self.assertEqual(support["left_normal_force_n"], 42.0)
+
+        sample["contacts"] = sample["contacts"][:1]
+        self.assertFalse(native_foot_support(sample)["supported"])
+
+    def test_native_capture_reader_defers_a_partial_final_append(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "native.jsonl"
+            first = {"event": "post_step", "generation": 0, "host_monotonic_ns": 1}
+            partial = '{"event":"post_step","generation":1'
+            trace.write_text(json.dumps(first) + "\n" + partial, encoding="utf-8")
+            offset, rows = read_complete_native_capture_rows(trace, 0)
+            self.assertEqual(rows, [first])
+            self.assertLess(offset, trace.stat().st_size)
+            with trace.open("a", encoding="utf-8") as stream:
+                stream.write(',"host_monotonic_ns":2}\n')
+            offset, rows = read_complete_native_capture_rows(trace, offset)
+            self.assertEqual(rows, [{"event": "post_step", "generation": 1, "host_monotonic_ns": 2}])
+            self.assertEqual(offset, trace.stat().st_size)
+
     def test_raw_fsm_capture_reads_nested_current_state_without_interpreting_it(self) -> None:
         self.assertEqual(_raw_fsm_state_value({"fsm_state": {"current_state": 4}}), 4)
         self.assertEqual(_raw_fsm_state_value({"fsm_state": {"value": 4}}), 4)
@@ -264,6 +300,8 @@ class SetActionCaptureTests(unittest.TestCase):
     def test_takeover_timing_reports_each_handoff_interval(self) -> None:
         summary = summarize_takeover_timing({
             "reset_dispatch_monotonic_ns": 1_000_000_000,
+            "native_reset_generation_host_monotonic_ns": 1_015_000_000,
+            "native_support_ready_host_monotonic_ns": 1_025_000_000,
             "first_valid_post_reset_state_monotonic_ns": 1_010_000_000,
             "first_upright_post_reset_monotonic_ns": 1_020_000_000,
             "joint_default": {"wall_monotonic_ns_submitted": 1_030_000_000, "wall_monotonic_ns_returned": 1_032_000_000},
@@ -274,6 +312,9 @@ class SetActionCaptureTests(unittest.TestCase):
             "first_unsafe_post_reset_monotonic_ns": 1_500_000_000,
         })
         self.assertEqual(summary["reset_to_first_valid_state_ms"], 10.0)
+        self.assertEqual(summary["reset_dispatch_to_native_generation_ms"], 15.0)
+        self.assertEqual(summary["native_generation_to_bilateral_support_ms"], 10.0)
+        self.assertEqual(summary["native_support_to_JD_request_ms"], 5.0)
         self.assertEqual(summary["reset_to_JD_request_ms"], 30.0)
         self.assertEqual(summary["JD_response_to_first_effective_leg_command_ms"], 18.0)
         self.assertEqual(summary["reset_to_SD_request_ms"], 210.0)
