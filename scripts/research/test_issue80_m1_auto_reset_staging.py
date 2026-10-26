@@ -43,6 +43,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             '"static_sample_count": int(static_scene["static_sample_count"])',
             source,
         )
+        self.assertIn('"mj_step_calls": int(static_scene["mj_step_calls"])', source)
 
     def test_prearmed_nominal_handoff_allows_only_the_early_bounded_contact_sample(self) -> None:
         expected_qpos = [0.0] * 45
