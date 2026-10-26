@@ -344,6 +344,36 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(child[child.index("--route-config") + 1], "/workspace/evidence/route_config.json")
         self.assertEqual(child[child.index("--extra-stop-observation") + 1], "7.0")
 
+    def test_parent_child_aligned_start_table_approach_propagates_explicit_derived_scene_flag(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.12,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="aligned-start-table-approach-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/aligned-start-table-approach.json",
+            aligned_start_table_approach=True,
+            route_config=None,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "aligned-start-table-approach-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--route-integration", child)
+        self.assertIn("--table-approach-mission", child)
+        self.assertIn("--aligned-start-table-approach", child)
+        self.assertIn("--zero-only-stop", child)
+        self.assertEqual(child[child.index("--route-config") + 1], "/workspace/evidence/route_config.json")
+
     def test_route_windows_use_source_grounded_nonzero_activation_not_zero_only(self) -> None:
         probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"

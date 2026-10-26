@@ -9,6 +9,7 @@ from the configured START pose; they are not the table-docking target.
 from __future__ import annotations
 
 import hashlib
+import copy
 from itertools import product
 import json
 import math
@@ -55,6 +56,22 @@ LOCAL01_MUG_PNG_SHA256 = "8bee0ad778cda4459b486a3fe97d49196d3583abf041020eb1a54e
 
 SHORT_ROUTE_SCHEMA = "robotsim.issue80.local01-short-scene-route.v1"
 TABLE_APPROACH_MISSION_SCHEMA = "robotsim.issue80.local01-table-approach-mission.v1"
+ALIGNED_START_TABLE_APPROACH_MISSION_SCHEMA = (
+    "robotsim.issue80.local01-aligned-start-table-approach-mission.v1"
+)
+ALIGNED_START_TABLE_APPROACH_CLASSIFICATION = (
+    "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
+)
+ALIGNED_START_SCENE_VERSION = "aligned-start-v1"
+X2_START_FRAME_NAME = "x2_start_frame"
+X2_SOURCE_START_POS_M = (-1.5, -1.5, 0.0)
+X2_SOURCE_START_QUAT_WXYZ = (
+    0.7071067811865476,
+    0.0,
+    0.0,
+    0.7071067811865476,
+)
+X2_ALIGNED_START_QUAT_WXYZ = (1.0, 0.0, 0.0, 0.0)
 SHORT_ROUTE_STEP_M = LOCAL01_SHORT_ROUTE_STEP_M
 SHORT_ROUTE_TARGETS_M = (SHORT_ROUTE_STEP_M, 2.0 * SHORT_ROUTE_STEP_M)
 SHORT_ROUTE_MAX_WINDOWS = LOCAL01_SHORT_ROUTE_MAX_WINDOWS
@@ -100,6 +117,42 @@ def _sha256(path: Path) -> str:
 
 def _wrap(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _parse_xml_vector(value: str | None, count: int, label: str) -> tuple[float, ...]:
+    """Parse one finite, exact-length MJCF vector without accepting omissions."""
+    if not isinstance(value, str):
+        raise Local01SceneRouteError(f"{label} is missing")
+    try:
+        parsed = tuple(float(item) for item in value.split())
+    except ValueError as exc:
+        raise Local01SceneRouteError(f"{label} is not numeric") from exc
+    if len(parsed) != count or not all(math.isfinite(item) for item in parsed):
+        raise Local01SceneRouteError(f"{label} is not a finite {count}-vector")
+    return parsed
+
+
+def _x2_start_frame(root: ET.Element) -> ET.Element:
+    frames = root.findall(f"./worldbody/frame[@name='{X2_START_FRAME_NAME}']")
+    if len(frames) != 1:
+        raise Local01SceneRouteError("expected exactly one X2 start frame")
+    return frames[0]
+
+
+def _validate_source_x2_start_frame(frame: ET.Element) -> None:
+    pos = _parse_xml_vector(frame.get("pos"), 3, "x2_start_frame.pos")
+    quat = _parse_xml_vector(frame.get("quat"), 4, "x2_start_frame.quat")
+    if any(abs(actual - expected) > 1e-12 for actual, expected in zip(pos, X2_SOURCE_START_POS_M)):
+        raise Local01SceneRouteError("source X2 start-frame position differs from Local01 provenance")
+    if any(
+        abs(actual - expected) > 1e-12
+        for actual, expected in zip(quat, X2_SOURCE_START_QUAT_WXYZ)
+    ):
+        raise Local01SceneRouteError("source X2 start-frame quaternion differs from Local01 provenance")
+
+
+def _format_xml_vector(values: tuple[float, ...]) -> str:
+    return " ".join(f"{value:.16g}" for value in values)
 
 
 def _pose_xyz_yaw(value: Mapping[str, Any], label: str) -> tuple[float, float, float, float]:
@@ -667,6 +720,160 @@ def validate_runtime_raw_odom_table_approach_mission(mission: Mapping[str, Any])
         raise Local01SceneRouteError("table-approach mission must preserve the source docking reference")
 
 
+def build_runtime_raw_odom_aligned_start_table_approach_mission(
+    source: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive a separately named, pre-physics yaw-zero table-approach mission.
+
+    This is intentionally a different simulation integration from the pinned
+    RAICOM start.  It preserves source coordinates, robot and room geometry,
+    limits, actuators, and controller configuration, while recording the one
+    permitted initial-frame delta explicitly.  It never relabels the original
+    +pi/2 start or claims that the original yaw-alignment problem is solved.
+    """
+    original = build_runtime_raw_odom_table_approach_mission(source)
+    aligned = copy.deepcopy(original)
+    source_start = dict(original["poses"]["START"])
+    source_align = dict(original["poses"]["START_ALIGN"])
+    if (
+        math.dist(
+            (float(source_start["x_m"]), float(source_start["y_m"]), float(source_start["z_m"])),
+            (float(source_align["x_m"]), float(source_align["y_m"]), float(source_align["z_m"])),
+        )
+        > 1e-12
+        or abs(_wrap(float(source_align["yaw_rad"]))) > 1e-12
+    ):
+        raise Local01SceneRouteError("source START_ALIGN is not the required same-position yaw-zero reference")
+
+    aligned.update({
+        "schema_version": ALIGNED_START_TABLE_APPROACH_MISSION_SCHEMA,
+        "mission_id": "local01-raicom-aligned-start-v1-table-approach-raw-world-odom",
+        "classification": ALIGNED_START_TABLE_APPROACH_CLASSIFICATION,
+        "execution_order": ["START", "WAYPOINT", "TABLE_APPROACH"],
+        "runtime_reset_odom_observed": False,
+        "derived_scene_initialization": {
+            "schema": "robotsim.issue80.aligned-start-scene-delta.v1",
+            "version": ALIGNED_START_SCENE_VERSION,
+            "applies_before_physics": True,
+            "active_simulation_qpos_write": False,
+            "source_x2_start_frame": {
+                "name": X2_START_FRAME_NAME,
+                "pos_m": list(X2_SOURCE_START_POS_M),
+                "quat_wxyz": list(X2_SOURCE_START_QUAT_WXYZ),
+            },
+            "derived_x2_start_frame": {
+                "name": X2_START_FRAME_NAME,
+                "pos_m": list(X2_SOURCE_START_POS_M),
+                "quat_wxyz": list(X2_ALIGNED_START_QUAT_WXYZ),
+            },
+            "original_raicom_start_yaw_rad": float(source_start["yaw_rad"]),
+            "derived_start_yaw_rad": 0.0,
+            "original_start_turn_status": "UNQUALIFIED_RETAINED_SEPARATELY",
+        },
+        "original_raicom_start_reference": source_start,
+        "poses": {
+            "START": source_align,
+            "WAYPOINT": dict(original["poses"]["WAYPOINT"]),
+            "TABLE_APPROACH": dict(original["poses"]["TABLE_APPROACH"]),
+            "TABLE_DOCKING_REFERENCE_UNCHANGED": dict(
+                original["poses"]["TABLE_DOCKING_REFERENCE_UNCHANGED"]
+            ),
+        },
+        "initial_alignment": {
+            "status": "NOT_APPLICABLE_DERIVED_INITIAL_YAW_ZERO_BEFORE_PHYSICS",
+            "nonzero_command_authorized_for_alignment": False,
+            "source_initial_yaw_rad": float(source_start["yaw_rad"]),
+            "derived_initial_yaw_rad": 0.0,
+            "original_yaw_only_turn_status": "UNQUALIFIED_RETAINED_SEPARATELY",
+            "moving_turn_substitution": "NOT_PERMITTED_BY_THIS_DERIVED_ROUTE",
+        },
+    })
+    contract = dict(aligned["runtime_coordinate_contract"])
+    contract["static_scene_start"] = dict(source_align)
+    contract["numeric_coordinate_convention"] = (
+        "DERIVED_ALIGNED_SCENE_WORLD_RAW_ODOM_AFTER_LIVE_RESET_GATE"
+    )
+    contract["original_source_scene_start_reference"] = source_start
+    aligned["runtime_coordinate_contract"] = contract
+    return aligned
+
+
+def validate_runtime_raw_odom_aligned_start_table_approach_mission(
+    mission: Mapping[str, Any],
+) -> None:
+    """Fail closed unless the aligned-start contract changes only initialization yaw."""
+    if mission.get("schema_version") != ALIGNED_START_TABLE_APPROACH_MISSION_SCHEMA:
+        raise Local01SceneRouteError("unsupported aligned-start table-approach mission schema")
+    if mission.get("classification") != ALIGNED_START_TABLE_APPROACH_CLASSIFICATION:
+        raise Local01SceneRouteError("aligned-start table-approach classification is invalid")
+    if mission.get("frame_id") != "odom" or mission.get("source_frame_id") != "raicom_scene_world":
+        raise Local01SceneRouteError("aligned-start mission frame contract is invalid")
+    if mission.get("execution_order") != ["START", "WAYPOINT", "TABLE_APPROACH"]:
+        raise Local01SceneRouteError("aligned-start mission must omit dynamic START_ALIGN")
+    if mission.get("runtime_reset_odom_observed") is not False:
+        raise Local01SceneRouteError("aligned-start static mission must not claim live Reset evidence")
+    poses = mission.get("poses")
+    if not isinstance(poses, Mapping):
+        raise Local01SceneRouteError("aligned-start mission poses are missing")
+    required = ("START", "WAYPOINT", "TABLE_APPROACH", "TABLE_DOCKING_REFERENCE_UNCHANGED")
+    if any(not isinstance(poses.get(name), Mapping) for name in required):
+        raise Local01SceneRouteError("aligned-start mission has a missing pose")
+    start, waypoint, approach, docking = (_pose_xyz_yaw(poses[name], name) for name in required)
+    original_start = mission.get("original_raicom_start_reference")
+    if not isinstance(original_start, Mapping):
+        raise Local01SceneRouteError("aligned-start mission lost its original START reference")
+    original_xyz_yaw = _pose_xyz_yaw(original_start, "original_raicom_start_reference")
+    if (
+        math.dist(start[:3], original_xyz_yaw[:3]) > 1e-12
+        or abs(_wrap(start[3])) > 1e-12
+        or abs(_wrap(original_xyz_yaw[3] - math.pi / 2.0)) > 1e-12
+    ):
+        raise Local01SceneRouteError("aligned-start must keep source START xyz and change only yaw to zero")
+    if (
+        math.dist(waypoint[:3], (-0.25, -1.50, start[2])) > 1e-12
+        or abs(_wrap(waypoint[3])) > 1e-12
+        or math.dist(approach[:3], (TABLE_APPROACH_X_M, TABLE_APPROACH_Y_M, start[2])) > 1e-12
+        or abs(_wrap(approach[3])) > 1e-12
+        or math.dist(docking[:3], (1.00, -1.50, start[2])) > 1e-12
+        or abs(_wrap(docking[3])) > 1e-12
+    ):
+        raise Local01SceneRouteError("aligned-start mission altered the pinned table corridor or docking reference")
+    if not math.isclose(math.hypot(docking[0] - approach[0], docking[1] - approach[1]), 0.10, abs_tol=1e-12):
+        raise Local01SceneRouteError("aligned-start table approach must remain 100 mm short of docking")
+    limits = mission.get("limits")
+    expected_limits = {
+        "forward_m_s": SHORT_ROUTE_FORWARD_M_S,
+        "angular_rad_s": SHORT_ROUTE_ANGULAR_RAD_S,
+        "max_cross_track_m": SHORT_ROUTE_MAX_CROSS_TRACK_M,
+        "max_window_s": TABLE_APPROACH_MAX_WINDOW_S,
+        "max_windows": TABLE_APPROACH_MAX_WINDOWS,
+        "max_aggregate_nonzero_s": TABLE_APPROACH_MAX_AGGREGATE_NONZERO_S,
+    }
+    if not isinstance(limits, Mapping) or any(limits.get(key) != value for key, value in expected_limits.items()):
+        raise Local01SceneRouteError("aligned-start mission exceeds the approved bounded motion envelope")
+    initialization = mission.get("derived_scene_initialization")
+    if not isinstance(initialization, Mapping) or (
+        initialization.get("version") != ALIGNED_START_SCENE_VERSION
+        or initialization.get("applies_before_physics") is not True
+        or initialization.get("active_simulation_qpos_write") is not False
+        or initialization.get("derived_start_yaw_rad") != 0.0
+    ):
+        raise Local01SceneRouteError("aligned-start initialization provenance is incomplete or unsafe")
+    if initialization.get("source_x2_start_frame", {}).get("pos_m") != list(X2_SOURCE_START_POS_M):
+        raise Local01SceneRouteError("aligned-start source frame position changed")
+    if initialization.get("derived_x2_start_frame", {}).get("quat_wxyz") != list(X2_ALIGNED_START_QUAT_WXYZ):
+        raise Local01SceneRouteError("aligned-start derived frame quaternion is invalid")
+    alignment = mission.get("initial_alignment")
+    if not isinstance(alignment, Mapping) or alignment.get("status") != "NOT_APPLICABLE_DERIVED_INITIAL_YAW_ZERO_BEFORE_PHYSICS":
+        raise Local01SceneRouteError("aligned-start mission must not schedule an unqualified yaw-only turn")
+    contract = mission.get("runtime_coordinate_contract")
+    if not isinstance(contract, Mapping) or contract.get("static_scene_start") != dict(poses["START"]):
+        raise Local01SceneRouteError("aligned-start runtime start contract does not match its derived scene pose")
+    reference = mission.get("table_docking_reference")
+    if not isinstance(reference, Mapping) or reference.get("source_pose_unchanged") is not True:
+        raise Local01SceneRouteError("aligned-start mission must preserve the source docking reference")
+
+
 def validate_runtime_raw_odom_table_approach_start(
     mission: Mapping[str, Any], observed_pose: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -712,6 +919,49 @@ def validate_runtime_raw_odom_table_approach_start(
         "maximum_z_m": z_max,
         "permission_to_publish_first_nonzero": passed,
         "basis": "fresh post-SD odometry, not the earlier Reset anchor sample",
+    }
+
+
+def validate_runtime_raw_odom_aligned_start_table_approach_start(
+    mission: Mapping[str, Any], observed_pose: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Require fresh STAND to retain the derived pre-physics start pose."""
+    validate_runtime_raw_odom_aligned_start_table_approach_mission(mission)
+    contract = mission.get("runtime_coordinate_contract")
+    if not isinstance(contract, Mapping):
+        raise Local01SceneRouteError("aligned-start mission lacks a runtime coordinate contract")
+    expected = contract.get("static_scene_start")
+    if not isinstance(expected, Mapping):
+        raise Local01SceneRouteError("aligned-start mission lacks a static start pose")
+    try:
+        ex, ey, eyaw = (float(expected[name]) for name in ("x_m", "y_m", "yaw_rad"))
+        ox, oy, oz, oyaw = (float(observed_pose[name]) for name in ("x_m", "y_m", "z_m", "yaw_rad"))
+        position_limit = float(contract["maximum_start_position_deviation_m"])
+        yaw_limit = float(contract["maximum_start_yaw_deviation_rad"])
+        z_min = float(contract["minimum_start_z_m"])
+        z_max = float(contract["maximum_start_z_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise Local01SceneRouteError("aligned-start runtime pose is malformed") from exc
+    values = (ex, ey, eyaw, ox, oy, oz, oyaw, position_limit, yaw_limit, z_min, z_max)
+    if not all(math.isfinite(value) for value in values) or position_limit <= 0.0 or yaw_limit <= 0.0:
+        raise Local01SceneRouteError("aligned-start runtime pose contains non-finite values or invalid limits")
+    planar_error = math.hypot(ox - ex, oy - ey)
+    yaw_error = abs(_wrap(oyaw - eyaw))
+    passed = planar_error <= position_limit and yaw_error <= yaw_limit and z_min <= oz <= z_max
+    return {
+        "schema": "robotsim.issue80.aligned-start-table-approach-runtime-start-gate.v1",
+        "status": "PASS" if passed else "FAIL",
+        "expected_static_scene_start": dict(expected),
+        "observed_post_sd_pose": dict(observed_pose),
+        "planar_position_error_m": planar_error,
+        "yaw_error_rad": yaw_error,
+        "observed_z_m": oz,
+        "maximum_position_error_m": position_limit,
+        "maximum_yaw_error_rad": yaw_limit,
+        "minimum_z_m": z_min,
+        "maximum_z_m": z_max,
+        "permission_to_publish_first_nonzero": passed,
+        "basis": "fresh post-SD odometry in the pre-physics derived aligned scene, not active qpos mutation",
     }
 
 
@@ -797,6 +1047,21 @@ def native_name_scene_tree(scene_path: str | Path) -> ET.Element:
     if len(attach) != 1 or attach[0].get("prefix") != "x2_":
         raise Local01SceneRouteError("expected exactly one source X2 attach with prefix x2_")
     attach[0].set("prefix", "")
+    return tree
+
+
+def aligned_start_scene_tree(scene_path: str | Path) -> ET.Element:
+    """Build the explicit, evidence-only zero-yaw RAICOM start wrapper.
+
+    The immutable Local01 scene remains the input.  The only geometric delta
+    is the X2 attachment frame quaternion, set before MuJoCo creates its first
+    ``MjData``.  It is deliberately not a runtime qpos write, a reset-time
+    teleport, or a substitute for the source scene's unsupported initial turn.
+    """
+    tree = native_name_scene_tree(scene_path)
+    frame = _x2_start_frame(tree)
+    _validate_source_x2_start_frame(frame)
+    frame.set("quat", _format_xml_vector(X2_ALIGNED_START_QUAT_WXYZ))
     return tree
 
 
@@ -919,6 +1184,138 @@ def assert_scene_name_only_equivalence(original: Any, corrected: Any) -> dict[st
         "maximum_fk_residual": max_residual,
         "initial_qpos_equal": True,
         "environment_geometry_and_placements_equal": True,
+        "mj_step_calls": 0,
+    }
+
+
+def assert_aligned_start_scene_equivalence(original: Any, aligned: Any) -> dict[str, Any]:
+    """Verify the documented pre-physics frame rotation changed nothing else.
+
+    A MuJoCo frame rotation necessarily changes pose-derived compiled arrays
+    such as ``qpos0`` and world-frame inverse weights.  Every remaining public
+    numeric model array must still match exactly.  Robot inertias, limits,
+    actuator mappings, contact settings, environment transforms, and solver
+    options are then checked independently below.
+    """
+    import mujoco
+    import numpy as np
+
+    expected_pose_derived_deltas = {
+        "actuator_acc0",
+        "body_invweight0",
+        "body_pos",
+        "body_quat",
+        "dof_M0",
+        "dof_invweight0",
+        "light_pos0",
+        "light_poscom0",
+        "qpos0",
+        "qpos_spring",
+    }
+    changed: list[str] = []
+    for field in dir(original):
+        if (
+            field.startswith("_")
+            or field.startswith("name_")
+            or field == "names_map"
+            or field.endswith("_pathadr")
+        ):
+            continue
+        value = getattr(original, field)
+        if isinstance(value, np.ndarray) and value.dtype.kind in "biufc":
+            other = getattr(aligned, field)
+            if not np.array_equal(value, other, equal_nan=True):
+                changed.append(field)
+                if field not in expected_pose_derived_deltas:
+                    raise Local01SceneRouteError(
+                        f"aligned-start wrapper changed unsupported compiled physical array {field}"
+                    )
+    if set(changed) != expected_pose_derived_deltas:
+        raise Local01SceneRouteError(
+            "aligned-start wrapper changed an incomplete or unexpected set of pose-derived arrays"
+        )
+    for count in ("nq", "nv", "nu", "nbody", "njnt", "ngeom", "nmesh", "nsensor", "nsite", "neq"):
+        if getattr(original, count) != getattr(aligned, count):
+            raise Local01SceneRouteError(f"aligned-start wrapper changed {count}")
+    for field in dir(original.opt):
+        if field.startswith("_"):
+            continue
+        value, other = getattr(original.opt, field), getattr(aligned.opt, field)
+        if isinstance(value, (int, float, np.ndarray)) and not np.array_equal(value, other):
+            raise Local01SceneRouteError(f"aligned-start wrapper changed solver option {field}")
+
+    root_a = mujoco.mj_name2id(original, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
+    root_b = mujoco.mj_name2id(aligned, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
+    if root_a < 0 or root_b < 0 or original.jnt_type[root_a] != mujoco.mjtJoint.mjJNT_FREE:
+        raise Local01SceneRouteError("aligned-start wrapper lacks the native floating base")
+    qadr_a, qadr_b = int(original.jnt_qposadr[root_a]), int(aligned.jnt_qposadr[root_b])
+    if qadr_a != qadr_b:
+        raise Local01SceneRouteError("aligned-start wrapper changed freejoint qpos addressing")
+    if not np.allclose(
+        original.qpos0[:qadr_a + 3], aligned.qpos0[:qadr_b + 3], rtol=0, atol=1e-12
+    ):
+        raise Local01SceneRouteError("aligned-start wrapper changed root position or prior qpos values")
+    if not np.allclose(aligned.qpos0[qadr_b + 3:qadr_b + 7], X2_ALIGNED_START_QUAT_WXYZ, rtol=0, atol=1e-12):
+        raise Local01SceneRouteError("aligned-start wrapper did not set the root yaw-zero quaternion")
+    if not np.allclose(
+        original.qpos0[qadr_a + 7:], aligned.qpos0[qadr_b + 7:], rtol=0, atol=1e-12
+    ):
+        raise Local01SceneRouteError("aligned-start wrapper changed passive joints or environment qpos")
+
+    # Check contact/collision material fields explicitly instead of inferring
+    # them from the tolerated pose-dependent model arrays above.
+    invariant_fields = (
+        "body_mass", "body_inertia", "body_ipos", "body_iquat",
+        "jnt_type", "jnt_pos", "jnt_axis", "jnt_range", "jnt_limited",
+        "jnt_actfrcrange", "geom_type", "geom_size", "geom_dataid",
+        "geom_contype", "geom_conaffinity", "geom_condim", "geom_friction",
+        "geom_solmix", "geom_solref", "geom_solimp", "geom_margin", "geom_gap",
+        "actuator_trntype", "actuator_trnid", "actuator_gear", "actuator_gainprm",
+        "actuator_biasprm", "actuator_dynprm", "actuator_ctrlrange",
+        "actuator_forcerange", "actuator_ctrllimited", "actuator_forcelimited",
+        "sensor_type", "sensor_objtype", "sensor_objid", "sensor_dim",
+        "sensor_noise", "sensor_cutoff", "sensor_datatype",
+    )
+    for field in invariant_fields:
+        if not np.array_equal(getattr(original, field), getattr(aligned, field), equal_nan=True):
+            raise Local01SceneRouteError(f"aligned-start wrapper changed invariant field {field}")
+
+    data_original, data_aligned = mujoco.MjData(original), mujoco.MjData(aligned)
+    mujoco.mj_forward(original, data_original)
+    mujoco.mj_forward(aligned, data_aligned)
+    pelvis = mujoco.mj_name2id(aligned, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    robot_bodies = {pelvis}
+    for body_id in range(pelvis + 1, aligned.nbody):
+        if int(aligned.body_parentid[body_id]) in robot_bodies:
+            robot_bodies.add(body_id)
+    environment_geoms = [
+        geom_id for geom_id in range(aligned.ngeom)
+        if int(aligned.geom_bodyid[geom_id]) not in robot_bodies
+    ]
+    environment_bodies = sorted({int(aligned.geom_bodyid[geom_id]) for geom_id in environment_geoms})
+    for body_id in environment_bodies:
+        if not np.array_equal(data_original.xpos[body_id], data_aligned.xpos[body_id]):
+            raise Local01SceneRouteError("aligned-start wrapper moved an environment body")
+        if not np.array_equal(data_original.xmat[body_id], data_aligned.xmat[body_id]):
+            raise Local01SceneRouteError("aligned-start wrapper rotated an environment body")
+    for geom_id in environment_geoms:
+        if not np.array_equal(data_original.geom_xpos[geom_id], data_aligned.geom_xpos[geom_id]):
+            raise Local01SceneRouteError("aligned-start wrapper moved an environment geom")
+        if not np.array_equal(data_original.geom_xmat[geom_id], data_aligned.geom_xmat[geom_id]):
+            raise Local01SceneRouteError("aligned-start wrapper rotated an environment geom")
+    return {
+        "status": "PASS_ALIGNED_START_PHYSICAL_INVARIANTS",
+        "expected_pose_derived_changed_arrays": sorted(expected_pose_derived_deltas),
+        "observed_changed_arrays": sorted(changed),
+        "solver_options_equal": True,
+        "root_position_unchanged": True,
+        "root_quaternion_before": original.qpos0[qadr_a + 3:qadr_a + 7].tolist(),
+        "root_quaternion_after": aligned.qpos0[qadr_b + 3:qadr_b + 7].tolist(),
+        "passive_joint_and_environment_qpos_unchanged": True,
+        "robot_geometry_limits_actuators_and_sensors_unchanged": True,
+        "environment_body_count": len(environment_bodies),
+        "environment_geom_count": len(environment_geoms),
+        "environment_world_placements_unchanged": True,
         "mj_step_calls": 0,
     }
 
@@ -1257,8 +1654,15 @@ def prepare_local01_scene_runtime_bundle(
     evidence_directory: str | Path,
     *,
     runtime_root: str | Path,
+    aligned_start: bool = False,
 ) -> dict[str, Any]:
-    """Copy immutable inputs; resolve paths and preserve the native X2 namespace."""
+    """Copy immutable inputs and generate a provenance-tracked runtime wrapper.
+
+    ``aligned_start`` is limited to the separately versioned derived scene. It
+    changes the X2 start-frame quaternion before first physics only; all source
+    and runtime inputs remain read-only and the original scene is copied as an
+    immutable evidence input beside the generated wrapper.
+    """
     evidence = Path(evidence_directory)
     runtime_x2_path = (
         Path(runtime_root)
@@ -1294,8 +1698,14 @@ def prepare_local01_scene_runtime_bundle(
     mug_xml = "/workspace/evidence/local01_scene/mug_portable_runtime.xml"
     source_dir = "/workspace/raicom_scene_source/robot/lx2501_3_t2d5/model_info/object/model/mug"
 
-    scene_root = ET.parse(bundle / "scene_workspace.xml").getroot()
+    source_scene_path = source_root / LOCAL01_SCENE_RELATIVE
+    scene_root = (
+        aligned_start_scene_tree(source_scene_path)
+        if aligned_start else native_name_scene_tree(source_scene_path)
+    )
     source_scene_root = ET.parse(bundle / "scene_workspace.xml").getroot()
+    source_start_frame = _x2_start_frame(source_scene_root)
+    _validate_source_x2_start_frame(source_start_frame)
     model_paths = {
         "x2_mc_runtime": runtime_x2,
         "raicom_room": room_xml,
@@ -1307,9 +1717,8 @@ def prepare_local01_scene_runtime_bundle(
             raise Local01SceneRouteError(f"unrecognized Local01 scene model include: {name}")
         model_elem.set("file", model_paths[name])
     attaches = scene_root.findall("./worldbody/frame/attach[@model='x2_mc_runtime']")
-    if len(attaches) != 1 or attaches[0].get("prefix") != "x2_":
-        raise Local01SceneRouteError("source scene must contain exactly one x2_ robot attachment")
-    attaches[0].set("prefix", "")
+    if len(attaches) != 1 or attaches[0].get("prefix") != "":
+        raise Local01SceneRouteError("native-name scene wrapper must contain exactly one unprefixed X2 attachment")
     # Restore the allowed deltas and compare the entire parsed XML tree.
     # Environment names, placements and every physical setting must be equal.
     source_models = {item.get("name"): item.get("file") for item in source_scene_root.findall("./asset/model")}
@@ -1319,12 +1728,22 @@ def prepare_local01_scene_runtime_bundle(
     for item in scene_root.findall("./asset/model"):
         item.set("file", source_models[item.get("name")])
     attaches[0].set("prefix", "x2_")
+    if aligned_start:
+        _x2_start_frame(scene_root).set("quat", source_start_frame.get("quat", ""))
     if ET.tostring(scene_root) != ET.tostring(source_scene_root):
-        raise Local01SceneRouteError("Local01 runtime scene wrapper changed scene content beyond model file paths")
+        raise Local01SceneRouteError(
+            "Local01 runtime scene wrapper changed content beyond allowed model paths, namespace, or aligned start quaternion"
+        )
     for item in scene_root.findall("./asset/model"):
         item.set("file", model_paths[item.get("name")])
     attaches[0].set("prefix", "")
-    scene_runtime = bundle / "scene_workspace_runtime.xml"
+    if aligned_start:
+        _x2_start_frame(scene_root).set("quat", _format_xml_vector(X2_ALIGNED_START_QUAT_WXYZ))
+    scene_runtime_name = (
+        "scene_workspace_aligned_start_v1_runtime.xml"
+        if aligned_start else "scene_workspace_runtime.xml"
+    )
+    scene_runtime = bundle / scene_runtime_name
     ET.ElementTree(scene_root).write(scene_runtime, encoding="utf-8", xml_declaration=True)
 
     mug_root = ET.parse(bundle / "mug_portable.xml").getroot()
@@ -1357,11 +1776,21 @@ def prepare_local01_scene_runtime_bundle(
         "simulation_model: /workspace/evidence/local01_scene/scene_workspace_runtime.xml",
         1,
     )
-    simulator_config = bundle / "simulator_default_local01_scene.yaml"
+    simulator_config_name = (
+        "simulator_default_local01_aligned_start_v1.yaml"
+        if aligned_start else "simulator_default_local01_scene.yaml"
+    )
+    runtime_scene_container_path = "/workspace/evidence/local01_scene/" + scene_runtime_name
+    runtime_simulator_config_container_path = "/workspace/evidence/local01_scene/" + simulator_config_name
+    runtime_config_text = runtime_config_text.replace(
+        "/workspace/evidence/local01_scene/scene_workspace_runtime.xml",
+        runtime_scene_container_path,
+    )
+    simulator_config = bundle / simulator_config_name
     with simulator_config.open("x", encoding="utf-8") as stream:
         stream.write(runtime_config_text)
     if runtime_config_text.replace(
-        "simulation_model: /workspace/evidence/local01_scene/scene_workspace_runtime.xml",
+        "simulation_model: " + runtime_scene_container_path,
         old_model_line,
         1,
     ) != default_text:
@@ -1427,21 +1856,28 @@ def prepare_local01_scene_runtime_bundle(
     corrected_source_model = mujoco.MjModel.from_xml_string(
         ET.tostring(native_name_scene_tree(source_root / LOCAL01_SCENE_RELATIVE), encoding="unicode")
     )
-    generated_equivalence = assert_scene_name_only_equivalence(corrected_source_model, generated_model)
     native_model = mujoco.MjModel.from_xml_path(str(runtime_x2_path.with_name("scene.xml")))
+    generated_equivalence = (
+        assert_aligned_start_scene_equivalence(corrected_source_model, generated_model)
+        if aligned_start else assert_scene_name_only_equivalence(corrected_source_model, generated_model)
+    )
+    native_robot_equivalence = assert_native_robot_equivalence(native_model, generated_model)
     generated_contract = audit_runtime_name_contract(native_model, generated_model, runtime_x2_path.with_name("default.yaml"))
     if generated_contract["status"] != "PASS_NATIVE_RUNTIME_NAMES":
         raise Local01SceneRouteError("generated runtime wrapper lost native X2 names")
 
     records = {
         "schema": "robotsim.issue80.local01-scene-runtime-bundle.v1",
-        "classification": "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER",
+        "classification": (
+            "SIMULATION_ONLY_ALIGNED_START_SCENE_WRAPPER_V1"
+            if aligned_start else "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER"
+        ),
         "source_local01_commit": source["source_commit"],
         "source_files_sha256": copied,
         "runtime_files_sha256": {
-            "scene_workspace_runtime.xml": _sha256(scene_runtime),
+            scene_runtime_name: _sha256(scene_runtime),
             "mug_portable_runtime.xml": _sha256(mug_runtime),
-            "simulator_default_local01_scene.yaml": _sha256(simulator_config),
+            simulator_config_name: _sha256(simulator_config),
         },
         "runtime_x2_sha256": _sha256(
             runtime_x2_path
@@ -1449,16 +1885,32 @@ def prepare_local01_scene_runtime_bundle(
         "simulator_config_only_change": {
             "field": "simulation_model",
             "from": old_model_line.split(": ", 1)[1],
-            "to": "/workspace/evidence/local01_scene/scene_workspace_runtime.xml",
+            "to": runtime_scene_container_path,
         },
-        "scene_wrapper_change_classification": "X2_ATTACH_PREFIX_ONLY_AND_MODEL_FILE_PATHS",
+        "scene_wrapper_change_classification": (
+            "X2_ATTACH_PREFIX_AND_ALIGNED_START_QUATERNION_V1_AND_MODEL_FILE_PATHS"
+            if aligned_start else "X2_ATTACH_PREFIX_ONLY_AND_MODEL_FILE_PATHS"
+        ),
         "x2_attach_prefix_change": {"source": "x2_", "runtime": ""},
+        "aligned_start": {
+            "enabled": aligned_start,
+            "version": ALIGNED_START_SCENE_VERSION if aligned_start else None,
+            "frame": X2_START_FRAME_NAME,
+            "source_pos_m": list(X2_SOURCE_START_POS_M),
+            "source_quat_wxyz": list(X2_SOURCE_START_QUAT_WXYZ),
+            "derived_quat_wxyz": list(X2_ALIGNED_START_QUAT_WXYZ) if aligned_start else None,
+            "applies_before_physics": aligned_start,
+            "active_simulation_qpos_write": False,
+        },
         "generated_runtime_name_contract": generated_contract,
         "generated_wrapper_physics_equivalence": generated_equivalence,
+        "generated_native_robot_equivalence": native_robot_equivalence,
         "mug_wrapper_change_classification": "COMPILER_ASSET_SEARCH_PATHS_ONLY",
         "reference_scene_mount_target": "/workspace/raicom_scene_source",
-        "runtime_simulator_config_path": "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml",
-        "runtime_scene_path": "/workspace/evidence/local01_scene/scene_workspace_runtime.xml",
+        "runtime_simulator_config_path": runtime_simulator_config_container_path,
+        "runtime_scene_path": runtime_scene_container_path,
+        "runtime_scene_filename": scene_runtime_name,
+        "runtime_simulator_config_filename": simulator_config_name,
         "container_path_resolution_status": "PASS_NARROW_READ_ONLY_RUNTIME_REFERENCE_AND_EVIDENCE_MOUNTS",
         "resolved_scene_model_sources": resolved_scene_models,
         "runtime_robot_model_path": "unchanged /workspace/raicom2026/.../model_info/default.yaml",

@@ -17,12 +17,16 @@ from issue80_local01_scene_route import (
     build_short_route_config,
     build_runtime_raw_odom_short_route_config,
     build_runtime_raw_odom_table_approach_mission,
+    build_runtime_raw_odom_aligned_start_table_approach_mission,
     load_local01_scene_inputs,
     prepare_local01_scene_runtime_bundle,
     validate_runtime_raw_odom_table_approach_mission,
     validate_runtime_raw_odom_table_approach_start,
+    validate_runtime_raw_odom_aligned_start_table_approach_mission,
+    validate_runtime_raw_odom_aligned_start_table_approach_start,
     validate_short_route_static_scene,
     native_name_scene_tree,
+    aligned_start_scene_tree,
     audit_runtime_name_contract,
     assert_scene_name_only_equivalence,
 )
@@ -66,6 +70,51 @@ def local01_source_fixture():
 
 
 class Local01SceneRouteTests(unittest.TestCase):
+    def test_aligned_start_mission_retains_original_reference_without_runtime_turn(self):
+        mission = build_runtime_raw_odom_aligned_start_table_approach_mission(
+            local01_source_fixture()
+        )
+        validate_runtime_raw_odom_aligned_start_table_approach_mission(mission)
+        self.assertEqual(
+            mission["classification"],
+            "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION",
+        )
+        self.assertEqual(mission["execution_order"], ["START", "WAYPOINT", "TABLE_APPROACH"])
+        self.assertAlmostEqual(mission["poses"]["START"]["yaw_rad"], 0.0)
+        self.assertAlmostEqual(mission["original_raicom_start_reference"]["yaw_rad"], math.pi / 2.0)
+        self.assertEqual(
+            mission["initial_alignment"]["status"],
+            "NOT_APPLICABLE_DERIVED_INITIAL_YAW_ZERO_BEFORE_PHYSICS",
+        )
+        self.assertFalse(mission["derived_scene_initialization"]["active_simulation_qpos_write"])
+
+    def test_aligned_start_requires_fresh_post_sd_pose_inside_derived_envelope(self):
+        mission = build_runtime_raw_odom_aligned_start_table_approach_mission(
+            local01_source_fixture()
+        )
+        accepted = validate_runtime_raw_odom_aligned_start_table_approach_start(
+            mission, {"x_m": -1.5, "y_m": -1.5, "z_m": 0.68, "yaw_rad": 0.0}
+        )
+        self.assertEqual(accepted["status"], "PASS")
+        rejected = validate_runtime_raw_odom_aligned_start_table_approach_start(
+            mission, {"x_m": -1.5, "y_m": -1.34, "z_m": 0.68, "yaw_rad": 0.0}
+        )
+        self.assertEqual(rejected["status"], "FAIL")
+        self.assertFalse(rejected["permission_to_publish_first_nonzero"])
+
+    def test_aligned_start_route_reuses_the_existing_route_manager(self):
+        mission = build_runtime_raw_odom_aligned_start_table_approach_mission(
+            local01_source_fixture()
+        )
+        route = build_table_approach_route_from_mission(
+            mission,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+        )
+        self.assertEqual([step.waypoint_id for step in route.steps], ["WAYPOINT", "TABLE_APPROACH"])
+        self.assertAlmostEqual(route.start_x_m, -1.5)
+        self.assertAlmostEqual(route.start_yaw_rad, 0.0)
+
     def test_table_approach_mission_preserves_docking_and_declares_turn_gate(self):
         mission = build_runtime_raw_odom_table_approach_mission(local01_source_fixture())
         validate_runtime_raw_odom_table_approach_mission(mission)
@@ -249,6 +298,34 @@ class Local01SceneRouteTests(unittest.TestCase):
             self.assertEqual(runtime_tree.find("./worldbody/frame/attach[@model='x2_mc_runtime']").get("prefix"), "")
             self.assertEqual(runtime_tree.find("./worldbody/frame/attach[@model='raicom_room']").get("prefix"), "raicom_")
             self.assertEqual(runtime_tree.find("./worldbody/frame/attach[@model='raicom_mug']").get("prefix"), "mug_")
+
+    @unittest.skipUnless(LOCAL01_POSES_PATH.is_file(), "Local01 source worktree is unavailable")
+    def test_aligned_start_bundle_is_separately_named_and_changes_only_prephysics_root_yaw(self):
+        source = load_local01_scene_inputs(LOCAL01_POSES_PATH, require_clean_commit=True)
+        runtime_root = ROBOTSIM_ROOT / "simulation/mujoco/raicom2026"
+        source_scene = Path(source["repository_root"]) / "simulation/mujoco/scenes/raicom2026/scene_workspace.xml"
+        source_tree = ET.parse(source_scene).getroot()
+        source_frame = source_tree.find("./worldbody/frame[@name='x2_start_frame']")
+        self.assertEqual(source_frame.get("quat"), "0.7071067811865476 0 0 0.7071067811865476")
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / "evidence"
+            evidence.mkdir()
+            bundle = prepare_local01_scene_runtime_bundle(
+                source, evidence, runtime_root=runtime_root, aligned_start=True
+            )
+            self.assertEqual(bundle["classification"], "SIMULATION_ONLY_ALIGNED_START_SCENE_WRAPPER_V1")
+            self.assertEqual(bundle["runtime_scene_filename"], "scene_workspace_aligned_start_v1_runtime.xml")
+            self.assertEqual(bundle["runtime_simulator_config_filename"], "simulator_default_local01_aligned_start_v1.yaml")
+            self.assertEqual(bundle["generated_wrapper_physics_equivalence"]["status"], "PASS_ALIGNED_START_PHYSICAL_INVARIANTS")
+            self.assertEqual(bundle["generated_native_robot_equivalence"]["status"], "PASS_NATIVE_ROBOT_UNDER_SCENE_START_TRANSFORM")
+            runtime_tree = ET.parse(evidence / "local01_scene" / bundle["runtime_scene_filename"]).getroot()
+            frame = runtime_tree.find("./worldbody/frame[@name='x2_start_frame']")
+            self.assertEqual(frame.get("pos"), "-1.5 -1.5 0")
+            self.assertEqual(frame.get("quat"), "1 0 0 0")
+            self.assertEqual(
+                runtime_tree.find("./worldbody/frame/attach[@model='x2_mc_runtime']").get("prefix"), ""
+            )
+            self.assertEqual(ET.parse(source_scene).getroot().find("./worldbody/frame[@name='x2_start_frame']").get("quat"), source_frame.get("quat"))
 
     def test_native_name_wrapper_rejects_unexpected_source_prefix(self):
         with tempfile.TemporaryDirectory() as d:

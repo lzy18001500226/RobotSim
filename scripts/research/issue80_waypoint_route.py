@@ -573,14 +573,23 @@ def build_table_approach_route_from_mission(
     can be emitted from this route.
     """
     try:
-        if mission.get("classification") != "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION":
+        classification = mission.get("classification")
+        supported_classifications = {
+            "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION",
+            "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION",
+        }
+        if classification not in supported_classifications:
             raise RouteError("table-approach mission classification is invalid")
         if mission.get("frame_id") != "odom":
             raise RouteError("table-approach mission must use odom")
         poses = mission["poses"]
         if not isinstance(poses, Mapping):
             raise RouteError("table-approach mission poses are missing")
-        start = poses["START_ALIGN"]
+        # The original scene reaches this pose only through an unqualified
+        # yaw-only alignment.  The explicitly versioned aligned-start scene
+        # begins there before physics instead, and must not recreate that
+        # runtime turn under another name.
+        start = poses["START" if classification.startswith("SIMULATION_ONLY_ALIGNED_START_") else "START_ALIGN"]
         waypoint = poses["WAYPOINT"]
         approach = poses["TABLE_APPROACH"]
         dock = poses["TABLE_DOCKING_REFERENCE_UNCHANGED"]

@@ -116,6 +116,8 @@ from issue80_waypoint_route import (
 from issue80_local01_scene_route import (
     validate_runtime_raw_odom_table_approach_mission,
     validate_runtime_raw_odom_table_approach_start,
+    validate_runtime_raw_odom_aligned_start_table_approach_mission,
+    validate_runtime_raw_odom_aligned_start_table_approach_start,
 )
 from issue80_route_motion_bridge import (
     ROUTE_WINDOW_ZERO_MARGIN_S, WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
@@ -2963,6 +2965,9 @@ class FocusedM1Diagnostic(Node):
         route_config_mode = bool(getattr(self.args, "route_config", None))
         short_scene_route_mode = bool(getattr(self.args, "short_scene_route", False))
         table_approach_mission_mode = bool(getattr(self.args, "table_approach_mission", False))
+        aligned_start_table_approach_mode = bool(
+            getattr(self.args, "aligned_start_table_approach", False)
+        )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -2973,6 +2978,8 @@ class FocusedM1Diagnostic(Node):
             "classification": (
                 "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING"
                 if short_scene_route_mode else
+                "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
+                if aligned_start_table_approach_mode else
                 "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION"
                 if table_approach_mission_mode else
                 "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE"
@@ -2992,6 +2999,8 @@ class FocusedM1Diagnostic(Node):
             "route_scope": (
                 "LOCAL01_START_HEADING_TWO_TARGET_SHORT_ROUTE"
                 if short_scene_route_mode else
+                "LOCAL01_ALIGNED_START_WAYPOINT_TABLE_APPROACH"
+                if aligned_start_table_approach_mode else
                 "LOCAL01_START_ALIGN_WAYPOINT_TABLE_APPROACH"
                 if table_approach_mission_mode else
                 "CONFIGURED_START_WAYPOINT_TABLE_DOCKING"
@@ -3007,6 +3016,8 @@ class FocusedM1Diagnostic(Node):
             "acceptance_scope": (
                 "STATIC_SCENE_VALIDATED_SHORT_ROUTE_AND_RESET_ODOM_GATE_ONLY_NOT_TABLE_DOCKING"
                 if short_scene_route_mode else
+                "DERIVED_ALIGNED_START_STATIC_SAFE_PREFIX_ONLY_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
+                if aligned_start_table_approach_mode else
                 "STATIC_SAFE_PREFIX_ONLY_NOT_TABLE_DOCKING_OR_MANIPULATION"
                 if table_approach_mission_mode else
                 "LOCAL01_CONFIGURED_WAYPOINT_AND_TABLE_DOCKING_POSE"
@@ -3100,22 +3111,49 @@ class FocusedM1Diagnostic(Node):
                 input_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 route_config_hash = hashlib.sha256(route_config_path.read_bytes()).hexdigest()
                 mission = json.loads(route_config_path.read_text(encoding="utf-8"))
-                validate_runtime_raw_odom_table_approach_mission(mission)
+                if aligned_start_table_approach_mode:
+                    validate_runtime_raw_odom_aligned_start_table_approach_mission(mission)
+                else:
+                    validate_runtime_raw_odom_table_approach_mission(mission)
+                expected_bundle_classification = (
+                    "SIMULATION_ONLY_ALIGNED_START_SCENE_WRAPPER_V1"
+                    if aligned_start_table_approach_mode
+                    else "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER"
+                )
+                expected_equivalence_status = (
+                    "PASS_ALIGNED_START_PHYSICAL_INVARIANTS"
+                    if aligned_start_table_approach_mode
+                    else "PASS_COMPILED_PHYSICS_EQUIVALENT"
+                )
+                expected_plan_status = (
+                    "STATIC_GEOMETRY_REVIEW_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED"
+                    if aligned_start_table_approach_mode
+                    else "STATIC_GEOMETRY_REVIEW_ONLY_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED"
+                )
                 if (
                     static_scene.get("status") != "PASS_STATIC_SCENE_CLEARANCE"
                     or static_scene.get("native_runtime_name_contract", {}).get("status") != "PASS_NATIVE_RUNTIME_NAMES"
                     or scene_bundle.get("x2_attach_prefix_change") != {"source": "x2_", "runtime": ""}
+                    or scene_bundle.get("classification") != expected_bundle_classification
                     or scene_bundle.get("generated_runtime_name_contract", {}).get("status") != "PASS_NATIVE_RUNTIME_NAMES"
-                    or scene_bundle.get("generated_wrapper_physics_equivalence", {}).get("status") != "PASS_COMPILED_PHYSICS_EQUIVALENT"
-                    or table_plan.get("status") != "STATIC_GEOMETRY_REVIEW_ONLY_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED"
+                    or scene_bundle.get("generated_wrapper_physics_equivalence", {}).get("status") != expected_equivalence_status
+                    or scene_bundle.get("generated_native_robot_equivalence", {}).get("status") != "PASS_NATIVE_ROBOT_UNDER_SCENE_START_TRANSFORM"
+                    or bool(scene_bundle.get("aligned_start", {}).get("enabled")) != aligned_start_table_approach_mode
+                    or table_plan.get("status") != expected_plan_status
                     or table_plan.get("safe_table_approach_mission", {}).get("classification") != mission.get("classification")
                     or table_plan.get("safe_table_approach_mission", {}).get("table_docking_reference_unchanged") is not True
                     or input_manifest.get("derived_route_sha256") != route_config_hash
                     or input_manifest.get("source_static_plan_sha256") != hashlib.sha256(table_plan_path.read_bytes()).hexdigest()
+                    or bool(input_manifest.get("aligned_start_table_approach")) != aligned_start_table_approach_mode
                 ):
                     raise ValueError("table-approach scene wrapper, static plan, or mission hash did not match")
-                required_segments = {("START", "START_ALIGN"), ("START_ALIGN", "WAYPOINT"),
-                                     ("WAYPOINT", "TABLE_APPROACH")}
+                required_segments = (
+                    {("START", "WAYPOINT"), ("WAYPOINT", "TABLE_APPROACH")}
+                    if aligned_start_table_approach_mode else {
+                        ("START", "START_ALIGN"), ("START_ALIGN", "WAYPOINT"),
+                        ("WAYPOINT", "TABLE_APPROACH"),
+                    }
+                )
                 passing_segments = {
                     (str(item.get("from")), str(item.get("to")))
                     for item in table_plan.get("segments", []) if isinstance(item, Mapping)
@@ -3136,7 +3174,11 @@ class FocusedM1Diagnostic(Node):
                 )
                 workcell = {
                     "status": "PASS",
-                    "classification": "STATIC_RAICOM_SAFE_PREFIX_ROOM_TABLE_CHAIR_MUG_SCENE; no dynamic collision observer",
+                    "classification": (
+                        "STATIC_DERIVED_ALIGNED_START_RAICOM_SAFE_PREFIX_ROOM_TABLE_CHAIR_MUG_SCENE; no dynamic collision observer"
+                        if aligned_start_table_approach_mode else
+                        "STATIC_RAICOM_SAFE_PREFIX_ROOM_TABLE_CHAIR_MUG_SCENE; no dynamic collision observer"
+                    ),
                     "robot_collision_footprint_radial_upper_bound_m": float(
                         static_scene["robot_collision_footprint_radial_upper_bound_m"]
                     ),
@@ -3145,6 +3187,7 @@ class FocusedM1Diagnostic(Node):
                     "active_world_obstacles": ["RAICOM room walls", "table", "chair", "mug"],
                     "static_preflight_path": str(table_plan_path),
                     "scene_bundle_path": str(bundle_path),
+                    "aligned_start_table_approach": aligned_start_table_approach_mode,
                 }
                 result["local01_scene_static_preflight"] = static_scene
                 result["local01_scene_runtime_bundle"] = scene_bundle
@@ -3156,6 +3199,7 @@ class FocusedM1Diagnostic(Node):
                     "mission_id": mission.get("mission_id"),
                     "classification": mission.get("classification"),
                     "frame_id": mission.get("frame_id"),
+                    "aligned_start_table_approach": aligned_start_table_approach_mode,
                     "staged_path": str(route_config_path),
                     "parent_manifest_verified": True,
                 }
@@ -3411,7 +3455,11 @@ class FocusedM1Diagnostic(Node):
                 )
                 result["runtime_raw_odom_reset_gate"] = {
                     "status": "PASS" if reset_frame_gate["status"] == "PASS" else "BLOCKED",
-                    "basis": "fresh post-Reset odometry against the source scene-world START before zero-forward alignment",
+                    "basis": (
+                        "fresh post-Reset odometry against the derived yaw-zero scene START before any locomotion command"
+                        if aligned_start_table_approach_mode else
+                        "fresh post-Reset odometry against the source scene-world START before zero-forward alignment"
+                    ),
                     "expected": runtime_contract["static_scene_start"],
                     "immediate_post_reset": reset_frame_gate,
                     "runtime_reset_odom_observed": True,
@@ -3421,45 +3469,71 @@ class FocusedM1Diagnostic(Node):
                     result.update({"status": "BLOCKED", "fault": "TABLE_APPROACH_RESET_ANCHOR_MISMATCH",
                                    "route_manager_motion_calls": 0, "nonzero_publish_calls_returned": 0})
                     return result
-                alignment = self.run_zero_forward_table_alignment(
-                    registration=registration, set_action=set_action,
-                    stationary_baseline=stationary_baseline, mission=local01_route_input,
-                )
-                result["initial_yaw_alignment"] = alignment
-                if alignment.get("status") != "PASS":
-                    result.update({"status": "BLOCKED", "fault": alignment.get("fault") or "TABLE_START_ALIGNMENT_NOT_QUALIFIED"})
-                    return result
-                # Alignment ends in verified STAND.  Reacquire LOCOMOTION via
-                # the existing source-grounded path before its first transit.
-                lifecycle, next_set_action, activation_gate = self.begin_source_grounded_route_activation(
-                    registration=registration, phase="table-approach-first-transit-rearm",
-                )
-                result["post_alignment_source_grounded_activation"] = {
-                    "set_mc_action_ld": next_set_action,
-                    "activation_gate": activation_gate,
-                    "lifecycle_after_activation": lifecycle.snapshot(),
-                }
-                if activation_gate.get("status") != "READY":
-                    recovery = self.recover_activation_to_stand(
-                        lifecycle=lifecycle, registration=registration, set_action=next_set_action,
-                        baseline=stationary_baseline,
-                        reason=str(activation_gate.get("fault") or activation_gate.get("terminal_reason") or "post-alignment route activation was not ready"),
-                        phase="table-approach-first-transit-recovery",
+                if aligned_start_table_approach_mode:
+                    post_sd_pose = {
+                        "x_m": start_pose.x_m,
+                        "y_m": start_pose.y_m,
+                        "z_m": float(initial["pose"]["z"]),
+                        "yaw_rad": start_pose.yaw_rad,
+                    }
+                    derived_start_gate = validate_runtime_raw_odom_aligned_start_table_approach_start(
+                        local01_route_input, post_sd_pose
                     )
-                    result["post_alignment_source_grounded_activation"]["stand_recovery"] = recovery
-                    result.update({"status": "BLOCKED", "fault": "TABLE_APPROACH_FIRST_TRANSIT_REARM_NOT_CONFIRMED"})
-                    return result
-                self.activation_lifecycle = lifecycle
-                set_action = next_set_action
-                initial = self.sample_for_first_motion()
-                initial_fault = snapshot_fault(
-                    initial, self.joint_limits, state_timeout_s=self.args.state_timeout,
-                    min_root_z=self.args.min_root_z, max_tilt_deg=self.args.max_tilt_deg,
-                    max_observed_planar_speed_m_s=0.2,
-                )
-                if initial_fault or not stand_mode_readback_confirmed(initial):
-                    raise ValueError("post-alignment route start is not fresh stable STAND")
-                start_pose = pose_from_snapshot(initial)
+                    result["derived_aligned_start_post_sd_gate"] = derived_start_gate
+                    result["initial_yaw_alignment"] = {
+                        "status": "NOT_APPLICABLE_DERIVED_INITIAL_YAW_ZERO_BEFORE_PHYSICS",
+                        "nonzero_commands_sent_for_alignment": 0,
+                        "post_sd_start_gate": derived_start_gate,
+                        "original_yaw_only_turn": "NOT_RUN_AND_NOT_QUALIFIED",
+                    }
+                    if derived_start_gate["status"] != "PASS":
+                        result.update({
+                            "status": "BLOCKED",
+                            "fault": "ALIGNED_START_POST_SD_POSE_OUTSIDE_STATIC_ENVELOPE",
+                            "route_manager_motion_calls": 0,
+                            "nonzero_publish_calls_returned": 0,
+                        })
+                        return result
+                else:
+                    alignment = self.run_zero_forward_table_alignment(
+                        registration=registration, set_action=set_action,
+                        stationary_baseline=stationary_baseline, mission=local01_route_input,
+                    )
+                    result["initial_yaw_alignment"] = alignment
+                    if alignment.get("status") != "PASS":
+                        result.update({"status": "BLOCKED", "fault": alignment.get("fault") or "TABLE_START_ALIGNMENT_NOT_QUALIFIED"})
+                        return result
+                    # Alignment ends in verified STAND.  Reacquire LOCOMOTION via
+                    # the existing source-grounded path before its first transit.
+                    lifecycle, next_set_action, activation_gate = self.begin_source_grounded_route_activation(
+                        registration=registration, phase="table-approach-first-transit-rearm",
+                    )
+                    result["post_alignment_source_grounded_activation"] = {
+                        "set_mc_action_ld": next_set_action,
+                        "activation_gate": activation_gate,
+                        "lifecycle_after_activation": lifecycle.snapshot(),
+                    }
+                    if activation_gate.get("status") != "READY":
+                        recovery = self.recover_activation_to_stand(
+                            lifecycle=lifecycle, registration=registration, set_action=next_set_action,
+                            baseline=stationary_baseline,
+                            reason=str(activation_gate.get("fault") or activation_gate.get("terminal_reason") or "post-alignment route activation was not ready"),
+                            phase="table-approach-first-transit-recovery",
+                        )
+                        result["post_alignment_source_grounded_activation"]["stand_recovery"] = recovery
+                        result.update({"status": "BLOCKED", "fault": "TABLE_APPROACH_FIRST_TRANSIT_REARM_NOT_CONFIRMED"})
+                        return result
+                    self.activation_lifecycle = lifecycle
+                    set_action = next_set_action
+                    initial = self.sample_for_first_motion()
+                    initial_fault = snapshot_fault(
+                        initial, self.joint_limits, state_timeout_s=self.args.state_timeout,
+                        min_root_z=self.args.min_root_z, max_tilt_deg=self.args.max_tilt_deg,
+                        max_observed_planar_speed_m_s=0.2,
+                    )
+                    if initial_fault or not stand_mode_readback_confirmed(initial):
+                        raise ValueError("post-alignment route start is not fresh stable STAND")
+                    start_pose = pose_from_snapshot(initial)
             footprint = float(workcell["robot_collision_footprint_radial_upper_bound_m"])
             clear_radius = float(workcell["verified_local_clear_radius_m"])
             curved_reference = (
@@ -3681,7 +3755,11 @@ class FocusedM1Diagnostic(Node):
                     "configured_route_input_sha256": hashlib.sha256(
                         Path(self.args.route_config).read_bytes()
                     ).hexdigest(),
-                    "route_motion_profile": "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION",
+                    "route_motion_profile": (
+                        "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
+                        if aligned_start_table_approach_mode else
+                        "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION"
+                    ),
                     "maximum_windows_total": int(limits["max_windows"]),
                     "maximum_window_s": float(limits["max_window_s"]),
                     "aggregate_nonzero_limit_s": float(limits["max_aggregate_nonzero_s"]),
@@ -5451,6 +5529,10 @@ class FocusedM1Diagnostic(Node):
                 result.update({
                     "status": "PASS" if final_route_pass else "BLOCKED",
                     "classification": (
+                        "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION_PASS"
+                        if final_route_pass and aligned_start_table_approach_mode else
+                        "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION_BLOCKED"
+                        if aligned_start_table_approach_mode else
                         "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION_PASS"
                         if final_route_pass and table_approach_mission_mode else
                         "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION_BLOCKED"
@@ -5464,12 +5546,16 @@ class FocusedM1Diagnostic(Node):
                         "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED"
                     ),
                     "acceptance_scope": (
+                        "DERIVED_ALIGNED_START_GROUND_TRUTH_SAFE_PREFIX_TO_TABLE_APPROACH_WITH_PHYSICAL_STOP; ORIGINAL_START_ALIGNMENT_TABLE_DOCKING_AND_MANIPULATION_NOT_RUN"
+                        if aligned_start_table_approach_mode else
                         "GROUND_TRUTH_SAFE_PREFIX_TO_TABLE_APPROACH_WITH_PHYSICAL_STOP; TABLE_DOCKING_AND_MANIPULATION_NOT_RUN"
                         if table_approach_mission_mode else
                         "LOCAL01_SCENE_START_HEADING_SHORT_FORWARD_ROUTE_NOT_TABLE_DOCKING"
                         if short_scene_route_mode else "GROUND_TRUTH_WAYPOINT_AND_DOCKING_POSE_WITH_PHYSICAL_STOP"
                     ),
                     "route_lifecycle_completion": (
+                        "DERIVED_ALIGNED_START_TABLE_APPROACH_STOPPED_NO_ORIGINAL_START_QUALIFICATION_OR_MANIPULATOR_HANDOFF"
+                        if final_route_pass and aligned_start_table_approach_mode else
                         "TABLE_APPROACH_STOPPED_NO_TABLE_DOCKING_OR_MANIPULATOR_HANDOFF"
                         if final_route_pass and table_approach_mission_mode else
                         "SHORT_ROUTE_STOPPED_NO_TABLE_OR_MANIPULATOR_HANDOFF"
@@ -7339,6 +7425,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     configured_route = bool(getattr(args, "route_config", None))
     short_scene_route = bool(getattr(args, "short_scene_route", False))
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
+    aligned_start_table_approach = bool(
+        getattr(args, "aligned_start_table_approach", False)
+    )
     configured_route_observation = bool(
         getattr(args, "route_config_post_stand_observation", False)
     )
@@ -7348,6 +7437,8 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("--table-approach-mission requires --route-config")
     if table_approach_mission and short_scene_route:
         raise ValueError("table-approach mission cannot be combined with the short-scene route")
+    if aligned_start_table_approach and not table_approach_mission:
+        raise ValueError("--aligned-start-table-approach requires --table-approach-mission")
     if configured_route_observation and not configured_route:
         raise ValueError("configured-route post-STAND observation requires --route-config")
     if configured_route:
@@ -7379,7 +7470,10 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("configured route must retain the existing speed, zero-stop, and watchdog profile")
         if table_approach_mission:
             route_input = json.loads(Path(args.route_config).read_text(encoding="utf-8"))
-            validate_runtime_raw_odom_table_approach_mission(route_input)
+            if aligned_start_table_approach:
+                validate_runtime_raw_odom_aligned_start_table_approach_mission(route_input)
+            else:
+                validate_runtime_raw_odom_table_approach_mission(route_input)
             profile_route = {
                 "status": "VALIDATED_NO_RUNTIME",
                 "route_kind": route_input["classification"],
@@ -7389,6 +7483,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "maximum_windows_total": int(route_input["limits"]["max_windows"]),
                 "aggregate_nonzero_limit_s": float(route_input["limits"]["max_aggregate_nonzero_s"]),
                 "initial_yaw_alignment": dict(route_input["initial_alignment"]),
+                "aligned_start_table_approach": aligned_start_table_approach,
                 "runtime_reset_odom_observed": False,
             }
         elif short_scene_route:
@@ -7779,6 +7874,14 @@ def main() -> int:
         "--table-approach-mission",
         action="store_true",
         help="execute only Local01 START_ALIGN→WAYPOINT→TABLE_APPROACH; never TABLE_DOCKING",
+    )
+    first.add_argument(
+        "--aligned-start-table-approach",
+        action="store_true",
+        help=(
+            "require the versioned SIMULATION_ONLY pre-physics yaw-zero scene; "
+            "it does not qualify the original START yaw alignment"
+        ),
     )
     first.add_argument("--route-config-post-stand-observation", action="store_true")
     first.add_argument("--point-goal-diagnostic", action="store_true")

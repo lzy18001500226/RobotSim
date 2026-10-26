@@ -20,10 +20,12 @@ import yaml
 
 from issue80_local01_scene_route import (
     LOCAL01_SCENE_RELATIVE, _world_geom_aabb, load_local01_scene_inputs,
-    native_name_scene_tree, transform_scene_pose_to_odom,
+    native_name_scene_tree, aligned_start_scene_tree, transform_scene_pose_to_odom,
     RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,
     build_runtime_raw_odom_table_approach_mission,
+    build_runtime_raw_odom_aligned_start_table_approach_mission,
     validate_runtime_raw_odom_table_approach_mission,
+    validate_runtime_raw_odom_aligned_start_table_approach_mission,
 )
 from issue80_raicom_reset_only import LOCAL01_POSES_DEFAULT, RUNTIME
 from issue80_waypoint_route import WAYPOINT_DOCKING_POSE_SCHEMA_VERSION, load_waypoint_docking_pose_input
@@ -164,6 +166,14 @@ def main(argv: list[str] | None = None):
         "--native-standing-qpos-trace", type=Path, default=None,
         help="read-only native MjData trace used as a third static posture",
     )
+    parser.add_argument(
+        "--aligned-start",
+        action="store_true",
+        help=(
+            "generate the separately versioned SIMULATION_ONLY yaw-zero X2 start scene audit; "
+            "the immutable Local01 input and original yaw+pi/2 mission remain references"
+        ),
+    )
     args = parser.parse_args(argv)
     source = load_local01_scene_inputs(LOCAL01_POSES_DEFAULT)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"agent"))
@@ -171,7 +181,12 @@ def main(argv: list[str] | None = None):
     output = create_unique_output_directory(
         "/home/lzy18001500226/projects/RobotSim/reviews/issue-80", prefix="raicom-table-plan"
     ).native_path
-    tree = native_name_scene_tree(Path(source["repository_root"])/LOCAL01_SCENE_RELATIVE)
+    tree = (
+        aligned_start_scene_tree(Path(source["repository_root"])/LOCAL01_SCENE_RELATIVE)
+        if args.aligned_start else native_name_scene_tree(
+            Path(source["repository_root"])/LOCAL01_SCENE_RELATIVE
+        )
+    )
     model = mujoco.MjModel.from_xml_string(ET.tostring(tree, encoding="unicode"))
     pelvis = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
     root = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
@@ -214,9 +229,19 @@ def main(argv: list[str] | None = None):
 
     points = source["scene_world_poses"]["poses"]
     pose = lambda name: tuple(points[name]["xyz_m"])+(float(points[name]["yaw_rad"]),)
-    waypoints = [("START",pose("START")), ("START_ALIGN",pose("START_ALIGN")),
-                 ("WAYPOINT",pose("WAYPOINT")), ("TABLE_APPROACH",(.90,-1.50,.68,0.0)),
-                 ("TABLE_DOCKING",pose("TABLE_DOCKING"))]
+    if args.aligned_start:
+        waypoints = [
+            ("START", pose("START_ALIGN")),
+            ("WAYPOINT", pose("WAYPOINT")),
+            ("TABLE_APPROACH", (.90, -1.50, .68, 0.0)),
+            ("TABLE_DOCKING", pose("TABLE_DOCKING")),
+        ]
+    else:
+        waypoints = [
+            ("START",pose("START")), ("START_ALIGN",pose("START_ALIGN")),
+            ("WAYPOINT",pose("WAYPOINT")), ("TABLE_APPROACH",(.90,-1.50,.68,0.0)),
+            ("TABLE_DOCKING",pose("TABLE_DOCKING")),
+        ]
     results = []
     rows = []
     segments = list(zip(waypoints,waypoints[1:]))
@@ -316,23 +341,55 @@ def main(argv: list[str] | None = None):
     poses = []
     for name,p in waypoints:
         world={"xyz_m":list(p[:3]),"yaw_rad":p[3]}
-        poses.append({"name":name,"scene_world":world,
-                      "local01_reset_local_odom":transform_scene_pose_to_odom(world,source["odom_from_scene"]),
-                      "runtime_raw_odom_convention":"SCENE_WORLD_RESET_ANCHOR_OBSERVED_20261026; independent live GT unavailable"})
+        record = {"name": name, "scene_world": world}
+        if args.aligned_start:
+            record.update({
+                "original_local01_reset_local_odom_reference": transform_scene_pose_to_odom(
+                    world, source["odom_from_scene"]
+                ),
+                "derived_runtime_raw_odom_expected": {
+                    "x_m": p[0], "y_m": p[1], "z_m": p[2], "yaw_rad": p[3],
+                },
+                "runtime_raw_odom_convention": (
+                    "DERIVED_ALIGNED_SCENE_WORLD_HYPOTHESIS_REQUIRES_LIVE_RESET_GATE"
+                ),
+            })
+        else:
+            record.update({
+                "local01_reset_local_odom": transform_scene_pose_to_odom(
+                    world, source["odom_from_scene"]
+                ),
+                "runtime_raw_odom_convention": (
+                    "SCENE_WORLD_RESET_ANCHOR_OBSERVED_20261026; independent live GT unavailable"
+                ),
+            })
+        poses.append(record)
     # Reuse the existing route-config shape, but do not feed it into a live
     # runner: the complete route has different distance/turning budgets.
     config = build_raw_world_odom_route_config(poses)
     config_path=output/"table_route_raw_world_ODOM_OFFLINE_ONLY.json"
     config_path.write_text(json.dumps(config,indent=2)+"\n")
     load_waypoint_docking_pose_input(config_path)
-    mission = build_runtime_raw_odom_table_approach_mission(source)
-    validate_runtime_raw_odom_table_approach_mission(mission)
-    mission_path = output / "safe_table_approach_mission_raw_world_ODOM_OFFLINE_ONLY.json"
+    mission = (
+        build_runtime_raw_odom_aligned_start_table_approach_mission(source)
+        if args.aligned_start else build_runtime_raw_odom_table_approach_mission(source)
+    )
+    if args.aligned_start:
+        validate_runtime_raw_odom_aligned_start_table_approach_mission(mission)
+    else:
+        validate_runtime_raw_odom_table_approach_mission(mission)
+    mission_path = output / (
+        "aligned_start_v1_table_approach_mission_raw_world_ODOM_OFFLINE_ONLY.json"
+        if args.aligned_start else "safe_table_approach_mission_raw_world_ODOM_OFFLINE_ONLY.json"
+    )
     mission_path.write_text(json.dumps(mission, indent=2)+"\n")
     length=sum(math.dist(a[:3],b[:3]) for (_,a),(_,b) in zip(waypoints,waypoints[1:]))
     minimum_turn_radius=.12/.075
     report={"schema":"robotsim.issue80.raicom-table-plan.v1",
-            "status":"STATIC_GEOMETRY_REVIEW_ONLY_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED",
+            "status":(
+                "STATIC_GEOMETRY_REVIEW_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED"
+                if args.aligned_start else "STATIC_GEOMETRY_REVIEW_ONLY_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED"
+            ),
             "source_commit":source["source_commit"],"source_hashes":source["source_hashes"],
             "mujoco_version":mujoco.__version__,"mj_step_calls":0,
             "robot_collision_geoms":len(robot),"environment_collision_geoms":len(environment),
@@ -348,9 +405,15 @@ def main(argv: list[str] | None = None):
                 "classification": mission["classification"],
                 "execution_order": mission["execution_order"],
                 "table_docking_reference_unchanged": mission["table_docking_reference"]["source_pose_unchanged"],
-                "initial_turn_status": mission["initial_alignment"]["zero_forward_angular_mc_status"],
+                "initial_turn_status": (
+                    mission["initial_alignment"].get("zero_forward_angular_mc_status")
+                    if not args.aligned_start else mission["initial_alignment"]["status"]
+                ),
                 "bounded_runtime_budget": mission["bounded_runtime_budget"],
             },
+            "aligned_start_scene_derivation": (
+                mission["derived_scene_initialization"] if args.aligned_start else None
+            ),
             "separate_review_candidate":{"scene_world_xyz_yaw":[.95,-1.50,.68,0.0],
                  "reason":"50 mm retreat from source docking to preserve nominal-posture uncertainty clearance",
                  "source_docking_unchanged":True,"manipulation_reach":"UNKNOWN_NOT_AN_ACCEPTED_DOCK"},
@@ -368,8 +431,11 @@ def main(argv: list[str] | None = None):
             "docking_requirement":{"position_tolerance_m":.025,"yaw_tolerance_rad":.02,
                                    "controller_accuracy":"NOT_YET_VALIDATED","manipulation_IK":"NOT_VALIDATED",
                                    "source_target_preserved":True},
-            "turning":{"initial_heading_change_rad":-math.pi/2,"primitive":"STOP_AND_ALIGN_GEOMETRY_ONLY",
-                       "in_place_rotation_MC_qualification":"NOT_VALIDATED",
+            "turning":{"initial_heading_change_rad":0.0 if args.aligned_start else -math.pi/2,"primitive":(
+                           "PRE_PHYSICS_DERIVED_START_FRAME_ROTATION" if args.aligned_start else "STOP_AND_ALIGN_GEOMETRY_ONLY"),
+                       "in_place_rotation_MC_qualification":(
+                           "NOT_APPLICABLE_TO_DERIVED_SCENE; ORIGINAL_START_REMAINS_NOT_VALIDATED"
+                           if args.aligned_start else "NOT_VALIDATED"),
                        "moving_arc_radius_at_caps_m":minimum_turn_radius,
                        "right_quarter_arc_endpoint_world":[-1.5+minimum_turn_radius,-1.5+minimum_turn_radius],
                        "right_quarter_arc_length_m":minimum_turn_radius*math.pi/2,
@@ -382,8 +448,14 @@ def main(argv: list[str] | None = None):
                 "post_window_STAND_and_composite_hold":"unchanged full gates; up to 7 seconds observation",
                 "the_old_15_second_budget_cannot_reach":length>.12*15,
                 "total_budget_decision":"DEFERRED_UNTIL_90_DEG_TURN_AND_DOCK_ACCURACY_QUALIFIED"},
-            "longest_verified_prefix":"STATIC_START_ALIGN_AND_CORRIDOR_ONLY; dynamic prefix requires live Reset/standing and turn qualification",
-            "table_approach_live_execution":"NOT_RUN_UNTIL_INITIAL_TURN_AND_FULL_MISSION_RUNTIME_GATES_PASS",
+            "longest_verified_prefix":(
+                "STATIC_DERIVED_START_TO_CORRIDOR_ONLY; dynamic route requires live Reset/standing and full gates"
+                if args.aligned_start else "STATIC_START_ALIGN_AND_CORRIDOR_ONLY; dynamic prefix requires live Reset/standing and turn qualification"
+            ),
+            "table_approach_live_execution":(
+                "NOT_RUN_UNTIL_DERIVED_START_STANDING_AND_FULL_MISSION_RUNTIME_GATES_PASS"
+                if args.aligned_start else "NOT_RUN_UNTIL_INITIAL_TURN_AND_FULL_MISSION_RUNTIME_GATES_PASS"
+            ),
             "full_route_live_execution":"NOT_RUN_NOT_AUTHORIZED"}
     (output/"table_plan.json").write_text(json.dumps(report,indent=2)+"\n")
     (output/"samples.json").write_text(json.dumps(rows)+"\n")

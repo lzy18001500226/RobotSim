@@ -71,10 +71,12 @@ from issue80_local01_scene_route import (
     LOCAL01_COMMIT,
     build_runtime_raw_odom_short_route_config,
     build_runtime_raw_odom_table_approach_mission,
+    build_runtime_raw_odom_aligned_start_table_approach_mission,
     load_local01_scene_inputs,
     prepare_local01_scene_runtime_bundle,
     validate_short_route_static_scene,
     validate_runtime_raw_odom_table_approach_mission,
+    validate_runtime_raw_odom_aligned_start_table_approach_mission,
 )
 
 
@@ -954,6 +956,63 @@ def validate_local01_table_approach_mission_input(
     }
 
 
+def validate_local01_aligned_start_table_approach_mission_input(
+    poses_path: str | os.PathLike[str], mission_path: str | os.PathLike[str],
+    static_plan_path: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Validate the separately versioned pre-physics aligned-start integration.
+
+    The original source mission is retained by the generated input as a
+    reference, but cannot be silently substituted by this derived scene.
+    """
+    source = load_local01_scene_inputs(poses_path, require_clean_commit=True)
+    mission_file = Path(mission_path)
+    plan_file = Path(static_plan_path)
+    if any(path.is_symlink() or not path.is_file() for path in (mission_file, plan_file)):
+        raise ValueError("aligned-start mission and static plan must be regular files")
+    try:
+        mission = json.loads(mission_file.read_text(encoding="utf-8"))
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"aligned-start mission or static plan is unreadable: {type(exc).__name__}"
+        ) from exc
+    if not isinstance(mission, Mapping) or not isinstance(plan, Mapping):
+        raise ValueError("aligned-start mission and static plan must be JSON objects")
+    validate_runtime_raw_odom_aligned_start_table_approach_mission(mission)
+    expected = build_runtime_raw_odom_aligned_start_table_approach_mission(source)
+    if mission != expected:
+        raise ValueError("aligned-start mission differs from the pinned source-derived contract")
+    if (
+        plan.get("status")
+            != "STATIC_GEOMETRY_REVIEW_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED"
+        or plan.get("source_commit") != source["source_commit"]
+        or plan.get("source_hashes") != source["source_hashes"]
+        or plan.get("safe_table_approach_mission", {}).get("classification")
+            != mission.get("classification")
+        or plan.get("safe_table_approach_mission", {}).get("table_docking_reference_unchanged") is not True
+        or plan.get("aligned_start_scene_derivation")
+            != mission.get("derived_scene_initialization")
+    ):
+        raise ValueError("aligned-start static plan does not match the pinned derived mission")
+    required_segments = {("START", "WAYPOINT"), ("WAYPOINT", "TABLE_APPROACH")}
+    observed = {
+        (str(item.get("from")), str(item.get("to")))
+        for item in plan.get("segments", []) if isinstance(item, Mapping)
+        and item.get("status") == "PASS_STATIC_ONLY"
+    }
+    if not required_segments.issubset(observed):
+        raise ValueError("aligned-start static plan lacks passing full derived-corridor segments")
+    return {
+        "source": source,
+        "mission": mission,
+        "plan": plan,
+        "mission_sha256": hashlib.sha256(mission_file.read_bytes()).hexdigest(),
+        "plan_sha256": hashlib.sha256(plan_file.read_bytes()).hexdigest(),
+        "aligned_start": True,
+    }
+
+
 def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str]:
     """Build the exact production Docker exec command for the M1 child runner."""
     zero_only_activation = bool(
@@ -1092,6 +1151,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --short-scene-route"
         if getattr(args, "table_approach_mission", None):
             command[-1] += " --table-approach-mission"
+            if getattr(args, "aligned_start_table_approach", False):
+                command[-1] += " --aligned-start-table-approach"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -1630,6 +1691,9 @@ class BoundedRun:
         self.local01_scene_bundle: dict[str, Any] | None = None
         self.local01_scene_source: dict[str, Any] | None = None
         self.local01_scene_readonly_mounts: list[tuple[Path, str]] = []
+        self.aligned_start_table_approach = bool(
+            getattr(args, "aligned_start_table_approach", False)
+        )
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
@@ -1654,15 +1718,45 @@ class BoundedRun:
             staged_plan = self.evidence / "table_approach_static_plan.json"
             shutil.copyfile(plan_source, staged_plan)
             self.local01_scene_bundle = prepare_local01_scene_runtime_bundle(
-                self.local01_scene_source, self.evidence, runtime_root=RUNTIME,
+                self.local01_scene_source,
+                self.evidence,
+                runtime_root=RUNTIME,
+                aligned_start=self.aligned_start_table_approach,
             )
             # Retain the existing name/physics-equivalence evidence used by
             # the Local01 runtime wrapper.  The separate full table-plan file
             # remains the authority for the longer safe-prefix geometry.
-            short_static = validate_short_route_static_scene(
-                Path(str(source["repository_root"])) / "simulation/mujoco/scenes/raicom2026",
-                build_runtime_raw_odom_short_route_config(source),
-            )
+            if self.aligned_start_table_approach:
+                short_static = {
+                    "schema": "robotsim.issue80.aligned-start-runtime-static-preflight.v1",
+                    "status": "PASS_STATIC_SCENE_CLEARANCE",
+                    "classification": "STATIC_COMPILED_ALIGNED_START_WRAPPER_NO_DYNAMICS",
+                    "mj_step_calls": 0,
+                    "source_local01_commit": source["source_commit"],
+                    "source_scene_world_poses_sha256": source["source_hashes"]["scene_world_poses"],
+                    "native_runtime_name_contract": self.local01_scene_bundle[
+                        "generated_runtime_name_contract"
+                    ],
+                    "compiled_name_only_equivalence": self.local01_scene_bundle[
+                        "generated_wrapper_physics_equivalence"
+                    ],
+                    "native_robot_equivalence": self.local01_scene_bundle[
+                        "generated_native_robot_equivalence"
+                    ],
+                    "scene_wrapper_change_classification": self.local01_scene_bundle[
+                        "scene_wrapper_change_classification"
+                    ],
+                    "initial_full_body_static_clearance": "AUTHORITY_IS_MATCHING_TABLE_APPROACH_STATIC_PLAN",
+                    "limitations": [
+                        "This wrapper preflight validates native names and compiled invariants only.",
+                        "The matching aligned-start table plan owns full-body initial and corridor clearance.",
+                    ],
+                }
+            else:
+                short_static = validate_short_route_static_scene(
+                    Path(str(source["repository_root"])) / "simulation/mujoco/scenes/raicom2026",
+                    build_runtime_raw_odom_short_route_config(source),
+                )
             if short_static.get("status") != "PASS_STATIC_SCENE_CLEARANCE":
                 raise ValueError("Local01 wrapper short static preflight no longer passes")
             with (self.evidence / "local01_scene/static_scene_preflight.json").open("x", encoding="utf-8") as stream:
@@ -1671,6 +1765,7 @@ class BoundedRun:
             route_manifest = {
                 "schema": "robotsim.issue80.table-approach-mission-input.v1",
                 "classification": mission["classification"],
+                "aligned_start_table_approach": self.aligned_start_table_approach,
                 "source_local01_commit": source["source_commit"],
                 "source_scene_world_poses_sha256": source["source_hashes"]["scene_world_poses"],
                 "derived_route_sha256": self.route_config_sha256,
@@ -1684,6 +1779,8 @@ class BoundedRun:
             with (self.evidence / "route_config_input.json").open("x", encoding="utf-8") as stream:
                 json.dump(route_manifest, stream, indent=2, allow_nan=False)
                 stream.write("\n")
+            runtime_scene_filename = str(self.local01_scene_bundle["runtime_scene_filename"])
+            runtime_config_filename = str(self.local01_scene_bundle["runtime_simulator_config_filename"])
             self.local01_scene_readonly_mounts = [
                 (self.evidence / "route_config.json", "/workspace/evidence/route_config.json"),
                 (self.evidence / "route_config_input.json", "/workspace/evidence/route_config_input.json"),
@@ -1692,9 +1789,9 @@ class BoundedRun:
                 (self.evidence / "local01_scene/route_waypoints.json", "/workspace/evidence/local01_scene/route_waypoints.json"),
                 (self.evidence / "local01_scene/scene_workspace.xml", "/workspace/evidence/local01_scene/scene_workspace.xml"),
                 (self.evidence / "local01_scene/mug_portable.xml", "/workspace/evidence/local01_scene/mug_portable.xml"),
-                (self.evidence / "local01_scene/scene_workspace_runtime.xml", "/workspace/evidence/local01_scene/scene_workspace_runtime.xml"),
+                (self.evidence / "local01_scene" / runtime_scene_filename, "/workspace/evidence/local01_scene/" + runtime_scene_filename),
                 (self.evidence / "local01_scene/mug_portable_runtime.xml", "/workspace/evidence/local01_scene/mug_portable_runtime.xml"),
-                (self.evidence / "local01_scene/simulator_default_local01_scene.yaml", "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml"),
+                (self.evidence / "local01_scene" / runtime_config_filename, "/workspace/evidence/local01_scene/" + runtime_config_filename),
                 (self.evidence / "local01_scene/runtime_bundle_manifest.json", "/workspace/evidence/local01_scene/runtime_bundle_manifest.json"),
                 (self.evidence / "local01_scene/static_scene_preflight.json", "/workspace/evidence/local01_scene/static_scene_preflight.json"),
             ]
@@ -2479,9 +2576,13 @@ class BoundedRun:
     def start_sim_first(self) -> None:
         launch_command = "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
         if self.local01_scene_bundle is not None:
+            config_path = str(self.local01_scene_bundle.get(
+                "runtime_simulator_config_path",
+                "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml",
+            ))
             launch_command = (
                 "ROBOTSIM_SIMULATOR_CFG_OVERRIDE="
-                "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml "
+                + shlex.quote(config_path) + " "
                 + launch_command
             )
         self.docker_exec(
@@ -2503,23 +2604,32 @@ class BoundedRun:
             timeout_s=26.0,
         )
         if self.local01_scene_bundle is not None:
-            expected_scene = str(self.local01_scene_bundle["runtime_files_sha256"]["scene_workspace_runtime.xml"])
+            scene_path = str(self.local01_scene_bundle.get(
+                "runtime_scene_path",
+                "/workspace/evidence/local01_scene/scene_workspace_runtime.xml",
+            ))
+            scene_filename = str(self.local01_scene_bundle.get(
+                "runtime_scene_filename", "scene_workspace_runtime.xml"
+            ))
+            expected_scene = str(self.local01_scene_bundle["runtime_files_sha256"][scene_filename])
             checked = self.docker_exec(
                 "verify_local01_runtime_scene_wrapper_sha256",
-                "sha256sum /workspace/evidence/local01_scene/scene_workspace_runtime.xml",
+                "sha256sum " + shlex.quote(scene_path),
                 timeout_s=4.0,
             )
             actual_scene = checked.stdout.split()[0] if checked.stdout.split() else ""
             if actual_scene != expected_scene:
                 raise RuntimeError("container scene wrapper differs from the statically validated Local01 scene")
-            config_path = "/workspace/evidence/local01_scene/simulator_default_local01_scene.yaml"
             checked = self.docker_exec(
                 "verify_local01_simulator_config_sha256",
                 "sha256sum " + shlex.quote(config_path),
                 timeout_s=4.0,
             )
             actual_config = checked.stdout.split()[0] if checked.stdout.split() else ""
-            expected_config = str(self.local01_scene_bundle["runtime_files_sha256"]["simulator_default_local01_scene.yaml"])
+            config_filename = str(self.local01_scene_bundle.get(
+                "runtime_simulator_config_filename", "simulator_default_local01_scene.yaml"
+            ))
+            expected_config = str(self.local01_scene_bundle["runtime_files_sha256"][config_filename])
             if actual_config != expected_config:
                 raise RuntimeError("container simulator config differs from the validated Local01 scene overlay")
         if self.foundationwalk_config_overlay is not None:
@@ -3652,13 +3762,17 @@ class BoundedRun:
             pid, title, window_id = self.inspect_window()
             if self.local01_scene_mode:
                 title_matches = "RAICOM X2 room workspace" in title
+                runtime_scene_filename = str(
+                    self.local01_scene_bundle["runtime_scene_filename"]
+                ) if self.local01_scene_bundle is not None else "scene_workspace_runtime.xml"
                 result["scene_window_verification"] = {
                     "status": "PASS" if title_matches else "FAIL",
                     "expected_scene_model_title_fragment": "RAICOM X2 room workspace",
                     "observed_window_title": title,
                     "scene_runtime_bundle_sha256": hashlib.sha256(
-                        (self.evidence / "local01_scene/scene_workspace_runtime.xml").read_bytes()
+                        (self.evidence / "local01_scene" / runtime_scene_filename).read_bytes()
                     ).hexdigest(),
+                    "aligned_start_table_approach": self.aligned_start_table_approach,
                 }
                 if not title_matches:
                     raise RuntimeError("MuJoCo window does not identify the configured Local01 RAICOM scene")
@@ -3831,6 +3945,8 @@ class BoundedRun:
                 self.outcome_classification = (
                     str(route.get("classification"))
                     if route_pass and isinstance(route, Mapping)
+                    else "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION_BLOCKED"
+                    if getattr(self.args, "aligned_start_table_approach", False)
                     else "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION_BLOCKED"
                     if getattr(self.args, "table_approach_mission", None)
                     else "SIMULATION_ONLY_CURVED_PATH_DIAGNOSTIC_BLOCKED"
@@ -4169,6 +4285,14 @@ def main() -> int:
         help="matching read-only RAICOM static table-plan JSON with safe-prefix evidence",
     )
     parser.add_argument(
+        "--aligned-start-table-approach",
+        action="store_true",
+        help=(
+            "require the separately versioned SIMULATION_ONLY pre-physics yaw-zero "
+            "RAICOM scene wrapper; never substitutes for the original START turn"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -4296,16 +4420,26 @@ def main() -> int:
                 "for bounded turn, transit, stop, and teardown windows"
             )
         try:
-            table_preflight = validate_local01_table_approach_mission_input(
-                args.local01_scene_world_poses,
-                args.table_approach_mission,
-                args.table_approach_static_plan,
+            table_preflight = (
+                validate_local01_aligned_start_table_approach_mission_input(
+                    args.local01_scene_world_poses,
+                    args.table_approach_mission,
+                    args.table_approach_static_plan,
+                )
+                if args.aligned_start_table_approach
+                else validate_local01_table_approach_mission_input(
+                    args.local01_scene_world_poses,
+                    args.table_approach_mission,
+                    args.table_approach_static_plan,
+                )
             )
             args.configured_table_approach_preflight = table_preflight
             args.local01_scene_source = table_preflight["source"]
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
             parser.error(f"table-approach mission rejected before runtime: {type(exc).__name__}: {exc}")
         args.extra_stop_observation = 7.0
+    elif args.aligned_start_table_approach:
+        parser.error("--aligned-start-table-approach requires --table-approach-mission")
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
