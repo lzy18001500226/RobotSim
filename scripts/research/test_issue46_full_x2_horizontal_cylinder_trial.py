@@ -17,6 +17,9 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PositionLimitTests(unittest.TestCase):
+    def test_live_viewer_has_a_nonzero_observation_delay(self) -> None:
+        self.assertGreater(MODULE.LIVE_VIEWER_START_DELAY_S, 0.0)
+
     def test_live_viewer_requires_real_dynamics(self) -> None:
         MODULE.validate_live_viewer_options(execute_dynamics=True, live_viewer=True)
         MODULE.validate_live_viewer_options(execute_dynamics=False, live_viewer=False)

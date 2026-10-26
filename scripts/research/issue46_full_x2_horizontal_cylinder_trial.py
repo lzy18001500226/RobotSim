@@ -59,6 +59,7 @@ FINAL_HOLD_STEPS = 500
 VIDEO_EVERY = 20
 VIDEO_FPS = 25
 LIVE_VIEWER_SYNC_EVERY = 10
+LIVE_VIEWER_START_DELAY_S = 3.0
 SETTLE_LINEAR_SPEED_M_S = 0.020
 SETTLE_ANGULAR_SPEED_RAD_S = 0.050
 SETTLE_SUPPORT_RATIO = (0.80, 1.20)
@@ -397,9 +398,19 @@ def main() -> None:
     live_viewer_wall_start_s = None
 
     if args.live_viewer:
-        live_viewer = mujoco.viewer.launch_passive(model, data)
+        # The native reset/control panels can overwrite the preflighted qpos
+        # while this external controller is stepping.  This window is solely a
+        # live display; mouse orbit/pan/zoom remain available.
+        live_viewer = mujoco.viewer.launch_passive(
+            model, data, show_left_ui=False, show_right_ui=False
+        )
         configure_live_viewer(live_viewer)
         live_viewer.sync()
+        print(
+            f"Live MuJoCo viewer open. The real trial starts automatically in "
+            f"{LIVE_VIEWER_START_DELAY_S:.0f} seconds; do not reset the state."
+        )
+        time.sleep(LIVE_VIEWER_START_DELAY_S)
         live_viewer_wall_start_s = time.monotonic() - float(data.time)
         print("Live MuJoCo viewer active: this is the real mj_step trial; closing the window stops the episode.")
 
