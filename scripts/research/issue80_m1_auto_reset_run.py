@@ -296,11 +296,16 @@ def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, 
         and getattr(args, "maintainer_authorized_standing_takeover", False)
         and not getattr(args, "maintainer_authorized_first_motion", False)
     )
+    direct_standing_only = bool(
+        getattr(args, "direct_stand_from_passive", False)
+        and getattr(args, "maintainer_authorized_standing_takeover", False)
+        and not getattr(args, "maintainer_authorized_first_motion", False)
+    )
     if require_warmup and (
         not (
             (getattr(args, "maintainer_authorized_first_motion", False)
              and (extended_b or configured_route))
-            or (prearmed_standing_only and configured_route)
+            or ((prearmed_standing_only or direct_standing_only) and configured_route)
         )
     ):
         raise ValueError(
@@ -5672,8 +5677,16 @@ def main() -> int:
     if args.route_config and args.local01_scene_world_poses:
         parser.error("select either the generic odom route JSON or the pinned Local01 scene-world route")
     if args.local01_scene_world_poses and not args.table_approach_mission:
-        if not args.maintainer_authorized_first_motion:
-            parser.error("Local01 scene route requires separate explicit first-motion authorization")
+        direct_standing_only = bool(
+            args.direct_stand_from_passive
+            and args.maintainer_authorized_standing_takeover
+            and not args.maintainer_authorized_first_motion
+        )
+        if not args.maintainer_authorized_first_motion and not direct_standing_only:
+            parser.error(
+                "Local01 scene route requires separate explicit first-motion authorization "
+                "or the direct-stand startup qualification"
+            )
         if not args.require_stand_warmup_composite:
             parser.error("Local01 scene route requires the complete STAND warmup composite gate")
         if args.route_turn_evidence is not None or args.capture_mc_rl_debug:
@@ -5708,12 +5721,17 @@ def main() -> int:
             and args.maintainer_authorized_standing_takeover
             and not args.maintainer_authorized_first_motion
         )
+        direct_standing_variant = bool(
+            args.direct_stand_from_passive
+            and args.maintainer_authorized_standing_takeover
+            and not args.maintainer_authorized_first_motion
+        )
         if not args.maintainer_authorized_first_motion and not (
             args.maintainer_authorized_zero_only_activation and args.run65_curved_path_diagnostic
-        ) and not prearmed_standing_variant:
+        ) and not prearmed_standing_variant and not direct_standing_variant:
             parser.error(
                 "FoundationWalk diagnostic requires first-motion authorization, except the zero-only activation preflight "
-                "or the MC-prearmed standing qualification"
+                "or a bounded standing qualification"
             )
         if args.run65_ground_truth_point_goal:
             try:
