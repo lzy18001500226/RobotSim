@@ -150,6 +150,10 @@ POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 TABLE_APPROACH_CHILD_TIMEOUT_S = 410.0
 TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
 STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
+# The already-established root-motion guard is 0.20 m/s.  The pre-armed
+# handoff uses it only to reject an already unsafe start; it is not a standing
+# or physical-stop acceptance threshold.
+PREARMED_NOMINAL_MAX_ROOT_SPEED_M_S = 0.20
 POINT_GOAL_ANGULAR_TAPER_START_ERROR_M = 0.25
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
@@ -171,6 +175,17 @@ MC_SIM_CONFIG_DUMP_CONTAINER_PATH = (
 )
 MC_SIM_GENERATED_DIRECTORY = (
     "/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim"
+)
+MC_SIM_CONFIG_RELATIVE = Path(
+    "mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
+)
+MC_SIM_CONFIG_DUMP_RELATIVE = Path(
+    "mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml.dump"
+)
+MC_SIM_GENERATED_SEED_FILENAMES = (
+    "action_setting.yaml",
+    "action_ruler.yaml",
+    "action_state.yaml",
 )
 RUN38_FOUNDATIONWALK_CONFIG_SHA256 = "b3081e9bca2035d4a986657bdc03b79ca0ed5d4e852c7972d86816f569acc2e9"
 RUN38_FOUNDATIONWALK_ONNX_SHA256 = "b8cca5e9048c3c056e94c56ad06f171f9d5a76149aebd893ad524b365507cc9b"
@@ -274,12 +289,22 @@ def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, 
         or getattr(args, "local01_scene_world_poses", None)
     )
     post_observation = getattr(args, "post_locomotion_convergence_observation_s", None)
+    prearmed_standing_only = bool(
+        getattr(args, "mc_prearm_before_simulator", False)
+        and getattr(args, "static_nominal_start_initialization", False)
+        and getattr(args, "maintainer_authorized_standing_takeover", False)
+        and not getattr(args, "maintainer_authorized_first_motion", False)
+    )
     if require_warmup and (
-        not getattr(args, "maintainer_authorized_first_motion", False)
-        or not (extended_b or configured_route)
+        not (
+            (getattr(args, "maintainer_authorized_first_motion", False)
+             and (extended_b or configured_route))
+            or (prearmed_standing_only and configured_route)
+        )
     ):
         raise ValueError(
-            "composite stand warmup gate requires authorized extended-B or configured-route motion"
+            "composite stand warmup gate requires authorized extended-B or configured-route motion, "
+            "or prearmed standing-only qualification"
         )
     if post_observation is None:
         if require_warmup and not configured_route:
@@ -370,6 +395,119 @@ def assess_static_nominal_start_sample(
         "support": support,
         "failure_reason": None if eligible else "static_nominal_start_native_gate_not_met",
     }
+
+
+def assess_prearmed_nominal_handoff_sample(
+    sample: Mapping[str, Any], expected: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Gate the one early JD request while MC is already service-ready.
+
+    This differs deliberately from ``assess_static_nominal_start_sample``.
+    The latter proves *settled* bilateral support before an action request;
+    that is impossible here because the vendor simulator begins stepping before
+    it has received a controller command.  The pre-armed gate accepts only the
+    first source-nominal, bilateral-contact sample while root geometry and both
+    linear-speed components remain within the existing 0.20 m/s guard.  It is
+    an eligibility check for one JD request, never proof of standing.
+    """
+    try:
+        qpos = [float(value) for value in sample["qpos"]]
+        target = [float(value) for value in expected["qpos"]]
+    except (KeyError, TypeError, ValueError):
+        return {"eligible": False, "failure_reason": "missing_native_or_expected_qpos"}
+    if len(qpos) != len(target) or len(qpos) < 19:
+        return {"eligible": False, "failure_reason": "native_qpos_dimension_mismatch"}
+
+    residuals = [abs(qpos[index] - target[index]) for index in range(7, 19)]
+    max_leg_residual = max(residuals, default=math.inf)
+    support = native_foot_support(sample)
+    root_safe = native_root_within_existing_safety_gate(support)
+    vertical_speed = support.get("pelvis_vertical_speed_world_m_s")
+    contact_count = sample.get("captured_foot_floor_contact_count")
+    try:
+        vertical_safe = (
+            math.isfinite(float(vertical_speed))
+            and abs(float(vertical_speed)) <= PREARMED_NOMINAL_MAX_ROOT_SPEED_M_S
+        )
+    except (TypeError, ValueError):
+        vertical_safe = False
+    try:
+        bilateral_contact_geometry = int(contact_count) >= 2
+    except (TypeError, ValueError):
+        bilateral_contact_geometry = False
+    eligible = (
+        math.isfinite(max_leg_residual)
+        and max_leg_residual <= STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD
+        and root_safe
+        and vertical_safe
+        and bilateral_contact_geometry
+    )
+    return {
+        "eligible": eligible,
+        "maximum_leg_nominal_residual_rad": max_leg_residual,
+        "maximum_leg_nominal_residual_limit_rad": STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD,
+        "native_root_within_existing_safety_gate": root_safe,
+        "vertical_speed_within_existing_root_speed_guard": vertical_safe,
+        "maximum_abs_root_speed_guard_m_s": PREARMED_NOMINAL_MAX_ROOT_SPEED_M_S,
+        "bilateral_foot_contact_geometry_observed": bilateral_contact_geometry,
+        "captured_foot_floor_contact_count": contact_count,
+        "support": support,
+        "classification": "PREARMED_NOMINAL_HANDOFF_ELIGIBILITY_NOT_STANDING",
+        "failure_reason": None if eligible else "prearmed_nominal_handoff_native_gate_not_met",
+    }
+
+
+def stage_mc_generated_config_writeback(evidence: Path) -> tuple[Path, dict[str, Any]]:
+    """Stage MC's known generated config outputs outside the vendor runtime.
+
+    The mounted runtime stays read-only.  MC receives one evidence-local dump
+    bind mount and a tmpfs-backed ``sim/`` directory populated from verified
+    vendor inputs.  This mirrors the successful read-only MC pre-arm probe.
+    """
+    config = RUNTIME / MC_SIM_CONFIG_RELATIVE
+    original_dump = RUNTIME / MC_SIM_CONFIG_DUMP_RELATIVE
+    for path in (config, original_dump):
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"required MC config input is missing or unsafe: {path.name}")
+    staged_directory = evidence / "mc_runtime_writeback"
+    staged_directory.mkdir(mode=0o755)
+    staged_dump = staged_directory / "mc_sim.yaml.dump"
+    with staged_dump.open("xb") as stream:
+        stream.write(original_dump.read_bytes())
+    seed_directory = staged_directory / "sim_seed"
+    seed_directory.mkdir(mode=0o755)
+    seed_hashes: dict[str, str] = {}
+    for name in MC_SIM_GENERATED_SEED_FILENAMES:
+        source = config.parent / "sim" / name
+        if source.is_symlink() or not source.is_file():
+            raise RuntimeError(f"required MC generated-config seed is missing or unsafe: {name}")
+        payload = source.read_bytes()
+        with (seed_directory / name).open("xb") as stream:
+            stream.write(payload)
+        seed_hashes[name] = hashlib.sha256(payload).hexdigest()
+    manifest = {
+        "schema": "robotsim.issue80.mc-generated-config-writeback.v1",
+        "classification": "NARROW_EPHEMERAL_MC_GENERATED_CONFIG_ONLY",
+        "runtime_readonly": True,
+        "vendor_runtime_tree_modified": False,
+        "vendor_source_config": str(config),
+        "vendor_source_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+        "vendor_source_dump": str(original_dump),
+        "vendor_source_dump_sha256": hashlib.sha256(original_dump.read_bytes()).hexdigest(),
+        "staged_dump": str(staged_dump),
+        "staged_dump_initial_sha256": hashlib.sha256(staged_dump.read_bytes()).hexdigest(),
+        "container_dump_target": MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
+        "generated_sim_tmpfs_target": MC_SIM_GENERATED_DIRECTORY,
+        "seed_hashes": seed_hashes,
+        "permitted_write_scope": [
+            MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
+            MC_SIM_GENERATED_DIRECTORY,
+        ],
+    }
+    with (evidence / "mc_runtime_writeback_manifest.json").open("x", encoding="utf-8") as stream:
+        json.dump(manifest, stream, indent=2)
+        stream.write("\n")
+    return staged_dump, manifest
 
 
 def validate_static_nominal_start_table_approach_clearance(
@@ -1811,10 +1949,15 @@ class BoundedRun:
         self.static_nominal_start_initialization = bool(
             getattr(args, "static_nominal_start_initialization", False)
         )
+        self.mc_prearm_before_simulator = bool(
+            getattr(args, "mc_prearm_before_simulator", False)
+        )
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
         self.runtime_writeback_mounts: list[tuple[Path, str]] = []
+        self.mc_prearm_writeback_manifest: dict[str, Any] | None = None
+        self.mc_prearm_status: dict[str, Any] | None = None
         if getattr(args, "table_approach_mission", None):
             preflight = getattr(args, "configured_table_approach_preflight", None)
             if not isinstance(preflight, Mapping) or not self.local01_scene_mode:
@@ -2582,6 +2725,132 @@ class BoundedRun:
             stream.write("\n")
         return staged
 
+    def prepare_mc_prearm_writeback(self) -> None:
+        """Prepare the only writable MC paths for the pre-simulator phase."""
+        if not self.mc_prearm_before_simulator:
+            return
+        if not self.static_nominal_start_initialization:
+            raise RuntimeError("MC pre-arm is restricted to static nominal-start initialization")
+        if not bool(getattr(self.args, "runtime_readonly", False)):
+            raise RuntimeError("MC pre-arm requires the vendor runtime to be mounted read-only")
+        # The tmpfs is mounted only inside the isolated container and is seeded
+        # below from evidence-local copies of the three known source files.
+        self.args.mc_sim_generated_tmpfs = True
+        staged_dump, manifest = stage_mc_generated_config_writeback(self.evidence)
+        self.runtime_writeback_mounts = [
+            (staged_dump, MC_SIM_CONFIG_DUMP_CONTAINER_PATH),
+        ]
+        self.mc_prearm_writeback_manifest = manifest
+
+    def seed_mc_prearm_generated_config(self) -> dict[str, Any]:
+        """Copy verified generated-config seeds into the container tmpfs once."""
+        if not self.mc_prearm_before_simulator:
+            return {"status": "NOT_REQUESTED"}
+        manifest = self.mc_prearm_writeback_manifest
+        if not isinstance(manifest, Mapping):
+            raise RuntimeError("MC pre-arm writeback manifest is missing")
+        seed_directory = self.evidence / "mc_runtime_writeback" / "sim_seed"
+        expected = manifest.get("seed_hashes")
+        if not isinstance(expected, Mapping) or set(expected) != set(MC_SIM_GENERATED_SEED_FILENAMES):
+            raise RuntimeError("MC pre-arm seed manifest is malformed")
+        copy_command = " && ".join(
+            "cp "
+            + shlex.quote(str(seed_directory / name))
+            + " "
+            + shlex.quote(MC_SIM_GENERATED_DIRECTORY + "/" + name)
+            for name in MC_SIM_GENERATED_SEED_FILENAMES
+        )
+        self.docker_exec(
+            "seed_mc_prearm_generated_config",
+            copy_command,
+            timeout_s=3.0,
+        )
+        observed: dict[str, str] = {}
+        for name in MC_SIM_GENERATED_SEED_FILENAMES:
+            result = self.docker_exec(
+                f"verify_mc_prearm_seed_{name}",
+                "sha256sum " + shlex.quote(MC_SIM_GENERATED_DIRECTORY + "/" + name),
+                timeout_s=2.0,
+            )
+            parts = result.stdout.split()
+            observed[name] = parts[0] if parts else ""
+        if observed != dict(expected):
+            raise RuntimeError("MC pre-arm generated config seeds differ from verified source inputs")
+        record = {
+            "schema": "robotsim.issue80.mc-prearm-seed.v1",
+            "status": "PASS_SEEDED_EPHEMERAL_GENERATED_CONFIG",
+            "source_manifest": str(self.evidence / "mc_runtime_writeback_manifest.json"),
+            "generated_tmpfs_target": MC_SIM_GENERATED_DIRECTORY,
+            "observed_seed_hashes": observed,
+            "vendor_runtime_tree_modified": False,
+        }
+        with (self.evidence / "mc_prearm_seed.json").open("x", encoding="utf-8") as stream:
+            json.dump(record, stream, indent=2)
+            stream.write("\n")
+        return record
+
+    def start_mc_prearmed_before_simulator(self) -> dict[str, Any]:
+        """Start the unmodified MC core before the simulator can take a step.
+
+        The core is allowed to wait for the simulator's leg/IMU topics.  A
+        running process, completed AimRT startup, and no generated-config
+        write failure are the only claims here; controller readiness still
+        requires live state after the simulator starts.
+        """
+        if not self.mc_prearm_before_simulator:
+            return {"status": "NOT_REQUESTED"}
+        self.docker_exec(
+            "start_mc_prearmed_before_simulator",
+            "bash /workspace/evidence/launch_mc.sh > /workspace/evidence/mc-console.log 2>&1",
+            timeout_s=4.0,
+            detached=True,
+        )
+        shell = (
+            "timeout 12s bash -lc " + shlex.quote(
+                "until grep -q 'AimRT startup completed' /workspace/evidence/mc-console.log; do "
+                "if grep -qE 'Failed to write file|Aborted|SIGABRT|Segmentation fault' "
+                "/workspace/evidence/mc-console.log; then exit 3; fi; sleep 0.05; done; "
+                "pid=$(pgrep -f '^./aima-mc-app-main --cfg_file_path=' | head -n1); "
+                "test -n \"$pid\"; test -x /proc/$pid/exe; "
+                "grep -q 'MotionControlModule Started Succeeded' /workspace/evidence/mc-console.log"
+            )
+        )
+        result = self.docker_exec(
+            "wait_mc_prearmed_core",
+            shell,
+            timeout_s=13.0,
+            check=False,
+        )
+        log = self.docker_exec(
+            "capture_mc_prearm_log_tail",
+            "tail -n 160 /workspace/evidence/mc-console.log",
+            timeout_s=3.0,
+            check=False,
+        )
+        record = {
+            "schema": "robotsim.issue80.mc-prearm.v1",
+            "status": (
+                "PASS_MC_CORE_PREARMED_AWAITING_SIMULATOR_STATE"
+                if result.returncode == 0 else "FAIL_MC_CORE_PREARM"
+            ),
+            "simulator_started_before_record": False,
+            "set_mc_action_requests": 0,
+            "velocity_publishers_created": 0,
+            "wait_returncode": result.returncode,
+            "wait_stdout": result.stdout,
+            "wait_stderr": result.stderr,
+            "log_tail": log.stdout,
+            "controller_state_claim": "NOT_READY_UNTIL_FRESH_LEG_AND_IMU_STATE",
+            "vendor_runtime_tree_modified": False,
+        }
+        with (self.evidence / "mc_prearm_status.json").open("x", encoding="utf-8") as stream:
+            json.dump(record, stream, indent=2)
+            stream.write("\n")
+        self.mc_prearm_status = record
+        if result.returncode != 0:
+            raise RuntimeError("MC core did not become ready before the simulator was started")
+        return record
+
     def start_container(self) -> None:
         cmd = [
             "docker", "run", "-d", "--pull=never", "--name", self.container,
@@ -3117,7 +3386,15 @@ class BoundedRun:
             timeout_s=5.0,
         )
 
-    def start_observer(self) -> None:
+    def start_observer(self, *, prearmed_before_simulator: bool = False) -> None:
+        """Start the one persistent JD/SD client before its event barrier.
+
+        In MC-prearm mode the client is constructed while only the MC service
+        graph exists.  It must not claim sensor readiness until the simulator
+        begins publishing after the static nominal-start barrier.
+        """
+        if prearmed_before_simulator and not self.mc_prearm_before_simulator:
+            raise RuntimeError("pre-simulator observer requires MC pre-arm")
         native_capture_args = (
             " --native-mjdata-trace /workspace/evidence/" + CAPTURE_TRACE_NAME
             + ("" if self.static_nominal_start_initialization else " --require-native-reset-generation")
@@ -3133,6 +3410,7 @@ class BoundedRun:
             if self.static_nominal_start_initialization
             else " --reset-event-file /workspace/evidence/reset_dispatch_event.json"
         )
+        prearm_args = " --prearmed-before-simulator" if prearmed_before_simulator else ""
         self.docker_exec(
             "start_prearmed_standing_takeover_observer",
             "source /opt/ros/humble/setup.bash && "
@@ -3143,7 +3421,7 @@ class BoundedRun:
             f"--ready-timeout-s 3 --reset-wait-timeout-s 30 --upright-timeout-s {RESET_STARTUP_OBSERVATION_TIMEOUT_S:g} "
             "--joint-stand-timeout-s 4 --set-timeout-s 2 --get-timeout-s 0.75 "
             f"--duration-s {RESET_OBSERVER_DURATION_S:.1f} "
-            + initialization_args + native_capture_args + " "
+            + initialization_args + prearm_args + native_capture_args + " "
             "> /workspace/evidence/takeover-capture-console.log 2>&1",
             timeout_s=4.0,
             detached=True,
@@ -3159,11 +3437,24 @@ class BoundedRun:
         ready = json.loads(ready_path.read_text(encoding="utf-8"))
         if ready.get("status") != "READY":
             raise RuntimeError(f"pre-Reset ROS2 observer/client readiness failed: {ready}")
-        if len(ready.get("fresh_topics", [])) != 5:
+        if not prearmed_before_simulator and len(ready.get("fresh_topics", [])) != 5:
             raise RuntimeError(f"Reset precondition failed: live state streams are incomplete: {ready}")
+        if prearmed_before_simulator and ready.get("fresh_topics"):
+            raise RuntimeError("MC-prearmed observer unexpectedly claimed live simulator state before launch")
         if ready.get("set_mc_action_service_ready") is not True or ready.get("get_mc_action_service_ready") is not True:
             raise RuntimeError(f"Reset precondition failed: persistent MC action services are not ready: {ready}")
         pre_mode = ready.get("pre_reset_get_mc_action", {})
+        if prearmed_before_simulator:
+            if pre_mode.get("transport_state") != "RESPONSE_RECEIVED" or pre_mode.get("response_header_code") != 0:
+                raise RuntimeError(
+                    "MC-prearmed observer did not receive a valid service response before simulator launch: "
+                    f"{pre_mode}"
+                )
+            # The installed MC returns action_desc='' / UNKNOWN(0) before its
+            # first leg and IMU state.  That is recorded as uninitialized;
+            # the child independently requires PASSIVE_DEFAULT only after
+            # fresh state arrives, immediately before JD.
+            return
         if pre_mode.get("action_desc") != "PASSIVE_DEFAULT" or pre_mode.get("action_status_value") != 100:
             raise RuntimeError(f"Reset precondition failed: expected PASSIVE_DEFAULT, got {pre_mode}")
         # Pre-SD mode/FSM values are retained raw and are not a standing gate.
@@ -3590,6 +3881,7 @@ class BoundedRun:
         deadline = min(self.deadline, time.monotonic() + RESET_STAND_HANDOFF_MAX_S)
         last: dict[str, Any] = {"status": "WAITING_FOR_NATIVE_STATIC_NOMINAL_START"}
         consecutive = 0
+        required_samples = 1 if self.mc_prearm_before_simulator else 2
         saw_nominal = False
         unsafe_after_nominal: dict[str, Any] | None = None
         seen_native_sample_ns: set[int] = set()
@@ -3608,7 +3900,11 @@ class BoundedRun:
                 if not isinstance(host_ns, int) or host_ns in seen_native_sample_ns:
                     continue
                 seen_native_sample_ns.add(host_ns)
-                assessment = assess_static_nominal_start_sample(row, expected)
+                assessment = (
+                    assess_prearmed_nominal_handoff_sample(row, expected)
+                    if self.mc_prearm_before_simulator
+                    else assess_static_nominal_start_sample(row, expected)
+                )
                 max_residual = assessment.get("maximum_leg_nominal_residual_rad")
                 if isinstance(max_residual, (int, float)) and math.isfinite(float(max_residual)):
                     saw_nominal = saw_nominal or (
@@ -3620,20 +3916,34 @@ class BoundedRun:
                 if assessment.get("eligible") is True:
                     consecutive += 1
                     last = {
-                        "status": "STATIC_NOMINAL_START_NATIVE_READY",
-                        "required_consecutive_samples": 2,
+                        "status": (
+                            "PREARMED_NOMINAL_HANDOFF_NATIVE_READY"
+                            if self.mc_prearm_before_simulator
+                            else "STATIC_NOMINAL_START_NATIVE_READY"
+                        ),
+                        "required_consecutive_samples": required_samples,
                         "consecutive_samples": consecutive,
                         "sample": row,
                         "assessment": assessment,
                     }
-                    if consecutive >= 2:
+                    if consecutive >= required_samples:
                         record = {
                             "schema": "robotsim.issue80.static-nominal-start-native-preflight.v1",
-                            "status": "PASS_STATIC_NOMINAL_START_NATIVE_READY",
+                            "status": (
+                                "PASS_PREARMED_NOMINAL_HANDOFF_NATIVE_READY"
+                                if self.mc_prearm_before_simulator
+                                else "PASS_STATIC_NOMINAL_START_NATIVE_READY"
+                            ),
                             "source": "read_only_native_MjData_capture",
                             "initialization": static,
                             "native_gate": last,
                             "unsafe_after_nominal": None,
+                            "mc_prearm_before_simulator": self.mc_prearm_before_simulator,
+                            "classification": (
+                                "PREARMED_EARLY_JD_ELIGIBILITY_NOT_STANDING"
+                                if self.mc_prearm_before_simulator
+                                else "SETTLED_STATIC_NOMINAL_SUPPORT_BEFORE_JD"
+                            ),
                             "mj_step_calls_by_parent": 0,
                             "qpos_writes_by_parent": 0,
                         }
@@ -3653,17 +3963,27 @@ class BoundedRun:
             time.sleep(0.02)
         record = {
             "schema": "robotsim.issue80.static-nominal-start-native-preflight.v1",
-            "status": "FAIL_STATIC_NOMINAL_START_NATIVE_READY",
+            "status": (
+                "FAIL_PREARMED_NOMINAL_HANDOFF_NATIVE_READY"
+                if self.mc_prearm_before_simulator
+                else "FAIL_STATIC_NOMINAL_START_NATIVE_READY"
+            ),
             "source": "read_only_native_MjData_capture",
             "initialization": static,
             "last": last,
             "unsafe_after_nominal": unsafe_after_nominal,
+            "mc_prearm_before_simulator": self.mc_prearm_before_simulator,
             "mj_step_calls_by_parent": 0,
             "qpos_writes_by_parent": 0,
         }
         with (self.evidence / "static_nominal_start_native_preflight.json").open("x", encoding="utf-8") as stream:
             json.dump(record, stream, indent=2)
             stream.write("\n")
+        if self.mc_prearm_before_simulator:
+            raise RuntimeError(
+                "MC-prearmed nominal handoff did not observe one source-nominal, "
+                "bilateral-contact sample inside the existing root-speed guard"
+            )
         raise RuntimeError("static nominal-start native preflight did not establish two safe nominal-support samples")
 
     def dispatch_static_nominal_start_barrier(self, native_preflight: Mapping[str, Any]) -> dict[str, Any]:
@@ -3921,9 +4241,14 @@ class BoundedRun:
             json.loads(native_preflight_path.read_text(encoding="utf-8"))
             if native_preflight_path.is_file() else None
         )
+        native_status = native_preflight.get("status") if isinstance(native_preflight, Mapping) else None
+        native_ready = native_status in {
+            "PASS_STATIC_NOMINAL_START_NATIVE_READY",
+            "PASS_PREARMED_NOMINAL_HANDOFF_NATIVE_READY",
+        }
         passed = (
             isinstance(native_preflight, Mapping)
-            and native_preflight.get("status") == "PASS_STATIC_NOMINAL_START_NATIVE_READY"
+            and native_ready
             and takeover.get("status") == "TAKEOVER_SEQUENCE_COMPLETE"
             and summary.get("observer_status") == "STAND_DEFAULT_BASELINE_COMPLETE"
             and isinstance(baseline, Mapping)
@@ -3942,6 +4267,7 @@ class BoundedRun:
             "native_mjdata": takeover.get("native_mjdata"),
             "reset_or_runtime_qpos_teleportation": False,
             "initialization_method": "static_x2_start_frame_z_before_vendor_model_load",
+            "mc_prearm_before_simulator": self.mc_prearm_before_simulator,
         }
         with (self.evidence / "static_nominal_start_analysis.json").open("x", encoding="utf-8") as stream:
             json.dump(result, stream, indent=2)
@@ -4289,6 +4615,7 @@ class BoundedRun:
             "reset_classification": "NOT_ATTEMPTED",
             "synchronized_paused_initialization": self.synchronized_paused_initialization,
             "static_nominal_start_initialization": self.static_nominal_start_initialization,
+            "mc_prearm_before_simulator": self.mc_prearm_before_simulator,
             "m1_status": "NOT_RUN",
             "mc_rl_debug_capture": None,
             "mc_rl_debug_overlay": None,
@@ -4424,8 +4751,16 @@ class BoundedRun:
             self.prepare_mc_rl_debug_overlay()
             self.stage_research_scripts()
             self.prepare_native_mjdata_capture()
+            self.prepare_mc_prearm_writeback()
             self.start_container()
-            if self.synchronized_paused_initialization:
+            if self.mc_prearm_before_simulator:
+                result["mc_prearm_seed"] = self.seed_mc_prearm_generated_config()
+                result["mc_prearm"] = self.start_mc_prearmed_before_simulator()
+                # The persistent action client is ready before any native
+                # simulator step, but it deliberately has no state samples yet.
+                self.start_observer(prearmed_before_simulator=True)
+                self.start_sim_first(start_mc=False)
+            elif self.synchronized_paused_initialization:
                 self.start_sim_first(start_mc=False)
             else:
                 self.start_sim_first()
@@ -4483,8 +4818,9 @@ class BoundedRun:
                 result["synchronized_pause_dispatch"] = pause
                 result["synchronized_pause_quiescence"] = self.verify_native_pause_quiescence(pause)
                 self.start_mc_after_sim_topics()
-            self.capture_service_topic_inventory()
-            self.start_observer()
+            if not self.mc_prearm_before_simulator:
+                self.capture_service_topic_inventory()
+                self.start_observer()
             if self.synchronized_paused_initialization:
                 assert pid is not None and title is not None and window_id is not None
                 result["synchronized_keyframe_selection"] = self.dispatch_native_keyframe_zero(
@@ -4507,6 +4843,10 @@ class BoundedRun:
                     result["static_nominal_start_native_preflight"]
                 )
                 result["set_mc_action_sd"] = self.request_sd_and_verify()
+                if self.mc_prearm_before_simulator:
+                    # Inventory is evidence only.  It occurs after the early
+                    # handoff so it cannot delay the first JD request.
+                    self.capture_service_topic_inventory()
                 reset = self.wait_and_classify_static_nominal_start()
             else:
                 assert pid is not None and title is not None and window_id is not None
@@ -5073,6 +5413,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--mc-prearm-before-simulator",
+        action="store_true",
+        help=(
+            "simulation-only coordinated startup: start the unmodified MC core and its persistent "
+            "JD/SD client before the static nominal-start simulator takes its first physical step; "
+            "uses only evidence-local generated-config writeback and a read-only vendor runtime"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5190,8 +5539,16 @@ def main() -> int:
             parser.error("table-approach mission owns its route input; do not also pass --route-config")
         if not args.local01_scene_world_poses or not args.table_approach_static_plan:
             parser.error("table-approach mission requires Local01 scene poses and its matching static plan")
-        if not args.maintainer_authorized_first_motion:
-            parser.error("table-approach mission requires explicit first-motion authorization")
+        standing_prearm_only = bool(
+            args.mc_prearm_before_simulator
+            and args.maintainer_authorized_standing_takeover
+            and not args.maintainer_authorized_first_motion
+        )
+        if not args.maintainer_authorized_first_motion and not standing_prearm_only:
+            parser.error(
+                "table-approach mission requires explicit first-motion authorization "
+                "or the isolated MC-prearmed standing qualification"
+            )
         if not args.require_stand_warmup_composite:
             parser.error("table-approach mission requires the complete STAND warmup composite gate")
         if args.route_turn_evidence is not None or args.capture_mc_rl_debug:
@@ -5240,7 +5597,7 @@ def main() -> int:
         if not (
             args.table_approach_mission
             and args.aligned_start_table_approach
-            and args.maintainer_authorized_first_motion
+            and (args.maintainer_authorized_first_motion or args.maintainer_authorized_standing_takeover)
             and args.require_stand_warmup_composite
             and args.native_mjdata_capture
         ):
@@ -5248,6 +5605,17 @@ def main() -> int:
                 "static nominal-start initialization requires the authorized aligned-start TABLE_APPROACH mission, "
                 "standing warmup, and native MjData capture"
             )
+        if args.maintainer_authorized_standing_takeover and not args.maintainer_authorized_first_motion and not args.mc_prearm_before_simulator:
+            parser.error("static nominal standing-only qualification requires MC pre-arm")
+    if args.mc_prearm_before_simulator:
+        if not args.static_nominal_start_initialization:
+            parser.error("MC pre-arm requires static nominal-start initialization")
+        if args.synchronized_paused_initialization:
+            parser.error("MC pre-arm cannot be combined with paused-keyframe initialization")
+        # The runner sets these internal container properties only for this
+        # mode.  No caller can accidentally use a writable vendor runtime.
+        args.runtime_readonly = True
+        args.mc_sim_generated_tmpfs = True
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
@@ -5299,10 +5667,19 @@ def main() -> int:
     ):
         parser.error("activation-probe authorization is isolated and cannot be combined with route/controller tuning profiles")
     if any(diagnostic_variants):
+        prearmed_standing_variant = bool(
+            args.mc_prearm_before_simulator
+            and args.static_nominal_start_initialization
+            and args.maintainer_authorized_standing_takeover
+            and not args.maintainer_authorized_first_motion
+        )
         if not args.maintainer_authorized_first_motion and not (
             args.maintainer_authorized_zero_only_activation and args.run65_curved_path_diagnostic
-        ):
-            parser.error("FoundationWalk diagnostic requires first-motion authorization, except the zero-only activation preflight")
+        ) and not prearmed_standing_variant:
+            parser.error(
+                "FoundationWalk diagnostic requires first-motion authorization, except the zero-only activation preflight "
+                "or the MC-prearmed standing qualification"
+            )
         if args.run65_ground_truth_point_goal:
             try:
                 args.turning_reassessment_provenance = validate_run65_point_goal_profile(args)

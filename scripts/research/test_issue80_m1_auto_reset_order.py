@@ -170,6 +170,39 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertIn("--upright-timeout-s 4", captured[0])
 
+    def test_mc_prearm_observer_allows_service_only_readiness_before_simulator(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BoundedRun(argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="test-container",
+                attempt_id="mc-prearm-observer-test",
+                max_runtime_s=30.0,
+                mc_prearm_before_simulator=True,
+                static_nominal_start_initialization=True,
+            ))
+            runner.deadline = time.monotonic() + 5.0
+            ready = {
+                "status": "READY",
+                "fresh_topics": [],
+                "prearmed_before_simulator": True,
+                "fresh_topics_required_before_barrier": False,
+                "fresh_topics_required_before_jd": True,
+                "set_mc_action_service_ready": True,
+                "get_mc_action_service_ready": True,
+                "pre_reset_get_mc_action": {
+                    "transport_state": "RESPONSE_RECEIVED", "response_header_code": 0,
+                    "action_desc": "", "action_status_value": 0,
+                },
+            }
+            (Path(temp_dir) / "reset_watch_ready.json").write_text(json.dumps(ready), encoding="utf-8")
+            captured: list[str] = []
+            runner.docker_exec = lambda _label, command, **_kwargs: captured.append(command)
+            runner.start_observer(prearmed_before_simulator=True)
+
+        self.assertEqual(len(captured), 1)
+        self.assertIn("--prearmed-before-simulator", captured[0])
+        self.assertIn("--static-nominal-start-event-file", captured[0])
+
     def make_runner(
         self,
         events: list[str],

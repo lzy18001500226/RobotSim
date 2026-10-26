@@ -657,6 +657,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--prearmed-before-simulator",
+        action="store_true",
+        help=(
+            "construct only the persistent JD/SD service client before simulator startup; "
+            "fresh state remains mandatory after the static nominal-start barrier"
+        ),
+    )
+    parser.add_argument(
         "--synchronized-keyframe-event-file", type=Path, default=None,
         help="native MuJoCo Load key dispatch record for the paused synchronized-init path",
     )
@@ -724,6 +732,8 @@ def main() -> int:
             parser.error("synchronized initialization requires native MjData capture generation evidence")
     elif not static_nominal_start and args.reset_event_file is None:
         parser.error("--reset-event-file is required outside synchronized initialization")
+    if args.prearmed_before_simulator and not static_nominal_start:
+        parser.error("--prearmed-before-simulator requires static nominal-start initialization")
 
     import rclpy
     from rclpy.node import Node
@@ -755,6 +765,7 @@ def main() -> int:
             self.static_nominal_start_initialization = bool(
                 args.static_nominal_start_event_file
             )
+            self.prearmed_before_simulator = bool(args.prearmed_before_simulator)
             self.reset_event_file = (
                 args.reset_event_file.resolve(strict=False)
                 if args.reset_event_file is not None else None
@@ -1446,26 +1457,44 @@ def main() -> int:
                     except (OSError, ValueError) as exc:
                         self.error = f"native MjData pre-Reset baseline is unreadable: {type(exc).__name__}: {exc}"
                         break
-                now_ns = time.monotonic_ns()
-                fresh = [
-                    key for key, row in self.latest.items()
-                    if key in REQUIRED_TOPICS and 0.0 <= (now_ns - int(row["wall_monotonic_ns"])) / 1e9 <= MAX_STATE_AGE_S
-                ]
-                if len(fresh) != len(REQUIRED_TOPICS):
-                    continue
                 set_ready = bool(self.set_client.service_is_ready())
                 get_ready = bool(self.get_client.service_is_ready())
                 if not set_ready or not get_ready:
                     continue
                 if self.require_native_reset_generation and self.native_baseline_generation is None:
                     continue
+                now_ns = time.monotonic_ns()
+                fresh = [
+                    key for key, row in self.latest.items()
+                    if key in REQUIRED_TOPICS
+                    and 0.0 <= (now_ns - int(row["wall_monotonic_ns"])) / 1e9 <= MAX_STATE_AGE_S
+                ]
+                # MC has already exposed its two action services in the
+                # pre-simulator phase, but no state publisher is allowed to
+                # exist yet.  Confirm only its passive mode here; after the
+                # barrier, wait_for_post_reset_upright() still requires all
+                # five fresh streams before the one JD request.
+                if not self.prearmed_before_simulator and len(fresh) != len(REQUIRED_TOPICS):
+                    continue
                 pre_mode = self.mode_readback(args.get_timeout_s)
                 if pre_mode.get("transport_state") != "RESPONSE_RECEIVED":
-                    self.error = "GetMcAction pre-Reset readback failed"
+                    self.error = (
+                        "GetMcAction pre-simulator readback failed"
+                        if self.prearmed_before_simulator
+                        else "GetMcAction pre-Reset readback failed"
+                    )
+                elif self.prearmed_before_simulator:
+                    # The installed MC intentionally returns an empty
+                    # action/UNKNOWN(0) until its first leg/IMU messages.  A
+                    # valid service response proves only that the persistent
+                    # client is ready; PASSIVE_DEFAULT is required again
+                    # after fresh simulator state arrives, before JD.
+                    self.observer_ready = True
                 elif pre_mode.get("action_desc") != "PASSIVE_DEFAULT" or pre_mode.get("action_status_value") != 100:
                     self.error = (
-                        "unexpected pre-Reset mode/readiness: "
-                        f"action={pre_mode.get('action_desc')!r} status={pre_mode.get('action_status_value')!r}"
+                        ("unexpected pre-simulator mode/readiness: "
+                         if self.prearmed_before_simulator else "unexpected pre-Reset mode/readiness: ")
+                        + f"action={pre_mode.get('action_desc')!r} status={pre_mode.get('action_status_value')!r}"
                     )
                 else:
                     self.observer_ready = True
@@ -1479,6 +1508,10 @@ def main() -> int:
                     "subscriptions_created_wall_utc": self.subscriptions_created_utc,
                     "subscriptions_created_monotonic_ns": self.subscriptions_created_ns,
                     "fresh_topics": sorted(fresh),
+                    "prearmed_before_simulator": self.prearmed_before_simulator,
+                    "fresh_topics_required_before_barrier": not self.prearmed_before_simulator,
+                    "fresh_topics_required_before_jd": True,
+                    "pre_sim_action_state_is_not_jd_eligibility": self.prearmed_before_simulator,
                     "set_mc_action_service_ready": set_ready,
                     "get_mc_action_service_ready": get_ready,
                     "pre_reset_get_mc_action": pre_mode,
@@ -1495,9 +1528,14 @@ def main() -> int:
                 "wall_utc": datetime.now(timezone.utc).isoformat(),
                 "wall_monotonic_ns": time.monotonic_ns(),
                 "fresh_topics": sorted(self.latest),
+                "prearmed_before_simulator": self.prearmed_before_simulator,
                 "set_mc_action_service_ready": bool(self.set_client.service_is_ready()),
                 "get_mc_action_service_ready": bool(self.get_client.service_is_ready()),
-                "error": "required state streams and both MC clients did not become ready before Reset",
+                "error": (
+                    "both MC action services did not become ready before simulator launch"
+                    if self.prearmed_before_simulator
+                    else "required state streams and both MC clients did not become ready before Reset"
+                ),
             }
             self.write_json_once(self.ready_path, ready)
             self.error = ready["error"]

@@ -28,11 +28,59 @@ from issue80_m1_auto_reset_run import (
     validate_configured_route_motion_profile,
     validate_stand_convergence_arguments,
     assess_static_nominal_start_sample,
+    assess_prearmed_nominal_handoff_sample,
+    stage_mc_generated_config_writeback,
     validate_static_nominal_start_table_approach_clearance,
 )
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_prearmed_nominal_handoff_allows_only_the_early_bounded_contact_sample(self) -> None:
+        expected_qpos = [0.0] * 45
+        expected_qpos[7:19] = [-0.24, 0.0, 0.0, 0.45, -0.21, 0.0] * 2
+        sample = {
+            "qpos": list(expected_qpos),
+            "captured_foot_floor_contact_count": 2,
+            "pelvis": {"state": {
+                "world_position_m": [0.0, 0.0, 0.6593],
+                "world_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "world_spatial_velocity_rot_lin": [0.0, 0.0, 0.0, 0.03, 0.0, -0.08],
+            }},
+            # Tangent contact may have no positive impulse before the control
+            # handoff; the early eligibility path must not call it standing.
+            "contacts": [
+                {"involves_selected_left_foot": True, "normal_force_n": 0.0},
+                {"involves_selected_right_foot": True, "normal_force_n": 0.0},
+            ],
+        }
+        accepted = assess_prearmed_nominal_handoff_sample(sample, {"qpos": expected_qpos})
+        self.assertTrue(accepted["eligible"])
+        self.assertEqual(
+            accepted["classification"],
+            "PREARMED_NOMINAL_HANDOFF_ELIGIBILITY_NOT_STANDING",
+        )
+        sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][5] = -0.21
+        self.assertFalse(
+            assess_prearmed_nominal_handoff_sample(sample, {"qpos": expected_qpos})["eligible"]
+        )
+
+    def test_mc_prearm_stages_only_evidence_local_generated_config_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            staged_dump, manifest = stage_mc_generated_config_writeback(evidence)
+            self.assertTrue(staged_dump.is_file())
+            self.assertEqual(manifest["permitted_write_scope"], [
+                issue80_m1_auto_reset_run.MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
+                issue80_m1_auto_reset_run.MC_SIM_GENERATED_DIRECTORY,
+            ])
+            self.assertTrue(manifest["runtime_readonly"])
+            self.assertFalse(manifest["vendor_runtime_tree_modified"])
+            self.assertEqual(
+                set(manifest["seed_hashes"]),
+                set(issue80_m1_auto_reset_run.MC_SIM_GENERATED_SEED_FILENAMES),
+            )
+            self.assertTrue((evidence / "mc_runtime_writeback_manifest.json").is_file())
+
     def test_static_nominal_start_requires_vendor_nominal_legs_and_existing_safe_support(self) -> None:
         expected_qpos = [0.0] * 45
         expected_qpos[7:19] = [-0.24, 0.0, 0.0, 0.45, -0.21, 0.0] * 2

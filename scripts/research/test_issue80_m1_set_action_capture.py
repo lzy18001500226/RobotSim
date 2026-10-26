@@ -225,6 +225,16 @@ class SetActionCaptureTests(unittest.TestCase):
         self.assertNotIn("self.docker_exec(", request_body)
         self.assertIn('"set_action_capture_result.json"', request_body)
 
+    def test_pre_simulator_prearm_keeps_state_freshness_mandatory_before_jd(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_set_action_capture.py").read_text()
+        self.assertIn('"--prearmed-before-simulator"', source)
+        self.assertIn("--prearmed-before-simulator requires static nominal-start initialization", source)
+        self.assertIn("fresh_topics_required_before_barrier", source)
+        self.assertIn("fresh_topics_required_before_jd", source)
+        self.assertIn("pre_sim_action_state_is_not_jd_eligibility", source)
+        self.assertIn("returns an empty", source)
+        self.assertIn("wait_for_post_reset_upright() still requires all", source)
+
     def test_native_handoff_anchors_jd_to_mjdata_and_reanchors_ros_after_effective_command(self) -> None:
         source = Path(__file__).with_name("issue80_m1_set_action_capture.py").read_text()
         start = source.index("if self.require_native_reset_generation:", source.index("def wait_for_post_reset_upright"))
