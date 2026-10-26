@@ -13,6 +13,17 @@ from issue80_raicom_reset_only import (
     _write_json, _sha256, RUNTIME,
 )
 from issue80_m1_first_motion import load_leg_joint_limits, MC_FSM_RUNTIME_LIBRARY_SHA256
+from issue80_raicom_mjdata_capture import (
+    CAPTURE_SOURCE,
+    CAPTURE_SUMMARY_NAME,
+    CAPTURE_TRACE_NAME,
+    DEFAULT_INTERVAL_STEPS,
+    MjDataCaptureError,
+    prepare_mjdata_capture_overlay,
+    run_mjdata_capture_smoke,
+    summarize_mjdata_capture,
+    write_new_json as write_new_capture_json,
+)
 
 OBSERVER=Path(__file__).with_name('issue80_raicom_stand_observer.py')
 
@@ -27,6 +38,12 @@ class StandingRun(ResetOnlyRun):
         if self.protocol not in ('sd','jd-sd'):
             raise ValueError('unsupported standing protocol')
         self.observer_cli_suffix='--protocol '+self.protocol
+        self.native_mjdata_capture=bool(getattr(args,'native_mjdata_capture',False))
+        self.capture_interval_steps=int(
+            getattr(args,'capture_interval_steps',DEFAULT_INTERVAL_STEPS)
+        )
+        self.mjdata_capture_overlay=None
+        self.mjdata_capture_smoke=None
 
     def _capture_optional_screenshot(self,pid,title,window_id):
         if self.protocol=='jd-sd':
@@ -61,10 +78,33 @@ class StandingRun(ResetOnlyRun):
             matches=list((RUNTIME/'mc').rglob(name))
             if not matches or any(_sha256(p)!=expected for p in matches):
                 raise RuntimeError('pinned FSM runtime identity mismatch: '+name)
+        if self.native_mjdata_capture:
+            self.mjdata_capture_overlay=prepare_mjdata_capture_overlay(
+                self.evidence,
+                staged_launch_script=self.evidence/'launch_sim.sh',
+                interval_steps=self.capture_interval_steps,
+            )
+            self.mjdata_capture_smoke=run_mjdata_capture_smoke(
+                self.evidence,
+                overlay=self.mjdata_capture_overlay,
+                runtime_root=RUNTIME,
+            )
+            write_new_capture_json(
+                self.evidence/'native_mjdata_capture_smoke_result.json',
+                self.mjdata_capture_smoke,
+            )
         _write_json(self.evidence/'standing_capability_audit.json',{
             'observer_sha256':_sha256(OBSERVER),'max_sd_requests':1,'max_native_reset':1,
             'protocol':self.protocol,'max_jd_requests':1 if self.protocol=='jd-sd' else 0,
             'velocity_publishers':0,'locomotion_source_registration':False,
+            'native_mjdata_capture':(
+                {
+                    'overlay':self.mjdata_capture_overlay,
+                    'smoke':self.mjdata_capture_smoke,
+                } if self.native_mjdata_capture
+                else {'status':'NOT_REQUESTED'}
+            ),
+            'capture_source_sha256':_sha256(CAPTURE_SOURCE),
             'service_allowlist':(['SetMcAction:JOINT_DEFAULT'] if self.protocol=='jd-sd' else [])+['SetMcAction:STAND_DEFAULT','GetMcAction'],
             'fsm_libraries_sha256':MC_FSM_RUNTIME_LIBRARY_SHA256,
             'native_transition_route':{
@@ -97,6 +137,29 @@ class StandingRun(ResetOnlyRun):
         result['runtime_non_motion_invariants']['allowed_action']='ONE_JD_THEN_ONE_SD' if self.protocol=='jd-sd' else 'STAND_DEFAULT_ONLY'
         result.get('reset_effect',{}).pop('no_action_or_locomotion_request',None)
         result['diagnostic_kind']='RESET_TO_SD_ACTIVE_STANDING_NO_LOCOMOTION'
+        if self.native_mjdata_capture:
+            try:
+                capture_summary=summarize_mjdata_capture(
+                    self.evidence/CAPTURE_TRACE_NAME,
+                    standing_trace=self.evidence/'stand_takeover_trace.jsonl',
+                )
+            except (MjDataCaptureError, OSError, ValueError) as exc:
+                capture_summary={
+                    'schema':'robotsim.issue80.native-mjdata-capture-summary.v1',
+                    'status':'BLOCKED_NATIVE_MJDATA_CAPTURE',
+                    'failure_reasons':[f'{type(exc).__name__}: {exc}'],
+                    'trace':str(self.evidence/CAPTURE_TRACE_NAME),
+                }
+            write_new_capture_json(
+                self.evidence/CAPTURE_SUMMARY_NAME,
+                capture_summary,
+            )
+            result['native_mjdata_capture']=capture_summary
+            if capture_summary['status']!='PASS_NATIVE_MJDATA_CAPTURE':
+                result['native_mjdata_capture_failure']=capture_summary['failure_reasons']
+                if result.get('status')=='PASS':
+                    result['status']='BLOCKED'
+                    result['failure']='NATIVE_MJDATA_CAPTURE_UNQUALIFIED'
         complete = (
             result['status']=='PASS' and summary and summary['status']=='PASS'
             and summary['stable_hold_s']>=2.5 and summary['sd_requests']==1
@@ -114,6 +177,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--attempt-id',required=True)
     parser.add_argument('--protocol',choices=('sd','jd-sd'),default='sd')
+    parser.add_argument('--native-mjdata-capture',action='store_true')
+    parser.add_argument(
+        '--capture-interval-steps',
+        type=int,
+        default=DEFAULT_INTERVAL_STEPS,
+    )
     parser.add_argument('--local01-scene-world-poses',type=Path,default=LOCAL01_POSES_DEFAULT)
     parser.add_argument('--evidence-parent',type=Path,default=EVIDENCE_PARENT_DEFAULT)
     args=parser.parse_args()
@@ -130,7 +199,10 @@ def main():
         _write_json(output/'standing_execution_identity.json',{
             'attempt_id':args.attempt_id,'runner_sha256':_sha256(Path(__file__)),
             'observer_sha256':_sha256(OBSERVER),'argv':sys.argv,
-            'parent_runner_sha256':_sha256(Path(__file__).with_name('issue80_raicom_reset_only.py'))})
+            'parent_runner_sha256':_sha256(Path(__file__).with_name('issue80_raicom_reset_only.py')),
+            'native_mjdata_capture_requested':args.native_mjdata_capture,
+            'capture_interval_steps':args.capture_interval_steps,
+            'capture_source_sha256':_sha256(CAPTURE_SOURCE)})
         run=StandingRun(args,output,'robotsim-issue80-standing-'+args.attempt_id)
         result=run.run_once(host)
     except Exception as exc:
