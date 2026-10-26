@@ -172,6 +172,17 @@ class Local01SceneRouteTests(unittest.TestCase):
         self.assertAlmostEqual(route.start_yaw_rad, 0.0)
         self.assertAlmostEqual(route.start_position_tolerance_m, 0.05)
         self.assertAlmostEqual(route.start_yaw_tolerance_rad, 0.075)
+        self.assertTrue(all(step.segment_timeout_s == 60.0 for step in route.steps))
+
+        bounded_wall_time = build_table_approach_route_from_mission(
+            mission,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+            segment_timeout_s=300.0,
+        )
+        self.assertTrue(
+            all(step.segment_timeout_s == 300.0 for step in bounded_wall_time.steps)
+        )
 
     def test_runtime_raw_odom_route_uses_scene_numeric_start_and_static_envelope(self):
         route_input = build_runtime_raw_odom_short_route_config(local01_source_fixture())

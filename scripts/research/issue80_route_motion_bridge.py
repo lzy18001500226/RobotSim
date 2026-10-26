@@ -41,7 +41,10 @@ MIN_EFFECTIVE_FORWARD_M_S = 0.12
 MAX_ANGULAR_RAD_S = 0.075
 RUN73_BEARING_HEADING_GAIN = 0.8
 MAX_INCREMENTAL_WINDOW_S = 1.0
-MAX_ROUTE_ACTION_WINDOW_S = 5.0
+# The existing M1 primitive caps any one continuous command window at 10 s.
+# Ordinary route profiles continue to request 5 s; an explicit profile may
+# choose 10 s without raising the underlying M1 ceiling.
+MAX_ROUTE_ACTION_WINDOW_S = MAX_AUTHORIZED_PULSE_S
 ROUTE_WINDOW_ZERO_MARGIN_S = 0.02  # A2's timing-recovery margin before a 5 s M1 deadline.
 # AimDK documents a stationary angular start threshold of approximately
 # 0.03--0.05 rad/s.  This SIMULATION_ONLY profile uses the upper end while
@@ -1343,7 +1346,7 @@ class RouteMotionBridge:
         if route_frame_id not in ("odom", "map"):
             raise ValueError("route frame must be odom or map")
         if not math.isfinite(incremental_window_s) or not 0.0 < incremental_window_s <= MAX_ROUTE_ACTION_WINDOW_S:
-            raise ValueError("incremental window must be in (0, 5.0] seconds")
+            raise ValueError("incremental window must be in (0, 10.0] seconds")
         self.route_frame_id = route_frame_id
         self.incremental_window_s = incremental_window_s
         self._next_window_id = 1

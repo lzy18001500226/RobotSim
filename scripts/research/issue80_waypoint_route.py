@@ -571,6 +571,7 @@ def build_table_approach_route_from_mission(
     *,
     runtime_robot_footprint_radius_m: float,
     verified_local_clear_radius_m: float,
+    segment_timeout_s: float | None = None,
 ) -> RouteSpec:
     """Adapt the explicit Local01 table-approach mission to RouteSpec.
 
@@ -621,6 +622,17 @@ def build_table_approach_route_from_mission(
         "waypoint": values["waypoint"],
         "table_docking": values["approach"],
     }
+    resolved_segment_timeout_s: float | None = None
+    if segment_timeout_s is not None:
+        try:
+            resolved_segment_timeout_s = float(segment_timeout_s)
+        except (TypeError, ValueError) as exc:
+            raise RouteError("table-approach segment timeout must be numeric") from exc
+        if (
+            not math.isfinite(resolved_segment_timeout_s)
+            or resolved_segment_timeout_s <= 0.0
+        ):
+            raise RouteError("table-approach segment timeout must be finite and positive")
     base = build_waypoint_docking_route_from_poses(
         converted,
         runtime_robot_footprint_radius_m=runtime_robot_footprint_radius_m,
@@ -633,9 +645,17 @@ def build_table_approach_route_from_mission(
         start_yaw_tolerance_rad=0.075,
         steps=(
             replace(base.steps[0], waypoint_id="WAYPOINT", profile=Profile.TRANSIT,
-                    position_tolerance_m=0.15),
+                    position_tolerance_m=0.15,
+                    segment_timeout_s=(
+                        resolved_segment_timeout_s
+                        if resolved_segment_timeout_s is not None else base.steps[0].segment_timeout_s
+                    )),
             replace(base.steps[1], waypoint_id="TABLE_APPROACH", profile=Profile.TRANSIT,
-                    position_tolerance_m=0.15),
+                    position_tolerance_m=0.15,
+                    segment_timeout_s=(
+                        resolved_segment_timeout_s
+                        if resolved_segment_timeout_s is not None else base.steps[1].segment_timeout_s
+                    )),
         ),
     )
     route.validate()

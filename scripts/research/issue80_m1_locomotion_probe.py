@@ -180,6 +180,14 @@ POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 POINT_GOAL_HEADING_GAIN = 0.8
 ROUTE_TRANSIT_MAX_FORWARD_M_S = 0.12
 ROUTE_STEERING_WARMUP_S = 0.5
+# A TABLE_APPROACH segment may consume all 15 approved five-second command
+# windows.  Its wall-time cap must also cover the unchanged 1 s zero stream,
+# 3.5 s STAND wait, 2 s physical hold, and 7 s extra observation after each
+# stopped window: 15 * 19 s = 285 s.  Keep 300 s below the parent's 410 s
+# child budget; this does not increase any active-command allowance.
+TABLE_APPROACH_SEGMENT_TIMEOUT_S = 300.0
+TABLE_APPROACH_CONTINUOUS_WINDOW_S = 10.0
+TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS = 8
 # Run80's 0.15 m taper still missed the yaw stop gate by 0.13 deg. A saved-pose
 # command-only replay showed 0.25 m start reduces angular command integral
 # further; this is one bounded terminal-settling diagnostic, not a new goal
@@ -2999,6 +3007,9 @@ class FocusedM1Diagnostic(Node):
         zero_forward_heading_acquisition_mode = bool(
             getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
         )
+        continuous_ten_second_transit_mode = bool(
+            getattr(self.args, "raicom_continuous_ten_second_transit", False)
+        )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -3047,6 +3058,23 @@ class FocusedM1Diagnostic(Node):
                     if zero_forward_heading_acquisition_mode else None
                 ),
                 "windows": [],
+            },
+            "continuous_ten_second_transit": {
+                "enabled": continuous_ten_second_transit_mode,
+                "classification": (
+                    "SIMULATION_ONLY_CONTINUOUS_TEN_SECOND_TABLE_TRANSIT"
+                    if continuous_ten_second_transit_mode else None
+                ),
+                "maximum_window_s": (
+                    TABLE_APPROACH_CONTINUOUS_WINDOW_S
+                    if continuous_ten_second_transit_mode else None
+                ),
+                "maximum_windows_total": (
+                    TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
+                    if continuous_ten_second_transit_mode else None
+                ),
+                "aggregate_nonzero_limit_s": 75.0 if continuous_ten_second_transit_mode else None,
+                "physical_stop_after_each_window": True,
             },
             "route_scope": (
                 "LOCAL01_START_HEADING_TWO_TARGET_SHORT_ROUTE"
@@ -3658,7 +3686,20 @@ class FocusedM1Diagnostic(Node):
                     local01_route_input,
                     runtime_robot_footprint_radius_m=footprint,
                     verified_local_clear_radius_m=clear_radius,
+                    segment_timeout_s=TABLE_APPROACH_SEGMENT_TIMEOUT_S,
                 )
+                if continuous_ten_second_transit_mode:
+                    route = replace(
+                        route,
+                        steps=tuple(
+                            replace(
+                                step,
+                                max_command_window_s=TABLE_APPROACH_CONTINUOUS_WINDOW_S,
+                            )
+                            for step in route.steps
+                        ),
+                    )
+                    route.validate()
                 if bool(getattr(self.args, "raicom_low_cruise_profile", False)):
                     route = replace(
                         route,
@@ -3826,7 +3867,13 @@ class FocusedM1Diagnostic(Node):
                     measured_displacement_guard_verified=measured_turn_guard,
                 )
 
-            bridge = RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.0)
+            bridge = RouteMotionBridge(
+                route_frame_id="odom",
+                incremental_window_s=(
+                    TABLE_APPROACH_CONTINUOUS_WINDOW_S
+                    if continuous_ten_second_transit_mode else 5.0
+                ),
+            )
             initial_readiness = readiness_from_snapshot(initial)
             transit_plan = bridge.plan_next(
                 current_directive, start_pose, initial_readiness,
@@ -3845,6 +3892,7 @@ class FocusedM1Diagnostic(Node):
                     {"waypoint_id": step.waypoint_id, "profile": step.profile.value, "x_m": step.x_m,
                      "y_m": step.y_m, "position_tolerance_m": step.position_tolerance_m,
                      "yaw_tolerance_rad": step.yaw_tolerance_rad,
+                     "segment_timeout_s": step.segment_timeout_s,
                      "maximum_turn_displacement_m": step.maximum_turn_displacement_m}
                     for step in route.steps
                 ],
@@ -3871,12 +3919,25 @@ class FocusedM1Diagnostic(Node):
                         if aligned_start_table_approach_mode else
                         "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION"
                     ),
-                    "maximum_windows_total": int(limits["max_windows"]),
-                    "maximum_window_s": float(limits["max_window_s"]),
+                    "maximum_windows_total": (
+                        TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
+                        if continuous_ten_second_transit_mode
+                        else int(limits["max_windows"])
+                    ),
+                    "maximum_window_s": (
+                        TABLE_APPROACH_CONTINUOUS_WINDOW_S
+                        if continuous_ten_second_transit_mode
+                        else float(limits["max_window_s"])
+                    ),
                     "aggregate_nonzero_limit_s": float(limits["max_aggregate_nonzero_s"]),
                     "maximum_forward_m_s": float(route.steps[0].max_forward_m_s),
                     "maximum_angular_rad_s": float(limits["angular_rad_s"]),
                     "maximum_segment_cross_track_m": float(limits["max_cross_track_m"]),
+                    "segment_timeout_s": TABLE_APPROACH_SEGMENT_TIMEOUT_S,
+                    "segment_timeout_basis": (
+                        "the unchanged 75 s aggregate nonzero allowance plus complete zero/stand/"
+                        "physical-stop observation budgets; below the 410 s child-runtime watchdog"
+                    ),
                     "post_stand_observation_s": 7.0,
                     "bounded_runtime_budget": budget,
                     "final_state": "COMPLETE_AT_TABLE_APPROACH_WITHOUT_MANIPULATOR_HANDOFF",
@@ -4698,7 +4759,11 @@ class FocusedM1Diagnostic(Node):
             route_total_nonzero_s = 0.0
             transit_window_limit = (
                 SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
-                int(local01_route_input["limits"]["max_windows"])
+                (
+                    TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
+                    if continuous_ten_second_transit_mode
+                    else int(local01_route_input["limits"]["max_windows"])
+                )
                 if table_approach_mission_mode else
                 3 if route_config_mode else
                 CURVED_PATH_MAX_WINDOWS if curved_path_diagnostic else
@@ -4732,7 +4797,11 @@ class FocusedM1Diagnostic(Node):
                 while True:
                     if route_config_mode and len(result["segments"]) >= (
                         SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
-                        int(local01_route_input["limits"]["max_windows"])
+                        (
+                            TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
+                            if continuous_ten_second_transit_mode
+                            else int(local01_route_input["limits"]["max_windows"])
+                        )
                         if table_approach_mission_mode else 3
                     ):
                         return {
@@ -4806,7 +4875,9 @@ class FocusedM1Diagnostic(Node):
                     window_cap_s = min(
                         float(current_plan.maximum_duration_s),
                         SHORT_ROUTE_MAX_WINDOW_S if short_scene_route_mode else
-                        CURVED_PATH_MAX_WINDOW_S if curved_path_diagnostic else WAYPOINT_B_WINDOW_MAX_S,
+                        CURVED_PATH_MAX_WINDOW_S if curved_path_diagnostic else
+                        TABLE_APPROACH_CONTINUOUS_WINDOW_S
+                        if continuous_ten_second_transit_mode else WAYPOINT_B_WINDOW_MAX_S,
                         remaining_transit_s,
                         remaining_route_s,
                     )
@@ -7768,6 +7839,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     zero_forward_heading_acquisition = bool(
         getattr(args, "raicom_zero_forward_heading_acquisition", False)
     )
+    continuous_ten_second_transit = bool(
+        getattr(args, "raicom_continuous_ten_second_transit", False)
+    )
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
         getattr(args, "aligned_start_table_approach", False)
@@ -7821,6 +7895,18 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "zero-forward heading acquisition requires the native-timestep aligned TABLE_APPROACH low-cruise profile"
         )
+    if continuous_ten_second_transit and not (
+        zero_forward_heading_acquisition
+        and table_approach_mission
+        and aligned_start_table_approach
+        and native_x2_timestep
+        and low_cruise_profile
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    ):
+        raise ValueError(
+            "continuous ten-second transit requires the native-timestep aligned TABLE_APPROACH "
+            "low-cruise heading-acquisition profile"
+        )
     if configured_route_observation and not configured_route:
         raise ValueError("configured-route post-STAND observation requires --route-config")
     if configured_route:
@@ -7870,6 +7956,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "command_forward_m_s": float(args.forward_speed),
                 "raicom_low_cruise_profile": low_cruise_profile,
                 "raicom_zero_forward_heading_acquisition": zero_forward_heading_acquisition,
+                "raicom_continuous_ten_second_transit": continuous_ten_second_transit,
                 "zero_forward_heading_profile": (
                     {
                         "classification": "SIMULATION_ONLY_AIMDK_YAW_SOURCE_ACQUISITION",
@@ -7879,6 +7966,16 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                         "minimum_measured_response_rad": ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
                     }
                     if zero_forward_heading_acquisition else None
+                ),
+                "continuous_transit_profile": (
+                    {
+                        "classification": "SIMULATION_ONLY_CONTINUOUS_TEN_SECOND_TABLE_TRANSIT",
+                        "maximum_window_s": TABLE_APPROACH_CONTINUOUS_WINDOW_S,
+                        "maximum_windows_total": TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS,
+                        "aggregate_nonzero_limit_s": 75.0,
+                        "physical_stop_after_each_window": True,
+                    }
+                    if continuous_ten_second_transit else None
                 ),
                 "runtime_reset_odom_observed": False,
             }
@@ -8287,6 +8384,14 @@ def main() -> int:
         help=(
             "SIMULATION_ONLY native-timestep aligned TABLE_APPROACH profile: use a bounded "
             "zero-forward yaw command to acquire the source before forward transit"
+        ),
+    )
+    first.add_argument(
+        "--raicom-continuous-ten-second-transit",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY native-timestep aligned TABLE_APPROACH profile: extend each "
+            "continuous transit command to the existing 10 s M1 ceiling before the full stop gate"
         ),
     )
     first.add_argument(

@@ -1420,6 +1420,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --raicom-low-cruise-profile"
         if getattr(args, "raicom_zero_forward_heading_acquisition", False):
             command[-1] += " --raicom-zero-forward-heading-acquisition"
+        if getattr(args, "raicom_continuous_ten_second_transit", False):
+            command[-1] += " --raicom-continuous-ten-second-transit"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -5534,6 +5536,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-continuous-ten-second-transit",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY aligned TABLE_APPROACH profile: use the existing 10 s M1 continuous "
+            "command ceiling between measured physical stops, retaining the 75 s aggregate limit "
+            "and all root-speed, posture, collision, freshness, and final-stop gates"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5786,6 +5797,21 @@ def main() -> int:
         parser.error(
             "zero-forward heading acquisition is limited to the native-timestep aligned "
             "TABLE_APPROACH low-cruise first-motion profile"
+        )
+    if args.raicom_continuous_ten_second_transit and not (
+        args.raicom_zero_forward_heading_acquisition
+        and args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_x2_timestep
+        and args.raicom_low_cruise_profile
+        and args.direct_stand_from_passive
+        and args.maintainer_authorized_first_motion
+        and args.require_stand_warmup_composite
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    ):
+        parser.error(
+            "continuous ten-second transit requires the native-timestep aligned TABLE_APPROACH "
+            "low-cruise profile with zero-forward heading source acquisition"
         )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:

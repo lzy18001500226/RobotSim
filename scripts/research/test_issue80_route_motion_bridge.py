@@ -1707,8 +1707,20 @@ class RouteMotionBridgeTests(unittest.TestCase):
 
     def test_route_action_window_remains_one_second_by_default(self) -> None:
         self.assertEqual(RouteMotionBridge(route_frame_id="odom").incremental_window_s, 1.0)
+        self.assertEqual(RouteMotionBridge(route_frame_id="odom", incremental_window_s=10.0).incremental_window_s, 10.0)
         with self.assertRaises(ValueError):
-            RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.001)
+            RouteMotionBridge(route_frame_id="odom", incremental_window_s=10.001)
+
+    def test_explicit_ten_second_bridge_window_remains_under_the_m1_ceiling(self) -> None:
+        bridge = RouteMotionBridge(route_frame_id="odom", incremental_window_s=10.0)
+        plan = bridge.plan_next(
+            follow_directive(max_command_window_s=10.0),
+            make_pose(),
+            readiness(),
+            now_steady_s=10.0,
+        )
+        self.assertEqual(plan.status, "PROPOSAL_ONLY")
+        self.assertEqual(plan.maximum_duration_s, 10.0)
 
     def test_right_turn_evidence_does_not_qualify_left_turn(self) -> None:
         bridge = RouteMotionBridge(route_frame_id="odom")
