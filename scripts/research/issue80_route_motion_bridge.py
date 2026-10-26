@@ -43,6 +43,13 @@ RUN73_BEARING_HEADING_GAIN = 0.8
 MAX_INCREMENTAL_WINDOW_S = 1.0
 MAX_ROUTE_ACTION_WINDOW_S = 5.0
 ROUTE_WINDOW_ZERO_MARGIN_S = 0.02  # A2's timing-recovery margin before a 5 s M1 deadline.
+# AimDK documents a stationary angular start threshold of approximately
+# 0.03--0.05 rad/s.  This SIMULATION_ONLY profile uses the upper end while
+# remaining inside the established 0.075 rad/s route cap.
+ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD = 0.03
+ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S = 0.05
+ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD = 0.01
+ZERO_FORWARD_HEADING_ACQUISITION_MAX_S = 0.75
 WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M = 0.20
 WAYPOINT_B_POSITION_TOLERANCE_M = 0.15
 # Run d5df79e0 drifted 36.811 mm from arrival to settled pose; reserve 45 mm.
@@ -917,6 +924,33 @@ class TransitSteeringGate:
     steering_enabled: bool = False
     fault: str | None = None
 
+    def seed_verified_acquisition(
+        self,
+        *,
+        started_steady_s: float,
+        observed_steady_s: float,
+    ) -> None:
+        """Seed this gate after a measured nonzero yaw-only source acquisition.
+
+        The caller must first observe the source and LOCOMOTION_DEFAULT in the
+        current sample.  Future calls to :meth:`observe` still require the
+        normal fresh same-sample readbacks.
+        """
+        try:
+            started = float(started_steady_s)
+            observed = float(observed_steady_s)
+        except (TypeError, ValueError) as exc:
+            raise RouteMotionBridgeError("verified acquisition times must be numeric") from exc
+        if not math.isfinite(started) or not math.isfinite(observed) or observed < started:
+            raise RouteMotionBridgeError("verified acquisition times are invalid")
+        if self.window_started_steady_s is None:
+            self.window_started_steady_s = started
+        elif started < self.window_started_steady_s:
+            self.fault = "transit_steering_acquisition_precedes_window_start"
+            return
+        self.handshake_observed = True
+        self.handshake_observed_steady_s = observed
+
     def observe(
         self,
         steady_s: float,
@@ -963,6 +997,43 @@ class TransitSteeringGate:
             "steering_enabled": self.steering_enabled,
             "fault": self.fault,
         }
+
+
+def zero_forward_heading_acquisition_plan(
+    heading_error_rad: float,
+    *,
+    trigger_rad: float = ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD,
+    command_rad_s: float = ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
+    maximum_angular_rad_s: float = MAX_ANGULAR_RAD_S,
+) -> dict[str, float | bool]:
+    """Return a bounded yaw-only source-acquisition command from fresh odometry.
+
+    Zero commands cannot acquire or refresh an AimDK input source.  When the
+    bearing error is inside the documented angular start threshold, callers
+    retain the existing forward acquisition path; otherwise they receive a
+    nonzero yaw command with the bearing-error sign.
+    """
+    try:
+        error = float(heading_error_rad)
+        trigger = float(trigger_rad)
+        command = float(command_rad_s)
+        maximum = float(maximum_angular_rad_s)
+    except (TypeError, ValueError) as exc:
+        raise RouteMotionBridgeError("heading acquisition inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (error, trigger, command, maximum)):
+        raise RouteMotionBridgeError("heading acquisition inputs must be finite")
+    if not 0.0 < trigger <= maximum or not 0.0 < command <= maximum:
+        raise RouteMotionBridgeError("heading acquisition command is outside the angular envelope")
+    required = abs(error) >= trigger
+    angular = math.copysign(command, error) if required else 0.0
+    return {
+        "required": required,
+        "heading_error_rad": error,
+        "forward_velocity_m_s": 0.0,
+        "angular_velocity_rad_s": angular,
+        "trigger_rad": trigger,
+        "command_magnitude_rad_s": command,
+    }
 
 
 def waypoint_b_window_budget_passes(

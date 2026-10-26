@@ -1418,6 +1418,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 command[-1] += " --native-x2-timestep"
         if getattr(args, "raicom_low_cruise_profile", False):
             command[-1] += " --raicom-low-cruise-profile"
+        if getattr(args, "raicom_zero_forward_heading_acquisition", False):
+            command[-1] += " --raicom-zero-forward-heading-acquisition"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -5523,6 +5525,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-zero-forward-heading-acquisition",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY aligned TABLE_APPROACH profile: acquire the registered source with "
+            "a bounded zero-forward yaw command before the first forward gait command; requires "
+            "the native-timestep low-cruise route and preserves every existing safety gate"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5762,6 +5773,20 @@ def main() -> int:
                 "exactly 0.105 m/s, and either the Local01 short route or its aligned-start "
                 "TABLE_APPROACH mission"
             )
+    if args.raicom_zero_forward_heading_acquisition and not (
+        args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_x2_timestep
+        and args.raicom_low_cruise_profile
+        and args.direct_stand_from_passive
+        and args.maintainer_authorized_first_motion
+        and args.require_stand_warmup_composite
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    ):
+        parser.error(
+            "zero-forward heading acquisition is limited to the native-timestep aligned "
+            "TABLE_APPROACH low-cruise first-motion profile"
+        )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")

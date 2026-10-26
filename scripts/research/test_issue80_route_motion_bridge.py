@@ -68,6 +68,9 @@ from issue80_route_motion_bridge import (
     validate_physical_stop_evidence,
     waypoint_b_window_budget_passes,
     validate_curved_path_cli_profile,
+    ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
+    ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD,
+    zero_forward_heading_acquisition_plan,
 )
 
 
@@ -158,6 +161,35 @@ def turn_directive(**overrides) -> RouteDirective:
 
 
 class RouteMotionBridgeTests(unittest.TestCase):
+    def test_zero_forward_heading_acquisition_uses_the_documented_start_band(self) -> None:
+        right = zero_forward_heading_acquisition_plan(-0.04)
+        self.assertTrue(right["required"])
+        self.assertEqual(right["forward_velocity_m_s"], 0.0)
+        self.assertEqual(
+            right["angular_velocity_rad_s"],
+            -ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
+        )
+        self.assertEqual(right["trigger_rad"], ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD)
+
+        left = zero_forward_heading_acquisition_plan(0.04)
+        self.assertTrue(left["required"])
+        self.assertEqual(left["angular_velocity_rad_s"], ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S)
+
+        aligned = zero_forward_heading_acquisition_plan(0.02)
+        self.assertFalse(aligned["required"])
+        self.assertEqual(aligned["angular_velocity_rad_s"], 0.0)
+
+    def test_verified_yaw_only_acquisition_still_requires_fresh_handshake(self) -> None:
+        gate = TransitSteeringGate(warmup_s=0.5)
+        gate.seed_verified_acquisition(started_steady_s=10.0, observed_steady_s=10.75)
+        state = gate.observe(10.75, True, active_readbacks_valid=True)
+        self.assertTrue(state["handshake_observed"])
+        self.assertTrue(state["steering_enabled"])
+        self.assertIsNone(state["fault"])
+
+        lost = gate.observe(10.80, False, active_readbacks_valid=False)
+        self.assertEqual(lost["fault"], "transit_locomotion_source_mode_handshake_lost")
+
     def test_route_adapter_skips_only_fresh_duplicate_odom_without_relaxing_core_stamps(self):
         self.assertEqual(
             classify_route_odom_stamp(

@@ -151,6 +151,10 @@ from issue80_route_motion_bridge import (
     waypoint_b_window_budget_passes, waypoint_b_forward_guard_reached,
     waypoint_b_cross_track_guard_reached,
     TransitSteeringGate,
+    ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
+    ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
+    ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
+    zero_forward_heading_acquisition_plan,
     active_locomotion_source_readbacks_valid,
     RouteOdomFreshnessTracker,
     route_feedback_sample_disposition,
@@ -1039,6 +1043,7 @@ class FocusedM1Diagnostic(Node):
         phase: str,
         forward_command_m_s: float = ACTIVATION_PROBE_FORWARD_M_S,
         allow_raicom_low_cruise: bool = False,
+        zero_forward_heading_acquisition: bool = False,
     ) -> tuple[MCLocomotionAbortLifecycle, dict[str, Any], dict[str, Any]]:
         """Prepare the reviewed nonzero-acquisition phase for one route window.
 
@@ -1059,8 +1064,16 @@ class FocusedM1Diagnostic(Node):
                 "maximum_activation_qualification_s": ACTIVATION_PROBE_DURATION_S,
                 "forward_velocity_m_s": float(forward_command_m_s),
                 "raicom_low_cruise_profile": bool(allow_raicom_low_cruise),
+                "zero_forward_heading_acquisition": bool(
+                    zero_forward_heading_acquisition
+                ),
                 "route_source_acquisition_profile": {
                     "forward_command_m_s": float(forward_command_m_s),
+                    "first_nonzero_command": (
+                        "bounded_zero_forward_heading_acquisition"
+                        if zero_forward_heading_acquisition
+                        else "forward_transit_command"
+                    ),
                     "allowed_profiles_m_s": (
                         [ACTIVATION_PROBE_FORWARD_M_S, RAICOM_LOW_CRUISE_FORWARD_M_S]
                         if allow_raicom_low_cruise else [ACTIVATION_PROBE_FORWARD_M_S]
@@ -2983,6 +2996,9 @@ class FocusedM1Diagnostic(Node):
             getattr(self.args, "aligned_start_table_approach", False)
         )
         native_x2_timestep_mode = bool(getattr(self.args, "native_x2_timestep", False))
+        zero_forward_heading_acquisition_mode = bool(
+            getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
+        )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -3011,6 +3027,27 @@ class FocusedM1Diagnostic(Node):
             "status": "NOT_RUN",
             "route_attempt_id": self.args.attempt_id,
             "segments": [],
+            "zero_forward_heading_acquisition": {
+                "enabled": zero_forward_heading_acquisition_mode,
+                "classification": (
+                    "SIMULATION_ONLY_AIMDK_YAW_SOURCE_ACQUISITION"
+                    if zero_forward_heading_acquisition_mode else None
+                ),
+                "forward_velocity_m_s": 0.0,
+                "angular_command_magnitude_rad_s": (
+                    ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S
+                    if zero_forward_heading_acquisition_mode else None
+                ),
+                "maximum_duration_s": (
+                    ZERO_FORWARD_HEADING_ACQUISITION_MAX_S
+                    if zero_forward_heading_acquisition_mode else None
+                ),
+                "minimum_response_rad": (
+                    ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD
+                    if zero_forward_heading_acquisition_mode else None
+                ),
+                "windows": [],
+            },
             "route_scope": (
                 "LOCAL01_START_HEADING_TWO_TARGET_SHORT_ROUTE"
                 if short_scene_route_mode else
@@ -4366,22 +4403,115 @@ class FocusedM1Diagnostic(Node):
                     self.activation_lifecycle is not None
                     and self.activation_lifecycle.activation_probe_command_allowed
                 )
+                heading_acquisition = window_control.get(
+                    "zero_forward_heading_acquisition"
+                )
                 if route_activation_pending:
-                    # The documented source contract needs this first bounded
-                    # nonzero publish to acquire arbitration. Keep the path
-                    # straight and retain all physical/odom checks above; do
-                    # not enable bearing steering until confirmation arrives.
+                    # The documented source contract needs a first bounded
+                    # nonzero publish to acquire arbitration.  The explicitly
+                    # selected RAICOM profile uses a source-grounded yaw-only
+                    # command when fresh bearing error exceeds the documented
+                    # angular start threshold; all pose/cross-track guards
+                    # above remain active.  Other profiles retain the prior
+                    # straight acquisition behavior.
                     window_control.update({
                         "steering_enabled": False,
                         "initial_source_grounded_activation_pending": True,
                         "source_mode_handshake": handshake,
+                        "zero_forward_heading_acquisition_active": bool(
+                            zero_forward_heading_acquisition_mode
+                            and isinstance(heading_acquisition, Mapping)
+                            and heading_acquisition.get("status") == "ACTIVE"
+                        ),
                     })
+                    if (
+                        zero_forward_heading_acquisition_mode
+                        and isinstance(heading_acquisition, Mapping)
+                        and heading_acquisition.get("status") == "ACTIVE"
+                    ):
+                        try:
+                            acquisition_elapsed = sample_time - float(
+                                heading_acquisition["started_steady_s"]
+                            )
+                        except (KeyError, TypeError, ValueError):
+                            route_fault = "zero_forward_heading_acquisition_state_invalid"
+                            return True
+                        heading_acquisition["elapsed_s"] = acquisition_elapsed
+                        if acquisition_elapsed >= ZERO_FORWARD_HEADING_ACQUISITION_MAX_S:
+                            route_fault = "zero_forward_heading_acquisition_source_mode_not_confirmed"
+                            heading_acquisition["status"] = "FAILED_SOURCE_MODE_HANDSHAKE"
+                            route_events.append({
+                                "kind": "ZERO_FORWARD_HEADING_ACQUISITION_ABORT",
+                                "reason": route_fault,
+                                **dict(heading_acquisition),
+                            })
+                            return True
                     return False
                 active_readbacks_valid = active_locomotion_source_readbacks_valid(
                     snapshot,
                     expected_source=self.source,
                     maximum_age_s=float(self.args.state_timeout),
                 )
+                window_control["initial_source_grounded_activation_pending"] = False
+                if (
+                    zero_forward_heading_acquisition_mode
+                    and isinstance(heading_acquisition, Mapping)
+                    and heading_acquisition.get("status") == "ACTIVE"
+                ):
+                    try:
+                        started = float(heading_acquisition["started_steady_s"])
+                        initial_yaw = float(heading_acquisition["initial_yaw_rad"])
+                        commanded = float(
+                            heading_acquisition["angular_velocity_rad_s"]
+                        )
+                        elapsed = sample_time - started
+                        yaw_delta = math.atan2(
+                            math.sin(pose.yaw_rad - initial_yaw),
+                            math.cos(pose.yaw_rad - initial_yaw),
+                        )
+                        signed_response = yaw_delta * math.copysign(1.0, commanded)
+                    except (KeyError, TypeError, ValueError):
+                        route_fault = "zero_forward_heading_acquisition_state_invalid"
+                        return True
+                    heading_acquisition.update({
+                        "elapsed_s": elapsed,
+                        "measured_yaw_delta_rad": yaw_delta,
+                        "commanded_sign_yaw_delta_rad": signed_response,
+                        "same_sample_handshake": handshake,
+                        "active_readbacks_valid": active_readbacks_valid,
+                    })
+                    if elapsed < ZERO_FORWARD_HEADING_ACQUISITION_MAX_S:
+                        return False
+                    if not handshake or not active_readbacks_valid:
+                        route_fault = "zero_forward_heading_acquisition_source_mode_not_confirmed"
+                        heading_acquisition["status"] = "FAILED_SOURCE_MODE_HANDSHAKE"
+                        route_events.append({
+                            "kind": "ZERO_FORWARD_HEADING_ACQUISITION_ABORT",
+                            "reason": route_fault,
+                            **dict(heading_acquisition),
+                        })
+                        return True
+                    if signed_response < ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD:
+                        route_fault = (
+                            "zero_forward_heading_acquisition_opposite_yaw_response"
+                            if signed_response < -ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD
+                            else "zero_forward_heading_acquisition_response_too_small"
+                        )
+                        heading_acquisition["status"] = "FAILED_YAW_RESPONSE"
+                        route_events.append({
+                            "kind": "ZERO_FORWARD_HEADING_ACQUISITION_ABORT",
+                            "reason": route_fault,
+                            **dict(heading_acquisition),
+                        })
+                        return True
+                    heading_acquisition["status"] = "QUALIFIED"
+                    active_window_gate.seed_verified_acquisition(
+                        started_steady_s=started,
+                        observed_steady_s=sample_time,
+                    )
+                    result["zero_forward_heading_acquisition"]["windows"].append(
+                        dict(heading_acquisition)
+                    )
                 gate_state = active_window_gate.observe(
                     sample_time,
                     handshake,
@@ -4633,6 +4763,7 @@ class FocusedM1Diagnostic(Node):
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
                             ),
+                            zero_forward_heading_acquisition=zero_forward_heading_acquisition_mode,
                         )
                         result.setdefault("activation_rearms", []).append({
                             "window_index": window_index + 1,
@@ -4712,6 +4843,76 @@ class FocusedM1Diagnostic(Node):
                             "saturated": False,
                         }
                         snapshot = latest_transit_snapshot
+                        if (
+                            zero_forward_heading_acquisition_mode
+                            and isinstance(snapshot, Mapping)
+                        ):
+                            acquisition = window_control.get(
+                                "zero_forward_heading_acquisition"
+                            )
+                            if acquisition is None:
+                                pose = snapshot.get("pose")
+                                active = executor.active_step
+                                if not isinstance(pose, Mapping) or active is None:
+                                    window_control["feedback_fault"] = (
+                                        "zero_forward_heading_acquisition_pose_or_goal_missing"
+                                    )
+                                    self._publish(0.0, 0.0, 0.0)
+                                    return
+                                try:
+                                    target_yaw = math.atan2(
+                                        float(active.y_m) - float(pose["y"]),
+                                        float(active.x_m) - float(pose["x"]),
+                                    )
+                                    heading_error = math.atan2(
+                                        math.sin(target_yaw - float(pose["yaw"])),
+                                        math.cos(target_yaw - float(pose["yaw"])),
+                                    )
+                                    source_plan = zero_forward_heading_acquisition_plan(
+                                        heading_error,
+                                        maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                                    )
+                                except (KeyError, TypeError, ValueError, RouteMotionBridgeError) as exc:
+                                    window_control["feedback_fault"] = (
+                                        "zero_forward_heading_acquisition_invalid:"
+                                        f"{type(exc).__name__}:{exc}"
+                                    )
+                                    self._publish(0.0, 0.0, 0.0)
+                                    return
+                                acquisition = {
+                                    **source_plan,
+                                    "status": (
+                                        "ACTIVE" if source_plan["required"]
+                                        else "FALLBACK_STRAIGHT_WARMUP"
+                                    ),
+                                    "started_steady_s": float(
+                                        snapshot["sample_monotonic_s"]
+                                    ),
+                                    "initial_yaw_rad": float(pose["yaw"]),
+                                    "target_yaw_rad": target_yaw,
+                                    "window_id": int(current_plan.window_id),
+                                }
+                                window_control["zero_forward_heading_acquisition"] = acquisition
+                            if acquisition.get("status") == "ACTIVE":
+                                forward = 0.0
+                                angular = float(acquisition["angular_velocity_rad_s"])
+                                control_row.update({
+                                    "forward_velocity_m_s": 0.0,
+                                    "angular_velocity_rad_s": angular,
+                                    "control_phase": "ZERO_FORWARD_HEADING_SOURCE_ACQUISITION",
+                                    "heading_error_rad": float(
+                                        acquisition["heading_error_rad"]
+                                    ),
+                                    "target_yaw_rad": float(acquisition["target_yaw_rad"]),
+                                    "initial_yaw_rad": float(acquisition["initial_yaw_rad"]),
+                                    "source_acquisition_command_rad_s": angular,
+                                    "source_acquisition_started_steady_s": float(
+                                        acquisition["started_steady_s"]
+                                    ),
+                                })
+                                steering_samples.append(control_row)
+                                self._publish(0.0, 0.0, angular)
+                                return
                         if forward > 0.0 and isinstance(snapshot, Mapping):
                             control_row["sample_monotonic_s"] = snapshot.get("sample_monotonic_s")
                             control_row["odom_stamp_action"] = window_control.get("odom_stamp_action")
@@ -4939,6 +5140,12 @@ class FocusedM1Diagnostic(Node):
                         "heading_gain": 0.8,
                         "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                         "straight_warmup_s": ROUTE_STEERING_WARMUP_S,
+                        "zero_forward_heading_acquisition": window_control.get(
+                            "zero_forward_heading_acquisition"
+                        ),
+                        "zero_forward_heading_acquisition_profile_enabled": (
+                            zero_forward_heading_acquisition_mode
+                        ),
                         "fresh_mode_source_handshake_required_before_steering": True,
                         "handshake_state": dict(window_control),
                         "sample_count": len(steering_samples),
@@ -5365,6 +5572,11 @@ class FocusedM1Diagnostic(Node):
                         lifecycle, next_set_action, activation_gate = self.begin_source_grounded_route_activation(
                             registration=registration,
                             phase=f"configured-route-{configured_step.waypoint_id.lower()}-activation",
+                            forward_command_m_s=float(self.args.forward_speed),
+                            allow_raicom_low_cruise=bool(
+                                getattr(self.args, "raicom_low_cruise_profile", False)
+                            ),
+                            zero_forward_heading_acquisition=zero_forward_heading_acquisition_mode,
                         )
                         result.setdefault("activation_rearms", []).append({
                             "step_id": configured_step.waypoint_id,
@@ -6852,6 +7064,9 @@ class FocusedM1Diagnostic(Node):
                         allow_raicom_low_cruise=bool(
                             getattr(self.args, "raicom_low_cruise_profile", False)
                         ),
+                        zero_forward_heading_acquisition=bool(
+                            getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
+                        ),
                     )
                 else:
                     lifecycle, set_action, activation_gate = self.begin_zero_only_locomotion_activation(
@@ -7542,6 +7757,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     configured_route = bool(getattr(args, "route_config", None))
     short_scene_route = bool(getattr(args, "short_scene_route", False))
     low_cruise_profile = bool(getattr(args, "raicom_low_cruise_profile", False))
+    zero_forward_heading_acquisition = bool(
+        getattr(args, "raicom_zero_forward_heading_acquisition", False)
+    )
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
         getattr(args, "aligned_start_table_approach", False)
@@ -7584,6 +7802,16 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise ValueError(
             "native X2 timestep requires the aligned-start TABLE_APPROACH low-cruise profile"
+        )
+    if zero_forward_heading_acquisition and not (
+        table_approach_mission
+        and aligned_start_table_approach
+        and native_x2_timestep
+        and low_cruise_profile
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    ):
+        raise ValueError(
+            "zero-forward heading acquisition requires the native-timestep aligned TABLE_APPROACH low-cruise profile"
         )
     if configured_route_observation and not configured_route:
         raise ValueError("configured-route post-STAND observation requires --route-config")
@@ -7633,6 +7861,17 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "native_x2_timestep": native_x2_timestep,
                 "command_forward_m_s": float(args.forward_speed),
                 "raicom_low_cruise_profile": low_cruise_profile,
+                "raicom_zero_forward_heading_acquisition": zero_forward_heading_acquisition,
+                "zero_forward_heading_profile": (
+                    {
+                        "classification": "SIMULATION_ONLY_AIMDK_YAW_SOURCE_ACQUISITION",
+                        "forward_velocity_m_s": 0.0,
+                        "angular_command_magnitude_rad_s": ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
+                        "maximum_duration_s": ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
+                        "minimum_measured_response_rad": ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
+                    }
+                    if zero_forward_heading_acquisition else None
+                ),
                 "runtime_reset_odom_observed": False,
             }
         elif short_scene_route:
@@ -8032,6 +8271,14 @@ def main() -> int:
         help=(
             "permit only the evidence-backed 0.105 m/s short-route recovery profile; "
             "all route stop, posture, and root-speed gates remain unchanged"
+        ),
+    )
+    first.add_argument(
+        "--raicom-zero-forward-heading-acquisition",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY native-timestep aligned TABLE_APPROACH profile: use a bounded "
+            "zero-forward yaw command to acquire the source before forward transit"
         ),
     )
     first.add_argument(
