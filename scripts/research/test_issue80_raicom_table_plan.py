@@ -2,10 +2,23 @@
 import math
 import unittest
 
-from issue80_raicom_table_plan import sample_segment
+from issue80_raicom_table_plan import sample_segment, build_raw_world_odom_route_config
 
 
 class TablePlanTests(unittest.TestCase):
+    def test_raw_odom_config_never_uses_planned_local_coordinates(self):
+        poses = [
+            {"name":"START","scene_world":{"xyz_m":[-1.5,-1.5,.68],"yaw_rad":math.pi/2},
+             "local01_reset_local_odom":{"x_m":0,"y_m":0,"yaw_rad":0}},
+            {"name":"WAYPOINT","scene_world":{"xyz_m":[-.25,-1.5,.68],"yaw_rad":0}},
+            {"name":"TABLE_DOCKING","scene_world":{"xyz_m":[1,-1.5,.68],"yaw_rad":0}},
+        ]
+        config = build_raw_world_odom_route_config(poses)
+        self.assertEqual(config["frame_id"],"odom")
+        self.assertEqual(config["start"],{"x_m":-1.5,"y_m":-1.5,"yaw_rad":math.pi/2})
+        self.assertEqual(config["table_docking"]["x_m"],1.)
+        self.assertIn("OFFLINE-ONLY",config["route_id"])
+
     def test_translation_preserves_endpoints_and_spacing(self):
         a = (-1.5, -1.5, .68, 0.)
         b = (1., -1.5, .68, 0.)

@@ -159,6 +159,11 @@ SVG. It checks source-zero and runtime-nominal postures, active environment and
 self contacts, source limits, 50 mm XY uncertainty and sampled yaw uncertainty.
 The remaining 20 mm clearance gate is a planning margin, not a changed runtime
 safety threshold. Two static postures do not bound the dynamic gait envelope.
+Its `table_route_raw_world_ODOM_OFFLINE_ONLY.json` uses scene-world numeric
+coordinates for the observed raw HAL `odom` channel. Planned-local coordinates
+remain separately named report fields, never a second route config mislabeled
+as raw odom. This repairs the offline artifact contract only; the live short
+route's source transform and fail-closed Reset-anchor gates remain unchanged.
 
 The source docking `(1,-1.5,0.68,0)` has only 11.3 mm conservative clearance
 under nominal posture and fails that additional margin. The separately labeled

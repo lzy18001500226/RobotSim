@@ -32,6 +32,26 @@ def sample_segment(a, b, spacing=0.025, yaw_spacing=0.02):
             + (a[3]+delta*t/(count-1),) for t in range(count)]
 
 
+def build_raw_world_odom_route_config(poses):
+    """Keep executable-schema odom coordinates consistent with observed raw HAL.
+
+    Local01's planned-local transform remains a separate report field. This
+    output is still OFFLINE_ONLY: a Reset anchor is not an active-motion frame
+    qualification, nor does this supply a qualified initial turning primitive.
+    """
+    by_name = {item["name"]: item["scene_world"] for item in poses}
+    config = {"schema_version": WAYPOINT_DOCKING_POSE_SCHEMA_VERSION,
+              "route_id": "raicom-source-table-raw-world-odom-OFFLINE-ONLY",
+              "frame_id": "odom"}
+    for dest, name in (("start", "START"), ("waypoint", "WAYPOINT"),
+                       ("table_docking", "TABLE_DOCKING")):
+        pose = by_name[name]
+        config[dest] = {"x_m": float(pose["xyz_m"][0]),
+                        "y_m": float(pose["xyz_m"][1]),
+                        "yaw_rad": float(pose["yaw_rad"])}
+    return config
+
+
 def main():
     source = load_local01_scene_inputs(LOCAL01_POSES_DEFAULT)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"agent"))
@@ -142,12 +162,8 @@ def main():
                       "runtime_raw_odom_convention":"SCENE_WORLD_RESET_ANCHOR_OBSERVED_20261026; independent live GT unavailable"})
     # Reuse the existing route-config shape, but do not feed it into a live
     # runner: the complete route has different distance/turning budgets.
-    odom={item["name"]:item["local01_reset_local_odom"] for item in poses}
-    config={"schema_version":WAYPOINT_DOCKING_POSE_SCHEMA_VERSION,
-            "route_id":"raicom-source-table-full-distance-OFFLINE-ONLY","frame_id":"odom"}
-    for dest,key in (("start","START"),("waypoint","WAYPOINT"),("table_docking","TABLE_DOCKING")):
-        config[dest]={k:odom[key][k] for k in ("x_m","y_m","yaw_rad")}
-    config_path=output/"table_route_config_OFFLINE_ONLY.json"
+    config = build_raw_world_odom_route_config(poses)
+    config_path=output/"table_route_raw_world_ODOM_OFFLINE_ONLY.json"
     config_path.write_text(json.dumps(config,indent=2)+"\n")
     load_waypoint_docking_pose_input(config_path)
     length=sum(math.dist(a[:3],b[:3]) for (_,a),(_,b) in zip(waypoints,waypoints[1:]))
@@ -158,6 +174,12 @@ def main():
             "mujoco_version":mujoco.__version__,"mj_step_calls":0,
             "robot_collision_geoms":len(robot),"environment_collision_geoms":len(environment),
             "waypoints":poses,"segments":results,"translation_distance_m":length,
+            "route_config_coordinate_contract":{
+                "file":config_path.name,"published_frame_id":"odom",
+                "coordinate_values":"scene_world; matches observed raw HAL Reset anchor",
+                "planned_local_values":"report only, never silently relabeled raw odom",
+                "active_motion_frame_qualification":"NOT_RUN",
+                "live_execution_enabled":False},
             "separate_review_candidate":{"scene_world_xyz_yaw":[.95,-1.50,.68,0.0],
                  "reason":"50 mm retreat from source docking to preserve nominal-posture uncertainty clearance",
                  "source_docking_unchanged":True,"manipulation_reach":"UNKNOWN_NOT_AN_ACCEPTED_DOCK"},
