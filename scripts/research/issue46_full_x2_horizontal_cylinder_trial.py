@@ -257,9 +257,16 @@ def main() -> None:
     arm_contact = np.asarray(waypoints["HORIZONTAL_CONTACT"]["arm_q_rad"], dtype=float)
     arm_lift = np.asarray(waypoints["VERTICAL_LIFT_50MM"]["arm_q_rad"], dtype=float)
     preflight.set_static_state(model, data, arm_initial, initial["right_hand_qpos_rad"], initial["left_hand_qpos_rad"])
-    data.qvel[:] = 0.0
     motor_actuators = controller.all_motor_actuators(model)
     motor_targets = dict(initial["motor_targets_rad"])
+    # Static preflight may intentionally move idle torque-motor joints one
+    # numerical margin inside a source endpoint.  Reapply that exact initial
+    # state before physics begins; no qpos is written after this block.
+    for joint_name, value in motor_targets.items():
+        joint = model.joint(joint_name).id
+        data.qpos[model.jnt_qposadr[joint]] = value
+    data.qvel[:] = 0.0
+    mujoco.mj_forward(model, data)
     arm_names = list(preflight.ARM)
     right_root = float(config["right_root_open_target_rad"])
     left_root = float(config["left_root_idle_target_rad"])

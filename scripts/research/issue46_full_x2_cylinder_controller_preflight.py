@@ -31,6 +31,7 @@ ROBOT_STATIC_QACC_GATE_RAD_S2 = 1e-3
 JOINT_EQUALITY_GATE_RAD = 0.003
 CONNECT_EQUALITY_GATE_M = 0.001
 LEFT_IDLE_PERCENT = 2
+ENDPOINT_INTERIOR_MARGIN_RAD = 1e-5
 
 
 def sha256(path: Path) -> str:
@@ -126,9 +127,52 @@ def all_motor_actuators(model: mujoco.MjModel) -> list[int]:
     ]
 
 
+def move_motor_endpoint_qpos_inside(model: mujoco.MjModel, data: mujoco.MjData) -> list[dict[str, object]]:
+    """Start non-moving posture joints microscopically inside source limits."""
+    updates = []
+    for actuator in all_motor_actuators(model):
+        joint, _ = actuator_joint(model, actuator)
+        if not bool(model.jnt_limited[joint]):
+            continue
+        address = int(model.jnt_qposadr[joint])
+        qpos = float(data.qpos[address])
+        lower, upper = map(float, model.jnt_range[joint])
+        target = None
+        boundary = None
+        if abs(qpos - lower) <= 1e-12:
+            target, boundary = lower + ENDPOINT_INTERIOR_MARGIN_RAD, "lower"
+        elif abs(qpos - upper) <= 1e-12:
+            target, boundary = upper - ENDPOINT_INTERIOR_MARGIN_RAD, "upper"
+        if target is not None:
+            data.qpos[address] = target
+            updates.append({
+                "joint": name(model, mujoco.mjtObj.mjOBJ_JOINT, joint), "boundary": boundary,
+                "source_qpos_rad": qpos, "initialized_qpos_rad": target,
+                "margin_rad": ENDPOINT_INTERIOR_MARGIN_RAD,
+            })
+    return updates
+
+
+def endpoint_initialization_records(model: mujoco.MjModel, data: mujoco.MjData) -> list[dict[str, object]]:
+    records = []
+    for actuator in all_motor_actuators(model):
+        joint, _ = actuator_joint(model, actuator)
+        if not bool(model.jnt_limited[joint]):
+            continue
+        qpos = float(data.qpos[model.jnt_qposadr[joint]])
+        lower, upper = map(float, model.jnt_range[joint])
+        if abs(qpos - (lower + ENDPOINT_INTERIOR_MARGIN_RAD)) <= 1e-10:
+            records.append({"joint": name(model, mujoco.mjtObj.mjOBJ_JOINT, joint), "boundary": "lower", "initialized_qpos_rad": qpos, "margin_rad": ENDPOINT_INTERIOR_MARGIN_RAD})
+        elif abs(qpos - (upper - ENDPOINT_INTERIOR_MARGIN_RAD)) <= 1e-10:
+            records.append({"joint": name(model, mujoco.mjtObj.mjOBJ_JOINT, joint), "boundary": "upper", "initialized_qpos_rad": qpos, "margin_rad": ENDPOINT_INTERIOR_MARGIN_RAD})
+    return records
+
+
 def apply_static_state(preflight, model: mujoco.MjModel, data: mujoco.MjData, arm_q: np.ndarray, right: dict[str, float], left: dict[str, float], cylinder: np.ndarray | None) -> None:
     preflight.set_static_state(model, data, arm_q, right, left, cylinder)
+    move_motor_endpoint_qpos_inside(model, data)
     data.qvel[:] = 0.0
+    mujoco.mj_forward(model, data)
 
 
 def inverse_static_forces(preflight, model: mujoco.MjModel, arm_q: np.ndarray, right: dict[str, float], left: dict[str, float], cylinder: np.ndarray | None) -> mujoco.MjData:
@@ -267,6 +311,7 @@ def solve_hand_equilibrium(
         "right_root_tracking_error_rad": abs(right_root - right_target),
         "left_root_tracking_error_rad": abs(left_root - left_target),
         "motor_targets_rad": targets, "controls": controls,
+        "endpoint_interior_initialization": endpoint_initialization_records(model, data),
         "equality": equality, "robot_qacc": robot_qacc(model, data),
         "contacts": classify_contacts(body_pair_contacts(model, data)),
         "data": data,
@@ -432,6 +477,8 @@ def main() -> None:
             "method": "existing motor controls receive current-state inverse gravity feedforward plus bounded posture PD; frozen claw position servos stay unchanged",
             "motor_gains": {"head": [20.0, 2.0], "arm": [30.0, 4.0], "other": [40.0, 5.0]},
             "root_servo": "unchanged kp=0.5, kv=0.05, gear=1, ctrlrange [-1,0], forcerange [-0.5,0.5]",
+            "endpoint_initialization": "source-limit endpoints for idle torque-motor joints are initialized 1e-5 rad inside their existing limits; source ranges are unchanged",
+            "endpoint_interior_margin_rad": ENDPOINT_INTERIOR_MARGIN_RAD,
         },
         "static_states": [{key: value for key, value in state.items() if key not in {"contacts", "controls"}} for state in static_states],
         "right_root_open_target_rad": right_open["right_claw_joint"],
