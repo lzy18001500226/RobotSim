@@ -2006,6 +2006,16 @@ class BoundedRun:
             # the Local01 runtime wrapper.  The separate full table-plan file
             # remains the authority for the longer safe-prefix geometry.
             if self.aligned_start_table_approach:
+                aligned_plan_segments = [
+                    item for item in preflight["plan"].get("segments", [])
+                    if isinstance(item, Mapping)
+                    and item.get("status") == "PASS_STATIC_ONLY"
+                    and (item.get("from"), item.get("to")) in {
+                        ("START", "WAYPOINT"), ("WAYPOINT", "TABLE_APPROACH"),
+                    }
+                ]
+                if len(aligned_plan_segments) != 2:
+                    raise ValueError("aligned-start table plan lacks both source-grounded safe-prefix segments")
                 short_static = {
                     "schema": "robotsim.issue80.aligned-start-runtime-static-preflight.v1",
                     "status": "PASS_STATIC_SCENE_CLEARANCE",
@@ -2025,6 +2035,23 @@ class BoundedRun:
                     "scene_wrapper_change_classification": self.local01_scene_bundle[
                         "scene_wrapper_change_classification"
                     ],
+                    # The aligned wrapper is compiled-equivalent in all robot
+                    # collision geometry except the pre-physics root yaw. The
+                    # established bound therefore remains applicable, while
+                    # clearance is taken from the matching aligned table plan.
+                    "robot_collision_footprint_radial_upper_bound_m": ROUTE_QPOS0_FOOTPRINT_BOUND_M,
+                    "verified_local_clear_radius_m": ROUTE_LOCAL_CLEAR_RADIUS_M,
+                    "minimum_swept_aabb_clearance_lower_bound_m": min(
+                        float(item["tracking_inflated_aabb_lower_bound_m"])
+                        for item in aligned_plan_segments
+                    ),
+                    "static_sample_count": sum(
+                        int(item["samples"]) for item in aligned_plan_segments
+                    ),
+                    "footprint_and_clearance_provenance": (
+                        "unchanged X2 collision geometry verified by the aligned wrapper equivalence; "
+                        "safe-prefix clearance and samples are derived from the matching aligned table plan"
+                    ),
                     "initial_full_body_static_clearance": "AUTHORITY_IS_MATCHING_TABLE_APPROACH_STATIC_PLAN",
                     "limitations": [
                         "This wrapper preflight validates native names and compiled invariants only.",
