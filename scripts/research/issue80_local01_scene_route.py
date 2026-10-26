@@ -63,6 +63,8 @@ ALIGNED_START_TABLE_APPROACH_CLASSIFICATION = (
     "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
 )
 ALIGNED_START_SCENE_VERSION = "aligned-start-v1"
+SYNCHRONIZED_NOMINAL_KEYFRAME_VERSION = "nominal-keyframe-v1"
+SYNCHRONIZED_NOMINAL_KEYFRAME_NAME = "issue80_nominal_stand_v1"
 X2_START_FRAME_NAME = "x2_start_frame"
 X2_SOURCE_START_POS_M = (-1.5, -1.5, 0.0)
 X2_SOURCE_START_QUAT_WXYZ = (
@@ -153,6 +155,142 @@ def _validate_source_x2_start_frame(frame: ET.Element) -> None:
 
 def _format_xml_vector(values: tuple[float, ...]) -> str:
     return " ".join(f"{value:.16g}" for value in values)
+
+
+def derive_synchronized_nominal_keyframe(model: Any, runtime_config_path: str | Path) -> dict[str, Any]:
+    """Derive a contact-valid X2 standing keyframe from the installed MC config.
+
+    This is a simulation-only initialization artifact.  It uses the vendor
+    ``logical.nominal_configuration`` verbatim, retains every non-robot qpos0
+    entry, sets all qvel to zero, and derives the root height from the compiled
+    selected-foot collision geometry.  It performs only ``mj_forward``.
+    """
+    import mujoco
+    import yaml
+
+    config_path = Path(runtime_config_path)
+    if config_path.is_symlink() or not config_path.is_file():
+        raise Local01SceneRouteError("runtime default.yaml is missing or unsafe")
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        joint_groups = config["actual"]["active_joint_name"]
+        nominal_groups = config["logical"]["nominal_configuration"]
+    except (KeyError, TypeError, yaml.YAMLError) as exc:
+        raise Local01SceneRouteError("installed MC nominal configuration is invalid") from exc
+    joint_names = [str(name) for group in joint_groups for name in group]
+    nominal = [float(value) for group in nominal_groups for value in group]
+    if len(joint_names) != len(nominal) or not joint_names:
+        raise Local01SceneRouteError("MC nominal configuration does not match active joint names")
+    if not all(math.isfinite(value) for value in nominal):
+        raise Local01SceneRouteError("MC nominal configuration contains a non-finite joint value")
+
+    root_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
+    if root_joint < 0 or model.jnt_type[root_joint] != mujoco.mjtJoint.mjJNT_FREE:
+        raise Local01SceneRouteError("compiled scene lacks the native X2 floating base")
+    root_qadr = int(model.jnt_qposadr[root_joint])
+    qpos = model.qpos0.copy()
+    for name, value in zip(joint_names, nominal):
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        if joint_id < 0 or model.jnt_type[joint_id] != mujoco.mjtJoint.mjJNT_HINGE:
+            raise Local01SceneRouteError(f"MC nominal joint is not a compiled X2 hinge: {name}")
+        lower, upper = model.jnt_range[joint_id]
+        if model.jnt_limited[joint_id] and not (float(lower) <= value <= float(upper)):
+            raise Local01SceneRouteError(f"MC nominal joint violates source limit: {name}")
+        qpos[int(model.jnt_qposadr[joint_id])] = value
+
+    data = mujoco.MjData(model)
+    data.qpos[:] = qpos
+    data.qvel[:] = 0.0
+    mujoco.mj_forward(model, data)
+    floor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    if floor_id < 0:
+        raise Local01SceneRouteError("compiled RAICOM scene lacks the canonical floor geom")
+    selected_bodies = {
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link"),
+        mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link"),
+    }
+    if min(selected_bodies) < 0:
+        raise Local01SceneRouteError("compiled scene lacks the selected X2 ankle-roll bodies")
+    foot_geoms = [
+        geom_id for geom_id in range(model.ngeom)
+        if int(model.geom_bodyid[geom_id]) in selected_bodies and int(model.geom_contype[geom_id])
+    ]
+    if not foot_geoms:
+        raise Local01SceneRouteError("selected X2 feet have no compiled collision geoms")
+    lower_bounds = [
+        float(data.geom_xpos[geom_id][2] - model.geom_rbound[geom_id])
+        for geom_id in foot_geoms
+    ]
+    minimum_before = min(lower_bounds)
+    qpos[root_qadr + 2] = float(qpos[root_qadr + 2] - minimum_before)
+    data.qpos[:] = qpos
+    data.qvel[:] = 0.0
+    mujoco.mj_forward(model, data)
+
+    foot_bounds_after = {
+        str(geom_id): float(data.geom_xpos[geom_id][2] - model.geom_rbound[geom_id])
+        for geom_id in foot_geoms
+    }
+    permitted_contact_pairs: list[dict[str, Any]] = []
+    for contact_id in range(data.ncon):
+        contact = data.contact[contact_id]
+        body1, body2 = int(model.geom_bodyid[contact.geom1]), int(model.geom_bodyid[contact.geom2])
+        if int(floor_id) not in (contact.geom1, contact.geom2) or not ({body1, body2} & selected_bodies):
+            raise Local01SceneRouteError("nominal initialization has a non-foot/environment contact")
+        if abs(float(contact.dist)) > 1e-8:
+            raise Local01SceneRouteError("nominal initialization contact distance is outside static tolerance")
+        permitted_contact_pairs.append({
+            "geom1": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom1),
+            "geom2": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom2),
+            "distance_m": float(contact.dist),
+        })
+    if len(permitted_contact_pairs) < 2:
+        raise Local01SceneRouteError("nominal initialization lacks bilateral floor contacts")
+    if any(abs(value) > 1e-8 for value in foot_bounds_after.values() if abs(value) > 0.0):
+        # Non-lowest collision pads are intentionally above the floor.  Each
+        # selected foot must nevertheless own at least one tangent pad.
+        sides = {
+            "left": any(
+                int(model.geom_bodyid[geom_id]) == mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
+                and abs(foot_bounds_after[str(geom_id)]) <= 1e-8
+                for geom_id in foot_geoms
+            ),
+            "right": any(
+                int(model.geom_bodyid[geom_id]) == mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
+                and abs(foot_bounds_after[str(geom_id)]) <= 1e-8
+                for geom_id in foot_geoms
+            ),
+        }
+    else:
+        sides = {"left": True, "right": True}
+    if not all(sides.values()):
+        raise Local01SceneRouteError("nominal initialization lacks a tangent collision pad on one foot")
+    pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    return {
+        "schema": "robotsim.issue80.synchronized-nominal-keyframe.v1",
+        "classification": "SIMULATION_ONLY_SOURCE_MC_NOMINAL_CONFIGURATION_KEYFRAME",
+        "key_name": SYNCHRONIZED_NOMINAL_KEYFRAME_NAME,
+        "version": SYNCHRONIZED_NOMINAL_KEYFRAME_VERSION,
+        "qpos": [float(value) for value in qpos],
+        "qvel": [0.0] * int(model.nv),
+        "source_runtime_config": str(config_path),
+        "source_nominal_joint_names": joint_names,
+        "source_nominal_joint_values_rad": nominal,
+        "source_qpos0_root": [float(value) for value in model.qpos0[root_qadr:root_qadr + 7]],
+        "derived_root_qpos": [float(value) for value in qpos[root_qadr:root_qadr + 7]],
+        "root_height_shift_m": float(-minimum_before),
+        "lowest_selected_foot_bound_before_shift_m": minimum_before,
+        "selected_foot_lower_bounds_after_shift_m": foot_bounds_after,
+        "selected_foot_tangent_contact": sides,
+        "contact_pairs": permitted_contact_pairs,
+        "pelvis_world_position_m": [float(value) for value in data.xpos[pelvis_id]],
+        "qvel_zero": bool(not data.qvel.any()),
+        "mj_step_calls": 0,
+        "limitations": [
+            "This is a static mj_forward collision/contact validation, not an active standing result.",
+            "The keyframe derives joint values only from the installed MC nominal_configuration and retains non-robot qpos0 entries.",
+        ],
+    }
 
 
 def _pose_xyz_yaw(value: Mapping[str, Any], label: str) -> tuple[float, float, float, float]:
@@ -1320,6 +1458,76 @@ def assert_aligned_start_scene_equivalence(original: Any, aligned: Any) -> dict[
     }
 
 
+def assert_synchronized_keyframe_addition(
+    aligned: Any, keyed: Any, expected: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Prove that a runtime-only keyframe changed no physical model field."""
+    import mujoco
+    import numpy as np
+
+    if keyed.nkey != aligned.nkey + 1:
+        raise Local01SceneRouteError("synchronized initialization must add exactly one keyframe")
+    for count in ("nq", "nv", "nu", "nbody", "njnt", "ngeom", "nmesh", "nsensor", "nsite", "neq"):
+        if getattr(aligned, count) != getattr(keyed, count):
+            raise Local01SceneRouteError(f"keyframe wrapper changed {count}")
+    changed: list[str] = []
+    for field in dir(aligned):
+        if (
+            field.startswith("_")
+            or field.startswith("name_")
+            or field == "names_map"
+            or field.endswith("_pathadr")
+            or field.startswith("key_")
+        ):
+            continue
+        value = getattr(aligned, field)
+        if isinstance(value, np.ndarray) and value.dtype.kind in "biufc":
+            other = getattr(keyed, field)
+            if not np.array_equal(value, other, equal_nan=True):
+                changed.append(field)
+    if changed:
+        raise Local01SceneRouteError(
+            "synchronized keyframe changed non-keyframe model fields: " + ", ".join(changed)
+        )
+    for field in dir(aligned.opt):
+        if field.startswith("_"):
+            continue
+        value, other = getattr(aligned.opt, field), getattr(keyed.opt, field)
+        if isinstance(value, (int, float, np.ndarray)) and not np.array_equal(value, other):
+            raise Local01SceneRouteError(f"keyframe wrapper changed solver option {field}")
+    key_id = mujoco.mj_name2id(keyed, mujoco.mjtObj.mjOBJ_KEY, str(expected["key_name"]))
+    if key_id < 0:
+        raise Local01SceneRouteError("compiled synchronized keyframe name is missing")
+    qpos = np.asarray(expected["qpos"], dtype=float)
+    qvel = np.asarray(expected["qvel"], dtype=float)
+    if qpos.shape != (keyed.nq,) or qvel.shape != (keyed.nv,):
+        raise Local01SceneRouteError("synchronized keyframe dimensions are invalid")
+    if not np.allclose(keyed.key_qpos[key_id], qpos, rtol=0, atol=1e-12):
+        raise Local01SceneRouteError("compiled synchronized keyframe qpos differs from static derivation")
+    if not np.allclose(keyed.key_qvel[key_id], qvel, rtol=0, atol=1e-12):
+        raise Local01SceneRouteError("compiled synchronized keyframe qvel differs from static derivation")
+    a, b = mujoco.MjData(aligned), mujoco.MjData(keyed)
+    mujoco.mj_forward(aligned, a)
+    mujoco.mj_forward(keyed, b)
+    for field in ("xpos", "xmat", "geom_xpos", "geom_xmat", "site_xpos", "site_xmat"):
+        if not np.array_equal(getattr(a, field), getattr(b, field), equal_nan=True):
+            raise Local01SceneRouteError("keyframe wrapper changed qpos0 forward kinematics")
+    mujoco.mj_resetDataKeyframe(keyed, b, key_id)
+    mujoco.mj_forward(keyed, b)
+    if not np.allclose(b.qpos, qpos, rtol=0, atol=1e-12) or not np.allclose(b.qvel, qvel, rtol=0, atol=1e-12):
+        raise Local01SceneRouteError("compiled keyframe did not restore the validated state")
+    return {
+        "status": "PASS_SYNCHRONIZED_KEYFRAME_PHYSICAL_INVARIANTS",
+        "key_name": str(expected["key_name"]),
+        "key_id": int(key_id),
+        "solver_options_equal": True,
+        "non_keyframe_numeric_fields_changed": [],
+        "qpos0_forward_kinematics_equal": True,
+        "keyframe_restore_matches_static_derivation": True,
+        "mj_step_calls": 0,
+    }
+
+
 def assert_native_robot_equivalence(native: Any, combined: Any) -> dict[str, Any]:
     """Check native robot inertias/limits/actuators and FK under the START frame."""
     import mujoco
@@ -1655,15 +1863,22 @@ def prepare_local01_scene_runtime_bundle(
     *,
     runtime_root: str | Path,
     aligned_start: bool = False,
+    synchronized_nominal_initialization: bool = False,
 ) -> dict[str, Any]:
     """Copy immutable inputs and generate a provenance-tracked runtime wrapper.
 
     ``aligned_start`` is limited to the separately versioned derived scene. It
     changes the X2 start-frame quaternion before first physics only; all source
     and runtime inputs remain read-only and the original scene is copied as an
-    immutable evidence input beside the generated wrapper.
+    immutable evidence input beside the generated wrapper.  The optional
+    synchronized initialization adds one source-MC-derived keyframe; it does
+    not alter qpos0, geometry, contacts, gains, or source assets.
     """
     evidence = Path(evidence_directory)
+    if synchronized_nominal_initialization and not aligned_start:
+        raise Local01SceneRouteError(
+            "synchronized nominal initialization requires the separately reviewed aligned-start scene"
+        )
     runtime_x2_path = (
         Path(runtime_root)
         / "sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/x2.xml"
@@ -1740,6 +1955,8 @@ def prepare_local01_scene_runtime_bundle(
     if aligned_start:
         _x2_start_frame(scene_root).set("quat", _format_xml_vector(X2_ALIGNED_START_QUAT_WXYZ))
     scene_runtime_name = (
+        "scene_workspace_aligned_start_v2_nominal_keyframe_runtime.xml"
+        if synchronized_nominal_initialization else
         "scene_workspace_aligned_start_v1_runtime.xml"
         if aligned_start else "scene_workspace_runtime.xml"
     )
@@ -1777,6 +1994,8 @@ def prepare_local01_scene_runtime_bundle(
         1,
     )
     simulator_config_name = (
+        "simulator_default_local01_aligned_start_v2_nominal_keyframe.yaml"
+        if synchronized_nominal_initialization else
         "simulator_default_local01_aligned_start_v1.yaml"
         if aligned_start else "simulator_default_local01_scene.yaml"
     )
@@ -1857,9 +2076,61 @@ def prepare_local01_scene_runtime_bundle(
         ET.tostring(native_name_scene_tree(source_root / LOCAL01_SCENE_RELATIVE), encoding="unicode")
     )
     native_model = mujoco.MjModel.from_xml_path(str(runtime_x2_path.with_name("scene.xml")))
-    generated_equivalence = (
+    base_equivalence = (
         assert_aligned_start_scene_equivalence(corrected_source_model, generated_model)
         if aligned_start else assert_scene_name_only_equivalence(corrected_source_model, generated_model)
+    )
+    synchronized_keyframe: dict[str, Any] | None = None
+    keyframe_equivalence: dict[str, Any] | None = None
+    if synchronized_nominal_initialization:
+        synchronized_keyframe = derive_synchronized_nominal_keyframe(
+            generated_model, runtime_x2_path.with_name("default.yaml")
+        )
+        if scene_root.find("./keyframe") is not None:
+            raise Local01SceneRouteError("source-aligned scene unexpectedly already contains a keyframe section")
+        keyframes = ET.SubElement(scene_root, "keyframe")
+        ET.SubElement(
+            keyframes,
+            "key",
+            name=str(synchronized_keyframe["key_name"]),
+            qpos=_format_xml_vector(tuple(synchronized_keyframe["qpos"])),
+            qvel=_format_xml_vector(tuple(synchronized_keyframe["qvel"])),
+        )
+        ET.ElementTree(scene_root).write(scene_runtime, encoding="utf-8", xml_declaration=True)
+        runtime_scene_root = ET.parse(scene_runtime).getroot()
+        host_scene = ET.fromstring(ET.tostring(runtime_scene_root))
+        for item in host_scene.findall("./asset/model"):
+            item.set("file", "offline_mug.xml" if item.get("name") == "raicom_mug"
+                     else str(resolve_container_path(item.attrib["file"])))
+        generated_model = mujoco.MjModel.from_xml_string(
+            ET.tostring(host_scene, encoding="unicode"),
+            assets={"offline_mug.xml": ET.tostring(host_mug)},
+        )
+        # Rebuild the unkeyed scene from the staged wrapper and compare it to
+        # the keyed model explicitly.  The source/vendor files remain read-only.
+        unkeyed_scene = ET.parse(scene_runtime).getroot()
+        unkeyed_scene.remove(unkeyed_scene.find("./keyframe"))
+        host_unkeyed = ET.fromstring(ET.tostring(unkeyed_scene))
+        for item in host_unkeyed.findall("./asset/model"):
+            item.set("file", "offline_mug.xml" if item.get("name") == "raicom_mug"
+                     else str(resolve_container_path(item.attrib["file"])))
+        unkeyed_model = mujoco.MjModel.from_xml_string(
+            ET.tostring(host_unkeyed, encoding="unicode"),
+            assets={"offline_mug.xml": ET.tostring(host_mug)},
+        )
+        keyframe_equivalence = assert_synchronized_keyframe_addition(
+            unkeyed_model, generated_model, synchronized_keyframe
+        )
+        with (bundle / "synchronized_nominal_keyframe.json").open("x", encoding="utf-8") as stream:
+            json.dump(synchronized_keyframe, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+    generated_equivalence = (
+        {
+            "status": "PASS_ALIGNED_START_KEYFRAME_INITIALIZATION_INVARIANTS",
+            "aligned_start_equivalence": base_equivalence,
+            "synchronized_keyframe_equivalence": keyframe_equivalence,
+        }
+        if synchronized_nominal_initialization else base_equivalence
     )
     native_robot_equivalence = assert_native_robot_equivalence(native_model, generated_model)
     generated_contract = audit_runtime_name_contract(native_model, generated_model, runtime_x2_path.with_name("default.yaml"))
@@ -1869,6 +2140,8 @@ def prepare_local01_scene_runtime_bundle(
     records = {
         "schema": "robotsim.issue80.local01-scene-runtime-bundle.v1",
         "classification": (
+            "SIMULATION_ONLY_ALIGNED_START_KEYFRAME_SYNCHRONIZED_INITIALIZATION_V1"
+            if synchronized_nominal_initialization else
             "SIMULATION_ONLY_ALIGNED_START_SCENE_WRAPPER_V1"
             if aligned_start else "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER"
         ),
@@ -1878,6 +2151,8 @@ def prepare_local01_scene_runtime_bundle(
             scene_runtime_name: _sha256(scene_runtime),
             "mug_portable_runtime.xml": _sha256(mug_runtime),
             simulator_config_name: _sha256(simulator_config),
+            **({"synchronized_nominal_keyframe.json": _sha256(bundle / "synchronized_nominal_keyframe.json")}
+               if synchronized_nominal_initialization else {}),
         },
         "runtime_x2_sha256": _sha256(
             runtime_x2_path
@@ -1888,6 +2163,8 @@ def prepare_local01_scene_runtime_bundle(
             "to": runtime_scene_container_path,
         },
         "scene_wrapper_change_classification": (
+            "X2_ATTACH_PREFIX_ALIGNED_START_QUATERNION_AND_SOURCE_MC_NOMINAL_KEYFRAME_V1"
+            if synchronized_nominal_initialization else
             "X2_ATTACH_PREFIX_AND_ALIGNED_START_QUATERNION_V1_AND_MODEL_FILE_PATHS"
             if aligned_start else "X2_ATTACH_PREFIX_ONLY_AND_MODEL_FILE_PATHS"
         ),
@@ -1901,6 +2178,15 @@ def prepare_local01_scene_runtime_bundle(
             "derived_quat_wxyz": list(X2_ALIGNED_START_QUAT_WXYZ) if aligned_start else None,
             "applies_before_physics": aligned_start,
             "active_simulation_qpos_write": False,
+        },
+        "synchronized_nominal_initialization": {
+            "enabled": synchronized_nominal_initialization,
+            "keyframe": synchronized_keyframe,
+            "keyframe_equivalence": keyframe_equivalence,
+            "applies_only_via_native_MuJoCo_Load_key_before_physics_release": (
+                synchronized_nominal_initialization
+            ),
+            "post_start_qpos_write": False,
         },
         "generated_runtime_name_contract": generated_contract,
         "generated_wrapper_physics_equivalence": generated_equivalence,

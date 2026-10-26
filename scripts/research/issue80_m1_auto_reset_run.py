@@ -1708,6 +1708,9 @@ class BoundedRun:
         self.aligned_start_table_approach = bool(
             getattr(args, "aligned_start_table_approach", False)
         )
+        self.synchronized_paused_initialization = bool(
+            getattr(args, "synchronized_paused_initialization", False)
+        )
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
@@ -1736,6 +1739,7 @@ class BoundedRun:
                 self.evidence,
                 runtime_root=RUNTIME,
                 aligned_start=self.aligned_start_table_approach,
+                synchronized_nominal_initialization=self.synchronized_paused_initialization,
             )
             # Retain the existing name/physics-equivalence evidence used by
             # the Local01 runtime wrapper.  The separate full table-plan file
@@ -2644,7 +2648,7 @@ class BoundedRun:
         with (self.evidence / "container-inspect-start.json").open("x", encoding="utf-8") as f:
             f.write(inspect.stdout)
 
-    def start_sim_first(self) -> None:
+    def start_sim_first(self, *, start_mc: bool = True) -> None:
         launch_command = "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
         if self.local01_scene_bundle is not None:
             config_path = str(self.local01_scene_bundle.get(
@@ -2728,6 +2732,11 @@ class BoundedRun:
             ) as stream:
                 json.dump(verification, stream, indent=2)
                 stream.write("\n")
+        if start_mc:
+            self.start_mc_after_sim_topics()
+
+    def start_mc_after_sim_topics(self) -> None:
+        """Launch the unchanged MC only after the simulator ordering gate permits it."""
         self.docker_exec(
             "start_mc_after_sim_topics",
             "bash /workspace/evidence/launch_mc.sh > /workspace/evidence/mc-console.log 2>&1",
@@ -3013,6 +3022,14 @@ class BoundedRun:
             + " --require-native-reset-generation"
             if self.native_mjdata_capture else ""
         )
+        initialization_args = (
+            " --synchronized-keyframe-event-file /workspace/evidence/keyframe_load_event.json"
+            " --synchronized-keyframe-spec /workspace/evidence/local01_scene/synchronized_nominal_keyframe.json"
+            " --physics-release-event-file /workspace/evidence/physics_release_event.json"
+            " --synchronized-ready-file /workspace/evidence/synchronized_jd_ready.json"
+            if self.synchronized_paused_initialization
+            else " --reset-event-file /workspace/evidence/reset_dispatch_event.json"
+        )
         self.docker_exec(
             "start_prearmed_standing_takeover_observer",
             "source /opt/ros/humble/setup.bash && "
@@ -3020,11 +3037,10 @@ class BoundedRun:
             "timeout 45s python3 /workspace/evidence/issue80_m1_set_action_capture.py "
             "--action STAND_DEFAULT --source node.set_mc_action "
             "--output-dir /workspace/evidence "
-            "--reset-event-file /workspace/evidence/reset_dispatch_event.json "
             f"--ready-timeout-s 3 --reset-wait-timeout-s 30 --upright-timeout-s {RESET_STARTUP_OBSERVATION_TIMEOUT_S:g} "
             "--joint-stand-timeout-s 4 --set-timeout-s 2 --get-timeout-s 0.75 "
             f"--duration-s {RESET_OBSERVER_DURATION_S:.1f} "
-            + native_capture_args + " "
+            + initialization_args + native_capture_args + " "
             "> /workspace/evidence/takeover-capture-console.log 2>&1",
             timeout_s=4.0,
             detached=True,
@@ -3295,6 +3311,162 @@ class BoundedRun:
             self.reset_classification = "RESET_NOT_DELIVERED"
             raise RuntimeError(f"native MuJoCo Reset button click was not verified: {payload}")
 
+    def _dispatch_native_simulation_control(
+        self,
+        *,
+        command_name: str,
+        step_name: str,
+        event_path: Path,
+        expected_status: str,
+        pid: int,
+        title: str,
+        window_id: int,
+    ) -> dict[str, Any]:
+        """Send one process-verified native MuJoCo UI control and persist its event."""
+        if event_path.exists():
+            raise RuntimeError(f"native control event already exists: {event_path.name}")
+        command = [
+            sys.executable, str(X11_HELPER), command_name,
+            "--expected-pid", str(pid), "--expected-title", title,
+            "--window-id", str(window_id),
+            "--dispatch-event-json", str(event_path),
+        ]
+        completed = self.run(step_name, command, timeout_s=5.0, check=False)
+        if event_path.exists():
+            payload = json.loads(event_path.read_text(encoding="utf-8"))
+        else:
+            try:
+                payload = json.loads(completed.stdout)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"native MuJoCo {command_name} helper did not persist or print JSON"
+                ) from exc
+        event = payload.get("event", {})
+        if event.get("status") != expected_status:
+            raise RuntimeError(
+                f"native MuJoCo {command_name} was not safely dispatched: {payload}"
+            )
+        return payload
+
+    def dispatch_native_pause_toggle(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
+        return self._dispatch_native_simulation_control(
+            command_name="send-pause",
+            step_name="x11_pause_native_mujoco_physics",
+            event_path=self.evidence / "pause_dispatch_event.json",
+            expected_status="KEY_DISPATCHED",
+            pid=pid,
+            title=title,
+            window_id=window_id,
+        )
+
+    def dispatch_native_keyframe_zero(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
+        return self._dispatch_native_simulation_control(
+            command_name="select-key-zero",
+            step_name="x11_select_native_keyframe_zero",
+            event_path=self.evidence / "keyframe_selection_event.json",
+            expected_status="KEYFRAME_INDEX_ZERO_CLICKED",
+            pid=pid,
+            title=title,
+            window_id=window_id,
+        )
+
+    def dispatch_native_load_key(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
+        return self._dispatch_native_simulation_control(
+            command_name="click-native-load-key",
+            step_name="x11_load_native_synchronized_keyframe",
+            event_path=self.evidence / "keyframe_load_event.json",
+            expected_status="LOAD_KEY_BUTTON_CLICKED",
+            pid=pid,
+            title=title,
+            window_id=window_id,
+        )
+
+    def wait_for_synchronized_jd_ready(self) -> dict[str, Any]:
+        path = self.evidence / "synchronized_jd_ready.json"
+        deadline = min(self.deadline, time.monotonic() + RESET_STAND_HANDOFF_MAX_S)
+        while time.monotonic() < deadline:
+            if path.exists():
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("synchronized JD readiness artifact is unreadable") from exc
+                if payload.get("status") != "JD_CONTROL_READY_WHILE_PHYSICS_PAUSED":
+                    raise RuntimeError(f"synchronized JD control barrier failed: {payload}")
+                return payload
+            result = self.evidence / "set_action_capture_result.json"
+            if result.exists():
+                payload = json.loads(result.read_text(encoding="utf-8"))
+                raise RuntimeError(f"standing observer terminated before physics release: {payload}")
+            time.sleep(0.01)
+        raise RuntimeError("synchronized JD control readiness did not arrive before the bounded deadline")
+
+    def dispatch_native_physics_release(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
+        return self._dispatch_native_simulation_control(
+            command_name="send-pause",
+            step_name="x11_resume_native_mujoco_physics",
+            event_path=self.evidence / "physics_release_event.json",
+            expected_status="KEY_DISPATCHED",
+            pid=pid,
+            title=title,
+            window_id=window_id,
+        )
+
+    def verify_native_pause_quiescence(self, pause_event: Mapping[str, Any]) -> dict[str, Any]:
+        """Require native ``mj_step`` calls to quiesce after the documented Pause key."""
+        event = pause_event.get("event", {})
+        dispatch_ns = event.get("dispatch_monotonic_ns")
+        if not isinstance(dispatch_ns, int) or dispatch_ns <= 0:
+            raise RuntimeError("Pause event lacks a valid monotonic dispatch timestamp")
+        trace = self.evidence / CAPTURE_TRACE_NAME
+        deadline = min(self.deadline, time.monotonic() + 2.0)
+        last_step_ns: int | None = None
+        pre_dispatch_steps = 0
+        while time.monotonic() < deadline:
+            rows: list[dict[str, Any]] = []
+            if trace.is_file() and not trace.is_symlink():
+                for line in trace.read_text(encoding="utf-8", errors="replace").splitlines():
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(row, dict) and isinstance(row.get("mj_step_call_index"), int):
+                        rows.append(row)
+            pre_dispatch_steps = sum(
+                1 for row in rows if int(row.get("host_monotonic_ns", 0)) < dispatch_ns
+            )
+            post = [row for row in rows if int(row.get("host_monotonic_ns", 0)) >= dispatch_ns]
+            if post:
+                last_step_ns = max(int(row["host_monotonic_ns"]) for row in post)
+            reference_ns = last_step_ns if last_step_ns is not None else dispatch_ns
+            quiet_s = (time.monotonic_ns() - reference_ns) / 1e9
+            if pre_dispatch_steps and quiet_s >= 0.15:
+                record = {
+                    "schema": "robotsim.issue80.native-pause-quiescence.v1",
+                    "status": "PAUSE_CONFIRMED_BY_MJ_STEP_QUIESCENCE",
+                    "pause_dispatch_monotonic_ns": dispatch_ns,
+                    "last_post_dispatch_mj_step_monotonic_ns": last_step_ns,
+                    "quiescent_duration_s": quiet_s,
+                    "pre_dispatch_capture_step_samples": pre_dispatch_steps,
+                    "physics_stepping_released": False,
+                }
+                with (self.evidence / "pause_quiescence.json").open("x", encoding="utf-8") as stream:
+                    json.dump(record, stream, indent=2)
+                    stream.write("\n")
+                return record
+            time.sleep(0.02)
+        record = {
+            "schema": "robotsim.issue80.native-pause-quiescence.v1",
+            "status": "PAUSE_NOT_CONFIRMED",
+            "pause_dispatch_monotonic_ns": dispatch_ns,
+            "last_post_dispatch_mj_step_monotonic_ns": last_step_ns,
+            "pre_dispatch_capture_step_samples": pre_dispatch_steps,
+            "physics_stepping_released": False,
+        }
+        with (self.evidence / "pause_quiescence.json").open("x", encoding="utf-8") as stream:
+            json.dump(record, stream, indent=2)
+            stream.write("\n")
+        raise RuntimeError("native MuJoCo Pause could not be confirmed from MjData step quiescence")
+
     def inspect_x11_target_identity(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
         """Recheck the exact X11 process/window identity without changing focus or sending input."""
         result = self.run(
@@ -3459,6 +3631,51 @@ class BoundedRun:
         )
         self.reset_classification = str(self.reset_analysis.get("classification","ANALYSIS_FAILED"))
         return self.reset_analysis
+
+    def wait_and_classify_synchronized_initialization(
+        self, pid: int, title: str, window_id: int,
+    ) -> dict[str, Any]:
+        """Classify the keyframe/JD/SD observation without mislabelling it as Reset."""
+        summary_path = self.evidence / "reset_state_summary.json"
+        takeover_path = self.evidence / "set_action_capture_result.json"
+        deadline = min(
+            self.deadline,
+            time.monotonic() + RESET_OBSERVER_DURATION_S + RESET_OBSERVER_COMPLETION_MARGIN_S,
+        )
+        while time.monotonic() < deadline and not summary_path.exists():
+            time.sleep(0.02)
+        if not summary_path.exists() or not takeover_path.exists():
+            raise RuntimeError("synchronized initialization observer did not produce its terminal summary")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        takeover = json.loads(takeover_path.read_text(encoding="utf-8"))
+        after = self.capture_reset_image(pid, title, window_id, "synchronized_after_release")
+        baseline = summary.get("standing_baseline_observation")
+        passed = (
+            takeover.get("status") == "TAKEOVER_SEQUENCE_COMPLETE"
+            and summary.get("observer_status") == "STAND_DEFAULT_BASELINE_COMPLETE"
+            and isinstance(baseline, Mapping)
+            and baseline.get("complete") is True
+        )
+        result = {
+            "schema": "robotsim.issue80.synchronized-initialization-observation.v1",
+            "classification": (
+                "SYNCHRONIZED_INITIALIZATION_STAND_BASELINE_PASS"
+                if passed else "SYNCHRONIZED_INITIALIZATION_STAND_BASELINE_FAIL"
+            ),
+            "takeover_status": takeover.get("status"),
+            "observer_status": summary.get("observer_status"),
+            "standing_baseline_observation": baseline,
+            "native_mjdata": takeover.get("native_mjdata"),
+            "after_release_image": after,
+            "reset_or_qpos_teleportation": False,
+            "initialization_method": "native_MuJoCo_Pause_Load_key_then_MC_JD_before_Play",
+        }
+        with (self.evidence / "synchronized_initialization_analysis.json").open("x", encoding="utf-8") as stream:
+            json.dump(result, stream, indent=2)
+            stream.write("\n")
+        self.reset_analysis = result
+        self.reset_classification = str(result["classification"])
+        return result
 
     def evaluate_standing_warmup(self) -> dict[str, Any]:
         """Analyze the completed post-STAND physics window before any motion command."""
@@ -3797,6 +4014,7 @@ class BoundedRun:
             "runtime_image_digest": IMAGE_DIGEST,
             "runtime_limit_s": self.args.max_runtime_s,
             "reset_classification": "NOT_ATTEMPTED",
+            "synchronized_paused_initialization": self.synchronized_paused_initialization,
             "m1_status": "NOT_RUN",
             "mc_rl_debug_capture": None,
             "mc_rl_debug_overlay": None,
@@ -3916,8 +4134,10 @@ class BoundedRun:
             self.stage_research_scripts()
             self.prepare_native_mjdata_capture()
             self.start_container()
-            self.start_sim_first()
-            self.capture_service_topic_inventory()
+            if self.synchronized_paused_initialization:
+                self.start_sim_first(start_mc=False)
+            else:
+                self.start_sim_first()
             pid, title, window_id = self.inspect_window()
             if self.local01_scene_mode:
                 title_matches = "RAICOM X2 room workspace" in title
@@ -3935,17 +4155,50 @@ class BoundedRun:
                 }
                 if not title_matches:
                     raise RuntimeError("MuJoCo window does not identify the configured Local01 RAICOM scene")
+                if self.synchronized_paused_initialization:
+                    synchronization = self.local01_scene_bundle.get(
+                        "synchronized_nominal_initialization"
+                    ) if self.local01_scene_bundle is not None else None
+                    if not isinstance(synchronization, Mapping) or synchronization.get("enabled") is not True:
+                        raise RuntimeError("synchronized nominal keyframe bundle is missing")
+                    result["synchronized_initialization_preflight"] = synchronization
             self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
+            if self.synchronized_paused_initialization:
+                pause = self.dispatch_native_pause_toggle(pid, title, window_id)
+                result["synchronized_pause_dispatch"] = pause
+                result["synchronized_pause_quiescence"] = self.verify_native_pause_quiescence(pause)
+                self.start_mc_after_sim_topics()
+            self.capture_service_topic_inventory()
             self.start_observer()
-            self.dispatch_native_reset_button(pid, title, window_id)
-            result["reset_immediate_posture"] = self.wait_for_immediate_reset_pose()
-            # The pre-armed node sends the source-supported PD -> JD -> SD
-            # handoff; SD is gated on fresh upright telemetry and MC STAND state.
-            result["set_mc_action_sd"] = self.request_sd_and_verify()
-            reset = self.wait_and_classify_reset(pid, title, window_id)
+            if self.synchronized_paused_initialization:
+                result["synchronized_keyframe_selection"] = self.dispatch_native_keyframe_zero(
+                    pid, title, window_id
+                )
+                keyframe_load = self.dispatch_native_load_key(pid, title, window_id)
+                self.reset_dispatch_payload = keyframe_load
+                result["synchronized_keyframe_load"] = keyframe_load
+                result["synchronized_jd_ready"] = self.wait_for_synchronized_jd_ready()
+                result["synchronized_physics_release"] = self.dispatch_native_physics_release(
+                    pid, title, window_id
+                )
+                # The pre-armed node performs JD before this release, then
+                # validates resumed native stepping before SD.
+                result["set_mc_action_sd"] = self.request_sd_and_verify()
+                reset = self.wait_and_classify_synchronized_initialization(pid, title, window_id)
+            else:
+                self.dispatch_native_reset_button(pid, title, window_id)
+                result["reset_immediate_posture"] = self.wait_for_immediate_reset_pose()
+                # The pre-armed node sends the source-supported PD -> JD -> SD
+                # handoff; SD is gated on fresh upright telemetry and MC STAND state.
+                result["set_mc_action_sd"] = self.request_sd_and_verify()
+                reset = self.wait_and_classify_reset(pid, title, window_id)
             result["reset_classification"] = reset.get("classification")
             result["reset_analysis"] = reset
-            if reset.get("classification") != "AUTO_RESET_PASS":
+            required_startup_status = (
+                "SYNCHRONIZED_INITIALIZATION_STAND_BASELINE_PASS"
+                if self.synchronized_paused_initialization else "AUTO_RESET_PASS"
+            )
+            if reset.get("classification") != required_startup_status:
                 self.outcome_classification = "STANDING_CONTROL_NOT_READY"
                 raise RuntimeError(f"post-SD standing safety gate failed: {reset.get('classification')}")
 
@@ -4478,6 +4731,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--synchronized-paused-initialization",
+        action="store_true",
+        help=(
+            "simulation-only native MuJoCo Pause -> source-MC nominal keyframe -> JD handoff; "
+            "requires the aligned-start TABLE_APPROACH mission and native MjData capture"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -4627,6 +4888,18 @@ def main() -> int:
         args.extra_stop_observation = 7.0
     elif args.aligned_start_table_approach:
         parser.error("--aligned-start-table-approach requires --table-approach-mission")
+    if args.synchronized_paused_initialization:
+        if not (
+            args.table_approach_mission
+            and args.aligned_start_table_approach
+            and args.maintainer_authorized_first_motion
+            and args.require_stand_warmup_composite
+            and args.native_mjdata_capture
+        ):
+            parser.error(
+                "synchronized paused initialization requires the authorized aligned-start TABLE_APPROACH mission, "
+                "standing warmup, and native MjData capture"
+            )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")

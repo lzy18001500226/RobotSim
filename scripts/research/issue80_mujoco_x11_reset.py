@@ -40,6 +40,19 @@ NATIVE_RESET_BUTTON_PIXEL_POINTS = {
 NATIVE_RESET_BUTTON_BORDER_RGB = (153, 102, 102)
 NATIVE_RESET_BUTTON_BACKGROUND_RGB = (26, 26, 26)
 NATIVE_RESET_BUTTON_COLOR_TOLERANCE = 24
+# ``Key`` is MuJoCo's ``mjITEM_SLIDERINT``.  Its interactive numeric slider
+# occupies the right half of the left UI panel (not the ``Key`` label at x=68).
+# With exactly one staged keyframe, its [0, 0] range makes this a deterministic
+# selection of index zero.  The later native-MjData check remains authoritative.
+NATIVE_KEY_SLIDER_ZERO_POINT = (185, 517)
+NATIVE_LOAD_KEY_BUTTON_POINT = (68, 546)
+NATIVE_LOAD_KEY_BUTTON_PIXEL_POINTS = {
+    "top": (68, 534),
+    "left": (13, 546),
+    "right": (124, 546),
+    "bottom": (68, 558),
+    "center": NATIVE_LOAD_KEY_BUTTON_POINT,
+}
 
 
 def native_reset_button_signature_matches(pixels: dict[str, tuple[int, int, int]]) -> bool:
@@ -536,18 +549,20 @@ class X11:
         finally:
             self.lib.XDestroyImage(image)
 
-    def native_reset_button_pixels(self, window: int) -> dict[str, tuple[int, int, int]] | None:
-        """Read the calibrated Reset border/background pixels from this exact XID."""
+    def native_button_pixels(
+        self, window: int, points: dict[str, tuple[int, int]],
+    ) -> dict[str, tuple[int, int, int]] | None:
+        """Read one calibrated native MuJoCo button from this exact XID."""
         attrs = self.attributes(window)
         if not attrs:
             return None
         if (
-            attrs.width <= max(point[0] for point in NATIVE_RESET_BUTTON_PIXEL_POINTS.values())
-            or attrs.height <= max(point[1] for point in NATIVE_RESET_BUTTON_PIXEL_POINTS.values())
+            attrs.width <= max(point[0] for point in points.values())
+            or attrs.height <= max(point[1] for point in points.values())
         ):
             return None
         pixels: dict[str, tuple[int, int, int]] = {}
-        for label, (x, y) in NATIVE_RESET_BUTTON_PIXEL_POINTS.items():
+        for label, (x, y) in points.items():
             image = self.lib.XGetImage(
                 self.display, window, x, y, 1, 1, ALL_PLANES, Z_PIXMAP,
             )
@@ -564,6 +579,10 @@ class X11:
             finally:
                 self.lib.XDestroyImage(image)
         return pixels
+
+    def native_reset_button_pixels(self, window: int) -> dict[str, tuple[int, int, int]] | None:
+        """Read the calibrated Reset border/background pixels from this exact XID."""
+        return self.native_button_pixels(window, NATIVE_RESET_BUTTON_PIXEL_POINTS)
 
     def _input_focus(self) -> int:
         focus = ctypes.c_ulong()
@@ -762,8 +781,14 @@ class X11:
         window: int,
         expected_pid: int,
         expected_title: str,
+        *,
+        control_label: str = "Simulation / Reset",
+        button_point: tuple[int, int] = NATIVE_RESET_BUTTON_POINT,
+        pixel_points: dict[str, tuple[int, int]] = NATIVE_RESET_BUTTON_PIXEL_POINTS,
+        dispatched_status: str = "RESET_BUTTON_CLICKED",
+        dispatched_classification: str = "NATIVE_RESET_BUTTON_INPUT_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_ROS_TRACE",
     ) -> dict[str, Any]:
-        """Click the visible MuJoCo Simulation/Reset control in the verified X2 viewer.
+        """Click one calibrated native MuJoCo Simulation control in a verified viewer.
 
         WSLg may deny X input focus while still routing a verified pointer click
         to the exact client window. This path sends no key and is accepted only
@@ -774,7 +799,7 @@ class X11:
         if identity_before is None:
             return {
                 "status": "RESET_NOT_DELIVERED",
-                "reason": "exact process/title/window/viewability match lost before native Reset click",
+                "reason": f"exact process/title/window/viewability match lost before native {control_label} click",
                 "target_window_id": window,
                 "expected_pid": expected_pid,
                 "expected_title": expected_title,
@@ -782,30 +807,34 @@ class X11:
                 "key_events_sent": 0,
             }
         width, height = int(identity_before["width"]), int(identity_before["height"])
-        required_width = max(point[0] for point in NATIVE_RESET_BUTTON_PIXEL_POINTS.values()) + 1
-        required_height = max(point[1] for point in NATIVE_RESET_BUTTON_PIXEL_POINTS.values()) + 1
+        required_width = max(point[0] for point in pixel_points.values()) + 1
+        required_height = max(point[1] for point in pixel_points.values()) + 1
         if width < required_width or height < required_height:
             return {
                 "status": "RESET_NOT_DELIVERED",
-                "reason": "MuJoCo window is too small to contain the calibrated native Reset control",
+                "reason": f"MuJoCo window is too small to contain the calibrated native {control_label} control",
                 "target_window_id": window,
                 "observed_window_size": [width, height],
                 "minimum_window_size": [required_width, required_height],
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
             }
-        button_pixels = self.native_reset_button_pixels(window)
+        button_pixels = (
+            self.native_reset_button_pixels(window)
+            if pixel_points == NATIVE_RESET_BUTTON_PIXEL_POINTS
+            else self.native_button_pixels(window, pixel_points)
+        )
         if button_pixels is None or not native_reset_button_signature_matches(button_pixels):
             return {
                 "status": "RESET_NOT_DELIVERED",
-                "reason": "native Reset control pixel signature was not verified; no click sent",
+                "reason": f"native {control_label} control pixel signature was not verified; no click sent",
                 "target_window_id": window,
                 "observed_window_size": [width, height],
                 "button_pixel_signature": button_pixels,
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
             }
-        local_x, local_y = NATIVE_RESET_BUTTON_POINT
+        local_x, local_y = button_point
         root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
         translated = int(self.lib.XTranslateCoordinates(
             self.display, window, self.root, local_x, local_y,
@@ -814,7 +843,7 @@ class X11:
         if not translated:
             return {
                 "status": "RESET_NOT_DELIVERED",
-                "reason": "could not translate the native Reset button point to root coordinates",
+                "reason": f"could not translate the native {control_label} button point to root coordinates",
                 "local_point": [local_x, local_y],
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
@@ -844,7 +873,7 @@ class X11:
             identity_before_click is not None
             and move_return
             and pointer_inside
-            and (win_x_return.value, win_y_return.value) == NATIVE_RESET_BUTTON_POINT
+            and (win_x_return.value, win_y_return.value) == (local_x, local_y)
         )
         pointer_record = {
             "status": "POINTER_VERIFIED_ON_RESET_BUTTON" if pointer_verified else "POINTER_NOT_VERIFIED",
@@ -858,7 +887,7 @@ class X11:
         if not pointer_verified:
             return {
                 "status": "RESET_NOT_DELIVERED",
-                "reason": "exact target identity or pointer-at-native-Reset verification failed; no click sent",
+                "reason": f"exact target identity or pointer-at-native-{control_label} verification failed; no click sent",
                 "target_window_id": window,
                 "identity_before": identity_before,
                 "identity_before_click": identity_before_click,
@@ -888,7 +917,7 @@ class X11:
         if identity_before_dispatch is None or not identity_geometry_stable:
             return {
                 "status": "RESET_NOT_DELIVERED",
-                "reason": "exact target identity or geometry changed after verified native Reset pointer placement; no click sent",
+                "reason": f"exact target identity or geometry changed after verified native {control_label} pointer placement; no click sent",
                 "target_window_id": window,
                 "identity_before": identity_before,
                 "identity_before_click": identity_before_click,
@@ -921,9 +950,13 @@ class X11:
                 "key_events_sent": 0,
             }
         return {
-            "status": "RESET_BUTTON_CLICKED",
-            "input_path": "MUJOCO_NATIVE_SIMULATION_RESET_BUTTON",
-            "control_label": "Simulation / Reset",
+            "status": dispatched_status,
+            "input_path": (
+                "MUJOCO_NATIVE_SIMULATION_RESET_BUTTON"
+                if dispatched_status == "RESET_BUTTON_CLICKED"
+                else "MUJOCO_NATIVE_SIMULATION_BUTTON"
+            ),
+            "control_label": control_label,
             "target_window_id": window,
             "expected_pid": expected_pid,
             "expected_title": expected_title,
@@ -942,7 +975,134 @@ class X11:
             "xtest_button_release_return": release_return,
             "mouse_button_events_sent": 2,
             "key_events_sent": 0,
-            "classification": "NATIVE_RESET_BUTTON_INPUT_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_ROS_TRACE",
+            "classification": dispatched_classification,
+        }
+
+    def click_native_load_key_button_once(
+        self,
+        window: int,
+        expected_pid: int,
+        expected_title: str,
+    ) -> dict[str, Any]:
+        """Request the supported MuJoCo Load key action after a verified key-index selection."""
+        return self.click_native_reset_button_once(
+            window,
+            expected_pid,
+            expected_title,
+            control_label="Simulation / Load key",
+            button_point=NATIVE_LOAD_KEY_BUTTON_POINT,
+            pixel_points=NATIVE_LOAD_KEY_BUTTON_PIXEL_POINTS,
+            dispatched_status="LOAD_KEY_BUTTON_CLICKED",
+            dispatched_classification="NATIVE_LOAD_KEY_BUTTON_INPUT_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_NATIVE_TRACE",
+        )
+
+    def select_native_keyframe_zero_once(
+        self,
+        window: int,
+        expected_pid: int,
+        expected_title: str,
+    ) -> dict[str, Any]:
+        """Select keyframe index zero through the native Simulation/Key slider.
+
+        The caller must verify the subsequent Load key effect from native
+        MjData. This method proves only target identity and one slider click.
+        """
+        identity_before = self._target_identity(expected_pid, expected_title, window)
+        if identity_before is None:
+            return {
+                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "reason": "exact process/title/window/viewability match lost before keyframe slider click",
+                "target_window_id": window,
+                "mouse_button_events_sent": 0,
+            }
+        width, height = int(identity_before["width"]), int(identity_before["height"])
+        local_x, local_y = NATIVE_KEY_SLIDER_ZERO_POINT
+        if width <= local_x or height <= local_y:
+            return {
+                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "reason": "MuJoCo window is too small for the calibrated keyframe slider point",
+                "target_window_id": window,
+                "observed_window_size": [width, height],
+                "mouse_button_events_sent": 0,
+            }
+        root_x, root_y, child = ctypes.c_int(), ctypes.c_int(), ctypes.c_ulong()
+        translated = int(self.lib.XTranslateCoordinates(
+            self.display, window, self.root, local_x, local_y,
+            ctypes.byref(root_x), ctypes.byref(root_y), ctypes.byref(child),
+        ))
+        if not translated:
+            return {
+                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "reason": "could not translate the calibrated keyframe slider point",
+                "target_window_id": window,
+                "mouse_button_events_sent": 0,
+            }
+        move_return = int(self.xtst.XTestFakeMotionEvent(
+            self.display, 0, root_x.value, root_y.value, CURRENT_TIME,
+        ))
+        self.lib.XFlush(self.display)
+        self.lib.XSync(self.display, 0)
+        root_return, child_return = ctypes.c_ulong(), ctypes.c_ulong()
+        root_x_return, root_y_return = ctypes.c_int(), ctypes.c_int()
+        win_x_return, win_y_return = ctypes.c_int(), ctypes.c_int()
+        mask_return = ctypes.c_uint()
+        pointer_inside = bool(self.lib.XQueryPointer(
+            self.display, window,
+            ctypes.byref(root_return), ctypes.byref(child_return),
+            ctypes.byref(root_x_return), ctypes.byref(root_y_return),
+            ctypes.byref(win_x_return), ctypes.byref(win_y_return), ctypes.byref(mask_return),
+        ))
+        pointer_verified = bool(
+            move_return and pointer_inside
+            and (win_x_return.value, win_y_return.value) == (local_x, local_y)
+        )
+        identity_before_dispatch = self._target_identity(expected_pid, expected_title, window)
+        if identity_before_dispatch is None or not pointer_verified:
+            return {
+                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "reason": "target identity or pointer-at-keyframe-slider verification failed; no click sent",
+                "target_window_id": window,
+                "local_point": [local_x, local_y],
+                "pointer_verification": {
+                    "query_return": int(pointer_inside),
+                    "local_point": [win_x_return.value, win_y_return.value],
+                    "expected_point": [local_x, local_y],
+                },
+                "mouse_button_events_sent": 0,
+            }
+        dispatch_utc = datetime.now(timezone.utc).isoformat()
+        dispatch_monotonic_ns = time.monotonic_ns()
+        press_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 1, CURRENT_TIME))
+        release_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 0, CURRENT_TIME))
+        self.lib.XFlush(self.display)
+        self.lib.XSync(self.display, 0)
+        if not press_return or not release_return:
+            return {
+                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "reason": "XTest rejected keyframe slider button press/release",
+                "target_window_id": window,
+                "mouse_button_events_sent": int(bool(press_return)) + int(bool(release_return)),
+            }
+        return {
+            "status": "KEYFRAME_INDEX_ZERO_CLICKED",
+            "input_path": "MUJOCO_NATIVE_SIMULATION_KEY_SLIDER",
+            "control_label": "Simulation / Key",
+            "target_window_id": window,
+            "expected_pid": expected_pid,
+            "expected_title": expected_title,
+            "local_point": [local_x, local_y],
+            "pointer_verification": {
+                "query_return": int(pointer_inside),
+                "local_point": [win_x_return.value, win_y_return.value],
+                "expected_point": [local_x, local_y],
+            },
+            "xtest_pointer_events_sent": 1,
+            "xtest_button_press_return": press_return,
+            "xtest_button_release_return": release_return,
+            "mouse_button_events_sent": 2,
+            "dispatch_wall_utc": dispatch_utc,
+            "dispatch_monotonic_ns": dispatch_monotonic_ns,
+            "classification": "NATIVE_KEYFRAME_INDEX_ZERO_INPUT_DISPATCHED_LOAD_EFFECT_MUST_BE_VERIFIED_BY_NATIVE_TRACE",
         }
 
     def send_backspace_once(
@@ -951,10 +1111,11 @@ class X11:
         expected_pid: int,
         expected_title: str,
         *,
+        key_name: str = "BackSpace",
         ewmh_timeout_s: float = 1.0,
         direct_timeout_s: float = 0.5,
     ) -> dict[str, Any]:
-        """Send one key only after rechecking exact identity and verified X focus."""
+        """Send one explicitly named key after exact identity/focus verification."""
         identity_before = self._target_identity(expected_pid, expected_title, window)
         if identity_before is None:
             return {
@@ -965,10 +1126,10 @@ class X11:
                 "expected_title": expected_title,
                 "xtest_key_events_sent": 0,
             }
-        key_sym = int(self.lib.XStringToKeysym(b"BackSpace"))
+        key_sym = int(self.lib.XStringToKeysym(key_name.encode("ascii")))
         keycode = int(self.lib.XKeysymToKeycode(self.display, key_sym))
         if not key_sym or not keycode:
-            raise RuntimeError("BackSpace keysym is not mapped on this X server")
+            raise RuntimeError(f"{key_name} keysym is not mapped on this X server")
         focus_before = self._input_focus()
         activation = self.activate_window(window, timeout_s=ewmh_timeout_s)
         direct_focus = {"status": "NOT_NEEDED", "target_window_id": window}
@@ -1042,7 +1203,7 @@ class X11:
             )
         return {
             "status": "KEY_DISPATCHED",
-            "key": "BackSpace",
+            "key": key_name,
             "keycode": keycode,
             "target_window_id": window,
             "expected_pid": expected_pid,
@@ -1063,6 +1224,27 @@ class X11:
             "dispatch_monotonic_ns": dispatch_monotonic_ns,
             "wall_utc": datetime.now(timezone.utc).isoformat(),
         }
+
+    def send_space_once(
+        self,
+        window: int,
+        expected_pid: int,
+        expected_title: str,
+    ) -> dict[str, Any]:
+        """Toggle the documented native MuJoCo Play/Pause control once."""
+        result = self.send_backspace_once(
+            window,
+            expected_pid,
+            expected_title,
+            key_name="space",
+        )
+        result["control_label"] = "Simulation / Play-Pause"
+        result["classification"] = (
+            "NATIVE_MUJOCO_PLAY_PAUSE_KEY_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_NATIVE_TRACE"
+            if result.get("status") == "KEY_DISPATCHED"
+            else "NATIVE_MUJOCO_PLAY_PAUSE_NOT_DISPATCHED"
+        )
+        return result
 
 
 def main() -> int:
@@ -1094,6 +1276,21 @@ def main() -> int:
     native_reset_parser.add_argument("--expected-title", required=True)
     native_reset_parser.add_argument("--window-id", type=int, required=True)
     native_reset_parser.add_argument("--dispatch-event-json", type=Path, required=True)
+    pause_parser = sub.add_parser("send-pause", help="toggle native MuJoCo Play/Pause once in a verified window")
+    pause_parser.add_argument("--expected-pid", type=int, required=True)
+    pause_parser.add_argument("--expected-title", required=True)
+    pause_parser.add_argument("--window-id", type=int, required=True)
+    pause_parser.add_argument("--dispatch-event-json", type=Path, required=True)
+    key_zero_parser = sub.add_parser("select-key-zero", help="select native MuJoCo keyframe index zero once")
+    key_zero_parser.add_argument("--expected-pid", type=int, required=True)
+    key_zero_parser.add_argument("--expected-title", required=True)
+    key_zero_parser.add_argument("--window-id", type=int, required=True)
+    key_zero_parser.add_argument("--dispatch-event-json", type=Path, required=True)
+    load_key_parser = sub.add_parser("click-native-load-key", help="click native MuJoCo Simulation/Load key once")
+    load_key_parser.add_argument("--expected-pid", type=int, required=True)
+    load_key_parser.add_argument("--expected-title", required=True)
+    load_key_parser.add_argument("--window-id", type=int, required=True)
+    load_key_parser.add_argument("--dispatch-event-json", type=Path, required=True)
     args = parser.parse_args()
     x11 = None
     try:
@@ -1156,6 +1353,67 @@ def main() -> int:
                 os.fsync(stream.fileno())
             print(json.dumps(event_record, indent=2))
             return 0 if event.get("status") == "RESET_BUTTON_CLICKED" else 2
+        if args.command == "send-pause":
+            event = x11.send_space_once(
+                args.window_id,
+                expected_pid=args.expected_pid,
+                expected_title=args.expected_title,
+            )
+            event_record = {
+                "schema": "robotsim.issue80.pause-dispatch-event.v1",
+                "window": window,
+                "event": event,
+                "pause_toggle_attempt_count": 1,
+            }
+            args.dispatch_event_json.parent.mkdir(parents=True, exist_ok=True)
+            with args.dispatch_event_json.open("x", encoding="utf-8") as stream:
+                json.dump(event_record, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            print(json.dumps(event_record, indent=2))
+            return 0 if event.get("status") == "KEY_DISPATCHED" else 2
+        if args.command == "select-key-zero":
+            event = x11.select_native_keyframe_zero_once(
+                args.window_id,
+                expected_pid=args.expected_pid,
+                expected_title=args.expected_title,
+            )
+            event_record = {
+                "schema": "robotsim.issue80.keyframe-selection-event.v1",
+                "window": window,
+                "event": event,
+                "keyframe_index": 0,
+            }
+            args.dispatch_event_json.parent.mkdir(parents=True, exist_ok=True)
+            with args.dispatch_event_json.open("x", encoding="utf-8") as stream:
+                json.dump(event_record, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            print(json.dumps(event_record, indent=2))
+            return 0 if event.get("status") == "KEYFRAME_INDEX_ZERO_CLICKED" else 2
+        if args.command == "click-native-load-key":
+            event = x11.click_native_load_key_button_once(
+                args.window_id,
+                expected_pid=args.expected_pid,
+                expected_title=args.expected_title,
+            )
+            event_record = {
+                "schema": "robotsim.issue80.keyframe-load-dispatch-event.v1",
+                "window": window,
+                "event": event,
+                "keyframe_index": 0,
+                "keyframe_load_attempt_count": 1,
+            }
+            args.dispatch_event_json.parent.mkdir(parents=True, exist_ok=True)
+            with args.dispatch_event_json.open("x", encoding="utf-8") as stream:
+                json.dump(event_record, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            print(json.dumps(event_record, indent=2))
+            return 0 if event.get("status") == "LOAD_KEY_BUTTON_CLICKED" else 2
         before = x11.capture_png(args.window_id, args.before_png) if args.before_png else {"status": "NOT_REQUESTED"}
         event = x11.send_backspace_once(
             args.window_id,

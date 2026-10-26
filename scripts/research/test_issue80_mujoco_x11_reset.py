@@ -299,6 +299,38 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
         self.assertEqual(x11.xtst.pointer_events, [])
         self.assertEqual(x11.xtst.events, [])
 
+    def test_native_load_key_and_key_zero_selection_keep_target_verification(self) -> None:
+        x11 = make_x11(accept_direct_focus=False)
+        x11.native_button_pixels = lambda _window, _points: {
+            "top": (153, 102, 102),
+            "left": (153, 102, 102),
+            "right": (153, 102, 102),
+            "bottom": (153, 102, 102),
+            "center": (26, 26, 26),
+        }
+        selected = x11.select_native_keyframe_zero_once(
+            0x5678, expected_pid=4321, expected_title="MuJoCo : X2 simulator",
+        )
+        loaded = x11.click_native_load_key_button_once(
+            0x5678, expected_pid=4321, expected_title="MuJoCo : X2 simulator",
+        )
+        self.assertEqual(selected["status"], "KEYFRAME_INDEX_ZERO_CLICKED")
+        self.assertEqual(loaded["status"], "LOAD_KEY_BUTTON_CLICKED")
+        self.assertEqual(selected["local_point"], [185, 517])
+        self.assertEqual(selected["mouse_button_events_sent"], 2)
+        self.assertEqual(loaded["mouse_button_events_sent"], 2)
+        self.assertFalse(x11.xtst.events)
+
+    def test_space_dispatch_uses_the_same_verified_focus_contract(self) -> None:
+        x11 = make_x11(accept_direct_focus=True)
+        result = x11.send_space_once(
+            0x5678, expected_pid=4321, expected_title="MuJoCo : X2 simulator",
+        )
+        self.assertEqual(result["status"], "KEY_DISPATCHED")
+        self.assertEqual(result["key"], "space")
+        self.assertEqual(result["control_label"], "Simulation / Play-Pause")
+        self.assertEqual(x11.xtst.events, [(22, 1), (22, 0)])
+
     def test_transient_focus_loss_is_reasserted_but_still_verified(self) -> None:
         x11 = make_x11(accept_direct_focus=True)
         matching = x11.list_windows()[0]

@@ -160,6 +160,120 @@ def native_root_within_existing_safety_gate(support: Mapping[str, Any]) -> bool:
         return False
 
 
+def native_synchronized_keyframe_state(
+    sample: Mapping[str, Any], expected: Mapping[str, Any], *, tolerance: float = 1e-8,
+) -> dict[str, Any]:
+    """Verify the native Load key result before physics is released.
+
+    Positive contact force is intentionally not required: the paused native
+    viewer has run ``mj_forward`` but has not integrated a contact impulse.
+    The qpos/qvel identity, tangent bilateral contacts, and unchanged root
+    safety limits are authoritative for this pre-step gate.
+    """
+    try:
+        qpos = [float(value) for value in sample["qpos"]]
+        qvel = [float(value) for value in sample["qvel"]]
+        expected_qpos = [float(value) for value in expected["qpos"]]
+        expected_qvel = [float(value) for value in expected["qvel"]]
+    except (KeyError, TypeError, ValueError):
+        return {"eligible": False, "failure_reason": "missing_or_non_numeric_keyframe_state"}
+    qpos_match = (
+        len(qpos) == len(expected_qpos)
+        and all(math.isfinite(value) for value in qpos)
+        and max((abs(a - b) for a, b in zip(qpos, expected_qpos)), default=math.inf) <= tolerance
+    )
+    qvel_match = (
+        len(qvel) == len(expected_qvel)
+        and all(math.isfinite(value) for value in qvel)
+        and max((abs(a - b) for a, b in zip(qvel, expected_qvel)), default=math.inf) <= tolerance
+    )
+    support = native_foot_support(sample)
+    tangent = {"left": False, "right": False}
+    for contact in sample.get("contacts", []):
+        if not isinstance(contact, Mapping):
+            continue
+        try:
+            distance = float(contact.get("distance_m"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(distance) or abs(distance) > tolerance:
+            continue
+        for side in tangent:
+            if contact.get(f"involves_selected_{side}_foot") is True:
+                tangent[side] = True
+    eligible = (
+        qpos_match and qvel_match and native_root_within_existing_safety_gate(support)
+        and all(tangent.values())
+    )
+    return {
+        "eligible": eligible,
+        "qpos_matches_expected": qpos_match,
+        "qvel_matches_expected": qvel_match,
+        "tangent_selected_foot_contacts": tangent,
+        "native_root_within_existing_safety_gate": native_root_within_existing_safety_gate(support),
+        "support": support,
+        "failure_reason": (
+            None if eligible else "synchronized_keyframe_state_not_verified"
+        ),
+    }
+
+
+def ros_leg_state_matches_synchronized_keyframe(
+    leg_state: Mapping[str, Any], expected: Mapping[str, Any], *, tolerance: float = 1e-5,
+) -> dict[str, Any]:
+    """Require the paused simulator's published leg state to match the loaded keyframe.
+
+    The native ``MjData`` keyframe check is the physical authority.  This
+    companion check proves that the simulator's ROS joint-state publisher has
+    observed the same source-MC nominal leg configuration before JD is sent.
+    It deliberately does not infer an odometry frame equivalence from a paused
+    sample, because the installed odom convention has not been established.
+    """
+    try:
+        names = [str(value) for value in expected["source_nominal_joint_names"]]
+        values = [float(value) for value in expected["source_nominal_joint_values_rad"]]
+        joints = leg_state["joints"]
+    except (KeyError, TypeError, ValueError):
+        return {
+            "eligible": False,
+            "failure_reason": "missing_or_invalid_ros_leg_state_or_keyframe_spec",
+        }
+    if len(names) != len(values) or len(names) < 12 or not isinstance(joints, list):
+        return {
+            "eligible": False,
+            "failure_reason": "invalid_ros_leg_state_or_keyframe_joint_inventory",
+        }
+    expected_legs = dict(zip(names[:12], values[:12]))
+    observed: dict[str, float] = {}
+    for joint in joints:
+        if not isinstance(joint, Mapping):
+            continue
+        try:
+            name = str(joint["name"])
+            position = float(joint["position"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if name in expected_legs and math.isfinite(position):
+            observed[name] = position
+    missing = sorted(set(expected_legs) - set(observed))
+    residuals = {
+        name: abs(observed[name] - target)
+        for name, target in expected_legs.items()
+        if name in observed
+    }
+    maximum_residual = max(residuals.values(), default=math.inf)
+    eligible = not missing and maximum_residual <= tolerance
+    return {
+        "eligible": eligible,
+        "expected_leg_joint_count": len(expected_legs),
+        "observed_matching_leg_joint_count": len(observed),
+        "missing_leg_joint_names": missing,
+        "maximum_abs_position_residual_rad": maximum_residual,
+        "position_tolerance_rad": tolerance,
+        "failure_reason": None if eligible else "ros_leg_state_does_not_match_loaded_nominal_keyframe",
+    }
+
+
 def read_complete_native_capture_rows(
     path: Path, offset: int,
 ) -> tuple[int, list[dict[str, Any]]]:
@@ -534,7 +648,23 @@ def main() -> int:
     parser.add_argument("--action", default="STAND_DEFAULT")
     parser.add_argument("--source", default="node.set_mc_action")
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--reset-event-file", required=True, type=Path)
+    parser.add_argument("--reset-event-file", type=Path, default=None)
+    parser.add_argument(
+        "--synchronized-keyframe-event-file", type=Path, default=None,
+        help="native MuJoCo Load key dispatch record for the paused synchronized-init path",
+    )
+    parser.add_argument(
+        "--synchronized-keyframe-spec", type=Path, default=None,
+        help="read-only source-MC-derived keyframe specification staged by the parent",
+    )
+    parser.add_argument(
+        "--physics-release-event-file", type=Path, default=None,
+        help="parent-written verified native Play/Pause release event for synchronized initialization",
+    )
+    parser.add_argument(
+        "--synchronized-ready-file", type=Path, default=None,
+        help="child-written JD-control readiness barrier consumed by the parent before unpausing physics",
+    )
     parser.add_argument("--set-timeout-s", type=float, default=2.0)
     parser.add_argument("--get-timeout-s", type=float, default=0.75)
     parser.add_argument("--ready-timeout-s", type=float, default=3.0)
@@ -568,6 +698,22 @@ def main() -> int:
         parser.error("this capture only supports the reviewed PD -> JD -> SD standing handoff")
     if args.require_native_reset_generation and args.native_mjdata_trace is None:
         parser.error("--require-native-reset-generation requires --native-mjdata-trace")
+    synchronized_paths = (
+        args.synchronized_keyframe_event_file,
+        args.synchronized_keyframe_spec,
+        args.physics_release_event_file,
+        args.synchronized_ready_file,
+    )
+    synchronized = any(path is not None for path in synchronized_paths)
+    if synchronized:
+        if any(path is None for path in synchronized_paths):
+            parser.error("synchronized initialization requires all keyframe/release/ready paths")
+        if args.reset_event_file is not None:
+            parser.error("synchronized initialization cannot also consume a Reset event")
+        if not args.require_native_reset_generation:
+            parser.error("synchronized initialization requires native MjData capture generation evidence")
+    elif args.reset_event_file is None:
+        parser.error("--reset-event-file is required outside synchronized initialization")
 
     import rclpy
     from rclpy.node import Node
@@ -595,7 +741,27 @@ def main() -> int:
         def __init__(self) -> None:
             super().__init__("issue80_m1_standing_takeover_capture")
             self.output_dir = args.output_dir.resolve(strict=True)
-            self.reset_event_file = args.reset_event_file.resolve(strict=False)
+            self.synchronized_initialization = bool(args.synchronized_keyframe_event_file)
+            self.reset_event_file = (
+                args.reset_event_file.resolve(strict=False)
+                if args.reset_event_file is not None else None
+            )
+            self.synchronized_keyframe_event_file = (
+                args.synchronized_keyframe_event_file.resolve(strict=False)
+                if args.synchronized_keyframe_event_file is not None else None
+            )
+            self.physics_release_event_file = (
+                args.physics_release_event_file.resolve(strict=False)
+                if args.physics_release_event_file is not None else None
+            )
+            self.synchronized_ready_file = (
+                args.synchronized_ready_file.resolve(strict=False)
+                if args.synchronized_ready_file is not None else None
+            )
+            self.synchronized_keyframe_spec = self._load_synchronized_keyframe_spec(
+                args.synchronized_keyframe_spec
+            ) if self.synchronized_initialization else None
+            self.synchronized_ros_leg_state_ready: dict[str, Any] | None = None
             self.trace_path = self.output_dir / "reset_state_trace.jsonl"
             self.ready_path = self.output_dir / "reset_watch_ready.json"
             self.summary_path = self.output_dir / "reset_state_summary.json"
@@ -608,6 +774,8 @@ def main() -> int:
             self.clocks: list[dict[str, Any]] = []
             self.reset_dispatch: dict[str, Any] | None = None
             self.reset_ns: int | None = None
+            self.physics_release: dict[str, Any] | None = None
+            self.physics_release_ns: int | None = None
             self.post_reset_epoch_ns: int | None = None
             self.native_trace_path = (
                 args.native_mjdata_trace.resolve(strict=False)
@@ -625,6 +793,11 @@ def main() -> int:
             self.native_support_samples = 0
             self.native_support_ready_ns: int | None = None
             self.native_support_sample: dict[str, Any] | None = None
+            self.native_keyframe_ready_ns: int | None = None
+            self.native_keyframe_sample: dict[str, Any] | None = None
+            self.native_keyframe_assessment: dict[str, Any] | None = None
+            self.first_native_step_after_release: dict[str, Any] | None = None
+            self.first_native_actuation_after_release: dict[str, Any] | None = None
             self.post_jd_control_epoch_ns: int | None = None
             self.native_handoff_safety_lost: dict[str, Any] | None = None
             self.native_unsafe_after_jd: dict[str, Any] | None = None
@@ -669,6 +842,28 @@ def main() -> int:
             self.subscriptions_created_utc = datetime.now(timezone.utc).isoformat()
             self.subscriptions_created_ns = time.monotonic_ns()
 
+        @staticmethod
+        def _load_synchronized_keyframe_spec(path_value: Path | None) -> dict[str, Any]:
+            if path_value is None:
+                raise ValueError("synchronized keyframe spec path is missing")
+            path = path_value.resolve(strict=True)
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("synchronized keyframe spec is not a regular file")
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                qpos = [float(item) for item in value["qpos"]]
+                qvel = [float(item) for item in value["qvel"]]
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError("synchronized keyframe spec is invalid") from exc
+            if (
+                value.get("schema") != "robotsim.issue80.synchronized-nominal-keyframe.v1"
+                or value.get("key_name") != "issue80_nominal_stand_v1"
+                or not qpos or not qvel
+                or not all(math.isfinite(item) for item in qpos + qvel)
+            ):
+                raise ValueError("synchronized keyframe spec violates the reviewed schema")
+            return {**value, "qpos": qpos, "qvel": qvel, "path": str(path)}
+
         def write_trace(self, row: dict[str, Any]) -> None:
             self.trace.write(json.dumps(row, allow_nan=False, separators=(",", ":")) + "\n")
             self.trace.flush()
@@ -678,7 +873,7 @@ def main() -> int:
 
         def _assessment_epoch(self) -> int | None:
             """Ignore queued pre-JD telemetry after a native MjData handoff."""
-            return self.post_jd_control_epoch_ns or self._post_reset_epoch()
+            return self.physics_release_ns or self.post_jd_control_epoch_ns or self._post_reset_epoch()
 
         def _clear_assessment_counters(self) -> None:
             self.upright_samples = 0
@@ -741,33 +936,56 @@ def main() -> int:
                 if generation != self.native_reset_generation:
                     continue
                 support = native_foot_support(row)
-                if support["safe_to_begin_ros_upright_gate"]:
-                    self.native_support_samples += 1
-                    self.native_support_sample = {"sample": row, "support": support}
-                else:
-                    self.native_support_samples = 0
-                if (
-                    self.native_support_ready_ns is None
-                    and self.native_support_samples >= NATIVE_SUPPORT_REQUIRED_SAMPLES
-                ):
-                    self.native_support_ready_ns = host_ns
-                    self.post_reset_epoch_ns = host_ns
-                    self._clear_assessment_counters()
-                    self.record_event(
-                        "native_bilateral_foot_support_ready",
-                        generation=generation,
-                        native_host_monotonic_ns=host_ns,
-                        required_samples=NATIVE_SUPPORT_REQUIRED_SAMPLES,
-                        required_post_reset_ros_upright_samples=self.required_post_reset_upright_samples,
-                        support=self.native_support_sample,
+                if self.synchronized_initialization:
+                    assert self.synchronized_keyframe_spec is not None
+                    assessment = native_synchronized_keyframe_state(
+                        row, self.synchronized_keyframe_spec
                     )
+                    if self.native_keyframe_ready_ns is None and assessment["eligible"]:
+                        self.native_keyframe_ready_ns = host_ns
+                        self.native_keyframe_sample = row
+                        self.native_keyframe_assessment = assessment
+                        self.post_reset_epoch_ns = host_ns
+                        self._clear_assessment_counters()
+                        self.record_event(
+                            "native_synchronized_keyframe_ready",
+                            generation=generation,
+                            native_host_monotonic_ns=host_ns,
+                            assessment=assessment,
+                        )
+                else:
+                    if support["safe_to_begin_ros_upright_gate"]:
+                        self.native_support_samples += 1
+                        self.native_support_sample = {"sample": row, "support": support}
+                    else:
+                        self.native_support_samples = 0
+                    if (
+                        self.native_support_ready_ns is None
+                        and self.native_support_samples >= NATIVE_SUPPORT_REQUIRED_SAMPLES
+                    ):
+                        self.native_support_ready_ns = host_ns
+                        self.post_reset_epoch_ns = host_ns
+                        self._clear_assessment_counters()
+                        self.record_event(
+                            "native_bilateral_foot_support_ready",
+                            generation=generation,
+                            native_host_monotonic_ns=host_ns,
+                            required_samples=NATIVE_SUPPORT_REQUIRED_SAMPLES,
+                            required_post_reset_ros_upright_samples=self.required_post_reset_upright_samples,
+                            support=self.native_support_sample,
+                        )
                 jd_ns = self.pending_jd_submission_ns or self.set_records.get(
                     "JOINT_DEFAULT", {}
                 ).get("wall_monotonic_ns_submitted")
+                native_ready_ns = (
+                    self.native_keyframe_ready_ns
+                    if self.synchronized_initialization else self.native_support_ready_ns
+                )
                 if (
-                    self.native_support_ready_ns is not None
+                    native_ready_ns is not None
                     and jd_ns is None
-                    and host_ns > self.native_support_ready_ns
+                    and (not self.synchronized_initialization or self.physics_release_ns is not None)
+                    and host_ns > native_ready_ns
                     and not native_root_within_existing_safety_gate(support)
                     and self.native_handoff_safety_lost is None
                 ):
@@ -777,13 +995,36 @@ def main() -> int:
                         native_host_monotonic_ns=host_ns,
                         support=self.native_handoff_safety_lost,
                     )
-                if isinstance(jd_ns, int) and host_ns > jd_ns:
+                if isinstance(jd_ns, int) and host_ns > jd_ns and (
+                    not self.synchronized_initialization or self.physics_release_ns is not None
+                ):
                     if not native_root_within_existing_safety_gate(support) and self.native_unsafe_after_jd is None:
                         self.native_unsafe_after_jd = {"sample": row, "support": support}
                         self.record_event(
                             "native_post_JD_physical_safety_fault",
                             native_host_monotonic_ns=host_ns,
                             support=self.native_unsafe_after_jd,
+                        )
+                if self.physics_release_ns is not None and host_ns > self.physics_release_ns:
+                    if self.first_native_step_after_release is None and isinstance(row.get("mj_step_call_index"), int):
+                        self.first_native_step_after_release = row
+                        self.record_event(
+                            "native_first_step_after_physics_release",
+                            native_host_monotonic_ns=host_ns,
+                            sample=row,
+                        )
+                    force = row.get("actuator_force", [])
+                    try:
+                        max_force = max(abs(float(value)) for value in force)
+                    except (TypeError, ValueError):
+                        max_force = 0.0
+                    if self.first_native_actuation_after_release is None and max_force > 1e-8:
+                        self.first_native_actuation_after_release = row
+                        self.record_event(
+                            "native_first_actuation_after_physics_release",
+                            native_host_monotonic_ns=host_ns,
+                            max_abs_actuator_force=max_force,
+                            sample=row,
                         )
 
         def native_reset_support_record(self) -> dict[str, Any]:
@@ -796,6 +1037,14 @@ def main() -> int:
                 "support_samples": self.native_support_samples,
                 "support_ready_host_monotonic_ns": self.native_support_ready_ns,
                 "support": self.native_support_sample,
+                "synchronized_initialization": self.synchronized_initialization,
+                "synchronized_keyframe_spec": self.synchronized_keyframe_spec,
+                "synchronized_keyframe_ready_host_monotonic_ns": self.native_keyframe_ready_ns,
+                "synchronized_keyframe_assessment": self.native_keyframe_assessment,
+                "synchronized_ros_leg_state_ready": self.synchronized_ros_leg_state_ready,
+                "physics_release_monotonic_ns": self.physics_release_ns,
+                "first_native_step_after_physics_release": self.first_native_step_after_release,
+                "first_native_actuation_after_physics_release": self.first_native_actuation_after_release,
                 "required_post_reset_ros_upright_samples": self.required_post_reset_upright_samples,
                 "post_JD_effective_command_epoch_monotonic_ns": self.post_jd_control_epoch_ns,
                 "native_pre_JD_physical_safety_fault": self.native_handoff_safety_lost,
@@ -812,10 +1061,14 @@ def main() -> int:
                 except (OSError, ValueError) as exc:
                     self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
                     return False
-                if self.native_support_ready_ns is not None:
+                if self.synchronized_initialization and self.native_keyframe_ready_ns is not None:
+                    return True
+                if not self.synchronized_initialization and self.native_support_ready_ns is not None:
                     return True
             if self.native_reset_generation is None:
-                self.error = "native MjData did not observe a post-dispatch reset generation"
+                self.error = "native MjData did not observe a post-dispatch initialization generation"
+            elif self.synchronized_initialization:
+                self.error = "native MjData did not verify the source-MC nominal keyframe while physics was paused"
             else:
                 self.error = "native MjData did not observe consecutive bilateral foot support after reset"
             return False
@@ -1111,24 +1364,50 @@ def main() -> int:
 
         def wait_reset_event(self) -> dict[str, Any] | None:
             deadline = time.monotonic() + args.reset_wait_timeout_s
+            event_file = (
+                self.synchronized_keyframe_event_file
+                if self.synchronized_initialization else self.reset_event_file
+            )
+            assert event_file is not None
+            expected_status = (
+                "LOAD_KEY_BUTTON_CLICKED"
+                if self.synchronized_initialization else None
+            )
             while rclpy.ok() and time.monotonic() < deadline:
                 self.spin_for(0.005)
-                if not self.reset_event_file.exists():
+                if not event_file.exists():
                     continue
                 try:
-                    payload = json.loads(self.reset_event_file.read_text(encoding="utf-8"))
+                    payload = json.loads(event_file.read_text(encoding="utf-8"))
                     event = payload.get("event", {})
                     dispatch_ns = int(event.get("dispatch_monotonic_ns", 0))
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     continue
-                if event.get("status") not in {"KEY_DISPATCHED", "RESET_BUTTON_CLICKED"} or dispatch_ns <= 0:
-                    self.error = "Reset event file did not contain a verified simulator Reset input event"
+                accepted = (
+                    event.get("status") == expected_status
+                    if expected_status is not None
+                    else event.get("status") in {"KEY_DISPATCHED", "RESET_BUTTON_CLICKED"}
+                )
+                if not accepted or dispatch_ns <= 0:
+                    self.error = (
+                        "synchronized keyframe event did not contain a verified native Load key input"
+                        if self.synchronized_initialization
+                        else "Reset event file did not contain a verified simulator Reset input event"
+                    )
                     return None
                 self.reset_dispatch = payload
                 self.reset_ns = dispatch_ns
-                self.record_event("reset_barrier_observed", reset_dispatch=payload)
+                self.record_event(
+                    "synchronized_keyframe_barrier_observed" if self.synchronized_initialization
+                    else "reset_barrier_observed",
+                    reset_dispatch=payload,
+                )
                 return payload
-            self.error = "verified Reset event file was not observed before timeout"
+            self.error = (
+                "verified native Load key event file was not observed before timeout"
+                if self.synchronized_initialization
+                else "verified Reset event file was not observed before timeout"
+            )
             return None
 
         def wait_pre_reset_ready(self) -> bool:
@@ -1212,6 +1491,91 @@ def main() -> int:
                     "native_mjdata": self.native_reset_support_record(),
                     "error": self.error,
                 }
+            if self.synchronized_initialization:
+                while rclpy.ok() and time.monotonic() < deadline:
+                    self.spin_for(0.005)
+                    try:
+                        self.poll_native_capture()
+                    except (OSError, ValueError) as exc:
+                        self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                        break
+                    now_ns = time.monotonic_ns()
+                    transport = self.ros_transport_liveness(now_ns)
+                    if not transport["fresh_required_topics"]:
+                        last = {
+                            "status": "SYNCHRONIZED_KEYFRAME_WAITING_FOR_ROS_TRANSPORT",
+                            "initialization_dispatch_monotonic_ns": self.reset_ns,
+                            "native_mjdata": self.native_reset_support_record(),
+                            "ros_transport": transport,
+                        }
+                        continue
+                    leg_state_row = self.latest.get("leg_state")
+                    native_keyframe_ns = self.native_keyframe_ready_ns
+                    if (
+                        not isinstance(leg_state_row, Mapping)
+                        or native_keyframe_ns is None
+                        or int(leg_state_row.get("wall_monotonic_ns", 0)) <= native_keyframe_ns
+                    ):
+                        last = {
+                            "status": "SYNCHRONIZED_KEYFRAME_WAITING_FOR_POST_KEYFRAME_LEG_STATE",
+                            "initialization_dispatch_monotonic_ns": self.reset_ns,
+                            "native_mjdata": self.native_reset_support_record(),
+                            "ros_transport": transport,
+                        }
+                        continue
+                    assert self.synchronized_keyframe_spec is not None
+                    ros_leg_state = ros_leg_state_matches_synchronized_keyframe(
+                        leg_state_row.get("data", {}), self.synchronized_keyframe_spec,
+                    )
+                    if not ros_leg_state["eligible"]:
+                        last = {
+                            "status": "SYNCHRONIZED_KEYFRAME_WAITING_FOR_MATCHING_ROS_LEG_STATE",
+                            "initialization_dispatch_monotonic_ns": self.reset_ns,
+                            "native_mjdata": self.native_reset_support_record(),
+                            "ros_transport": transport,
+                            "ros_leg_state": ros_leg_state,
+                            "leg_state_wall_monotonic_ns": leg_state_row.get("wall_monotonic_ns"),
+                        }
+                        continue
+                    if self.synchronized_ros_leg_state_ready is None:
+                        self.synchronized_ros_leg_state_ready = {
+                            "wall_utc": datetime.now(timezone.utc).isoformat(),
+                            "wall_monotonic_ns": now_ns,
+                            "leg_state_wall_monotonic_ns": leg_state_row.get("wall_monotonic_ns"),
+                            "assessment": ros_leg_state,
+                        }
+                        self.record_event(
+                            "synchronized_ros_leg_state_matches_keyframe",
+                            readiness=self.synchronized_ros_leg_state_ready,
+                        )
+                    readback = self.mode_readback(args.get_timeout_s)
+                    if (
+                        readback.get("transport_state") != "RESPONSE_RECEIVED"
+                        or readback.get("action_desc") != "PASSIVE_DEFAULT"
+                        or readback.get("action_status_value") != 100
+                    ):
+                        self.error = "GetMcAction did not retain PASSIVE_DEFAULT/status=100 before synchronized JD"
+                        break
+                    last = {
+                        "status": "SYNCHRONIZED_KEYFRAME_READY",
+                        "wall_utc": datetime.now(timezone.utc).isoformat(),
+                        "wall_monotonic_ns": now_ns,
+                        "initialization_dispatch_monotonic_ns": self.reset_ns,
+                        "snapshot": {
+                            "native_mjdata": self.native_reset_support_record(),
+                            "ros_transport": transport,
+                            "ros_leg_state_matches_keyframe": self.synchronized_ros_leg_state_ready,
+                            "get_mc_action": readback,
+                            "physics_stepping_released": False,
+                            "physical_state_authority": "native_MjData_keyframe",
+                        },
+                    }
+                    self.record_event("synchronized_keyframe_gate", snapshot=last)
+                    return last
+                if self.error is None:
+                    self.error = "synchronized keyframe was verified but MC transport/mode was not ready"
+                last.update({"error": self.error, "timeout_s": args.upright_timeout_s})
+                return last
             if self.require_native_reset_generation:
                 # Native MjData has already established the physical handoff
                 # condition.  Do not wait for queued ROS pose samples here:
@@ -1346,6 +1710,97 @@ def main() -> int:
                 self.spin_for(0.05)
             return last
 
+        def wait_for_synchronized_jd_control_ready(self, deadline: float) -> bool:
+            """Wait for a real MC leg command while native physics remains paused."""
+            if not self.synchronized_initialization:
+                return True
+            assert self.synchronized_ready_file is not None
+            while rclpy.ok() and time.monotonic() < deadline:
+                self.spin_for(0.005)
+                try:
+                    self.poll_native_capture()
+                except (OSError, ValueError) as exc:
+                    self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                    return False
+                if self.first_effective_after_jd is None:
+                    continue
+                now_ns = time.monotonic_ns()
+                transport = self.ros_transport_liveness(now_ns)
+                if not transport["fresh_required_topics"]:
+                    continue
+                readback = self.mode_readback(args.get_timeout_s)
+                if (
+                    readback.get("transport_state") != "RESPONSE_RECEIVED"
+                    or readback.get("action_desc") != "JOINT_DEFAULT"
+                    or readback.get("action_status_value") != 100
+                ):
+                    continue
+                ready = {
+                    "schema": "robotsim.issue80.synchronized-jd-ready.v1",
+                    "status": "JD_CONTROL_READY_WHILE_PHYSICS_PAUSED",
+                    "wall_utc": datetime.now(timezone.utc).isoformat(),
+                    "wall_monotonic_ns": now_ns,
+                    "first_effective_leg_command_after_jd_monotonic_ns": self.first_effective_after_jd,
+                    "native_mjdata": self.native_reset_support_record(),
+                    "ros_transport": transport,
+                    "ros_leg_state_matches_keyframe": self.synchronized_ros_leg_state_ready,
+                    "get_mc_action": readback,
+                    "physics_stepping_released": False,
+                }
+                self.write_json_once(self.synchronized_ready_file, ready)
+                self.record_event("synchronized_jd_control_ready", readiness=ready)
+                return True
+            self.error = "JOINT_DEFAULT did not produce an effective leg command while native physics was paused"
+            return False
+
+        def wait_for_physics_release(self, deadline: float) -> bool:
+            """Accept exactly the parent-verified native Play/Pause release event."""
+            if not self.synchronized_initialization:
+                return True
+            assert self.physics_release_event_file is not None
+            while rclpy.ok() and time.monotonic() < deadline:
+                self.spin_for(0.005)
+                if not self.physics_release_event_file.exists():
+                    continue
+                try:
+                    payload = json.loads(self.physics_release_event_file.read_text(encoding="utf-8"))
+                    event = payload.get("event", {})
+                    dispatch_ns = int(event.get("dispatch_monotonic_ns", 0))
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+                if event.get("status") != "KEY_DISPATCHED" or event.get("key") != "space" or dispatch_ns <= 0:
+                    self.error = "physics release event is not a verified native MuJoCo Play/Pause dispatch"
+                    return False
+                self.physics_release = payload
+                self.physics_release_ns = dispatch_ns
+                self._clear_assessment_counters()
+                self.record_event("synchronized_physics_release_observed", physics_release=payload)
+                return True
+            self.error = "verified native physics-release event was not observed before timeout"
+            return False
+
+        def wait_for_native_release_actuation(self, deadline: float) -> bool:
+            """Require the first resumed mj_step and nonzero MC actuation before JD qualification."""
+            if not self.synchronized_initialization:
+                return True
+            while rclpy.ok() and time.monotonic() < deadline:
+                self.spin_for(0.005)
+                try:
+                    self.poll_native_capture()
+                except (OSError, ValueError) as exc:
+                    self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                    return False
+                if self.native_unsafe_after_jd is not None:
+                    self.error = "native physical safety gate faulted immediately after physics release"
+                    return False
+                if (
+                    self.first_native_step_after_release is not None
+                    and self.first_native_actuation_after_release is not None
+                ):
+                    return True
+            self.error = "physics release did not yield a native mj_step plus nonzero MC actuation before the bounded deadline"
+            return False
+
         def wait_for_joint_stand(self, timeout_s: float) -> dict[str, Any] | None:
             assert self.reset_ns is not None
             deadline = time.monotonic() + timeout_s
@@ -1465,6 +1920,22 @@ def main() -> int:
                 "first_effective_leg_command_after_jd_monotonic_ns": self.first_effective_after_jd,
                 "first_effective_leg_command_after_sd_monotonic_ns": self.first_effective_after_sd,
                 "timing_ms": summarize_takeover_timing(timing_events),
+                "synchronized_initialization_timing_ms": {
+                    "keyframe_dispatch_to_native_keyframe_ms": elapsed_ms(
+                        self.reset_ns, self.native_keyframe_ready_ns
+                    ),
+                    "JD_response_to_effective_command_while_paused_ms": elapsed_ms(
+                        jd.get("wall_monotonic_ns_returned"), self.first_effective_after_jd
+                    ),
+                    "physics_release_to_first_native_step_ms": elapsed_ms(
+                        self.physics_release_ns,
+                        (self.first_native_step_after_release or {}).get("host_monotonic_ns"),
+                    ),
+                    "physics_release_to_first_native_actuation_ms": elapsed_ms(
+                        self.physics_release_ns,
+                        (self.first_native_actuation_after_release or {}).get("host_monotonic_ns"),
+                    ),
+                } if self.synchronized_initialization else None,
                 "limitations": [
                     "ROS graph exposes no foot-contact or ground-reaction-force topic in the captured runtime inventory.",
                     "MC body_status=STAND is retained as the installed AimDK classifier; it is not a direct force-plate measurement.",
@@ -1489,6 +1960,7 @@ def main() -> int:
             if upright_gate is None or upright_gate.get("status") not in {
                 "POST_RESET_UPRIGHT_OBSERVED",
                 "POST_RESET_NATIVE_SUPPORT_READY",
+                "SYNCHRONIZED_KEYFRAME_READY",
             }:
                 self._write_final_result("BLOCKED_POST_RESET_UPRIGHT", block_stage="POST_RESET_UPRIGHT", error=self.error, pre_reset=pre_reset_mode, upright_gate=upright_gate)
                 return 2
@@ -1503,6 +1975,17 @@ def main() -> int:
                 self.error = "GetMcAction did not confirm JOINT_DEFAULT/status=100 after the single JD request"
                 self._write_final_result("BLOCKED_JOINT_DEFAULT_READBACK", block_stage="JOINT_DEFAULT_READBACK", error=self.error, pre_reset=pre_reset_mode, upright_gate=upright_gate)
                 return 2
+            if self.synchronized_initialization:
+                release_deadline = time.monotonic() + args.joint_stand_timeout_s
+                if not self.wait_for_synchronized_jd_control_ready(release_deadline):
+                    self._write_final_result("BLOCKED_SYNCHRONIZED_JD_CONTROL", block_stage="SYNCHRONIZED_JD_CONTROL", error=self.error, pre_reset=pre_reset_mode, upright_gate=upright_gate)
+                    return 2
+                if not self.wait_for_physics_release(time.monotonic() + args.reset_wait_timeout_s):
+                    self._write_final_result("BLOCKED_SYNCHRONIZED_PHYSICS_RELEASE", block_stage="SYNCHRONIZED_PHYSICS_RELEASE", error=self.error, pre_reset=pre_reset_mode, upright_gate=upright_gate)
+                    return 2
+                if not self.wait_for_native_release_actuation(time.monotonic() + args.joint_stand_timeout_s):
+                    self._write_final_result("BLOCKED_SYNCHRONIZED_RELEASE_ACTUATION", block_stage="SYNCHRONIZED_RELEASE_ACTUATION", error=self.error, pre_reset=pre_reset_mode, upright_gate=upright_gate)
+                    return 2
             stand_gate = self.wait_for_joint_stand(args.joint_stand_timeout_s)
             if not stand_gate.get("eligible"):
                 self._write_final_result("BLOCKED_STAND_PRECONDITION", block_stage="BODY_STAND_GATE", error=str(stand_gate.get("failure_reason")), pre_reset=pre_reset_mode, upright_gate=upright_gate, stand_gate=stand_gate)

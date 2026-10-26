@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
 
@@ -384,6 +385,43 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--aligned-start-table-approach", child)
         self.assertIn("--zero-only-stop", child)
         self.assertEqual(child[child.index("--route-config") + 1], "/workspace/evidence/route_config.json")
+
+    def test_synchronized_initialization_observer_requires_keyframe_and_release_barriers_not_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BoundedRun(argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="sync-init-test-container",
+                attempt_id="sync-init-test",
+                max_runtime_s=30.0,
+                synchronized_paused_initialization=True,
+                native_mjdata_capture=True,
+            ))
+            calls: list[tuple[str, str]] = []
+
+            def fake_docker_exec(name: str, command: str, **_kwargs):
+                calls.append((name, command))
+                if name == "start_prearmed_standing_takeover_observer":
+                    (Path(temp_dir) / "reset_watch_ready.json").write_text(json.dumps({
+                        "status": "READY",
+                        "fresh_topics": ["odom", "imu", "common", "leg_state", "leg_command"],
+                        "set_mc_action_service_ready": True,
+                        "get_mc_action_service_ready": True,
+                        "pre_reset_get_mc_action": {
+                            "action_desc": "PASSIVE_DEFAULT", "action_status_value": 100,
+                        },
+                    }), encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            runner.docker_exec = fake_docker_exec
+            runner.start_observer()
+
+        self.assertEqual(len(calls), 1)
+        command = calls[0][1]
+        self.assertIn("--synchronized-keyframe-event-file /workspace/evidence/keyframe_load_event.json", command)
+        self.assertIn("--synchronized-keyframe-spec /workspace/evidence/local01_scene/synchronized_nominal_keyframe.json", command)
+        self.assertIn("--physics-release-event-file /workspace/evidence/physics_release_event.json", command)
+        self.assertIn("--synchronized-ready-file /workspace/evidence/synchronized_jd_ready.json", command)
+        self.assertNotIn("--reset-event-file", command)
 
     def test_route_windows_use_source_grounded_nonzero_activation_not_zero_only(self) -> None:
         probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(

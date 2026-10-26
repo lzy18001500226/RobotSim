@@ -327,6 +327,38 @@ class Local01SceneRouteTests(unittest.TestCase):
             )
             self.assertEqual(ET.parse(source_scene).getroot().find("./worldbody/frame[@name='x2_start_frame']").get("quat"), source_frame.get("quat"))
 
+    @unittest.skipUnless(LOCAL01_POSES_PATH.is_file(), "Local01 source worktree is unavailable")
+    def test_synchronized_nominal_keyframe_is_source_mc_derived_and_physics_invariant(self):
+        source = load_local01_scene_inputs(LOCAL01_POSES_PATH, require_clean_commit=True)
+        runtime_root = ROBOTSIM_ROOT / "simulation/mujoco/raicom2026"
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / "evidence"
+            evidence.mkdir()
+            bundle = prepare_local01_scene_runtime_bundle(
+                source,
+                evidence,
+                runtime_root=runtime_root,
+                aligned_start=True,
+                synchronized_nominal_initialization=True,
+            )
+            self.assertEqual(
+                bundle["classification"],
+                "SIMULATION_ONLY_ALIGNED_START_KEYFRAME_SYNCHRONIZED_INITIALIZATION_V1",
+            )
+            init = bundle["synchronized_nominal_initialization"]
+            self.assertTrue(init["enabled"])
+            self.assertEqual(init["keyframe"]["key_name"], "issue80_nominal_stand_v1")
+            self.assertAlmostEqual(init["keyframe"]["derived_root_qpos"][2], 0.6593205061260876)
+            self.assertTrue(all(init["keyframe"]["selected_foot_tangent_contact"].values()))
+            self.assertEqual(
+                init["keyframe_equivalence"]["status"],
+                "PASS_SYNCHRONIZED_KEYFRAME_PHYSICAL_INVARIANTS",
+            )
+            tree = ET.parse(evidence / "local01_scene" / bundle["runtime_scene_filename"]).getroot()
+            key = tree.find("./keyframe/key[@name='issue80_nominal_stand_v1']")
+            self.assertIsNotNone(key)
+            self.assertTrue((evidence / "local01_scene/synchronized_nominal_keyframe.json").is_file())
+
     def test_native_name_wrapper_rejects_unexpected_source_prefix(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "scene.xml"

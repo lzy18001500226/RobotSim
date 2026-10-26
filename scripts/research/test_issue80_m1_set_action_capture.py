@@ -15,6 +15,8 @@ from issue80_m1_set_action_capture import (
     assess_pre_action_state,
     command_is_effective,
     native_foot_support,
+    native_synchronized_keyframe_state,
+    ros_leg_state_matches_synchronized_keyframe,
     read_complete_native_capture_rows,
     installed_body_stand_value,
     _raw_fsm_state_value,
@@ -92,10 +94,58 @@ class SetActionCaptureTests(unittest.TestCase):
         self.assertEqual(support["pelvis_tilt_deg"], 0.0)
         sample["pelvis"]["state"]["world_position_m"][2] = 0.51
         self.assertFalse(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
+
+    def test_synchronized_keyframe_requires_exact_static_qpos_zero_qvel_and_bilateral_tangent_contacts(self) -> None:
+        sample = {
+            "qpos": [1.0, 2.0, 3.0],
+            "qvel": [0.0, 0.0],
+            "pelvis": {"state": {
+                "world_position_m": [0.0, 0.0, 0.68],
+                "world_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "world_spatial_velocity_rot_lin": [0, 0, 0, 0.0, 0.0, 0.0],
+            }},
+            "contacts": [
+                {"involves_selected_left_foot": True, "distance_m": 0.0},
+                {"involves_selected_right_foot": True, "distance_m": -1e-10},
+            ],
+        }
+        expected = {"qpos": [1.0, 2.0, 3.0], "qvel": [0.0, 0.0]}
+        accepted = native_synchronized_keyframe_state(sample, expected)
+        self.assertTrue(accepted["eligible"])
+        sample["qvel"][0] = 1e-3
+        self.assertFalse(native_synchronized_keyframe_state(sample, expected)["eligible"])
+        sample["qvel"][0] = 0.0
+        sample["contacts"][1]["distance_m"] = -1e-3
+        self.assertFalse(native_synchronized_keyframe_state(sample, expected)["eligible"])
         sample["pelvis"]["state"]["world_position_m"][2] = 0.68
         # 30 deg pitch: a valid quaternion but outside the unchanged 15 deg gate.
         sample["pelvis"]["state"]["world_quaternion_wxyz"] = [0.965925826, 0.0, 0.258819045, 0.0]
         self.assertFalse(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
+
+    def test_synchronized_keyframe_requires_post_load_ros_leg_state_to_match_mc_nominal_legs(self) -> None:
+        names = [
+            "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+            "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+            "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+            "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+        ]
+        values = [-0.24, 0.0, 0.0, 0.45, -0.21, 0.0] * 2
+        expected = {
+            "source_nominal_joint_names": names + ["waist_yaw_joint"],
+            "source_nominal_joint_values_rad": values + [0.0],
+        }
+        state = {"joints": [
+            {"name": name, "position": value} for name, value in zip(names, values)
+        ]}
+        accepted = ros_leg_state_matches_synchronized_keyframe(state, expected)
+        self.assertTrue(accepted["eligible"])
+        self.assertEqual(accepted["observed_matching_leg_joint_count"], 12)
+        state["joints"][0]["position"] = -0.10
+        self.assertFalse(ros_leg_state_matches_synchronized_keyframe(state, expected)["eligible"])
+        state["joints"] = state["joints"][:-1]
+        rejected = ros_leg_state_matches_synchronized_keyframe(state, expected)
+        self.assertFalse(rejected["eligible"])
+        self.assertEqual(rejected["missing_leg_joint_names"], ["right_ankle_roll_joint"])
 
     def test_native_capture_reader_defers_a_partial_final_append(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
