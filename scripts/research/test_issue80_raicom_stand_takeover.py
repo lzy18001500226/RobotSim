@@ -137,6 +137,60 @@ class StandingTests(unittest.TestCase):
             run=StandingRun(argparse.Namespace(attempt_id='offline',protocol='jd-sd'),Path(directory),'no-runtime')
             self.assertEqual(run.observer_cli_suffix,'--protocol jd-sd')
 
+    def test_existing_node_graph_rejects_any_velocity_publisher(self):
+        from types import SimpleNamespace
+        class Graph:
+            def __init__(self,endpoints):self.endpoints=endpoints
+            def get_publishers_info_by_topic(self,topic):
+                self.topic=topic;return self.endpoints
+        snapshot=pure('velocity_graph_snapshot')
+        self.assertEqual(snapshot(Graph([]))['status'],'PASS_ZERO_VELOCITY_PUBLISHERS')
+        graph=Graph([SimpleNamespace(node_name='unexpected',node_namespace='/')])
+        self.assertEqual(snapshot(graph)['status'],'BLOCKED_VELOCITY_PUBLISHER')
+        self.assertEqual(graph.topic,'/aima/mc/locomotion/velocity')
+
+    def test_jd_protocol_cannot_reset_without_observer_zero_publisher_proof(self):
+        import argparse,tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            run=StandingRun(argparse.Namespace(attempt_id='offline',protocol='jd-sd'),Path(directory),'none')
+            self.assertEqual(run.inspect_velocity_endpoint()['status'],'PENDING_OBSERVER_GRAPH_REQUIRED_BEFORE_RESET')
+            for invalid in ({},{'velocity_graph':{'publisher_count':0}},
+                            {'velocity_graph':{'status':'PASS_ZERO_VELOCITY_PUBLISHERS','publisher_count':1,
+                                               'method':'rclpy_existing_observer_graph'}}):
+                with self.assertRaises(RuntimeError):run.validate_observer_ready(invalid)
+            run.validate_observer_ready({'velocity_graph':{'status':'PASS_ZERO_VELOCITY_PUBLISHERS',
+                'publisher_count':0,'method':'rclpy_existing_observer_graph'}})
+            self.assertEqual(run.reset_dispatch_count,0)
+
+    def test_pre_observer_failure_proves_zero_actions_without_inventing_post_launch_counts(self):
+        import argparse,tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from issue80_raicom_reset_only import ResetOnlyRun
+        def blocked():return {'status':'BLOCKED','failure':'graph CLI timeout','runtime_non_motion_invariants':{}}
+        with tempfile.TemporaryDirectory() as directory:
+            run=StandingRun(argparse.Namespace(attempt_id='offline',protocol='jd-sd'),Path(directory),'none')
+            with patch.object(ResetOnlyRun,'run_once',return_value=blocked()):
+                self.assertEqual(run.run_once({})['mc_action_request_count'],0)
+            run.observer_launch_started=True
+            with patch.object(ResetOnlyRun,'run_once',return_value=blocked()):
+                self.assertIsNone(run.run_once({})['mc_action_request_count'])
+
+    def test_step_log_retains_monotonic_deadline_evidence(self):
+        import json,tempfile,subprocess
+        from pathlib import Path
+        from issue80_m1_auto_reset_run import BoundedRun
+        with tempfile.TemporaryDirectory() as directory:
+            run=object.__new__(BoundedRun)
+            run.evidence=Path(directory);run.step=0;run.steps=[]
+            run.save_command('offline_timeout',['no-process'],subprocess.CompletedProcess([],124,'',''),
+                             100.,103.003,'subprocess timeout')
+            record=json.loads((run.evidence/'execution.jsonl').read_text())
+            self.assertEqual(record['started_monotonic_s'],100.)
+            self.assertEqual(record['ended_monotonic_s'],103.003)
+            self.assertAlmostEqual(record['duration_s'],3.003)
+
 
 if __name__=='__main__':
     unittest.main()

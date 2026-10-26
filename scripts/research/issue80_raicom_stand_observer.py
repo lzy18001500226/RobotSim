@@ -50,6 +50,13 @@ def source_progress(previous, stamp):
     return 'DUPLICATE' if stamp==previous else 'REGRESSION'
 
 
+def velocity_graph_snapshot(node):
+    endpoints=node.get_publishers_info_by_topic('/aima/mc/locomotion/velocity')
+    return {'status':'PASS_ZERO_VELOCITY_PUBLISHERS' if len(endpoints)==0 else 'BLOCKED_VELOCITY_PUBLISHER',
+            'publisher_count':len(endpoints),'method':'rclpy_existing_observer_graph',
+            'nodes':[{'name':e.node_name,'namespace':e.node_namespace} for e in endpoints]}
+
+
 def active_mode_agrees(common, readback):
     return (readback.get('header',{}).get('code')==0
             and readback.get('info',{}).get('action_desc')=='STAND_DEFAULT'
@@ -133,6 +140,8 @@ class StandObserver(ResetOnlyObserver):
         self.transition_state='TRANSITION_PENDING'
         self.last_transition_state=None
         self.max_hold_s=0.
+        self.last_graph_check_ns=0
+        self.velocity_graph=None
         self.joint_limits = json.loads((output_dir/'standing_joint_limits.json').read_text())['limits']
 
     def _callback(self,key):
@@ -198,6 +207,8 @@ class StandObserver(ResetOnlyObserver):
         effect = classify_reset_effect(self.pre_reset_snapshot,self.post_reset_rows)
         common = self.latest_messages.get('common')
         raw = _safe(common) if common is not None else {}
+        if self.protocol=='jd-sd' and (self.jd_count or self.sd_count) and raw.get('input_source',{}).get('name'):
+            self.failure='CONFLICTING_ACTIVE_INPUT_SOURCE';return
         command_raw=_safe(self.latest_messages.get('leg_command')) or {}
         if self.protocol=='jd-sd' and self.upright_streak>=3:
             cj=command_raw.get('joints',[])
@@ -248,6 +259,10 @@ class StandObserver(ResetOnlyObserver):
             fresh=self._fresh(receipt_ns),pose=pose,advancing=advancing,
             count=self.jd_count if action=='JOINT_DEFAULT' else self.sd_count,
         ):
+            if self.protocol=='jd-sd':
+                self.velocity_graph=velocity_graph_snapshot(self)
+                if self.velocity_graph['publisher_count']!=0:
+                    self.failure='VELOCITY_PUBLISHER_CONFLICT_AT_ACTION_GATE';return
             if not self.sd_client.service_is_ready():
                 self.failure = 'SD_SERVICE_DISAPPEARED_AT_SAFE_REQUEST_GATE'
                 return
@@ -383,6 +398,7 @@ class StandObserver(ResetOnlyObserver):
             'jd_request_monotonic_ns':self.jd_request_ns,'jd_ready_monotonic_ns':self.jd_ready_ns,
             'transition_state':self.transition_state,'maximum_stable_hold_s':self.max_hold_s,
             'duplicate_topic_counts':self.duplicate_topic_counts,
+            'velocity_graph':self.velocity_graph,
             'first_active_monotonic_ns':self.first_active_ns,
             'stable_hold_s':(self.last_hold_ns-self.hold_start_ns)/1e9
                 if self.last_hold_ns is not None and self.hold_start_ns is not None else 0.,
@@ -401,6 +417,11 @@ class StandObserver(ResetOnlyObserver):
             rclpy.spin_once(self,timeout_sec=.002)
             now=time.monotonic_ns()
             self.poll_services(now)
+            if self.protocol=='jd-sd' and now-self.last_graph_check_ns>=100_000_000:
+                self.last_graph_check_ns=now
+                self.velocity_graph=velocity_graph_snapshot(self)
+                if self.velocity_graph['publisher_count']!=0:
+                    self.failure='VELOCITY_PUBLISHER_CONFLICT'
             if self.ready_ns is None:
                 if (len(self.latest)==len(TOPIC_TYPES) and self._fresh(now)
                     and self.sd_client.service_is_ready() and self.get_client.service_is_ready()
@@ -408,10 +429,13 @@ class StandObserver(ResetOnlyObserver):
                     counts=self.interface_counts()
                     if counts['publishers']!=0 or counts['service_clients']!=2:
                         self._finish('BLOCKED','UNEXPECTED_OBSERVER_INTERFACE_SURFACE');break
+                    if self.protocol=='jd-sd' and self.velocity_graph['status']!='PASS_ZERO_VELOCITY_PUBLISHERS':
+                        self._finish('BLOCKED','VELOCITY_GRAPH_NOT_QUALIFIED');break
                     self.ready_ns=now
                     self.pre_reset_snapshot=self._snapshot(now)
                     _write_new_json(self.output_dir/'reset_watch_ready.json',{
                         'status':'READY','publishers_created':0,'service_clients_created':2,
+                        'velocity_graph':self.velocity_graph,
                         'state_age_s':self._ages(now),'snapshot':self.pre_reset_snapshot})
                     _write_new_json(self.output_dir/'reset_only_pre_reset_snapshot.json',{
                         'snapshot_monotonic_ns':now,'snapshot':self.pre_reset_snapshot})
@@ -450,6 +474,7 @@ def main():
         node=StandObserver(args.output_dir,args.reset_event_file,protocol=args.protocol)
         if args.construction_smoke:
             counts=node.interface_counts()
+            if args.protocol=='jd-sd':counts['velocity_graph']=velocity_graph_snapshot(node)
             counts['status']='PASS_CONSTRUCTION_SMOKE' if counts['publishers']==0 and counts['service_clients']==2 and counts['subscriptions']==5 else 'BLOCKED'
             _write_new_json(args.output_dir/'standing_observer_smoke.json',counts)
             return 0 if counts['publishers']==0 and counts['service_clients']==2 and counts['subscriptions']==5 else 2

@@ -609,6 +609,30 @@ class ResetOnlyRun:
     def prepare_observer(self) -> None:
         """Dedicated diagnostics may stage a separate, audited observer."""
 
+    def validate_observer_ready(self,ready) -> None:
+        """A dedicated diagnostic may require extra fail-closed readiness data."""
+
+    def inspect_velocity_endpoint(self):
+        graph = self.runtime.docker_exec(
+            "inspect_velocity_endpoint_without_publishing",
+            "source /opt/ros/humble/setup.bash && "
+            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+            "ros2 topic info --verbose /aima/mc/locomotion/velocity",
+            timeout_s=3.0,check=False,
+        )
+        counts=[int(value) for value in re.findall(r"Publisher count:\s*(\d+)",graph.stdout,flags=re.IGNORECASE)]
+        unknown="Unknown topic" in graph.stderr+graph.stdout
+        if graph.returncode==0 and counts and any(counts):
+            raise ResetOnlyError("a velocity publisher was already visible in the isolated ROS graph")
+        if graph.returncode==0 and not counts and not unknown:
+            raise ResetOnlyError("velocity publisher count was not reported by ROS graph introspection")
+        if graph.returncode!=0 and not unknown:
+            raise ResetOnlyError("could not safely inspect the velocity topic graph before Reset")
+        return {"command":"ros2 topic info --verbose /aima/mc/locomotion/velocity",
+                "returncode":graph.returncode,"stdout":graph.stdout,"stderr":graph.stderr,
+                "publisher_counts":counts,"no_command_published":True,
+                "unknown_topic_means_no_visible_endpoint_not_a_publisher":unknown}
+
     def __init__(self, args: argparse.Namespace, evidence: Path, container: str):
         self.args = args
         self.evidence = evidence
@@ -616,6 +640,7 @@ class ResetOnlyRun:
         self.runtime: BoundedRun | None = None
         self.reset_dispatch_started = False
         self.reset_dispatch_count = 0
+        self.observer_launch_started = False
         self.container_watchdog: threading.Timer | None = None
         self.container_watchdog_fired = threading.Event()
         self.container_watchdog_result: dict[str, Any] = {
@@ -764,33 +789,7 @@ class ResetOnlyRun:
             )
             self.runtime.start_sim_first()
             self.result["mc_startup"] = _verify_mc_started_without_crash(self.runtime)
-            velocity_graph = self.runtime.docker_exec(
-                "inspect_velocity_endpoint_without_publishing",
-                "source /opt/ros/humble/setup.bash && "
-                "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                "ros2 topic info --verbose /aima/mc/locomotion/velocity",
-                timeout_s=3.0,
-                check=False,
-            )
-            velocity_publisher_counts = [
-                int(value) for value in re.findall(r"Publisher count:\s*(\d+)", velocity_graph.stdout, flags=re.IGNORECASE)
-            ]
-            unknown_velocity_topic = "Unknown topic" in velocity_graph.stderr + velocity_graph.stdout
-            if velocity_graph.returncode == 0 and velocity_publisher_counts and any(velocity_publisher_counts):
-                raise ResetOnlyError("a velocity publisher was already visible in the isolated ROS graph")
-            if velocity_graph.returncode == 0 and not velocity_publisher_counts and not unknown_velocity_topic:
-                raise ResetOnlyError("velocity publisher count was not reported by ROS graph introspection")
-            if velocity_graph.returncode != 0 and not unknown_velocity_topic:
-                raise ResetOnlyError("could not safely inspect the velocity topic graph before Reset")
-            self.result["velocity_topic_graph_pre_reset"] = {
-                "command": "ros2 topic info --verbose /aima/mc/locomotion/velocity",
-                "returncode": velocity_graph.returncode,
-                "stdout": velocity_graph.stdout,
-                "stderr": velocity_graph.stderr,
-                "publisher_counts": velocity_publisher_counts,
-                "no_command_published": True,
-                "unknown_topic_means_no_visible_endpoint_not_a_publisher": unknown_velocity_topic,
-            }
+            self.result["velocity_topic_graph_pre_reset"] = self.inspect_velocity_endpoint()
             scene_identity = _verify_loaded_scene(self.runtime, bundle)
             reference_hashes = {
                 name: _sha256(Path(path))
@@ -810,6 +809,7 @@ class ResetOnlyRun:
             }
 
             observer_log = self.evidence / "reset_only_observer_console.log"
+            self.observer_launch_started = True
             self.runtime.docker_exec(
                 "start_reset_only_readonly_observer",
                 "source /opt/ros/humble/setup.bash && "
@@ -830,6 +830,7 @@ class ResetOnlyRun:
             )
             if ready.get("status") != "READY" or ready.get("publishers_created") != 0 or ready.get("service_clients_created") != self.expected_observer_clients:
                 raise ResetOnlyError("read-only telemetry observer failed its pre-Reset setup gate")
+            self.validate_observer_ready(ready)
             ages = ready.get("state_age_s", {})
             if not required_state_ages_pass(ages):
                 raise ResetOnlyError("pre-Reset required state topics were not all fresh")

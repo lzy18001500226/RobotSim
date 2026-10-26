@@ -235,6 +235,48 @@ FSM conflict on their own. A future separately authorized diagnostic needs an
 explicit transition/readback contract before any relaxation of that conflict
 gate; do not infer safety merely from a successful service response.
 
+### Explicit native JD-readiness protocol
+
+The same dedicated standing tool accepts `--protocol jd-sd`. It requests JD
+once only after confirmed Reset effect and fresh safe advancing posture;
+requires accepted JD plus fresh agreeing Get/Common JD/status100, FSM1/body1,
+valid active gains and source joint safety; then requests SD once. Readiness
+is observation-driven, not a 244 ms sleep. JD readiness is bounded to 1 s;
+SD readiness to 2 s; a qualified active hold requires 2.5 s and 25 unique
+observations. Post-Reset capture is bounded to 7 s, within the unchanged
+15 s observer, 26 s container watchdog and 30 s runtime cap.
+
+Run65 supports unchanged initial raw6 during the JD preparation phase only.
+It remains TRANSITION_PENDING and never grants SD permission. After a normal
+FSM has been observed, raw6 returning is protection and stops the episode.
+After verified JD/FSM1/body1, SD may have the documented asynchronous JD/SD
+readbacks while FSM1 changes to FSM4; mismatches do not advance the hold.
+Unknown categories/body contracts and protection ambiguity fail closed.
+Duplicate source stamps do not refresh state or tick readiness; regressions
+stop. The original direct-SD protocol remains separate.
+
+One authorized JD-SD episode, `bbe4b6af-b5db-411a-ac42-835cbb144579` at
+`61535ca`, was BLOCKED before observer launch or Reset: inherited
+`ros2 topic info --verbose` exceeded its 3 s subprocess deadline. Both MC and
+MuJoCo module-ready logs were saved; runtime was 16.838 s with verified
+container removal. No Reset/JD/SD request or standing telemetry was obtained.
+This is an infrastructure pre-Reset result, not a failed JD/SD qualification.
+
+For this protocol only, subsequent code moves the same zero-velocity-publisher
+check into the already initialized rclpy observer. Missing graph proof, any
+publisher, stale telemetry, or a failed client gate blocks Reset. The graph is
+rechecked before actions and periodically; no CLI subprocess or new publisher
+is created. The parent validates that proof before dispatch. Default Reset-only
+and direct-SD paths keep their existing inspection. Real Humble no-physics
+smoke verifies the API and five subscriptions/zero publishers/two clients;
+it does not validate the repaired path against live MC. No retry was executed.
+
+Execution step logs now retain monotonic start/end values, since reconstructed
+wall-time fields alone cannot establish elapsed ordering. A blocked result
+before observer launch can positively report zero action requests; a missing
+summary after launch remains UNKNOWN instead of inventing zero. Both semantics
+have offline regressions. Any next JD-SD physics episode needs new authorization.
+
 For a separately authorized future attempt, the command shape is:
 
 ```bash
