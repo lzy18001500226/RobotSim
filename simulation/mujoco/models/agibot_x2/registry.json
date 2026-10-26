@@ -221,7 +221,7 @@
         "cycle_steps": 17500,
         "cycle_duration_s": 17.5,
         "source_pose_table_sha256": "117bc4e81edbef8b341341c1cb81baba5a7bde61b590eaea93553ec77c4b540a",
-        "historical_evidence_location": "reviews/issue-46/omnipicker-stl-kin-table-20261026T135229Z (provenance only; runtime does not read reviews)"
+        "historical_evidence_identity": "Issue 46 source-STL table review; provenance only and not a runtime dependency"
       },
       "unsupported_claims": [
         "manufacturer_transmission_equivalence",
