@@ -7,6 +7,7 @@
 // runtime before it dereferences mjModel or mjData.
 
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -52,6 +53,7 @@ static int capture_enabled = 0;
 static int capture_error = 0;
 static int metadata_written = 0;
 static int step_calls = 0;
+static int emitted_sample_count = 0;
 static int sample_interval_steps = 10;
 static int generation = 0;
 static double last_observed_sim_time = NAN;
@@ -461,6 +463,35 @@ static void write_contact(FILE* stream, const mjModel* m, const mjData* d,
   fputs("]}", stream);
 }
 
+static int has_floor_name(const mjModel* m, int geom_id) {
+  const char* name = geom_id >= 0 ? real_mj_id2name(m, mjOBJ_GEOM, geom_id) : NULL;
+  if (!name) return 0;
+  for (const char* p = name; p[0] && p[1] && p[2] && p[3] && p[4]; ++p) {
+    if (tolower((unsigned char)p[0]) == 'f' &&
+        tolower((unsigned char)p[1]) == 'l' &&
+        tolower((unsigned char)p[2]) == 'o' &&
+        tolower((unsigned char)p[3]) == 'o' &&
+        tolower((unsigned char)p[4]) == 'r') {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int is_selected_foot_floor_contact(const mjModel* m, const mjData* d,
+                                          int contact_id) {
+  const mjContact* contact = d->contact + contact_id;
+  const int geom1 = contact->geom[0] >= 0 ? contact->geom[0] : contact->geom1;
+  const int geom2 = contact->geom[1] >= 0 ? contact->geom[1] : contact->geom2;
+  const int body1 = geom_body_id(m, geom1);
+  const int body2 = geom_body_id(m, geom2);
+  const int selected_foot = body1 == left_foot_body_id ||
+                            body1 == right_foot_body_id ||
+                            body2 == left_foot_body_id ||
+                            body2 == right_foot_body_id;
+  return selected_foot && (has_floor_name(m, geom1) || has_floor_name(m, geom2));
+}
+
 static void capture_sample(const char* event, const mjModel* m, const mjData* d) {
   if (!capture_enabled || capture_error || !m || !d) return;
   if (pthread_mutex_trylock(&output_lock) != 0) return;
@@ -547,13 +578,25 @@ static void capture_sample(const char* event, const mjModel* m, const mjData* d)
   json_num_array(trace_stream, d->actuator_force, m->nu);
   fputs(",\"qfrc_actuator\":", trace_stream);
   json_num_array(trace_stream, d->qfrc_actuator, m->nv);
-  fprintf(trace_stream, ",\"contact_count\":%d,\"contacts\":[", d->ncon);
+  int selected_foot_floor_contacts = 0;
   for (int i = 0; i < d->ncon; ++i) {
-    if (i) fputc(',', trace_stream);
+    selected_foot_floor_contacts += is_selected_foot_floor_contact(m, d, i);
+  }
+  fprintf(trace_stream,
+          ",\"contact_count\":%d,\"captured_foot_floor_contact_count\":%d,"
+          "\"contacts\":[",
+          d->ncon, selected_foot_floor_contacts);
+  int written_contacts = 0;
+  for (int i = 0; i < d->ncon; ++i) {
+    if (!is_selected_foot_floor_contact(m, d, i)) continue;
+    if (written_contacts++) fputc(',', trace_stream);
     write_contact(trace_stream, m, d, i);
   }
   fputs("]}\n", trace_stream);
-  fflush(trace_stream);
+  ++emitted_sample_count;
+  if (strcmp(event, "post_step") != 0 || emitted_sample_count % 10 == 0) {
+    fflush(trace_stream);
+  }
 
   last_sample_sim_time = sample_time;
   last_sample_pelvis_xy[0] = pelvis_position[0];
