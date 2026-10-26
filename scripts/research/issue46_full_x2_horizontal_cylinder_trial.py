@@ -36,7 +36,10 @@ MAX_TIME_S = 20.0
 ROOT_TRACKING_GATE_RAD = 0.020
 EQUALITY_JOINT_GATE_RAD = 0.003
 EQUALITY_CONNECT_GATE_M = 0.001
-JOINT_LIMIT_NUMERICAL_TOL_RAD = 1e-9
+# MuJoCo's implicit integrator can report an endpoint displacement of roughly
+# 1e-9 rad while the target, velocity and actuator effort remain at the source
+# limit.  This comparison tolerance does not change the model range.
+JOINT_LIMIT_NUMERICAL_TOL_RAD = 1e-8
 SETTLE_MAX_STEPS = 2_000
 SETTLE_REQUIRED_STABLE_STEPS = 500
 PREGRASP_HOLD_STEPS = 250
