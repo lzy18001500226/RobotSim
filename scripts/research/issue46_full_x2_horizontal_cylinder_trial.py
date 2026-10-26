@@ -441,8 +441,13 @@ def main() -> None:
             return record["transfer_streak"] >= MIN_CONTACT_FRAMES
         return True
 
+    # Set the validated existing-actuator controls before the zero-step audit.
+    # The initial passive qpos is an approved static equilibrium, but the
+    # frozen root position servo otherwise starts with ctrl=0 and would make a
+    # false ROOT_TRACKING_ERROR before any physics integration occurs.
+    initial_clipping = apply_controller(arm_initial, right_root)
     render_frame()
-    initial_record = evaluate(0, "INITIAL", [])
+    initial_record = evaluate(0, "INITIAL", initial_clipping)
     if initial_record["table_force_z"] <= 0.0 or first_failure is not None:
         first_failure = first_failure or {"gate": "INITIAL_TABLE_SUPPORT", "step": 0}
     if first_failure is None and run_phase("INITIAL_SETTLE", SETTLE_STEPS, arm_initial, arm_initial, right_root, right_root, "settle"):
