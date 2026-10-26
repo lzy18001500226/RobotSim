@@ -146,6 +146,9 @@ MC_SIM_CONFIG_DUMP_CONTAINER_PATH = (
     "/workspace/raicom2026/mc/bin/mc_param/src/robot/"
     "lx2501_3_t2d5/mc_sim.yaml.dump"
 )
+MC_SIM_GENERATED_DIRECTORY = (
+    "/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim"
+)
 RUN38_FOUNDATIONWALK_CONFIG_SHA256 = "b3081e9bca2035d4a986657bdc03b79ca0ed5d4e852c7972d86816f569acc2e9"
 RUN38_FOUNDATIONWALK_ONNX_SHA256 = "b8cca5e9048c3c056e94c56ad06f171f9d5a76149aebd893ad524b365507cc9b"
 RUN38_FOUNDATIONWALK_RUNNER_SHA256 = "0fa34f81a7ec87179309cd78859f5469c5e84ec595588bf7cc7ff935c865556b"
@@ -2160,6 +2163,9 @@ class BoundedRun:
             "--mount", f"type=bind,source={self.evidence},target=/workspace/evidence",
             "--mount", "type=bind,source=/tmp/.X11-unix,target=/tmp/.X11-unix,readonly",
         ]
+        if bool(getattr(self.args, "mc_sim_generated_tmpfs", False)):
+            cmd += ["--tmpfs", MC_SIM_GENERATED_DIRECTORY
+                    + ":rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755,size=8m"]
         if self.local01_scene_bundle is not None:
             if not isinstance(self.local01_scene_source, Mapping):
                 raise RuntimeError("Local01 scene bundle lacks pinned source provenance")

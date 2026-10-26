@@ -55,7 +55,8 @@ Known limitations must remain explicit:
   odom source is `pelvis`; `body-linear-pos` is a separate `imu_0` framepos
   sensor. This supports height-bearing telemetry rather than a conventionally
   zero planar z, but proprietary publisher code is unavailable. The translated,
-  rotated room's live world-versus-local XY/yaw convention remains unverified.
+  rotated room's Reset anchor was subsequently observed in scene-world XY/yaw
+  (2026-10-26 capture below); this is not an independent live ground-truth stream.
   Never replace missing-body zero telemetry with an assumed 0.68 m reading.
 - The established `SIMULATION_ONLY` FoundationWalk overlay has left/right knee
   action scales 0.19 (vendor 0.25) and `min_run_velx=0.1` (vendor 0.5).
@@ -103,9 +104,72 @@ MC aborted before telemetry readiness because its startup copies
 `mc_sim.yaml.dump` beside the readonly vendor runtime config. No Reset was
 dispatched. The runner now stages that one generated dump file in its evidence
 directory and mounts only that exact file writable beneath the otherwise
-readonly runtime tree. This is an unexecuted next-attempt correction; it is
-not evidence that MC startup or Reset has passed. A new explicit authorization
-is required before trying it.
+readonly runtime tree. That correction alone was insufficient: the subsequent
+authorized capture required generated `sim/*.yaml` files as well.
+
+### Read-only runtime generated-config prelaunch
+
+Run the small no-physics prelaunch before an independently authorized episode:
+
+```bash
+/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python \
+  scripts/research/issue80_raicom_prelaunch.py --host
+```
+
+It uses the pinned image, no network, readonly runtime, and state-only observer
+construction. It tests dump truncation and exact generated-config write paths;
+the readonly parent and cross-mount rename failures remain explicit. The
+Reset-only runner additionally provides an 8 MiB tmpfs at the exact native
+`mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim` directory, seeds the three existing
+YAML files, and preserves MC's generated files and symlink descriptions before
+cleanup. The binary, source configurations, ONNX and vendor model stay readonly.
+This option defaults off for other runners. Generated output is not a new MC
+policy. Its hashes must be compared with the staged source seed.
+
+The 2026-10-26 capture `2e141d98-6954-4d9d-ab48-a465d49e274e` demonstrated
+complete MC startup, five fresh streams and one effective native Reset. All
+three generated YAML files were byte-identical to their seed. Reset restored
+raw HAL odom to `(-1.5,-1.5,0.6796076,pi/2)`, agreeing with scene-world START,
+not the Local01 planned Reset-local `(0,0,0.68,0)` anchor. Odom source stamps
+continued increasing: physical discontinuity, not timestamp rebasing, proved
+the Reset effect. The first fresh upright sample must be used for that anchor
+comparison; a later fallen sample cannot establish the Reset frame. Final
+posture is reported independently and must still fail closed.
+
+The robot remained `PASSIVE_DEFAULT` in all 32 CommonState samples. All 194
+leg-command messages had zero stiffness, damping and effort. Upright samples
+spanned only 0.195602 s before pitch reached -0.283761 rad. The capture therefore
+remains BLOCKED for sustained upright readiness. No SD/LD, input registration,
+velocity publication or navigation occurred. Never spend another Reset-only
+episode expecting passive physics alone to produce standing control. A future
+Reset-to-SD takeover experiment requires separate authorization, fresh posture
+at the service request, unchanged guards and complete raw response capture.
+
+The source Local01 SE(2) transform is an offline planned-local frame; do not
+apply its local waypoints directly to vendor raw scene-world odometry. Preserve
+both frames explicitly. The existing 0.002 s room timestep versus 0.001 s native
+scene also remains unqualified for active MC motion; telemetry frequency alone
+does not demonstrate integration-time compatibility.
+
+### Static table-route planning tool
+
+`issue80_raicom_table_plan.py` reuses the pinned scene wrapper and route schema,
+uses only `mj_forward`, and writes a unique governed directory with JSON and an
+SVG. It checks source-zero and runtime-nominal postures, active environment and
+self contacts, source limits, 50 mm XY uncertainty and sampled yaw uncertainty.
+The remaining 20 mm clearance gate is a planning margin, not a changed runtime
+safety threshold. Two static postures do not bound the dynamic gait envelope.
+
+The source docking `(1,-1.5,0.68,0)` has only 11.3 mm conservative clearance
+under nominal posture and fails that additional margin. The separately labeled
+`(0.95,-1.5,0.68,0)` review candidate has 61.3 mm; it does not replace Local01's
+source target or establish manipulation IK. The initial -90 degree alignment
+is geometric only: stationary turning is unqualified, and the 1.6 m radius
+moving arc at the command caps does not join the straight corridor. Consequently
+the full-distance route is OFFLINE_ONLY. Its approximately 2.5 m travel needs
+at least 20.8 s even at commanded speed; measured historical progress suggests
+about 72.5 s / 15 transit windows, plus independent stop/rearm and alignment.
+Neither the old 15 s motion budget nor this estimate authorizes a long run.
 
 For a separately authorized future attempt, the command shape is:
 

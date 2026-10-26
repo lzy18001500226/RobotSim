@@ -472,6 +472,10 @@ class ResetOnlyObserver(Node):
             "maximum_consecutive_upright_odom_samples": self.upright_max_streak,
             "pre_reset_snapshot": pre,
             "post_reset_first_odom": post_rows[0] if post_rows else None,
+            "post_reset_first_fresh_upright_odom": next(
+                (row for row in post_rows if row.get("upright")
+                 and row.get("fresh_all_required_topics")), None
+            ),
             "post_reset_last_odom": post_rows[-1] if post_rows else None,
             "reset_effect": reset_effect,
             "raw_reset_event": reset_event,

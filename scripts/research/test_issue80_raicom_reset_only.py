@@ -29,6 +29,7 @@ from issue80_raicom_reset_only import (
     required_state_ages_pass,
     _static_preflight,
     _stage_mc_config_dump_writeback,
+    _verify_mc_started_without_crash,
     validate_policy,
 )
 from issue80_m1_auto_reset_run import (
@@ -49,6 +50,32 @@ class FakeRuntime:
 
 
 class ResetOnlySafetyTests(unittest.TestCase):
+    def test_anchor_frame_does_not_infer_stability_or_use_transform_as_pose(self):
+        observed = dict(x_m=-1.5, y_m=-1.5, z_m=.6796076, yaw_rad=math.pi/2)
+        candidates = {
+            "scene_world_start": dict(x_m=-1.5,y_m=-1.5,z_m=.68,yaw_rad=math.pi/2),
+            "reset_local_odom_anchor":dict(x_m=0,y_m=0,z_m=.68,yaw_rad=0),
+        }
+        result = classify_odom_frame(observed, candidates)
+        self.assertEqual(result["classification"], "scene_world_start")
+        self.assertFalse(result["used_as_motion_gate"])
+        source = RUNNER.read_text()
+        self.assertIn('summary.get("post_reset_first_fresh_upright_odom"',source)
+        self.assertIn('self.result["final_odom_frame_assessment"]',source)
+        self.assertIn('POST_RESET_UPRIGHT_POSTURE_LOST',RESET_OBSERVER.read_text())
+
+    def test_mc_health_checks_full_argv_and_exact_executable_not_truncated_comm(self):
+        class Capture:
+            shell = ""
+            def docker_exec(self, name, shell, **kwargs):
+                self.shell = shell
+                return argparse.Namespace(returncode=0, stdout="verified_mc_pid=293", stderr="")
+        runtime = Capture()
+        self.assertEqual(_verify_mc_started_without_crash(runtime)["returncode"], 0)
+        self.assertIn("pgrep -f", runtime.shell)
+        self.assertIn("/proc/$pid/exe", runtime.shell)
+        self.assertNotIn("pgrep -x aima-mc-app-main", runtime.shell)
+
     @staticmethod
     def _reset_effect_classifier():
         tree = ast.parse(RESET_OBSERVER.read_text(encoding="utf-8"))
@@ -113,6 +140,7 @@ class ResetOnlySafetyTests(unittest.TestCase):
             self.assertIsNone(args.route_config)
             self.assertIsNone(args.local01_scene_world_poses)
             self.assertTrue(args.runtime_readonly)
+            self.assertTrue(args.mc_sim_generated_tmpfs)
 
     def test_observer_startup_error_aborts_readiness_before_reset(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -256,6 +284,9 @@ class ResetOnlySafetyTests(unittest.TestCase):
             self.assertTrue(manifest["runtime_readonly"])
             self.assertFalse(manifest["vendor_runtime_tree_modified"])
             self.assertEqual(source_dump.read_bytes(), before)
+            self.assertEqual(set(manifest["sim_seed_sha256"]),
+                             {"action_setting.yaml", "action_ruler.yaml", "action_state.yaml"})
+            self.assertTrue((staged.parent / "sim_seed/action_setting.yaml").is_file())
 
     def test_static_preflight_stages_scene_and_existing_overlay_without_route_runtime_input(self):
         with tempfile.TemporaryDirectory() as directory:

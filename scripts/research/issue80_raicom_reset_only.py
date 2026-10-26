@@ -44,6 +44,7 @@ from issue80_m1_auto_reset_run import (
     IMAGE_DIGEST,
     MC_LAUNCH,
     MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
+    MC_SIM_GENERATED_DIRECTORY,
     REPO,
     RUN38_ACTION_SETTING_SHA256,
     RUN38_FOUNDATIONWALK_CONFIG_SHA256,
@@ -162,6 +163,7 @@ def build_reset_only_runtime_args(evidence: Path, container: str) -> argparse.Na
         local01_scene_world_poses=None,
         route_config=None,
         runtime_readonly=True,
+        mc_sim_generated_tmpfs=True,
     )
 
 
@@ -347,9 +349,17 @@ def _stage_mc_config_dump_writeback(evidence: Path) -> tuple[Path, dict[str, Any
     # runtime tree; MC may replace its staged copy during startup.
     with staged_dump.open("xb") as stream:
         stream.write(original_dump.read_bytes())
+    seed = staged_directory / "sim_seed"
+    seed.mkdir()
+    seed_hashes = {}
+    for name in ("action_setting.yaml", "action_ruler.yaml", "action_state.yaml"):
+        source = config.parent / "sim" / name
+        payload = source.read_bytes()
+        (seed / name).write_bytes(payload)
+        seed_hashes[name] = hashlib.sha256(payload).hexdigest()
     manifest = {
         "schema": "robotsim.issue80.raicom-reset-only-mc-writeback.v1",
-        "classification": "NARROW_EPHEMERAL_MC_GENERATED_DUMP_ONLY",
+        "classification": "NARROW_EPHEMERAL_MC_GENERATED_CONFIG_ONLY",
         "runtime_readonly": True,
         "vendor_source_config": str(config),
         "vendor_source_config_sha256": _sha256(config),
@@ -359,7 +369,10 @@ def _stage_mc_config_dump_writeback(evidence: Path) -> tuple[Path, dict[str, Any
         "staged_dump_initial_sha256": _sha256(staged_dump),
         "container_target": MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
         "vendor_runtime_tree_modified": False,
-        "permitted_write_scope": [MC_SIM_CONFIG_DUMP_CONTAINER_PATH],
+        "permitted_write_scope": [MC_SIM_CONFIG_DUMP_CONTAINER_PATH, MC_SIM_GENERATED_DIRECTORY],
+        "generated_sim_tmpfs": MC_SIM_GENERATED_DIRECTORY,
+        "sim_seed_sha256": seed_hashes,
+        "sim_symlinks_created_only_inside_container_tmpfs": True,
     }
     _write_json(evidence / "mc_runtime_writeback_manifest.json", manifest)
     return staged_dump, manifest
@@ -369,10 +382,13 @@ def _verify_mc_started_without_crash(runtime: BoundedRun) -> dict[str, Any]:
     """Refuse to wait for telemetry when MC has already aborted during startup."""
     probe = runtime.docker_exec(
         "verify_mc_started_before_reset_observer",
-        "timeout 4s bash -lc 'until pgrep -x aima-mc-app-main >/dev/null; do "
-        "if grep -qE \"filesystem error|Aborted|SIGABRT\" /workspace/evidence/mc-console.log; then exit 3; fi; "
+        "timeout 4s bash -lc 'until pgrep -f \"^./aima-mc-app-main --cfg_file_path=\" >/dev/null; do "
+        "if grep -qE \"filesystem error|Aborted|SIGABRT|Failed to write file\" /workspace/evidence/mc-console.log; then exit 3; fi; "
         "sleep 0.1; done; "
-        "! grep -qE \"filesystem error|Aborted|SIGABRT\" /workspace/evidence/mc-console.log'",
+        "if grep -qE \"filesystem error|Aborted|SIGABRT|Failed to write file\" /workspace/evidence/mc-console.log; then exit 3; fi; "
+        "for pid in $(pgrep -f \"^./aima-mc-app-main --cfg_file_path=\"); do "
+        "test \"$(readlink -f /proc/$pid/exe)\" = /workspace/raicom2026/mc/bin/aima-mc-app-main || exit 4; "
+        "printf \"verified_mc_pid=%s\\n\" \"$pid\"; done'",
         timeout_s=5.0,
         check=False,
     )
@@ -391,7 +407,6 @@ def _verify_mc_started_without_crash(runtime: BoundedRun) -> dict[str, Any]:
 def _scene_expected_poses(source: Mapping[str, Any]) -> dict[str, Any]:
     config = source["scene_world_poses"]
     poses = config["poses"]
-    transform = config["transforms"]["odom_from_scene_world"]
     raw_start = poses["START"]
     xyz = raw_start["xyz_m"]
     expected_scene = {
@@ -402,7 +417,6 @@ def _scene_expected_poses(source: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "scene_world_start": expected_scene,
         "reset_local_odom_anchor": route["reset_anchor_expected_odom"],
-        "odom_from_scene_world": transform,
     }
 
 
@@ -734,6 +748,12 @@ class ResetOnlyRun:
             self.result["mc_runtime_writeback"] = mc_writeback_manifest
             self.runtime.start_container()
             self._arm_container_stop_watchdog()
+            self.runtime.docker_exec(
+                "seed_isolated_generated_sim_config",
+                "cp /workspace/evidence/mc_runtime_writeback/sim_seed/*.yaml "
+                + MC_SIM_GENERATED_DIRECTORY + "/",
+                timeout_s=2.0,
+            )
             self.runtime.start_sim_first()
             self.result["mc_startup"] = _verify_mc_started_without_crash(self.runtime)
             velocity_graph = self.runtime.docker_exec(
@@ -846,6 +866,12 @@ class ResetOnlyRun:
             )
             self.result["telemetry"] = summary
             self.result["odom_frame_assessment"] = classify_odom_frame(
+                summary.get("post_reset_first_fresh_upright_odom", {}).get("pose")
+                if isinstance(summary.get("post_reset_first_fresh_upright_odom"), Mapping) else None,
+                _scene_expected_poses(source),
+            )
+            self.result["odom_frame_assessment"]["sampling_basis"] = "FIRST_FRESH_UPRIGHT_RESET_ANCHOR_NOT_STABILITY_ACCEPTANCE"
+            self.result["final_odom_frame_assessment"] = classify_odom_frame(
                 summary.get("post_reset_last_odom", {}).get("pose")
                 if isinstance(summary.get("post_reset_last_odom"), Mapping) else None,
                 _scene_expected_poses(source),
@@ -887,6 +913,18 @@ class ResetOnlyRun:
                 if not self.container_watchdog_fired.is_set():
                     self.container_watchdog_result["cancelled_before_fire"] = True
             if self.runtime is not None:
+                try:
+                    generated = self.runtime.docker_exec(
+                        "capture_generated_sim_config",
+                        "mkdir -p /workspace/evidence/mc_runtime_writeback/sim_generated; "
+                        "find " + MC_SIM_GENERATED_DIRECTORY + " -maxdepth 1 -type f -name '*.yaml' "
+                        "-exec cp '{}' /workspace/evidence/mc_runtime_writeback/sim_generated/ ';'; "
+                        "find " + MC_SIM_GENERATED_DIRECTORY + " -maxdepth 1 -type l -printf '%f -> %l\\n'",
+                        timeout_s=2.0, check=False,
+                    )
+                    self.result["generated_sim_links"] = generated.stdout
+                except Exception as exc:
+                    self.result["generated_sim_capture_error"] = str(exc)
                 self.runtime.cleanup()
                 self.runtime.apply_container_teardown_gate(self.result)
                 self.result["cleanup"] = self.runtime.cleanup_evidence
