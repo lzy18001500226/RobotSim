@@ -93,6 +93,8 @@ MAX_CONNECT_RESIDUAL_M = 0.001
 ROOT_TRACKING_GATE_RAD = 0.020
 ARM_KP = 150.0
 ARM_KD = 22.0
+HEAD_YAW_SWEEP_SAMPLES = 37
+HEAD_PITCH_SWEEP_SAMPLES = 43
 
 sys.path.insert(0, str(REPO / "scripts/agent"))
 import path_governance as pg
@@ -344,6 +346,65 @@ def summarize_unexpected_contacts(events: list[dict[str, object]]) -> list[dict[
         item["contexts"] = sorted(set(str(context) for context in contexts))
         summary.append(item)
     return sorted(summary, key=lambda item: float(item["deepest_distance_m"]))
+
+
+def head_torso_proxy_pose_sweep(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    right: dict[str, float],
+    left: dict[str, float],
+) -> dict[str, object]:
+    """Check whether a legal head posture alone clears the active proxy pair.
+
+    This is a deterministic ``mj_forward`` grid.  It is intentionally an
+    evidence aid rather than a claim that a finite grid proves continuous
+    clearance over the complete head-joint range.
+    """
+    yaw = model.joint("head_yaw_joint").id
+    pitch = model.joint("head_pitch_joint").id
+    yaw_address = int(model.jnt_qposadr[yaw])
+    pitch_address = int(model.jnt_qposadr[pitch])
+    yaw_range = model.jnt_range[yaw].astype(float)
+    pitch_range = model.jnt_range[pitch].astype(float)
+    contact_free = []
+    least_penetrating: dict[str, object] | None = None
+    deepest_penetrating: dict[str, object] | None = None
+
+    for yaw_value in np.linspace(yaw_range[0], yaw_range[1], HEAD_YAW_SWEEP_SAMPLES):
+        for pitch_value in np.linspace(pitch_range[0], pitch_range[1], HEAD_PITCH_SWEEP_SAMPLES):
+            set_static_state(model, data, np.zeros(len(ARM)), right, left)
+            data.qpos[yaw_address] = yaw_value
+            data.qpos[pitch_address] = pitch_value
+            data.qvel[:] = 0.0
+            mujoco.mj_forward(model, data)
+            contacts = [
+                contact for contact in contact_records(model, data)
+                if contact["kind"] == "head_torso_proxy_contact"
+            ]
+            if not contacts:
+                contact_free.append({"head_yaw_rad": float(yaw_value), "head_pitch_rad": float(pitch_value)})
+                continue
+            candidate = {
+                "head_yaw_rad": float(yaw_value),
+                "head_pitch_rad": float(pitch_value),
+                "minimum_contact_distance_m": min(float(contact["distance_m"]) for contact in contacts),
+            }
+            if least_penetrating is None or candidate["minimum_contact_distance_m"] > least_penetrating["minimum_contact_distance_m"]:
+                least_penetrating = candidate
+            if deepest_penetrating is None or candidate["minimum_contact_distance_m"] < deepest_penetrating["minimum_contact_distance_m"]:
+                deepest_penetrating = candidate
+
+    return {
+        "method": "legal head-joint grid with mj_forward only; no dynamics or contact filtering",
+        "head_yaw_range_rad": yaw_range.tolist(),
+        "head_pitch_range_rad": pitch_range.tolist(),
+        "samples": {"yaw": HEAD_YAW_SWEEP_SAMPLES, "pitch": HEAD_PITCH_SWEEP_SAMPLES},
+        "contact_free_sample_count": len(contact_free),
+        "contact_free_samples": contact_free[:20],
+        "least_penetrating_sample": least_penetrating,
+        "deepest_penetrating_sample": deepest_penetrating,
+        "all_sampled_poses_have_proxy_contact": not contact_free,
+    }
 
 
 def right_equality_residuals(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, object]:
@@ -777,6 +838,7 @@ def main() -> None:
                 "unexpected_scene_contacts": unexpected,
             })
 
+    head_proxy_sweep = head_torso_proxy_pose_sweep(model, data, right_open, left_open)
     set_static_state(model, data, contact_q, right_closed, left_open)
     source_visual = source_mesh_sample_check(model, data, cylinder)
     equality = right_equality_residuals(model, data)
@@ -838,6 +900,7 @@ def main() -> None:
         "BILATERAL_DISTAL_PAD_CONTACT_AT_75_PERCENT": "PASS" if closure_pass else "FAIL",
         "SOURCE_VISUAL_MESH_NONPAD_CLEARANCE": "PASS" if not source_bad else "FAIL",
         "FULL_X2_UNEXPECTED_SELF_CONTACT_FREE": "PASS" if full_body_contact_pass else "FAIL",
+        "HEAD_TORSO_PROXY_LEGAL_POSE_CLEARANCE": "PASS" if not head_proxy_sweep["all_sampled_poses_have_proxy_contact"] else "FAIL",
         "RIGHT_LINKAGE_CLOSURE": "PASS" if equality["max_joint_residual_rad"] <= MAX_EQUALITY_RESIDUAL_RAD and equality["max_connect_residual_m"] <= MAX_CONNECT_RESIDUAL_M else "FAIL",
         "INITIAL_RIGHT_ROOT_TRACKING_AND_LINKAGE": "PASS" if root_hold["root_tracking_and_linkage_pass"] else "FAIL",
         "RIGHT_ARM_AND_HAND_STATIC_HOLD": "PASS" if root_hold["right_arm_and_hand_static_hold_pass"] else (
@@ -886,6 +949,7 @@ def main() -> None:
             "unexpected_contact_summary": unexpected_summary,
             "full_body_contact_free_pass": full_body_contact_pass,
         },
+        "head_torso_proxy_pose_sweep": head_proxy_sweep,
         "right_linkage_closure": equality,
         "source_visual_mesh_check": source_visual,
         "root_hold_preflight": root_hold,
