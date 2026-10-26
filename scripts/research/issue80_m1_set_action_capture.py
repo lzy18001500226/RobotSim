@@ -1883,8 +1883,11 @@ def main() -> int:
                                 stand_gate: dict[str, Any] | None = None) -> None:
             if self.result is not None:
                 return
-            jd = self.set_records.get("JOINT_DEFAULT")
-            sd = self.set_records.get("STAND_DEFAULT")
+            # A blocked pre-JD synchronized barrier has no action record.  It
+            # must still persist its concrete blocker rather than throwing
+            # while formatting diagnostic timing fields.
+            jd = self.set_records.get("JOINT_DEFAULT") or {}
+            sd = self.set_records.get("STAND_DEFAULT") or {}
             timing_events = {
                 "reset_dispatch_monotonic_ns": self.reset_ns,
                 "native_reset_generation_host_monotonic_ns": self.native_reset_host_monotonic_ns,

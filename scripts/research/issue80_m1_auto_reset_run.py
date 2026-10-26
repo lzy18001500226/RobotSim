@@ -3364,7 +3364,7 @@ class BoundedRun:
             command_name="select-key-zero",
             step_name="x11_select_native_keyframe_zero",
             event_path=self.evidence / "keyframe_selection_event.json",
-            expected_status="KEYFRAME_INDEX_ZERO_CLICKED",
+            expected_status="KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED",
             pid=pid,
             title=title,
             window_id=window_id,

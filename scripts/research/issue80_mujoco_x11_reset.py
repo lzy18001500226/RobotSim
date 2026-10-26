@@ -1010,7 +1010,7 @@ class X11:
         identity_before = self._target_identity(expected_pid, expected_title, window)
         if identity_before is None:
             return {
-                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "status": "KEYFRAME_INDEX_INPUT_NOT_DISPATCHED",
                 "reason": "exact process/title/window/viewability match lost before keyframe slider click",
                 "target_window_id": window,
                 "mouse_button_events_sent": 0,
@@ -1019,7 +1019,7 @@ class X11:
         local_x, local_y = NATIVE_KEY_SLIDER_ZERO_POINT
         if width <= local_x or height <= local_y:
             return {
-                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "status": "KEYFRAME_INDEX_INPUT_NOT_DISPATCHED",
                 "reason": "MuJoCo window is too small for the calibrated keyframe slider point",
                 "target_window_id": window,
                 "observed_window_size": [width, height],
@@ -1032,7 +1032,7 @@ class X11:
         ))
         if not translated:
             return {
-                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "status": "KEYFRAME_INDEX_INPUT_NOT_DISPATCHED",
                 "reason": "could not translate the calibrated keyframe slider point",
                 "target_window_id": window,
                 "mouse_button_events_sent": 0,
@@ -1059,7 +1059,7 @@ class X11:
         identity_before_dispatch = self._target_identity(expected_pid, expected_title, window)
         if identity_before_dispatch is None or not pointer_verified:
             return {
-                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "status": "KEYFRAME_INDEX_INPUT_NOT_DISPATCHED",
                 "reason": "target identity or pointer-at-keyframe-slider verification failed; no click sent",
                 "target_window_id": window,
                 "local_point": [local_x, local_y],
@@ -1078,15 +1078,17 @@ class X11:
         self.lib.XSync(self.display, 0)
         if not press_return or not release_return:
             return {
-                "status": "KEYFRAME_INDEX_NOT_SELECTED",
+                "status": "KEYFRAME_INDEX_INPUT_NOT_DISPATCHED",
                 "reason": "XTest rejected keyframe slider button press/release",
                 "target_window_id": window,
                 "mouse_button_events_sent": int(bool(press_return)) + int(bool(release_return)),
             }
         return {
-            "status": "KEYFRAME_INDEX_ZERO_CLICKED",
+            "status": "KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED",
             "input_path": "MUJOCO_NATIVE_SIMULATION_KEY_SLIDER",
             "control_label": "Simulation / Key",
+            "requested_keyframe_index": 0,
+            "selection_authoritatively_observed": False,
             "target_window_id": window,
             "expected_pid": expected_pid,
             "expected_title": expected_title,
@@ -1383,7 +1385,8 @@ def main() -> int:
                 "schema": "robotsim.issue80.keyframe-selection-event.v1",
                 "window": window,
                 "event": event,
-                "keyframe_index": 0,
+                "requested_keyframe_index": 0,
+                "selection_authoritatively_observed": False,
             }
             args.dispatch_event_json.parent.mkdir(parents=True, exist_ok=True)
             with args.dispatch_event_json.open("x", encoding="utf-8") as stream:
@@ -1392,7 +1395,7 @@ def main() -> int:
                 stream.flush()
                 os.fsync(stream.fileno())
             print(json.dumps(event_record, indent=2))
-            return 0 if event.get("status") == "KEYFRAME_INDEX_ZERO_CLICKED" else 2
+            return 0 if event.get("status") == "KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED" else 2
         if args.command == "click-native-load-key":
             event = x11.click_native_load_key_button_once(
                 args.window_id,

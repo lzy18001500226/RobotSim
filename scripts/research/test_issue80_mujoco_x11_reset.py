@@ -314,7 +314,8 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
         loaded = x11.click_native_load_key_button_once(
             0x5678, expected_pid=4321, expected_title="MuJoCo : X2 simulator",
         )
-        self.assertEqual(selected["status"], "KEYFRAME_INDEX_ZERO_CLICKED")
+        self.assertEqual(selected["status"], "KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED")
+        self.assertFalse(selected["selection_authoritatively_observed"])
         self.assertEqual(loaded["status"], "LOAD_KEY_BUTTON_CLICKED")
         self.assertEqual(selected["local_point"], [185, 517])
         self.assertEqual(selected["mouse_button_events_sent"], 2)

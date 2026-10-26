@@ -255,9 +255,9 @@ static void write_model_metadata(FILE* stream, const mjModel* m, const mjData* d
           ",\"mujoco_runtime_version\":");
   json_string(stream, real_mj_version_string());
   fprintf(stream,
-          ",\"generation\":%d,\"nq\":%d,\"nv\":%d,\"nu\":%d,"
+          ",\"generation\":%d,\"nq\":%d,\"nv\":%d,\"nu\":%d,\"nkey\":%d,"
           "\"nbody\":%d,\"ngeom\":%d,\"njnt\":%d,\"timestep_s\":",
-          generation, m->nq, m->nv, m->nu, m->nbody, m->ngeom, m->njnt);
+          generation, m->nq, m->nv, m->nu, m->nkey, m->nbody, m->ngeom, m->njnt);
   json_num(stream, m->opt.timestep);
   fputs(",\"capture_interval_steps\":", stream);
   fprintf(stream, "%d", sample_interval_steps);
