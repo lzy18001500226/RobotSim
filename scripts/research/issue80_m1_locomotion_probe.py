@@ -3079,6 +3079,7 @@ class FocusedM1Diagnostic(Node):
                     "minimum_swept_aabb_clearance_lower_bound_m": float(
                         static_scene["minimum_swept_aabb_clearance_lower_bound_m"]
                     ),
+                    "static_sample_count": int(static_scene["static_sample_count"]),
                     "active_world_obstacles": ["RAICOM room walls", "table", "chair", "mug"],
                     "static_preflight_path": str(static_path),
                     "scene_bundle_path": str(bundle_path),

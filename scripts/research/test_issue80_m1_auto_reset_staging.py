@@ -35,6 +35,15 @@ from issue80_m1_auto_reset_run import (
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_local01_short_route_preserves_static_sample_count_for_runtime_evidence(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            '"static_sample_count": int(static_scene["static_sample_count"])',
+            source,
+        )
+
     def test_prearmed_nominal_handoff_allows_only_the_early_bounded_contact_sample(self) -> None:
         expected_qpos = [0.0] * 45
         expected_qpos[7:19] = [-0.24, 0.0, 0.0, 0.45, -0.21, 0.0] * 2
