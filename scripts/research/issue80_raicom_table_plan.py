@@ -19,6 +19,7 @@ import yaml
 from issue80_local01_scene_route import (
     LOCAL01_SCENE_RELATIVE, _world_geom_aabb, load_local01_scene_inputs,
     native_name_scene_tree, transform_scene_pose_to_odom,
+    RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,
 )
 from issue80_raicom_reset_only import LOCAL01_POSES_DEFAULT, RUNTIME
 from issue80_waypoint_route import WAYPOINT_DOCKING_POSE_SCHEMA_VERSION, load_waypoint_docking_pose_input
@@ -97,7 +98,8 @@ def main():
             limiting = None
             previous_boxes = None
             for step, p in enumerate(samples):
-                for yaw_offset in (-.02,0,.02):
+                for yaw_offset in (-RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD, 0,
+                                   RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD):
                     mujoco.mj_resetData(model,data)
                     if posture == "runtime_nominal":
                         for name,q in nominal.items():
@@ -128,7 +130,7 @@ def main():
                         if previous_boxes is not None:
                             lo = np.minimum(lo,previous_boxes[g][0]); hi=np.maximum(hi,previous_boxes[g][1])
                         radius = float(np.linalg.norm(data.geom_xpos[g]-data.xpos[pelvis])+model.geom_rbound[g])
-                        yaw_pad = radius*.02
+                        yaw_pad = radius*RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD
                         ilo,ihi = lo.copy(),hi.copy()
                         ilo[:2] -= .05+yaw_pad; ihi[:2] += .05+yaw_pad
                         for eg,(elo,ehi) in envboxes.items():
@@ -183,8 +185,9 @@ def main():
             "separate_review_candidate":{"scene_world_xyz_yaw":[.95,-1.50,.68,0.0],
                  "reason":"50 mm retreat from source docking to preserve nominal-posture uncertainty clearance",
                  "source_docking_unchanged":True,"manipulation_reach":"UNKNOWN_NOT_AN_ACCEPTED_DOCK"},
-            "clearance_assumptions":{"xy_tracking_inflation_m":.05,"yaw_error_samples_rad":[-.02,0,.02],
-                                     "extra_rotation_interpolation_bound_rad":.02,"additional_clearance_gate_m":.02,
+            "clearance_assumptions":{"xy_tracking_inflation_m":.05,
+                                     "yaw_error_samples_rad":[-RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,0,RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD],
+                                     "extra_rotation_interpolation_bound_rad":RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,"additional_clearance_gate_m":.02,
                                      "postures":["source_qpos0","runtime_nominal"],
                                      "dynamic_gait_envelope":"NOT_PROVEN_BY_TWO_STATIC_POSTURES"},
             "docking_requirement":{"position_tolerance_m":.025,"yaw_tolerance_rad":.02,

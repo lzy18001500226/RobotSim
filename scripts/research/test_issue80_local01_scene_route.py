@@ -76,6 +76,10 @@ class Local01SceneRouteTests(unittest.TestCase):
             route_input["runtime_coordinate_contract"]["numeric_coordinate_convention"],
             "RAICOM_SCENE_WORLD_AFTER_LIVE_RESET_GATE",
         )
+        self.assertAlmostEqual(
+            route_input["runtime_coordinate_contract"]["maximum_start_yaw_deviation_rad"],
+            0.075,
+        )
 
     def test_short_route_uses_local01_scene_transform_and_retains_full_dock_reference(self):
         route_input = build_short_route_config(local01_source_fixture())

@@ -63,7 +63,11 @@ SHORT_ROUTE_FORWARD_M_S = LOCAL01_SHORT_ROUTE_FORWARD_M_S
 SHORT_ROUTE_ANGULAR_RAD_S = LOCAL01_SHORT_ROUTE_ANGULAR_RAD_S
 SHORT_ROUTE_MAX_CROSS_TRACK_M = LOCAL01_SHORT_ROUTE_MAX_CROSS_TRACK_M
 RUNTIME_RAW_ODOM_START_POSITION_ENVELOPE_M = 0.025
-RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD = 0.04
+# Qualified RAICOM SD traces retained raw scene-world yaw offsets of
+# 0.000045, 0.030419, 0.031349, and 0.068198 rad from the source START.
+# The 0.075 rad bound is the smallest reviewed rounded-up envelope above that
+# observed maximum; its complete short-path collision sweep remains required.
+RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD = 0.075
 RUNTIME_RAW_ODOM_START_Z_MIN_M = 0.64
 RUNTIME_RAW_ODOM_START_Z_MAX_M = 0.69
 

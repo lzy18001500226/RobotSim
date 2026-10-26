@@ -3,6 +3,7 @@ import math
 import unittest
 
 from issue80_raicom_table_plan import sample_segment, build_raw_world_odom_route_config
+from issue80_local01_scene_route import RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD
 
 
 class TablePlanTests(unittest.TestCase):
@@ -38,6 +39,9 @@ class TablePlanTests(unittest.TestCase):
                                 (-1.5, -1.5, .68, 0))
         self.assertGreater(len(points), 70)
         self.assertTrue(all(p[:3] == (-1.5, -1.5, .68) for p in points))
+
+    def test_full_plan_uses_the_reviewed_runtime_start_yaw_envelope(self):
+        self.assertAlmostEqual(RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD, .075)
 
 
 if __name__ == "__main__":
