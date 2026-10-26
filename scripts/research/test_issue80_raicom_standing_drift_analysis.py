@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+import hashlib
 
-from issue80_raicom_standing_drift_analysis import native_metrics, replay_hold
+from issue80_raicom_standing_drift_analysis import build_report, native_metrics, replay_hold
 
 
 def common_state() -> dict:
@@ -58,6 +60,28 @@ def sample(index: int) -> dict:
 
 
 class StandingDriftAnalysisTests(unittest.TestCase):
+    def test_saved_authorized_episode_replays_without_mutation(self):
+        evidence = Path(
+            "/home/lzy18001500226/projects/RobotSim/reviews/issue-80/"
+            "raicom-standing-9250e32c-20261026T061812Z"
+        )
+        comparison = Path(
+            "/home/lzy18001500226/projects/RobotSim/reviews/issue-80/"
+            "x2-startup-supervisor-20261026T044215Z/run65_raicom_comparison.json"
+        )
+        trace = evidence / "native_mjdata_trace.jsonl"
+        before = hashlib.sha256(trace.read_bytes()).hexdigest()
+        report = build_report(evidence, comparison)
+        self.assertEqual(
+            report["physical_standing_evidence"],
+            "PASS_RECONSTRUCTED_FROM_RAW_NATIVE_AND_ROS_TRACE",
+        )
+        self.assertEqual(
+            report["original_runner_closeout"],
+            "BLOCKED_NO_STAND_TAKEOVER_SUMMARY",
+        )
+        self.assertEqual(before, hashlib.sha256(trace.read_bytes()).hexdigest())
+
     def test_replays_exact_continuous_hold_without_initial_reset_joint_noise(self):
         rows = [
             {"event": "JD_REQUEST"},

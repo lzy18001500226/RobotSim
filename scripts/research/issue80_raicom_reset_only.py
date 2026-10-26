@@ -58,6 +58,13 @@ from issue80_m1_auto_reset_run import (
     build_runtime_bind_mount,
     build_run41_foundationwalk_min_run_overlay,
 )
+from issue80_raicom_terminal_protocol import (
+    BASE_SUMMARY_FILENAME,
+    PROCESS_EXIT_FILENAME,
+    TerminalProtocolError,
+    validate_process_exit,
+    validate_terminal_manifest,
+)
 
 
 MAX_RUNTIME_S = 30.0
@@ -65,6 +72,8 @@ ACTIVE_CONTAINER_WATCHDOG_S = 26.0
 OBSERVER_MAX_RUNTIME_S = 15.0
 RESET_ONLY_SCHEMA = "robotsim.issue80.raicom-reset-only.v1"
 RESET_OBSERVER = Path(__file__).with_name("issue80_raicom_reset_only_observer.py")
+OBSERVER_WRAPPER = Path(__file__).with_name("issue80_raicom_observer_wrapper.py")
+TERMINAL_PROTOCOL = Path(__file__).with_name("issue80_raicom_terminal_protocol.py")
 LOCAL01_POSES_DEFAULT = Path(
     "/home/lzy18001500226/robotsim-issue77-raicom-x2-reuse/"
     "simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json"
@@ -479,7 +488,13 @@ def _static_preflight(args: argparse.Namespace, evidence: Path) -> dict[str, Any
     bundle = prepare_local01_scene_runtime_bundle(source, evidence, runtime_root=RUNTIME)
     overlay_path, overlay = _prepare_foundationwalk_overlay(evidence)
     scene_dir = evidence / "local01_scene"
-    for source_path, staged_name in ((SIM_LAUNCH, "launch_sim.sh"), (MC_LAUNCH, "launch_mc.sh"), (RESET_OBSERVER, RESET_OBSERVER.name)):
+    for source_path, staged_name in (
+        (SIM_LAUNCH, "launch_sim.sh"),
+        (MC_LAUNCH, "launch_mc.sh"),
+        (RESET_OBSERVER, RESET_OBSERVER.name),
+        (OBSERVER_WRAPPER, OBSERVER_WRAPPER.name),
+        (TERMINAL_PROTOCOL, TERMINAL_PROTOCOL.name),
+    ):
         if source_path.is_symlink() or not source_path.is_file():
             raise ResetOnlyError(f"required reset-only runtime input is missing: {source_path.name}")
         target = evidence / staged_name
@@ -605,12 +620,89 @@ class ResetOnlyRun:
     observer_script = RESET_OBSERVER
     expected_observer_clients = 0
     observer_cli_suffix = ""
+    required_observer_summaries = (BASE_SUMMARY_FILENAME,)
 
     def prepare_observer(self) -> None:
         """Dedicated diagnostics may stage a separate, audited observer."""
 
     def validate_observer_ready(self,ready) -> None:
         """A dedicated diagnostic may require extra fail-closed readiness data."""
+
+    def observer_command_tokens(self) -> list[str]:
+        child = [
+            "python3",
+            f"/workspace/evidence/{self.observer_script.name}",
+            "--output-dir",
+            "/workspace/evidence",
+            "--reset-event-file",
+            "/workspace/evidence/reset_dispatch_event.json",
+            *shlex.split(self.observer_cli_suffix),
+        ]
+        wrapper = [
+            "python3",
+            f"/workspace/evidence/{OBSERVER_WRAPPER.name}",
+            "--output-dir",
+            "/workspace/evidence",
+            "--timeout-s",
+            str(OBSERVER_MAX_RUNTIME_S),
+        ]
+        for summary in self.required_observer_summaries:
+            wrapper.extend(["--required-summary", summary])
+        return [*wrapper, "--", *child]
+
+    def _wait_for_observer_completion(self) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        """Require durable summaries and a completed child before cleanup."""
+        assert self.runtime is not None
+        exit_path = self.evidence / PROCESS_EXIT_FILENAME
+        error_path = self.evidence / "reset_only_observer_startup_error.json"
+        deadline = min(
+            time.monotonic() + OBSERVER_MAX_RUNTIME_S + 0.5,
+            self.runtime.deadline,
+        )
+        while time.monotonic() < deadline:
+            if self.container_watchdog_fired.is_set():
+                raise ResetOnlyError(
+                    f"{ACTIVE_CONTAINER_WATCHDOG_S:g}-second isolated-container watchdog stopped the runtime"
+                )
+            if error_path.is_file() and not error_path.is_symlink():
+                try:
+                    payload = json.loads(error_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    payload = {"status": "ERROR_RECORD_INVALID"}
+                raise ResetOnlyError(f"observer startup failed: {payload}")
+            if exit_path.is_file() and not exit_path.is_symlink():
+                try:
+                    exit_record = json.loads(exit_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raise ResetOnlyError("OBSERVER_PROCESS_EXIT_RECORD_INVALID")
+                try:
+                    terminal = validate_terminal_manifest(
+                        self.evidence,
+                        required_summary_filenames=self.required_observer_summaries,
+                    )
+                    validate_process_exit(
+                        self.evidence,
+                        required_summary_filenames=self.required_observer_summaries,
+                    )
+                except TerminalProtocolError as exc:
+                    raise ResetOnlyError(
+                        "OBSERVER_EVIDENCE_INTEGRITY_FAILURE:" + str(exc)
+                    ) from exc
+                summaries: dict[str, Any] = {}
+                for name in self.required_observer_summaries:
+                    path = self.evidence / name
+                    try:
+                        summaries[name] = json.loads(path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError) as exc:
+                        raise ResetOnlyError(
+                            "OBSERVER_REQUIRED_SUMMARY_INVALID:" + name
+                        ) from exc
+                self.observer_completion_verified = True
+                return terminal, exit_record, summaries
+            time.sleep(0.025)
+        raise ResetOnlyError(
+            "OBSERVER_PROCESS_COMPLETION_NOT_PROVEN_BEFORE_DESTRUCTIVE_CLEANUP"
+        )
 
     def inspect_velocity_endpoint(self):
         graph = self.runtime.docker_exec(
@@ -641,6 +733,7 @@ class ResetOnlyRun:
         self.reset_dispatch_started = False
         self.reset_dispatch_count = 0
         self.observer_launch_started = False
+        self.observer_completion_verified = False
         self.container_watchdog: threading.Timer | None = None
         self.container_watchdog_fired = threading.Event()
         self.container_watchdog_result: dict[str, Any] = {
@@ -814,10 +907,7 @@ class ResetOnlyRun:
                 "start_reset_only_readonly_observer",
                 "source /opt/ros/humble/setup.bash && "
                 "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                f"timeout {OBSERVER_MAX_RUNTIME_S}s python3 /workspace/evidence/{self.observer_script.name} "
-                "--output-dir /workspace/evidence "
-                "--reset-event-file /workspace/evidence/reset_dispatch_event.json "
-                + self.observer_cli_suffix + " "
+                + shlex.join(self.observer_command_tokens()) + " "
                 f"> /workspace/evidence/{observer_log.name} 2>&1",
                 timeout_s=3.0,
                 detached=True,
@@ -868,12 +958,11 @@ class ResetOnlyRun:
             self.result["reset_dispatch"] = self._wait_for_file(
                 event, timeout_s=1.0, label="verified native Reset event record"
             )
-            summary = self._wait_for_file(
-                self.evidence / "reset_only_observer_summary.json",
-                timeout_s=OBSERVER_MAX_RUNTIME_S + 0.5,
-                label="bounded post-Reset telemetry observation",
-                fail_if=self.evidence / "reset_only_observer_startup_error.json",
-            )
+            terminal, observer_exit, observer_summaries = self._wait_for_observer_completion()
+            self.result["observer_terminal"] = terminal
+            self.result["observer_process_exit"] = observer_exit
+            self.result["observer_summaries"] = observer_summaries
+            summary = observer_summaries[BASE_SUMMARY_FILENAME]
             self.result["telemetry"] = summary
             self.result["odom_frame_assessment"] = classify_odom_frame(
                 summary.get("post_reset_first_fresh_upright_odom", {}).get("pose")
@@ -923,6 +1012,13 @@ class ResetOnlyRun:
                 if not self.container_watchdog_fired.is_set():
                     self.container_watchdog_result["cancelled_before_fire"] = True
             if self.runtime is not None:
+                self.result["observer_completion_verified_before_cleanup"] = (
+                    self.observer_completion_verified
+                )
+                if not self.observer_completion_verified:
+                    self.result["observer_completion_integrity"] = (
+                        "NOT_PROVEN_BEFORE_CLEANUP"
+                    )
                 try:
                     generated = self.runtime.docker_exec(
                         "capture_generated_sim_config",

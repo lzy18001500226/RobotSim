@@ -432,11 +432,8 @@ class StandObserver(ResetOnlyObserver):
             if not accepted:
                 self.failure = 'SD_REJECTED_WITH_EXACT_RAW_RESPONSE'
 
-    def _finish(self,status,reason=None):
-        if self.complete:
-            return
-        super()._finish(status,reason)
-        _write_new_json(self.output_dir/'stand_takeover_summary.json',{
+    def _terminal_extra_summaries(self, status):
+        return {'stand_takeover_summary.json': {
             'status':'PASS' if status=='CAPTURE_COMPLETE' and self.failure is None else 'BLOCKED',
             'failure':self.failure,'sd_requests':self.sd_count,'sd_request_monotonic_ns':self.sd_request_ns,
             'sd_response':self.sd_response,'last_get_mc_action':self.get_result,
@@ -456,7 +453,8 @@ class StandObserver(ResetOnlyObserver):
             'complete_raw_telemetry':'reset_only_state_trace.jsonl',
             'snapshot_at_stop':self._snapshot(),
             'protection_reason':'NOT_EXPOSED; raw 6 remains fail-closed, no inferred cause',
-        })
+            'terminal_protocol':'base and standing summaries are atomically published before terminal readiness',
+        }}
 
     def run_capture(self):
         deadline = self.started_ns+15_000_000_000
@@ -531,7 +529,9 @@ def main():
         return 2
     finally:
         if node is not None:
-            node.trace.close();node.destroy_node()
+            if not node.trace.closed:
+                node.trace.close()
+            node.destroy_node()
         rclpy.shutdown()
 
 

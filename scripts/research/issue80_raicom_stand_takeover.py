@@ -13,6 +13,7 @@ from issue80_raicom_reset_only import (
     _write_json, _sha256, RUNTIME,
 )
 from issue80_m1_first_motion import load_leg_joint_limits, MC_FSM_RUNTIME_LIBRARY_SHA256
+from issue80_raicom_terminal_protocol import BASE_SUMMARY_FILENAME
 from issue80_raicom_mjdata_capture import (
     CAPTURE_SOURCE,
     CAPTURE_SUMMARY_NAME,
@@ -31,6 +32,10 @@ OBSERVER=Path(__file__).with_name('issue80_raicom_stand_observer.py')
 class StandingRun(ResetOnlyRun):
     observer_script=OBSERVER
     expected_observer_clients=2
+    required_observer_summaries = (
+        BASE_SUMMARY_FILENAME,
+        "stand_takeover_summary.json",
+    )
 
     def __init__(self,args,evidence,container):
         super().__init__(args,evidence,container)
@@ -123,8 +128,7 @@ class StandingRun(ResetOnlyRun):
         result=super().run_once(preflight)
         result['inherited_reset_only_infrastructure_audit']=result.pop('static_capability_audit',None)
         result['static_capability_audit']=json.loads((self.evidence/'standing_capability_audit.json').read_text()) if (self.evidence/'standing_capability_audit.json').exists() else None
-        path=self.evidence/'stand_takeover_summary.json'
-        summary=json.loads(path.read_text()) if path.exists() else None
+        summary=result.get('observer_summaries',{}).get('stand_takeover_summary.json')
         result['standing_takeover']=summary
         # Never retain the capture-only parent's zero-action claim for this
         # explicitly active standing diagnostic; missing summary is UNKNOWN.

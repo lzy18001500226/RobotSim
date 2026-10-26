@@ -22,6 +22,12 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
+from issue80_raicom_terminal_protocol import (
+    BASE_SUMMARY_FILENAME,
+    TERMINAL_MANIFEST_FILENAME,
+    atomic_write_new_json,
+    publish_terminal_manifest,
+)
 
 
 TOPIC_TYPES = {
@@ -97,11 +103,7 @@ def _odom_pose(message: Odometry) -> dict[str, Any]:
 
 
 def _write_new_json(path: Path, payload: Mapping[str, Any]) -> None:
-    with path.open("x", encoding="utf-8") as stream:
-        json.dump(payload, stream, indent=2, allow_nan=False)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    atomic_write_new_json(path, payload)
 
 
 def _write_snapshot_replace(path: Path, payload: Mapping[str, Any]) -> None:
@@ -235,6 +237,8 @@ class ResetOnlyObserver(Node):
         self.regressing_odom_post_reset = 0
         self.failure: str | None = None
         self.complete = False
+        self.trace_finalized = False
+        self.terminal_manifest: dict[str, Any] | None = None
         self.post_reset_rows: list[dict[str, Any]] = []
         self.pre_reset_snapshot: dict[str, Any] | None = None
         self.subscription_handles = [
@@ -408,9 +412,7 @@ class ResetOnlyObserver(Node):
             self.post_reset_rows.append(row)
             self._write({"event": "post_reset_odom_sample", **row})
 
-    def _finish(self, status: str, reason: str | None = None) -> None:
-        if self.complete:
-            return
+    def _base_terminal_summary(self, status: str, reason: str | None = None) -> dict[str, Any]:
         self.failure = reason or self.failure
         now_ns = time.monotonic_ns()
         reset_event = self.reset_event or {}
@@ -494,10 +496,43 @@ class ResetOnlyObserver(Node):
                 "Reset dispatch is not treated as proof that MuJoCo processed it; state change is inferred only from time-aligned telemetry.",
             ],
         }
-        summary_path = self.output_dir / "reset_only_observer_summary.json"
-        _write_new_json(summary_path, summary)
+        return summary
+
+    def _terminal_extra_summaries(self, status: str) -> dict[str, Mapping[str, Any]]:
+        """A derived observer supplies all of its summaries before readiness."""
+        return {}
+
+    def _flush_close_trace(self) -> None:
+        if self.trace_finalized:
+            return
         self.trace.flush()
         os.fsync(self.trace.fileno())
+        self.trace.close()
+        self.trace_finalized = True
+
+    def _finish(self, status: str, reason: str | None = None) -> None:
+        if self.complete:
+            return
+        base_summary = self._base_terminal_summary(status, reason)
+        summaries: dict[str, Mapping[str, Any]] = {
+            BASE_SUMMARY_FILENAME: base_summary,
+            **self._terminal_extra_summaries(status),
+        }
+        for filename, payload in summaries.items():
+            _write_new_json(self.output_dir / filename, payload)
+        self._flush_close_trace()
+        self.terminal_manifest = publish_terminal_manifest(
+            self.output_dir,
+            observer_status=status,
+            failure=self.failure,
+            summary_filenames=list(summaries),
+            trace_filename=self.trace_path.name,
+            finalization_monotonic_ns=time.monotonic_ns(),
+            extra={
+                "protocol": self.__class__.__name__,
+                "terminal_manifest_filename": TERMINAL_MANIFEST_FILENAME,
+            },
+        )
         self.complete = True
 
     def run_capture(self) -> int:
@@ -649,7 +684,8 @@ def main() -> int:
         return 2
     finally:
         if observer is not None:
-            observer.trace.close()
+            if not observer.trace.closed:
+                observer.trace.close()
             observer.destroy_node()
         try:
             rclpy.shutdown()
