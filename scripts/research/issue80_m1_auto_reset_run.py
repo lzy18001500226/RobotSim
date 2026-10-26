@@ -1424,6 +1424,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --raicom-continuous-ten-second-transit"
         if getattr(args, "raicom_forward_gait_yaw_inversion", False):
             command[-1] += " --raicom-forward-gait-yaw-inversion"
+        if getattr(args, "raicom_native_nominal_straight_gait_diagnostic", False):
+            command[-1] += " --raicom-native-nominal-straight-gait-diagnostic"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -5556,6 +5558,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-native-nominal-straight-gait-diagnostic",
+        action="store_true",
+        help=(
+            "one SIMULATION_ONLY native-timestep RAICOM 10 s straight-gait diagnostic at the "
+            "existing 0.12 m/s route ceiling; no yaw correction or waypoint completion claim"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5722,6 +5732,15 @@ def main() -> int:
     elif args.aligned_start_table_approach:
         parser.error("--aligned-start-table-approach requires --table-approach-mission")
     if args.native_x2_timestep:
+        low_cruise_native_profile = (
+            args.raicom_low_cruise_profile
+            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        )
+        nominal_straight_native_profile = (
+            args.raicom_native_nominal_straight_gait_diagnostic
+            and not args.raicom_low_cruise_profile
+            and abs(float(args.forward_speed) - 0.12) <= 1e-9
+        )
         if not (
             args.table_approach_mission
             and args.aligned_start_table_approach
@@ -5729,13 +5748,12 @@ def main() -> int:
             and args.maintainer_authorized_first_motion
             and args.require_stand_warmup_composite
             and args.native_mjdata_capture
-            and args.raicom_low_cruise_profile
-            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+            and (low_cruise_native_profile or nominal_straight_native_profile)
         ):
             parser.error(
                 "native X2 timestep synchronization requires direct-stand, the aligned-start "
-                "TABLE_APPROACH mission, native capture, the explicit 0.105 m/s low-cruise profile, "
-                "and first-motion authorization"
+                "TABLE_APPROACH mission, native capture, and either the explicit 0.105 m/s "
+                "low-cruise profile or the isolated 0.12 m/s straight-gait diagnostic"
             )
     if args.synchronized_paused_initialization:
         if not (
@@ -5839,6 +5857,23 @@ def main() -> int:
         parser.error(
             "forward-gait yaw inversion requires the explicit continuous native-timestep "
             "TABLE_APPROACH heading-acquisition profile"
+        )
+    if args.raicom_native_nominal_straight_gait_diagnostic and not (
+        args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_x2_timestep
+        and args.direct_stand_from_passive
+        and args.maintainer_authorized_first_motion
+        and args.require_stand_warmup_composite
+        and not args.raicom_low_cruise_profile
+        and not args.raicom_zero_forward_heading_acquisition
+        and not args.raicom_continuous_ten_second_transit
+        and not args.raicom_forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    ):
+        parser.error(
+            "native nominal straight-gait diagnostic requires the aligned native-timestep "
+            "TABLE_APPROACH profile at exactly 0.12 m/s without yaw correction"
         )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:

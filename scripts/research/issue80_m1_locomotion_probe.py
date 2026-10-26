@@ -3014,6 +3014,9 @@ class FocusedM1Diagnostic(Node):
         forward_gait_yaw_inversion_mode = bool(
             getattr(self.args, "raicom_forward_gait_yaw_inversion", False)
         )
+        native_nominal_straight_gait_diagnostic_mode = bool(
+            getattr(self.args, "raicom_native_nominal_straight_gait_diagnostic", False)
+        )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -3090,6 +3093,19 @@ class FocusedM1Diagnostic(Node):
                 "forward_gait_mapping": (
                     "negative_of_standard_odom_bearing_feedback"
                     if forward_gait_yaw_inversion_mode else "standard_odom_bearing_feedback"
+                ),
+            },
+            "straight_gait_diagnostic": {
+                "enabled": native_nominal_straight_gait_diagnostic_mode,
+                "classification": (
+                    "SIMULATION_ONLY_NATIVE_NOMINAL_STRAIGHT_GAIT_DIAGNOSTIC"
+                    if native_nominal_straight_gait_diagnostic_mode else None
+                ),
+                "forward_velocity_m_s": 0.12 if native_nominal_straight_gait_diagnostic_mode else None,
+                "angular_velocity_rad_s": 0.0 if native_nominal_straight_gait_diagnostic_mode else None,
+                "maximum_window_s": (
+                    TABLE_APPROACH_CONTINUOUS_WINDOW_S
+                    if native_nominal_straight_gait_diagnostic_mode else None
                 ),
             },
             "route_scope": (
@@ -3704,7 +3720,10 @@ class FocusedM1Diagnostic(Node):
                     verified_local_clear_radius_m=clear_radius,
                     segment_timeout_s=TABLE_APPROACH_SEGMENT_TIMEOUT_S,
                 )
-                if continuous_ten_second_transit_mode:
+                if (
+                    continuous_ten_second_transit_mode
+                    or native_nominal_straight_gait_diagnostic_mode
+                ):
                     route = replace(
                         route,
                         steps=tuple(
@@ -3887,7 +3906,10 @@ class FocusedM1Diagnostic(Node):
                 route_frame_id="odom",
                 incremental_window_s=(
                     TABLE_APPROACH_CONTINUOUS_WINDOW_S
-                    if continuous_ten_second_transit_mode else 5.0
+                    if (
+                        continuous_ten_second_transit_mode
+                        or native_nominal_straight_gait_diagnostic_mode
+                    ) else 5.0
                 ),
             )
             initial_readiness = readiness_from_snapshot(initial)
@@ -3936,13 +3958,17 @@ class FocusedM1Diagnostic(Node):
                         "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION"
                     ),
                     "maximum_windows_total": (
-                        TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
+                        1 if native_nominal_straight_gait_diagnostic_mode
+                        else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                         if continuous_ten_second_transit_mode
                         else int(limits["max_windows"])
                     ),
                     "maximum_window_s": (
                         TABLE_APPROACH_CONTINUOUS_WINDOW_S
-                        if continuous_ten_second_transit_mode
+                        if (
+                            continuous_ten_second_transit_mode
+                            or native_nominal_straight_gait_diagnostic_mode
+                        )
                         else float(limits["max_window_s"])
                     ),
                     "aggregate_nonzero_limit_s": float(limits["max_aggregate_nonzero_s"]),
@@ -4776,7 +4802,8 @@ class FocusedM1Diagnostic(Node):
             transit_window_limit = (
                 SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                 (
-                    TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
+                    1 if native_nominal_straight_gait_diagnostic_mode
+                    else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                     if continuous_ten_second_transit_mode
                     else int(local01_route_input["limits"]["max_windows"])
                 )
@@ -4823,7 +4850,8 @@ class FocusedM1Diagnostic(Node):
                     if route_config_mode and len(result["segments"]) >= (
                         SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                         (
-                            TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
+                            1 if native_nominal_straight_gait_diagnostic_mode
+                            else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                             if continuous_ten_second_transit_mode
                             else int(local01_route_input["limits"]["max_windows"])
                         )
@@ -4902,7 +4930,10 @@ class FocusedM1Diagnostic(Node):
                         SHORT_ROUTE_MAX_WINDOW_S if short_scene_route_mode else
                         CURVED_PATH_MAX_WINDOW_S if curved_path_diagnostic else
                         TABLE_APPROACH_CONTINUOUS_WINDOW_S
-                        if continuous_ten_second_transit_mode else WAYPOINT_B_WINDOW_MAX_S,
+                        if (
+                            continuous_ten_second_transit_mode
+                            or native_nominal_straight_gait_diagnostic_mode
+                        ) else WAYPOINT_B_WINDOW_MAX_S,
                         remaining_transit_s,
                         remaining_route_s,
                     )
@@ -5082,6 +5113,20 @@ class FocusedM1Diagnostic(Node):
                                         "measured_yaw_rate_age_s": float(measured["age_s"]),
                                         "raw_angular_velocity_rad_s": float(terminal["raw_yaw_rate_command_rad_s"]),
                                         "saturated": abs(float(terminal["raw_yaw_rate_command_rad_s"])) > float(active.max_angular_rad_s),
+                                        "locomotion_handshake_confirmed": True,
+                                    })
+                                elif native_nominal_straight_gait_diagnostic_mode:
+                                    angular = 0.0
+                                    control_row.update({
+                                        "control_phase": "NATIVE_NOMINAL_STRAIGHT_GAIT_DIAGNOSTIC",
+                                        "target_x_m": float(active.x_m),
+                                        "target_y_m": float(active.y_m),
+                                        "current_x_m": float(pose["x"]),
+                                        "current_y_m": float(pose["y"]),
+                                        "current_yaw_rad": float(pose["yaw"]),
+                                        "heading_error_rad": None,
+                                        "raw_angular_velocity_rad_s": 0.0,
+                                        "forward_gait_yaw_mapping": "ZERO_YAW_DIAGNOSTIC",
                                         "locomotion_handshake_confirmed": True,
                                     })
                                 elif curved_path_diagnostic:
@@ -5395,6 +5440,18 @@ class FocusedM1Diagnostic(Node):
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
 
+                    if native_nominal_straight_gait_diagnostic_mode:
+                        return {
+                            "status": "STRAIGHT_GAIT_DIAGNOSTIC_COMPLETE",
+                            "fault": None,
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "bridge_stop_rearmed": True,
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                            "segment_nonzero_command_time_s": segment_nonzero_s,
+                        }
+
                     snapshot = self.sample_for_first_motion()
                     try:
                         pose = pose_provider.update(snapshot)
@@ -5669,6 +5726,44 @@ class FocusedM1Diagnostic(Node):
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
                     current_directive = directive_after_stop
+
+            if native_nominal_straight_gait_diagnostic_mode:
+                transit_summary = run_transit_windows(
+                    current_directive,
+                    transit_plan,
+                    "WAYPOINT",
+                )
+                last_result = transit_summary.get("last_result") or {}
+                last_gate = transit_summary.get("last_gate") or {}
+                diagnostic_pass = bool(
+                    transit_summary.get("status") == "STRAIGHT_GAIT_DIAGNOSTIC_COMPLETE"
+                    and last_result.get("physical_motion_status") == "PHYSICAL_MOTION_CONFIRMED"
+                    and last_gate.get("status") == "PASS"
+                )
+                result["straight_gait_diagnostic"].update({
+                    "status": "PASS" if diagnostic_pass else "FAIL",
+                    "transit_summary": transit_summary,
+                    "physical_motion_status": last_result.get("physical_motion_status"),
+                    "physical_stop_gate": last_gate,
+                    "measured_nonzero_s": transit_summary.get(
+                        "route_total_nonzero_command_time_s"
+                    ),
+                    "acceptance_scope": (
+                        "one 10 s native-timestep straight gait and physical stop; "
+                        "does not qualify TABLE_APPROACH"
+                    ),
+                })
+                result.update({
+                    "status": "BLOCKED",
+                    "fault": (
+                        "STRAIGHT_GAIT_DIAGNOSTIC_COMPLETE_NOT_TABLE_APPROACH"
+                        if diagnostic_pass else
+                        transit_summary.get("fault") or "STRAIGHT_GAIT_DIAGNOSTIC_FAILED"
+                    ),
+                    "route_events": route_events + route_motion.events,
+                    "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                })
+                return result
 
             if route_config_mode:
                 route_step_results: list[dict[str, Any]] = []
@@ -7886,6 +7981,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     forward_gait_yaw_inversion = bool(
         getattr(args, "raicom_forward_gait_yaw_inversion", False)
     )
+    native_nominal_straight_gait_diagnostic = bool(
+        getattr(args, "raicom_native_nominal_straight_gait_diagnostic", False)
+    )
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
         getattr(args, "aligned_start_table_approach", False)
@@ -7920,14 +8018,23 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("table-approach mission cannot be combined with the short-scene route")
     if aligned_start_table_approach and not table_approach_mission:
         raise ValueError("--aligned-start-table-approach requires --table-approach-mission")
+    low_cruise_native_profile = (
+        low_cruise_profile
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    )
+    nominal_straight_native_profile = (
+        native_nominal_straight_gait_diagnostic
+        and not low_cruise_profile
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    )
     if native_x2_timestep and not (
         table_approach_mission
         and aligned_start_table_approach
-        and low_cruise_profile
-        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        and (low_cruise_native_profile or nominal_straight_native_profile)
     ):
         raise ValueError(
-            "native X2 timestep requires the aligned-start TABLE_APPROACH low-cruise profile"
+            "native X2 timestep requires the aligned-start TABLE_APPROACH low-cruise profile "
+            "or the isolated nominal straight-gait diagnostic"
         )
     if zero_forward_heading_acquisition and not (
         table_approach_mission
@@ -7963,6 +8070,20 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "forward-gait yaw inversion requires the explicit continuous native-timestep "
             "TABLE_APPROACH heading-acquisition profile"
+        )
+    if native_nominal_straight_gait_diagnostic and not (
+        table_approach_mission
+        and aligned_start_table_approach
+        and native_x2_timestep
+        and not low_cruise_profile
+        and not zero_forward_heading_acquisition
+        and not continuous_ten_second_transit
+        and not forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    ):
+        raise ValueError(
+            "native nominal straight-gait diagnostic requires the aligned native-timestep "
+            "TABLE_APPROACH profile at exactly 0.12 m/s without yaw correction"
         )
     if configured_route_observation and not configured_route:
         raise ValueError("configured-route post-STAND observation requires --route-config")
@@ -8015,6 +8136,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "raicom_zero_forward_heading_acquisition": zero_forward_heading_acquisition,
                 "raicom_continuous_ten_second_transit": continuous_ten_second_transit,
                 "raicom_forward_gait_yaw_inversion": forward_gait_yaw_inversion,
+                "raicom_native_nominal_straight_gait_diagnostic": native_nominal_straight_gait_diagnostic,
                 "zero_forward_heading_profile": (
                     {
                         "classification": "SIMULATION_ONLY_AIMDK_YAW_SOURCE_ACQUISITION",
@@ -8046,6 +8168,17 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                         ),
                     }
                     if forward_gait_yaw_inversion else None
+                ),
+                "straight_gait_diagnostic_profile": (
+                    {
+                        "classification": "SIMULATION_ONLY_NATIVE_NOMINAL_STRAIGHT_GAIT_DIAGNOSTIC",
+                        "forward_velocity_m_s": 0.12,
+                        "angular_velocity_rad_s": 0.0,
+                        "maximum_window_s": TABLE_APPROACH_CONTINUOUS_WINDOW_S,
+                        "maximum_windows_total": 1,
+                        "acceptance": "sustained physical forward progress and complete physical stop only; not TABLE_APPROACH",
+                    }
+                    if native_nominal_straight_gait_diagnostic else None
                 ),
                 "runtime_reset_odom_observed": False,
             }
@@ -8470,6 +8603,14 @@ def main() -> int:
         help=(
             "SIMULATION_ONLY native-timestep RAICOM profile: apply the evidence-backed inverse "
             "yaw mapping only while a forward gait is active"
+        ),
+    )
+    first.add_argument(
+        "--raicom-native-nominal-straight-gait-diagnostic",
+        action="store_true",
+        help=(
+            "one native-timestep RAICOM 0.12 m/s straight-gait-only diagnostic; no yaw correction "
+            "or table-route acceptance"
         ),
     )
     first.add_argument(
