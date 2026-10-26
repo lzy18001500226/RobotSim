@@ -17,6 +17,12 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PositionLimitTests(unittest.TestCase):
+    def test_live_viewer_requires_real_dynamics(self) -> None:
+        MODULE.validate_live_viewer_options(execute_dynamics=True, live_viewer=True)
+        MODULE.validate_live_viewer_options(execute_dynamics=False, live_viewer=False)
+        with self.assertRaisesRegex(ValueError, "--live-viewer requires --execute-dynamics"):
+            MODULE.validate_live_viewer_options(execute_dynamics=False, live_viewer=True)
+
     def test_roundoff_at_closed_endpoint_is_not_a_physical_violation(self) -> None:
         self.assertFalse(MODULE.outside_position_range(6.1e-21, -2.356194, 0.0))
 

@@ -22,6 +22,7 @@ import xml.etree.ElementTree as ET
 
 import imageio_ffmpeg
 import mujoco
+import mujoco.viewer
 import numpy as np
 
 
@@ -57,6 +58,7 @@ LIFT_STEPS = 3_000
 FINAL_HOLD_STEPS = 500
 VIDEO_EVERY = 20
 VIDEO_FPS = 25
+LIVE_VIEWER_SYNC_EVERY = 10
 SETTLE_LINEAR_SPEED_M_S = 0.020
 SETTLE_ANGULAR_SPEED_RAD_S = 0.050
 SETTLE_SUPPORT_RATIO = (0.80, 1.20)
@@ -108,6 +110,23 @@ def quintic(alpha: float) -> float:
 
 def interpolate(first: np.ndarray, second: np.ndarray, alpha: float) -> np.ndarray:
     return (1.0 - quintic(alpha)) * first + quintic(alpha) * second
+
+
+def validate_live_viewer_options(*, execute_dynamics: bool, live_viewer: bool) -> None:
+    """Reject a GUI request that would otherwise look like a live trial."""
+    if live_viewer and not execute_dynamics:
+        raise ValueError("--live-viewer requires --execute-dynamics")
+
+
+def configure_live_viewer(viewer) -> None:
+    """Show the complete visual X2 scene, without modifying model state."""
+    viewer.cam.lookat[:] = [1.43, -0.92, 0.80]
+    viewer.cam.distance = 1.45
+    viewer.cam.azimuth = 165
+    viewer.cam.elevation = -18
+    viewer.opt.geomgroup[:] = 0
+    viewer.opt.geomgroup[0] = 1
+    viewer.opt.geomgroup[1] = 1
 
 
 def outside_position_range(qpos: float, lower: float, upper: float, tolerance_rad: float = JOINT_LIMIT_NUMERICAL_TOL_RAD) -> bool:
@@ -269,7 +288,12 @@ def main() -> None:
     parser.add_argument("--full-urdf", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--execute-dynamics", action="store_true")
+    parser.add_argument("--live-viewer", action="store_true", help="show the actual mj_step trial in a MuJoCo GLFW window")
     args = parser.parse_args()
+    try:
+        validate_live_viewer_options(execute_dynamics=args.execute_dynamics, live_viewer=args.live_viewer)
+    except ValueError as exc:
+        parser.error(str(exc))
     output = pg.validate_output_path(args.output_dir, require_exists=True, expected_kind="directory", environment="wsl").native_path
     if (output / "result.json").exists():
         raise SystemExit("refusing to overwrite trial evidence")
@@ -369,6 +393,15 @@ def main() -> None:
     physics_steps = 0
     post_start_cylinder_qpos_writes = 0
     initial_warnings = np.asarray(data.warning.number, dtype=int).copy()
+    live_viewer = None
+    live_viewer_wall_start_s = None
+
+    if args.live_viewer:
+        live_viewer = mujoco.viewer.launch_passive(model, data)
+        configure_live_viewer(live_viewer)
+        live_viewer.sync()
+        live_viewer_wall_start_s = time.monotonic() - float(data.time)
+        print("Live MuJoCo viewer active: this is the real mj_step trial; closing the window stops the episode.")
 
     def render_frame() -> None:
         renderer.update_scene(data, camera=camera)
@@ -481,12 +514,21 @@ def main() -> None:
         return {"cylinder": cylinder_state, "lift_m": lift, "table_force_z": table_force_z, "bilateral": bilateral, "bilateral_streak": bilateral_streak, "transfer": load_transferred, "transfer_streak": transfer_streak, "settle_streak": settle_streak}
 
     def step(stage: str, arm_target: np.ndarray, root_target: float) -> dict[str, object] | None:
-        nonlocal physics_steps
+        nonlocal first_failure, physics_steps
         if physics_steps >= MAX_STEPS or data.time >= MAX_TIME_S:
+            return None
+        if live_viewer is not None and not live_viewer.is_running():
+            first_failure = {"gate": "LIVE_VIEWER_CLOSED", "step": physics_steps, "stage": stage}
             return None
         clipping = apply_controller(arm_target, root_target)
         mujoco.mj_step(model, data)
         physics_steps += 1
+        if live_viewer is not None and physics_steps % LIVE_VIEWER_SYNC_EVERY == 0:
+            live_viewer.sync()
+            assert live_viewer_wall_start_s is not None
+            delay_s = live_viewer_wall_start_s + float(data.time) - time.monotonic()
+            if delay_s > 0.0:
+                time.sleep(delay_s)
         return evaluate(physics_steps, stage, clipping)
 
     def run_phase(label: str, count: int, arm_first: np.ndarray, arm_second: np.ndarray, root_first: float, root_second: float, require: str | None = None) -> bool:
@@ -574,10 +616,18 @@ def main() -> None:
         "safety": {"post_start_cylinder_qpos_writes": post_start_cylinder_qpos_writes, "weld_or_attachment": False, "mocap": False, "follower_qpos_writes": 0, "exact_pair_exception_only": True},
         "video": {"path": str(video), "sha256": sha256(video) if video.is_file() else None, "bytes": video.stat().st_size if video.is_file() else 0, "fps": VIDEO_FPS},
         "traces": ["joint_actuator_trace.csv.gz", "contact_force_trace.jsonl.gz", "phase_summary_trace.csv.gz"],
-        "reproduction_command": f"MUJOCO_GL=egl python {Path(__file__).resolve()} --config {args.config.resolve()} --preflight-result {args.preflight_result.resolve()} --frozen-model {args.frozen_model.resolve()} --full-urdf {args.full_urdf.resolve()} --output-dir {output} --execute-dynamics",
+        "live_viewer": bool(args.live_viewer),
+        "reproduction_command": f"MUJOCO_GL={'glfw' if args.live_viewer else 'egl'} python {Path(__file__).resolve()} --config {args.config.resolve()} --preflight-result {args.preflight_result.resolve()} --frozen-model {args.frozen_model.resolve()} --full-urdf {args.full_urdf.resolve()} --output-dir {output} --execute-dynamics{' --live-viewer' if args.live_viewer else ''}",
     }
     pg.write_new_text(output / "result.json", json.dumps(result, indent=2, allow_nan=False) + "\n")
     pg.write_artifact_manifest(output)
+    if live_viewer is not None:
+        live_viewer.sync()
+        print("Trial complete. Inspect the final live state, then close the MuJoCo window to exit.")
+        while live_viewer.is_running():
+            live_viewer.sync()
+            time.sleep(0.02)
+        live_viewer.close()
     print(json.dumps({"status": result_status, "steps": physics_steps, "first_failure": first_failure, "lift_mm": metrics["max_cylinder_com_rise_m"] * 1000.0, "evidence_dir": str(output)}, indent=2))
 
 
