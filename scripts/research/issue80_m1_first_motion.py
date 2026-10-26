@@ -3698,6 +3698,8 @@ def run_first_motion_window(
     activation_lifecycle: MCLocomotionAbortLifecycle | None = None,
     activation_probe_only: bool = False,
     source_contract_supported: bool = False,
+    source_grounded_route_activation: bool = False,
+    source_grounded_activation_timeout_s: float = ACTIVATION_PROBE_DURATION_S,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
@@ -3749,6 +3751,14 @@ def run_first_motion_window(
         "pre_motion_abort_reason": pre_motion_abort_reason,
         "activation_probe_only": bool(activation_probe_only),
         "source_contract_supported": bool(source_contract_supported),
+        "source_grounded_route_activation": {
+            "enabled": bool(source_grounded_route_activation),
+            "maximum_qualification_s": source_grounded_activation_timeout_s
+            if source_grounded_route_activation else None,
+            "mode_source_confirmed": False,
+            "confirmation_monotonic_s": None,
+            "first_nonzero_is_part_of_this_window": bool(source_grounded_route_activation),
+        },
         "activation_probe": {
             "enabled": bool(activation_probe_only),
             "forward_command_m_s": ACTIVATION_PROBE_FORWARD_M_S if activation_probe_only else None,
@@ -3786,7 +3796,18 @@ def run_first_motion_window(
         or termination_condition is not None
     ):
         pulse_fault = pulse_fault or "activation_probe_profile_must_remain_exactly_0p12_mps_for_1p8s"
-    elif not activation_probe_only and source_contract_supported:
+    elif source_grounded_route_activation and activation_probe_only:
+        pulse_fault = pulse_fault or "route_activation_cannot_use_probe_only_mode"
+    elif source_grounded_route_activation and (
+        activation_lifecycle is None
+        or not source_contract_supported
+        or abs(float(forward_command_m_s) - ACTIVATION_PROBE_FORWARD_M_S) > 1e-9
+        or not math.isfinite(float(source_grounded_activation_timeout_s))
+        or abs(float(source_grounded_activation_timeout_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
+        or float(source_grounded_activation_timeout_s) > float(pulse_duration_s)
+    ):
+        pulse_fault = pulse_fault or "source_grounded_route_activation_profile_invalid"
+    elif not activation_probe_only and source_contract_supported and not source_grounded_route_activation:
         pulse_fault = pulse_fault or "source_contract_flag_requires_explicit_activation_probe_mode"
     if (
         not math.isfinite(extra_post_stop_observe_limit_s)
@@ -3983,11 +4004,14 @@ def run_first_motion_window(
     try:
         if activation_lifecycle is not None:
             if pulse_fault is None:
-                if activation_probe_only:
+                if activation_probe_only or source_grounded_route_activation:
                     activation_lifecycle.begin_activation_probe(
                         source_contract_supported=source_contract_supported,
                         forward_command_m_s=forward_command_m_s,
-                        duration_s=pulse_duration_s,
+                        duration_s=(
+                            pulse_duration_s if activation_probe_only
+                            else source_grounded_activation_timeout_s
+                        ),
                         now_s=clock(),
                     )
                 else:
@@ -4090,7 +4114,7 @@ def run_first_motion_window(
                     current["forward_displacement_since_start_m"] = startup_displacement
                 tracker.observe(current, phase="activation")
                 record_sample("activation", current, None)
-                if activation_probe_only:
+                if activation_probe_only or source_grounded_route_activation:
                     probe_classification = classify_locomotion_activation_readbacks(
                         current,
                         expected_source=VELOCITY_SOURCE_NAME,
@@ -4100,25 +4124,49 @@ def run_first_motion_window(
                     activation_lifecycle.observe_locomotion_readback(
                         probe_classification, now_s=clock(),
                     )
-                    result["activation_probe"]["last_readback_classification"] = probe_classification
+                    activation_record = (
+                        result["activation_probe"] if activation_probe_only
+                        else result["source_grounded_route_activation"]
+                    )
+                    activation_record["last_readback_classification"] = probe_classification
                     if probe_classification.get("classification") == "LOCOMOTION_CONFIRMED":
-                        result["activation_probe"].update({
-                            "mode_source_confirmed": True,
-                            "confirmation_monotonic_s": clock(),
-                            "terminal_reason": "fresh synchronized LOCO/source handshake observed; aborting probe to STAND",
-                        })
-                        pulse_fault = "activation_probe_complete_abort_to_stand"
-                        stop_requested.set()
-                        break
+                        if source_grounded_route_activation:
+                            if not activation_lifecycle.nonzero_motion_allowed:
+                                activation_lifecycle.begin_motion(now_s=clock())
+                            if not activation_record["mode_source_confirmed"]:
+                                activation_record.update({
+                                    "mode_source_confirmed": True,
+                                    "confirmation_monotonic_s": clock(),
+                                    "terminal_reason": "fresh synchronized LOCO/source handshake observed; continue the same bounded route window",
+                                })
+                        else:
+                            activation_record.update({
+                                "mode_source_confirmed": True,
+                                "confirmation_monotonic_s": clock(),
+                                "terminal_reason": "fresh synchronized LOCO/source handshake observed; aborting probe to STAND",
+                            })
+                            pulse_fault = "activation_probe_complete_abort_to_stand"
+                            stop_requested.set()
+                            break
                     if str(probe_classification.get("classification", "")).startswith("ERROR_"):
                         pulse_fault = "activation_probe_readback_error:" + str(
                             probe_classification.get("reason") or probe_classification.get("classification")
                         )
-                        result["activation_probe"]["terminal_reason"] = pulse_fault
+                        activation_record["terminal_reason"] = pulse_fault
+                        stop_requested.set()
+                        break
+                    if (
+                        source_grounded_route_activation
+                        and activation_lifecycle.activation_probe_command_allowed
+                        and command_offset >= source_grounded_activation_timeout_s
+                    ):
+                        pulse_fault = "source_grounded_route_activation_timeout"
+                        activation_record["terminal_reason"] = pulse_fault
                         stop_requested.set()
                         break
                 if (
                     not activation_probe_only
+                    and not source_grounded_route_activation
                     and require_locomotion_confirmation
                     and not tracker.last_control_handshake_observed
                 ):
@@ -4152,6 +4200,17 @@ def run_first_motion_window(
                 if activation_probe_only and not activation_lifecycle.activation_probe_command_allowed:
                     pulse_fault = "activation_probe_state_no_longer_permits_a_nonzero_probe_command"
                     result["activation_probe"]["terminal_reason"] = pulse_fault
+                    stop_requested.set()
+                    break
+                if (
+                    source_grounded_route_activation
+                    and not (
+                        activation_lifecycle.activation_probe_command_allowed
+                        or activation_lifecycle.nonzero_motion_allowed
+                    )
+                ):
+                    pulse_fault = "source_grounded_route_activation_state_no_longer_permits_nonzero"
+                    result["source_grounded_route_activation"]["terminal_reason"] = pulse_fault
                     stop_requested.set()
                     break
                 if now >= next_publish:
@@ -4708,6 +4767,16 @@ def run_first_motion_window(
     result["pulse_odometry"] = tracker.odometry_delta()
     if activation_probe_only:
         result["activation_probe"].update({
+            "actual_loop_elapsed_s": result["pulse_loop_elapsed_s"],
+            "nonzero_publish_calls_returned": result["nonzero_publish_calls_returned"],
+            "command_success_offsets_s": list(nonzero_success_offsets_s),
+            "actual_forward_projected_displacement_m": (
+                result.get("pulse_odometry", {}).get("forward_projected_m")
+                if isinstance(result.get("pulse_odometry"), Mapping) else None
+            ),
+        })
+    if source_grounded_route_activation:
+        result["source_grounded_route_activation"].update({
             "actual_loop_elapsed_s": result["pulse_loop_elapsed_s"],
             "nonzero_publish_calls_returned": result["nonzero_publish_calls_returned"],
             "command_success_offsets_s": list(nonzero_success_offsets_s),

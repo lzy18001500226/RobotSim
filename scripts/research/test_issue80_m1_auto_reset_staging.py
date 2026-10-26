@@ -315,6 +315,21 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertNotIn("--route-curved-path-diagnostic", child)
         self.assertNotIn("--route-waypoint-b-only", child)
 
+    def test_route_windows_use_source_grounded_nonzero_activation_not_zero_only(self) -> None:
+        probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        route_start = probe.index("    def run_short_route_integration(")
+        route_end = probe.index("    def execute(", route_start)
+        route = probe[route_start:route_end]
+        self.assertNotIn("begin_zero_only_locomotion_activation(", route)
+        self.assertIn("begin_source_grounded_route_activation(", route)
+        self.assertIn("source_grounded_route_activation=True", route)
+        self.assertLess(
+            route.index("route_activation_pending"),
+            route.index("active_window_gate.observe("),
+        )
+
     def test_parent_child_point_goal_invocation_propagates_runtime_profile(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=7.0,

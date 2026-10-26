@@ -1022,6 +1022,38 @@ class FocusedM1Diagnostic(Node):
         self.events.append({"event": "zero_only_locomotion_activation", "phase": phase, **activation})
         return lifecycle, set_action, activation
 
+    def begin_source_grounded_route_activation(
+        self,
+        *,
+        registration: Mapping[str, Any],
+        phase: str,
+    ) -> tuple[MCLocomotionAbortLifecycle, dict[str, Any], dict[str, Any]]:
+        """Prepare the reviewed nonzero-acquisition phase for one route window.
+
+        The 0.12 m/s source-acquisition publish happens in the first portion
+        of the existing route window.  It therefore consumes that window's
+        own time/displacement budget and ends through its unchanged zero-stop
+        and physical-stop contract.
+        """
+        lifecycle, set_action, activation = self.begin_locomotion_activation_probe_request(
+            registration=registration,
+            phase=phase,
+        )
+        if activation.get("status") == "READY":
+            activation.update({
+                "classification": "SIMULATION_ONLY_SOURCE_GROUNDED_ROUTE_ACTIVATION",
+                "route_motion_authorized": True,
+                "initial_nonzero_is_part_of_route_window": True,
+                "maximum_activation_qualification_s": ACTIVATION_PROBE_DURATION_S,
+                "forward_velocity_m_s": ACTIVATION_PROBE_FORWARD_M_S,
+            })
+        self.events.append({
+            "event": "source_grounded_route_activation_prepared",
+            "phase": phase,
+            **activation,
+        })
+        return lifecycle, set_action, activation
+
     def recover_activation_to_stand(
         self,
         *,
@@ -3744,6 +3776,21 @@ class FocusedM1Diagnostic(Node):
                     return True
 
                 handshake = same_sample_handshake(snapshot)
+                route_activation_pending = bool(
+                    self.activation_lifecycle is not None
+                    and self.activation_lifecycle.activation_probe_command_allowed
+                )
+                if route_activation_pending:
+                    # The documented source contract needs this first bounded
+                    # 0.12 m/s publish to acquire arbitration.  Keep the path
+                    # straight and retain all physical/odom checks above; do
+                    # not enable bearing steering until confirmation arrives.
+                    window_control.update({
+                        "steering_enabled": False,
+                        "initial_source_grounded_activation_pending": True,
+                        "source_mode_handshake": handshake,
+                    })
+                    return False
                 active_readbacks_valid = active_locomotion_source_readbacks_valid(
                     snapshot,
                     expected_source=self.source,
@@ -3985,9 +4032,9 @@ class FocusedM1Diagnostic(Node):
                         }
                     if window_index > 0:
                         # A prior window may rearm only after its full physical
-                        # stop gate passed. Start a new LD lifecycle from that
-                        # fresh STAND state and observe zero-only activation.
-                        lifecycle, next_set_action, activation_gate = self.begin_zero_only_locomotion_activation(
+                        # stop gate passed.  The first nonzero command of this
+                        # next bounded window reacquires the same approved source.
+                        lifecycle, next_set_action, activation_gate = self.begin_source_grounded_route_activation(
                             registration=registration,
                             phase=f"{segment_id.lower()}-window-{window_index + 1}-rearm",
                         )
@@ -3997,7 +4044,7 @@ class FocusedM1Diagnostic(Node):
                             "activation_gate": activation_gate,
                             "lifecycle_after_activation": lifecycle.snapshot(),
                         })
-                        if activation_gate.get("status") != "PASS":
+                        if activation_gate.get("status") != "READY":
                             recovery = self.recover_activation_to_stand(
                                 lifecycle=lifecycle,
                                 registration=registration,
@@ -4244,6 +4291,9 @@ class FocusedM1Diagnostic(Node):
                         zero_until_stand_timeout_s=3.5,
                         require_locomotion_confirmation=True,
                         activation_lifecycle=self.activation_lifecycle,
+                        source_contract_supported=True,
+                        source_grounded_route_activation=True,
+                        source_grounded_activation_timeout_s=ACTIVATION_PROBE_DURATION_S,
                     )
                     raw_stop_gate = last_result.get("physical_stop_gate")
                     final_stop_window = (
@@ -4709,7 +4759,7 @@ class FocusedM1Diagnostic(Node):
                         })
                         return result
                     if step_index > 0:
-                        lifecycle, next_set_action, activation_gate = self.begin_zero_only_locomotion_activation(
+                        lifecycle, next_set_action, activation_gate = self.begin_source_grounded_route_activation(
                             registration=registration,
                             phase=f"configured-route-{configured_step.waypoint_id.lower()}-activation",
                         )
@@ -4719,7 +4769,7 @@ class FocusedM1Diagnostic(Node):
                             "activation_gate": activation_gate,
                             "lifecycle_after_activation": lifecycle.snapshot(),
                         })
-                        if activation_gate.get("status") != "PASS":
+                        if activation_gate.get("status") != "READY":
                             recovery = self.recover_activation_to_stand(
                                 lifecycle=lifecycle,
                                 registration=registration,
@@ -6155,6 +6205,11 @@ class FocusedM1Diagnostic(Node):
                         registration=registration,
                         phase="controlled-activation-probe",
                     )
+                elif getattr(self.args, "route_integration", False):
+                    lifecycle, set_action, activation_gate = self.begin_source_grounded_route_activation(
+                        registration=registration,
+                        phase="initial-route-window",
+                    )
                 else:
                     lifecycle, set_action, activation_gate = self.begin_zero_only_locomotion_activation(
                         registration=registration,
@@ -6383,7 +6438,10 @@ class FocusedM1Diagnostic(Node):
                 ) or "activation probe mode/source or physical-stop gate did not pass"
                 return result
 
-            if activation_gate.get("status") != "PASS" or lifecycle is None:
+            allowed_activation_statuses = (
+                {"READY"} if getattr(self.args, "route_integration", False) else {"PASS"}
+            )
+            if activation_gate.get("status") not in allowed_activation_statuses or lifecycle is None:
                 recovery = None
                 if lifecycle is not None:
                     recovery = self.recover_activation_to_stand(
