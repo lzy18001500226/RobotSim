@@ -1242,6 +1242,45 @@ class ResearchScriptStagingTests(unittest.TestCase):
         ):
             self.assertEqual(issue80_m1_auto_reset_run.main(), 2)
 
+    def test_parent_parser_accepts_local01_route_existing_seven_second_stop_observation(self) -> None:
+        class OfflineRunner:
+            def __init__(self, args: argparse.Namespace):
+                self.args = args
+
+            def execute(self) -> dict[str, str]:
+                return {"status": "BLOCKED", "fault": "offline runner sentinel"}
+
+        argv = [
+            "issue80_m1_auto_reset_run.py",
+            "--evidence-dir", "/tmp/reserved-evidence",
+            "--container", "issue80-local01-route-test",
+            "--attempt-id", "local01-route-cli-test",
+            "--maintainer-authorized-first-motion",
+            "--require-stand-warmup-composite",
+            "--local01-scene-world-poses", "/tmp/scene_world_poses.json",
+            "--forward-speed", "0.12",
+            "--pulse-duration", "1.0",
+            "--extra-stop-observation", "7.0",
+        ]
+        local01 = {
+            "route": object(),
+            "route_input": {"route_id": "fixture"},
+            "source": {"source_commit": "fixture"},
+            "static_scene_preflight": {"status": "PASS_STATIC_SCENE_CLEARANCE"},
+            "source_sha256": "fixture",
+        }
+        with (
+            patch.object(issue80_m1_auto_reset_run.sys, "argv", argv),
+            patch.object(
+                issue80_m1_auto_reset_run,
+                "validate_local01_scene_route_input",
+                return_value=local01,
+            ),
+            patch.object(issue80_m1_auto_reset_run, "validate_reserved_evidence_directory"),
+            patch.object(issue80_m1_auto_reset_run, "BoundedRun", OfflineRunner),
+        ):
+            self.assertEqual(issue80_m1_auto_reset_run.main(), 2)
+
     def test_parent_does_not_start_container_without_first_motion_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = self.make_runner(Path(temp_dir))

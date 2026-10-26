@@ -4042,6 +4042,8 @@ def main() -> int:
         POINT_GOAL_MAX_EXTRA_STOP_OBSERVATION_S
         if args.run65_ground_truth_point_goal
         else MAX_EXTRA_POST_STOP_OBSERVE_S
+        if args.route_config or args.local01_scene_world_poses
+        else MAX_EXTRA_POST_STOP_OBSERVE_S
         if args.post_locomotion_convergence_observation_s is not None
         else 5.0
     )
