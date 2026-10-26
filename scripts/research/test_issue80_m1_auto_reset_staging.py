@@ -27,10 +27,49 @@ from issue80_m1_auto_reset_run import (
     validate_waypoint_docking_route_input,
     validate_configured_route_motion_profile,
     validate_stand_convergence_arguments,
+    assess_static_nominal_start_sample,
+    validate_static_nominal_start_table_approach_clearance,
 )
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_static_nominal_start_requires_vendor_nominal_legs_and_existing_safe_support(self) -> None:
+        expected_qpos = [0.0] * 45
+        expected_qpos[7:19] = [-0.24, 0.0, 0.0, 0.45, -0.21, 0.0] * 2
+        sample = {
+            "qpos": list(expected_qpos),
+            "pelvis": {"state": {
+                "world_position_m": [0.0, 0.0, 0.6593],
+                "world_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "world_spatial_velocity_rot_lin": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            }},
+            "contacts": [
+                {"involves_selected_left_foot": True, "normal_force_n": 100.0},
+                {"involves_selected_right_foot": True, "normal_force_n": 100.0},
+            ],
+        }
+        accepted = assess_static_nominal_start_sample(sample, {"qpos": expected_qpos})
+        self.assertTrue(accepted["eligible"])
+        sample["qpos"][7] += 0.021
+        self.assertFalse(assess_static_nominal_start_sample(sample, {"qpos": expected_qpos})["eligible"])
+
+    def test_static_nominal_start_transfers_only_the_reviewed_table_approach_clearance(self) -> None:
+        plan_path = (
+            Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-80")
+            / "raicom-table-plan-20261026T131502Z/table_plan.json"
+        )
+        if not plan_path.is_file():
+            self.skipTest("pinned table plan unavailable")
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        result = validate_static_nominal_start_table_approach_clearance(
+            plan, root_z_offset_m=-0.020679493873912384,
+        )
+        self.assertEqual(result["status"], "PASS_STATIC_NOMINAL_START_TABLE_APPROACH_CLEARANCE")
+        self.assertGreater(result["minimum_conservative_transferred_lower_bound_m"], 0.020)
+        self.assertEqual({(row["from"], row["to"]) for row in result["segments"]}, {
+            ("START", "WAYPOINT"), ("WAYPOINT", "TABLE_APPROACH"),
+        })
+
     def test_passive_video_recorder_does_not_start_in_the_reset_to_jd_window(self) -> None:
         source = Path(__file__).with_name("issue80_m1_auto_reset_run.py").read_text(
             encoding="utf-8"
@@ -422,6 +461,68 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--physics-release-event-file /workspace/evidence/physics_release_event.json", command)
         self.assertIn("--synchronized-ready-file /workspace/evidence/synchronized_jd_ready.json", command)
         self.assertNotIn("--reset-event-file", command)
+
+    def test_static_nominal_start_observer_uses_no_reset_or_native_generation_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BoundedRun(argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="static-init-test-container",
+                attempt_id="static-init-test",
+                max_runtime_s=30.0,
+                static_nominal_start_initialization=True,
+                native_mjdata_capture=True,
+            ))
+            calls: list[tuple[str, str]] = []
+
+            def fake_docker_exec(name: str, command: str, **_kwargs):
+                calls.append((name, command))
+                if name == "start_prearmed_standing_takeover_observer":
+                    (Path(temp_dir) / "reset_watch_ready.json").write_text(json.dumps({
+                        "status": "READY",
+                        "fresh_topics": ["odom", "imu", "common", "leg_state", "leg_command"],
+                        "set_mc_action_service_ready": True,
+                        "get_mc_action_service_ready": True,
+                        "pre_reset_get_mc_action": {
+                            "action_desc": "PASSIVE_DEFAULT", "action_status_value": 100,
+                        },
+                    }), encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            runner.docker_exec = fake_docker_exec
+            runner.start_observer()
+
+        command = calls[0][1]
+        self.assertIn("--static-nominal-start-event-file /workspace/evidence/static_nominal_start_event.json", command)
+        self.assertIn("--native-mjdata-trace /workspace/evidence/native_mjdata_trace.jsonl", command)
+        self.assertNotIn("--require-native-reset-generation", command)
+        self.assertNotIn("--reset-event-file", command)
+
+    def test_static_nominal_start_motion_child_uses_generic_initialization_gate_not_reset_label(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=7.0,
+            pulse_duration=1.0,
+            forward_speed=0.12,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="static-nominal-motion-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/static-nominal-table-approach.json",
+            route_config=None,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+            static_nominal_start_initialization=True,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "static-nominal-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--initialization-gate-verified", child)
+        self.assertNotIn("--reset-gate-verified", child)
 
     def test_route_windows_use_source_grounded_nonzero_activation_not_zero_only(self) -> None:
         probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(

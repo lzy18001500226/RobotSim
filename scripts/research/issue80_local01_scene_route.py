@@ -65,6 +65,7 @@ ALIGNED_START_TABLE_APPROACH_CLASSIFICATION = (
 ALIGNED_START_SCENE_VERSION = "aligned-start-v1"
 SYNCHRONIZED_NOMINAL_KEYFRAME_VERSION = "nominal-keyframe-v1"
 SYNCHRONIZED_NOMINAL_KEYFRAME_NAME = "issue80_nominal_stand_v1"
+STATIC_NOMINAL_START_VERSION = "static-nominal-start-v1"
 X2_START_FRAME_NAME = "x2_start_frame"
 X2_SOURCE_START_POS_M = (-1.5, -1.5, 0.0)
 X2_SOURCE_START_QUAT_WXYZ = (
@@ -1528,6 +1529,102 @@ def assert_synchronized_keyframe_addition(
     }
 
 
+def assert_static_nominal_start_equivalence(
+    aligned: Any, static_start: Any, expected_nominal: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Prove a pre-load frame-Z wrapper equals the old nominal keyframe state.
+
+    The vendor ModelManager already applies ``nominal_configuration`` before
+    normal stepping.  This check establishes that moving only the scene's X2
+    start-frame Z coordinate makes that vendor-owned nominal state physically
+    identical to the collision-checked target formerly held in a GUI keyframe.
+    No ``mj_step`` is called.
+    """
+    import mujoco
+    import numpy as np
+
+    if aligned.nkey != static_start.nkey:
+        raise Local01SceneRouteError("static nominal-start wrapper changed keyframe count")
+    for count in ("nq", "nv", "nu", "nbody", "njnt", "ngeom", "nmesh", "nsensor", "nsite", "neq"):
+        if getattr(aligned, count) != getattr(static_start, count):
+            raise Local01SceneRouteError(f"static nominal-start wrapper changed {count}")
+    invariant_fields = (
+        "body_mass", "body_inertia", "body_ipos", "body_iquat",
+        "jnt_type", "jnt_pos", "jnt_axis", "jnt_range", "jnt_limited",
+        "jnt_actfrcrange", "geom_type", "geom_size", "geom_dataid",
+        "geom_contype", "geom_conaffinity", "geom_condim", "geom_friction",
+        "geom_solmix", "geom_solref", "geom_solimp", "geom_margin", "geom_gap",
+        "actuator_trntype", "actuator_trnid", "actuator_gear", "actuator_gainprm",
+        "actuator_biasprm", "actuator_dynprm", "actuator_ctrlrange",
+        "actuator_forcerange", "actuator_ctrllimited", "actuator_forcelimited",
+        "sensor_type", "sensor_objtype", "sensor_objid", "sensor_dim",
+        "sensor_noise", "sensor_cutoff", "sensor_datatype",
+    )
+    for field in invariant_fields:
+        if not np.array_equal(
+            getattr(aligned, field), getattr(static_start, field), equal_nan=True,
+        ):
+            raise Local01SceneRouteError(
+                f"static nominal-start wrapper changed physical field {field}"
+            )
+    for field in dir(aligned.opt):
+        if field.startswith("_"):
+            continue
+        value, other = getattr(aligned.opt, field), getattr(static_start.opt, field)
+        if isinstance(value, (int, float, np.ndarray)) and not np.array_equal(value, other):
+            raise Local01SceneRouteError(
+                f"static nominal-start wrapper changed solver option {field}"
+            )
+    root_a = mujoco.mj_name2id(aligned, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
+    root_b = mujoco.mj_name2id(static_start, mujoco.mjtObj.mjOBJ_JOINT, "floating_base_joint")
+    if root_a < 0 or root_b < 0:
+        raise Local01SceneRouteError("static nominal-start wrapper lacks native floating base")
+    qadr_a, qadr_b = int(aligned.jnt_qposadr[root_a]), int(static_start.jnt_qposadr[root_b])
+    expected_qpos = np.asarray(expected_nominal["qpos"], dtype=float)
+    expected_qvel = np.asarray(expected_nominal["qvel"], dtype=float)
+    if expected_qpos.shape != (aligned.nq,) or expected_qvel.shape != (aligned.nv,):
+        raise Local01SceneRouteError("static nominal-start target state dimensions are invalid")
+    if not np.allclose(
+        aligned.qpos0[:qadr_a + 2], static_start.qpos0[:qadr_b + 2], rtol=0, atol=1e-12,
+    ) or not np.allclose(
+        aligned.qpos0[qadr_a + 3:], static_start.qpos0[qadr_b + 3:], rtol=0, atol=1e-12,
+    ):
+        raise Local01SceneRouteError("static nominal-start wrapper changed qpos0 beyond root Z")
+    if not math.isclose(
+        float(static_start.qpos0[qadr_b + 2]), float(expected_qpos[qadr_a + 2]), abs_tol=1e-12,
+    ):
+        raise Local01SceneRouteError("static nominal-start root Z does not equal collision-checked target")
+
+    a, b = mujoco.MjData(aligned), mujoco.MjData(static_start)
+    a.qpos[:] = expected_qpos
+    b.qpos[:] = expected_qpos
+    a.qvel[:] = expected_qvel
+    b.qvel[:] = expected_qvel
+    mujoco.mj_forward(aligned, a)
+    mujoco.mj_forward(static_start, b)
+    max_residual = 0.0
+    for field in ("xpos", "xmat", "geom_xpos", "geom_xmat", "site_xpos", "site_xmat"):
+        if getattr(a, field).size:
+            max_residual = max(
+                max_residual,
+                float(np.max(np.abs(getattr(a, field) - getattr(b, field)))),
+            )
+    if max_residual > 1e-12 or a.ncon != b.ncon:
+        raise Local01SceneRouteError(
+            "static nominal-start wrapper does not reproduce the collision-checked nominal state"
+        )
+    return {
+        "status": "PASS_STATIC_NOMINAL_START_PHYSICAL_INVARIANTS",
+        "root_z_before_m": float(aligned.qpos0[qadr_a + 2]),
+        "root_z_after_m": float(static_start.qpos0[qadr_b + 2]),
+        "root_z_offset_m": float(static_start.qpos0[qadr_b + 2] - aligned.qpos0[qadr_a + 2]),
+        "nominal_state_fk_maximum_residual": max_residual,
+        "nominal_state_contact_count": int(a.ncon),
+        "robot_geometry_limits_actuators_sensors_and_solver_unchanged": True,
+        "mj_step_calls": 0,
+    }
+
+
 def assert_native_robot_equivalence(native: Any, combined: Any) -> dict[str, Any]:
     """Check native robot inertias/limits/actuators and FK under the START frame."""
     import mujoco
@@ -1864,6 +1961,7 @@ def prepare_local01_scene_runtime_bundle(
     runtime_root: str | Path,
     aligned_start: bool = False,
     synchronized_nominal_initialization: bool = False,
+    static_nominal_start_initialization: bool = False,
 ) -> dict[str, Any]:
     """Copy immutable inputs and generate a provenance-tracked runtime wrapper.
 
@@ -1872,12 +1970,23 @@ def prepare_local01_scene_runtime_bundle(
     and runtime inputs remain read-only and the original scene is copied as an
     immutable evidence input beside the generated wrapper.  The optional
     synchronized initialization adds one source-MC-derived keyframe; it does
-    not alter qpos0, geometry, contacts, gains, or source assets.
+    not alter qpos0, geometry, contacts, gains, or source assets.  The static
+    nominal-start variant instead adjusts only the scene attachment Z before
+    model load, so the installed simulator's existing nominal-configuration
+    initialization starts at the collision-checked root height.
     """
     evidence = Path(evidence_directory)
     if synchronized_nominal_initialization and not aligned_start:
         raise Local01SceneRouteError(
             "synchronized nominal initialization requires the separately reviewed aligned-start scene"
+        )
+    if static_nominal_start_initialization and not aligned_start:
+        raise Local01SceneRouteError(
+            "static nominal-start initialization requires the separately reviewed aligned-start scene"
+        )
+    if synchronized_nominal_initialization and static_nominal_start_initialization:
+        raise Local01SceneRouteError(
+            "keyframe and static nominal-start initialization are mutually exclusive"
         )
     runtime_x2_path = (
         Path(runtime_root)
@@ -1955,6 +2064,8 @@ def prepare_local01_scene_runtime_bundle(
     if aligned_start:
         _x2_start_frame(scene_root).set("quat", _format_xml_vector(X2_ALIGNED_START_QUAT_WXYZ))
     scene_runtime_name = (
+        "scene_workspace_aligned_start_v3_static_nominal_runtime.xml"
+        if static_nominal_start_initialization else
         "scene_workspace_aligned_start_v2_nominal_keyframe_runtime.xml"
         if synchronized_nominal_initialization else
         "scene_workspace_aligned_start_v1_runtime.xml"
@@ -1994,6 +2105,8 @@ def prepare_local01_scene_runtime_bundle(
         1,
     )
     simulator_config_name = (
+        "simulator_default_local01_aligned_start_v3_static_nominal.yaml"
+        if static_nominal_start_initialization else
         "simulator_default_local01_aligned_start_v2_nominal_keyframe.yaml"
         if synchronized_nominal_initialization else
         "simulator_default_local01_aligned_start_v1.yaml"
@@ -2080,6 +2193,72 @@ def prepare_local01_scene_runtime_bundle(
         assert_aligned_start_scene_equivalence(corrected_source_model, generated_model)
         if aligned_start else assert_scene_name_only_equivalence(corrected_source_model, generated_model)
     )
+    static_nominal_start: dict[str, Any] | None = None
+    static_nominal_start_equivalence: dict[str, Any] | None = None
+    if static_nominal_start_initialization:
+        nominal_target = derive_synchronized_nominal_keyframe(
+            generated_model, runtime_x2_path.with_name("default.yaml")
+        )
+        frame = _x2_start_frame(scene_root)
+        source_pos = _parse_xml_vector(frame.get("pos"), 3, "aligned x2_start_frame.pos")
+        if not (
+            math.isclose(source_pos[0], X2_SOURCE_START_POS_M[0], abs_tol=1e-12)
+            and math.isclose(source_pos[1], X2_SOURCE_START_POS_M[1], abs_tol=1e-12)
+            and math.isclose(source_pos[2], X2_SOURCE_START_POS_M[2], abs_tol=1e-12)
+        ):
+            raise Local01SceneRouteError(
+                "static nominal-start may alter only the source X2 frame Z coordinate"
+            )
+        frame.set(
+            "pos",
+            _format_xml_vector((
+                source_pos[0],
+                source_pos[1],
+                source_pos[2] + float(nominal_target["root_height_shift_m"]),
+            )),
+        )
+        ET.ElementTree(scene_root).write(scene_runtime, encoding="utf-8", xml_declaration=True)
+        runtime_scene_root = ET.parse(scene_runtime).getroot()
+        host_scene = ET.fromstring(ET.tostring(runtime_scene_root))
+        for item in host_scene.findall("./asset/model"):
+            item.set(
+                "file",
+                "offline_mug.xml" if item.get("name") == "raicom_mug"
+                else str(resolve_container_path(item.attrib["file"])),
+            )
+        static_model = mujoco.MjModel.from_xml_string(
+            ET.tostring(host_scene, encoding="unicode"),
+            assets={"offline_mug.xml": ET.tostring(host_mug)},
+        )
+        static_nominal_start_equivalence = assert_static_nominal_start_equivalence(
+            generated_model, static_model, nominal_target,
+        )
+        post_static_nominal = derive_synchronized_nominal_keyframe(
+            static_model, runtime_x2_path.with_name("default.yaml")
+        )
+        if abs(float(post_static_nominal["root_height_shift_m"])) > 1e-8:
+            raise Local01SceneRouteError(
+                "static nominal-start frame Z does not produce tangent selected-foot contacts"
+            )
+        generated_model = static_model
+        static_nominal_start = {
+            "schema": "robotsim.issue80.static-nominal-start.v1",
+            "classification": "SIMULATION_ONLY_SOURCE_MC_NOMINAL_CONFIGURATION_STATIC_FRAME_Z",
+            "version": STATIC_NOMINAL_START_VERSION,
+            "source_nominal_target": nominal_target,
+            "derived_frame_z_offset_m": float(nominal_target["root_height_shift_m"]),
+            "derived_start_frame_pos_m": list(_parse_xml_vector(
+                _x2_start_frame(runtime_scene_root).get("pos"), 3, "static x2_start_frame.pos",
+            )),
+            "post_static_contact_validation": post_static_nominal,
+            "equivalence": static_nominal_start_equivalence,
+            "applies_before_vendor_model_load": True,
+            "post_start_qpos_write": False,
+            "mj_step_calls": 0,
+        }
+        with (bundle / "static_nominal_start.json").open("x", encoding="utf-8") as stream:
+            json.dump(static_nominal_start, stream, indent=2, sort_keys=True)
+            stream.write("\n")
     synchronized_keyframe: dict[str, Any] | None = None
     keyframe_equivalence: dict[str, Any] | None = None
     if synchronized_nominal_initialization:
@@ -2126,6 +2305,12 @@ def prepare_local01_scene_runtime_bundle(
             stream.write("\n")
     generated_equivalence = (
         {
+            "status": "PASS_ALIGNED_START_STATIC_NOMINAL_INITIALIZATION_INVARIANTS",
+            "aligned_start_equivalence": base_equivalence,
+            "static_nominal_start_equivalence": static_nominal_start_equivalence,
+        }
+        if static_nominal_start_initialization else
+        {
             "status": "PASS_ALIGNED_START_KEYFRAME_INITIALIZATION_INVARIANTS",
             "aligned_start_equivalence": base_equivalence,
             "synchronized_keyframe_equivalence": keyframe_equivalence,
@@ -2140,6 +2325,8 @@ def prepare_local01_scene_runtime_bundle(
     records = {
         "schema": "robotsim.issue80.local01-scene-runtime-bundle.v1",
         "classification": (
+            "SIMULATION_ONLY_ALIGNED_START_STATIC_NOMINAL_INITIALIZATION_V1"
+            if static_nominal_start_initialization else
             "SIMULATION_ONLY_ALIGNED_START_KEYFRAME_SYNCHRONIZED_INITIALIZATION_V1"
             if synchronized_nominal_initialization else
             "SIMULATION_ONLY_ALIGNED_START_SCENE_WRAPPER_V1"
@@ -2153,6 +2340,8 @@ def prepare_local01_scene_runtime_bundle(
             simulator_config_name: _sha256(simulator_config),
             **({"synchronized_nominal_keyframe.json": _sha256(bundle / "synchronized_nominal_keyframe.json")}
                if synchronized_nominal_initialization else {}),
+            **({"static_nominal_start.json": _sha256(bundle / "static_nominal_start.json")}
+               if static_nominal_start_initialization else {}),
         },
         "runtime_x2_sha256": _sha256(
             runtime_x2_path
@@ -2163,6 +2352,8 @@ def prepare_local01_scene_runtime_bundle(
             "to": runtime_scene_container_path,
         },
         "scene_wrapper_change_classification": (
+            "X2_ATTACH_PREFIX_ALIGNED_START_QUATERNION_AND_SOURCE_MC_NOMINAL_STATIC_FRAME_Z_V1"
+            if static_nominal_start_initialization else
             "X2_ATTACH_PREFIX_ALIGNED_START_QUATERNION_AND_SOURCE_MC_NOMINAL_KEYFRAME_V1"
             if synchronized_nominal_initialization else
             "X2_ATTACH_PREFIX_AND_ALIGNED_START_QUATERNION_V1_AND_MODEL_FILE_PATHS"
@@ -2186,6 +2377,12 @@ def prepare_local01_scene_runtime_bundle(
             "applies_only_via_native_MuJoCo_Load_key_before_physics_release": (
                 synchronized_nominal_initialization
             ),
+            "post_start_qpos_write": False,
+        },
+        "static_nominal_start_initialization": {
+            "enabled": static_nominal_start_initialization,
+            "initialization": static_nominal_start,
+            "applies_only_before_vendor_model_load": static_nominal_start_initialization,
             "post_start_qpos_write": False,
         },
         "generated_runtime_name_contract": generated_contract,

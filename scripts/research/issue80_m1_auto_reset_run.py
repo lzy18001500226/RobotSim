@@ -30,6 +30,7 @@ from issue80_m1_first_motion import (
     ZERO_STOP_MIN_MESSAGES,
     validate_b_post_locomotion_observation,
 )
+from issue80_m1_set_action_capture import native_foot_support, native_root_within_existing_safety_gate
 from issue80_stand_baseline_analysis import analyze_standing_trace
 from issue80_coordinated_pose_goal import (
     POSE_GOAL_APPROACH_WARMUP_S,
@@ -148,6 +149,7 @@ POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 TABLE_APPROACH_CHILD_TIMEOUT_S = 410.0
 TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
+STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
 POINT_GOAL_ANGULAR_TAPER_START_ERROR_M = 0.25
 POINT_GOAL_MAX_LATERAL_ERROR_M = 0.05
 POINT_GOAL_MAX_OVERSHOOT_M = 0.05
@@ -332,6 +334,96 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
             "configured route requires 0.12 m/s, the default generic pulse fields, "
             "7 s existing post-STAND observation, and no ramp/debug/turn overlays"
         )
+
+
+def assess_static_nominal_start_sample(
+    sample: Mapping[str, Any], expected: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Assess vendor-applied nominal joints plus static root geometry.
+
+    This is an observation-only pre-JD gate.  It checks the generated scene's
+    source-MC nominal target against native capture; it neither steps MuJoCo
+    nor writes a state vector.
+    """
+    try:
+        qpos = [float(value) for value in sample["qpos"]]
+        target = [float(value) for value in expected["qpos"]]
+    except (KeyError, TypeError, ValueError):
+        return {"eligible": False, "failure_reason": "missing_native_or_expected_qpos"}
+    if len(qpos) != len(target) or len(qpos) < 19:
+        return {"eligible": False, "failure_reason": "native_qpos_dimension_mismatch"}
+    residuals = [abs(qpos[index] - target[index]) for index in range(7, 19)]
+    max_leg_residual = max(residuals, default=math.inf)
+    support = native_foot_support(sample)
+    root_safe = native_root_within_existing_safety_gate(support)
+    eligible = (
+        math.isfinite(max_leg_residual)
+        and max_leg_residual <= STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD
+        and support.get("safe_to_begin_ros_upright_gate") is True
+        and root_safe
+    )
+    return {
+        "eligible": eligible,
+        "maximum_leg_nominal_residual_rad": max_leg_residual,
+        "maximum_leg_nominal_residual_limit_rad": STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD,
+        "native_root_within_existing_safety_gate": root_safe,
+        "support": support,
+        "failure_reason": None if eligible else "static_nominal_start_native_gate_not_met",
+    }
+
+
+def validate_static_nominal_start_table_approach_clearance(
+    static_plan: Mapping[str, Any], *, root_z_offset_m: float,
+) -> dict[str, Any]:
+    """Transfer the reviewed table-approach clearance bound to a Z-shifted start.
+
+    Translating every robot point by ``d`` can reduce a point-to-environment
+    Euclidean clearance lower bound by no more than ``abs(d)``.  This is a
+    conservative static certificate for START -> WAYPOINT -> TABLE_APPROACH,
+    never a dynamic navigation result or TABLE_DOCKING clearance claim.
+    """
+    if not math.isfinite(root_z_offset_m):
+        raise ValueError("static nominal-start root Z offset is non-finite")
+    segments = static_plan.get("segments")
+    if not isinstance(segments, list):
+        raise ValueError("table static plan has no segment list")
+    required = {("START", "WAYPOINT"), ("WAYPOINT", "TABLE_APPROACH")}
+    records: list[dict[str, Any]] = []
+    for segment in segments:
+        if not isinstance(segment, Mapping):
+            continue
+        key = (segment.get("from"), segment.get("to"))
+        if key not in required or segment.get("posture") != "runtime_nominal":
+            continue
+        try:
+            original = float(segment["tracking_inflated_aabb_lower_bound_m"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("required runtime-nominal route clearance is malformed") from exc
+        if (
+            not math.isfinite(original)
+            or segment.get("status") != "PASS_STATIC_ONLY"
+            or segment.get("active_environment_contacts")
+            or segment.get("first_tracking_inflated_below_20mm") is not None
+        ):
+            raise ValueError("reviewed runtime-nominal route segment is not clearance-qualified")
+        records.append({
+            "from": key[0],
+            "to": key[1],
+            "original_tracking_inflated_lower_bound_m": original,
+            "root_z_translation_magnitude": abs(root_z_offset_m),
+            "conservative_transferred_lower_bound_m": max(0.0, original - abs(root_z_offset_m)),
+        })
+    if { (record["from"], record["to"]) for record in records } != required:
+        raise ValueError("table static plan lacks both runtime-nominal approach segments")
+    minimum = min(record["conservative_transferred_lower_bound_m"] for record in records)
+    return {
+        "schema": "robotsim.issue80.static-nominal-start-table-approach-clearance.v1",
+        "status": "PASS_STATIC_NOMINAL_START_TABLE_APPROACH_CLEARANCE" if minimum >= 0.020 else "FAIL_STATIC_NOMINAL_START_TABLE_APPROACH_CLEARANCE",
+        "segments": records,
+        "minimum_conservative_transferred_lower_bound_m": minimum,
+        "minimum_required_clearance_m": 0.020,
+        "classification": "STATIC_GEOMETRY_TRANSFER_ONLY_NOT_DYNAMIC_NAVIGATION_OR_TABLE_DOCKING",
+    }
 
 
 class RunDeadline(TimeoutError):
@@ -1054,9 +1146,14 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
     )
     child_pulse = ACTIVATION_PROBE_DURATION_S if activation_probe else args.pulse_duration
     child_forward = 0.12 if activation_probe else args.forward_speed
+    startup_gate_flag = (
+        "--initialization-gate-verified"
+        if getattr(args, "static_nominal_start_initialization", False)
+        else "--reset-gate-verified"
+    )
     command = [
         "docker", "exec", "-e", "ROBOTSIM_VERIFIED_NETWORK_MODE=bridge", container, "bash", "-lc",
-        "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion " + child_authorization + " --reset-gate-verified"
+        "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && python3 /workspace/evidence/issue80_m1_locomotion_probe.py first-motion " + child_authorization + " " + startup_gate_flag
         + " --extra-stop-observation " + str(child_extra_stop)
         + " --pulse-duration " + str(child_pulse)
         + " --forward-speed " + str(child_forward)
@@ -1711,6 +1808,9 @@ class BoundedRun:
         self.synchronized_paused_initialization = bool(
             getattr(args, "synchronized_paused_initialization", False)
         )
+        self.static_nominal_start_initialization = bool(
+            getattr(args, "static_nominal_start_initialization", False)
+        )
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
@@ -1740,6 +1840,7 @@ class BoundedRun:
                 runtime_root=RUNTIME,
                 aligned_start=self.aligned_start_table_approach,
                 synchronized_nominal_initialization=self.synchronized_paused_initialization,
+                static_nominal_start_initialization=self.static_nominal_start_initialization,
             )
             # Retain the existing name/physics-equivalence evidence used by
             # the Local01 runtime wrapper.  The separate full table-plan file
@@ -3019,7 +3120,7 @@ class BoundedRun:
     def start_observer(self) -> None:
         native_capture_args = (
             " --native-mjdata-trace /workspace/evidence/" + CAPTURE_TRACE_NAME
-            + " --require-native-reset-generation"
+            + ("" if self.static_nominal_start_initialization else " --require-native-reset-generation")
             if self.native_mjdata_capture else ""
         )
         initialization_args = (
@@ -3028,6 +3129,8 @@ class BoundedRun:
             " --physics-release-event-file /workspace/evidence/physics_release_event.json"
             " --synchronized-ready-file /workspace/evidence/synchronized_jd_ready.json"
             if self.synchronized_paused_initialization
+            else " --static-nominal-start-event-file /workspace/evidence/static_nominal_start_event.json"
+            if self.static_nominal_start_initialization
             else " --reset-event-file /workspace/evidence/reset_dispatch_event.json"
         )
         self.docker_exec(
@@ -3467,6 +3570,127 @@ class BoundedRun:
             stream.write("\n")
         raise RuntimeError("native MuJoCo Pause could not be confirmed from MjData step quiescence")
 
+    def verify_native_static_nominal_start(self) -> dict[str, Any]:
+        """Require a stable vendor-applied nominal configuration before JD.
+
+        The static wrapper is already present when the vendor loads the model.
+        This method only reads the evidence-local capture stream and records a
+        single barrier; it has no GUI, qpos, actuator, or MC-action path.
+        """
+        initialization = (
+            self.local01_scene_bundle or {}
+        ).get("static_nominal_start_initialization", {})
+        static = initialization.get("initialization") if isinstance(initialization, Mapping) else None
+        if not isinstance(static, Mapping):
+            raise RuntimeError("static nominal-start scene bundle is missing its derived target")
+        expected = static.get("source_nominal_target")
+        if not isinstance(expected, Mapping):
+            raise RuntimeError("static nominal-start scene bundle has no source nominal target")
+        trace = self.evidence / CAPTURE_TRACE_NAME
+        deadline = min(self.deadline, time.monotonic() + RESET_STAND_HANDOFF_MAX_S)
+        last: dict[str, Any] = {"status": "WAITING_FOR_NATIVE_STATIC_NOMINAL_START"}
+        consecutive = 0
+        saw_nominal = False
+        unsafe_after_nominal: dict[str, Any] | None = None
+        seen_native_sample_ns: set[int] = set()
+        while time.monotonic() < deadline:
+            rows: list[dict[str, Any]] = []
+            if trace.is_file() and not trace.is_symlink():
+                for line in trace.read_text(encoding="utf-8", errors="replace").splitlines():
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if row.get("event") in {"post_step", "post_step_after_reset_generation"}:
+                        rows.append(row)
+            for row in rows:
+                host_ns = row.get("host_monotonic_ns")
+                if not isinstance(host_ns, int) or host_ns in seen_native_sample_ns:
+                    continue
+                seen_native_sample_ns.add(host_ns)
+                assessment = assess_static_nominal_start_sample(row, expected)
+                max_residual = assessment.get("maximum_leg_nominal_residual_rad")
+                if isinstance(max_residual, (int, float)) and math.isfinite(float(max_residual)):
+                    saw_nominal = saw_nominal or (
+                        float(max_residual) <= STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD
+                    )
+                if saw_nominal and assessment.get("native_root_within_existing_safety_gate") is not True:
+                    unsafe_after_nominal = {"sample": row, "assessment": assessment}
+                    break
+                if assessment.get("eligible") is True:
+                    consecutive += 1
+                    last = {
+                        "status": "STATIC_NOMINAL_START_NATIVE_READY",
+                        "required_consecutive_samples": 2,
+                        "consecutive_samples": consecutive,
+                        "sample": row,
+                        "assessment": assessment,
+                    }
+                    if consecutive >= 2:
+                        record = {
+                            "schema": "robotsim.issue80.static-nominal-start-native-preflight.v1",
+                            "status": "PASS_STATIC_NOMINAL_START_NATIVE_READY",
+                            "source": "read_only_native_MjData_capture",
+                            "initialization": static,
+                            "native_gate": last,
+                            "unsafe_after_nominal": None,
+                            "mj_step_calls_by_parent": 0,
+                            "qpos_writes_by_parent": 0,
+                        }
+                        with (self.evidence / "static_nominal_start_native_preflight.json").open("x", encoding="utf-8") as stream:
+                            json.dump(record, stream, indent=2)
+                            stream.write("\n")
+                        return record
+                else:
+                    consecutive = 0
+                    last = {
+                        "status": "WAITING_FOR_NATIVE_STATIC_NOMINAL_START",
+                        "assessment": assessment,
+                        "sample": row,
+                    }
+            if unsafe_after_nominal is not None:
+                break
+            time.sleep(0.02)
+        record = {
+            "schema": "robotsim.issue80.static-nominal-start-native-preflight.v1",
+            "status": "FAIL_STATIC_NOMINAL_START_NATIVE_READY",
+            "source": "read_only_native_MjData_capture",
+            "initialization": static,
+            "last": last,
+            "unsafe_after_nominal": unsafe_after_nominal,
+            "mj_step_calls_by_parent": 0,
+            "qpos_writes_by_parent": 0,
+        }
+        with (self.evidence / "static_nominal_start_native_preflight.json").open("x", encoding="utf-8") as stream:
+            json.dump(record, stream, indent=2)
+            stream.write("\n")
+        raise RuntimeError("static nominal-start native preflight did not establish two safe nominal-support samples")
+
+    def dispatch_static_nominal_start_barrier(self, native_preflight: Mapping[str, Any]) -> dict[str, Any]:
+        """Publish one evidence-only barrier for the pre-armed ROS observer."""
+        path = self.evidence / "static_nominal_start_event.json"
+        if path.exists():
+            raise RuntimeError("static nominal-start barrier already exists")
+        event = {
+            "status": "STATIC_NOMINAL_START_READY",
+            "dispatch_wall_utc": datetime.now(timezone.utc).isoformat(),
+            "dispatch_monotonic_ns": time.monotonic_ns(),
+            "input_sent": False,
+            "qpos_written": False,
+            "native_preflight_status": native_preflight.get("status"),
+            "classification": "STATIC_SCENE_INITIALIZATION_BARRIER_NOT_MUJOCO_RESET",
+        }
+        payload = {
+            "schema": "robotsim.issue80.static-nominal-start-event.v1",
+            "event": event,
+            "native_preflight": native_preflight,
+        }
+        with path.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.write("\n")
+        self.reset_dispatch_payload = payload
+        return payload
+
     def inspect_x11_target_identity(self, pid: int, title: str, window_id: int) -> dict[str, Any]:
         """Recheck the exact X11 process/window identity without changing focus or sending input."""
         result = self.run(
@@ -3671,6 +3895,55 @@ class BoundedRun:
             "initialization_method": "native_MuJoCo_Pause_Load_key_then_MC_JD_before_Play",
         }
         with (self.evidence / "synchronized_initialization_analysis.json").open("x", encoding="utf-8") as stream:
+            json.dump(result, stream, indent=2)
+            stream.write("\n")
+        self.reset_analysis = result
+        self.reset_classification = str(result["classification"])
+        return result
+
+    def wait_and_classify_static_nominal_start(self) -> dict[str, Any]:
+        """Classify the no-Reset static-start JD/SD observation."""
+        summary_path = self.evidence / "reset_state_summary.json"
+        takeover_path = self.evidence / "set_action_capture_result.json"
+        deadline = min(
+            self.deadline,
+            time.monotonic() + RESET_OBSERVER_DURATION_S + RESET_OBSERVER_COMPLETION_MARGIN_S,
+        )
+        while time.monotonic() < deadline and not summary_path.exists():
+            time.sleep(0.02)
+        if not summary_path.exists() or not takeover_path.exists():
+            raise RuntimeError("static nominal-start observer did not produce its terminal summary")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        takeover = json.loads(takeover_path.read_text(encoding="utf-8"))
+        baseline = summary.get("standing_baseline_observation")
+        native_preflight_path = self.evidence / "static_nominal_start_native_preflight.json"
+        native_preflight = (
+            json.loads(native_preflight_path.read_text(encoding="utf-8"))
+            if native_preflight_path.is_file() else None
+        )
+        passed = (
+            isinstance(native_preflight, Mapping)
+            and native_preflight.get("status") == "PASS_STATIC_NOMINAL_START_NATIVE_READY"
+            and takeover.get("status") == "TAKEOVER_SEQUENCE_COMPLETE"
+            and summary.get("observer_status") == "STAND_DEFAULT_BASELINE_COMPLETE"
+            and isinstance(baseline, Mapping)
+            and baseline.get("complete") is True
+        )
+        result = {
+            "schema": "robotsim.issue80.static-nominal-start-observation.v1",
+            "classification": (
+                "STATIC_NOMINAL_START_STAND_BASELINE_PASS"
+                if passed else "STATIC_NOMINAL_START_STAND_BASELINE_FAIL"
+            ),
+            "takeover_status": takeover.get("status"),
+            "observer_status": summary.get("observer_status"),
+            "standing_baseline_observation": baseline,
+            "native_static_preflight": native_preflight,
+            "native_mjdata": takeover.get("native_mjdata"),
+            "reset_or_runtime_qpos_teleportation": False,
+            "initialization_method": "static_x2_start_frame_z_before_vendor_model_load",
+        }
+        with (self.evidence / "static_nominal_start_analysis.json").open("x", encoding="utf-8") as stream:
             json.dump(result, stream, indent=2)
             stream.write("\n")
         self.reset_analysis = result
@@ -4015,6 +4288,7 @@ class BoundedRun:
             "runtime_limit_s": self.args.max_runtime_s,
             "reset_classification": "NOT_ATTEMPTED",
             "synchronized_paused_initialization": self.synchronized_paused_initialization,
+            "static_nominal_start_initialization": self.static_nominal_start_initialization,
             "m1_status": "NOT_RUN",
             "mc_rl_debug_capture": None,
             "mc_rl_debug_overlay": None,
@@ -4088,6 +4362,23 @@ class BoundedRun:
                         "classification": preflight["mission"]["classification"],
                         "execution_status": "INPUT_PREFLIGHT_ONLY",
                     }
+                    if self.static_nominal_start_initialization:
+                        static_bundle = (
+                            self.local01_scene_bundle or {}
+                        ).get("static_nominal_start_initialization", {})
+                        static_init = (
+                            static_bundle.get("initialization")
+                            if isinstance(static_bundle, Mapping) else None
+                        )
+                        if not isinstance(static_init, Mapping):
+                            raise RuntimeError("static nominal-start bundle has no derived frame-Z offset")
+                        transferred = validate_static_nominal_start_table_approach_clearance(
+                            preflight["plan"],
+                            root_z_offset_m=float(static_init["derived_frame_z_offset_m"]),
+                        )
+                        result["static_nominal_start_table_approach_clearance"] = transferred
+                        if transferred.get("status") != "PASS_STATIC_NOMINAL_START_TABLE_APPROACH_CLEARANCE":
+                            raise RuntimeError("static nominal-start table-approach clearance transfer did not pass")
                 elif getattr(self.args, "local01_scene_world_poses", None):
                     local01_static = self.args.local01_scene_static_preflight
                     if local01_static.get("status") != "PASS_STATIC_SCENE_CLEARANCE":
@@ -4138,23 +4429,44 @@ class BoundedRun:
                 self.start_sim_first(start_mc=False)
             else:
                 self.start_sim_first()
-            pid, title, window_id = self.inspect_window()
+            pid: int | None = None
+            title: str | None = None
+            window_id: int | None = None
+            if not self.static_nominal_start_initialization:
+                pid, title, window_id = self.inspect_window()
             if self.local01_scene_mode:
-                title_matches = "RAICOM X2 room workspace" in title
                 runtime_scene_filename = str(
                     self.local01_scene_bundle["runtime_scene_filename"]
                 ) if self.local01_scene_bundle is not None else "scene_workspace_runtime.xml"
-                result["scene_window_verification"] = {
-                    "status": "PASS" if title_matches else "FAIL",
-                    "expected_scene_model_title_fragment": "RAICOM X2 room workspace",
-                    "observed_window_title": title,
-                    "scene_runtime_bundle_sha256": hashlib.sha256(
-                        (self.evidence / "local01_scene" / runtime_scene_filename).read_bytes()
-                    ).hexdigest(),
-                    "aligned_start_table_approach": self.aligned_start_table_approach,
-                }
-                if not title_matches:
-                    raise RuntimeError("MuJoCo window does not identify the configured Local01 RAICOM scene")
+                scene_sha = hashlib.sha256(
+                    (self.evidence / "local01_scene" / runtime_scene_filename).read_bytes()
+                ).hexdigest()
+                if self.static_nominal_start_initialization:
+                    result["scene_runtime_verification"] = {
+                        "status": "PASS_STATIC_WRAPPER_HASH_VERIFIED_NO_GUI_DEPENDENCY",
+                        "expected_scene_model_title_fragment": "RAICOM X2 room workspace",
+                        "observed_window_title": None,
+                        "scene_runtime_bundle_sha256": scene_sha,
+                        "aligned_start_table_approach": self.aligned_start_table_approach,
+                    }
+                    static_start = self.local01_scene_bundle.get(
+                        "static_nominal_start_initialization"
+                    ) if self.local01_scene_bundle is not None else None
+                    if not isinstance(static_start, Mapping) or static_start.get("enabled") is not True:
+                        raise RuntimeError("static nominal-start scene bundle is missing")
+                    result["static_nominal_start_preflight"] = static_start
+                else:
+                    assert title is not None
+                    title_matches = "RAICOM X2 room workspace" in title
+                    result["scene_window_verification"] = {
+                        "status": "PASS" if title_matches else "FAIL",
+                        "expected_scene_model_title_fragment": "RAICOM X2 room workspace",
+                        "observed_window_title": title,
+                        "scene_runtime_bundle_sha256": scene_sha,
+                        "aligned_start_table_approach": self.aligned_start_table_approach,
+                    }
+                    if not title_matches:
+                        raise RuntimeError("MuJoCo window does not identify the configured Local01 RAICOM scene")
                 if self.synchronized_paused_initialization:
                     synchronization = self.local01_scene_bundle.get(
                         "synchronized_nominal_initialization"
@@ -4162,8 +4474,11 @@ class BoundedRun:
                     if not isinstance(synchronization, Mapping) or synchronization.get("enabled") is not True:
                         raise RuntimeError("synchronized nominal keyframe bundle is missing")
                     result["synchronized_initialization_preflight"] = synchronization
-            self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
+            if not self.static_nominal_start_initialization:
+                assert pid is not None and title is not None and window_id is not None
+                self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
             if self.synchronized_paused_initialization:
+                assert pid is not None and title is not None and window_id is not None
                 pause = self.dispatch_native_pause_toggle(pid, title, window_id)
                 result["synchronized_pause_dispatch"] = pause
                 result["synchronized_pause_quiescence"] = self.verify_native_pause_quiescence(pause)
@@ -4171,6 +4486,7 @@ class BoundedRun:
             self.capture_service_topic_inventory()
             self.start_observer()
             if self.synchronized_paused_initialization:
+                assert pid is not None and title is not None and window_id is not None
                 result["synchronized_keyframe_selection"] = self.dispatch_native_keyframe_zero(
                     pid, title, window_id
                 )
@@ -4185,7 +4501,15 @@ class BoundedRun:
                 # validates resumed native stepping before SD.
                 result["set_mc_action_sd"] = self.request_sd_and_verify()
                 reset = self.wait_and_classify_synchronized_initialization(pid, title, window_id)
+            elif self.static_nominal_start_initialization:
+                result["static_nominal_start_native_preflight"] = self.verify_native_static_nominal_start()
+                result["static_nominal_start_barrier"] = self.dispatch_static_nominal_start_barrier(
+                    result["static_nominal_start_native_preflight"]
+                )
+                result["set_mc_action_sd"] = self.request_sd_and_verify()
+                reset = self.wait_and_classify_static_nominal_start()
             else:
+                assert pid is not None and title is not None and window_id is not None
                 self.dispatch_native_reset_button(pid, title, window_id)
                 result["reset_immediate_posture"] = self.wait_for_immediate_reset_pose()
                 # The pre-armed node sends the source-supported PD -> JD -> SD
@@ -4198,6 +4522,8 @@ class BoundedRun:
                 "SYNCHRONIZED_INITIALIZATION_STAND_BASELINE_PASS"
                 if self.synchronized_paused_initialization else "AUTO_RESET_PASS"
             )
+            if self.static_nominal_start_initialization:
+                required_startup_status = "STATIC_NOMINAL_START_STAND_BASELINE_PASS"
             if reset.get("classification") != required_startup_status:
                 self.outcome_classification = "STANDING_CONTROL_NOT_READY"
                 raise RuntimeError(f"post-SD standing safety gate failed: {reset.get('classification')}")
@@ -4739,6 +5065,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--static-nominal-start-initialization",
+        action="store_true",
+        help=(
+            "simulation-only source-MC nominal configuration with a collision-derived "
+            "pre-load X2 start-frame Z offset; no GUI Reset, keyframe load, or runtime qpos write"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -4898,6 +5232,20 @@ def main() -> int:
         ):
             parser.error(
                 "synchronized paused initialization requires the authorized aligned-start TABLE_APPROACH mission, "
+                "standing warmup, and native MjData capture"
+            )
+    if args.static_nominal_start_initialization:
+        if args.synchronized_paused_initialization:
+            parser.error("static nominal-start initialization cannot be combined with keyframe initialization")
+        if not (
+            args.table_approach_mission
+            and args.aligned_start_table_approach
+            and args.maintainer_authorized_first_motion
+            and args.require_stand_warmup_composite
+            and args.native_mjdata_capture
+        ):
+            parser.error(
+                "static nominal-start initialization requires the authorized aligned-start TABLE_APPROACH mission, "
                 "standing warmup, and native MjData capture"
             )
     if args.route_config:

@@ -7351,10 +7351,19 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("activation probe requires its separate authorization flag")
     if sum((bool(args.maintainer_authorized), zero_only_authorized, activation_probe_authorized)) > 1:
         raise ValueError("first-motion, zero-only activation, and activation-probe authorizations are separate")
-    if not args.reset_gate_verified or not (
+    startup_gate_verified = bool(
+        args.reset_gate_verified or getattr(args, "initialization_gate_verified", False)
+    )
+    if args.reset_gate_verified and getattr(args, "initialization_gate_verified", False):
+        raise ValueError("Reset and static initialization gates are mutually exclusive")
+    if not startup_gate_verified or not (
         args.maintainer_authorized or zero_only_authorized or activation_probe_authorized
     ):
-        raise ValueError("a verified Reset and matching explicit authorization are required")
+        raise ValueError("a verified Reset or static initialization gate and matching explicit authorization are required")
+    # Existing route and stop logic use this internal boolean as an already
+    # qualified startup gate; retain it without mislabelling static startup in
+    # the command-line evidence.
+    args.reset_gate_verified = startup_gate_verified
     if zero_only_verification and (
         args.maintainer_authorized
         or args.turning_diagnostic
@@ -7830,6 +7839,11 @@ def main() -> int:
     first.add_argument("--activation-probe-prerequisite-attempt-id", default=None)
     first.add_argument("--activation-probe-prerequisite-path", default=None)
     first.add_argument("--reset-gate-verified", action="store_true")
+    first.add_argument(
+        "--initialization-gate-verified",
+        action="store_true",
+        help="verified static pre-load startup plus JD/SD standing gate; no Reset is implied",
+    )
     first.add_argument("--attempt-id", required=True)
     first.add_argument("--output-dir", required=True)
     first.add_argument("--robot-model-path", default=ROBOT_MODEL_PATH)
@@ -7912,7 +7926,7 @@ def main() -> int:
             "attempt_id": args.attempt_id,
             "production_authorization_flags_present": True,
             "network_isolation": "NOT_EVALUATED; validation container is intentionally --network=none",
-            "reset_and_standing": "NOT_EVALUATED",
+            "reset_or_static_initialization_and_standing": "NOT_EVALUATED",
             "ros_initialized": False,
             "mujoco_or_mc_started": False,
             "profile": profile,

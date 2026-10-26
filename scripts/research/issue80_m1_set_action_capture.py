@@ -650,6 +650,13 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--reset-event-file", type=Path, default=None)
     parser.add_argument(
+        "--static-nominal-start-event-file", type=Path, default=None,
+        help=(
+            "parent-written pre-physics static-nominal-start barrier; this path "
+            "does not dispatch or claim a native MuJoCo Reset"
+        ),
+    )
+    parser.add_argument(
         "--synchronized-keyframe-event-file", type=Path, default=None,
         help="native MuJoCo Load key dispatch record for the paused synchronized-init path",
     )
@@ -705,6 +712,9 @@ def main() -> int:
         args.synchronized_ready_file,
     )
     synchronized = any(path is not None for path in synchronized_paths)
+    static_nominal_start = args.static_nominal_start_event_file is not None
+    if static_nominal_start and (synchronized or args.reset_event_file is not None):
+        parser.error("static nominal-start initialization is mutually exclusive with Reset and keyframe initialization")
     if synchronized:
         if any(path is None for path in synchronized_paths):
             parser.error("synchronized initialization requires all keyframe/release/ready paths")
@@ -712,7 +722,7 @@ def main() -> int:
             parser.error("synchronized initialization cannot also consume a Reset event")
         if not args.require_native_reset_generation:
             parser.error("synchronized initialization requires native MjData capture generation evidence")
-    elif args.reset_event_file is None:
+    elif not static_nominal_start and args.reset_event_file is None:
         parser.error("--reset-event-file is required outside synchronized initialization")
 
     import rclpy
@@ -742,6 +752,9 @@ def main() -> int:
             super().__init__("issue80_m1_standing_takeover_capture")
             self.output_dir = args.output_dir.resolve(strict=True)
             self.synchronized_initialization = bool(args.synchronized_keyframe_event_file)
+            self.static_nominal_start_initialization = bool(
+                args.static_nominal_start_event_file
+            )
             self.reset_event_file = (
                 args.reset_event_file.resolve(strict=False)
                 if args.reset_event_file is not None else None
@@ -749,6 +762,10 @@ def main() -> int:
             self.synchronized_keyframe_event_file = (
                 args.synchronized_keyframe_event_file.resolve(strict=False)
                 if args.synchronized_keyframe_event_file is not None else None
+            )
+            self.static_nominal_start_event_file = (
+                args.static_nominal_start_event_file.resolve(strict=False)
+                if args.static_nominal_start_event_file is not None else None
             )
             self.physics_release_event_file = (
                 args.physics_release_event_file.resolve(strict=False)
@@ -1366,12 +1383,16 @@ def main() -> int:
             deadline = time.monotonic() + args.reset_wait_timeout_s
             event_file = (
                 self.synchronized_keyframe_event_file
-                if self.synchronized_initialization else self.reset_event_file
+                if self.synchronized_initialization else
+                self.static_nominal_start_event_file
+                if self.static_nominal_start_initialization else self.reset_event_file
             )
             assert event_file is not None
             expected_status = (
                 "LOAD_KEY_BUTTON_CLICKED"
-                if self.synchronized_initialization else None
+                if self.synchronized_initialization else
+                "STATIC_NOMINAL_START_READY"
+                if self.static_nominal_start_initialization else None
             )
             while rclpy.ok() and time.monotonic() < deadline:
                 self.spin_for(0.005)
@@ -1392,6 +1413,8 @@ def main() -> int:
                     self.error = (
                         "synchronized keyframe event did not contain a verified native Load key input"
                         if self.synchronized_initialization
+                        else "static nominal-start event did not contain a verified parent readiness barrier"
+                        if self.static_nominal_start_initialization
                         else "Reset event file did not contain a verified simulator Reset input event"
                     )
                     return None
@@ -1399,6 +1422,7 @@ def main() -> int:
                 self.reset_ns = dispatch_ns
                 self.record_event(
                     "synchronized_keyframe_barrier_observed" if self.synchronized_initialization
+                    else "static_nominal_start_barrier_observed" if self.static_nominal_start_initialization
                     else "reset_barrier_observed",
                     reset_dispatch=payload,
                 )
@@ -1406,6 +1430,8 @@ def main() -> int:
             self.error = (
                 "verified native Load key event file was not observed before timeout"
                 if self.synchronized_initialization
+                else "verified static nominal-start barrier was not observed before timeout"
+                if self.static_nominal_start_initialization
                 else "verified Reset event file was not observed before timeout"
             )
             return None

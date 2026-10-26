@@ -359,6 +359,43 @@ class Local01SceneRouteTests(unittest.TestCase):
             self.assertIsNotNone(key)
             self.assertTrue((evidence / "local01_scene/synchronized_nominal_keyframe.json").is_file())
 
+    @unittest.skipUnless(LOCAL01_POSES_PATH.is_file(), "Local01 source worktree is unavailable")
+    def test_static_nominal_start_moves_only_preload_frame_z_to_the_nominal_contact_height(self):
+        source = load_local01_scene_inputs(LOCAL01_POSES_PATH, require_clean_commit=True)
+        runtime_root = ROBOTSIM_ROOT / "simulation/mujoco/raicom2026"
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / "evidence"
+            evidence.mkdir()
+            bundle = prepare_local01_scene_runtime_bundle(
+                source,
+                evidence,
+                runtime_root=runtime_root,
+                aligned_start=True,
+                static_nominal_start_initialization=True,
+            )
+            self.assertEqual(
+                bundle["classification"],
+                "SIMULATION_ONLY_ALIGNED_START_STATIC_NOMINAL_INITIALIZATION_V1",
+            )
+            init = bundle["static_nominal_start_initialization"]
+            self.assertTrue(init["enabled"])
+            state = init["initialization"]
+            self.assertAlmostEqual(state["derived_frame_z_offset_m"], -0.020679493873912384)
+            self.assertAlmostEqual(state["derived_start_frame_pos_m"][2], -0.020679493873912384)
+            self.assertEqual(
+                state["equivalence"]["status"],
+                "PASS_STATIC_NOMINAL_START_PHYSICAL_INVARIANTS",
+            )
+            self.assertLessEqual(
+                abs(state["post_static_contact_validation"]["root_height_shift_m"]), 1e-8,
+            )
+            tree = ET.parse(evidence / "local01_scene" / bundle["runtime_scene_filename"]).getroot()
+            self.assertIsNone(tree.find("./keyframe"))
+            frame = tree.find("./worldbody/frame[@name='x2_start_frame']")
+            self.assertEqual(frame.get("quat"), "1 0 0 0")
+            self.assertAlmostEqual(float(frame.get("pos").split()[2]), -0.020679493873912384)
+            self.assertTrue((evidence / "local01_scene/static_nominal_start.json").is_file())
+
     def test_native_name_wrapper_rejects_unexpected_source_prefix(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "scene.xml"

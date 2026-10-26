@@ -404,6 +404,42 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertLess(events.index("sd_once"), events.index("post_sd_standing_window"))
         self.assertLess(events.index("post_sd_standing_window"), events.index("first_motion_after_standing_gate"))
 
+    def test_static_nominal_start_uses_no_gui_reset_and_reaches_the_existing_motion_gate(self) -> None:
+        events: list[str] = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = self.make_runner(events, temp_dir)
+            runner.static_nominal_start_initialization = True
+            runner.args.static_nominal_start_initialization = True
+
+            def static_preflight():
+                events.append("static_native_preflight")
+                return {"status": "PASS_STATIC_NOMINAL_START_NATIVE_READY"}
+
+            def static_barrier(_preflight):
+                events.append("static_start_barrier")
+                return {"event": {"status": "STATIC_NOMINAL_START_READY"}}
+
+            def static_observation():
+                events.append("static_post_sd_standing_window")
+                return {
+                    "classification": "STATIC_NOMINAL_START_STAND_BASELINE_PASS",
+                    "standing_baseline_observation": {"complete": True},
+                }
+
+            runner.verify_native_static_nominal_start = static_preflight
+            runner.dispatch_static_nominal_start_barrier = static_barrier
+            runner.wait_and_classify_static_nominal_start = static_observation
+            result = runner.execute()
+
+        self.assertEqual(result["outcome_classification"], "FIRST_PHYSICAL_WALKING_PASS")
+        self.assertNotIn("inspect_window", events)
+        self.assertNotIn("capture_before", events)
+        self.assertNotIn("reset_once", events)
+        self.assertLess(events.index("static_native_preflight"), events.index("static_start_barrier"))
+        self.assertLess(events.index("static_start_barrier"), events.index("sd_once"))
+        self.assertLess(events.index("sd_once"), events.index("static_post_sd_standing_window"))
+        self.assertLess(events.index("static_post_sd_standing_window"), events.index("first_motion_after_standing_gate"))
+
     def test_parent_reports_activation_joint_limit_fault_as_walking_failure(self) -> None:
         events: list[str] = []
         m1_result = {
