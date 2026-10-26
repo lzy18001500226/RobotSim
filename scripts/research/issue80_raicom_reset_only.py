@@ -602,6 +602,12 @@ def _verify_loaded_scene(runtime: BoundedRun, bundle: Mapping[str, Any]) -> dict
 
 
 class ResetOnlyRun:
+    observer_script = RESET_OBSERVER
+    expected_observer_clients = 0
+
+    def prepare_observer(self) -> None:
+        """Dedicated diagnostics may stage a separate, audited observer."""
+
     def __init__(self, args: argparse.Namespace, evidence: Path, container: str):
         self.args = args
         self.evidence = evidence
@@ -746,6 +752,7 @@ class ResetOnlyRun:
                 (staged_mc_dump, MC_SIM_CONFIG_DUMP_CONTAINER_PATH)
             ]
             self.result["mc_runtime_writeback"] = mc_writeback_manifest
+            self.prepare_observer()
             self.runtime.start_container()
             self._arm_container_stop_watchdog()
             self.runtime.docker_exec(
@@ -806,7 +813,7 @@ class ResetOnlyRun:
                 "start_reset_only_readonly_observer",
                 "source /opt/ros/humble/setup.bash && "
                 "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                f"timeout {OBSERVER_MAX_RUNTIME_S}s python3 /workspace/evidence/{RESET_OBSERVER.name} "
+                f"timeout {OBSERVER_MAX_RUNTIME_S}s python3 /workspace/evidence/{self.observer_script.name} "
                 "--output-dir /workspace/evidence "
                 "--reset-event-file /workspace/evidence/reset_dispatch_event.json "
                 f"> /workspace/evidence/{observer_log.name} 2>&1",
@@ -819,7 +826,7 @@ class ResetOnlyRun:
                 label="read-only ROS telemetry readiness",
                 fail_if=self.evidence / "reset_only_observer_startup_error.json",
             )
-            if ready.get("status") != "READY" or ready.get("publishers_created") != 0 or ready.get("service_clients_created") != 0:
+            if ready.get("status") != "READY" or ready.get("publishers_created") != 0 or ready.get("service_clients_created") != self.expected_observer_clients:
                 raise ResetOnlyError("read-only telemetry observer failed its pre-Reset setup gate")
             ages = ready.get("state_age_s", {})
             if not required_state_ages_pass(ages):

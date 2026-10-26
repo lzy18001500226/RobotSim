@@ -14,7 +14,7 @@ import sys
 import uuid
 
 
-def run_host() -> int:
+def run_host(*, standing: bool = False) -> int:
     from issue80_raicom_reset_only import (
         IMAGE, IMAGE_DIGEST, RUNTIME, RESET_OBSERVER,
         MC_SIM_CONFIG_DUMP_CONTAINER_PATH, _stage_mc_config_dump_writeback,
@@ -33,6 +33,9 @@ def run_host() -> int:
     dump, manifest = _stage_mc_config_dump_writeback(output)
     shutil.copyfile(__file__, output / Path(__file__).name)
     shutil.copyfile(RESET_OBSERVER, output / RESET_OBSERVER.name)
+    if standing:
+        from issue80_raicom_stand_takeover import StandingRun
+        StandingRun(argparse.Namespace(attempt_id=str(uuid.uuid4())),output,'no-runtime-smoke').prepare_observer()
     name = "robotsim-prelaunch-" + str(uuid.uuid4())
     cmd = ["docker", "run", "--rm", "--pull=never", "--name", name,
            "--network=none", "--read-only", "--cap-drop=ALL",
@@ -48,6 +51,8 @@ def run_host() -> int:
            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
            "python3 /workspace/evidence/issue80_raicom_prelaunch.py "
            "--output-dir /workspace/evidence --dump-target " + MC_SIM_CONFIG_DUMP_CONTAINER_PATH]
+    if standing:
+        cmd[-1] += " --standing"
     (output / "command.json").write_text(json.dumps(cmd, indent=2) + "\n")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
@@ -68,6 +73,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--dump-target", type=Path, required=True)
+    parser.add_argument("--standing", action="store_true")
     args = parser.parse_args()
     root = args.output_dir.resolve(strict=True)
     target = args.dump_target
@@ -126,9 +132,12 @@ def main() -> int:
                                         "reason": str(exc)}
         else:
             report["atomic_replace"] = {"supported": True}
-        observer = root / "issue80_raicom_reset_only_observer.py"
+        observer = root / ("issue80_raicom_stand_observer.py" if args.standing
+                           else "issue80_raicom_reset_only_observer.py")
         capture = root / "observer_smoke"
         capture.mkdir()
+        if args.standing:
+            shutil.copyfile(root/'standing_joint_limits.json',capture/'standing_joint_limits.json')
         result = subprocess.run([sys.executable, str(observer), "--construction-smoke",
                                  "--output-dir", str(capture), "--reset-event-file",
                                  str(capture / "reset_dispatch_event.json")],
@@ -136,7 +145,7 @@ def main() -> int:
         report["observer_returncode"] = result.returncode
         report["observer_stdout"] = result.stdout
         report["observer_stderr"] = result.stderr
-        smoke = capture / "reset_only_observer_smoke.json"
+        smoke = capture / ("standing_observer_smoke.json" if args.standing else "reset_only_observer_smoke.json")
         if result.returncode != 0 or not smoke.is_file():
             raise RuntimeError("actual ROS observer construction failed")
         report["observer_smoke"] = json.loads(smoke.read_text())
@@ -151,4 +160,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_host() if sys.argv[1:] == ["--host"] else main())
+    raise SystemExit(run_host(standing="--standing" in sys.argv) if "--host" in sys.argv else main())

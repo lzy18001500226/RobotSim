@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Bounded one-Reset/one-SD RAICOM standing qualification, never locomotion."""
+from __future__ import annotations
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+import time
+import uuid
+
+from issue80_raicom_reset_only import (
+    ResetOnlyRun, _host_preflight, LOCAL01_POSES_DEFAULT, EVIDENCE_PARENT_DEFAULT,
+    _write_json, _sha256, RUNTIME,
+)
+from issue80_m1_first_motion import load_leg_joint_limits, MC_FSM_RUNTIME_LIBRARY_SHA256
+
+OBSERVER=Path(__file__).with_name('issue80_raicom_stand_observer.py')
+
+
+class StandingRun(ResetOnlyRun):
+    observer_script=OBSERVER
+    expected_observer_clients=2
+
+    def prepare_observer(self):
+        text=OBSERVER.read_text()
+        if 'create_publisher(' in text or 'SetMcInputSource' in text or text.count('self.sd_client.call_async(request)')!=1:
+            raise RuntimeError('standing observer capability audit failed')
+        (self.evidence/OBSERVER.name).write_bytes(OBSERVER.read_bytes())
+        source=RUNTIME/'mc/bin/mc_param/src/robot/lx2501_3_t2d5/robot_model.yaml'
+        limits,digest=load_leg_joint_limits(source)
+        _write_json(self.evidence/'standing_joint_limits.json',{'limits':limits,'source_sha256':digest})
+        for name,expected in MC_FSM_RUNTIME_LIBRARY_SHA256.items():
+            matches=list((RUNTIME/'mc').rglob(name))
+            if not matches or any(_sha256(p)!=expected for p in matches):
+                raise RuntimeError('pinned FSM runtime identity mismatch: '+name)
+        _write_json(self.evidence/'standing_capability_audit.json',{
+            'observer_sha256':_sha256(OBSERVER),'max_sd_requests':1,'max_native_reset':1,
+            'velocity_publishers':0,'locomotion_source_registration':False,
+            'service_allowlist':['SetMcAction:STAND_DEFAULT','GetMcAction'],
+            'fsm_libraries_sha256':MC_FSM_RUNTIME_LIBRARY_SHA256,
+            'native_transition_route':{
+                'source':'sim/action_ruler.yaml + pinned libmc_manager_action.so ActionRuler/GetShortestPath',
+                'graph':['PASSIVE_DEFAULT','JOINT_DEFAULT','STAND_DEFAULT'],
+                'external_request':'one STAND_DEFAULT only; intermediate JD must be native MC behavior',
+                'history':'Run65 explicitly requested JD then SD; direct target routing must be observed in this episode',
+                'no_external_JD_request':True},
+            'timing_review':{'scene_dt_s':.002,'native_dt_s':.001,'MC_leg_command_config_hz':500,
+                'sim_IMU_config_hz':500,'sim_joint_publication_config_hz':1000,
+                'qualification':'bounded SD test only; publication cadence is not independent state advancement',
+                'duplicate_odom':'never ticks stable hold; unique age capped at .5 s'},
+        })
+
+    def run_once(self,preflight):
+        result=super().run_once(preflight)
+        result['inherited_reset_only_infrastructure_audit']=result.pop('static_capability_audit',None)
+        result['static_capability_audit']=json.loads((self.evidence/'standing_capability_audit.json').read_text()) if (self.evidence/'standing_capability_audit.json').exists() else None
+        path=self.evidence/'stand_takeover_summary.json'
+        summary=json.loads(path.read_text()) if path.exists() else None
+        result['standing_takeover']=summary
+        # Never retain the capture-only parent's zero-action claim for this
+        # explicitly active standing diagnostic; missing summary is UNKNOWN.
+        count=summary['sd_requests'] if summary else None
+        result['mc_action_request_count']=count
+        result['runtime_non_motion_invariants']['set_mc_action_requests']=count
+        result['runtime_non_motion_invariants']['allowed_action']='STAND_DEFAULT_ONLY'
+        result.get('reset_effect',{}).pop('no_action_or_locomotion_request',None)
+        result['diagnostic_kind']='RESET_TO_SD_ACTIVE_STANDING_NO_LOCOMOTION'
+        result['classification']='STANDING_READY_FOR_SEPARATE_MOTION_REVIEW' if (
+            result['status']=='PASS' and summary and summary['status']=='PASS'
+            and summary['stable_hold_s']>=2.5 and summary['sd_requests']==1
+        ) else 'STANDING_TAKEOVER_BLOCKED'
+        if result['classification']=='STANDING_TAKEOVER_BLOCKED':
+            result['status']='BLOCKED'
+            result['failure']=(summary or {}).get('failure') or result.get('failure') or 'STANDING_SUMMARY_UNAVAILABLE'
+        return result
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--attempt-id',required=True)
+    parser.add_argument('--local01-scene-world-poses',type=Path,default=LOCAL01_POSES_DEFAULT)
+    parser.add_argument('--evidence-parent',type=Path,default=EVIDENCE_PARENT_DEFAULT)
+    args=parser.parse_args()
+    args.attempt_id=str(uuid.UUID(args.attempt_id))
+    if os.environ.get('DISPLAY')!=':0':
+        parser.error('DISPLAY=:0 required')
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'agent'))
+    from path_governance import create_unique_output_directory,write_artifact_manifest
+    output=create_unique_output_directory(args.evidence_parent,
+        prefix='raicom-standing-'+args.attempt_id[:8]).native_path
+    result={}
+    try:
+        host=_host_preflight(args,'robotsim-issue80-standing-'+args.attempt_id)
+        _write_json(output/'standing_execution_identity.json',{
+            'attempt_id':args.attempt_id,'runner_sha256':_sha256(Path(__file__)),
+            'observer_sha256':_sha256(OBSERVER),'argv':sys.argv,
+            'parent_runner_sha256':_sha256(Path(__file__).with_name('issue80_raicom_reset_only.py'))})
+        run=StandingRun(args,output,'robotsim-issue80-standing-'+args.attempt_id)
+        result=run.run_once(host)
+    except Exception as exc:
+        result={'status':'BLOCKED','failure':repr(exc),'no_automatic_retry':True}
+    finally:
+        _write_json(output/'standing_result.json',result)
+        write_artifact_manifest(output)
+    print(json.dumps({'output':str(output),'status':result.get('status'),'failure':result.get('failure')}))
+    return 0 if result.get('status')=='PASS' else 2
+
+
+if __name__=='__main__':
+    raise SystemExit(main())
