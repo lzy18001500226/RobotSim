@@ -665,6 +665,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--direct-stand-from-passive",
+        action="store_true",
+        help=(
+            "after the existing fresh native-support gate, request STAND_DEFAULT directly from "
+            "PASSIVE_DEFAULT once; used only to test the pinned runtime action graph"
+        ),
+    )
+    parser.add_argument(
         "--synchronized-keyframe-event-file", type=Path, default=None,
         help="native MuJoCo Load key dispatch record for the paused synchronized-init path",
     )
@@ -734,6 +742,8 @@ def main() -> int:
         parser.error("--reset-event-file is required outside synchronized initialization")
     if args.prearmed_before_simulator and not static_nominal_start:
         parser.error("--prearmed-before-simulator requires static nominal-start initialization")
+    if args.direct_stand_from_passive and (static_nominal_start or synchronized):
+        parser.error("--direct-stand-from-passive is only valid for the native Reset path")
 
     import rclpy
     from rclpy.node import Node
@@ -766,6 +776,7 @@ def main() -> int:
                 args.static_nominal_start_event_file
             )
             self.prearmed_before_simulator = bool(args.prearmed_before_simulator)
+            self.direct_stand_from_passive = bool(args.direct_stand_from_passive)
             self.reset_event_file = (
                 args.reset_event_file.resolve(strict=False)
                 if args.reset_event_file is not None else None
@@ -2031,6 +2042,57 @@ def main() -> int:
             }:
                 self._write_final_result("BLOCKED_POST_RESET_UPRIGHT", block_stage="POST_RESET_UPRIGHT", error=self.error, pre_reset=pre_reset_mode, upright_gate=upright_gate)
                 return 2
+            if self.direct_stand_from_passive:
+                # The installed action graph advertises PASSIVE_DEFAULT ->
+                # STAND_DEFAULT directly.  This is a bounded alternate
+                # startup hypothesis for the observed JD lateral transient;
+                # it preserves the native support gate and never retries.
+                sd = self.set_action_once(
+                    "STAND_DEFAULT", args.set_timeout_s, upright_gate["snapshot"]
+                )
+                if (
+                    sd.get("transport_state") != "RESPONSE_RECEIVED"
+                    or sd.get("service_success") is not True
+                    or sd.get("action_result_success") is not True
+                ):
+                    self.error = "direct STAND_DEFAULT SetMcAction did not return a successful status/code pair"
+                    self._write_final_result(
+                        "BLOCKED_STAND_DEFAULT_REJECTED",
+                        block_stage="STAND_DEFAULT",
+                        error=self.error,
+                        pre_reset=pre_reset_mode,
+                        upright_gate=upright_gate,
+                    )
+                    return 2
+                sd_readback = self.confirm_mode("STAND_DEFAULT", 2.0)
+                if (
+                    sd_readback is None
+                    or sd_readback.get("action_desc") != "STAND_DEFAULT"
+                    or sd_readback.get("action_status_value") != 100
+                ):
+                    self.error = "GetMcAction did not confirm direct STAND_DEFAULT/status=100"
+                    self._write_final_result(
+                        "BLOCKED_STAND_DEFAULT_READBACK",
+                        block_stage="STAND_DEFAULT_READBACK",
+                        error=self.error,
+                        pre_reset=pre_reset_mode,
+                        upright_gate=upright_gate,
+                    )
+                    return 2
+                self.stand_default_confirmed_ns = int(
+                    sd_readback.get("wall_monotonic_ns_returned") or time.monotonic_ns()
+                )
+                self._write_final_result(
+                    "TAKEOVER_SEQUENCE_COMPLETE",
+                    pre_reset=pre_reset_mode,
+                    upright_gate=upright_gate,
+                    stand_gate={
+                        "eligible": True,
+                        "classification": "DIRECT_STAND_FROM_PASSIVE_ACTION_GRAPH",
+                        "fresh_native_support_required": True,
+                    },
+                )
+                return 0
             jd_pre = upright_gate["snapshot"]
             jd = self.set_action_once("JOINT_DEFAULT", args.set_timeout_s, jd_pre)
             if jd.get("transport_state") != "RESPONSE_RECEIVED" or jd.get("service_success") is not True or jd.get("action_result_success") is not True:

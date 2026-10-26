@@ -235,6 +235,18 @@ class SetActionCaptureTests(unittest.TestCase):
         self.assertIn("returns an empty", source)
         self.assertIn("wait_for_post_reset_upright() still requires all", source)
 
+    def test_direct_stand_protocol_remains_after_native_upright_gate_and_never_retries(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_set_action_capture.py").read_text()
+        self.assertIn('"--direct-stand-from-passive"', source)
+        upright = source.index("upright_gate = self.wait_for_post_reset_upright()")
+        direct = source.index("if self.direct_stand_from_passive:", upright)
+        direct_request = source.index('self.set_action_once(\n                    "STAND_DEFAULT"', direct)
+        joint_request = source.index('self.set_action_once("JOINT_DEFAULT"', direct)
+        self.assertLess(upright, direct)
+        self.assertLess(direct, direct_request)
+        self.assertLess(direct_request, joint_request)
+        self.assertIn("fresh_native_support_required", source[direct:joint_request])
+
     def test_native_handoff_anchors_jd_to_mjdata_and_reanchors_ros_after_effective_command(self) -> None:
         source = Path(__file__).with_name("issue80_m1_set_action_capture.py").read_text()
         start = source.index("if self.require_native_reset_generation:", source.index("def wait_for_post_reset_upright"))

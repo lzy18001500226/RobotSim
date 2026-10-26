@@ -1953,6 +1953,9 @@ class BoundedRun:
         self.mc_prearm_before_simulator = bool(
             getattr(args, "mc_prearm_before_simulator", False)
         )
+        self.direct_stand_from_passive = bool(
+            getattr(args, "direct_stand_from_passive", False)
+        )
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
@@ -3419,6 +3422,7 @@ class BoundedRun:
             else " --reset-event-file /workspace/evidence/reset_dispatch_event.json"
         )
         prearm_args = " --prearmed-before-simulator" if prearmed_before_simulator else ""
+        direct_stand_args = " --direct-stand-from-passive" if self.direct_stand_from_passive else ""
         self.docker_exec(
             "start_prearmed_standing_takeover_observer",
             "source /opt/ros/humble/setup.bash && "
@@ -3429,7 +3433,7 @@ class BoundedRun:
             f"--ready-timeout-s 3 --reset-wait-timeout-s 30 --upright-timeout-s {RESET_STARTUP_OBSERVATION_TIMEOUT_S:g} "
             "--joint-stand-timeout-s 4 --set-timeout-s 2 --get-timeout-s 0.75 "
             f"--duration-s {RESET_OBSERVER_DURATION_S:.1f} "
-            + initialization_args + prearm_args + native_capture_args + " "
+            + initialization_args + prearm_args + direct_stand_args + native_capture_args + " "
             "> /workspace/evidence/takeover-capture-console.log 2>&1",
             timeout_s=4.0,
             detached=True,
@@ -3981,6 +3985,7 @@ class BoundedRun:
             "last": last,
             "unsafe_after_nominal": unsafe_after_nominal,
             "mc_prearm_before_simulator": self.mc_prearm_before_simulator,
+            "direct_stand_from_passive": self.direct_stand_from_passive,
             "mj_step_calls_by_parent": 0,
             "qpos_writes_by_parent": 0,
         }
@@ -5430,6 +5435,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--direct-stand-from-passive",
+        action="store_true",
+        help=(
+            "simulation-only native-Reset startup diagnostic: use the pinned runtime's advertised "
+            "PASSIVE_DEFAULT -> STAND_DEFAULT edge directly after the existing fresh bilateral-support gate; "
+            "never combine with static/keyframe initialization"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5632,6 +5646,11 @@ def main() -> int:
         # mode.  No caller can accidentally use a writable vendor runtime.
         args.runtime_readonly = True
         args.mc_sim_generated_tmpfs = True
+    if args.direct_stand_from_passive:
+        if args.static_nominal_start_initialization or args.synchronized_paused_initialization:
+            parser.error("direct stand from passive is only valid for the native Reset startup path")
+        if not args.native_mjdata_capture:
+            parser.error("direct stand from passive requires native MjData capture")
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
