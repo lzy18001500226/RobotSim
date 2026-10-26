@@ -26,11 +26,18 @@ LOCAL01_SHORT_ROUTE_MAX_WINDOWS = 2
 LOCAL01_SHORT_ROUTE_MAX_WINDOW_S = 5.0
 LOCAL01_SHORT_ROUTE_MAX_AGGREGATE_S = 10.0
 LOCAL01_SHORT_ROUTE_FORWARD_M_S = 0.12
+# The only lower speed admitted by the live short-route builder. It is not a
+# new tuning value: the preserved FoundationWalk physical-pass trace used
+# 0.105 m/s below the unchanged 0.20 m/s root-speed guard.
+RAICOM_LOW_CRUISE_FORWARD_M_S = 0.105
 LOCAL01_SHORT_ROUTE_ANGULAR_RAD_S = 0.075
 LOCAL01_SHORT_ROUTE_MAX_CROSS_TRACK_M = 0.05
 MAX_FORWARD_M_S = 0.14
 MAX_ANGULAR_RAD_S = 0.075
+# Keep the legacy nominal 0.12 m/s route profile distinct from the explicitly
+# named low-cruise recovery profile. Corner/turn routes remain nominal-only.
 MIN_EFFECTIVE_FORWARD_M_S = 0.12
+MIN_VALIDATED_TRANSIT_FORWARD_M_S = RAICOM_LOW_CRUISE_FORWARD_M_S
 CONFIGURED_ROUTE_MAX_CROSS_TRACK_M = 0.05
 MAX_ACTION_WINDOW_S = 10.0
 REALTIME_CLOCK_ALIGNMENT_TOLERANCE_NS = 50_000_000
@@ -936,12 +943,25 @@ def build_runtime_raw_odom_short_scene_route(
     observed_start_pose: Mapping[str, Any],
     runtime_robot_footprint_radius_m: float,
     verified_local_clear_radius_m: float = 2.0,
+    forward_m_s: float = LOCAL01_SHORT_ROUTE_FORWARD_M_S,
 ) -> tuple[RouteSpec, dict[str, Any]]:
     """Use the existing route manager with targets derived from live robot-forward.
 
     This does not change the static scene plan.  It only instantiates its two
     already bounded 0.20 m targets from the fresh post-STAND ground-truth pose.
     """
+    try:
+        forward = float(forward_m_s)
+    except (TypeError, ValueError) as exc:
+        raise RouteError("runtime short-route forward speed must be numeric") from exc
+    if not math.isfinite(forward) or not any(
+        abs(forward - allowed) <= 1e-9
+        for allowed in (LOCAL01_SHORT_ROUTE_FORWARD_M_S, RAICOM_LOW_CRUISE_FORWARD_M_S)
+    ):
+        raise RouteError(
+            "runtime short route permits only the nominal 0.12 m/s profile or "
+            "the evidence-backed 0.105 m/s low-cruise profile"
+        )
     gate = validate_runtime_raw_odom_start_pose(route_input, observed_start_pose)
     if gate["status"] != "PASS":
         raise RouteError("runtime raw-odom start pose is outside the statically swept envelope")
@@ -980,12 +1000,16 @@ def build_runtime_raw_odom_short_scene_route(
                 waypoint_id="WAYPOINT",
                 profile=Profile.TRANSIT,
                 position_tolerance_m=LOCAL01_SHORT_ROUTE_POSITION_TOLERANCE_M,
+                target_forward_m_s=forward,
+                max_forward_m_s=forward,
             ),
             replace(
                 docking_shape.steps[1],
                 waypoint_id="SHORT_ROUTE_END",
                 profile=Profile.TRANSIT,
                 position_tolerance_m=LOCAL01_SHORT_ROUTE_POSITION_TOLERANCE_M,
+                target_forward_m_s=forward,
+                max_forward_m_s=forward,
             ),
         ),
     )
@@ -997,6 +1021,12 @@ def build_runtime_raw_odom_short_scene_route(
         "waypoint": first,
         "short_route_end": end,
         "segments_m": [LOCAL01_SHORT_ROUTE_STEP_M, LOCAL01_SHORT_ROUTE_STEP_M],
+        "forward_m_s": forward,
+        "motion_profile": (
+            "SIMULATION_ONLY_RAICOM_LOW_CRUISE_RECOVERY"
+            if abs(forward - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+            else "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_NOMINAL"
+        ),
         "classification": "SIMULATION_ONLY_RUNTIME_RAW_ODOM_SCENE_WORLD_SHORT_FORWARD_ROUTE",
     }
 
@@ -1119,8 +1149,16 @@ def _validate_step(step: RouteStep) -> None:
         raise RouteError(f"{step.waypoint_id}: recovery_limit exceeds the route prototype bound of 3")
     if step.max_forward_m_s > MAX_FORWARD_M_S + 1e-9:
         raise RouteError(f"{step.waypoint_id}: forward command exceeds the existing 0.14 m/s envelope")
-    if step.target_forward_m_s < MIN_EFFECTIVE_FORWARD_M_S - 1e-9:
-        raise RouteError(f"{step.waypoint_id}: target forward speed is below the measured effective command deadzone")
+    minimum_forward = (
+        MIN_VALIDATED_TRANSIT_FORWARD_M_S
+        if step.profile is Profile.TRANSIT
+        else MIN_EFFECTIVE_FORWARD_M_S
+    )
+    if step.target_forward_m_s < minimum_forward - 1e-9:
+        raise RouteError(
+            f"{step.waypoint_id}: target forward speed is below the validated "
+            "command floor for its route profile"
+        )
     if step.target_forward_m_s > step.max_forward_m_s + 1e-9:
         raise RouteError(f"{step.waypoint_id}: target forward speed exceeds its declared bound")
     if step.max_angular_rad_s > MAX_ANGULAR_RAD_S + 1e-9:

@@ -32,7 +32,7 @@ from issue80_m1_first_motion import (
 )
 from issue80_waypoint_route import (
     DirectiveKind, PoseEstimate, Profile, RouteDirective, RouteSpec, RouteStep,
-    StopBehavior, YawPolicy,
+    StopBehavior, YawPolicy, MIN_VALIDATED_TRANSIT_FORWARD_M_S,
 )
 
 
@@ -1725,8 +1725,13 @@ class RouteMotionBridge:
         if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in values):
             return "directive velocity bounds are nonfinite"
         target, maximum, angular = (float(value) for value in values)
-        if not MIN_EFFECTIVE_FORWARD_M_S <= target <= maximum:
-            return "forward target is below the measured effective command floor or above its cap"
+        minimum = (
+            MIN_VALIDATED_TRANSIT_FORWARD_M_S
+            if directive.profile is Profile.TRANSIT
+            else MIN_EFFECTIVE_FORWARD_M_S
+        )
+        if not minimum <= target <= maximum:
+            return "forward target is below the validated command floor or above its cap"
         if maximum > MAX_FORWARD_M_S:
             return "forward cap exceeds the reviewed 0.14 m/s route profile"
         if angular <= 0.0 or angular > MAX_ANGULAR_RAD_S:

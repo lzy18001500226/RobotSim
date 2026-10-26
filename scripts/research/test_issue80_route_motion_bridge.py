@@ -1701,6 +1701,29 @@ class RouteMotionBridgeTests(unittest.TestCase):
 
     def test_speed_window_and_total_directive_budget_are_bounded(self) -> None:
         bridge = RouteMotionBridge(route_frame_id="odom")
+        low_cruise = RouteMotionBridge(route_frame_id="odom").plan_next(
+            follow_directive(target_forward_m_s=0.105, max_forward_m_s=0.105),
+            make_pose(), readiness(), now_steady_s=10.0,
+        )
+        self.assertEqual(low_cruise.status, "PROPOSAL_ONLY")
+        self.assertAlmostEqual(low_cruise.forward_m_s, 0.105)
+        below_validated_low_cruise = RouteMotionBridge(route_frame_id="odom").plan_next(
+            follow_directive(target_forward_m_s=0.104, max_forward_m_s=0.104),
+            make_pose(), readiness(), now_steady_s=10.0,
+        )
+        self.assertEqual(below_validated_low_cruise.status, "BLOCKED_ZERO_ONLY")
+        low_speed_corner = RouteMotionBridge(route_frame_id="odom").plan_next(
+            turn_directive(target_forward_m_s=0.105, max_forward_m_s=0.105),
+            make_pose(), readiness(
+                bounded_moving_turn_qualified=True,
+                qualified_turn_directions=("RIGHT",),
+                turn_stop_margin_m=0.005,
+                turn_stop_margin_direction="RIGHT",
+                turn_stop_margin_evidence_id="qualified-right-turn",
+                measured_displacement_guard_verified=True,
+            ), now_steady_s=10.0,
+        )
+        self.assertEqual(low_speed_corner.status, "BLOCKED_ZERO_ONLY")
         bad_speed = bridge.plan_next(
             follow_directive(target_forward_m_s=0.10, max_forward_m_s=0.14),
             make_pose(), readiness(), now_steady_s=10.0,

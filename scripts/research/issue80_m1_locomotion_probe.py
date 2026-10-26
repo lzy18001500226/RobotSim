@@ -109,6 +109,7 @@ from issue80_waypoint_route import (
     validate_waypoint_docking_scene_clearance,
     build_local01_short_scene_route, build_runtime_raw_odom_short_scene_route,
     validate_local01_short_scene_route_input, validate_local01_reset_odom_pose,
+    LOCAL01_SHORT_ROUTE_FORWARD_M_S, RAICOM_LOW_CRUISE_FORWARD_M_S,
     LOCAL01_SHORT_ROUTE_MAX_WINDOWS as SHORT_ROUTE_MAX_WINDOWS,
     LOCAL01_SHORT_ROUTE_MAX_WINDOW_S as SHORT_ROUTE_MAX_WINDOW_S,
     LOCAL01_SHORT_ROUTE_MAX_AGGREGATE_S as SHORT_ROUTE_MAX_AGGREGATE_S,
@@ -3556,6 +3557,7 @@ class FocusedM1Diagnostic(Node):
                     observed_start_pose=live_start,
                     runtime_robot_footprint_radius_m=footprint,
                     verified_local_clear_radius_m=clear_radius,
+                    forward_m_s=float(self.args.forward_speed),
                 )
                 result["runtime_raw_odom_forward_plan"] = runtime_forward_plan
                 result["route_config_preflight"] = {
@@ -7435,6 +7437,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("post-locomotion convergence observation requires extended waypoint-B route integration")
     configured_route = bool(getattr(args, "route_config", None))
     short_scene_route = bool(getattr(args, "short_scene_route", False))
+    low_cruise_profile = bool(getattr(args, "raicom_low_cruise_profile", False))
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
         getattr(args, "aligned_start_table_approach", False)
@@ -7444,6 +7447,19 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     )
     if short_scene_route and not configured_route:
         raise ValueError("--short-scene-route requires --route-config")
+    if low_cruise_profile and not (
+        short_scene_route
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    ):
+        raise ValueError(
+            "RAICOM low-cruise profile requires the short-scene route and exactly 0.105 m/s"
+        )
+    if short_scene_route and not low_cruise_profile and (
+        abs(float(args.forward_speed) - LOCAL01_SHORT_ROUTE_FORWARD_M_S) > 1e-9
+    ):
+        raise ValueError(
+            "short-scene route requires 0.12 m/s unless the explicit RAICOM low-cruise profile is selected"
+        )
     if table_approach_mission and not configured_route:
         raise ValueError("--table-approach-mission requires --route-config")
     if table_approach_mission and short_scene_route:
@@ -7511,6 +7527,8 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "maximum_windows_total": 2,
                 "aggregate_nonzero_limit_s": 10.0,
                 "post_stand_observation_s": 7.0,
+                "command_forward_m_s": float(args.forward_speed),
+                "raicom_low_cruise_profile": low_cruise_profile,
                 "runtime_reset_odom_observed": False,
             }
         else:
@@ -7885,6 +7903,14 @@ def main() -> int:
         "--short-scene-route",
         action="store_true",
         help="interpret --route-config as the two-target Local01 short diagnostic, not table docking",
+    )
+    first.add_argument(
+        "--raicom-low-cruise-profile",
+        action="store_true",
+        help=(
+            "permit only the evidence-backed 0.105 m/s short-route recovery profile; "
+            "all route stop, posture, and root-speed gates remain unchanged"
+        ),
     )
     first.add_argument(
         "--table-approach-mission",

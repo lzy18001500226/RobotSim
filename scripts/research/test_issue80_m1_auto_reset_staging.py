@@ -463,6 +463,33 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertNotIn("--route-curved-path-diagnostic", child)
         self.assertNotIn("--route-waypoint-b-only", child)
 
+    def test_parent_child_low_cruise_short_route_propagates_explicit_profile(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.105,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="local01-low-cruise-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            route_config=None,
+            raicom_low_cruise_profile=True,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "local01-low-cruise-route-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertEqual(child[child.index("--forward-speed") + 1], "0.105")
+        self.assertIn("--short-scene-route", child)
+        self.assertIn("--raicom-low-cruise-profile", child)
+
     def test_parent_child_table_approach_profile_never_requests_table_docking(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=0.0,

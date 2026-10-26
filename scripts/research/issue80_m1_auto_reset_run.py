@@ -1410,6 +1410,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         )
         if local01_short_route:
             command[-1] += " --short-scene-route"
+            if getattr(args, "raicom_low_cruise_profile", False):
+                command[-1] += " --raicom-low-cruise-profile"
         if getattr(args, "table_approach_mission", None):
             command[-1] += " --table-approach-mission"
             if getattr(args, "aligned_start_table_approach", False):

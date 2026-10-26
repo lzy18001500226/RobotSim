@@ -253,10 +253,35 @@ class RouteConfigTests(unittest.TestCase):
         )
         self.assertEqual(plan["segments_m"], [0.20, 0.20])
         self.assertEqual(plan["runtime_start_gate"]["status"], "PASS")
+        self.assertAlmostEqual(plan["forward_m_s"], 0.12)
+        self.assertTrue(all(step.target_forward_m_s == 0.12 for step in route.steps))
         blocked = validate_runtime_raw_odom_start_pose(
             raw, {**observed, "yaw_rad": observed["yaw_rad"] + 0.05}
         )
         self.assertEqual(blocked["status"], "FAIL")
+
+    def test_runtime_raw_odom_short_route_propagates_the_explicit_low_cruise_profile(self) -> None:
+        raw = build_runtime_raw_odom_short_route_config(self.local01_scene_source_fixture())
+        observed = {"x_m": -1.504, "y_m": -1.481, "z_m": 0.653, "yaw_rad": 1.602}
+        route, plan = build_runtime_raw_odom_short_scene_route(
+            raw,
+            observed_start_pose=observed,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+            forward_m_s=0.105,
+        )
+        self.assertEqual(plan["motion_profile"], "SIMULATION_ONLY_RAICOM_LOW_CRUISE_RECOVERY")
+        self.assertAlmostEqual(plan["forward_m_s"], 0.105)
+        self.assertTrue(all(step.target_forward_m_s == 0.105 for step in route.steps))
+        self.assertTrue(all(step.max_forward_m_s == 0.105 for step in route.steps))
+        with self.assertRaisesRegex(ValueError, "short route permits only"):
+            build_runtime_raw_odom_short_scene_route(
+                raw,
+                observed_start_pose=observed,
+                runtime_robot_footprint_radius_m=0.41565748847422734,
+                verified_local_clear_radius_m=2.0,
+                forward_m_s=0.104,
+            )
 
     def test_local01_short_route_rejects_overbudget_or_nonforward_targets(self) -> None:
         raw = self.local01_short_route_input()
@@ -414,7 +439,7 @@ class RouteConfigTests(unittest.TestCase):
     def test_configured_target_speed_cannot_fall_below_measured_deadzone(self) -> None:
         raw = json.loads(RECTANGLE.read_text(encoding="utf-8"))
         raw["steps"][0]["command_bounds"]["target_forward_m_s"] = 0.10
-        with self.assertRaisesRegex(ValueError, "below the measured effective command deadzone"):
+        with self.assertRaisesRegex(ValueError, "below the validated command floor"):
             RouteSpec.from_mapping(raw)
 
     def test_rectangle_route_is_template_only_and_keeps_stage_b_gates_separate(self) -> None:
