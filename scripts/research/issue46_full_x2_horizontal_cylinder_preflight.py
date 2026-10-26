@@ -502,7 +502,11 @@ def table_surface_z(triangles: np.ndarray, xy: np.ndarray) -> float | None:
     return float(np.max(a[hit, 2] + s[hit] * u[hit, 2] + t[hit] * v[hit, 2]))
 
 
-def build_scene(output: Path) -> tuple[Path, dict[str, object]]:
+def build_scene(
+    output: Path,
+    filename: str = "full_x2_raicom_horizontal_cylinder.xml",
+    head_torso_proxy_exception: bool = False,
+) -> tuple[Path, dict[str, object]]:
     root = ET.parse(FULL_X2_SOURCE).getroot()
     world = root.find("worldbody")
     asset = root.find("asset")
@@ -536,13 +540,45 @@ def build_scene(output: Path) -> tuple[Path, dict[str, object]]:
     if right_base is None:
         raise RuntimeError("right OmniPicker base missing")
     ET.SubElement(right_base, "site", name=SITE_NAME, pos=" ".join(map(str, SITE_LOCAL)), size="0.004", rgba="0.95 0.10 0.70 1", group="0")
+    contact = root.find("contact")
+    if head_torso_proxy_exception:
+        if contact is None:
+            contact = ET.SubElement(root, "contact")
+        existing = {
+            (item.get("body1"), item.get("body2"))
+            for item in contact.findall("exclude")
+        }
+        target = ("head_pitch_link", "torso_link")
+        reverse = (target[1], target[0])
+        if target in existing or reverse in existing:
+            raise RuntimeError("head/torso exclusion unexpectedly exists in baseline source")
+        ET.SubElement(contact, "exclude", body1=target[0], body2=target[1])
     ET.indent(root, space="  ")
-    scene = output / "full_x2_raicom_horizontal_cylinder.xml"
+    scene = output / filename
     pg.write_new_bytes(scene, ET.tostring(root, encoding="utf-8", xml_declaration=True))
     return scene, {
         "robot_source_subtree_sha256": hashlib.sha256(robot_subtree).hexdigest(),
         "source_full_x2_sha256": sha256(FULL_X2_SOURCE),
         "source_table_sha256": sha256(RAICOM_TABLE_STL),
+        "head_torso_proxy_exception": head_torso_proxy_exception,
+    }
+
+
+def validate_head_torso_exception_audit(path: Path, baseline_scene: Path) -> dict[str, object]:
+    """Require the maintainer-approved source-surface audit before exclusion."""
+    audit = json.loads(path.read_text(encoding="utf-8"))
+    gate = audit.get("gate", {})
+    if gate.get("decision") != "PASS" or not gate.get("source_surface_no_intersection_all_phases"):
+        raise SystemExit("source trajectory audit did not prove head/torso surface clearance")
+    if audit.get("scene_sha256") != sha256(baseline_scene):
+        raise SystemExit("source trajectory audit scene hash does not match freshly generated baseline scene")
+    return {
+        "source_trajectory_audit": str(path.resolve()),
+        "source_trajectory_audit_sha256": sha256(path),
+        "baseline_scene_sha256": sha256(baseline_scene),
+        "minimum_authentic_surface_clearance_mm": gate.get("minimum_authentic_surface_clearance_mm"),
+        "policy": "SIMULATION_ONLY_HEAD_TORSO_PROXY_EXCEPTION_V1",
+        "exact_excluded_pair": ["head_pitch_link", "torso_link"],
     }
 
 
@@ -728,6 +764,7 @@ def main() -> None:
     parser.add_argument("--raicom-table-stl", type=Path, required=True)
     parser.add_argument("--frozen-model", type=Path, required=True)
     parser.add_argument("--fixture", type=Path)
+    parser.add_argument("--head-torso-proxy-exception-source-audit", type=Path)
     parser.add_argument("--execute-dynamics", action="store_true")
     args = parser.parse_args()
     configure_source_paths(args)
@@ -740,7 +777,23 @@ def main() -> None:
     output = pg.validate_output_path(args.output_dir, require_exists=True, expected_kind="directory", environment="wsl").native_path
     if (output / "result.json").exists():
         raise SystemExit("refusing to overwrite preflight evidence")
-    scene, provenance = build_scene(output)
+    exception_policy = None
+    if args.head_torso_proxy_exception_source_audit:
+        audit_path = args.head_torso_proxy_exception_source_audit.resolve()
+        if not audit_path.is_file():
+            raise SystemExit(f"missing source trajectory audit: {audit_path}")
+        baseline_scene, baseline_provenance = build_scene(output, filename="baseline_full_x2_raicom_horizontal_cylinder.xml")
+        exception_policy = validate_head_torso_exception_audit(audit_path, baseline_scene)
+        scene, provenance = build_scene(
+            output,
+            filename="full_x2_raicom_horizontal_cylinder_head_torso_proxy_exception.xml",
+            head_torso_proxy_exception=True,
+        )
+        provenance["baseline_scene"] = str(baseline_scene)
+        provenance["baseline_scene_sha256"] = sha256(baseline_scene)
+        provenance["baseline_provenance"] = baseline_provenance
+    else:
+        scene, provenance = build_scene(output)
     model = mujoco.MjModel.from_xml_path(str(scene))
     data = mujoco.MjData(model)
     rows = fixture_rows()
@@ -917,6 +970,10 @@ def main() -> None:
         "scene": str(scene),
         "scene_sha256": sha256(scene),
         "provenance": provenance,
+        "collision_policy": exception_policy or {
+            "policy": "BASELINE_NO_HEAD_TORSO_EXCEPTION",
+            "exact_excluded_pair": None,
+        },
         "frozen_omnipicker_model_sha256": sha256(FROZEN_MODEL),
         "full_body_required": required_bodies,
         "fixed_base_pose_world_m": FIXED_PELVIS_WORLD_M.tolist(),
