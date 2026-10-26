@@ -40,6 +40,12 @@ EQUALITY_CONNECT_GATE_M = 0.001
 # 1e-9 rad while the target, velocity and actuator effort remain at the source
 # limit.  This comparison tolerance does not change the model range.
 JOINT_LIMIT_NUMERICAL_TOL_RAD = 1e-8
+ENDPOINT_INITIALIZATION_MARGIN_RAD = 1e-5
+ENDPOINT_INITIALIZATION_JOINTS = {
+    "left_knee_joint": "lower",
+    "right_knee_joint": "lower",
+    "left_elbow_joint": "upper",
+}
 SETTLE_MAX_STEPS = 2_000
 SETTLE_REQUIRED_STABLE_STEPS = 500
 PREGRASP_HOLD_STEPS = 250
@@ -107,6 +113,41 @@ def interpolate(first: np.ndarray, second: np.ndarray, alpha: float) -> np.ndarr
 def outside_position_range(qpos: float, lower: float, upper: float, tolerance_rad: float = JOINT_LIMIT_NUMERICAL_TOL_RAD) -> bool:
     """Keep source limits intact while ignoring IEEE round-off at an endpoint."""
     return qpos < lower - tolerance_rad or qpos > upper + tolerance_rad
+
+
+def verify_endpoint_initialization(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    motor_targets: dict[str, float],
+    source: dict[str, dict[str, float | None]],
+) -> dict[str, object]:
+    """Verify the three source-limit endpoint joints before any mj_step call."""
+    records = []
+    passed = True
+    for joint_name, side in ENDPOINT_INITIALIZATION_JOINTS.items():
+        joint = model.joint(joint_name).id
+        address, dof = int(model.jnt_qposadr[joint]), int(model.jnt_dofadr[joint])
+        qpos, qvel = float(data.qpos[address]), float(data.qvel[dof])
+        lower, upper = map(float, model.jnt_range[joint])
+        expected = lower + ENDPOINT_INITIALIZATION_MARGIN_RAD if side == "lower" else upper - ENDPOINT_INITIALIZATION_MARGIN_RAD
+        source_range = source.get(joint_name, {})
+        source_lower, source_upper = source_range.get("lower"), source_range.get("upper")
+        record_pass = bool(
+            abs(qpos - expected) <= 1e-12
+            and abs(qvel) <= 1e-12
+            and abs(motor_targets[joint_name] - expected) <= 1e-12
+            and (source_lower is None or abs(float(source_lower) - lower) <= 1e-12)
+            and (source_upper is None or abs(float(source_upper) - upper) <= 1e-12)
+            and lower < qpos < upper
+        )
+        passed &= record_pass
+        records.append({
+            "joint": joint_name, "source_range_rad": [source_lower, source_upper],
+            "model_range_rad": [lower, upper], "qpos_rad": qpos, "qvel_rad_s": qvel,
+            "motor_target_rad": motor_targets[joint_name], "expected_qpos_rad": expected,
+            "pass": record_pass,
+        })
+    return {"margin_rad": ENDPOINT_INITIALIZATION_MARGIN_RAD, "joints": records, "pass": passed}
 
 
 def all_equalities(model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict[str, float], list[dict[str, float]]]:
@@ -465,6 +506,11 @@ def main() -> None:
     # frozen root position servo otherwise starts with ctrl=0 and would make a
     # false ROOT_TRACKING_ERROR before any physics integration occurs.
     initial_clipping = apply_controller(arm_initial, right_root)
+    initialization_verification = verify_endpoint_initialization(model, data, motor_targets, source)
+    if not initialization_verification["pass"]:
+        first_failure = {"gate": "ENDPOINT_INITIALIZATION", "step": 0, "verification": initialization_verification}
+    elif initial_clipping:
+        first_failure = {"gate": "INITIAL_MOTOR_CONTROL_RANGE", "step": 0, "clipping": initial_clipping}
     render_frame()
     initial_record = evaluate(0, "INITIAL", initial_clipping)
     if initial_record["table_force_z"] <= 0.0 or first_failure is not None:
@@ -516,6 +562,7 @@ def main() -> None:
         "status": result_status, "mj_step_calls": physics_steps, "simulated_time_s": float(data.time),
         "scene": str(scene), "scene_sha256": sha256(scene), "frozen_model_sha256": sha256(args.frozen_model),
         "controller_overlay": config["controller_overlay"], "static_preflight_config": str(args.config.resolve()), "static_preflight_config_sha256": sha256(args.config.resolve()),
+        "endpoint_initialization_verification": initialization_verification,
         "stages": stage_results, "first_failure": first_failure, "metrics": metrics,
         "final_cylinder": object_state(model, data, cylinder),
         "initial_cylinder_com_world_m": initial_com.tolist(), "weight_N": weight,
