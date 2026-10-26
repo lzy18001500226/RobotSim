@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from issue80_m1_first_motion import PHYSICAL_STOP_MAX_VERTICAL_SPEED_M_S
+
 
 REQUIRED_TOPICS = frozenset({"odom", "imu", "common", "leg_state", "leg_command"})
 ROOT_Z_MIN_M = 0.52
@@ -34,6 +36,53 @@ MAX_STATE_AGE_S = 0.5
 REQUIRED_UPRIGHT_ODOM_SAMPLES = 3
 REQUIRED_STAND_COMMON_SAMPLES = 3
 NATIVE_SUPPORT_REQUIRED_SAMPLES = 2
+
+
+def _native_pelvis_measurements(sample: Mapping[str, Any]) -> dict[str, float | None]:
+    """Extract fail-closed world-frame pelvis quantities from native MjData."""
+    pelvis = sample.get("pelvis")
+    state = pelvis.get("state", {}) if isinstance(pelvis, Mapping) else {}
+    position = state.get("world_position_m") if isinstance(state, Mapping) else None
+    quaternion = state.get("world_quaternion_wxyz") if isinstance(state, Mapping) else None
+    velocity = state.get("world_spatial_velocity_rot_lin") if isinstance(state, Mapping) else None
+    result: dict[str, float | None] = {
+        "pelvis_x_m": None,
+        "pelvis_y_m": None,
+        "pelvis_root_z_m": None,
+        "pelvis_roll_deg": None,
+        "pelvis_pitch_deg": None,
+        "pelvis_tilt_deg": None,
+        "pelvis_planar_speed_world_m_s": None,
+        "pelvis_vertical_speed_world_m_s": None,
+    }
+    try:
+        if isinstance(position, (list, tuple)) and len(position) == 3:
+            x, y, z = (float(value) for value in position)
+            if all(math.isfinite(value) for value in (x, y, z)):
+                result.update({"pelvis_x_m": x, "pelvis_y_m": y, "pelvis_root_z_m": z})
+        if isinstance(quaternion, (list, tuple)) and len(quaternion) == 4:
+            w, x, y, z = (float(value) for value in quaternion)
+            if all(math.isfinite(value) for value in (w, x, y, z)):
+                norm = math.sqrt(w * w + x * x + y * y + z * z)
+                if norm > 0.0:
+                    w, x, y, z = (value / norm for value in (w, x, y, z))
+                    roll = math.degrees(math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y)))
+                    pitch = math.degrees(math.asin(max(-1.0, min(1.0, 2.0 * (w * y - z * x)))))
+                    result.update({
+                        "pelvis_roll_deg": roll,
+                        "pelvis_pitch_deg": pitch,
+                        "pelvis_tilt_deg": max(abs(roll), abs(pitch)),
+                    })
+        if isinstance(velocity, (list, tuple)) and len(velocity) == 6:
+            vx, vy, vz = (float(velocity[index]) for index in (3, 4, 5))
+            if all(math.isfinite(value) for value in (vx, vy, vz)):
+                result.update({
+                    "pelvis_planar_speed_world_m_s": math.hypot(vx, vy),
+                    "pelvis_vertical_speed_world_m_s": vz,
+                })
+    except (TypeError, ValueError):
+        pass
+    return result
 
 
 def native_foot_support(sample: Mapping[str, Any]) -> dict[str, Any]:
@@ -59,28 +108,24 @@ def native_foot_support(sample: Mapping[str, Any]) -> dict[str, Any]:
             for side in side_normals:
                 if contact.get(f"involves_selected_{side}_foot") is True:
                     side_normals[side].append(normal)
-    pelvis = sample.get("pelvis")
-    state = pelvis.get("state", {}) if isinstance(pelvis, Mapping) else {}
-    velocity = state.get("world_spatial_velocity_rot_lin") if isinstance(state, Mapping) else None
-    planar_speed = None
-    vertical_speed = None
-    if isinstance(velocity, (list, tuple)) and len(velocity) == 6:
-        try:
-            vx, vy, vz = (float(velocity[index]) for index in (3, 4, 5))
-            if all(math.isfinite(value) for value in (vx, vy, vz)):
-                planar_speed = math.hypot(vx, vy)
-                vertical_speed = vz
-        except (TypeError, ValueError):
-            pass
+    measurements = _native_pelvis_measurements(sample)
+    planar_speed = measurements["pelvis_planar_speed_world_m_s"]
+    vertical_speed = measurements["pelvis_vertical_speed_world_m_s"]
+    root_z = measurements["pelvis_root_z_m"]
+    tilt = measurements["pelvis_tilt_deg"]
     bilateral = bool(side_normals["left"] and side_normals["right"])
-    # 0.20 m/s preserves the existing physical planar-speed ceiling.  The
-    # non-negative vertical criterion prevents accepting the first impact row
-    # merely because both feet happen to be in contact while the root is still
-    # descending.  ROS still independently checks height and tilt afterwards.
+    # A contact impulse plus upward root velocity is not a stable handoff.
+    # Reuse the established physical-stop vertical-speed ceiling and require
+    # the native root itself to satisfy the existing height/tilt gates.  This
+    # deliberately waits through the first impact/rebound, while preserving
+    # the existing 0.20 m/s planar-speed safety ceiling.
     settled = (
         bilateral
         and planar_speed is not None and planar_speed <= 0.20
-        and vertical_speed is not None and vertical_speed >= 0.0
+        and vertical_speed is not None
+        and abs(vertical_speed) <= PHYSICAL_STOP_MAX_VERTICAL_SPEED_M_S
+        and root_z is not None and root_z >= ROOT_Z_MIN_M
+        and tilt is not None and tilt < MAX_TILT_DEG
     )
     return {
         "supported": bilateral,
@@ -91,9 +136,28 @@ def native_foot_support(sample: Mapping[str, Any]) -> dict[str, Any]:
         "right_contact_count": len(side_normals["right"]),
         "captured_foot_floor_contact_count": sample.get("captured_foot_floor_contact_count"),
         "contact_count": sample.get("contact_count"),
-        "pelvis_planar_speed_world_m_s": planar_speed,
-        "pelvis_vertical_speed_world_m_s": vertical_speed,
+        **measurements,
+        "vertical_speed_within_existing_physical_stop_limit": (
+            vertical_speed is not None
+            and abs(vertical_speed) <= PHYSICAL_STOP_MAX_VERTICAL_SPEED_M_S
+        ),
+        "native_root_within_existing_height_tilt_gate": (
+            root_z is not None and root_z >= ROOT_Z_MIN_M
+            and tilt is not None and tilt < MAX_TILT_DEG
+        ),
     }
+
+
+def native_root_within_existing_safety_gate(support: Mapping[str, Any]) -> bool:
+    """Apply the unchanged root height/tilt/planar-speed safety limits."""
+    try:
+        return (
+            float(support["pelvis_planar_speed_world_m_s"]) <= 0.20
+            and float(support["pelvis_root_z_m"]) >= ROOT_Z_MIN_M
+            and float(support["pelvis_tilt_deg"]) < MAX_TILT_DEG
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def read_complete_native_capture_rows(
@@ -561,6 +625,10 @@ def main() -> int:
             self.native_support_samples = 0
             self.native_support_ready_ns: int | None = None
             self.native_support_sample: dict[str, Any] | None = None
+            self.post_jd_control_epoch_ns: int | None = None
+            self.native_handoff_safety_lost: dict[str, Any] | None = None
+            self.native_unsafe_after_jd: dict[str, Any] | None = None
+            self.pending_jd_submission_ns: int | None = None
             self.first_valid_state_ns: int | None = None
             self.first_upright_ns: int | None = None
             self.first_unsafe_ns: int | None = None
@@ -608,6 +676,38 @@ def main() -> int:
         def _post_reset_epoch(self) -> int | None:
             return self.post_reset_epoch_ns if self.post_reset_epoch_ns is not None else self.reset_ns
 
+        def _assessment_epoch(self) -> int | None:
+            """Ignore queued pre-JD telemetry after a native MjData handoff."""
+            return self.post_jd_control_epoch_ns or self._post_reset_epoch()
+
+        def _clear_assessment_counters(self) -> None:
+            self.upright_samples = 0
+            self.stand_samples = 0
+            self.first_valid_state_ns = None
+            self.first_upright_ns = None
+            self.first_unsafe_ns = None
+            self.first_unsafe_row = None
+
+        def ros_transport_liveness(self, now_ns: int) -> dict[str, Any]:
+            """Check delivery freshness without treating queued ROS data as current physics."""
+            rows = {key: self.latest[key] for key in REQUIRED_TOPICS if key in self.latest}
+            ages = {
+                key: (now_ns - int(row.get("wall_monotonic_ns", 0))) / 1e9
+                for key, row in rows.items()
+            }
+            fresh = REQUIRED_TOPICS.issubset(rows) and all(
+                0.0 <= ages[key] <= MAX_STATE_AGE_S for key in REQUIRED_TOPICS
+            )
+            return {
+                "fresh_required_topics": fresh,
+                "state_ages_s": ages,
+                "topic_keys": sorted(rows),
+                "interpretation": (
+                    "transport_liveness_only; physical JD eligibility is native_MjData "
+                    "until a post-JD effective leg-command epoch is observed"
+                ),
+            }
+
         def poll_native_capture(self) -> None:
             """Consume only completed evidence-local native samples once."""
             if self.native_trace_path is None:
@@ -652,12 +752,7 @@ def main() -> int:
                 ):
                     self.native_support_ready_ns = host_ns
                     self.post_reset_epoch_ns = host_ns
-                    self.upright_samples = 0
-                    self.stand_samples = 0
-                    self.first_valid_state_ns = None
-                    self.first_upright_ns = None
-                    self.first_unsafe_ns = None
-                    self.first_unsafe_row = None
+                    self._clear_assessment_counters()
                     self.record_event(
                         "native_bilateral_foot_support_ready",
                         generation=generation,
@@ -666,6 +761,30 @@ def main() -> int:
                         required_post_reset_ros_upright_samples=self.required_post_reset_upright_samples,
                         support=self.native_support_sample,
                     )
+                jd_ns = self.pending_jd_submission_ns or self.set_records.get(
+                    "JOINT_DEFAULT", {}
+                ).get("wall_monotonic_ns_submitted")
+                if (
+                    self.native_support_ready_ns is not None
+                    and jd_ns is None
+                    and host_ns > self.native_support_ready_ns
+                    and not native_root_within_existing_safety_gate(support)
+                    and self.native_handoff_safety_lost is None
+                ):
+                    self.native_handoff_safety_lost = {"sample": row, "support": support}
+                    self.record_event(
+                        "native_pre_JD_physical_safety_fault",
+                        native_host_monotonic_ns=host_ns,
+                        support=self.native_handoff_safety_lost,
+                    )
+                if isinstance(jd_ns, int) and host_ns > jd_ns:
+                    if not native_root_within_existing_safety_gate(support) and self.native_unsafe_after_jd is None:
+                        self.native_unsafe_after_jd = {"sample": row, "support": support}
+                        self.record_event(
+                            "native_post_JD_physical_safety_fault",
+                            native_host_monotonic_ns=host_ns,
+                            support=self.native_unsafe_after_jd,
+                        )
 
         def native_reset_support_record(self) -> dict[str, Any]:
             return {
@@ -678,6 +797,9 @@ def main() -> int:
                 "support_ready_host_monotonic_ns": self.native_support_ready_ns,
                 "support": self.native_support_sample,
                 "required_post_reset_ros_upright_samples": self.required_post_reset_upright_samples,
+                "post_JD_effective_command_epoch_monotonic_ns": self.post_jd_control_epoch_ns,
+                "native_pre_JD_physical_safety_fault": self.native_handoff_safety_lost,
+                "native_post_JD_physical_safety_fault": self.native_unsafe_after_jd,
             }
 
         def wait_for_native_reset_support(self, deadline: float) -> bool:
@@ -713,8 +835,16 @@ def main() -> int:
             self.latest[key] = row
             self.counts[key] += 1
             self.write_trace(row)
-            epoch_ns = self._post_reset_epoch()
-            if epoch_ns is not None and now_ns > epoch_ns and key == "odom":
+            epoch_ns = self._assessment_epoch()
+            # Native capture is synchronous with the simulator.  Before JD
+            # produces a real leg command, ROS can still be draining messages
+            # generated before Reset; retain those rows as evidence but do not
+            # classify their pose as the current physical state.
+            can_assess_ros_physics = not (
+                self.require_native_reset_generation
+                and self.post_jd_control_epoch_ns is None
+            )
+            if can_assess_ros_physics and epoch_ns is not None and now_ns > epoch_ns and key == "odom":
                 if pose_is_upright(data):
                     self.upright_samples += 1
                     if self.first_upright_ns is None:
@@ -726,7 +856,7 @@ def main() -> int:
                         self.first_unsafe_row = row
                 if self.first_valid_state_ns is None and self.fresh_topics_after_reset(now_ns):
                     self.first_valid_state_ns = now_ns
-            if epoch_ns is not None and now_ns > epoch_ns and key == "common":
+            if can_assess_ros_physics and epoch_ns is not None and now_ns > epoch_ns and key == "common":
                 common = data
                 if (
                     common.get("action_info", {}).get("action_desc") == "JOINT_DEFAULT"
@@ -741,6 +871,14 @@ def main() -> int:
                     response_ns = self.set_records.get("JOINT_DEFAULT", {}).get("wall_monotonic_ns_returned")
                     if response_ns is not None and now_ns > int(response_ns):
                         self.first_effective_after_jd = now_ns
+                        if self.require_native_reset_generation:
+                            self.post_jd_control_epoch_ns = now_ns
+                            self._clear_assessment_counters()
+                            self.record_event(
+                                "post_JD_effective_leg_command_epoch",
+                                wall_monotonic_ns=now_ns,
+                                source="fresh_effective_leg_command",
+                            )
                 if self.first_effective_after_sd is None:
                     response_ns = self.set_records.get("STAND_DEFAULT", {}).get("wall_monotonic_ns_returned")
                     if response_ns is not None and now_ns > int(response_ns):
@@ -757,7 +895,7 @@ def main() -> int:
             self.write_trace(row)
 
         def _post_reset_latest(self) -> dict[str, dict[str, Any]]:
-            epoch_ns = self._post_reset_epoch()
+            epoch_ns = self._assessment_epoch()
             if epoch_ns is None:
                 return {}
             return {
@@ -786,7 +924,7 @@ def main() -> int:
         def spin_for(self, timeout_s: float) -> None:
             rclpy.spin_once(self, timeout_sec=max(0.0, timeout_s))
 
-        def mode_readback(self, timeout_s: float) -> dict[str, Any]:
+        def mode_readback(self, timeout_s: float, *, monitor_native_handoff: bool = False) -> dict[str, Any]:
             request = GetMcAction.Request()
             request.request = CommonRequest()
             request.request.header.stamp = self.get_clock().now().to_msg()
@@ -796,9 +934,31 @@ def main() -> int:
             deadline = time.monotonic() + timeout_s
             while rclpy.ok() and not future.done() and time.monotonic() < deadline:
                 self.spin_for(min(0.01, max(0.0, deadline - time.monotonic())))
+                if monitor_native_handoff:
+                    try:
+                        self.poll_native_capture()
+                    except (OSError, ValueError) as exc:
+                        self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                        break
+                    if self.native_handoff_safety_lost is not None:
+                        self.error = "native physical safety gate faulted while reading pre-JD MC mode"
+                        break
             returned_utc = datetime.now(timezone.utc).isoformat()
             returned_ns = time.monotonic_ns()
-            if not future.done() or future.result() is None:
+            if self.native_handoff_safety_lost is not None and monitor_native_handoff:
+                record = {
+                    "transport_state": "GET_MC_ACTION_ABORTED_NATIVE_SAFETY",
+                    "wall_utc_submitted": submitted_utc,
+                    "wall_monotonic_ns_submitted": submitted_ns,
+                    "wall_utc_returned": returned_utc,
+                    "wall_monotonic_ns_returned": returned_ns,
+                    "request": json_safe(request),
+                    "response": None,
+                    "action_desc": None,
+                    "action_status_value": None,
+                    "native_mjdata": self.native_reset_support_record(),
+                }
+            elif not future.done() or future.result() is None:
                 record = {
                     "transport_state": "GET_MC_ACTION_TIMEOUT",
                     "wall_utc_submitted": submitted_utc,
@@ -846,10 +1006,39 @@ def main() -> int:
                 submitted_monotonic_ns=submitted_ns,
                 pre_action_state=pre_action,
             )
+            if action_desc == "JOINT_DEFAULT":
+                self.pending_jd_submission_ns = submitted_ns
             future = self.set_client.call_async(request)
             deadline = time.monotonic() + timeout_s
             while rclpy.ok() and not future.done() and time.monotonic() < deadline:
                 self.spin_for(min(0.01, max(0.0, deadline - time.monotonic())))
+                if self.require_native_reset_generation:
+                    try:
+                        self.poll_native_capture()
+                    except (OSError, ValueError) as exc:
+                        self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                        break
+                    if self.native_unsafe_after_jd is not None:
+                        record = {
+                            "transport_state": "REQUEST_OUTCOME_UNKNOWN_NATIVE_PHYSICAL_SAFETY",
+                            "wall_utc_submitted": submitted_utc,
+                            "wall_monotonic_ns_submitted": submitted_ns,
+                            "wall_utc_returned": datetime.now(timezone.utc).isoformat(),
+                            "wall_monotonic_ns_returned": time.monotonic_ns(),
+                            "request": json_safe(request),
+                            "pre_action_state": pre_action,
+                            "response": None,
+                            "response_status_value": None,
+                            "response_header_code": None,
+                            "response_message": "native physical safety gate faulted while the single request outcome was pending; it will not be retried",
+                            "service_success": False,
+                            "action_result_success": False,
+                            "requested_action_desc": action_desc,
+                            "native_mjdata": self.native_reset_support_record(),
+                        }
+                        self.set_records[action_desc] = record
+                        self.record_event("set_mc_action_response", action_desc=action_desc, record=record)
+                        return record
                 if self.first_unsafe_ns is not None and self.first_unsafe_ns > submitted_ns:
                     record = {
                         "transport_state": "REQUEST_OUTCOME_UNKNOWN_POSTURE_UNSAFE",
@@ -1023,6 +1212,70 @@ def main() -> int:
                     "native_mjdata": self.native_reset_support_record(),
                     "error": self.error,
                 }
+            if self.require_native_reset_generation:
+                # Native MjData has already established the physical handoff
+                # condition.  Do not wait for queued ROS pose samples here:
+                # the previous run showed they can describe the pre-Reset
+                # fallen state long after the native simulator has advanced.
+                # ROS remains required as a live transport and is re-anchored
+                # at the first effective JD leg command below.
+                while rclpy.ok() and time.monotonic() < deadline:
+                    self.spin_for(0.005)
+                    try:
+                        self.poll_native_capture()
+                    except (OSError, ValueError) as exc:
+                        self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                        break
+                    if self.native_handoff_safety_lost is not None:
+                        self.error = "native physical safety gate faulted before JD could be issued"
+                        break
+                    now_ns = time.monotonic_ns()
+                    transport = self.ros_transport_liveness(now_ns)
+                    if not transport["fresh_required_topics"]:
+                        last = {
+                            "status": "POST_RESET_NATIVE_SUPPORT_WAITING_FOR_ROS_TRANSPORT",
+                            "reset_dispatch_monotonic_ns": self.reset_ns,
+                            "native_mjdata": self.native_reset_support_record(),
+                            "ros_transport": transport,
+                        }
+                        continue
+                    readback = self.mode_readback(args.get_timeout_s, monitor_native_handoff=True)
+                    if (
+                        readback.get("transport_state") != "RESPONSE_RECEIVED"
+                        or readback.get("action_desc") != "PASSIVE_DEFAULT"
+                        or readback.get("action_status_value") != 100
+                    ):
+                        self.error = "GetMcAction did not retain PASSIVE_DEFAULT/status=100 at native JD handoff"
+                        last = {
+                            "status": "POST_RESET_NATIVE_SUPPORT_BAD_PRE_JD_MODE",
+                            "reset_dispatch_monotonic_ns": self.reset_ns,
+                            "native_mjdata": self.native_reset_support_record(),
+                            "ros_transport": transport,
+                            "get_mc_action": readback,
+                            "error": self.error,
+                        }
+                        break
+                    support = self.native_reset_support_record()
+                    last = {
+                        "status": "POST_RESET_NATIVE_SUPPORT_READY",
+                        "wall_utc": datetime.now(timezone.utc).isoformat(),
+                        "wall_monotonic_ns": now_ns,
+                        "reset_dispatch_monotonic_ns": self.reset_ns,
+                        "post_reset_epoch_monotonic_ns": self._post_reset_epoch(),
+                        "snapshot": {
+                            "native_mjdata": support,
+                            "ros_transport": transport,
+                            "get_mc_action": readback,
+                            "physical_state_authority": "native_MjData",
+                            "ros_pose_generation": "PENDING_POST_JD_EFFECTIVE_COMMAND",
+                        },
+                    }
+                    self.record_event("post_reset_native_support_gate", snapshot=last)
+                    return last
+                if self.error is None:
+                    self.error = "native support was observed but ROS transport or PASSIVE_DEFAULT was not ready before JD"
+                last.update({"error": self.error, "timeout_s": args.upright_timeout_s})
+                return last
             while rclpy.ok() and time.monotonic() < deadline:
                 self.spin_for(0.005)
                 now_ns = time.monotonic_ns()
@@ -1074,6 +1327,15 @@ def main() -> int:
             deadline = time.monotonic() + timeout_s
             last: dict[str, Any] | None = None
             while rclpy.ok() and time.monotonic() < deadline:
+                if self.require_native_reset_generation:
+                    try:
+                        self.poll_native_capture()
+                    except (OSError, ValueError) as exc:
+                        self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                        return last
+                    if self.native_unsafe_after_jd is not None:
+                        self.error = "native physical safety gate faulted while confirming MC mode"
+                        return last
                 if self.first_unsafe_ns is not None:
                     return last
                 last = self.mode_readback(args.get_timeout_s)
@@ -1090,6 +1352,23 @@ def main() -> int:
             last: dict[str, Any] | None = None
             while rclpy.ok() and time.monotonic() < deadline:
                 self.spin_for(0.005)
+                if self.require_native_reset_generation:
+                    try:
+                        self.poll_native_capture()
+                    except (OSError, ValueError) as exc:
+                        self.error = f"native MjData capture became unreadable: {type(exc).__name__}: {exc}"
+                        return {"eligible": False, "failure_reason": self.error}
+                    if self.native_unsafe_after_jd is not None:
+                        self.error = "native physical safety gate faulted while confirming JOINT_DEFAULT"
+                        return {
+                            "eligible": False,
+                            "failure_reason": self.error,
+                            "native_mjdata": self.native_reset_support_record(),
+                        }
+                    if self.post_jd_control_epoch_ns is None:
+                        # Do not assess queued ROS state until the MC has
+                        # emitted a new effective JD command.
+                        continue
                 now_ns = time.monotonic_ns()
                 if self.first_unsafe_ns is not None:
                     self.error = "posture crossed existing height/tilt gate after the first upright post-Reset pose"
@@ -1120,7 +1399,7 @@ def main() -> int:
                 last = assess_joint_to_stand_state(
                     latest,
                     now_monotonic_ns=now_ns,
-                    reset_dispatch_monotonic_ns=self._post_reset_epoch() or self.reset_ns,
+                    reset_dispatch_monotonic_ns=self._assessment_epoch() or self.reset_ns,
                     upright_odom_samples=self.upright_samples,
                     stand_common_samples=self.stand_samples,
                     set_service_ready=self.set_client.service_is_ready(),
@@ -1207,7 +1486,10 @@ def main() -> int:
                 self._write_final_result("BLOCKED_RESET_EVENT", block_stage="RESET", error=self.error, pre_reset=pre_reset_mode)
                 return 2
             upright_gate = self.wait_for_post_reset_upright()
-            if upright_gate is None or upright_gate.get("status") != "POST_RESET_UPRIGHT_OBSERVED":
+            if upright_gate is None or upright_gate.get("status") not in {
+                "POST_RESET_UPRIGHT_OBSERVED",
+                "POST_RESET_NATIVE_SUPPORT_READY",
+            }:
                 self._write_final_result("BLOCKED_POST_RESET_UPRIGHT", block_stage="POST_RESET_UPRIGHT", error=self.error, pre_reset=pre_reset_mode, upright_gate=upright_gate)
                 return 2
             jd_pre = upright_gate["snapshot"]

@@ -56,17 +56,45 @@ class SetActionCaptureTests(unittest.TestCase):
 
     def test_native_support_requires_a_settled_root_after_bilateral_contact(self) -> None:
         sample = {
-            "pelvis": {"state": {"world_spatial_velocity_rot_lin": [0, 0, 0, 0.03, 0.0, 0.01]}},
+            "pelvis": {"state": {
+                "world_position_m": [0.0, 0.0, 0.68],
+                "world_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "world_spatial_velocity_rot_lin": [0, 0, 0, 0.03, 0.0, 0.001],
+            }},
             "contacts": [
                 {"involves_selected_left_foot": True, "normal_force_n": 100.0},
                 {"involves_selected_right_foot": True, "normal_force_n": 100.0},
             ],
         }
         self.assertTrue(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
-        sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][5] = -0.01
+        sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][5] = 0.035
         self.assertFalse(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
-        sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][5] = 0.01
+        sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][5] = -0.004
+        self.assertTrue(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
         sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][3] = 0.21
+        self.assertFalse(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
+
+    def test_native_support_requires_native_height_and_tilt_not_only_foot_force(self) -> None:
+        sample = {
+            "pelvis": {"state": {
+                "world_position_m": [0.0, 0.0, 0.68],
+                "world_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "world_spatial_velocity_rot_lin": [0, 0, 0, 0.02, 0.0, 0.0],
+            }},
+            "contacts": [
+                {"involves_selected_left_foot": True, "normal_force_n": 100.0},
+                {"involves_selected_right_foot": True, "normal_force_n": 100.0},
+            ],
+        }
+        support = native_foot_support(sample)
+        self.assertTrue(support["safe_to_begin_ros_upright_gate"])
+        self.assertEqual(support["pelvis_root_z_m"], 0.68)
+        self.assertEqual(support["pelvis_tilt_deg"], 0.0)
+        sample["pelvis"]["state"]["world_position_m"][2] = 0.51
+        self.assertFalse(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
+        sample["pelvis"]["state"]["world_position_m"][2] = 0.68
+        # 30 deg pitch: a valid quaternion but outside the unchanged 15 deg gate.
+        sample["pelvis"]["state"]["world_quaternion_wxyz"] = [0.965925826, 0.0, 0.258819045, 0.0]
         self.assertFalse(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
 
     def test_native_capture_reader_defers_a_partial_final_append(self) -> None:
@@ -146,6 +174,18 @@ class SetActionCaptureTests(unittest.TestCase):
         request_body = runner[request:runner.index("def _write_sd_record", request)]
         self.assertNotIn("self.docker_exec(", request_body)
         self.assertIn('"set_action_capture_result.json"', request_body)
+
+    def test_native_handoff_anchors_jd_to_mjdata_and_reanchors_ros_after_effective_command(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_set_action_capture.py").read_text()
+        start = source.index("if self.require_native_reset_generation:", source.index("def wait_for_post_reset_upright"))
+        native_gate = source[start:source.index("\n            while rclpy.ok()", start)]
+        self.assertIn('"POST_RESET_NATIVE_SUPPORT_READY"', native_gate)
+        self.assertIn("ros_transport_liveness", native_gate)
+        self.assertIn("physical_state_authority", native_gate)
+        self.assertIn("PENDING_POST_JD_EFFECTIVE_COMMAND", native_gate)
+        self.assertIn("post_JD_effective_leg_command_epoch", source)
+        self.assertIn("native_pre_JD_physical_safety_fault", source)
+        self.assertIn("native_post_JD_physical_safety_fault", source)
 
     def response(self, status: int, code: int, message: str):
         body = FakeMessage(
