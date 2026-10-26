@@ -150,6 +150,7 @@ POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 TABLE_APPROACH_CHILD_TIMEOUT_S = 410.0
 TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
 PREARMED_STANDING_MIN_PARENT_RUNTIME_S = 90.0
+RAICOM_LOW_CRUISE_FORWARD_M_S = 0.105
 STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
 # The already-established root-motion guard is 0.20 m/s.  The pre-armed
 # handoff uses it only to reject an already unsafe start; it is not a standing
@@ -350,8 +351,10 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
     """Keep configured routes on the existing bounded transit and stop profile."""
     if not (getattr(args, "route_config", None) or getattr(args, "local01_scene_world_poses", None)):
         return
+    low_cruise = bool(getattr(args, "raicom_low_cruise_profile", False))
+    expected_forward = RAICOM_LOW_CRUISE_FORWARD_M_S if low_cruise else 0.12
     if (
-        abs(float(args.forward_speed) - 0.12) > 1e-9
+        abs(float(args.forward_speed) - expected_forward) > 1e-9
         or abs(float(args.pulse_duration) - 1.0) > 1e-9
         or abs(float(args.extra_stop_observation) - 7.0) > 1e-9
         or float(args.ramp_duration_s) != 0.0
@@ -365,7 +368,7 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
         or getattr(args, "route_turn_evidence", None) is not None
     ):
         raise ValueError(
-            "configured route requires 0.12 m/s, the default generic pulse fields, "
+            f"configured route requires {expected_forward:g} m/s, the default generic pulse fields, "
             "7 s existing post-STAND observation, and no ramp/debug/turn overlays"
         )
 
@@ -2367,6 +2370,7 @@ class BoundedRun:
             TURN_FORWARD_COMMAND_M_S if run53
             else POINT_GOAL_FORWARD_COMMAND_M_S if run65_point_goal
             else CURVED_PATH_FORWARD_M_S if run65_curved_path
+            else float(self.args.forward_speed) if getattr(self.args, "raicom_low_cruise_profile", False)
             else TURN_FORWARD_COMMAND_M_S if (run65_right_turn or run65_route or run65_waypoint_b_mode or run65_waypoint_docking)
             else float(self.args.forward_speed)
         )
@@ -2421,6 +2425,18 @@ class BoundedRun:
             if getattr(self.args, "run50_threshold_respecting_smoothstop_diagnostic", False)
             else 0.0 if getattr(self.args, "run49_smoothstop_diagnostic", False) else None,
         })
+        if getattr(self.args, "raicom_low_cruise_profile", False):
+            manifest["low_cruise_recovery_profile"] = {
+                "classification": "SIMULATION_ONLY_RAICOM_LOW_CRUISE_RECOVERY",
+                "forward_speed_m_s": float(self.args.forward_speed),
+                "basis": (
+                    "0.12 m/s produced a measured 0.228394 m/s root-speed safety abort in "
+                    "raicom-direct-sd-short-route-motion-20261026T200622Z; the preserved "
+                    "0.105 m/s FoundationWalk baseline peaked at 0.143708 m/s"
+                ),
+                "root_speed_guard_m_s": 0.2,
+                "no_vendor_or_safety_parameter_changed": True,
+            }
         if run65_right_turn:
             manifest["command_profile"] = {
                 "shape": "one-bounded-right-moving-arc",
@@ -5452,6 +5468,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-low-cruise-profile",
+        action="store_true",
+        help=(
+            "one evidence-based RAICOM recovery profile: hold the existing first-route command at "
+            "0.105 m/s, the prior physical PASS below the 0.20 m/s root-speed guard; "
+            "does not change MC, model, limits, or any safety threshold"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5659,6 +5684,18 @@ def main() -> int:
             parser.error("direct stand from passive is only valid for the native Reset startup path")
         if not args.native_mjdata_capture:
             parser.error("direct stand from passive requires native MjData capture")
+    if args.raicom_low_cruise_profile:
+        if not (
+            args.direct_stand_from_passive
+            and args.local01_scene_world_poses
+            and not args.table_approach_mission
+            and args.maintainer_authorized_first_motion
+            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        ):
+            parser.error(
+                "RAICOM low-cruise profile requires direct-stand, the Local01 short route, "
+                "first-motion authorization, and exactly 0.105 m/s"
+            )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")

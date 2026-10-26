@@ -223,6 +223,13 @@ class ResearchScriptStagingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "configured route requires 0.12 m/s"):
             validate_configured_route_motion_profile(args)
 
+        args.forward_speed = 0.105
+        args.raicom_low_cruise_profile = True
+        validate_configured_route_motion_profile(args)
+        args.forward_speed = 0.104
+        with self.assertRaisesRegex(ValueError, "requires 0.105 m/s"):
+            validate_configured_route_motion_profile(args)
+
     def test_activation_probe_requires_safe_zero_preflight_and_prior_nonzero_source_evidence(self) -> None:
         fixture_path = Path(__file__).with_name("fixtures") / "issue80_curved_abort_transition_replay.json"
         prior_replay = json.loads(fixture_path.read_text(encoding="utf-8"))
