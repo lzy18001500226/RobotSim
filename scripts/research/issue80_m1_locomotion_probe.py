@@ -93,6 +93,7 @@ from issue80_coordinated_pose_goal import (
 from issue80_m1_mode_logic import (
     ACTIVATION_PROBE_DURATION_S,
     ACTIVATION_PROBE_FORWARD_M_S,
+    RAICOM_LOW_CRUISE_FORWARD_M_S,
     MCLocomotionAbortLifecycle,
     activation_probe_abort_is_expected,
     activation_probe_safe_stop_passes,
@@ -109,7 +110,7 @@ from issue80_waypoint_route import (
     validate_waypoint_docking_scene_clearance,
     build_local01_short_scene_route, build_runtime_raw_odom_short_scene_route,
     validate_local01_short_scene_route_input, validate_local01_reset_odom_pose,
-    LOCAL01_SHORT_ROUTE_FORWARD_M_S, RAICOM_LOW_CRUISE_FORWARD_M_S,
+    LOCAL01_SHORT_ROUTE_FORWARD_M_S,
     LOCAL01_SHORT_ROUTE_MAX_WINDOWS as SHORT_ROUTE_MAX_WINDOWS,
     LOCAL01_SHORT_ROUTE_MAX_WINDOW_S as SHORT_ROUTE_MAX_WINDOW_S,
     LOCAL01_SHORT_ROUTE_MAX_AGGREGATE_S as SHORT_ROUTE_MAX_AGGREGATE_S,
@@ -1035,13 +1036,15 @@ class FocusedM1Diagnostic(Node):
         *,
         registration: Mapping[str, Any],
         phase: str,
+        forward_command_m_s: float = ACTIVATION_PROBE_FORWARD_M_S,
+        allow_raicom_low_cruise: bool = False,
     ) -> tuple[MCLocomotionAbortLifecycle, dict[str, Any], dict[str, Any]]:
         """Prepare the reviewed nonzero-acquisition phase for one route window.
 
-        The 0.12 m/s source-acquisition publish happens in the first portion
-        of the existing route window.  It therefore consumes that window's
-        own time/displacement budget and ends through its unchanged zero-stop
-        and physical-stop contract.
+        The selected reviewed source-acquisition publish happens in the first
+        portion of the existing route window. It therefore consumes that
+        window's own time/displacement budget and ends through its unchanged
+        zero-stop and physical-stop contract.
         """
         lifecycle, set_action, activation = self.begin_locomotion_activation_probe_request(
             registration=registration,
@@ -1053,7 +1056,16 @@ class FocusedM1Diagnostic(Node):
                 "route_motion_authorized": True,
                 "initial_nonzero_is_part_of_route_window": True,
                 "maximum_activation_qualification_s": ACTIVATION_PROBE_DURATION_S,
-                "forward_velocity_m_s": ACTIVATION_PROBE_FORWARD_M_S,
+                "forward_velocity_m_s": float(forward_command_m_s),
+                "raicom_low_cruise_profile": bool(allow_raicom_low_cruise),
+                "route_source_acquisition_profile": {
+                    "forward_command_m_s": float(forward_command_m_s),
+                    "allowed_profiles_m_s": (
+                        [ACTIVATION_PROBE_FORWARD_M_S, RAICOM_LOW_CRUISE_FORWARD_M_S]
+                        if allow_raicom_low_cruise else [ACTIVATION_PROBE_FORWARD_M_S]
+                    ),
+                    "all_other_motion_and_stop_limits_unchanged": True,
+                },
             })
         self.events.append({
             "event": "source_grounded_route_activation_prepared",
@@ -3734,6 +3746,9 @@ class FocusedM1Diagnostic(Node):
             )
             if transit_plan.status != "PROPOSAL_ONLY" or transit_plan.forward_m_s <= 0.0:
                 raise ValueError(f"route bridge refused transit proposal: {transit_plan.status}: {transit_plan.reason}")
+            # Record the actual bridge directive, rather than the legacy generic
+            # route default. This must match the value reaching publish_window.
+            result["forward_command_m_s"] = float(transit_plan.forward_m_s)
             route_spec = {
                 "route_id": route.route_id,
                 "frame_id": route.frame_id,
@@ -3773,6 +3788,25 @@ class FocusedM1Diagnostic(Node):
                     "post_stand_observation_s": 7.0,
                     "bounded_runtime_budget": budget,
                     "final_state": "COMPLETE_AT_TABLE_APPROACH_WITHOUT_MANIPULATOR_HANDOFF",
+                })
+            elif short_scene_route_mode:
+                route_spec.update({
+                    "configured_route_input_sha256": hashlib.sha256(
+                        Path(self.args.route_config).read_bytes()
+                    ).hexdigest(),
+                    "route_motion_profile": (
+                        "SIMULATION_ONLY_RAICOM_LOW_CRUISE_RECOVERY"
+                        if bool(getattr(self.args, "raicom_low_cruise_profile", False))
+                        else "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_NOMINAL"
+                    ),
+                    "maximum_windows_total": SHORT_ROUTE_MAX_WINDOWS,
+                    "maximum_window_s": SHORT_ROUTE_MAX_WINDOW_S,
+                    "aggregate_nonzero_limit_s": SHORT_ROUTE_MAX_AGGREGATE_S,
+                    "maximum_forward_m_s": float(transit_plan.forward_m_s),
+                    "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                    "maximum_segment_cross_track_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
+                    "post_stand_observation_s": 7.0,
+                    "final_state": "SHORT_ROUTE_STOPPED_WITHOUT_TABLE_OR_MANIPULATOR_HANDOFF",
                 })
             elif route_config_mode:
                 route_spec.update({
@@ -4279,7 +4313,7 @@ class FocusedM1Diagnostic(Node):
                 )
                 if route_activation_pending:
                     # The documented source contract needs this first bounded
-                    # 0.12 m/s publish to acquire arbitration.  Keep the path
+                    # nonzero publish to acquire arbitration. Keep the path
                     # straight and retain all physical/odom checks above; do
                     # not enable bearing steering until confirmation arrives.
                     window_control.update({
@@ -4540,6 +4574,10 @@ class FocusedM1Diagnostic(Node):
                         lifecycle, next_set_action, activation_gate = self.begin_source_grounded_route_activation(
                             registration=registration,
                             phase=f"{segment_id.lower()}-window-{window_index + 1}-rearm",
+                            forward_command_m_s=float(current_plan.forward_m_s),
+                            allow_raicom_low_cruise=bool(
+                                getattr(self.args, "raicom_low_cruise_profile", False)
+                            ),
                         )
                         result.setdefault("activation_rearms", []).append({
                             "window_index": window_index + 1,
@@ -4799,6 +4837,9 @@ class FocusedM1Diagnostic(Node):
                         source_contract_supported=True,
                         source_grounded_route_activation=True,
                         source_grounded_activation_timeout_s=ACTIVATION_PROBE_DURATION_S,
+                        allow_raicom_low_cruise_source_activation=bool(
+                            getattr(self.args, "raicom_low_cruise_profile", False)
+                        ),
                     )
                     raw_stop_gate = last_result.get("physical_stop_gate")
                     final_stop_window = (
@@ -6656,7 +6697,11 @@ class FocusedM1Diagnostic(Node):
             result["pulse_limit_s"] = TURN_PULSE_S
             result["total_turn_command_window_s"] = TURN_FORWARD_WARMUP_S + TURN_PULSE_S
         if getattr(self.args, "route_integration", False):
-            result["forward_command_m_s"] = TURN_FORWARD_COMMAND_M_S
+            result["forward_command_m_s"] = (
+                float(self.args.forward_speed)
+                if getattr(self.args, "short_scene_route", False)
+                else TURN_FORWARD_COMMAND_M_S
+            )
             if getattr(self.args, "short_scene_route", False):
                 result["route_transit_nonzero_limit_s"] = SHORT_ROUTE_MAX_AGGREGATE_S
                 result["route_transit_maximum_windows"] = SHORT_ROUTE_MAX_WINDOWS
@@ -6748,6 +6793,10 @@ class FocusedM1Diagnostic(Node):
                     lifecycle, set_action, activation_gate = self.begin_source_grounded_route_activation(
                         registration=registration,
                         phase="initial-route-window",
+                        forward_command_m_s=float(self.args.forward_speed),
+                        allow_raicom_low_cruise=bool(
+                            getattr(self.args, "raicom_low_cruise_profile", False)
+                        ),
                     )
                 else:
                     lifecycle, set_action, activation_gate = self.begin_zero_only_locomotion_activation(

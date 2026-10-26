@@ -16,6 +16,8 @@ import math
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 
+from issue80_m1_mode_logic import RAICOM_LOW_CRUISE_FORWARD_M_S
+
 
 SCHEMA_VERSION = "robotsim.issue80.waypoint-route.v1"
 WAYPOINT_DOCKING_POSE_SCHEMA_VERSION = "robotsim.issue80.waypoint-docking-poses.v1"
@@ -29,7 +31,6 @@ LOCAL01_SHORT_ROUTE_FORWARD_M_S = 0.12
 # The only lower speed admitted by the live short-route builder. It is not a
 # new tuning value: the preserved FoundationWalk physical-pass trace used
 # 0.105 m/s below the unchanged 0.20 m/s root-speed guard.
-RAICOM_LOW_CRUISE_FORWARD_M_S = 0.105
 LOCAL01_SHORT_ROUTE_ANGULAR_RAD_S = 0.075
 LOCAL01_SHORT_ROUTE_MAX_CROSS_TRACK_M = 0.05
 MAX_FORWARD_M_S = 0.14

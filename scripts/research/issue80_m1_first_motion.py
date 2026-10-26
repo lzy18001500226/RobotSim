@@ -16,8 +16,7 @@ from typing import Any, Callable, Mapping
 from issue80_m1_mode_logic import (
     ACTIVATION_PROBE_DURATION_S,
     ACTIVATION_PROBE_FORWARD_M_S,
-    ACTIVATION_PROBE_DURATION_S,
-    ACTIVATION_PROBE_FORWARD_M_S,
+    RAICOM_LOW_CRUISE_FORWARD_M_S,
     LOCOMOTION_CONFIRMED,
     LOCOMOTION_REQUESTED,
     MODE_LD,
@@ -26,6 +25,7 @@ from issue80_m1_mode_logic import (
     ZERO_AND_STOP_REQUESTED,
     MCLocomotionAbortLifecycle,
     classify_locomotion_activation_readbacks,
+    source_grounded_route_activation_speed_is_supported,
 )
 
 VELOCITY_SOURCE_NAME = "node.locomotion_velocity"
@@ -3700,6 +3700,7 @@ def run_first_motion_window(
     source_contract_supported: bool = False,
     source_grounded_route_activation: bool = False,
     source_grounded_activation_timeout_s: float = ACTIVATION_PROBE_DURATION_S,
+    allow_raicom_low_cruise_source_activation: bool = False,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
@@ -3758,6 +3759,10 @@ def run_first_motion_window(
             "mode_source_confirmed": False,
             "confirmation_monotonic_s": None,
             "first_nonzero_is_part_of_this_window": bool(source_grounded_route_activation),
+            "allow_raicom_low_cruise": bool(allow_raicom_low_cruise_source_activation),
+            "selected_forward_command_m_s": (
+                forward_command_m_s if source_grounded_route_activation else None
+            ),
         },
         "activation_probe": {
             "enabled": bool(activation_probe_only),
@@ -3801,7 +3806,10 @@ def run_first_motion_window(
     elif source_grounded_route_activation and (
         activation_lifecycle is None
         or not source_contract_supported
-        or abs(float(forward_command_m_s) - ACTIVATION_PROBE_FORWARD_M_S) > 1e-9
+        or not source_grounded_route_activation_speed_is_supported(
+            forward_command_m_s,
+            allow_raicom_low_cruise=allow_raicom_low_cruise_source_activation,
+        )
         or not math.isfinite(float(source_grounded_activation_timeout_s))
         or abs(float(source_grounded_activation_timeout_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
         or float(source_grounded_activation_timeout_s) > float(pulse_duration_s)
@@ -3809,6 +3817,8 @@ def run_first_motion_window(
         pulse_fault = pulse_fault or "source_grounded_route_activation_profile_invalid"
     elif not activation_probe_only and source_contract_supported and not source_grounded_route_activation:
         pulse_fault = pulse_fault or "source_contract_flag_requires_explicit_activation_probe_mode"
+    elif allow_raicom_low_cruise_source_activation and not source_grounded_route_activation:
+        pulse_fault = pulse_fault or "low_cruise_source_activation_requires_route_mode"
     if (
         not math.isfinite(extra_post_stop_observe_limit_s)
         or not 0.0 <= extra_post_stop_observe_limit_s <= MAX_EXTRA_POST_STOP_OBSERVE_S
@@ -4013,6 +4023,10 @@ def run_first_motion_window(
                             else source_grounded_activation_timeout_s
                         ),
                         now_s=clock(),
+                        allow_raicom_low_cruise=(
+                            source_grounded_route_activation
+                            and allow_raicom_low_cruise_source_activation
+                        ),
                     )
                 else:
                     activation_lifecycle.begin_motion(now_s=clock())

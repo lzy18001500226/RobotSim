@@ -30,6 +30,7 @@ from issue80_m1_first_motion import (
     ZERO_STOP_MIN_MESSAGES,
     validate_b_post_locomotion_observation,
 )
+from issue80_m1_mode_logic import RAICOM_LOW_CRUISE_FORWARD_M_S
 from issue80_m1_set_action_capture import native_foot_support, native_root_within_existing_safety_gate
 from issue80_stand_baseline_analysis import analyze_standing_trace
 from issue80_coordinated_pose_goal import (
@@ -150,7 +151,6 @@ POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 TABLE_APPROACH_CHILD_TIMEOUT_S = 410.0
 TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
 PREARMED_STANDING_MIN_PARENT_RUNTIME_S = 90.0
-RAICOM_LOW_CRUISE_FORWARD_M_S = 0.105
 STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
 # The already-established root-motion guard is 0.20 m/s.  The pre-armed
 # handoff uses it only to reject an already unsafe start; it is not a standing

@@ -1347,6 +1347,89 @@ class FirstMotionSafetyTests(unittest.TestCase):
             "source_grounded_route_activation_timeout",
         )
 
+    def test_low_cruise_route_activation_requires_explicit_opt_in_and_then_publishes_0105(self):
+        from issue80_m1_mode_logic import MCLocomotionAbortLifecycle
+
+        def execute(allow_low_cruise: bool):
+            clock = FakeClock()
+            lifecycle = MCLocomotionAbortLifecycle()
+            lifecycle.verify_initial_stand(confirmed=True, now_s=clock.now())
+            lifecycle.request_locomotion(accepted=True, now_s=clock.now())
+            state = self.snapshot(pose={
+                "x": 0.0, "y": 0.0, "z": 0.64, "roll": 0.0, "pitch": 0.0,
+                "yaw": 0.0, "vx": 0.0, "vy": 0.0, "vz": 0.0, "wz": 0.0,
+            })
+            commands: list[float] = []
+
+            def read_sample():
+                row = dict(state)
+                row["state_age_s"] = dict(state["state_age_s"])
+                row["sample_monotonic_s"] = clock.now()
+                row["readback_monotonic_s"] = {
+                    "get_mode": clock.now(), "get_source": clock.now(),
+                }
+                return row
+
+            def publish(value):
+                commands.append(value)
+                if value > 0.0:
+                    state.update({
+                        "get_source_name": VELOCITY_SOURCE_NAME,
+                        "common_source_name": VELOCITY_SOURCE_NAME,
+                        "get_mode_desc": MODE_LOCOMOTION,
+                        "common_mode_desc": MODE_LOCOMOTION,
+                        "get_mode_status_value": 100,
+                        "common_mode_status_value": 100,
+                        "fsm_state": int(McFsmStateCode.MOVING),
+                    })
+                    state["pose"] = {**state["pose"], "x": state["pose"]["x"] + 0.002}
+                else:
+                    state.update({
+                        "get_mode_desc": MODE_STAND,
+                        "common_mode_desc": MODE_STAND,
+                        "get_mode_status_value": 100,
+                        "common_mode_status_value": 100,
+                        "fsm_state": MC_FSM_STABLE,
+                        "get_source_name": "",
+                        "common_source_name": "",
+                    })
+
+            result = run_first_motion_window(
+                sample=read_sample,
+                publish=publish,
+                registration={"success": True, "selected_action": "ADD"},
+                set_action={"request_sent": True, "accepted_by_service": True},
+                joint_limits=LIMITS,
+                baseline_forward_displacements_m=[0.0, 0.0, 0.0],
+                authorized=True,
+                forward_command_m_s=0.105,
+                pulse_duration_s=2.0,
+                max_pulse_duration_s=2.0,
+                activation_lifecycle=lifecycle,
+                source_contract_supported=True,
+                source_grounded_route_activation=True,
+                source_grounded_activation_timeout_s=1.8,
+                allow_raicom_low_cruise_source_activation=allow_low_cruise,
+                require_locomotion_confirmation=True,
+                max_observed_planar_speed_m_s=0.2,
+                zero_until_stand_timeout_s=1.0,
+                after_zero_stop=lambda: {"success": True},
+                after_zero_abort=lambda: {"success": True},
+                clock=clock.now,
+                sleep=clock.sleep,
+            )
+            return result, commands
+
+        rejected, rejected_commands = execute(False)
+        self.assertEqual(rejected["fault"], "source_grounded_route_activation_profile_invalid")
+        self.assertFalse(any(value > 0.0 for value in rejected_commands))
+
+        accepted, accepted_commands = execute(True)
+        self.assertGreater(accepted["nonzero_publish_calls_returned"], 0)
+        self.assertEqual(next(value for value in accepted_commands if value > 0.0), 0.105)
+        self.assertTrue(accepted["source_grounded_route_activation"]["mode_source_confirmed"])
+        self.assertTrue(accepted["source_grounded_route_activation"]["allow_raicom_low_cruise"])
+
     def test_reviewed_ten_second_pulse_remains_continuous_and_stops_at_deadline(self):
         commands = []
         result = self.run_protocol(

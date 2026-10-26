@@ -26,6 +26,10 @@ ACTIVATION_PROBE = "ACTIVATION_PROBE"
 ZERO_AND_STOP_REQUESTED = "ZERO_AND_STOP_REQUESTED"
 ACTIVATION_PROBE_FORWARD_M_S = 0.12
 ACTIVATION_PROBE_DURATION_S = 1.8
+# This lower source-acquisition speed is limited to the separately named
+# RAICOM recovery route.  It is backed by the preserved 0.105 m/s physical
+# pass and does not alter the 0.12 m/s generic activation probe.
+RAICOM_LOW_CRUISE_FORWARD_M_S = 0.105
 TASK_STATES = {
     0: "UNKNOWN",
     1: "SUCCESS",
@@ -39,6 +43,27 @@ TASK_STATES = {
     300: "CREATED",
     400: "RUNNING",
 }
+
+
+def source_grounded_route_activation_speed_is_supported(
+    forward_command_m_s: float,
+    *,
+    allow_raicom_low_cruise: bool,
+) -> bool:
+    """Accept only the reviewed source-acquisition speeds for a route window."""
+    try:
+        speed = float(forward_command_m_s)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(speed):
+        return False
+    return (
+        abs(speed - ACTIVATION_PROBE_FORWARD_M_S) <= 1e-9
+        or (
+            allow_raicom_low_cruise
+            and abs(speed - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        )
+    )
 
 
 def is_valid_input_source_name(value: str) -> bool:
@@ -439,6 +464,7 @@ class MCLocomotionAbortLifecycle:
         forward_command_m_s: float,
         duration_s: float,
         now_s: float,
+        allow_raicom_low_cruise: bool = False,
     ) -> None:
         """Allow only the explicitly source-grounded, short activation qualification probe."""
         if self.rearm_forbidden:
@@ -450,16 +476,25 @@ class MCLocomotionAbortLifecycle:
         if (
             not math.isfinite(float(forward_command_m_s))
             or not math.isfinite(float(duration_s))
-            or abs(float(forward_command_m_s) - ACTIVATION_PROBE_FORWARD_M_S) > 1e-9
+            or not source_grounded_route_activation_speed_is_supported(
+                forward_command_m_s,
+                allow_raicom_low_cruise=allow_raicom_low_cruise,
+            )
             or abs(float(duration_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
         ):
+            if allow_raicom_low_cruise:
+                raise ValueError(
+                    "activation probe accepts 0.12 m/s, or the explicit 0.105 m/s "
+                    "RAICOM low-cruise route profile, for at most 1.80 s"
+                )
             raise ValueError("activation probe is fixed at 0.12 m/s for at most 1.80 s")
         self._transition(
             ACTIVATION_PROBE,
             now_s=now_s,
             reason=(
                 "source-grounded activation only: official startup threshold is about 0.1 m/s; "
-                "0.12 m/s is the prior installed-run value and duration is capped at 1.80 s"
+                f"{float(forward_command_m_s):.3f} m/s is the selected reviewed profile and "
+                "duration is capped at 1.80 s"
             ),
         )
 
