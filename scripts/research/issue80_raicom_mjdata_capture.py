@@ -348,15 +348,25 @@ def _as_finite_number(value: Any) -> float | None:
     return None
 
 
-def _trace_rows(trace_path: Path) -> list[dict[str, Any]]:
+def _trace_rows(trace_path: Path) -> tuple[list[dict[str, Any]], bool]:
     _require_regular_file(trace_path, "native MjData trace")
     rows: list[dict[str, Any]] = []
-    for line_number, line in enumerate(trace_path.read_text(encoding="utf-8").splitlines(), 1):
-        if not line:
+    raw_lines = trace_path.read_bytes().splitlines(keepends=True)
+    nonempty_indices = [
+        index for index, raw_line in enumerate(raw_lines) if raw_line.strip()
+    ]
+    last_nonempty = nonempty_indices[-1] if nonempty_indices else -1
+    truncated_final_record = False
+    for index, raw_line in enumerate(raw_lines):
+        if not raw_line.strip():
             continue
+        line_number = index + 1
         try:
-            item = json.loads(line)
+            item = json.loads(raw_line)
         except json.JSONDecodeError as exc:
+            if index == last_nonempty and not raw_line.endswith(b"\n"):
+                truncated_final_record = True
+                break
             raise MjDataCaptureError(
                 f"native MjData trace line {line_number} is not JSON"
             ) from exc
@@ -367,7 +377,7 @@ def _trace_rows(trace_path: Path) -> list[dict[str, Any]]:
         rows.append(item)
     if not rows:
         raise MjDataCaptureError("native MjData trace contains no rows")
-    return rows
+    return rows, truncated_final_record
 
 
 def _extract_standing_events(standing_trace: Path | None) -> list[dict[str, Any]]:
@@ -433,7 +443,7 @@ def summarize_mjdata_capture(
     standing_trace: Path | None = None,
 ) -> dict[str, Any]:
     """Summarize actual native samples without fabricating unavailable forces."""
-    rows = _trace_rows(trace_path)
+    rows, truncated_final_record = _trace_rows(trace_path)
     metadata = next((row for row in rows if row.get("event") == "model_metadata"), None)
     errors = [row for row in rows if row.get("event") == "capture_error"]
     samples = [
@@ -456,6 +466,9 @@ def summarize_mjdata_capture(
     if not samples:
         status = "BLOCKED_NATIVE_MJDATA_CAPTURE"
         reasons.append("NO_PHYSICAL_SAMPLES")
+    if truncated_final_record and status == "PASS_NATIVE_MJDATA_CAPTURE":
+        status = "PARTIAL_NATIVE_MJDATA_CAPTURE"
+        reasons.append("TRUNCATED_FINAL_RECORD")
 
     samples_by_generation: dict[int, list[dict[str, Any]]] = {}
     for sample in samples:
@@ -585,6 +598,7 @@ def summarize_mjdata_capture(
         "trace": str(trace_path),
         "trace_sha256": sha256_file(trace_path),
         "row_count": len(rows),
+        "truncated_final_record": truncated_final_record,
         "capture_error_events": errors,
         "model_metadata": metadata,
         "generation_count": len(samples_by_generation),

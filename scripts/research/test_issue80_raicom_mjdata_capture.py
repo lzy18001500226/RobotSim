@@ -223,6 +223,28 @@ class MjDataCaptureTests(unittest.TestCase):
             self.assertEqual(summary["generation_count"], 2)
             self.assertEqual(summary["current_generation"], 1)
 
+    def test_only_an_unterminated_final_record_is_recoverable(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "native_mjdata_trace.jsonl"
+            path.write_text(
+                json.dumps(metadata()) + "\n"
+                + json.dumps(sample(sim_time=0.0, host_time=20)) + "\n"
+                + '{"schema":"robotsim.issue80.native-mjdata-capture.v1"',
+                encoding="utf-8",
+            )
+            summary = summarize_mjdata_capture(path)
+            self.assertEqual(summary["status"], "PARTIAL_NATIVE_MJDATA_CAPTURE")
+            self.assertTrue(summary["truncated_final_record"])
+            self.assertIn("TRUNCATED_FINAL_RECORD", summary["failure_reasons"])
+            path.write_text(
+                json.dumps(metadata()) + "\n"
+                + '{"schema":"robotsim.issue80.native-mjdata-capture.v1"\n'
+                + json.dumps(sample(sim_time=0.0, host_time=20)) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(MjDataCaptureError):
+                summarize_mjdata_capture(path)
+
 
 if __name__ == "__main__":
     unittest.main()

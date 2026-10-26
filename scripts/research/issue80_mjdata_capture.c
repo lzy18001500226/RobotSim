@@ -546,9 +546,9 @@ static void capture_sample(const char* event, const mjModel* m, const mjData* d)
           "\"timestep_s\":",
           generation, step_calls);
   json_num(trace_stream, m->opt.timestep);
-  fputs(",\"mujoco_timer\":{\"step_duration_s\":", trace_stream);
+  fputs(",\"mujoco_timer\":{\"step_duration_raw\":", trace_stream);
   json_num(trace_stream, d->timer[mjTIMER_STEP].duration);
-  fprintf(trace_stream, ",\"step_number\":%d,\"forward_duration_s\":",
+  fprintf(trace_stream, ",\"step_number\":%d,\"forward_duration_raw\":",
           d->timer[mjTIMER_STEP].number);
   json_num(trace_stream, d->timer[mjTIMER_FORWARD].duration);
   fprintf(trace_stream, ",\"forward_number\":%d}",
