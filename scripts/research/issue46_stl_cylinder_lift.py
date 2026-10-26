@@ -281,6 +281,7 @@ def contact_data(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, object
     records = []
     pad_vectors = {name: np.zeros(3) for name in PADS}
     table_contacts = []
+    table_vector = np.zeros(3)
     nonpad = []
     robot_table = []
     for index in range(data.ncon):
@@ -309,6 +310,7 @@ def contact_data(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, object
                 pad_vectors[other] += force_on_cylinder
             elif other == "raicom_table":
                 table_contacts.append(record)
+                table_vector += force_on_cylinder
             elif other.startswith("R_hand_"):
                 nonpad.append(record)
         if "raicom_table" in names and any(name.startswith(("R_hand_", "right_")) for name in names):
@@ -317,6 +319,7 @@ def contact_data(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, object
         "records": records,
         "pad_forces_on_cylinder_world_N": {name: vector.tolist() for name, vector in pad_vectors.items()},
         "pad_force_norm_N": {name: float(np.linalg.norm(vector)) for name, vector in pad_vectors.items()},
+        "table_force_on_cylinder_world_N": table_vector.tolist(),
         "table_contacts": table_contacts,
         "nonpad_cylinder_contacts": nonpad,
         "robot_table_contacts": robot_table,
@@ -650,6 +653,9 @@ def main() -> None:
                     "cylinder_com_rise_m": com_rise, "cylinder_linear_speed_m_s": object_linear_speed,
                     "cylinder_angular_speed_rad_s": object_angular_speed,
                     "pad_force_norm_N": contacts["pad_force_norm_N"],
+                    "pad_force_on_cylinder_world_N": contacts["pad_forces_on_cylinder_world_N"],
+                    "table_force_on_cylinder_world_N": contacts["table_force_on_cylinder_world_N"],
+                    "cylinder_com_world_m": data.xipos[cylinder_body].tolist(),
                     "table_contact_count": len(contacts["table_contacts"]),
                     "nonpad_cylinder_contacts": contacts["nonpad_cylinder_contacts"],
                     "arm_error_rad": arm_error, "root_error_rad": root_error,
