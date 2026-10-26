@@ -4843,6 +4843,14 @@ class FocusedM1Diagnostic(Node):
                             "saturated": False,
                         }
                         snapshot = latest_transit_snapshot
+                        # ``run_first_motion_window`` reuses this callback for
+                        # every ZeroStopWindow publication.  A requested zero
+                        # must win over every source-acquisition or steering
+                        # branch: zero-stop may never be converted into a
+                        # yaw-only command.
+                        if forward <= 0.0:
+                            self._publish(0.0, 0.0, 0.0)
+                            return
                         if (
                             zero_forward_heading_acquisition_mode
                             and isinstance(snapshot, Mapping)

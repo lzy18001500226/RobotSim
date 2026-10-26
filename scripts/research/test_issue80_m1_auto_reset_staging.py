@@ -641,6 +641,19 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--native-x2-timestep", child)
         self.assertIn("--raicom-low-cruise-profile", child)
 
+    def test_route_zero_stop_precedes_zero_forward_heading_acquisition(self) -> None:
+        """A stop callback must never be reinterpreted as a yaw command."""
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        begin = source.index("def publish_window(forward_m_s: float) -> None:")
+        end = source.index("last_result = run_first_motion_window(", begin)
+        callback = source[begin:end]
+        zero_guard = callback.index("if forward <= 0.0:")
+        acquisition = callback.index("zero_forward_heading_acquisition_mode")
+        self.assertLess(zero_guard, acquisition)
+        self.assertIn("self._publish(0.0, 0.0, 0.0)", callback[:acquisition])
+
     def test_synchronized_initialization_observer_requires_keyframe_and_release_barriers_not_reset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = BoundedRun(argparse.Namespace(
