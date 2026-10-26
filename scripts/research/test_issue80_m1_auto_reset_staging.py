@@ -715,9 +715,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
         end = source.index("last_result = run_first_motion_window(", begin)
         callback = source[begin:end]
         zero_guard = callback.index("if forward <= 0.0:")
-        acquisition = callback.index("zero_forward_heading_acquisition_mode")
+        acquisition = callback.index("heading_acquisition_this_window")
         self.assertLess(zero_guard, acquisition)
         self.assertIn("self._publish(0.0, 0.0, 0.0)", callback[:acquisition])
+
+    def test_zero_forward_heading_acquisition_is_scoped_to_initial_waypoint_departure(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('segment_id == "WAYPOINT"', source)
+        self.assertIn("and window_index == 0", source)
+        self.assertIn("zero_forward_heading_acquisition=False", source)
 
     def test_synchronized_initialization_observer_requires_keyframe_and_release_barriers_not_reset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

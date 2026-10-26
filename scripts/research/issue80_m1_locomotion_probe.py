@@ -4496,13 +4496,13 @@ class FocusedM1Diagnostic(Node):
                         "initial_source_grounded_activation_pending": True,
                         "source_mode_handshake": handshake,
                         "zero_forward_heading_acquisition_active": bool(
-                            zero_forward_heading_acquisition_mode
+                            heading_acquisition_this_window
                             and isinstance(heading_acquisition, Mapping)
                             and heading_acquisition.get("status") == "ACTIVE"
                         ),
                     })
                     if (
-                        zero_forward_heading_acquisition_mode
+                        heading_acquisition_this_window
                         and isinstance(heading_acquisition, Mapping)
                         and heading_acquisition.get("status") == "ACTIVE"
                     ):
@@ -4531,7 +4531,7 @@ class FocusedM1Diagnostic(Node):
                 )
                 window_control["initial_source_grounded_activation_pending"] = False
                 if (
-                    zero_forward_heading_acquisition_mode
+                    heading_acquisition_this_window
                     and isinstance(heading_acquisition, Mapping)
                     and heading_acquisition.get("status") == "ACTIVE"
                 ):
@@ -4811,6 +4811,15 @@ class FocusedM1Diagnostic(Node):
                 window_index = 0
                 segment_nonzero_s = 0.0
                 while True:
+                    # The stationary yaw-only response is qualified only at
+                    # the initial route departure. After a verified stop, the
+                    # installed MC has shown a different yaw response, so a
+                    # rearm falls back to the existing forward acquisition.
+                    heading_acquisition_this_window = bool(
+                        zero_forward_heading_acquisition_mode
+                        and segment_id == "WAYPOINT"
+                        and window_index == 0
+                    )
                     if route_config_mode and len(result["segments"]) >= (
                         SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                         (
@@ -4848,7 +4857,7 @@ class FocusedM1Diagnostic(Node):
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
                             ),
-                            zero_forward_heading_acquisition=zero_forward_heading_acquisition_mode,
+                            zero_forward_heading_acquisition=heading_acquisition_this_window,
                         )
                         result.setdefault("activation_rearms", []).append({
                             "window_index": window_index + 1,
@@ -4939,7 +4948,7 @@ class FocusedM1Diagnostic(Node):
                             self._publish(0.0, 0.0, 0.0)
                             return
                         if (
-                            zero_forward_heading_acquisition_mode
+                            heading_acquisition_this_window
                             and isinstance(snapshot, Mapping)
                         ):
                             acquisition = window_control.get(
@@ -5252,7 +5261,7 @@ class FocusedM1Diagnostic(Node):
                             "zero_forward_heading_acquisition"
                         ),
                         "zero_forward_heading_acquisition_profile_enabled": (
-                            zero_forward_heading_acquisition_mode
+                            heading_acquisition_this_window
                         ),
                         "forward_gait_yaw_inversion_profile_enabled": (
                             forward_gait_yaw_inversion_mode
@@ -5687,7 +5696,7 @@ class FocusedM1Diagnostic(Node):
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
                             ),
-                            zero_forward_heading_acquisition=zero_forward_heading_acquisition_mode,
+                            zero_forward_heading_acquisition=False,
                         )
                         result.setdefault("activation_rearms", []).append({
                             "step_id": configured_step.waypoint_id,
