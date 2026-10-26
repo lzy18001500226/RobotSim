@@ -4799,6 +4799,13 @@ class FocusedM1Diagnostic(Node):
                 }
 
             route_total_nonzero_s = 0.0
+            # Every route path, including the one-window straight-gait
+            # diagnostic, needs the same-run stationary displacement envelope
+            # before it can call the shared transit executor.
+            baseline_displacements = [
+                float(window["forward_displacement_m"])
+                for window in (stationary_baseline or {}).get("windows", [])
+            ]
             transit_window_limit = (
                 SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                 (
@@ -5769,10 +5776,6 @@ class FocusedM1Diagnostic(Node):
                 route_step_results: list[dict[str, Any]] = []
                 current_directive = current_directive
                 current_plan = transit_plan
-                baseline_displacements = [
-                    float(window["forward_displacement_m"])
-                    for window in (stationary_baseline or {}).get("windows", [])
-                ]
                 for step_index, configured_step in enumerate(route.steps):
                     active = executor.active_step
                     if active is None or active.waypoint_id != configured_step.waypoint_id:

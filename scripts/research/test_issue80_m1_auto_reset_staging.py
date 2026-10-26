@@ -762,6 +762,16 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("and window_index == 0", source)
         self.assertIn("zero_forward_heading_acquisition=False", source)
 
+    def test_transit_baseline_precedes_all_route_mode_dispatch(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        baseline = source.index("baseline_displacements = [")
+        shared_executor = source.index("def run_transit_windows(")
+        straight_dispatch = source.index("if native_nominal_straight_gait_diagnostic_mode:")
+        self.assertLess(baseline, shared_executor)
+        self.assertLess(baseline, straight_dispatch)
+
     def test_synchronized_initialization_observer_requires_keyframe_and_release_barriers_not_reset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = BoundedRun(argparse.Namespace(
