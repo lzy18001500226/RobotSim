@@ -4509,6 +4509,12 @@ class FocusedM1Diagnostic(Node):
                 heading_acquisition = window_control.get(
                     "zero_forward_heading_acquisition"
                 )
+                # ``transit_termination`` is defined outside the per-window
+                # loop.  Keep the window-specific choice in its explicit
+                # state instead of closing over the loop-local flag.
+                heading_acquisition_enabled = bool(
+                    window_control.get("zero_forward_heading_acquisition_enabled", False)
+                )
                 if route_activation_pending:
                     # The documented source contract needs a first bounded
                     # nonzero publish to acquire arbitration.  The explicitly
@@ -4522,13 +4528,13 @@ class FocusedM1Diagnostic(Node):
                         "initial_source_grounded_activation_pending": True,
                         "source_mode_handshake": handshake,
                         "zero_forward_heading_acquisition_active": bool(
-                            heading_acquisition_this_window
+                            heading_acquisition_enabled
                             and isinstance(heading_acquisition, Mapping)
                             and heading_acquisition.get("status") == "ACTIVE"
                         ),
                     })
                     if (
-                        heading_acquisition_this_window
+                        heading_acquisition_enabled
                         and isinstance(heading_acquisition, Mapping)
                         and heading_acquisition.get("status") == "ACTIVE"
                     ):
@@ -4557,7 +4563,7 @@ class FocusedM1Diagnostic(Node):
                 )
                 window_control["initial_source_grounded_activation_pending"] = False
                 if (
-                    heading_acquisition_this_window
+                    heading_acquisition_enabled
                     and isinstance(heading_acquisition, Mapping)
                     and heading_acquisition.get("status") == "ACTIVE"
                 ):
@@ -4959,6 +4965,9 @@ class FocusedM1Diagnostic(Node):
                     route_stop_reason = None
                     latest_transit_snapshot = None
                     window_control.clear()
+                    window_control["zero_forward_heading_acquisition_enabled"] = (
+                        heading_acquisition_this_window
+                    )
                     active_window_gate = TransitSteeringGate(warmup_s=ROUTE_STEERING_WARMUP_S)
                     steering_samples: list[dict[str, Any]] = []
                     transit_forward_m_s = min(

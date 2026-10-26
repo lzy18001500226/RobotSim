@@ -762,6 +762,26 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("and window_index == 0", source)
         self.assertIn("zero_forward_heading_acquisition=False", source)
 
+    def test_transit_termination_reads_explicit_window_heading_state(self) -> None:
+        """The route callback must not close over a per-window local name."""
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("            def transit_termination(")
+        end = source.index("            def run_transit_windows(", start)
+        termination = source[start:end]
+        self.assertIn("heading_acquisition_enabled = bool(", termination)
+        self.assertIn(
+            'window_control.get("zero_forward_heading_acquisition_enabled", False)',
+            termination,
+        )
+        self.assertNotIn("heading_acquisition_this_window", termination)
+        route = source[start:]
+        self.assertIn(
+            'window_control["zero_forward_heading_acquisition_enabled"] = (',
+            route,
+        )
+
     def test_transit_baseline_precedes_all_route_mode_dispatch(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"
