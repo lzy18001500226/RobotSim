@@ -312,9 +312,10 @@ def standing_observation_window(
     *,
     reset_dispatch_monotonic_ns: int,
     stand_default_confirmed_monotonic_ns: int | None,
+    body_stand_confirmed_monotonic_ns: int | None = None,
     duration_s: float,
 ) -> dict[str, int | str]:
-    """Anchor the baseline window to positive STAND readback when available."""
+    """Anchor the baseline after both STAND mode and body state are ready."""
     if (
         isinstance(reset_dispatch_monotonic_ns, bool)
         or not isinstance(reset_dispatch_monotonic_ns, int)
@@ -333,8 +334,18 @@ def standing_observation_window(
             or stand_default_confirmed_monotonic_ns < reset_dispatch_monotonic_ns
         ):
             raise ValueError("STAND_DEFAULT confirmation must follow the Reset event")
-        anchor_ns = stand_default_confirmed_monotonic_ns
-        anchor_name = "STAND_DEFAULT_GETMC_READBACK"
+        if body_stand_confirmed_monotonic_ns is None:
+            anchor_ns = stand_default_confirmed_monotonic_ns
+            anchor_name = "STAND_DEFAULT_GETMC_READBACK"
+        else:
+            if (
+                isinstance(body_stand_confirmed_monotonic_ns, bool)
+                or not isinstance(body_stand_confirmed_monotonic_ns, int)
+                or body_stand_confirmed_monotonic_ns < stand_default_confirmed_monotonic_ns
+            ):
+                raise ValueError("body STAND confirmation must follow STAND_DEFAULT readback")
+            anchor_ns = body_stand_confirmed_monotonic_ns
+            anchor_name = "STAND_DEFAULT_GETMC_AND_BODY_STAND"
     duration_ns = int(float(duration_s) * 1e9)
     return {
         "anchor": anchor_name,
@@ -2135,14 +2146,66 @@ def main() -> int:
             self._write_final_result("TAKEOVER_SEQUENCE_COMPLETE", pre_reset=pre_reset_mode, upright_gate=upright_gate, stand_gate=stand_gate)
             return 0
 
+        def wait_for_body_stand_after_mode_readback(self) -> int | None:
+            """Return the first fresh STAND body-state after GetMcAction confirms SD.
+
+            A successful SD service/readback can precede the MC body-status
+            publication by a few samples.  The full baseline must start after
+            both observations; this avoids counting a transition sample as
+            stable standing while retaining the complete duration requirement.
+            """
+            if self.stand_default_confirmed_ns is None:
+                return None
+            deadline = time.monotonic() + args.joint_stand_timeout_s
+            while rclpy.ok() and time.monotonic() < deadline:
+                if self.first_unsafe_ns is not None:
+                    return None
+                self.spin_for(0.005)
+                row = self.latest.get("common")
+                if not isinstance(row, Mapping):
+                    continue
+                observed_ns = row.get("wall_monotonic_ns")
+                if (
+                    isinstance(observed_ns, bool)
+                    or not isinstance(observed_ns, int)
+                    or observed_ns < self.stand_default_confirmed_ns
+                    or (time.monotonic_ns() - observed_ns) / 1e9 > MAX_STATE_AGE_S
+                ):
+                    continue
+                common = row.get("data")
+                if not isinstance(common, Mapping):
+                    continue
+                action = common.get("action_info")
+                body = common.get("body_status")
+                action_desc = action.get("action_desc") if isinstance(action, Mapping) else None
+                action_status = (action.get("status") or {}).get("value") if isinstance(action, Mapping) else None
+                body_value = body.get("value") if isinstance(body, Mapping) else body
+                if (
+                    action_desc == "STAND_DEFAULT"
+                    and action_status == 100
+                    and body_value == body_stand_value
+                ):
+                    self.record_event(
+                        "stand_body_state_confirmed_after_mode_readback",
+                        wall_monotonic_ns=observed_ns,
+                        common_state=common,
+                    )
+                    return observed_ns
+            return None
+
         def capture(self) -> dict[str, Any]:
             status = "TRACE_CAPTURED"
             start = time.monotonic()
             observation = None
+            body_stand_confirmed_ns = None
             if self.reset_ns is not None:
+                body_stand_confirmed_ns = self.wait_for_body_stand_after_mode_readback()
+                if self.stand_default_confirmed_ns is not None and body_stand_confirmed_ns is None:
+                    status = "STAND_BODY_STATE_NOT_CONFIRMED"
                 observation = standing_observation_window(
                     reset_dispatch_monotonic_ns=self.reset_ns,
                     stand_default_confirmed_monotonic_ns=self.stand_default_confirmed_ns,
+                    body_stand_confirmed_monotonic_ns=body_stand_confirmed_ns,
                     duration_s=args.duration_s,
                 )
             # Count the baseline from the positive STAND readback; the Reset-to-SD
@@ -2174,6 +2237,7 @@ def main() -> int:
                 standing_observation_s = max(0.0, (effective_end_ns - anchor_ns) / 1e9)
                 complete = (
                     self.stand_default_confirmed_ns is not None
+                    and body_stand_confirmed_ns is not None
                     and unsafe_ns is None
                     and standing_observation_s + 1e-6 >= args.duration_s
                 )
@@ -2181,6 +2245,7 @@ def main() -> int:
                     status = "STAND_DEFAULT_BASELINE_COMPLETE" if complete else "STAND_DEFAULT_BASELINE_INCOMPLETE"
                 standing_observation = {
                     **observation,
+                    "body_stand_confirmed_monotonic_ns": body_stand_confirmed_ns,
                     "observed_end_monotonic_ns": effective_end_ns,
                     "observed_duration_s": standing_observation_s,
                     "minimum_duration_s": args.duration_s,

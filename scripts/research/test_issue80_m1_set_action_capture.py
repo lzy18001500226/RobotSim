@@ -177,6 +177,24 @@ class SetActionCaptureTests(unittest.TestCase):
         self.assertEqual(window["anchor_monotonic_ns"], 4_500_000_000)
         self.assertEqual(window["deadline_monotonic_ns"], 12_500_000_000)
 
+    def test_standing_baseline_reanchors_after_fresh_body_stand_confirmation(self) -> None:
+        window = standing_observation_window(
+            reset_dispatch_monotonic_ns=1_000_000_000,
+            stand_default_confirmed_monotonic_ns=4_500_000_000,
+            body_stand_confirmed_monotonic_ns=4_650_000_000,
+            duration_s=8.0,
+        )
+        self.assertEqual(window["anchor"], "STAND_DEFAULT_GETMC_AND_BODY_STAND")
+        self.assertEqual(window["anchor_monotonic_ns"], 4_650_000_000)
+        self.assertEqual(window["deadline_monotonic_ns"], 12_650_000_000)
+        with self.assertRaisesRegex(ValueError, "body STAND confirmation"):
+            standing_observation_window(
+                reset_dispatch_monotonic_ns=1_000_000_000,
+                stand_default_confirmed_monotonic_ns=4_500_000_000,
+                body_stand_confirmed_monotonic_ns=4_400_000_000,
+                duration_s=8.0,
+            )
+
     def test_unconfirmed_stand_cannot_be_reported_as_an_eight_second_standing_window(self) -> None:
         window = standing_observation_window(
             reset_dispatch_monotonic_ns=1_000_000_000,

@@ -228,7 +228,10 @@ def standing_baseline_observation_passes(
     common_sample_count = observation.get("common_state_sample_count")
     raw_fsm_values = observation.get("raw_fsm_state_values")
     return (
-        observation.get("anchor") == "STAND_DEFAULT_GETMC_READBACK"
+        observation.get("anchor") in {
+            "STAND_DEFAULT_GETMC_READBACK",
+            "STAND_DEFAULT_GETMC_AND_BODY_STAND",
+        }
         and observation.get("observer_status") == "STAND_DEFAULT_BASELINE_COMPLETE"
         and observation.get("complete") is True
         and observation.get("first_unsafe_monotonic_ns") is None
