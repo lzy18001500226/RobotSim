@@ -149,6 +149,7 @@ POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 TABLE_APPROACH_CHILD_TIMEOUT_S = 410.0
 TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
+PREARMED_STANDING_MIN_PARENT_RUNTIME_S = 90.0
 STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
 # The already-established root-motion guard is 0.20 m/s.  The pre-armed
 # handoff uses it only to reject an already unsafe start; it is not a standing
@@ -5553,10 +5554,18 @@ def main() -> int:
             parser.error("table-approach mission requires the complete STAND warmup composite gate")
         if args.route_turn_evidence is not None or args.capture_mc_rl_debug:
             parser.error("table-approach mission uses its own source-grounded yaw-alignment contract")
-        if args.max_runtime_s < TABLE_APPROACH_MIN_PARENT_RUNTIME_S:
+        required_runtime_s = (
+            PREARMED_STANDING_MIN_PARENT_RUNTIME_S
+            if standing_prearm_only else TABLE_APPROACH_MIN_PARENT_RUNTIME_S
+        )
+        if args.max_runtime_s < required_runtime_s:
             parser.error(
-                f"table-approach mission requires at least {TABLE_APPROACH_MIN_PARENT_RUNTIME_S:g} s "
-                "for bounded turn, transit, stop, and teardown windows"
+                f"table-approach mission requires at least {required_runtime_s:g} s "
+                + (
+                    "for the bounded prearmed standing qualification and teardown"
+                    if standing_prearm_only
+                    else "for bounded turn, transit, stop, and teardown windows"
+                )
             )
         try:
             table_preflight = (
