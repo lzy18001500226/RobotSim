@@ -27,8 +27,9 @@ MAX_PLANAR_SPEED_M_S = .20
 def safe_posture(pose):
     try:
         values = [float(pose[k]) for k in ('z_m','roll_rad','pitch_rad')]
+        frame_values = [float(pose[k]) for k in ('x_m','y_m','yaw_rad')]
         velocity = [float(v) for v in pose['linear_velocity_m_s']]
-        return (all(math.isfinite(v) for v in values+velocity)
+        return (all(math.isfinite(v) for v in values+velocity+frame_values)
                 and values[0] >= MIN_ROOT_Z_M
                 and max(abs(values[1]),abs(values[2])) < MAX_ABS_TILT_RAD
                 and math.hypot(*velocity[:2]) <= MAX_PLANAR_SPEED_M_S)
@@ -94,6 +95,8 @@ class StandObserver(ResetOnlyObserver):
         self._load_reset_event()
         previous = self.last_odom_stamp_ns
         super()._consider_odom(message,receipt_ns,stamp_ns)
+        if self.reset_ns is not None and previous is not None and stamp_ns is not None and stamp_ns<previous:
+            self.failure='POST_RESET_ODOM_STAMP_REGRESSION'
         if self.reset_ns is None or self.failure or self.complete:
             return
         advancing = stamp_ns is not None and (previous is None or stamp_ns > previous)
@@ -174,7 +177,9 @@ class StandObserver(ResetOnlyObserver):
             return
         if (self.sd_count and raw.get('action_info',{}).get('action_desc')=='STAND_DEFAULT'
             and raw.get('fsm_state',{}).get('current_state')==6):
-            self.failure='PINNED_MC_SAFETY_PROTECTION_DURING_SD'
+            # The category is unsafe for acceptance, but its unchanged raw 6
+            # during a target switch alone does not prove a NEW protection trip.
+            self.failure='SD_READBACK_CONFLICT_RAW_FSM6'
             return
         active = (
             self.sd_response is not None and self.sd_response['accepted']
@@ -237,6 +242,8 @@ class StandObserver(ResetOnlyObserver):
             'service_clients':len(list(self.clients)),
             'fsm_contract':'same pinned MC build: STABLE=4, body=1, action-ready=100; raw retained',
             'complete_raw_telemetry':'reset_only_state_trace.jsonl',
+            'snapshot_at_stop':self._snapshot(),
+            'protection_reason':'NOT_EXPOSED; raw 6 remains fail-closed, no inferred cause',
         })
 
     def run_capture(self):

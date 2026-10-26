@@ -176,6 +176,65 @@ at least 20.8 s even at commanded speed; measured historical progress suggests
 about 72.5 s / 15 transit windows, plus independent stop/rearm and alignment.
 Neither the old 15 s motion budget nor this estimate authorizes a long run.
 
+### Bounded Reset-to-SD active standing tool
+
+`issue80_raicom_stand_takeover.py` reuses the Reset-only launch, verified native
+Reset, generated-config isolation, scene/name checks and cleanup. Its separate
+observer permits only SetMcAction(STAND_DEFAULT) once and read-only GetMcAction;
+it has five state subscriptions and no publisher or input-source client. Run
+`issue80_raicom_prelaunch.py --host --standing` to construct these exact rclpy
+entities without simulator/MC physics. This does not authorize a live episode.
+Disposition: KEEP-AS-TOOL for Issue #80 isolated research; not a production
+startup policy or permission to execute new physical episodes.
+
+The standing client is discovered before Reset. Three fresh advancing upright
+odom samples and observed Reset effect gate the sole SD request; request-time
+pose age is capped at 50 ms. Existing 0.52 m height, 15 degree tilt, source leg
+position/velocity limits, telemetry freshness and 0.20 m/s planar speed guards
+remain. An active hold requires fresh agreeing Get/Common SD/status=100,
+body=1, pinned-build FSM=4, valid nonzero standing gains/effort, and at least
+2.5 seconds/25 unique observations. Every broken qualification resets that
+hold; a raw FSM=6 under SD remains fail-closed, never a standing PASS. The host
+26 s Timer watchdog is independent of the observer, but not an OS guarantee
+against parent-process SIGKILL; container absence still requires verification.
+
+One authorized capture at `faa6848`, attempt
+`5d005147-f1e7-4e56-8d7d-9e4ef3e51e11`, sent SD 16.800 ms after first fresh
+upright pose (pose age 2.465 ms). The service returned header.code=0,
+CommonState.SUCCESS=1 in 12.464 ms. MC's own log confirms its shortest route
+PASSIVE_DEFAULT -> JOINT_DEFAULT -> STAND_DEFAULT without an external JD call.
+The standing runner's PreRunOnce was logged, and gains reached stiffness=150,
+damping=5. Feedforward effort and HAL joint-state effort stayed zero; these
+fields do not independently measure simulator PD actuator torque.
+
+The run stopped after only 59.779 ms of post-request odom observation:
+CommonState reported SD/status=100, FSM=6, body=0 while the latest Get response
+was JD/status=200. Last recorded pitch was -0.015375 rad and height 0.674466 m;
+no post-Reset physical fall was recorded before the guard. Qualification is
+BLOCKED, not an SD rejection, late dispatch, or demonstrated model instability.
+Raw 6 already existed in PASSIVE, and no explicit new protection cause was
+logged. A stale/category-update conflict versus a genuine protection condition
+remains unresolved. The guard is retained; its later diagnostic label is
+`SD_READBACK_CONFLICT_RAW_FSM6`, without changing the original run artifacts or
+the stop decision. No 2.5 s active hold, locomotion, or automatic retry occurred.
+
+The saved successful Run65 differs: it sent JD explicitly, waited approximately
+0.244 s and observed body=1/FSM=1 before SD. Its CommonState still showed JD
+with raw FSM=6 earlier in that successful initialization, then SD with FSM=1
+at +97 ms and FSM=4 at +187 ms after SD. Thus target-mode acceptance and FSM
+category readiness demonstrably need separate gates. This comparison supports
+reviewing explicit native JD readiness staging, not ignoring raw 6 or asserting
+the present 60 ms capture proves that SD can never stand. Run65's floor scene
+and timestep differ too, so the sequence difference is not isolated causation.
+
+The scene remained at 0.002 s and native baseline at 0.001 s. MC command and
+sim IMU configs specify 500 Hz, joint-state publication 1000 Hz. Observed ROS
+delivery intervals and missed-deadline warnings are retained; they neither
+prove a complete simulation-time compatibility contract nor explain the raw
+FSM conflict on their own. A future separately authorized diagnostic needs an
+explicit transition/readback contract before any relaxation of that conflict
+gate; do not infer safety merely from a successful service response.
+
 For a separately authorized future attempt, the command shape is:
 
 ```bash

@@ -1,12 +1,7 @@
 """Offline policy and fake-ROS tests; real ROS construction is a separate smoke."""
 import ast
-import json
 import math
-from pathlib import Path
-import tempfile
-import types
 import unittest
-from unittest.mock import patch
 
 from issue80_raicom_stand_takeover import StandingRun, OBSERVER
 
@@ -24,14 +19,15 @@ def pure(name):
 class StandingTests(unittest.TestCase):
     def test_safe_request_requires_reset_effect_fresh_advancing_one_shot(self):
         args=dict(reset_verified=True,reset_effect=True,fresh=True,
-                  pose={'z_m':.68,'roll_rad':0,'pitch_rad':0,'linear_velocity_m_s':[0,0,0]},
+                  pose={'x_m':-1.5,'y_m':-1.5,'yaw_rad':math.pi/2,
+                        'z_m':.68,'roll_rad':0,'pitch_rad':0,'linear_velocity_m_s':[0,0,0]},
                   advancing=True,count=0)
         allowed=pure('request_allowed')
         self.assertTrue(allowed(**args))
         for key in ('reset_verified','reset_effect','fresh','advancing'):
             self.assertFalse(allowed(**dict(args,**{key:False})))
         self.assertFalse(allowed(**dict(args,count=1)))
-        for key,value in (('z_m',.1),('pitch_rad',.3),('roll_rad',float('nan'))):
+        for key,value in (('z_m',.1),('pitch_rad',.3),('roll_rad',float('nan')),('yaw_rad',float('nan'))):
             self.assertFalse(allowed(**dict(args,pose=dict(args['pose'],**{key:value}))))
 
     def test_request_path_is_sd_only_no_publishers_and_no_retry(self):
@@ -74,6 +70,14 @@ class StandingTests(unittest.TestCase):
             bad=copy.deepcopy(common);bad[key]=value
             self.assertFalse(qualifies(bad,readback))
         self.assertFalse(qualifies(common,dict(readback,header={'code':1})))
+
+    def test_saved_5d005147_conflicting_transition_cannot_qualify_standing(self):
+        # Exact reduced observations from the one authorized live episode.
+        common={'action_info':{'action_desc':'STAND_DEFAULT','status':{'value':100}},
+                'body_status':{'value':0},'fsm_state':{'current_state':6}}
+        get={'header':{'code':0},'info':{'action_desc':'JOINT_DEFAULT','status':{'value':200}}}
+        self.assertFalse(pure('active_mode_agrees')(common,get))
+        self.assertIn('SD_READBACK_CONFLICT_RAW_FSM6',OBSERVER.read_text())
 
 
 if __name__=='__main__':
