@@ -15,6 +15,7 @@ from issue80_local01_scene_route import (
     LOCAL01_POSES_SHA256,
     LOCAL01_RUNTIME_X2_SHA256,
     build_short_route_config,
+    build_runtime_raw_odom_short_route_config,
     load_local01_scene_inputs,
     prepare_local01_scene_runtime_bundle,
     validate_short_route_static_scene,
@@ -59,6 +60,23 @@ def local01_source_fixture():
 
 
 class Local01SceneRouteTests(unittest.TestCase):
+    def test_runtime_raw_odom_route_uses_scene_numeric_start_and_static_envelope(self):
+        route_input = build_runtime_raw_odom_short_route_config(local01_source_fixture())
+        validate_local01_short_scene_route_input(route_input)
+        self.assertEqual(
+            route_input["route_kind"],
+            "SIMULATION_ONLY_SHORT_ROUTE_RAW_ODOM_SCENE_WORLD_DIAGNOSTIC_NOT_TABLE_DOCKING",
+        )
+        self.assertAlmostEqual(route_input["start"]["x_m"], -1.5, places=9)
+        self.assertAlmostEqual(route_input["start"]["y_m"], -1.5, places=9)
+        self.assertAlmostEqual(route_input["start"]["yaw_rad"], math.pi / 2.0, places=9)
+        self.assertAlmostEqual(route_input["waypoint"]["x_m"], -1.5, places=9)
+        self.assertAlmostEqual(route_input["waypoint"]["y_m"], -1.3, places=9)
+        self.assertEqual(
+            route_input["runtime_coordinate_contract"]["numeric_coordinate_convention"],
+            "RAICOM_SCENE_WORLD_AFTER_LIVE_RESET_GATE",
+        )
+
     def test_short_route_uses_local01_scene_transform_and_retains_full_dock_reference(self):
         route_input = build_short_route_config(local01_source_fixture())
         validate_local01_short_scene_route_input(route_input)

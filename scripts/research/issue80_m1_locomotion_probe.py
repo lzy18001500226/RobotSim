@@ -106,8 +106,8 @@ from issue80_waypoint_route import (
     SafetyObservation, WaypointRouteExecutor, YawPolicy,
     build_waypoint_docking_route_from_poses, load_waypoint_docking_pose_input,
     validate_waypoint_docking_scene_clearance,
-    build_local01_short_scene_route, validate_local01_short_scene_route_input,
-    validate_local01_reset_odom_pose,
+    build_local01_short_scene_route, build_runtime_raw_odom_short_scene_route,
+    validate_local01_short_scene_route_input, validate_local01_reset_odom_pose,
     LOCAL01_SHORT_ROUTE_MAX_WINDOWS as SHORT_ROUTE_MAX_WINDOWS,
     LOCAL01_SHORT_ROUTE_MAX_WINDOW_S as SHORT_ROUTE_MAX_WINDOW_S,
     LOCAL01_SHORT_ROUTE_MAX_AGGREGATE_S as SHORT_ROUTE_MAX_AGGREGATE_S,
@@ -2999,6 +2999,9 @@ class FocusedM1Diagnostic(Node):
             if short_scene_route_mode:
                 if not isinstance(local01_route_input, Mapping):
                     raise ValueError("Local01 short route input was not retained after preflight")
+                runtime_contract = local01_route_input.get("runtime_coordinate_contract")
+                if not isinstance(runtime_contract, Mapping):
+                    raise ValueError("Local01 short route lacks the reviewed raw-odom coordinate contract")
                 reset_pose_path = evidence_root / "reset_immediate_posture.json"
                 if reset_pose_path.is_symlink() or not reset_pose_path.is_file():
                     raise ValueError("immediate post-Reset odometry evidence is missing")
@@ -3021,22 +3024,24 @@ class FocusedM1Diagnostic(Node):
                 }
                 reset_frame_gate = validate_local01_reset_odom_pose(
                     local01_route_input["reset_anchor_expected_odom"], reset_observed,
+                    maximum_position_error_m=float(runtime_contract["maximum_start_position_deviation_m"]),
+                    maximum_yaw_error_rad=float(runtime_contract["maximum_start_yaw_deviation_rad"]),
                 )
-                result["scene_world_to_odom_reset_gate"] = {
+                result["runtime_raw_odom_reset_gate"] = {
                     "status": (
                         "PASS" if reset_frame_gate["status"] == "PASS" else "BLOCKED"
                     ),
-                    "basis": "actual fresh post-Reset /aima/hal/odom/state sample compared to Local01's static Reset anchor; the unchanged RouteSpec start XY/yaw gate is checked again after STAND",
+                    "basis": "actual fresh post-Reset /aima/hal/odom/state numeric pose compared to the static RAICOM scene-world START; the live route is then derived from the fresh post-STAND heading",
                     "expected": local01_route_input["reset_anchor_expected_odom"],
                     "immediate_post_reset": reset_frame_gate,
                     "runtime_reset_odom_observed": True,
-                    "post_stand_start_anchor_still_checked_by_route_manager": True,
+                    "post_stand_runtime_forward_route_gate_required": True,
                     "nonzero_motion_allowed": reset_frame_gate["status"] == "PASS",
                 }
-                if result["scene_world_to_odom_reset_gate"]["status"] != "PASS":
+                if result["runtime_raw_odom_reset_gate"]["status"] != "PASS":
                     result.update({
                         "status": "BLOCKED",
-                        "fault": "LOCAL01_SCENE_WORLD_TO_ODOM_RESET_ANCHOR_MISMATCH",
+                        "fault": "LOCAL01_RUNTIME_RAW_ODOM_RESET_ANCHOR_MISMATCH",
                         "route_manager_motion_calls": 0,
                         "nonzero_publish_calls_returned": 0,
                     })
@@ -3050,11 +3055,19 @@ class FocusedM1Diagnostic(Node):
             if short_scene_route_mode:
                 if local01_route_input is None:
                     raise ValueError("Local01 short route config is unavailable")
-                route = build_local01_short_scene_route(
+                live_start = {
+                    "x_m": start_pose.x_m,
+                    "y_m": start_pose.y_m,
+                    "z_m": float(initial["pose"]["z"]),
+                    "yaw_rad": start_pose.yaw_rad,
+                }
+                route, runtime_forward_plan = build_runtime_raw_odom_short_scene_route(
                     local01_route_input,
+                    observed_start_pose=live_start,
                     runtime_robot_footprint_radius_m=footprint,
                     verified_local_clear_radius_m=clear_radius,
                 )
+                result["runtime_raw_odom_forward_plan"] = runtime_forward_plan
                 result["route_config_preflight"] = {
                     "status": "PASS_STATIC_SCENE_CLEARANCE",
                     "classification": "STATIC_MUJOCO_FORWARD_ONLY_NOT_TABLE_DOCKING_VALIDATION",

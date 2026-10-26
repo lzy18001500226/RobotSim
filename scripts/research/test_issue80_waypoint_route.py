@@ -33,6 +33,8 @@ from issue80_waypoint_route import (
     validate_local01_short_scene_route_input,
     build_local01_short_scene_route,
     validate_local01_reset_odom_pose,
+    build_runtime_raw_odom_short_scene_route,
+    validate_runtime_raw_odom_start_pose,
 )
 from issue80_route_motion_bridge import (
     build_curved_waypoint_route,
@@ -46,6 +48,7 @@ from issue80_coordinated_pose_goal import (
 )
 from issue80_local01_scene_route import (
     build_short_route_config,
+    build_runtime_raw_odom_short_route_config,
     LOCAL01_COMMIT,
     LOCAL01_POSES_SHA256,
 )
@@ -228,6 +231,32 @@ class RouteConfigTests(unittest.TestCase):
         self.assertAlmostEqual(route.steps[1].x_m, 0.4)
         self.assertFalse(any(step.waypoint_id == "TABLE_DOCKING" for step in route.steps))
         self.assertEqual(raw["safe_table_docking_reference"]["status"], "STATIC_BASELINE_ONLY_NOT_TARGETED_BY_SHORT_ROUTE")
+
+    def test_runtime_raw_odom_short_route_uses_fresh_measured_heading(self) -> None:
+        raw = build_runtime_raw_odom_short_route_config(self.local01_scene_source_fixture())
+        observed = {"x_m": -1.504, "y_m": -1.481, "z_m": 0.653, "yaw_rad": 1.602}
+        gate = validate_runtime_raw_odom_start_pose(raw, observed)
+        self.assertEqual(gate["status"], "PASS")
+        route, plan = build_runtime_raw_odom_short_scene_route(
+            raw,
+            observed_start_pose=observed,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+        )
+        self.assertAlmostEqual(route.start_x_m, observed["x_m"], places=9)
+        self.assertAlmostEqual(route.start_y_m, observed["y_m"], places=9)
+        self.assertAlmostEqual(route.start_yaw_rad, observed["yaw_rad"], places=9)
+        self.assertAlmostEqual(
+            route.steps[0].y_m,
+            observed["y_m"] + 0.20 * math.sin(observed["yaw_rad"]),
+            places=9,
+        )
+        self.assertEqual(plan["segments_m"], [0.20, 0.20])
+        self.assertEqual(plan["runtime_start_gate"]["status"], "PASS")
+        blocked = validate_runtime_raw_odom_start_pose(
+            raw, {**observed, "yaw_rad": observed["yaw_rad"] + 0.05}
+        )
+        self.assertEqual(blocked["status"], "FAIL")
 
     def test_local01_short_route_rejects_overbudget_or_nonforward_targets(self) -> None:
         raw = self.local01_short_route_input()

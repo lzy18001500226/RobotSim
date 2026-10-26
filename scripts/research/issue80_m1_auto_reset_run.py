@@ -69,7 +69,7 @@ from issue80_waypoint_route import (
 )
 from issue80_local01_scene_route import (
     LOCAL01_COMMIT,
-    build_short_route_config,
+    build_runtime_raw_odom_short_route_config,
     load_local01_scene_inputs,
     prepare_local01_scene_runtime_bundle,
     validate_short_route_static_scene,
@@ -864,9 +864,9 @@ def validate_waypoint_docking_route_input(route_path: str | os.PathLike[str]) ->
 
 
 def validate_local01_scene_route_input(poses_path: str | os.PathLike[str]) -> dict[str, Any]:
-    """Pin Local01's scene config, derive a short odom route, and check its real scene."""
+    """Pin Local01's scene config and preflight the live raw-odom short route."""
     source = load_local01_scene_inputs(poses_path, require_clean_commit=True)
-    route_input = build_short_route_config(source)
+    route_input = build_runtime_raw_odom_short_route_config(source)
     static = validate_short_route_static_scene(
         Path(source["repository_root"]) / "simulation/mujoco/scenes/raicom2026",
         route_input,

@@ -718,7 +718,10 @@ def validate_local01_short_scene_route_input(route_input: Mapping[str, Any]) -> 
     """
     if route_input.get("schema_version") != LOCAL01_SHORT_SCENE_ROUTE_SCHEMA_VERSION:
         raise RouteError("unsupported Local01 short-scene route schema_version")
-    if route_input.get("route_kind") != "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING":
+    if route_input.get("route_kind") not in {
+        "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING",
+        "SIMULATION_ONLY_SHORT_ROUTE_RAW_ODOM_SCENE_WORLD_DIAGNOSTIC_NOT_TABLE_DOCKING",
+    }:
         raise RouteError("Local01 short route must remain explicitly non-docking")
     if route_input.get("frame_id") != "odom" or route_input.get("source_frame_id") != "raicom_scene_world":
         raise RouteError("Local01 short route frame contract is invalid")
@@ -797,6 +800,127 @@ def build_local01_short_scene_route(
     if tuple(step.waypoint_id for step in route.steps) != ("WAYPOINT", "SHORT_ROUTE_END"):
         raise RouteError("Local01 short route generated an unexpected waypoint sequence")
     return route
+
+
+def validate_runtime_raw_odom_start_pose(
+    route_input: Mapping[str, Any], observed_pose: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fail closed unless live numeric ``odom`` remains inside the swept envelope."""
+    validate_local01_short_scene_route_input(route_input)
+    contract = route_input.get("runtime_coordinate_contract")
+    if not isinstance(contract, Mapping):
+        raise RouteError("runtime raw-odom route is missing its coordinate contract")
+    expected = contract.get("static_scene_start")
+    if not isinstance(expected, Mapping):
+        raise RouteError("runtime raw-odom route is missing the static scene start")
+    try:
+        ex, ey = float(expected["x_m"]), float(expected["y_m"])
+        eyaw = float(expected["yaw_rad"])
+        ox, oy, oz, oyaw = (
+            float(observed_pose[key]) for key in ("x_m", "y_m", "z_m", "yaw_rad")
+        )
+        position_limit = float(contract["maximum_start_position_deviation_m"])
+        yaw_limit = float(contract["maximum_start_yaw_deviation_rad"])
+        z_min = float(contract["minimum_start_z_m"])
+        z_max = float(contract["maximum_start_z_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RouteError("runtime raw-odom start pose or contract is malformed") from exc
+    values = (ex, ey, eyaw, ox, oy, oz, oyaw, position_limit, yaw_limit, z_min, z_max)
+    if not all(math.isfinite(value) for value in values) or position_limit <= 0.0 or yaw_limit <= 0.0:
+        raise RouteError("runtime raw-odom start pose contains non-finite or invalid bounds")
+    planar_error = math.hypot(ox - ex, oy - ey)
+    yaw_error = abs(wrap_angle(oyaw - eyaw))
+    status = (
+        "PASS" if planar_error <= position_limit and yaw_error <= yaw_limit and z_min <= oz <= z_max
+        else "FAIL"
+    )
+    return {
+        "schema": "robotsim.issue80.local01-runtime-raw-odom-start-gate.v1",
+        "status": status,
+        "published_frame_id": "odom",
+        "numeric_coordinate_convention": contract.get("numeric_coordinate_convention"),
+        "expected_static_scene_start": dict(expected),
+        "observed_post_stand_pose": dict(observed_pose),
+        "planar_position_error_m": planar_error,
+        "yaw_error_rad": yaw_error,
+        "observed_z_m": oz,
+        "maximum_position_error_m": position_limit,
+        "maximum_yaw_error_rad": yaw_limit,
+        "minimum_z_m": z_min,
+        "maximum_z_m": z_max,
+        "permission_to_publish_motion": status == "PASS",
+    }
+
+
+def build_runtime_raw_odom_short_scene_route(
+    route_input: Mapping[str, Any],
+    *,
+    observed_start_pose: Mapping[str, Any],
+    runtime_robot_footprint_radius_m: float,
+    verified_local_clear_radius_m: float = 2.0,
+) -> tuple[RouteSpec, dict[str, Any]]:
+    """Use the existing route manager with targets derived from live robot-forward.
+
+    This does not change the static scene plan.  It only instantiates its two
+    already bounded 0.20 m targets from the fresh post-STAND ground-truth pose.
+    """
+    gate = validate_runtime_raw_odom_start_pose(route_input, observed_start_pose)
+    if gate["status"] != "PASS":
+        raise RouteError("runtime raw-odom start pose is outside the statically swept envelope")
+    start_x = float(observed_start_pose["x_m"])
+    start_y = float(observed_start_pose["y_m"])
+    start_yaw = float(observed_start_pose["yaw_rad"])
+    first = {
+        "x_m": start_x + LOCAL01_SHORT_ROUTE_STEP_M * math.cos(start_yaw),
+        "y_m": start_y + LOCAL01_SHORT_ROUTE_STEP_M * math.sin(start_yaw),
+        "yaw_rad": start_yaw,
+    }
+    end = {
+        "x_m": start_x + 2.0 * LOCAL01_SHORT_ROUTE_STEP_M * math.cos(start_yaw),
+        "y_m": start_y + 2.0 * LOCAL01_SHORT_ROUTE_STEP_M * math.sin(start_yaw),
+        "yaw_rad": start_yaw,
+    }
+    converted = {
+        "schema_version": WAYPOINT_DOCKING_POSE_SCHEMA_VERSION,
+        "route_id": str(route_input["route_id"]) + "-live-forward",
+        "frame_id": "odom",
+        "start": {"x_m": start_x, "y_m": start_y, "yaw_rad": start_yaw},
+        "waypoint": first,
+        "table_docking": end,
+    }
+    docking_shape = build_waypoint_docking_route_from_poses(
+        converted,
+        runtime_robot_footprint_radius_m=runtime_robot_footprint_radius_m,
+        verified_local_clear_radius_m=verified_local_clear_radius_m,
+    )
+    route = replace(
+        docking_shape,
+        route_id=str(route_input["route_id"]) + "-live-forward",
+        steps=(
+            replace(
+                docking_shape.steps[0],
+                waypoint_id="WAYPOINT",
+                profile=Profile.TRANSIT,
+                position_tolerance_m=LOCAL01_SHORT_ROUTE_POSITION_TOLERANCE_M,
+            ),
+            replace(
+                docking_shape.steps[1],
+                waypoint_id="SHORT_ROUTE_END",
+                profile=Profile.TRANSIT,
+                position_tolerance_m=LOCAL01_SHORT_ROUTE_POSITION_TOLERANCE_M,
+            ),
+        ),
+    )
+    route.validate()
+    return route, {
+        "runtime_start_gate": gate,
+        "route_start_from_fresh_post_stand_pose": {"x_m": start_x, "y_m": start_y, "yaw_rad": start_yaw},
+        "actual_robot_forward_unit_xy": {"x": math.cos(start_yaw), "y": math.sin(start_yaw)},
+        "waypoint": first,
+        "short_route_end": end,
+        "segments_m": [LOCAL01_SHORT_ROUTE_STEP_M, LOCAL01_SHORT_ROUTE_STEP_M],
+        "classification": "SIMULATION_ONLY_RUNTIME_RAW_ODOM_SCENE_WORLD_SHORT_FORWARD_ROUTE",
+    }
 
 
 def _number(raw: Mapping[str, Any], key: str) -> float:

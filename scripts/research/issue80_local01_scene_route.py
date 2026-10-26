@@ -9,6 +9,7 @@ from the configured START pose; they are not the table-docking target.
 from __future__ import annotations
 
 import hashlib
+from itertools import product
 import json
 import math
 import subprocess
@@ -61,6 +62,10 @@ SHORT_ROUTE_MAX_AGGREGATE_S = LOCAL01_SHORT_ROUTE_MAX_AGGREGATE_S
 SHORT_ROUTE_FORWARD_M_S = LOCAL01_SHORT_ROUTE_FORWARD_M_S
 SHORT_ROUTE_ANGULAR_RAD_S = LOCAL01_SHORT_ROUTE_ANGULAR_RAD_S
 SHORT_ROUTE_MAX_CROSS_TRACK_M = LOCAL01_SHORT_ROUTE_MAX_CROSS_TRACK_M
+RUNTIME_RAW_ODOM_START_POSITION_ENVELOPE_M = 0.025
+RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD = 0.04
+RUNTIME_RAW_ODOM_START_Z_MIN_M = 0.64
+RUNTIME_RAW_ODOM_START_Z_MAX_M = 0.69
 
 
 class Local01SceneRouteError(ValueError):
@@ -392,10 +397,81 @@ def build_short_route_config(source: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_runtime_raw_odom_short_route_config(source: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive the two short targets in the numeric convention emitted at runtime.
+
+    The vendor simulator labels the published base pose frame ``odom``.  The
+    first real RAICOM Reset/standing trace showed that its numeric values match
+    the RAICOM scene world directly, rather than Local01's static
+    ``odom_from_scene_world`` algebra.  Keep the source transform as a static
+    reference, but do not apply it to a live control target until a fresh
+    runtime Reset sample has proven that convention again.
+    """
+    static = build_short_route_config(source)
+    config = source.get("scene_world_poses")
+    if not isinstance(config, Mapping) or not isinstance(config.get("poses"), Mapping):
+        raise Local01SceneRouteError("Local01 authoritative pose table is missing")
+    poses = config["poses"]
+    start_scene = poses.get("START")
+    full_dock_scene = poses.get("TABLE_DOCKING")
+    if not isinstance(start_scene, Mapping) or not isinstance(full_dock_scene, Mapping):
+        raise Local01SceneRouteError("Local01 START or safe TABLE_DOCKING pose is missing")
+    start_x, start_y, start_z, start_yaw = _pose_xyz_yaw(start_scene, "START")
+
+    def target(distance: float) -> dict[str, float]:
+        return {
+            "x_m": start_x + distance * math.cos(start_yaw),
+            "y_m": start_y + distance * math.sin(start_yaw),
+            "z_m": start_z,
+            "yaw_rad": start_yaw,
+        }
+
+    first = target(SHORT_ROUTE_STEP_M)
+    end = target(SHORT_ROUTE_TARGETS_M[-1])
+    dock_x, dock_y, dock_z, dock_yaw = _pose_xyz_yaw(full_dock_scene, "TABLE_DOCKING")
+    raw = dict(static)
+    raw.update({
+        "route_id": "local01-runtime-raw-odom-forward-two-target-diagnostic",
+        "route_kind": "SIMULATION_ONLY_SHORT_ROUTE_RAW_ODOM_SCENE_WORLD_DIAGNOSTIC_NOT_TABLE_DOCKING",
+        "start": {"x_m": start_x, "y_m": start_y, "z_m": start_z, "yaw_rad": start_yaw},
+        "waypoint": first,
+        "short_route_end": end,
+        "reset_anchor_expected_odom": {
+            "x_m": start_x, "y_m": start_y, "z_m": start_z, "yaw_rad": start_yaw,
+        },
+        "runtime_coordinate_contract": {
+            "published_frame_id": "odom",
+            "numeric_coordinate_convention": "RAICOM_SCENE_WORLD_AFTER_LIVE_RESET_GATE",
+            "static_scene_start": {"x_m": start_x, "y_m": start_y, "z_m": start_z, "yaw_rad": start_yaw},
+            "maximum_start_position_deviation_m": RUNTIME_RAW_ODOM_START_POSITION_ENVELOPE_M,
+            "maximum_start_yaw_deviation_rad": RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,
+            "minimum_start_z_m": RUNTIME_RAW_ODOM_START_Z_MIN_M,
+            "maximum_start_z_m": RUNTIME_RAW_ODOM_START_Z_MAX_M,
+            "runtime_target_policy": "derive each 0.20 m target from the fresh post-STAND measured pose and yaw",
+            "static_transform_retained_as_reference_only": static["odom_from_scene_transform"],
+        },
+        "scene_world_poses": {
+            "start": dict(start_scene),
+            "waypoint": _scene_pose(first["x_m"], first["y_m"], first["z_m"], first["yaw_rad"]),
+            "short_route_end": _scene_pose(end["x_m"], end["y_m"], end["z_m"], end["yaw_rad"]),
+        },
+        "safe_table_docking_reference": {
+            "pose_scene_world": dict(full_dock_scene),
+            "published_odom_numeric_pose": {"x_m": dock_x, "y_m": dock_y, "z_m": dock_z, "yaw_rad": dock_yaw},
+            "distance_from_start_m": math.hypot(dock_x - start_x, dock_y - start_y),
+            "status": "STATIC_BASELINE_ONLY_NOT_TARGETED_BY_SHORT_ROUTE",
+        },
+    })
+    return raw
+
+
 def validate_short_route_config(route: Mapping[str, Any]) -> None:
     if route.get("schema_version") != SHORT_ROUTE_SCHEMA:
         raise Local01SceneRouteError("unsupported Local01 short-route schema")
-    if route.get("route_kind") != "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING":
+    if route.get("route_kind") not in {
+        "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING",
+        "SIMULATION_ONLY_SHORT_ROUTE_RAW_ODOM_SCENE_WORLD_DIAGNOSTIC_NOT_TABLE_DOCKING",
+    }:
         raise Local01SceneRouteError("short route must remain explicitly diagnostic and non-docking")
     if route.get("frame_id") != "odom" or route.get("source_frame_id") != "raicom_scene_world":
         raise Local01SceneRouteError("short route frame contract is invalid")
@@ -416,6 +492,25 @@ def validate_short_route_config(route: Mapping[str, Any]) -> None:
         raise Local01SceneRouteError("short diagnostic route must preserve the Reset start heading")
     if route.get("runtime_reset_odom_observed") is not False:
         raise Local01SceneRouteError("static config must not claim a live Reset/odom observation")
+    contract = route.get("runtime_coordinate_contract")
+    if contract is not None:
+        if not isinstance(contract, Mapping):
+            raise Local01SceneRouteError("runtime raw-odom contract is malformed")
+        required = {
+            "published_frame_id": "odom",
+            "numeric_coordinate_convention": "RAICOM_SCENE_WORLD_AFTER_LIVE_RESET_GATE",
+            "runtime_target_policy": "derive each 0.20 m target from the fresh post-STAND measured pose and yaw",
+        }
+        if any(contract.get(key) != value for key, value in required.items()):
+            raise Local01SceneRouteError("runtime raw-odom contract differs from the reviewed policy")
+        for key, expected in (
+            ("maximum_start_position_deviation_m", RUNTIME_RAW_ODOM_START_POSITION_ENVELOPE_M),
+            ("maximum_start_yaw_deviation_rad", RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD),
+            ("minimum_start_z_m", RUNTIME_RAW_ODOM_START_Z_MIN_M),
+            ("maximum_start_z_m", RUNTIME_RAW_ODOM_START_Z_MAX_M),
+        ):
+            if abs(float(contract.get(key, float("nan"))) - expected) > 1e-12:
+                raise Local01SceneRouteError("runtime raw-odom start envelope differs from the reviewed policy")
     limits = route.get("limits")
     if not isinstance(limits, Mapping) or (
         limits.get("forward_m_s") != SHORT_ROUTE_FORWARD_M_S
@@ -732,9 +827,43 @@ def validate_short_route_static_scene(
     all_external_contacts: list[dict[str, Any]] = []
     all_self_contacts: list[dict[str, Any]] = []
     sample_total = 0
-    for segment_index in range(2):
-        start_pose = _pose_xyz_yaw(route_scene_poses[segment_index], "short route segment start")
-        end_pose = _pose_xyz_yaw(route_scene_poses[segment_index + 1], "short route segment end")
+    runtime_contract = route.get("runtime_coordinate_contract")
+    route_scenarios: list[tuple[str, list[Mapping[str, Any]]]] = [
+        ("STATIC_NOMINAL_START", route_scene_poses)
+    ]
+    if isinstance(runtime_contract, Mapping):
+        position_limit = float(runtime_contract["maximum_start_position_deviation_m"])
+        yaw_limit = float(runtime_contract["maximum_start_yaw_deviation_rad"])
+        z_values = (
+            float(runtime_contract["minimum_start_z_m"]),
+            float(runtime_contract["maximum_start_z_m"]),
+        )
+        start_x, start_y, _, start_yaw = _pose_xyz_yaw(route_scene_poses[0], "runtime raw-odom static start")
+        for x_offset, y_offset, z, yaw_offset in product(
+            (-position_limit, 0.0, position_limit),
+            (-position_limit, 0.0, position_limit),
+            z_values,
+            (-yaw_limit, 0.0, yaw_limit),
+        ):
+            yaw = _wrap(start_yaw + yaw_offset)
+            dynamic_start = _scene_pose(start_x + x_offset, start_y + y_offset, z, yaw)
+            dynamic_waypoint = _scene_pose(
+                start_x + x_offset + SHORT_ROUTE_STEP_M * math.cos(yaw),
+                start_y + y_offset + SHORT_ROUTE_STEP_M * math.sin(yaw), z, yaw,
+            )
+            dynamic_end = _scene_pose(
+                start_x + x_offset + SHORT_ROUTE_TARGETS_M[-1] * math.cos(yaw),
+                start_y + y_offset + SHORT_ROUTE_TARGETS_M[-1] * math.sin(yaw), z, yaw,
+            )
+            route_scenarios.append((
+                "RAW_ODOM_ENVELOPE_"
+                f"dx{x_offset:+.3f}_dy{y_offset:+.3f}_z{z:.3f}_dyaw{yaw_offset:+.3f}",
+                [dynamic_start, dynamic_waypoint, dynamic_end],
+            ))
+    for scenario_id, scenario_poses in route_scenarios:
+      for segment_index in range(2):
+        start_pose = _pose_xyz_yaw(scenario_poses[segment_index], "short route segment start")
+        end_pose = _pose_xyz_yaw(scenario_poses[segment_index + 1], "short route segment end")
         length = math.hypot(end_pose[0] - start_pose[0], end_pose[1] - start_pose[1])
         yaw_delta = abs(_wrap(end_pose[3] - start_pose[3]))
         sample_count = max(
@@ -769,6 +898,7 @@ def validate_short_route_static_scene(
                     robot2 and body1.startswith(("raicom_", "mug_"))
                 ):
                     all_external_contacts.append({
+                        "scenario": scenario_id,
                         "segment_index": segment_index,
                         "distance_m": float(contact.dist),
                         "body1": body1,
@@ -777,6 +907,7 @@ def validate_short_route_static_scene(
                     })
                 elif robot1 and robot2:
                     all_self_contacts.append({
+                        "scenario": scenario_id,
                         "segment_index": segment_index,
                         "distance_m": float(contact.dist),
                         "body1": body1,
@@ -811,6 +942,7 @@ def validate_short_route_static_scene(
                         "scene_geom_id": int(scene_geom),
                     }
         segment_results.append({
+            "scenario": scenario_id,
             "index": segment_index,
             "from": ("START", "WAYPOINT")[segment_index],
             "to": ("WAYPOINT", "SHORT_ROUTE_END")[segment_index],
@@ -849,6 +981,8 @@ def validate_short_route_static_scene(
         "scene_collision_geom_count": len(scene_geoms),
         "robot_collision_footprint_radial_upper_bound_m": footprint_bound,
         "cross_track_guard_inflation_m": cross_track_inflation,
+        "runtime_raw_odom_start_envelope": dict(runtime_contract) if isinstance(runtime_contract, Mapping) else None,
+        "static_route_scenario_count": len(route_scenarios),
         "verified_local_clear_radius_m": 2.0,
         "static_sample_count": sample_total,
         "minimum_required_aabb_margin_m": float(minimum_clearance_m),
