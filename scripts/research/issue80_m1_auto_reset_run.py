@@ -2014,7 +2014,10 @@ class BoundedRun:
                         ("START", "WAYPOINT"), ("WAYPOINT", "TABLE_APPROACH"),
                     }
                 ]
-                if len(aligned_plan_segments) != 2:
+                if {
+                    (item.get("from"), item.get("to"))
+                    for item in aligned_plan_segments
+                } != {("START", "WAYPOINT"), ("WAYPOINT", "TABLE_APPROACH")}:
                     raise ValueError("aligned-start table plan lacks both source-grounded safe-prefix segments")
                 short_static = {
                     "schema": "robotsim.issue80.aligned-start-runtime-static-preflight.v1",
