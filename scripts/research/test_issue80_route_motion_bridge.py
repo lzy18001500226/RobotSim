@@ -71,6 +71,7 @@ from issue80_route_motion_bridge import (
     ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
     ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD,
     zero_forward_heading_acquisition_plan,
+    forward_gait_yaw_command,
 )
 
 
@@ -178,6 +179,18 @@ class RouteMotionBridgeTests(unittest.TestCase):
         aligned = zero_forward_heading_acquisition_plan(0.02)
         self.assertFalse(aligned["required"])
         self.assertEqual(aligned["angular_velocity_rad_s"], 0.0)
+
+    def test_forward_gait_yaw_mapping_keeps_stationary_and_gait_signs_separate(self) -> None:
+        self.assertEqual(
+            forward_gait_yaw_command(-0.075, invert_from_measured_response=False),
+            -0.075,
+        )
+        self.assertEqual(
+            forward_gait_yaw_command(-0.075, invert_from_measured_response=True),
+            0.075,
+        )
+        with self.assertRaises(RouteMotionBridgeError):
+            forward_gait_yaw_command(0.076, invert_from_measured_response=True)
 
     def test_verified_yaw_only_acquisition_still_requires_fresh_handshake(self) -> None:
         gate = TransitSteeringGate(warmup_s=0.5)

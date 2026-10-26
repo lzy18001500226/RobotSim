@@ -673,6 +673,39 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--raicom-continuous-ten-second-transit", child)
         self.assertIn("--raicom-zero-forward-heading-acquisition", child)
 
+    def test_parent_child_forward_gait_yaw_inversion_is_explicit(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.105,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="aligned-start-forward-yaw-inversion-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/aligned-start-table-approach.json",
+            aligned_start_table_approach=True,
+            native_x2_timestep=True,
+            route_config=None,
+            raicom_low_cruise_profile=True,
+            raicom_zero_forward_heading_acquisition=True,
+            raicom_continuous_ten_second_transit=True,
+            raicom_forward_gait_yaw_inversion=True,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "aligned-start-forward-yaw-inversion-test")[-1]
+            .rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--raicom-forward-gait-yaw-inversion", child)
+        self.assertIn("--raicom-continuous-ten-second-transit", child)
+
     def test_route_zero_stop_precedes_zero_forward_heading_acquisition(self) -> None:
         """A stop callback must never be reinterpreted as a yaw command."""
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(

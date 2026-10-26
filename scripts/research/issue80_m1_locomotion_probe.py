@@ -155,6 +155,7 @@ from issue80_route_motion_bridge import (
     ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
     ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
     zero_forward_heading_acquisition_plan,
+    forward_gait_yaw_command,
     active_locomotion_source_readbacks_valid,
     RouteOdomFreshnessTracker,
     route_feedback_sample_disposition,
@@ -3010,6 +3011,9 @@ class FocusedM1Diagnostic(Node):
         continuous_ten_second_transit_mode = bool(
             getattr(self.args, "raicom_continuous_ten_second_transit", False)
         )
+        forward_gait_yaw_inversion_mode = bool(
+            getattr(self.args, "raicom_forward_gait_yaw_inversion", False)
+        )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -3075,6 +3079,18 @@ class FocusedM1Diagnostic(Node):
                 ),
                 "aggregate_nonzero_limit_s": 75.0 if continuous_ten_second_transit_mode else None,
                 "physical_stop_after_each_window": True,
+            },
+            "forward_gait_yaw_mapping": {
+                "enabled": forward_gait_yaw_inversion_mode,
+                "classification": (
+                    "SIMULATION_ONLY_RAICOM_FORWARD_GAIT_YAW_SIGN_INVERTED"
+                    if forward_gait_yaw_inversion_mode else None
+                ),
+                "stationary_source_acquisition_mapping": "documented_direct_sign",
+                "forward_gait_mapping": (
+                    "negative_of_standard_odom_bearing_feedback"
+                    if forward_gait_yaw_inversion_mode else "standard_odom_bearing_feedback"
+                ),
             },
             "route_scope": (
                 "LOCAL01_START_HEADING_TWO_TARGET_SHORT_ROUTE"
@@ -5109,7 +5125,14 @@ class FocusedM1Diagnostic(Node):
                                         target_y_m=float(active.y_m),
                                         maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                                     )
-                                    angular = float(steering["angular_rad_s"])
+                                    standard_angular = float(steering["angular_rad_s"])
+                                    angular = forward_gait_yaw_command(
+                                        standard_angular,
+                                        invert_from_measured_response=
+                                        forward_gait_yaw_inversion_mode,
+                                        maximum_angular_rad_s=
+                                        POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                                    )
                                     control_row.update({
                                         "control_phase": "CLOSED_LOOP_WAYPOINT_BEARING",
                                         "target_x_m": float(active.x_m),
@@ -5119,6 +5142,12 @@ class FocusedM1Diagnostic(Node):
                                         "current_yaw_rad": float(pose["yaw"]),
                                         "heading_error_rad": float(steering["bearing_error_rad"]),
                                         "raw_angular_velocity_rad_s": float(steering["raw_angular_rad_s"]),
+                                        "standard_odom_bearing_angular_velocity_rad_s": standard_angular,
+                                        "forward_gait_yaw_mapping": (
+                                            "INVERTED_FROM_MEASURED_NATIVE_RESPONSE"
+                                            if forward_gait_yaw_inversion_mode
+                                            else "STANDARD_ODOM_BEARING"
+                                        ),
                                         "saturated": bool(steering["saturated"]),
                                         "locomotion_handshake_confirmed": True,
                                     })
@@ -5224,6 +5253,9 @@ class FocusedM1Diagnostic(Node):
                         ),
                         "zero_forward_heading_acquisition_profile_enabled": (
                             zero_forward_heading_acquisition_mode
+                        ),
+                        "forward_gait_yaw_inversion_profile_enabled": (
+                            forward_gait_yaw_inversion_mode
                         ),
                         "fresh_mode_source_handshake_required_before_steering": True,
                         "handshake_state": dict(window_control),
@@ -7842,6 +7874,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     continuous_ten_second_transit = bool(
         getattr(args, "raicom_continuous_ten_second_transit", False)
     )
+    forward_gait_yaw_inversion = bool(
+        getattr(args, "raicom_forward_gait_yaw_inversion", False)
+    )
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
         getattr(args, "aligned_start_table_approach", False)
@@ -7907,6 +7942,19 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             "continuous ten-second transit requires the native-timestep aligned TABLE_APPROACH "
             "low-cruise heading-acquisition profile"
         )
+    if forward_gait_yaw_inversion and not (
+        continuous_ten_second_transit
+        and zero_forward_heading_acquisition
+        and table_approach_mission
+        and aligned_start_table_approach
+        and native_x2_timestep
+        and low_cruise_profile
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    ):
+        raise ValueError(
+            "forward-gait yaw inversion requires the explicit continuous native-timestep "
+            "TABLE_APPROACH heading-acquisition profile"
+        )
     if configured_route_observation and not configured_route:
         raise ValueError("configured-route post-STAND observation requires --route-config")
     if configured_route:
@@ -7957,6 +8005,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "raicom_low_cruise_profile": low_cruise_profile,
                 "raicom_zero_forward_heading_acquisition": zero_forward_heading_acquisition,
                 "raicom_continuous_ten_second_transit": continuous_ten_second_transit,
+                "raicom_forward_gait_yaw_inversion": forward_gait_yaw_inversion,
                 "zero_forward_heading_profile": (
                     {
                         "classification": "SIMULATION_ONLY_AIMDK_YAW_SOURCE_ACQUISITION",
@@ -7976,6 +8025,18 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                         "physical_stop_after_each_window": True,
                     }
                     if continuous_ten_second_transit else None
+                ),
+                "forward_gait_yaw_mapping": (
+                    {
+                        "classification": "SIMULATION_ONLY_RAICOM_FORWARD_GAIT_YAW_SIGN_INVERTED",
+                        "stationary_source_acquisition_mapping": "documented_direct_sign_retained",
+                        "forward_gait_mapping": "negative_of_standard_odom_bearing_feedback",
+                        "evidence": (
+                            "continuous10 native-timestep trace: -0.075 rad/s command accompanied "
+                            "by increasing MuJoCo-ground-truth yaw while source and LOCOMOTION remained active"
+                        ),
+                    }
+                    if forward_gait_yaw_inversion else None
                 ),
                 "runtime_reset_odom_observed": False,
             }
@@ -8392,6 +8453,14 @@ def main() -> int:
         help=(
             "SIMULATION_ONLY native-timestep aligned TABLE_APPROACH profile: extend each "
             "continuous transit command to the existing 10 s M1 ceiling before the full stop gate"
+        ),
+    )
+    first.add_argument(
+        "--raicom-forward-gait-yaw-inversion",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY native-timestep RAICOM profile: apply the evidence-backed inverse "
+            "yaw mapping only while a forward gait is active"
         ),
     )
     first.add_argument(

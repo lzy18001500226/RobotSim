@@ -1422,6 +1422,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --raicom-zero-forward-heading-acquisition"
         if getattr(args, "raicom_continuous_ten_second_transit", False):
             command[-1] += " --raicom-continuous-ten-second-transit"
+        if getattr(args, "raicom_forward_gait_yaw_inversion", False):
+            command[-1] += " --raicom-forward-gait-yaw-inversion"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -5545,6 +5547,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-forward-gait-yaw-inversion",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY native-timestep RAICOM profile: invert only the closed-loop "
+            "forward-gait yaw command after observed opposite signed yaw response; stationary "
+            "zero-forward acquisition retains the documented direct sign"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5812,6 +5823,22 @@ def main() -> int:
         parser.error(
             "continuous ten-second transit requires the native-timestep aligned TABLE_APPROACH "
             "low-cruise profile with zero-forward heading source acquisition"
+        )
+    if args.raicom_forward_gait_yaw_inversion and not (
+        args.raicom_continuous_ten_second_transit
+        and args.raicom_zero_forward_heading_acquisition
+        and args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_x2_timestep
+        and args.raicom_low_cruise_profile
+        and args.direct_stand_from_passive
+        and args.maintainer_authorized_first_motion
+        and args.require_stand_warmup_composite
+        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+    ):
+        parser.error(
+            "forward-gait yaw inversion requires the explicit continuous native-timestep "
+            "TABLE_APPROACH heading-acquisition profile"
         )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:

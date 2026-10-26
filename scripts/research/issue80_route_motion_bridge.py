@@ -1039,6 +1039,30 @@ def zero_forward_heading_acquisition_plan(
     }
 
 
+def forward_gait_yaw_command(
+    standard_angular_rad_s: float,
+    *,
+    invert_from_measured_response: bool,
+    maximum_angular_rad_s: float = MAX_ANGULAR_RAD_S,
+) -> float:
+    """Map a bounded bearing command to the observed forward-gait yaw channel.
+
+    The explicit inversion is restricted to a separately labelled runtime
+    profile.  Stationary yaw-only acquisition continues to use
+    :func:`zero_forward_heading_acquisition_plan` and is never routed here.
+    """
+    try:
+        command = float(standard_angular_rad_s)
+        maximum = float(maximum_angular_rad_s)
+    except (TypeError, ValueError) as exc:
+        raise RouteMotionBridgeError("forward-gait yaw command must be numeric") from exc
+    if not math.isfinite(command) or not math.isfinite(maximum) or maximum <= 0.0:
+        raise RouteMotionBridgeError("forward-gait yaw command must be finite and bounded")
+    if abs(command) > maximum + 1e-12:
+        raise RouteMotionBridgeError("forward-gait yaw command exceeds the angular envelope")
+    return -command if invert_from_measured_response else command
+
+
 def waypoint_b_window_budget_passes(
     window_count: int, *, short_diagnostic: bool, extended_diagnostic: bool = False
 ) -> bool:
