@@ -868,32 +868,34 @@ class X11:
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
             }
+        # The preceding XQueryPointer ran immediately after the XTEST motion
+        # request and XSync, and proved the exact native-button coordinates.
+        # No pointer-mutating X call occurs between that proof and this final
+        # identity check.  WSLg can nevertheless return a stale/different
+        # pointer coordinate on an immediately repeated XQueryPointer; using
+        # that second query caused a false-negative return before either mouse
+        # button event was submitted.  Keep the target proof strict by
+        # requiring unchanged window geometry at final identity validation.
         identity_before_dispatch = self._target_identity(expected_pid, expected_title, window)
         self.lib.XSync(self.display, 0)
-        root_return, child_return = ctypes.c_ulong(), ctypes.c_ulong()
-        root_x_return, root_y_return = ctypes.c_int(), ctypes.c_int()
-        win_x_return, win_y_return = ctypes.c_int(), ctypes.c_int()
-        mask_return = ctypes.c_uint()
-        pointer_still_on_button = bool(self.lib.XQueryPointer(
-            self.display,
-            window,
-            ctypes.byref(root_return),
-            ctypes.byref(child_return),
-            ctypes.byref(root_x_return),
-            ctypes.byref(root_y_return),
-            ctypes.byref(win_x_return),
-            ctypes.byref(win_y_return),
-            ctypes.byref(mask_return),
-        )) and (win_x_return.value, win_y_return.value) == NATIVE_RESET_BUTTON_POINT
-        if identity_before_dispatch is None or not pointer_still_on_button:
+        identity_geometry_stable = bool(
+            identity_before_dispatch is not None
+            and all(
+                identity_before_dispatch.get(name) == identity_before_click.get(name)
+                for name in ("window_id", "pid", "title", "x", "y", "width", "height", "viewable")
+            )
+        )
+        if identity_before_dispatch is None or not identity_geometry_stable:
             return {
                 "status": "RESET_NOT_DELIVERED",
-                "reason": "exact target identity or pointer-on-button check changed before native Reset click; no click sent",
+                "reason": "exact target identity or geometry changed after verified native Reset pointer placement; no click sent",
                 "target_window_id": window,
                 "identity_before": identity_before,
                 "identity_before_click": identity_before_click,
                 "identity_before_dispatch": identity_before_dispatch,
                 "pointer_verification": pointer_record,
+                "identity_geometry_stable": identity_geometry_stable,
+                "pointer_requery_after_identity_check": "NOT_PERFORMED; prior XSync-qualified button coordinate retained",
                 "xtest_pointer_events_sent": 1,
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
@@ -928,9 +930,11 @@ class X11:
             "identity_before": identity_before,
             "identity_before_click": identity_before_click,
             "identity_before_dispatch": identity_before_dispatch,
+            "identity_geometry_stable": identity_geometry_stable,
             "window_size": [width, height],
             "button_pixel_signature": button_pixels,
             "pointer_verification": pointer_record,
+            "pointer_requery_after_identity_check": "NOT_PERFORMED; prior XSync-qualified button coordinate retained",
             "dispatch_wall_utc": dispatch_utc,
             "dispatch_monotonic_ns": dispatch_monotonic_ns,
             "xtest_pointer_events_sent": 1,

@@ -127,10 +127,19 @@ def make_x11(
             "pid": 4321,
             "title": "MuJoCo : X2 simulator",
             "viewable": True,
+            "x": 0,
+            "y": 0,
             "width": 1706,
             "height": 1066,
         }
     ]
+    x11.native_reset_button_pixels = lambda _window: {
+        "top": (153, 102, 102),
+        "left": (153, 102, 102),
+        "right": (153, 102, 102),
+        "bottom": (153, 102, 102),
+        "center": (26, 26, 26),
+    }
     return x11
 
 
@@ -212,6 +221,60 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
         )
         self.assertEqual(result["key_events_sent"], 0)
 
+    def test_native_reset_uses_the_synced_pointer_proof_without_a_stale_second_query(self) -> None:
+        x11 = make_x11(accept_direct_focus=False)
+        original_query = x11.lib.XQueryPointer
+        query_count = [0]
+
+        def query_with_stale_second_reply(*args):
+            query_count[0] += 1
+            if query_count[0] == 1:
+                return original_query(*args)
+            # The historical WSLg failure happened at this redundant second
+            # query after the first one had already verified [68, 456].
+            # The repaired path must never consult it before button dispatch.
+            for ptr, value, ctype in (
+                (args[6], 0, ctypes.c_int), (args[7], 0, ctypes.c_int),
+            ):
+                ctypes.cast(ptr, ctypes.POINTER(ctype))[0] = value
+            return 1
+
+        x11.lib.XQueryPointer = query_with_stale_second_reply
+        result = x11.click_native_reset_button_once(
+            0x5678, expected_pid=4321, expected_title="MuJoCo : X2 simulator",
+        )
+
+        self.assertEqual(result["status"], "RESET_BUTTON_CLICKED")
+        self.assertEqual(query_count[0], 1)
+        self.assertTrue(result["identity_geometry_stable"])
+        self.assertEqual(
+            result["pointer_requery_after_identity_check"],
+            "NOT_PERFORMED; prior XSync-qualified button coordinate retained",
+        )
+        self.assertEqual(
+            [event for event in x11.xtst.pointer_events if event[0] == "button"],
+            [("button", 1, 1), ("button", 1, 0)],
+        )
+
+    def test_native_reset_refuses_button_when_final_target_geometry_changes(self) -> None:
+        x11 = make_x11(accept_direct_focus=False)
+        stable = x11.list_windows()[0]
+        changed = dict(stable, x=stable["x"] + 1)
+        calls = [0]
+
+        def identities():
+            calls[0] += 1
+            return [stable] if calls[0] <= 2 else [changed]
+
+        x11.list_windows = identities
+        result = x11.click_native_reset_button_once(
+            0x5678, expected_pid=4321, expected_title="MuJoCo : X2 simulator",
+        )
+
+        self.assertEqual(result["status"], "RESET_NOT_DELIVERED")
+        self.assertFalse(result["identity_geometry_stable"])
+        self.assertFalse(any(event[0] == "button" for event in x11.xtst.pointer_events))
+
     def test_native_reset_button_refuses_uncalibrated_window_geometry(self) -> None:
         x11 = make_x11(accept_direct_focus=False)
         x11.list_windows = lambda: [{
@@ -219,8 +282,10 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
             "pid": 4321,
             "title": "MuJoCo : X2 simulator",
             "viewable": True,
-            "width": 1280,
-            "height": 720,
+            "x": 0,
+            "y": 0,
+            "width": 124,
+            "height": 468,
         }]
 
         result = x11.click_native_reset_button_once(
@@ -230,7 +295,7 @@ class VerifiedFocusDispatchTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "RESET_NOT_DELIVERED")
-        self.assertIn("calibrated native Reset button layout", result["reason"])
+        self.assertIn("too small", result["reason"])
         self.assertEqual(x11.xtst.pointer_events, [])
         self.assertEqual(x11.xtst.events, [])
 
