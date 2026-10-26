@@ -59,14 +59,40 @@ def native_foot_support(sample: Mapping[str, Any]) -> dict[str, Any]:
             for side in side_normals:
                 if contact.get(f"involves_selected_{side}_foot") is True:
                     side_normals[side].append(normal)
+    pelvis = sample.get("pelvis")
+    state = pelvis.get("state", {}) if isinstance(pelvis, Mapping) else {}
+    velocity = state.get("world_spatial_velocity_rot_lin") if isinstance(state, Mapping) else None
+    planar_speed = None
+    vertical_speed = None
+    if isinstance(velocity, (list, tuple)) and len(velocity) == 6:
+        try:
+            vx, vy, vz = (float(velocity[index]) for index in (3, 4, 5))
+            if all(math.isfinite(value) for value in (vx, vy, vz)):
+                planar_speed = math.hypot(vx, vy)
+                vertical_speed = vz
+        except (TypeError, ValueError):
+            pass
+    bilateral = bool(side_normals["left"] and side_normals["right"])
+    # 0.20 m/s preserves the existing physical planar-speed ceiling.  The
+    # non-negative vertical criterion prevents accepting the first impact row
+    # merely because both feet happen to be in contact while the root is still
+    # descending.  ROS still independently checks height and tilt afterwards.
+    settled = (
+        bilateral
+        and planar_speed is not None and planar_speed <= 0.20
+        and vertical_speed is not None and vertical_speed >= 0.0
+    )
     return {
-        "supported": bool(side_normals["left"] and side_normals["right"]),
+        "supported": bilateral,
+        "safe_to_begin_ros_upright_gate": settled,
         "left_normal_force_n": sum(side_normals["left"]),
         "right_normal_force_n": sum(side_normals["right"]),
         "left_contact_count": len(side_normals["left"]),
         "right_contact_count": len(side_normals["right"]),
         "captured_foot_floor_contact_count": sample.get("captured_foot_floor_contact_count"),
         "contact_count": sample.get("contact_count"),
+        "pelvis_planar_speed_world_m_s": planar_speed,
+        "pelvis_vertical_speed_world_m_s": vertical_speed,
     }
 
 
@@ -232,6 +258,7 @@ def assess_pre_action_state(
     upright_odom_samples: int,
     service_ready: bool,
     reset_dispatch_monotonic_ns: int | None = None,
+    required_upright_odom_samples: int = REQUIRED_UPRIGHT_ODOM_SAMPLES,
 ) -> dict[str, Any]:
     """Apply the existing freshness/upright gate, optionally after Reset only."""
     post_reset = {
@@ -252,7 +279,7 @@ def assess_pre_action_state(
         reason = "required_post_reset_state_missing_or_stale"
     elif not pose_ok:
         reason = "live_posture_outside_existing_gate"
-    elif upright_odom_samples < REQUIRED_UPRIGHT_ODOM_SAMPLES:
+    elif upright_odom_samples < required_upright_odom_samples:
         reason = "upright_odom_samples_insufficient"
     elif not service_ready:
         reason = "SetMcAction_service_not_ready"
@@ -266,7 +293,7 @@ def assess_pre_action_state(
         "post_reset_required_topics": sorted(post_reset),
         "posture_gate_pass": pose_ok,
         "upright_odom_samples": upright_odom_samples,
-        "required_upright_odom_samples": REQUIRED_UPRIGHT_ODOM_SAMPLES,
+        "required_upright_odom_samples": required_upright_odom_samples,
         "service_ready": service_ready,
         "pose": odom if odom else None,
         "raw_common_state": post_reset.get("common", {}).get("data"),
@@ -288,6 +315,7 @@ def assess_joint_to_stand_state(
     get_mode_desc: str | None,
     get_mode_status: int | None,
     body_stand_value: int,
+    required_upright_odom_samples: int = REQUIRED_UPRIGHT_ODOM_SAMPLES,
 ) -> dict[str, Any]:
     """Gate SD on fresh physical posture and the installed MC stand classifier."""
     base = assess_pre_action_state(
@@ -296,6 +324,7 @@ def assess_joint_to_stand_state(
         upright_odom_samples=upright_odom_samples,
         service_ready=set_service_ready and get_service_ready,
         reset_dispatch_monotonic_ns=reset_dispatch_monotonic_ns,
+        required_upright_odom_samples=required_upright_odom_samples,
     )
     common = base.get("raw_common_state") or {}
     action = common.get("action_info", {}) if isinstance(common, dict) else {}
@@ -521,6 +550,9 @@ def main() -> int:
                 if args.native_mjdata_trace is not None else None
             )
             self.require_native_reset_generation = bool(args.require_native_reset_generation)
+            self.required_post_reset_upright_samples = (
+                1 if self.require_native_reset_generation else REQUIRED_UPRIGHT_ODOM_SAMPLES
+            )
             self.native_trace_offset = 0
             self.native_baseline_generation: int | None = None
             self.native_reset_generation: int | None = None
@@ -609,7 +641,7 @@ def main() -> int:
                 if generation != self.native_reset_generation:
                     continue
                 support = native_foot_support(row)
-                if support["supported"]:
+                if support["safe_to_begin_ros_upright_gate"]:
                     self.native_support_samples += 1
                     self.native_support_sample = {"sample": row, "support": support}
                 else:
@@ -631,6 +663,7 @@ def main() -> int:
                         generation=generation,
                         native_host_monotonic_ns=host_ns,
                         required_samples=NATIVE_SUPPORT_REQUIRED_SAMPLES,
+                        required_post_reset_ros_upright_samples=self.required_post_reset_upright_samples,
                         support=self.native_support_sample,
                     )
 
@@ -644,6 +677,7 @@ def main() -> int:
                 "support_samples": self.native_support_samples,
                 "support_ready_host_monotonic_ns": self.native_support_ready_ns,
                 "support": self.native_support_sample,
+                "required_post_reset_ros_upright_samples": self.required_post_reset_upright_samples,
             }
 
         def wait_for_native_reset_support(self, deadline: float) -> bool:
@@ -1008,6 +1042,7 @@ def main() -> int:
                     upright_odom_samples=self.upright_samples,
                     service_ready=self.set_client.service_is_ready() and self.get_client.service_is_ready(),
                     reset_dispatch_monotonic_ns=self._post_reset_epoch(),
+                    required_upright_odom_samples=self.required_post_reset_upright_samples,
                 )
                 common = latest.get("common", {}).get("data", {})
                 action = common.get("action_info", {})
@@ -1093,6 +1128,7 @@ def main() -> int:
                     get_mode_desc=readback_desc,
                     get_mode_status=readback_status,
                     body_stand_value=body_stand_value,
+                    required_upright_odom_samples=self.required_post_reset_upright_samples,
                 )
                 if last["eligible"]:
                     last["wall_utc"] = datetime.now(timezone.utc).isoformat()

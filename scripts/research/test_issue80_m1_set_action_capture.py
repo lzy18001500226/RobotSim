@@ -46,12 +46,28 @@ class SetActionCaptureTests(unittest.TestCase):
         }
         support = native_foot_support(sample)
         self.assertTrue(support["supported"])
+        self.assertFalse(support["safe_to_begin_ros_upright_gate"])
         self.assertEqual(support["left_contact_count"], 1)
         self.assertEqual(support["right_contact_count"], 1)
         self.assertEqual(support["left_normal_force_n"], 42.0)
 
         sample["contacts"] = sample["contacts"][:1]
         self.assertFalse(native_foot_support(sample)["supported"])
+
+    def test_native_support_requires_a_settled_root_after_bilateral_contact(self) -> None:
+        sample = {
+            "pelvis": {"state": {"world_spatial_velocity_rot_lin": [0, 0, 0, 0.03, 0.0, 0.01]}},
+            "contacts": [
+                {"involves_selected_left_foot": True, "normal_force_n": 100.0},
+                {"involves_selected_right_foot": True, "normal_force_n": 100.0},
+            ],
+        }
+        self.assertTrue(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
+        sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][5] = -0.01
+        self.assertFalse(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
+        sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][5] = 0.01
+        sample["pelvis"]["state"]["world_spatial_velocity_rot_lin"][3] = 0.21
+        self.assertFalse(native_foot_support(sample)["safe_to_begin_ros_upright_gate"])
 
     def test_native_capture_reader_defers_a_partial_final_append(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -201,6 +217,33 @@ class SetActionCaptureTests(unittest.TestCase):
         )
         self.assertFalse(result["eligible"])
         self.assertEqual(result["failure_reason"], "required_post_reset_state_missing_or_stale")
+
+    def test_native_generation_barrier_allows_one_fresh_ros_pose_only_after_supported_state(self) -> None:
+        now_ns = 50_000_000_000
+        latest = {
+            "odom": {"wall_monotonic_ns": now_ns - 1_000_000, "data": {"z": 0.68, "roll_deg": 0.0, "pitch_deg": 0.0}},
+            "imu": {"wall_monotonic_ns": now_ns - 2_000_000, "data": {}},
+            "common": {"wall_monotonic_ns": now_ns - 3_000_000, "data": {}},
+            "leg_state": {"wall_monotonic_ns": now_ns - 4_000_000, "data": {}},
+            "leg_command": {"wall_monotonic_ns": now_ns - 5_000_000, "data": {}},
+        }
+        one_sample = assess_pre_action_state(
+            latest,
+            now_monotonic_ns=now_ns,
+            upright_odom_samples=1,
+            required_upright_odom_samples=1,
+            service_ready=True,
+            reset_dispatch_monotonic_ns=now_ns - 10_000_000,
+        )
+        self.assertTrue(one_sample["eligible"])
+        legacy_three_sample = assess_pre_action_state(
+            latest,
+            now_monotonic_ns=now_ns,
+            upright_odom_samples=1,
+            service_ready=True,
+            reset_dispatch_monotonic_ns=now_ns - 10_000_000,
+        )
+        self.assertFalse(legacy_three_sample["eligible"])
 
     def test_sd_requires_confirmed_joint_default_and_fresh_mc_stand_classification(self) -> None:
         reset_ns = 30_000_000_000
