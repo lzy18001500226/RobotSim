@@ -83,6 +83,7 @@ from issue80_local01_scene_route import (
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
 RUNTIME = REPO / "simulation/mujoco/raicom2026"
 X11_HELPER = Path(__file__).with_name("issue80_mujoco_x11_reset.py")
+X11_RECORDER = Path(__file__).with_name("issue80_mujoco_x11_record.py")
 WINDOWS_FOCUS_HELPER = Path(__file__).with_name("issue80_mujoco_windows_focus.ps1")
 ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
@@ -1896,6 +1897,8 @@ class BoundedRun:
         self.reset_classification = "NOT_ATTEMPTED"
         self.m1_result: dict[str, Any] | None = None
         self.mc_rl_debug_capture: dict[str, Any] | None = None
+        self.motion_video_process: subprocess.Popen[str] | None = None
+        self.motion_video_capture: dict[str, Any] = {"status": "NOT_REQUESTED"}
         self.foundationwalk_config_overlay: Path | None = None
         self.foundationwalk_config_overlay_manifest: dict[str, Any] | None = None
         self.mc_rl_debug_overlay_manifest: dict[str, Any] | None = None
@@ -2347,6 +2350,7 @@ class BoundedRun:
         sources = (
             (Path(__file__), Path(__file__).name),
             (X11_HELPER, X11_HELPER.name),
+            (X11_RECORDER, X11_RECORDER.name),
             (WINDOWS_FOCUS_HELPER, WINDOWS_FOCUS_HELPER.name),
             (ANALYZER, ANALYZER.name),
             (M1_RUNNER, M1_RUNNER.name),
@@ -2842,6 +2846,87 @@ class BoundedRun:
         with path.open("x", encoding="utf-8") as f:
             json.dump(record, f, indent=2)
             f.write("\n")
+
+    def start_verified_motion_video_capture(self) -> None:
+        """Passively record the already Reset-verified MuJoCo window.
+
+        The established recorder watches the child trace for the first actual
+        nonzero command; it sends no X11 input and has no path to influence the
+        simulator or MC.  A missing recording never changes a safety decision.
+        """
+        if not getattr(self.args, "record_mujoco_video", False):
+            return
+        if self.motion_video_process is not None:
+            raise RuntimeError("motion video recorder was started more than once")
+        recorder = self.evidence / X11_RECORDER.name
+        if recorder.is_symlink() or not recorder.is_file():
+            raise RuntimeError("staged passive MuJoCo video recorder is missing or unsafe")
+        stdout_path = self.evidence / "x11_walk_capture.stdout.txt"
+        stderr_path = self.evidence / "x11_walk_capture.stderr.txt"
+        command = [
+            sys.executable, str(recorder),
+            "--evidence-dir", str(self.evidence),
+            "--fps", "4",
+            "--duration-s", "12",
+            "--wait-timeout-s", str(min(180.0, max(30.0, self.remaining()))),
+            "--output-name", "mujoco_aligned_start_route.gif",
+        ]
+        environment = dict(os.environ)
+        environment.setdefault("DISPLAY", ":0")
+        stdout = stdout_path.open("x", encoding="utf-8")
+        stderr = stderr_path.open("x", encoding="utf-8")
+        try:
+            self.motion_video_process = subprocess.Popen(
+                command,
+                text=True,
+                stdout=stdout,
+                stderr=stderr,
+                env=environment,
+                start_new_session=True,
+            )
+        finally:
+            stdout.close()
+            stderr.close()
+        self.motion_video_capture = {
+            "status": "STARTED_PASSIVE_RECORDING",
+            "command": command,
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "input_events_sent": False,
+            "starts_after_verified_reset": True,
+        }
+
+    def finalize_motion_video_capture(self) -> dict[str, Any]:
+        """Collect or terminate only the bounded passive recorder at teardown."""
+        if self.motion_video_process is None:
+            return self.motion_video_capture
+        process = self.motion_video_process
+        try:
+            returncode = process.wait(timeout=15.0)
+            termination = "RECORDER_EXITED"
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                returncode = process.wait(timeout=5.0)
+                termination = "RECORDER_TERMINATED_AFTER_BOUNDED_ROUTE"
+            except subprocess.TimeoutExpired:
+                process.kill()
+                returncode = process.wait(timeout=5.0)
+                termination = "RECORDER_KILLED_AFTER_TERMINATE_TIMEOUT"
+        manifest_path = self.evidence / "x11_walk_capture.json"
+        manifest: Any = None
+        if manifest_path.is_file() and not manifest_path.is_symlink():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                manifest = {"status": "INVALID_MANIFEST", "error": f"{type(exc).__name__}: {exc}"}
+        self.motion_video_capture.update({
+            "termination": termination,
+            "returncode": returncode,
+            "manifest_path": str(manifest_path) if manifest_path.exists() else None,
+            "manifest": manifest,
+        })
+        return self.motion_video_capture
 
     def capture_service_topic_inventory(self) -> None:
         self.docker_exec(
@@ -3779,6 +3864,7 @@ class BoundedRun:
             self.before_reset_image = self.capture_reset_image(pid, title, window_id, "before")
             self.start_observer()
             self.dispatch_native_reset_button(pid, title, window_id)
+            self.start_verified_motion_video_capture()
             result["reset_immediate_posture"] = self.wait_for_immediate_reset_pose()
             # The pre-armed node sends the source-supported PD -> JD -> SD
             # handoff; SD is gated on fresh upright telemetry and MC STAND state.
@@ -4032,6 +4118,7 @@ class BoundedRun:
             result["status"] = "BLOCKED"
         finally:
             elapsed = time.monotonic() - self.started
+            result["motion_video_capture"] = self.finalize_motion_video_capture()
             result["mc_rl_debug_capture"] = self.mc_rl_debug_capture
             result["mc_rl_debug_overlay"] = self.mc_rl_debug_overlay_manifest
             result["wall_elapsed_s"] = elapsed
@@ -4069,6 +4156,11 @@ def main() -> int:
     parser.add_argument("--container",required=True)
     parser.add_argument("--attempt-id",required=True)
     parser.add_argument("--max-runtime-s",type=float,default=180.0)
+    parser.add_argument(
+        "--record-mujoco-video",
+        action="store_true",
+        help="passively record the already Reset-verified MuJoCo window after its first nonzero route command",
+    )
     parser.add_argument("--extra-stop-observation", type=float, default=0.0)
     parser.add_argument("--pulse-duration", type=float, default=1.0)
     parser.add_argument("--forward-speed", type=float, default=0.2)
