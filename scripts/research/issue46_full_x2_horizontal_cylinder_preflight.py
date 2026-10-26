@@ -270,6 +270,13 @@ def contact_records(model: mujoco.MjModel, data: mujoco.MjData) -> list[dict[str
         pair = {n1, n2}
         if pair == {"test_cylinder", "raicom_table"}:
             kind = "cylinder_table"
+        elif pair == {"head_pitch_link", "torso_link"}:
+            # This is a separate full-body safety boundary.  The accepted
+            # Option-D scene currently represents the head pitch collision as
+            # a simple cylinder; it must never be silently treated as an
+            # acceptable internal contact merely because it is unrelated to
+            # the right-hand grasp.
+            kind = "head_torso_proxy_contact"
         elif "test_cylinder" in pair:
             other = n2 if n1 == "test_cylinder" else n1
             kind = "distal_pad" if other in PAD_BODIES else "cylinder_forbidden_robot"
@@ -286,9 +293,57 @@ def contact_records(model: mujoco.MjModel, data: mujoco.MjData) -> list[dict[str
                 mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g1),
                 mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g2),
             ],
+            "geom_ids": [g1, g2],
+            "geom_types": [int(model.geom_type[g1]), int(model.geom_type[g2])],
+            "geom_size_m": [model.geom_size[g1].tolist(), model.geom_size[g2].tolist()],
             "distance_m": float(contact.dist),
         })
     return output
+
+
+def unexpected_scene_contacts(records: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Return contacts that make a full-X2 physics episode unsafe to start.
+
+    A table-supported cylinder and the intentionally commanded distal-pad
+    contacts are allowed.  The helper deliberately does not classify an
+    unrecognised robot self-contact as harmless.
+    """
+    return [
+        record for record in records
+        if record["kind"] in {
+            "robot_self", "robot_table", "cylinder_forbidden_robot",
+            "head_torso_proxy_contact",
+        }
+    ]
+
+
+def summarize_unexpected_contacts(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Deduplicate repeated static contacts while retaining the deepest pose."""
+    grouped: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
+    for event in events:
+        record = event["contact"]
+        key = (str(record["kind"]), tuple(sorted(str(x) for x in record["bodies"])))
+        current = grouped.get(key)
+        if current is None:
+            grouped[key] = {
+                "kind": record["kind"],
+                "bodies": record["bodies"],
+                "geoms": record["geoms"],
+                "deepest_distance_m": record["distance_m"],
+                "contexts": [event["context"]],
+            }
+            continue
+        current["contexts"].append(event["context"])
+        if float(record["distance_m"]) < float(current["deepest_distance_m"]):
+            current["deepest_distance_m"] = record["distance_m"]
+            current["geoms"] = record["geoms"]
+    summary = []
+    for item in grouped.values():
+        contexts = list(item["contexts"])
+        item["observation_count"] = len(contexts)
+        item["contexts"] = sorted(set(str(context) for context in contexts))
+        summary.append(item)
+    return sorted(summary, key=lambda item: float(item["deepest_distance_m"]))
 
 
 def right_equality_residuals(model: mujoco.MjModel, data: mujoco.MjData) -> dict[str, object]:
@@ -467,6 +522,9 @@ def root_hold_preflight(
         mujoco.mj_forward(model, data)
 
     initialize(arm_q, right)
+    initial_contacts = contact_records(model, data)
+    initial_unexpected = unexpected_scene_contacts(initial_contacts)
+    initial_equality = right_equality_residuals(model, data)
     nominal = {
         "root_q_rad": float(data.qpos[root_address]),
         "root_target_rad": right["right_claw_joint"],
@@ -475,6 +533,40 @@ def root_hold_preflight(
         "root_qfrc_bias_Nm": float(data.qfrc_bias[root_dof]),
         "root_qfrc_constraint_Nm": float(data.qfrc_constraint[root_dof]),
     }
+
+    # The complete model must be free of unrelated active contacts before its
+    # arm/gripper hold equilibrium is interpreted.  Solving qacc=0 through a
+    # head/torso proxy penetration would report a controller problem that is
+    # actually a collision-model safety failure.
+    if initial_unexpected:
+        root_error = abs(float(data.qpos[root_address]) - right["right_claw_joint"])
+        dofs = [model.jnt_dofadr[model.joint(name).id] for name in ARM + RIGHT_HAND_NAMES]
+        return {
+            "method": "mj_forward startup audit only; static hold solve skipped because the full scene has unexpected active contact",
+            "equilibrium_arm_q_rad": arm_q.tolist(),
+            "equilibrium_right_hand_q_rad": right,
+            "arm_and_right_hand_delta_rad": [0.0] * (len(ARM) + len(RIGHT_HAND_NAMES)),
+            "max_abs_qacc_rad_s2": float(np.max(np.abs(data.qacc[dofs]))),
+            "qacc_by_right_arm_and_hand_rad_s2": {
+                name: float(data.qacc[model.jnt_dofadr[model.joint(name).id]])
+                for name in ARM + RIGHT_HAND_NAMES
+            },
+            "root_tracking_error_rad": root_error,
+            "root_target_rad": right["right_claw_joint"],
+            "root_actuator_force_Nm": float(data.actuator_force[root_actuator]),
+            "right_arm_control_saturated": set_right_arm_pd(model, data, arm_targets),
+            "equality": initial_equality,
+            "unexpected_full_scene_contacts": initial_unexpected,
+            "static_hold_evaluable": False,
+            "solver_success": False,
+            "iterations": 0,
+            "root_tracking_and_linkage_pass": bool(
+                root_error <= ROOT_TRACKING_GATE_RAD
+                and initial_equality["max_joint_residual_rad"] <= MAX_EQUALITY_RESIDUAL_RAD
+                and initial_equality["max_connect_residual_m"] <= MAX_CONNECT_RESIDUAL_M
+            ),
+            "right_arm_and_hand_static_hold_pass": False,
+        }
 
     hand_names = RIGHT_HAND_NAMES
     initial = np.r_[arm_q, [right[name] for name in hand_names]]
@@ -532,6 +624,8 @@ def root_hold_preflight(
         "root_actuator_force_Nm": float(data.actuator_force[root_actuator]),
         "right_arm_control_saturated": set_right_arm_pd(model, data, arm_targets),
         "equality": equality,
+        "unexpected_full_scene_contacts": [],
+        "static_hold_evaluable": True,
         "solver_success": bool(fit.success),
         "iterations": int(fit.nfev),
         "root_tracking_and_linkage_pass": root_tracking_pass,
@@ -625,6 +719,7 @@ def main() -> None:
     lift = solve_side_pose(model, data, lift_target, rotation, contact_q, right_closed, left_open)
 
     close_scan = []
+    unexpected_contact_events: list[dict[str, object]] = []
     first_bilateral = None
     first_forbidden = None
     for percent in range(OPEN_PERCENT, 0, -1):
@@ -632,6 +727,15 @@ def main() -> None:
         set_static_state(model, data, contact_q, hand, left_open)
         contacts = contact_records(model, data)
         forbidden = [x for x in contacts if x["kind"] in {"cylinder_forbidden_robot", "robot_table"}]
+        unexpected = unexpected_scene_contacts(contacts)
+        # The selected physical sequence closes only to CLOSE_PERCENT.  Keep
+        # deeper scan results as evidence, but do not let an out-of-sequence
+        # over-close collision masquerade as an initialization failure.
+        if percent >= CLOSE_PERCENT:
+            unexpected_contact_events.extend(
+                {"context": f"CLOSE_SCAN_{percent}_PERCENT", "contact": item}
+                for item in unexpected
+            )
         pads = sorted({body for x in contacts if x["kind"] == "distal_pad" for body in x["bodies"] if body in PAD_BODIES})
         row = {
             "command_percent": percent,
@@ -640,6 +744,7 @@ def main() -> None:
             "forbidden_by_body": dict(collections.Counter(
                 x["bodies"][1] if x["bodies"][0] == "test_cylinder" else x["bodies"][0] for x in forbidden
             )),
+            "unexpected_scene_contacts": unexpected,
         }
         close_scan.append(row)
         if set(pads) == PAD_BODIES and first_bilateral is None:
@@ -662,7 +767,15 @@ def main() -> None:
             set_static_state(model, data, q, hand, left_open, object_pos)
             contacts = contact_records(model, data)
             forbidden = [x for x in contacts if x["kind"] in {"cylinder_forbidden_robot", "robot_table"}]
-            path_samples.append({"segment": name, "fraction": float(fraction), "forbidden_contacts": forbidden})
+            unexpected = unexpected_scene_contacts(contacts)
+            unexpected_contact_events.extend(
+                {"context": f"{name}@{fraction:.3f}", "contact": item}
+                for item in unexpected
+            )
+            path_samples.append({
+                "segment": name, "fraction": float(fraction), "forbidden_contacts": forbidden,
+                "unexpected_scene_contacts": unexpected,
+            })
 
     set_static_state(model, data, contact_q, right_closed, left_open)
     source_visual = source_mesh_sample_check(model, data, cylinder)
@@ -673,11 +786,21 @@ def main() -> None:
     render_views(model, data, output)
 
     cylinder_joint = model.joint("test_cylinder_free").id
-    support_contacts = [x for x in contact_records(model, data) if x["kind"] == "cylinder_table"]
+    contact_pose_contacts = contact_records(model, data)
+    unexpected_contact_events.extend(
+        {"context": "HORIZONTAL_CONTACT_CLOSE_75_PERCENT", "contact": item}
+        for item in unexpected_scene_contacts(contact_pose_contacts)
+    )
+    support_contacts = [x for x in contact_pose_contacts if x["kind"] == "cylinder_table"]
     # The dynamic cylinder begins at source defined qpos0, so table support is
     # measured before static grasp positioning as a separate snapshot.
     set_static_state(model, data, np.zeros(len(ARM)), right_open, left_open)
-    initial_support = [x for x in contact_records(model, data) if x["kind"] == "cylinder_table"]
+    initial_contacts = contact_records(model, data)
+    initial_support = [x for x in initial_contacts if x["kind"] == "cylinder_table"]
+    unexpected_contact_events.extend(
+        {"context": "INITIAL_OPEN", "contact": item}
+        for item in unexpected_scene_contacts(initial_contacts)
+    )
     table_body = model.body("raicom_table").id
     table_gids = np.where(model.geom_bodyid == table_body)[0]
     table_vertices = []
@@ -699,6 +822,8 @@ def main() -> None:
         and closure_row["forbidden_count"] == 0
     )
     path_pass = not any(sample["forbidden_contacts"] for sample in path_samples)
+    unexpected_summary = summarize_unexpected_contacts(unexpected_contact_events)
+    full_body_contact_pass = not unexpected_summary
     source_bad = {
         body: value for body, value in source_visual["per_body"].items()
         if value["sampled_surface_enters_cylinder"] and body not in PAD_BODIES
@@ -712,9 +837,12 @@ def main() -> None:
         "OPEN_PREGRASP_APPROACH_CLEARANCE": "PASS" if path_pass else "FAIL",
         "BILATERAL_DISTAL_PAD_CONTACT_AT_75_PERCENT": "PASS" if closure_pass else "FAIL",
         "SOURCE_VISUAL_MESH_NONPAD_CLEARANCE": "PASS" if not source_bad else "FAIL",
+        "FULL_X2_UNEXPECTED_SELF_CONTACT_FREE": "PASS" if full_body_contact_pass else "FAIL",
         "RIGHT_LINKAGE_CLOSURE": "PASS" if equality["max_joint_residual_rad"] <= MAX_EQUALITY_RESIDUAL_RAD and equality["max_connect_residual_m"] <= MAX_CONNECT_RESIDUAL_M else "FAIL",
         "INITIAL_RIGHT_ROOT_TRACKING_AND_LINKAGE": "PASS" if root_hold["root_tracking_and_linkage_pass"] else "FAIL",
-        "RIGHT_ARM_AND_HAND_STATIC_HOLD": "PASS" if root_hold["right_arm_and_hand_static_hold_pass"] else "FAIL",
+        "RIGHT_ARM_AND_HAND_STATIC_HOLD": "PASS" if root_hold["right_arm_and_hand_static_hold_pass"] else (
+            "NOT_EVALUABLE_WITH_UNEXPECTED_FULL_X2_CONTACT" if not root_hold["static_hold_evaluable"] else "FAIL"
+        ),
         "DYNAMICS": "NOT RUN",
     }
     overall = "PASS" if all(value == "PASS" for key, value in gates.items() if key != "DYNAMICS") else "BLOCKED"
@@ -753,6 +881,11 @@ def main() -> None:
             "first_forbidden": first_forbidden,
         },
         "path_samples": path_samples,
+        "full_x2_contact_audit": {
+            "allowed_static_contact_kinds": ["cylinder_table", "distal_pad"],
+            "unexpected_contact_summary": unexpected_summary,
+            "full_body_contact_free_pass": full_body_contact_pass,
+        },
         "right_linkage_closure": equality,
         "source_visual_mesh_check": source_visual,
         "root_hold_preflight": root_hold,
