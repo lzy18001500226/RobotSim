@@ -667,6 +667,54 @@ def validate_runtime_raw_odom_table_approach_mission(mission: Mapping[str, Any])
         raise Local01SceneRouteError("table-approach mission must preserve the source docking reference")
 
 
+def validate_runtime_raw_odom_table_approach_start(
+    mission: Mapping[str, Any], observed_pose: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Require the fresh post-SD pose to remain inside the swept start envelope.
+
+    The Reset anchor alone is insufficient: active standing can move the root
+    before source-grounded locomotion begins.  This gate is deliberately
+    evaluated immediately before the first yaw-only command.
+    """
+    validate_runtime_raw_odom_table_approach_mission(mission)
+    contract = mission.get("runtime_coordinate_contract")
+    if not isinstance(contract, Mapping):
+        raise Local01SceneRouteError("table-approach mission lacks a runtime coordinate contract")
+    expected = contract.get("static_scene_start")
+    if not isinstance(expected, Mapping):
+        raise Local01SceneRouteError("table-approach start anchor is missing")
+    try:
+        ex, ey, eyaw = (float(expected[name]) for name in ("x_m", "y_m", "yaw_rad"))
+        ox, oy, oz, oyaw = (float(observed_pose[name]) for name in ("x_m", "y_m", "z_m", "yaw_rad"))
+        position_limit = float(contract["maximum_start_position_deviation_m"])
+        yaw_limit = float(contract["maximum_start_yaw_deviation_rad"])
+        z_min = float(contract["minimum_start_z_m"])
+        z_max = float(contract["maximum_start_z_m"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise Local01SceneRouteError("table-approach runtime start pose is malformed") from exc
+    values = (ex, ey, eyaw, ox, oy, oz, oyaw, position_limit, yaw_limit, z_min, z_max)
+    if not all(math.isfinite(value) for value in values) or position_limit <= 0.0 or yaw_limit <= 0.0:
+        raise Local01SceneRouteError("table-approach runtime start contains non-finite values or invalid limits")
+    planar_error = math.hypot(ox - ex, oy - ey)
+    yaw_error = abs(_wrap(oyaw - eyaw))
+    passed = planar_error <= position_limit and yaw_error <= yaw_limit and z_min <= oz <= z_max
+    return {
+        "schema": "robotsim.issue80.table-approach-runtime-start-gate.v1",
+        "status": "PASS" if passed else "FAIL",
+        "expected_static_scene_start": dict(expected),
+        "observed_post_sd_pose": dict(observed_pose),
+        "planar_position_error_m": planar_error,
+        "yaw_error_rad": yaw_error,
+        "observed_z_m": oz,
+        "maximum_position_error_m": position_limit,
+        "maximum_yaw_error_rad": yaw_limit,
+        "minimum_z_m": z_min,
+        "maximum_z_m": z_max,
+        "permission_to_publish_first_nonzero": passed,
+        "basis": "fresh post-SD odometry, not the earlier Reset anchor sample",
+    }
+
+
 def validate_short_route_config(route: Mapping[str, Any]) -> None:
     if route.get("schema_version") != SHORT_ROUTE_SCHEMA:
         raise Local01SceneRouteError("unsupported Local01 short-route schema")

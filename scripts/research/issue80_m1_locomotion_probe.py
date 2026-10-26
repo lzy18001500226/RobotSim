@@ -113,7 +113,10 @@ from issue80_waypoint_route import (
     LOCAL01_SHORT_ROUTE_MAX_WINDOW_S as SHORT_ROUTE_MAX_WINDOW_S,
     LOCAL01_SHORT_ROUTE_MAX_AGGREGATE_S as SHORT_ROUTE_MAX_AGGREGATE_S,
 )
-from issue80_local01_scene_route import validate_runtime_raw_odom_table_approach_mission
+from issue80_local01_scene_route import (
+    validate_runtime_raw_odom_table_approach_mission,
+    validate_runtime_raw_odom_table_approach_start,
+)
 from issue80_route_motion_bridge import (
     ROUTE_WINDOW_ZERO_MARGIN_S, WAYPOINT_B_AGGREGATE_TRANSIT_MAX_S,
     WAYPOINT_B_MAX_WINDOWS, WAYPOINT_B_POSITION_TOLERANCE_M,
@@ -2762,6 +2765,30 @@ class FocusedM1Diagnostic(Node):
         ]
         baseline_state = stationary_baseline.get("physical_state_summary")
         origin_snapshot = self.sample_for_first_motion()
+        origin_pose = origin_snapshot.get("pose")
+        if not isinstance(origin_pose, Mapping):
+            return {"status": "BLOCKED", "fault": "table_alignment_origin_pose_missing"}
+        try:
+            runtime_start_gate = validate_runtime_raw_odom_table_approach_start(
+                mission,
+                {
+                    "x_m": float(origin_pose["x"]),
+                    "y_m": float(origin_pose["y"]),
+                    "z_m": float(origin_pose["z"]),
+                    "yaw_rad": float(origin_pose["yaw"]),
+                },
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            return {
+                "status": "BLOCKED",
+                "fault": f"table_alignment_runtime_start_gate_invalid:{type(exc).__name__}",
+            }
+        if runtime_start_gate["status"] != "PASS":
+            return {
+                "status": "BLOCKED",
+                "fault": "table_alignment_runtime_start_outside_static_envelope",
+                "runtime_start_gate": runtime_start_gate,
+            }
         origin_fault = snapshot_fault(
             origin_snapshot, self.joint_limits,
             state_timeout_s=self.args.state_timeout,
@@ -2769,11 +2796,11 @@ class FocusedM1Diagnostic(Node):
             max_tilt_deg=self.args.max_tilt_deg,
             max_observed_planar_speed_m_s=0.2,
         )
-        origin_pose = origin_snapshot.get("pose")
         if origin_fault or not stand_mode_readback_confirmed(origin_snapshot) or not isinstance(origin_pose, Mapping):
             return {
                 "status": "BLOCKED",
                 "fault": "table_alignment_requires_fresh_stable_STAND:" + str(origin_fault or "pose_or_readback"),
+                "runtime_start_gate": runtime_start_gate,
             }
         try:
             origin_x, origin_y = float(origin_pose["x"]), float(origin_pose["y"])
@@ -2825,6 +2852,7 @@ class FocusedM1Diagnostic(Node):
                 return {
                     "status": "BLOCKED", "fault": "table_alignment_rearm_STAND_not_safe:" + str(before_fault or "pose_or_readback"),
                     "origin_pose": dict(origin_pose), "turns": turns,
+                    "runtime_start_gate": runtime_start_gate,
                 }
             try:
                 yaw_error = math.atan2(math.sin(target_yaw - float(pose["yaw"])), math.cos(target_yaw - float(pose["yaw"])))
@@ -2835,6 +2863,7 @@ class FocusedM1Diagnostic(Node):
                 return {
                     "status": "BLOCKED", "fault": "table_alignment_total_displacement_exceeded_before_next_turn",
                     "origin_pose": dict(origin_pose), "turns": turns,
+                    "runtime_start_gate": runtime_start_gate,
                     "current_total_displacement_m": current_displacement,
                 }
             if abs(yaw_error) <= yaw_tolerance:
@@ -2877,6 +2906,7 @@ class FocusedM1Diagnostic(Node):
                 return {
                     "status": "BLOCKED", "fault": "table_alignment_turn_not_qualified:" + str(turn.get("status")),
                     "origin_pose": dict(origin_pose), "turns": turns,
+                    "runtime_start_gate": runtime_start_gate,
                 }
             final_snapshot = self.sample_for_first_motion()
 
@@ -2899,6 +2929,7 @@ class FocusedM1Diagnostic(Node):
             "status": "PASS" if passed else "BLOCKED",
             "classification": "SIMULATION_ONLY_ZERO_FORWARD_TABLE_START_ALIGNMENT",
             "origin_pose": dict(origin_pose),
+            "runtime_start_gate": runtime_start_gate,
             "final_pose": dict(final_pose),
             "target_yaw_rad": target_yaw,
             "final_yaw_error_rad": final_yaw_error,

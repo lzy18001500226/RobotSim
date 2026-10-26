@@ -20,6 +20,7 @@ from issue80_local01_scene_route import (
     load_local01_scene_inputs,
     prepare_local01_scene_runtime_bundle,
     validate_runtime_raw_odom_table_approach_mission,
+    validate_runtime_raw_odom_table_approach_start,
     validate_short_route_static_scene,
     native_name_scene_tree,
     audit_runtime_name_contract,
@@ -94,6 +95,20 @@ class Local01SceneRouteTests(unittest.TestCase):
         mission["poses"]["TABLE_DOCKING_REFERENCE_UNCHANGED"]["x_m"] = 0.9
         with self.assertRaisesRegex(ValueError, "TABLE_DOCKING reference"):
             validate_runtime_raw_odom_table_approach_mission(mission)
+
+    def test_table_approach_requires_fresh_post_sd_start_inside_static_envelope(self):
+        mission = build_runtime_raw_odom_table_approach_mission(local01_source_fixture())
+        valid = validate_runtime_raw_odom_table_approach_start(
+            mission, {"x_m": -1.5, "y_m": -1.5, "z_m": 0.68, "yaw_rad": math.pi / 2.0},
+        )
+        self.assertEqual(valid["status"], "PASS")
+        drifted = validate_runtime_raw_odom_table_approach_start(
+            mission,
+            {"x_m": -1.5038967, "y_m": -1.3409248, "z_m": 0.6527287, "yaw_rad": 1.3995752},
+        )
+        self.assertEqual(drifted["status"], "FAIL")
+        self.assertFalse(drifted["permission_to_publish_first_nonzero"])
+        self.assertGreater(drifted["planar_position_error_m"], 0.025)
 
     def test_table_approach_route_reuses_route_spec_without_manipulator_handoff(self):
         mission = build_runtime_raw_odom_table_approach_mission(local01_source_fixture())
