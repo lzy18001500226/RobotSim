@@ -21,6 +21,19 @@ class StandingRun(ResetOnlyRun):
     observer_script=OBSERVER
     expected_observer_clients=2
 
+    def __init__(self,args,evidence,container):
+        super().__init__(args,evidence,container)
+        self.protocol=getattr(args,'protocol','sd')
+        if self.protocol not in ('sd','jd-sd'):
+            raise ValueError('unsupported standing protocol')
+        self.observer_cli_suffix='--protocol '+self.protocol
+
+    def _capture_optional_screenshot(self,pid,title,window_id):
+        if self.protocol=='jd-sd':
+            return {'status':'SKIPPED_OPTIONAL_CAPTURE_TO_RESERVE_TAKEOVER_TIME',
+                    'identity_and_native_button_pixel_verification':'PRESERVED'}
+        return super()._capture_optional_screenshot(pid,title,window_id)
+
     def prepare_observer(self):
         text=OBSERVER.read_text()
         if 'create_publisher(' in text or 'SetMcInputSource' in text or text.count('self.sd_client.call_async(request)')!=1:
@@ -35,15 +48,16 @@ class StandingRun(ResetOnlyRun):
                 raise RuntimeError('pinned FSM runtime identity mismatch: '+name)
         _write_json(self.evidence/'standing_capability_audit.json',{
             'observer_sha256':_sha256(OBSERVER),'max_sd_requests':1,'max_native_reset':1,
+            'protocol':self.protocol,'max_jd_requests':1 if self.protocol=='jd-sd' else 0,
             'velocity_publishers':0,'locomotion_source_registration':False,
-            'service_allowlist':['SetMcAction:STAND_DEFAULT','GetMcAction'],
+            'service_allowlist':(['SetMcAction:JOINT_DEFAULT'] if self.protocol=='jd-sd' else [])+['SetMcAction:STAND_DEFAULT','GetMcAction'],
             'fsm_libraries_sha256':MC_FSM_RUNTIME_LIBRARY_SHA256,
             'native_transition_route':{
                 'source':'sim/action_ruler.yaml + pinned libmc_manager_action.so ActionRuler/GetShortestPath',
                 'graph':['PASSIVE_DEFAULT','JOINT_DEFAULT','STAND_DEFAULT'],
-                'external_request':'one STAND_DEFAULT only; intermediate JD must be native MC behavior',
+                'external_request':'one JD then one SD with observed readiness barrier' if self.protocol=='jd-sd' else 'one STAND_DEFAULT only; intermediate JD must be native MC behavior',
                 'history':'Run65 explicitly requested JD then SD; direct target routing must be observed in this episode',
-                'no_external_JD_request':True},
+                'no_external_JD_request':self.protocol!='jd-sd'},
             'timing_review':{'scene_dt_s':.002,'native_dt_s':.001,'MC_leg_command_config_hz':500,
                 'sim_IMU_config_hz':500,'sim_joint_publication_config_hz':1000,
                 'qualification':'bounded SD test only; publication cadence is not independent state advancement',
@@ -60,16 +74,22 @@ class StandingRun(ResetOnlyRun):
         # Never retain the capture-only parent's zero-action claim for this
         # explicitly active standing diagnostic; missing summary is UNKNOWN.
         count=summary['sd_requests'] if summary else None
-        result['mc_action_request_count']=count
-        result['runtime_non_motion_invariants']['set_mc_action_requests']=count
-        result['runtime_non_motion_invariants']['allowed_action']='STAND_DEFAULT_ONLY'
+        jd_count=summary.get('jd_requests',0) if summary else None
+        total=count+jd_count if count is not None and jd_count is not None else None
+        result['mc_action_request_count']=total
+        result['jd_request_count']=jd_count
+        result['runtime_non_motion_invariants']['set_mc_action_requests']=total
+        result['runtime_non_motion_invariants']['allowed_action']='ONE_JD_THEN_ONE_SD' if self.protocol=='jd-sd' else 'STAND_DEFAULT_ONLY'
         result.get('reset_effect',{}).pop('no_action_or_locomotion_request',None)
         result['diagnostic_kind']='RESET_TO_SD_ACTIVE_STANDING_NO_LOCOMOTION'
-        result['classification']='STANDING_READY_FOR_SEPARATE_MOTION_REVIEW' if (
+        complete = (
             result['status']=='PASS' and summary and summary['status']=='PASS'
             and summary['stable_hold_s']>=2.5 and summary['sd_requests']==1
-        ) else 'STANDING_TAKEOVER_BLOCKED'
-        if result['classification']=='STANDING_TAKEOVER_BLOCKED':
+            and (self.protocol!='jd-sd' or (summary.get('jd_requests')==1 and summary.get('jd_ready_monotonic_ns') is not None))
+        )
+        result['classification']=('RAICOM_JD_TO_SD_STANDING_READY' if self.protocol=='jd-sd'
+                                  else 'STANDING_READY_FOR_SEPARATE_MOTION_REVIEW') if complete else 'STANDING_TAKEOVER_BLOCKED'
+        if not complete:
             result['status']='BLOCKED'
             result['failure']=(summary or {}).get('failure') or result.get('failure') or 'STANDING_SUMMARY_UNAVAILABLE'
         return result
@@ -78,6 +98,7 @@ class StandingRun(ResetOnlyRun):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--attempt-id',required=True)
+    parser.add_argument('--protocol',choices=('sd','jd-sd'),default='sd')
     parser.add_argument('--local01-scene-world-poses',type=Path,default=LOCAL01_POSES_DEFAULT)
     parser.add_argument('--evidence-parent',type=Path,default=EVIDENCE_PARENT_DEFAULT)
     args=parser.parse_args()

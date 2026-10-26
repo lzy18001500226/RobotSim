@@ -15,13 +15,15 @@ from aimdk_msgs.srv import GetMcAction, SetMcAction
 from issue80_raicom_reset_only_observer import (
     ResetOnlyObserver, _safe, _write_new_json, _write_snapshot_replace,
     MAX_STATE_AGE_S, MIN_ROOT_Z_M, MAX_ABS_TILT_RAD, TOPIC_TYPES,
-    classify_reset_effect,
+    classify_reset_effect, _stamp_ns,
 )
 
 SET_SERVICE = '/aimdk_5Fmsgs/srv/SetMcAction'
 GET_SERVICE = '/aimdk_5Fmsgs/srv/GetMcAction'
 STABLE_HOLD_S = 2.5
 MAX_PLANAR_SPEED_M_S = .20
+JD_READY_TIMEOUT_S = 1.0
+SD_READY_TIMEOUT_S = 2.0
 
 
 def safe_posture(pose):
@@ -42,6 +44,12 @@ def request_allowed(*, reset_verified, reset_effect, fresh, pose, advancing, cou
             and advancing and count == 0)
 
 
+def source_progress(previous, stamp):
+    if stamp is None:return 'MISSING'
+    if previous is None or stamp>previous:return 'ADVANCE'
+    return 'DUPLICATE' if stamp==previous else 'REGRESSION'
+
+
 def active_mode_agrees(common, readback):
     return (readback.get('header',{}).get('code')==0
             and readback.get('info',{}).get('action_desc')=='STAND_DEFAULT'
@@ -52,8 +60,52 @@ def active_mode_agrees(common, readback):
             and common.get('fsm_state',{}).get('current_state')==4)
 
 
+def native_transition_state(phase, common, readback, *, elapsed_s, jd_accepted,
+                            sd_accepted, initial_fsm6=True, left_initial_fsm6=False):
+    """Pinned Run65 semantics; pending never grants action or hold permission."""
+    ci=common.get('action_info',{})
+    gi=readback.get('info',{})
+    mode=ci.get('action_desc'); get_mode=gi.get('action_desc')
+    status=ci.get('status',{}).get('value'); get_status=gi.get('status',{}).get('value')
+    fsm=common.get('fsm_state',{}).get('current_state')
+    body=common.get('body_status',{}).get('value')
+    if readback.get('header',{}).get('code')!=0:
+        return 'PROTECTION_AMBIGUOUS'
+    if phase=='JD':
+        if fsm==6 and (left_initial_fsm6 or not initial_fsm6):
+            return 'PROTECTION_CONFIRMED'
+        if mode not in ('PASSIVE_DEFAULT','JOINT_DEFAULT') or get_mode not in ('PASSIVE_DEFAULT','JOINT_DEFAULT'):
+            return 'PROTECTION_AMBIGUOUS'
+        if fsm not in (1,6) or body not in (0,1) or status not in (100,200,300) or get_status not in (100,200,300):
+            return 'PROTECTION_AMBIGUOUS'
+        if elapsed_s>=JD_READY_TIMEOUT_S:
+            return 'TRANSITION_TIMEOUT'
+        if (jd_accepted and mode==get_mode=='JOINT_DEFAULT' and status==get_status==100
+            and fsm==1 and body==1):
+            return 'JD_READY'
+        return 'TRANSITION_TIMEOUT' if elapsed_s>=JD_READY_TIMEOUT_S else 'TRANSITION_PENDING'
+    if phase in ('SD','HOLD'):
+        # SD is entered ONLY after a positively verified JD/FSM1/body1 barrier.
+        if fsm==6 or mode in ('PASSIVE_DEFAULT','DAMPING_DEFAULT'):
+            return 'PROTECTION_CONFIRMED'
+        if (mode not in ('JOINT_DEFAULT','STAND_DEFAULT') or get_mode not in ('JOINT_DEFAULT','STAND_DEFAULT')
+            or fsm not in (1,4) or body!=1 or status not in (100,200,300) or get_status not in (100,200,300)):
+            return 'PROTECTION_AMBIGUOUS'
+        if phase=='SD' and elapsed_s>=SD_READY_TIMEOUT_S:
+            return 'TRANSITION_TIMEOUT'
+        if sd_accepted and active_mode_agrees(common,readback):
+            return 'SD_READY'
+        return 'TRANSITION_PENDING'
+    return 'TRANSITION_PENDING'
+
+
 class StandObserver(ResetOnlyObserver):
-    def __init__(self, output_dir, reset_event_path):
+    def __init__(self, output_dir, reset_event_path, protocol='sd'):
+        if protocol not in ('sd','jd-sd'):
+            raise ValueError('unsupported standing protocol')
+        self.protocol=protocol
+        self.unique_topic_stamps={}
+        self.duplicate_topic_counts={}
         super().__init__(output_dir,reset_event_path)
         self.sd_client = self.create_client(SetMcAction, SET_SERVICE)
         self.get_client = self.create_client(GetMcAction, GET_SERVICE)
@@ -71,7 +123,38 @@ class StandObserver(ResetOnlyObserver):
         self.first_active_ns = None
         self.sd_request_ns = None
         self.last_unique_ns = None
+        self.jd_count=0
+        self.jd_request_ns=None
+        self.jd_future=None
+        self.jd_response=None
+        self.jd_ready_ns=None
+        self.initial_fsm6=None
+        self.left_initial_fsm6=False
+        self.transition_state='TRANSITION_PENDING'
+        self.last_transition_state=None
+        self.max_hold_s=0.
         self.joint_limits = json.loads((output_dir/'standing_joint_limits.json').read_text())['limits']
+
+    def _callback(self,key):
+        receive=super()._callback(key)
+        def advancing_receive(message):
+            stamp=_stamp_ns(message)
+            if self.protocol=='jd-sd':
+                previous=self.unique_topic_stamps.get(key)
+                progression=source_progress(previous,stamp)
+                if progression=='MISSING':
+                    self.failure='MISSING_SOURCE_STAMP:'+key
+                    return
+                if progression in ('DUPLICATE','REGRESSION'):
+                    self._write({'event':'NONADVANCING_TOPIC_SAMPLE','topic_key':key,
+                                 'source_stamp_ns':stamp,'previous_stamp_ns':previous,
+                                 'receipt_monotonic_ns':time.monotonic_ns(),'raw':_safe(message)})
+                    if progression=='REGRESSION':self.failure='SOURCE_STAMP_REGRESSION:'+key
+                    else:self.duplicate_topic_counts[key]=self.duplicate_topic_counts.get(key,0)+1
+                    return
+                self.unique_topic_stamps[key]=stamp
+            receive(message)
+        return advancing_receive
 
     def joint_fault(self):
         state = self.latest_messages.get('leg_state')
@@ -107,46 +190,101 @@ class StandObserver(ResetOnlyObserver):
         if row is None or row['receipt_monotonic_ns'] != receipt_ns:
             return
         pose = row['pose']
-        if self.upright_streak>=3 or self.sd_count:
+        if self.upright_streak>=3 or self.sd_count or self.jd_count:
             fault=self.joint_fault()
             if fault:
                 self.failure=fault
                 return
         effect = classify_reset_effect(self.pre_reset_snapshot,self.post_reset_rows)
+        common = self.latest_messages.get('common')
+        raw = _safe(common) if common is not None else {}
+        command_raw=_safe(self.latest_messages.get('leg_command')) or {}
+        if self.protocol=='jd-sd' and self.upright_streak>=3:
+            cj=command_raw.get('joints',[])
+            if len(cj)!=12 or {j.get('name') for j in cj}!=set(self.joint_limits):
+                self.failure='INVALID_LEG_COMMAND_MAPPING';return
+            for j in cj:
+                if (any(not isinstance(j.get(k),(int,float)) or not math.isfinite(j[k])
+                        for k in ('position','velocity','effort','stiffness','damping'))
+                    or j['stiffness']<0 or j['damping']<0):
+                    self.failure='INVALID_STANDING_COMMAND:'+j['name'];return
+        gains_active=any(abs(j.get(k,0))>1e-8 for j in command_raw.get('joints',[])
+                         for k in ('stiffness','damping','effort'))
+        qualified_jd=False
+        if self.protocol=='jd-sd' and self.jd_count:
+            phase=('HOLD' if self.first_active_ns is not None else 'SD') if self.sd_count else 'JD'
+            elapsed=(receipt_ns-(self.sd_request_ns if self.sd_count else self.jd_request_ns))/1e9
+            state=native_transition_state(phase,raw,self.get_result or {},elapsed_s=elapsed,
+                jd_accepted=bool(self.jd_response and self.jd_response['accepted']),
+                sd_accepted=bool(self.sd_response and self.sd_response['accepted']),
+                initial_fsm6=self.initial_fsm6,left_initial_fsm6=self.left_initial_fsm6)
+            if raw.get('fsm_state',{}).get('current_state') in (1,4):
+                self.left_initial_fsm6=True
+            self.transition_state=state
+            if state!=self.last_transition_state:
+                self._write({'event':'NATIVE_TRANSITION','receipt_monotonic_ns':receipt_ns,
+                             'phase':phase,'state':state,'elapsed_s':elapsed,
+                             'raw_common':raw,'get_readback':self.get_result})
+                self.last_transition_state=state
+            if state in ('PROTECTION_CONFIRMED','PROTECTION_AMBIGUOUS','TRANSITION_TIMEOUT'):
+                self.failure=phase+':'+state
+                return
+            if state=='JD_READY' and gains_active and self._fresh(receipt_ns) and safe_posture(pose):
+                if self.get_received_ns is not None and 0<=(receipt_ns-self.get_received_ns)/1e9<=MAX_STATE_AGE_S:
+                    self.jd_ready_ns=self.jd_ready_ns or receipt_ns
+                    qualified_jd=True
+        action=None
+        if self.protocol=='jd-sd':
+            if not self.jd_count: action='JOINT_DEFAULT'
+            elif not self.sd_count and qualified_jd:
+                action='STAND_DEFAULT'
+        elif not self.sd_count:
+            action='STAND_DEFAULT'
         # Three advancing, fresh upright samples plus actual Reset effect; no
         # delayed host service discovery or disk-based trigger after this gate.
-        if self.sd_count == 0 and self.upright_streak >= 3 and request_allowed(
+        if action is not None and self.upright_streak >= 3 and request_allowed(
             reset_verified=self.reset_event is not None,
             reset_effect=effect['status']=='RESET_EFFECT_OBSERVED',
-            fresh=self._fresh(receipt_ns),pose=pose,advancing=advancing,count=self.sd_count,
+            fresh=self._fresh(receipt_ns),pose=pose,advancing=advancing,
+            count=self.jd_count if action=='JOINT_DEFAULT' else self.sd_count,
         ):
             if not self.sd_client.service_is_ready():
                 self.failure = 'SD_SERVICE_DISAPPEARED_AT_SAFE_REQUEST_GATE'
                 return
-            common = self.latest_messages.get('common')
             desc = common.action_info.action_desc if common is not None else None
-            if desc != 'PASSIVE_DEFAULT':
+            expected='JOINT_DEFAULT' if self.protocol=='jd-sd' and action=='STAND_DEFAULT' else 'PASSIVE_DEFAULT'
+            if desc != expected:
                 self.failure = 'UNEXPECTED_PRE_SD_MODE:'+str(desc)
                 return
+            if (self.get_received_ns is None or not 0<=(receipt_ns-self.get_received_ns)/1e9<=MAX_STATE_AGE_S
+                or (self.get_result or {}).get('info',{}).get('action_desc')!=expected
+                or (self.get_result or {}).get('info',{}).get('status',{}).get('value')!=100):
+                self.failure='UNQUALIFIED_PRE_ACTION_GET_READBACK';return
             if common.input_source.name:
                 self.failure = 'CONFLICTING_ACTIVE_INPUT_SOURCE'
                 return
             request = SetMcAction.Request()
             request.header.stamp = self.get_clock().now().to_msg()
             request.source = 'node.set_mc_action'
-            request.command.action_desc = 'STAND_DEFAULT'
+            request.command.action_desc = action
             # Re-evaluate host age immediately before the sole service call.
             now = time.monotonic_ns()
             if (now-receipt_ns)/1e9 > .05 or not self._fresh(now):
                 self.failure = 'TAKEOVER_TOO_LATE_FRESH_REQUEST_GATE'
                 return
-            self.sd_count = 1
-            self.sd_request_ns = now
-            self._write({'event':'SD_REQUEST','receipt_monotonic_ns':now,
+            if action=='JOINT_DEFAULT':
+                self.jd_count=1;self.jd_request_ns=now
+                self.initial_fsm6=raw.get('fsm_state',{}).get('current_state')==6
+            else:
+                self.sd_count = 1
+                self.sd_request_ns = now
+            self._write({'event':'JD_REQUEST' if action=='JOINT_DEFAULT' else 'SD_REQUEST','receipt_monotonic_ns':now,
                          'request':_safe(request),'request_pose':pose,
                          'pose_age_s':(now-receipt_ns)/1e9,
                          'state_ages_s':self._ages(now)})
-            self.sd_future = self.sd_client.call_async(request)
+            future = self.sd_client.call_async(request)
+            if action=='JOINT_DEFAULT':self.jd_future=future
+            else:self.sd_future=future
         if self.first_upright_ns is not None and not safe_posture(pose):
             self.failure = 'TAKEOVER_TOO_LATE_OR_ACTIVE_POSTURE_UNSAFE'
             return
@@ -175,7 +313,7 @@ class StandObserver(ResetOnlyObserver):
                 'PASSIVE_DEFAULT','JOINT_DEFAULT','STAND_DEFAULT'):
             self.failure='UNRELATED_MODE_DURING_SD_TAKEOVER'
             return
-        if (self.sd_count and raw.get('action_info',{}).get('action_desc')=='STAND_DEFAULT'
+        if (self.protocol=='sd' and self.sd_count and raw.get('action_info',{}).get('action_desc')=='STAND_DEFAULT'
             and raw.get('fsm_state',{}).get('current_state')==6):
             # The category is unsafe for acceptance, but its unchanged raw 6
             # during a target switch alone does not prove a NEW protection trip.
@@ -195,6 +333,7 @@ class StandObserver(ResetOnlyObserver):
                 self.hold_samples = 0
             self.hold_samples += 1
             self.last_hold_ns = receipt_ns
+            self.max_hold_s=max(self.max_hold_s,(receipt_ns-self.hold_start_ns)/1e9)
             self.first_active_ns = self.first_active_ns or receipt_ns
             if (receipt_ns-self.hold_start_ns)/1e9 >= STABLE_HOLD_S and self.hold_samples>=25:
                 self._finish('CAPTURE_COMPLETE')
@@ -217,6 +356,12 @@ class StandObserver(ResetOnlyObserver):
             request.request.header.stamp = self.get_clock().now().to_msg()
             self.get_future = self.get_client.call_async(request)
             self.next_get_ns = now+50_000_000
+        if self.jd_future is not None and self.jd_future.done() and self.jd_response is None:
+            response=self.jd_future.result()
+            accepted=response.response.header.code==0 and response.response.status.value==CommonState.SUCCESS
+            self.jd_response={'raw':_safe(response),'accepted':accepted,'receipt_monotonic_ns':now}
+            self._write({'event':'JD_RESPONSE',**self.jd_response})
+            if not accepted:self.failure='JD_REJECTED_WITH_EXACT_RAW_RESPONSE'
         if self.sd_future is not None and self.sd_future.done() and self.sd_response is None:
             response = self.sd_future.result()
             raw = _safe(response)
@@ -234,6 +379,10 @@ class StandObserver(ResetOnlyObserver):
             'status':'PASS' if status=='CAPTURE_COMPLETE' and self.failure is None else 'BLOCKED',
             'failure':self.failure,'sd_requests':self.sd_count,'sd_request_monotonic_ns':self.sd_request_ns,
             'sd_response':self.sd_response,'last_get_mc_action':self.get_result,
+            'protocol':self.protocol,'jd_requests':self.jd_count,'jd_response':self.jd_response,
+            'jd_request_monotonic_ns':self.jd_request_ns,'jd_ready_monotonic_ns':self.jd_ready_ns,
+            'transition_state':self.transition_state,'maximum_stable_hold_s':self.max_hold_s,
+            'duplicate_topic_counts':self.duplicate_topic_counts,
             'first_active_monotonic_ns':self.first_active_ns,
             'stable_hold_s':(self.last_hold_ns-self.hold_start_ns)/1e9
                 if self.last_hold_ns is not None and self.hold_start_ns is not None else 0.,
@@ -280,7 +429,8 @@ class StandObserver(ResetOnlyObserver):
                     self.failure='UNIQUE_ODOM_STALE'
             if self.failure:
                 self._finish('BLOCKED',self.failure);break
-            if self.reset_ns is not None and now-self.reset_ns>5_000_000_000:
+            post_limit_s=7.0 if self.protocol=='jd-sd' else 5.0
+            if self.reset_ns is not None and now-self.reset_ns>int(post_limit_s*1e9):
                 self._finish('BLOCKED','ACTIVE_STANDING_NOT_QUALIFIED_WITHIN_5S');break
             if now>=deadline:
                 self._finish('BLOCKED','BOUNDED_OBSERVER_DEADLINE');break
@@ -292,11 +442,12 @@ def main():
     p.add_argument('--output-dir',type=Path,required=True)
     p.add_argument('--reset-event-file',type=Path,required=True)
     p.add_argument('--construction-smoke',action='store_true')
+    p.add_argument('--protocol',choices=('sd','jd-sd'),default='sd')
     args=p.parse_args()
     rclpy.init()
     node=None
     try:
-        node=StandObserver(args.output_dir,args.reset_event_file)
+        node=StandObserver(args.output_dir,args.reset_event_file,protocol=args.protocol)
         if args.construction_smoke:
             counts=node.interface_counts()
             counts['status']='PASS_CONSTRUCTION_SMOKE' if counts['publishers']==0 and counts['service_clients']==2 and counts['subscriptions']==5 else 'BLOCKED'

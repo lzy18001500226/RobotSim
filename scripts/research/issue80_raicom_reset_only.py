@@ -604,6 +604,7 @@ def _verify_loaded_scene(runtime: BoundedRun, bundle: Mapping[str, Any]) -> dict
 class ResetOnlyRun:
     observer_script = RESET_OBSERVER
     expected_observer_clients = 0
+    observer_cli_suffix = ""
 
     def prepare_observer(self) -> None:
         """Dedicated diagnostics may stage a separate, audited observer."""
@@ -816,6 +817,7 @@ class ResetOnlyRun:
                 f"timeout {OBSERVER_MAX_RUNTIME_S}s python3 /workspace/evidence/{self.observer_script.name} "
                 "--output-dir /workspace/evidence "
                 "--reset-event-file /workspace/evidence/reset_dispatch_event.json "
+                + self.observer_cli_suffix + " "
                 f"> /workspace/evidence/{observer_log.name} 2>&1",
                 timeout_s=3.0,
                 detached=True,

@@ -14,7 +14,7 @@ import sys
 import uuid
 
 
-def run_host(*, standing: bool = False) -> int:
+def run_host(*, standing: bool = False, protocol: str = 'sd') -> int:
     from issue80_raicom_reset_only import (
         IMAGE, IMAGE_DIGEST, RUNTIME, RESET_OBSERVER,
         MC_SIM_CONFIG_DUMP_CONTAINER_PATH, _stage_mc_config_dump_writeback,
@@ -35,7 +35,7 @@ def run_host(*, standing: bool = False) -> int:
     shutil.copyfile(RESET_OBSERVER, output / RESET_OBSERVER.name)
     if standing:
         from issue80_raicom_stand_takeover import StandingRun
-        StandingRun(argparse.Namespace(attempt_id=str(uuid.uuid4())),output,'no-runtime-smoke').prepare_observer()
+        StandingRun(argparse.Namespace(attempt_id=str(uuid.uuid4()),protocol=protocol),output,'no-runtime-smoke').prepare_observer()
     name = "robotsim-prelaunch-" + str(uuid.uuid4())
     cmd = ["docker", "run", "--rm", "--pull=never", "--name", name,
            "--network=none", "--read-only", "--cap-drop=ALL",
@@ -52,7 +52,7 @@ def run_host(*, standing: bool = False) -> int:
            "python3 /workspace/evidence/issue80_raicom_prelaunch.py "
            "--output-dir /workspace/evidence --dump-target " + MC_SIM_CONFIG_DUMP_CONTAINER_PATH]
     if standing:
-        cmd[-1] += " --standing"
+        cmd[-1] += " --standing --protocol "+protocol
     (output / "command.json").write_text(json.dumps(cmd, indent=2) + "\n")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
@@ -74,6 +74,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--dump-target", type=Path, required=True)
     parser.add_argument("--standing", action="store_true")
+    parser.add_argument("--protocol", choices=('sd','jd-sd'), default='sd')
     args = parser.parse_args()
     root = args.output_dir.resolve(strict=True)
     target = args.dump_target
@@ -138,9 +139,12 @@ def main() -> int:
         capture.mkdir()
         if args.standing:
             shutil.copyfile(root/'standing_joint_limits.json',capture/'standing_joint_limits.json')
-        result = subprocess.run([sys.executable, str(observer), "--construction-smoke",
+        smoke_command=[sys.executable, str(observer), "--construction-smoke",
                                  "--output-dir", str(capture), "--reset-event-file",
-                                 str(capture / "reset_dispatch_event.json")],
+                                 str(capture / "reset_dispatch_event.json")]
+        if args.standing:
+            smoke_command += ['--protocol',args.protocol]
+        result = subprocess.run(smoke_command,
                                 capture_output=True, text=True, timeout=10)
         report["observer_returncode"] = result.returncode
         report["observer_stdout"] = result.stdout
@@ -160,4 +164,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_host(standing="--standing" in sys.argv) if "--host" in sys.argv else main())
+    raise SystemExit(run_host(standing="--standing" in sys.argv,protocol='jd-sd' if '--jd-sd' in sys.argv else 'sd') if "--host" in sys.argv else main())
