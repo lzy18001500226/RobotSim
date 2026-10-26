@@ -1279,6 +1279,12 @@ class RouteMotionBridge:
         self._active_plan: RouteActionWindow | None = None
         self._active_key: tuple[str, str, str] | None = None
         self._elapsed_by_key: dict[tuple[str, str, str], float] = {}
+        # The route contract sets ``max_command_window_s`` per transit
+        # window.  A successfully observed physical stop is the only point at
+        # which a follow-on window may receive a fresh five-second budget.
+        # Keep this key separate from ``_active_key`` because the active plan
+        # is deliberately cleared before the zero-command stop observation.
+        self._pending_stop_key: tuple[str, str, str] | None = None
         self._turn_origin_by_key: dict[tuple[str, str, str], tuple[float, float]] = {}
         self._first_activation_window_issued = False
         self._awaiting_physical_stop = False
@@ -1573,7 +1579,14 @@ class RouteMotionBridge:
         now_steady_s: float,
         expected_generation: str,
     ) -> bool:
-        """Rearm one new activation only after the existing physical-stop gate passes."""
+        """Rearm one new activation only after the existing physical-stop gate passes.
+
+        A RouteStep's command-window limit is a *per-window* limit.  This
+        method releases only the elapsed accounting for the directive that
+        was stopped, and only after the caller supplies a complete measured
+        physical-stop window.  Route-level and segment-level aggregate limits
+        remain owned and enforced by the consuming runtime.
+        """
         if not self._awaiting_physical_stop:
             return False
         if not validate_physical_stop_evidence(
@@ -1586,6 +1599,9 @@ class RouteMotionBridge:
         self._awaiting_physical_stop = False
         self._first_activation_window_issued = False
         self._active_key = None
+        if self._pending_stop_key is not None:
+            self._elapsed_by_key.pop(self._pending_stop_key, None)
+        self._pending_stop_key = None
         return True
 
     def zero_window(
@@ -1605,6 +1621,11 @@ class RouteMotionBridge:
         self._active_plan = None
         if physical_stop_gate_required:
             self._awaiting_physical_stop = True
+            self._pending_stop_key = (
+                directive.route_id,
+                directive.segment_id or "",
+                directive.kind.value,
+            )
         plan = RouteActionWindow(
             window_id=self._next_window_id,
             classification="SIMULATION_ONLY_ROUTE_ACTION_PROPOSAL",

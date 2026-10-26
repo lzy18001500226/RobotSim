@@ -1289,6 +1289,10 @@ class RouteMotionBridgeTests(unittest.TestCase):
             source_mode_handshake_pass=False, safety_gates_pass=True,
             initial_activation_authorized=True,
         ))
+        # The live TABLE_APPROACH mission defines a five-second *per-window*
+        # cap.  A verified stop must rearm a new cap without erasing the
+        # runtime-owned aggregate route budget.
+        directive = replace(directive, max_command_window_s=5.0)
         bridge = RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.0)
         first = bridge.plan_next(directive, pose_store.pose, readiness(), now_steady_s=10.0)
         bridge.complete_window(first.window_id, actual_elapsed_s=4.98)
@@ -1317,6 +1321,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
         next_directive = executor.tick(16.95, first_feedback)
         self.assertEqual(next_directive.kind, DirectiveKind.FOLLOW_WAYPOINT)
         self.assertEqual(executor.step_index, 0)
+        next_directive = replace(next_directive, max_command_window_s=5.0)
 
         second = bridge.plan_next(
             next_directive, pose_store.pose,
@@ -1355,6 +1360,40 @@ class RouteMotionBridgeTests(unittest.TestCase):
         ))
         self.assertEqual(after_b_stop.kind, DirectiveKind.FOLLOW_WAYPOINT)
         self.assertEqual(executor.step_index, 1)
+
+    def test_failed_physical_stop_keeps_the_next_five_second_window_blocked(self) -> None:
+        """A per-window budget resets only after actual stop evidence passes."""
+        bridge = RouteMotionBridge(route_frame_id="odom", incremental_window_s=5.0)
+        directive = follow_directive(max_command_window_s=5.0)
+        first = bridge.plan_next(directive, make_pose(), readiness(), now_steady_s=10.0)
+        bridge.complete_window(first.window_id, actual_elapsed_s=4.98)
+        bridge.zero_window(
+            directive,
+            now_steady_s=15.0,
+            reason="completed bounded transit window requires measured stop",
+        )
+        self.assertFalse(bridge.confirm_physical_stop(
+            {
+                "status": "FAIL",
+                "window_start_steady_s": 15.01,
+                "window_end_steady_s": 15.50,
+                "sample_count": 12,
+                "maximum_sample_gap_s": 0.08,
+                "maximum_state_age_s": 0.2,
+                "generation": "episode-1",
+            },
+            zero_request_started_s=15.0,
+            now_steady_s=15.50,
+            expected_generation="episode-1",
+        ))
+        blocked = bridge.plan_next(
+            directive,
+            make_pose(stamp=2_000_000_000, received=15.50),
+            readiness(observed_steady_s=15.50),
+            now_steady_s=15.50,
+        )
+        self.assertEqual(blocked.status, "BLOCKED_ZERO_ONLY")
+        self.assertIn("physical-stop evidence passes", blocked.reason)
 
     def test_follow_maps_measured_bearing_to_bounded_forward_arc(self) -> None:
         bridge = RouteMotionBridge(route_frame_id="odom")
