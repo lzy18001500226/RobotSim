@@ -36,6 +36,7 @@ MAX_TIME_S = 20.0
 ROOT_TRACKING_GATE_RAD = 0.020
 EQUALITY_JOINT_GATE_RAD = 0.003
 EQUALITY_CONNECT_GATE_M = 0.001
+JOINT_LIMIT_NUMERICAL_TOL_RAD = 1e-9
 SETTLE_STEPS = 750
 PREGRASP_HOLD_STEPS = 250
 APPROACH_STEPS = 2_000
@@ -97,6 +98,11 @@ def quintic(alpha: float) -> float:
 
 def interpolate(first: np.ndarray, second: np.ndarray, alpha: float) -> np.ndarray:
     return (1.0 - quintic(alpha)) * first + quintic(alpha) * second
+
+
+def outside_position_range(qpos: float, lower: float, upper: float, tolerance_rad: float = JOINT_LIMIT_NUMERICAL_TOL_RAD) -> bool:
+    """Keep source limits intact while ignoring IEEE round-off at an endpoint."""
+    return qpos < lower - tolerance_rad or qpos > upper + tolerance_rad
 
 
 def all_equalities(model: mujoco.MjModel, data: mujoco.MjData) -> tuple[dict[str, float], list[dict[str, float]]]:
@@ -404,7 +410,7 @@ def main() -> None:
                     if bool(model.jnt_limited[joint]):
                         q = float(data.qpos[model.jnt_qposadr[joint]])
                         lo, hi = map(float, model.jnt_range[joint])
-                        if q < lo or q > hi:
+                        if outside_position_range(q, lo, hi):
                             first_failure = {"gate": "JOINT_POSITION_LIMIT", "step": step, "stage": stage, "joint": joint_name, "qpos": q, "range": [lo, hi]}
                             break
                     limit = source.get(joint_name, {}).get("velocity")
