@@ -2751,12 +2751,19 @@ class BoundedRun:
         if not isinstance(manifest, Mapping):
             raise RuntimeError("MC pre-arm writeback manifest is missing")
         seed_directory = self.evidence / "mc_runtime_writeback" / "sim_seed"
+        container_seed_directory = "/workspace/evidence/mc_runtime_writeback/sim_seed"
+        if (
+            seed_directory.is_symlink()
+            or not seed_directory.is_dir()
+            or any(not (seed_directory / name).is_file() for name in MC_SIM_GENERATED_SEED_FILENAMES)
+        ):
+            raise RuntimeError("MC pre-arm evidence-local generated-config seed directory is missing or unsafe")
         expected = manifest.get("seed_hashes")
         if not isinstance(expected, Mapping) or set(expected) != set(MC_SIM_GENERATED_SEED_FILENAMES):
             raise RuntimeError("MC pre-arm seed manifest is malformed")
         copy_command = " && ".join(
             "cp "
-            + shlex.quote(str(seed_directory / name))
+            + shlex.quote(container_seed_directory + "/" + name)
             + " "
             + shlex.quote(MC_SIM_GENERATED_DIRECTORY + "/" + name)
             for name in MC_SIM_GENERATED_SEED_FILENAMES

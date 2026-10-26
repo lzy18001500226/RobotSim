@@ -81,6 +81,38 @@ class ResearchScriptStagingTests(unittest.TestCase):
             )
             self.assertTrue((evidence / "mc_runtime_writeback_manifest.json").is_file())
 
+    def test_mc_prearm_seed_uses_the_container_evidence_mount_not_host_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            args = argparse.Namespace(
+                evidence_dir=directory,
+                container="prearm-seed-test",
+                max_runtime_s=30.0,
+                runtime_readonly=True,
+                static_nominal_start_initialization=True,
+                mc_prearm_before_simulator=True,
+            )
+            runner = BoundedRun(args)
+            runner.prepare_mc_prearm_writeback()
+            expected = dict(runner.mc_prearm_writeback_manifest["seed_hashes"])
+            commands: list[str] = []
+
+            def fake_docker_exec(name, command, **_kwargs):
+                commands.append(command)
+                if name.startswith("verify_mc_prearm_seed_"):
+                    filename = name.removeprefix("verify_mc_prearm_seed_")
+                    return SimpleNamespace(stdout=expected[filename] + " target\n")
+                return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+            runner.docker_exec = fake_docker_exec
+            result = runner.seed_mc_prearm_generated_config()
+
+        self.assertEqual(result["status"], "PASS_SEEDED_EPHEMERAL_GENERATED_CONFIG")
+        self.assertIn(
+            "/workspace/evidence/mc_runtime_writeback/sim_seed/action_setting.yaml",
+            commands[0],
+        )
+        self.assertNotIn("/home/lzy18001500226", commands[0])
+
     def test_static_nominal_start_requires_vendor_nominal_legs_and_existing_safe_support(self) -> None:
         expected_qpos = [0.0] * 45
         expected_qpos[7:19] = [-0.24, 0.0, 0.0, 0.45, -0.21, 0.0] * 2
