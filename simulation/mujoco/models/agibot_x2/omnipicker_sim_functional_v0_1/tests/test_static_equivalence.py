@@ -20,7 +20,7 @@ from simulation.mujoco.models.agibot_x2.omnipicker_sim_functional_v0_1.tests.sou
 
 ROOT = Path(__file__).resolve().parents[6]
 PACKAGE = ROOT / "simulation/mujoco/models/agibot_x2/omnipicker_sim_functional_v0_1"
-MODEL_ID = "X2-OmniPicker-Sim-Functional-v0.1"
+MODEL_ID = "X2-OmniPicker-CAD"
 
 
 def _joint_id(model, name):
