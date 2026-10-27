@@ -850,6 +850,8 @@ class ResearchScriptStagingTests(unittest.TestCase):
         validation = source[source.index("if native_mjdata_route_feedback and not ("):]
         self.assertIn("or straight_ten_second_table_native_profile", validation)
         self.assertIn("STRAIGHT_TEN_SECOND_STATIC_COLLINEAR_GAIT", source)
+        bridge = source[source.index("bridge = RouteMotionBridge("):]
+        self.assertIn("or straight_ten_second_table_approach_mode", bridge)
 
     def test_route_bridge_stop_evidence_is_timestamped_before_result_bookkeeping(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(

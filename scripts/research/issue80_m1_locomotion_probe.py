@@ -4303,6 +4303,7 @@ class FocusedM1Diagnostic(Node):
                     if (
                         continuous_ten_second_transit_mode
                         or native_nominal_straight_gait_diagnostic_mode
+                        or straight_ten_second_table_approach_mode
                     ) else 5.0
                 ),
             )
