@@ -379,6 +379,37 @@ def _resolve_raicom_reference_root(repository_root: Path) -> Path:
     return resolved[0]
 
 
+def _resolve_runtime_x2_path(repository_root: Path) -> Path:
+    """Locate the one shared read-only RAICOM runtime X2 XML for this worktree."""
+    relative = Path(
+        "simulation/mujoco/raicom2026/sim_mujoco/configuration/robot/"
+        "lx2501_3_t2d5/model_info/x2.xml"
+    )
+    candidates = [repository_root]
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(repository_root), "worktree", "list", "--porcelain"],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Local01SceneRouteError("unable to resolve the shared RAICOM runtime X2 XML") from exc
+    for line in listing:
+        if line.startswith("worktree "):
+            candidates.append(Path(line.removeprefix("worktree ")))
+    resolved: list[Path] = []
+    for worktree in candidates:
+        candidate = worktree / relative
+        if candidate.is_file() and not candidate.is_symlink():
+            canonical = candidate.resolve(strict=True)
+            if canonical not in resolved:
+                resolved.append(canonical)
+    if not resolved:
+        raise Local01SceneRouteError("Local01 scene does not target the pinned MC/runtime X2 XML")
+    if len(resolved) > 1:
+        raise Local01SceneRouteError("multiple distinct RAICOM runtime X2 XML files are present")
+    return resolved[0]
+
+
 def load_local01_scene_inputs(
     poses_path: str | Path,
     *,
@@ -478,7 +509,7 @@ def load_local01_scene_inputs(
         if _sha256(required_reference_files[name]) != expected:
             raise Local01SceneRouteError(f"RAICOM {name} source hash does not match Local01 static evidence")
 
-    runtime_x2 = root / "simulation/mujoco/raicom2026/sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/x2.xml"
+    runtime_x2 = _resolve_runtime_x2_path(root)
     if runtime_x2.is_symlink() or not runtime_x2.is_file() or _sha256(runtime_x2) != LOCAL01_RUNTIME_X2_SHA256:
         raise Local01SceneRouteError("Local01 scene does not target the pinned MC/runtime X2 XML")
 
