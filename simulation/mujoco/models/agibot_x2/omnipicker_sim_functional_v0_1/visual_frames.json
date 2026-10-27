@@ -1,0 +1,83 @@
+{
+  "schema_version": "robotsim.x2-omnipicker-mesh-frames.v2",
+  "derived_urdf_sha256": "977c9cf45abbba34898d24f8de9258280e9dadcb1d95237ef13560317cb6097d",
+  "classification": "CAD_SUPPORTED_EXPERIMENTAL",
+  "purpose": "Record the four CAD/STL bore-registered mesh-local transforms used by the frozen PR #90 functional candidate. These offsets affect both visual meshes and collision proxies. They are RobotSim derived-model metadata, not vendor URDF values; none is SOURCE_VERIFIED.",
+  "source": {
+    "repository": "AgibotTech/agibot_x2_urdf",
+    "commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+    "official_urdf_path": "X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+    "official_urdf_sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d",
+    "cad_reference": {
+      "filename": "OP1-官网模型.STEP",
+      "sha256": "5d61f8d7e94fa3c789ddd497e4574aa2a508e24aed447d841585dfdbb8e8c20b",
+      "provenance_status": "local_only_unverified",
+      "license_status": "unknown",
+      "step_component_to_urdf_link_identity": "unresolved"
+    },
+    "bore_registration_report_sha256": "e6fa5d449572f4bc42ded8147a56dcdada5287203d5175cebd717d42f9871454",
+    "registration_method": "Fit distal bore centers from the original STL vertices and align their local XY directions to the CAD-derived D-site vectors about the local origin."
+  },
+  "frames": {
+    "narrow": {
+      "link": "R_hand_narrow3_Link",
+      "role": "jaw_surface",
+      "mesh": "narrow3_Link.stl",
+      "mesh_sha256": "0fb55604e97d18c9545567e082e071746a968f624a0aa31ece3a0cc4fc1217b0",
+      "classification": "CAD_SUPPORTED_EXPERIMENTAL",
+      "source_urdf_origin_xyz_m": [0.0, 0.0, 0.0],
+      "source_urdf_origin_rpy_rad": [0.0, 0.0, 0.0],
+      "origin_xyz_m": [0.0, 0.0, 0.0],
+      "origin_rpy_rad": [0.0, 0.0, 0.0735393791763881],
+      "measured_stl_bore_xy_mm": [-0.07532981605067517, -10.433484964821574],
+      "bore_fit_residual_mm": 0.000006608753360115571,
+      "radial_site_error_before_mm": 0.7670316688685319,
+      "radial_site_error_after_mm": 0.0024885201551611683
+    },
+    "wide": {
+      "link": "R_hand_wide3_Link",
+      "role": "jaw_surface",
+      "mesh": "wide3_Link.stl",
+      "mesh_sha256": "a06d0c7e16ddd06e28a8e75c5a27c2e5fa025c00b79d973983f389cd08a380fb",
+      "classification": "CAD_SUPPORTED_EXPERIMENTAL",
+      "source_urdf_origin_xyz_m": [0.0, 0.0, 0.0],
+      "source_urdf_origin_rpy_rad": [0.0, 0.0, 0.0],
+      "origin_xyz_m": [0.0, 0.0, 0.0],
+      "origin_rpy_rad": [0.0, 0.0, -0.07353823908103618],
+      "measured_stl_bore_xy_mm": [-0.0753296645001922, 10.433484949426596],
+      "bore_fit_residual_mm": 0.000005983476486282058,
+      "radial_site_error_before_mm": 0.767021546550381,
+      "radial_site_error_after_mm": 0.0024359241791427353
+    },
+    "narrow_loop": {
+      "link": "R_hand_narrow_loop_Link",
+      "role": "passive_loop",
+      "mesh": "narrow_loop_Link.stl",
+      "mesh_sha256": "63b895ff646b799c303c41c924ea4c77cf00f9c5d357e2fb4f6761c649237b17",
+      "classification": "CAD_SUPPORTED_EXPERIMENTAL",
+      "source_urdf_origin_xyz_m": [0.0, 0.0, 0.0],
+      "source_urdf_origin_rpy_rad": [0.0, 0.0, 0.0],
+      "origin_xyz_m": [0.0, 0.0, 0.0],
+      "origin_rpy_rad": [0.0, 0.0, 0.208409480769141],
+      "measured_stl_bore_xy_mm": [31.52528293201639, -9.754822141220217],
+      "bore_fit_residual_mm": 0.00000693152346054049,
+      "radial_site_error_before_mm": 6.865050276648555,
+      "radial_site_error_after_mm": 0.00021806521539477253
+    },
+    "wide_loop": {
+      "link": "R_hand_wide_loop_Link",
+      "role": "passive_loop",
+      "mesh": "wide_loop_Link.stl",
+      "mesh_sha256": "31aa42a993b3364e16efa657700ffe621eeaa5994d415bbe1b77f0687419b2b8",
+      "classification": "CAD_SUPPORTED_EXPERIMENTAL",
+      "source_urdf_origin_xyz_m": [0.0, 0.0, 0.0],
+      "source_urdf_origin_rpy_rad": [0.0, 0.0, 0.0],
+      "origin_xyz_m": [0.0, 0.0, 0.0],
+      "origin_rpy_rad": [0.0, 0.0, -0.208408370630988],
+      "measured_stl_bore_xy_mm": [31.525282675571606, 9.754820783416584],
+      "bore_fit_residual_mm": 0.0000045033792437365605,
+      "radial_site_error_before_mm": 6.865013743808102,
+      "radial_site_error_after_mm": 0.00021770611772221196
+    }
+  }
+}

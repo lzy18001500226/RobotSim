@@ -1,0 +1,18 @@
+{
+  "collision_proxy_count": 137,
+  "collision_proxy_manifest_sha256": "7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a",
+  "delta": "Only MJCF mesh asset file paths were rewritten from per-user cache/reviews absolute paths to the pinned reference checkout and explicitly provisioned ignored collision_generated directory. No joints, frames, coefficients, actuator values, collision masks/exclusions, solver settings, or geometry were edited by the path conversion.",
+  "derived_urdf_sha256": "977c9cf45abbba34898d24f8de9258280e9dadcb1d95237ef13560317cb6097d",
+  "model_xml_sha256": "5e33d30e212ee72271efc3f0a790ebfb46cd31e775c578a10f1a2fb1f33c93e7",
+  "portable_model_path": "simulation/mujoco/models/agibot_x2/omnipicker_sim_functional_v0_1/model.xml",
+  "portable_model_sha256": "5e33d30e212ee72271efc3f0a790ebfb46cd31e775c578a10f1a2fb1f33c93e7",
+  "reference_model_original_hash_preserved": true,
+  "reference_model_sha256": "32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45",
+  "rewritten_mesh_count": 146,
+  "schema_version": "robotsim.x2-omnipicker-portability.v1",
+  "source_mesh_count": 9,
+  "static_sample_fixture_bytes": 11880,
+  "static_sample_fixture_sha256": "4ce15e41dcfd3088f377d6790ed2c2ee75a9cba3dc8bed11a528dd88589b1e43",
+  "static_signature_fixture_sha256": "f88c030750167d46de1358591076722d6034e3cfdffe9f7c2603260e49882a67",
+  "visual_frame_manifest_sha256": "c53724fe5bfead6f3a11624b18f84c6b8d03c0c7bfbab7f80b1cd6a9b37acb19"
+}

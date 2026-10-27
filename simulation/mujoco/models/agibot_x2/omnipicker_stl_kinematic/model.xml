@@ -1,0 +1,72 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="X2-OmniPicker-STL-Kinematic-Simulation-Only">
+  <compiler angle="radian" autolimits="true" meshdir="../../../../../reference/AgibotTech/agibot_x2_urdf/X2_URDF-v1.4.0/meshes" inertiafromgeom="false" fusestatic="false" />
+  <option gravity="0 0 -9.81" timestep="0.001000" integrator="implicitfast" iterations="100" />
+  <size nconmax="512" njmax="4096" />
+  <asset>
+    <mesh name="mesh_base_link" file="base_link.stl" />
+    <mesh name="mesh_narrow1_Link" file="narrow1_Link.stl" />
+    <mesh name="mesh_narrow2_Link" file="narrow2_Link.stl" />
+    <mesh name="mesh_narrow3_Link" file="narrow3_Link.stl" />
+    <mesh name="mesh_narrow_loop_Link" file="narrow_loop_Link.stl" />
+    <mesh name="mesh_wide1_Link" file="wide1_Link.stl" />
+    <mesh name="mesh_wide2_Link" file="wide2_Link.stl" />
+    <mesh name="mesh_wide3_Link" file="wide3_Link.stl" />
+    <mesh name="mesh_wide_loop_Link" file="wide_loop_Link.stl" />
+  </asset>
+  <worldbody>
+    <light name="comparison_key_light" pos="0.25 -0.35 0.35" dir="-0.3 0.4 -1" diffuse="0.9 0.9 0.9" specular="0.15 0.15 0.15" />
+    <body name="R_omnipicker_base_link">
+      <inertial mass="0.25641368" fullinertia="4.6351E-04 4.4525E-04 1.0438E-04 -1.0E-08 -1.04E-06 -5.00E-08" pos="-0.00005520 1.2341E-05 0.03296193" />
+      <geom name="R_omnipicker_base_link__visual_0" type="mesh" mesh="mesh_base_link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+      <body name="R_hand_narrow1_Link" pos="0 -0.0195 0.0565" quat="-0.00464845343076732 -0.707090219583989 0.00464805741484665 -0.707092786564561">
+        <joint name="right_claw_joint" type="hinge" pos="0 0 0" axis="0 0 -1" limited="true" range="-1.00 0.0" />
+        <inertial mass="0.025428" fullinertia="1.9574E-06 2.3919E-06 1.5501E-06 -4.2911E-07 -3.7111E-11 -3.008E-10" pos="0.0094685 0.0068806 6.5437E-05" />
+        <geom name="R_hand_narrow1_Link__visual_0" type="mesh" mesh="mesh_narrow1_Link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+        <geom name="R_hand_narrow1_Link__collision_0" type="mesh" mesh="mesh_narrow1_Link" pos="0 0 0" rgba="0.92 0.60 0.28 0.30" contype="1" conaffinity="1" density="0" group="1" />
+        <body name="R_hand_narrow2_Link" pos="0.030852 0.018551 0" quat="1 0 0 0">
+          <inertial mass="0.0040132" fullinertia="1.0307E-07 1.1385E-07 1.7009E-07 5.7851E-08 9.5801E-11 -2.81E-11" pos="0.0088027 -0.007035 1.6424E-05" />
+          <geom name="R_hand_narrow2_Link__visual_0" type="mesh" mesh="mesh_narrow2_Link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+          <geom name="R_hand_narrow2_Link__collision_0" type="mesh" mesh="mesh_narrow2_Link" pos="0 0 0" rgba="0.92 0.60 0.28 0.30" contype="1" conaffinity="1" density="0" group="1" />
+          <body name="R_hand_narrow3_Link" pos="0.018118 -0.01574 0" quat="1 0 0 0">
+            <joint name="R_hand_narrow3_joint" type="hinge" pos="0 0 0" axis="0 0 -1" limited="true" range="-3.14 3.14" />
+            <inertial mass="0.018029" fullinertia="1.1403E-06 2.5704E-06 2.3252E-06 5.5159E-07 -4.0096E-13 1.0951E-12" pos="0.012508 -0.0079729 9.4339E-05" />
+            <geom name="R_hand_narrow3_Link__visual_0" type="mesh" mesh="mesh_narrow3_Link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+            <geom name="R_hand_narrow3_Link__collision_0" type="mesh" mesh="mesh_narrow3_Link" pos="0 0 0" rgba="0.92 0.60 0.28 0.30" contype="1" conaffinity="1" density="0" group="1" />
+            <body name="R_hand_narrow4_Link" pos="0 -0.0104 0" quat="1 0 0 0" />
+          </body>
+        </body>
+      </body>
+      <body name="R_hand_narrow_loop_Link" pos="0 -0.021633 0.07387" quat="-0.00464845343076732 -0.707090219583989 0.00464805741484665 -0.707092786564561">
+        <joint name="R_hand_narrow_loop_joint" type="hinge" pos="0 0 0" axis="0 0 -1" limited="true" range="-3.14 3.14" />
+        <inertial mass="0.022591" fullinertia="4.3916E-06 4.737E-06 6.0445E-07 1.114E-07 -4.9655E-12 1.7121E-11" pos="0.014869 -0.0036066 0.00029307" />
+        <geom name="R_hand_narrow_loop_Link__visual_0" type="mesh" mesh="mesh_narrow_loop_Link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+        <geom name="R_hand_narrow_loop_Link__collision_0" type="mesh" mesh="mesh_narrow_loop_Link" pos="0 0 0" rgba="0.92 0.60 0.28 0.30" contype="1" conaffinity="1" density="0" group="1" />
+      </body>
+      <body name="R_hand_wide1_Link" pos="0 0.0195 0.0565" quat="-0.00464845343076732 -0.707090219583989 0.00464805741484665 -0.707092786564561">
+        <joint name="R_hand_wide1_joint" type="hinge" pos="0 0 0" axis="0 0 -1" limited="true" range="0.0 1.0" />
+        <inertial mass="0.025428" fullinertia="1.9565E-06 2.3928E-06 1.5501E-06 4.2798E-07 2.3844E-10 -1.4454E-10" pos="0.0095051 -0.0068479 6.8268E-05" />
+        <geom name="R_hand_wide1_Link__visual_0" type="mesh" mesh="mesh_wide1_Link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+        <geom name="R_hand_wide1_Link__collision_0" type="mesh" mesh="mesh_wide1_Link" pos="0 0 0" rgba="0.92 0.60 0.28 0.30" contype="1" conaffinity="1" density="0" group="1" />
+        <body name="R_hand_wide2_Link" pos="0.030852 -0.018551 0" quat="1 0 0 0">
+          <inertial mass="0.0040132" fullinertia="1.0307E-07 1.1385E-07 1.7009E-07 -5.7851E-08 -9.58E-11 -2.81E-11" pos="0.0088027 0.007035 -1.6424E-05" />
+          <geom name="R_hand_wide2_Link__visual_0" type="mesh" mesh="mesh_wide2_Link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+          <geom name="R_hand_wide2_Link__collision_0" type="mesh" mesh="mesh_wide2_Link" pos="0 0 0" rgba="0.92 0.60 0.28 0.30" contype="1" conaffinity="1" density="0" group="1" />
+          <body name="R_hand_wide3_Link" pos="0.018118 0.01574 0" quat="1 0 0 0">
+            <joint name="R_hand_wide3_joint" type="hinge" pos="0 0 0" axis="0 0 -1" limited="true" range="-3.14 3.14" />
+            <inertial mass="0.035835" fullinertia="8.5056E-06 1.1235E-05 4.6309E-06 -1.1363E-06 -4.2908E-11 -2.9251E-11" pos="0.016206 0.0094593 4.7668E-05" />
+            <geom name="R_hand_wide3_Link__visual_0" type="mesh" mesh="mesh_wide3_Link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+            <geom name="R_hand_wide3_Link__collision_0" type="mesh" mesh="mesh_wide3_Link" pos="0 0 0" rgba="0.92 0.60 0.28 0.30" contype="1" conaffinity="1" density="0" group="1" />
+            <body name="R_hand_wide4_Link" pos="0 0.0104 0" quat="1 0 0 0" />
+          </body>
+        </body>
+      </body>
+      <body name="R_hand_wide_loop_Link" pos="0 0.021633 0.07387" quat="-0.00464845343076732 -0.707090219583989 0.00464805741484665 -0.707092786564561">
+        <joint name="R_hand_wide_loop_joint" type="hinge" pos="0 0 0" axis="0 0 -1" limited="true" range="-3.14 3.14" />
+        <inertial mass="0.025142" fullinertia="5.887E-06 6.236E-06 6.2389E-07 -1.1234E-07 2.1954E-11 -9.473E-12" pos="0.016268 0.0040555 0.00030323" />
+        <geom name="R_hand_wide_loop_Link__visual_0" type="mesh" mesh="mesh_wide_loop_Link" pos="0 0 0" rgba="0.47 0.72 0.68 1" contype="0" conaffinity="0" density="0" group="0" />
+        <geom name="R_hand_wide_loop_Link__collision_0" type="mesh" mesh="mesh_wide_loop_Link" pos="0 0 0" rgba="0.92 0.60 0.28 0.30" contype="1" conaffinity="1" density="0" group="1" />
+      </body>
+    </body>
+  </worldbody>
+  <contact><exclude body1="R_hand_narrow1_Link" body2="R_hand_narrow_loop_Link" /><exclude body1="R_hand_narrow2_Link" body2="R_hand_narrow_loop_Link" /><exclude body1="R_hand_narrow3_Link" body2="R_hand_narrow_loop_Link" /><exclude body1="R_hand_wide1_Link" body2="R_hand_wide_loop_Link" /><exclude body1="R_hand_wide2_Link" body2="R_hand_wide_loop_Link" /><exclude body1="R_hand_wide3_Link" body2="R_hand_wide_loop_Link" /><exclude body1="R_hand_narrow3_Link" body2="R_hand_wide3_Link" /></contact></mujoco>

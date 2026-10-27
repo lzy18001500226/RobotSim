@@ -1,0 +1,2941 @@
+{
+  "caveat": "max_convex_hull is capped at 24 per STL. CoACD documents that the cap may allow concavity above threshold; all parts are SIMULATION_ONLY collision approximations.",
+  "classification": "SIMULATION_ONLY_DERIVED_COLLISION_APPROXIMATION",
+  "input_units": "meters, from source STL bounds and unscaled URDF mesh references",
+  "mesh_decompositions": [
+    {
+      "bounds_max_m": [
+        0.028657060116529465,
+        0.03967761993408203,
+        0.08350001275539398
+      ],
+      "bounds_min_m": [
+        -0.028657108545303345,
+        -0.03967761993408203,
+        6.538173336068098e-10
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.01905922656313653,
+            -0.0193197289392968,
+            0.08394466686732643
+          ],
+          "bounds_min_m": [
+            -0.011095097898109927,
+            -0.03060931577841815,
+            0.07348507250241128
+          ],
+          "filename": "base_link_coacd_00.stl",
+          "name": "base_link_coacd_00",
+          "sha256": "29d80de1ec569dae34f36c995ee3516bb487873ba2430c5fd3b0c1dbe462d28a",
+          "triangles": 1496,
+          "vertices": 750
+        },
+        {
+          "bounds_max_m": [
+            0.025715926365761966,
+            0.04010255315957018,
+            0.04537665272632707
+          ],
+          "bounds_min_m": [
+            -0.028141116987182548,
+            1.0440477751855993e-05,
+            0.030947063585650816
+          ],
+          "filename": "base_link_coacd_01.stl",
+          "name": "base_link_coacd_01",
+          "sha256": "738d9c5b9a1f2f9c2fd72851991675696f3986eec960d5dd80e47d9c5802227e",
+          "triangles": 2060,
+          "vertices": 1032
+        },
+        {
+          "bounds_max_m": [
+            -2.9198077078844125e-05,
+            4.592765043219026e-05,
+            0.04471871319133308
+          ],
+          "bounds_min_m": [
+            -0.028224775187888518,
+            -0.04010254320559306,
+            0.03660836443201805
+          ],
+          "filename": "base_link_coacd_02.stl",
+          "name": "base_link_coacd_02",
+          "sha256": "029580468f80e3b4e2192ee1b322e35702d47b8b4778e2597d21d956a18c0954",
+          "triangles": 788,
+          "vertices": 396
+        },
+        {
+          "bounds_max_m": [
+            0.029087632058668465,
+            0.023279520577447997,
+            0.037469831381878024
+          ],
+          "bounds_min_m": [
+            0.019234229923379472,
+            -0.023031656593180124,
+            0.008316125493642128
+          ],
+          "filename": "base_link_coacd_03.stl",
+          "name": "base_link_coacd_03",
+          "sha256": "a30a037f389beab4fd71f203a00c5bf3d04bdeaaf1f86941a85174003d365bd2",
+          "triangles": 1102,
+          "vertices": 553
+        },
+        {
+          "bounds_max_m": [
+            -2.7522076181245504e-05,
+            3.20518063267561e-06,
+            0.08381748987865134
+          ],
+          "bounds_min_m": [
+            -0.01109618288161602,
+            -0.01931578467586296,
+            0.0685643239130846
+          ],
+          "filename": "base_link_coacd_04.stl",
+          "name": "base_link_coacd_04",
+          "sha256": "0e11f5d3447fd6f55ddb070e3d0be11633036c1b95a430b46c9229edbcfee2ca",
+          "triangles": 238,
+          "vertices": 121
+        },
+        {
+          "bounds_max_m": [
+            -0.01788224954788297,
+            0.020356930866718047,
+            0.037066573372293826
+          ],
+          "bounds_min_m": [
+            -0.02908568471502976,
+            -0.000200989461762133,
+            0.014989137376273144
+          ],
+          "filename": "base_link_coacd_05.stl",
+          "name": "base_link_coacd_05",
+          "sha256": "fbb4b60cd5cb2f0591aa4aa11e9a993e80be9b2ea5f028b22e79c2d5276e8480",
+          "triangles": 594,
+          "vertices": 299
+        },
+        {
+          "bounds_max_m": [
+            -0.010149778022866575,
+            4.4768012097697375e-06,
+            0.03660836443201805
+          ],
+          "bounds_min_m": [
+            -0.02908568471502976,
+            -0.02719427793461353,
+            0.015009766993854572
+          ],
+          "filename": "base_link_coacd_06.stl",
+          "name": "base_link_coacd_06",
+          "sha256": "af158da41391ae47cc7e7a0803396aa53aa3c32ef32613cffe5cf5f3130809a4",
+          "triangles": 604,
+          "vertices": 304
+        },
+        {
+          "bounds_max_m": [
+            0.028944379396944393,
+            0.028955290773806455,
+            0.00831579701239716
+          ],
+          "bounds_min_m": [
+            -0.02895469037612911,
+            -0.02894517753305242,
+            -0.00045925096556177075
+          ],
+          "filename": "base_link_coacd_07.stl",
+          "name": "base_link_coacd_07",
+          "sha256": "412345018dd13f2e06a64b4f11cc140dd5e16eca3b5a02576c97ff414180e926",
+          "triangles": 3302,
+          "vertices": 1653
+        },
+        {
+          "bounds_max_m": [
+            -0.007765741400860938,
+            0.03771576861775582,
+            0.08357233337616014
+          ],
+          "bounds_min_m": [
+            -0.019319051398296774,
+            -0.038464556546616145,
+            0.0424469157489631
+          ],
+          "filename": "base_link_coacd_08.stl",
+          "name": "base_link_coacd_08",
+          "sha256": "1b55d02d6f4aad7d5276a1ce04815b65516b1023be69ed913bbd1b07186e64cc",
+          "triangles": 2302,
+          "vertices": 1153
+        },
+        {
+          "bounds_max_m": [
+            0.0046082155305124375,
+            -0.000200990706009273,
+            0.017459246660559948
+          ],
+          "bounds_min_m": [
+            -0.029038139543315553,
+            -0.029049233921371778,
+            0.005446483475708322
+          ],
+          "filename": "base_link_coacd_09.stl",
+          "name": "base_link_coacd_09",
+          "sha256": "e6ed4d897f454173aee4a7e4ecdc8d96063ba0da4dfa6177e4a49e6e349facb3",
+          "triangles": 604,
+          "vertices": 304
+        },
+        {
+          "bounds_max_m": [
+            0.019298331047538704,
+            -0.012520769384165025,
+            0.030940721657978166
+          ],
+          "bounds_min_m": [
+            -2.8497565939016342e-05,
+            -0.029184543309354,
+            0.004954926223585905
+          ],
+          "filename": "base_link_coacd_10.stl",
+          "name": "base_link_coacd_10",
+          "sha256": "a3764b56f2b14eb8f08ad150edff137ead8ffa6f2dae8459797ad0c1bee26be8",
+          "triangles": 120,
+          "vertices": 62
+        },
+        {
+          "bounds_max_m": [
+            0.019788161284630786,
+            0.037628745972783255,
+            0.07348407710469926
+          ],
+          "bounds_min_m": [
+            0.007758603874006829,
+            -0.037628785788691735,
+            0.0424419312949202
+          ],
+          "filename": "base_link_coacd_11.stl",
+          "name": "base_link_coacd_11",
+          "sha256": "ed76b61cf85c6571743d7f2b9f03c6b7e0d9d8de323aa18b8ae9b35d72be8c57",
+          "triangles": 1360,
+          "vertices": 682
+        },
+        {
+          "bounds_max_m": [
+            0.01905922656313653,
+            0.0012224703265693018,
+            0.08393587750552939
+          ],
+          "bounds_min_m": [
+            -2.6438336922293464e-05,
+            -0.02217905614843989,
+            0.06847583803347539
+          ],
+          "filename": "base_link_coacd_12.stl",
+          "name": "base_link_coacd_12",
+          "sha256": "ea92f1f1511d088e450ef7b418d7c20e4e5d2882a768805c9349e133cf19a259",
+          "triangles": 490,
+          "vertices": 247
+        },
+        {
+          "bounds_max_m": [
+            0.009280901056028832,
+            0.02901064732906567,
+            0.08394682190337294
+          ],
+          "bounds_min_m": [
+            -0.01109618288161602,
+            -5.8399983763688825e-05,
+            0.06856432889007316
+          ],
+          "filename": "base_link_coacd_13.stl",
+          "name": "base_link_coacd_13",
+          "sha256": "0a6f70425fab635495f2ba4b24e3c2f027d931003447012b1b790345e746f2d2",
+          "triangles": 1012,
+          "vertices": 508
+        },
+        {
+          "bounds_max_m": [
+            0.020247155344851907,
+            0.024645820896414337,
+            0.025800105889281073
+          ],
+          "bounds_min_m": [
+            0.015419987827172818,
+            0.003852878458398366,
+            0.008316854622466174
+          ],
+          "filename": "base_link_coacd_14.stl",
+          "name": "base_link_coacd_14",
+          "sha256": "b13efa43370e44abafe545755318ab683c31a035c923c3cb5ab04b72353ddea9",
+          "triangles": 274,
+          "vertices": 139
+        },
+        {
+          "bounds_max_m": [
+            0.020259834223208647,
+            -0.00015434388073015478,
+            0.025801814240604314
+          ],
+          "bounds_min_m": [
+            0.00038363441424776244,
+            -0.02512931542706947,
+            0.008317021351582937
+          ],
+          "filename": "base_link_coacd_15.stl",
+          "name": "base_link_coacd_15",
+          "sha256": "44cb8f3f78db67297cb7858670ec64fdff97475e5595dd1fb3b84b5be792bd16",
+          "triangles": 300,
+          "vertices": 152
+        },
+        {
+          "bounds_max_m": [
+            0.00038363441424776244,
+            0.029207016901196932,
+            0.03706381238789013
+          ],
+          "bounds_min_m": [
+            -0.02693257974008712,
+            0.010946697212276339,
+            0.014990242267733475
+          ],
+          "filename": "base_link_coacd_16.stl",
+          "name": "base_link_coacd_16",
+          "sha256": "ca4713511a5608632cd34e4e7f5ce92ae16ff49f27efd30a7f01181f0eecb31d",
+          "triangles": 348,
+          "vertices": 176
+        },
+        {
+          "bounds_max_m": [
+            0.0003807577148600505,
+            0.02899716964404504,
+            0.017459002788120504
+          ],
+          "bounds_min_m": [
+            -0.029035073718362562,
+            -0.00019813267032866126,
+            0.005439854126946329
+          ],
+          "filename": "base_link_coacd_17.stl",
+          "name": "base_link_coacd_17",
+          "sha256": "7aa9916356aeb026e30251a4adeb2d15b48970cd3f358ebf7bb0bfe6fa8d0096",
+          "triangles": 576,
+          "vertices": 290
+        },
+        {
+          "bounds_max_m": [
+            0.00038363441424776244,
+            -0.017834845646651446,
+            0.03660625045612717
+          ],
+          "bounds_min_m": [
+            -0.019669319410682066,
+            -0.03890306158918266,
+            0.015013440011411895
+          ],
+          "filename": "base_link_coacd_18.stl",
+          "name": "base_link_coacd_18",
+          "sha256": "346ab434dc69e08afbfd024a56fa0dfdd750ad5579ead6b2b25df79737fbde73",
+          "triangles": 168,
+          "vertices": 86
+        },
+        {
+          "bounds_max_m": [
+            0.01905922656313653,
+            0.033173709133986644,
+            0.0837261422306201
+          ],
+          "bounds_min_m": [
+            0.009280899811781691,
+            0.0012224703265693018,
+            0.06732376472159378
+          ],
+          "filename": "base_link_coacd_19.stl",
+          "name": "base_link_coacd_19",
+          "sha256": "b5733b057550e8806ba710026a6b8f983a5ce9f0820e59ec9523fe3722507535",
+          "triangles": 1070,
+          "vertices": 537
+        },
+        {
+          "bounds_max_m": [
+            0.01923232373676097,
+            0.03933057992950285,
+            0.03747033156922831
+          ],
+          "bounds_min_m": [
+            -2.8497565939016342e-05,
+            0.01262019717312353,
+            0.01627229461284948
+          ],
+          "filename": "base_link_coacd_20.stl",
+          "name": "base_link_coacd_20",
+          "sha256": "58cb82d2dca5c23623a796727843a069526e0766ddc3e83a5c2be704eb3a8612",
+          "triangles": 232,
+          "vertices": 118
+        },
+        {
+          "bounds_max_m": [
+            0.015419515013259612,
+            0.029047907553920522,
+            0.01745854988216154
+          ],
+          "bounds_min_m": [
+            -0.005198514894554636,
+            -0.00014573742326267914,
+            0.004955832035503836
+          ],
+          "filename": "base_link_coacd_21.stl",
+          "name": "base_link_coacd_21",
+          "sha256": "99c05c578c03fc523f7a9c3bc4838d3f02d1c1c87e03ba00759d26d9c4433522",
+          "triangles": 314,
+          "vertices": 159
+        },
+        {
+          "bounds_max_m": [
+            0.019299184601076755,
+            -0.014495744205801868,
+            0.03661519877049636
+          ],
+          "bounds_min_m": [
+            -2.8497565939016342e-05,
+            -0.038906883916396774,
+            0.030943264899132357
+          ],
+          "filename": "base_link_coacd_22.stl",
+          "name": "base_link_coacd_22",
+          "sha256": "21d5c5d4318c594f9203c637dfa71399270ce102161d4b23d84e0c959ddcf1d5",
+          "triangles": 962,
+          "vertices": 483
+        },
+        {
+          "bounds_max_m": [
+            0.02822288278485314,
+            0.01695597665629124,
+            0.04537746615289486
+          ],
+          "bounds_min_m": [
+            -2.8497565939016342e-05,
+            -0.04009711331107404,
+            0.03661630832788347
+          ],
+          "filename": "base_link_coacd_23.stl",
+          "name": "base_link_coacd_23",
+          "sha256": "36325fc53393d29f2b2987afa1b9fbd6fa0dd5ecad8cb73e43b40edfa9273a35",
+          "triangles": 1074,
+          "vertices": 539
+        }
+      ],
+      "source_bytes": 9216984,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/base_link.stl",
+      "source_sha256": "ca4911f4e84a6d850bafab3b35f8e7fb6db32eb3bd36165079de3d1342ff8e4a",
+      "triangles": 184338,
+      "vertices_unique": 92136
+    },
+    {
+      "bounds_max_m": [
+        0.036851391196250916,
+        0.024550028145313263,
+        0.018400000408291817
+      ],
+      "bounds_min_m": [
+        -0.012799892574548721,
+        -0.012785484082996845,
+        -0.018400000408291817
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.004249585932404321,
+            0.004247449390043595,
+            0.018673082993783674
+          ],
+          "bounds_min_m": [
+            -0.0042398071642535395,
+            -0.004256587420953306,
+            0.013265779477515394
+          ],
+          "filename": "narrow1_Link_coacd_00.stl",
+          "name": "narrow1_Link_coacd_00",
+          "sha256": "ec298c4863e1830565dc65b65a984e590987e2beb029fc0a1f0331603c3c3d17",
+          "triangles": 546,
+          "vertices": 275
+        },
+        {
+          "bounds_max_m": [
+            0.014011964496676299,
+            0.00552965538512773,
+            0.013265779477515394
+          ],
+          "bounds_min_m": [
+            -0.006243922566055438,
+            -0.0062543067176416,
+            0.0034123213382460105
+          ],
+          "filename": "narrow1_Link_coacd_01.stl",
+          "name": "narrow1_Link_coacd_01",
+          "sha256": "85707cadf86bed41cdfa4c8d99312b1de01224b916d22fcb6a9f3f59359bc885",
+          "triangles": 1486,
+          "vertices": 745
+        },
+        {
+          "bounds_max_m": [
+            0.014012651088410877,
+            0.00552965538512773,
+            0.003412320228453336
+          ],
+          "bounds_min_m": [
+            -0.013064893308518677,
+            -0.01302078663979056,
+            -0.0034244835561650366
+          ],
+          "filename": "narrow1_Link_coacd_02.stl",
+          "name": "narrow1_Link_coacd_02",
+          "sha256": "f9514c28cb601926c79796f0ebee97e46e831f166b156cb7058abf5b57fea921",
+          "triangles": 772,
+          "vertices": 388
+        },
+        {
+          "bounds_max_m": [
+            0.0039340777939594895,
+            0.013564174059010004,
+            0.012274413519239857
+          ],
+          "bounds_min_m": [
+            -0.0037394149648672936,
+            0.00552965538512773,
+            0.004216837792753725
+          ],
+          "filename": "narrow1_Link_coacd_03.stl",
+          "name": "narrow1_Link_coacd_03",
+          "sha256": "9594e6473062d56bcc7aa74ff00b03f604e257c9609dbd5ea329ed050137f9ae",
+          "triangles": 934,
+          "vertices": 469
+        },
+        {
+          "bounds_max_m": [
+            0.014020959736233407,
+            0.00552965538512773,
+            -0.0034244835561650366
+          ],
+          "bounds_min_m": [
+            -0.006243922566055438,
+            -0.0062543067176416,
+            -0.013247879261538698
+          ],
+          "filename": "narrow1_Link_coacd_04.stl",
+          "name": "narrow1_Link_coacd_04",
+          "sha256": "4b429fe5bd0cf4d7e63287adcd99cca23667e1d4a6eb105a97093858cf3dd543",
+          "triangles": 1464,
+          "vertices": 734
+        },
+        {
+          "bounds_max_m": [
+            0.004255750460779861,
+            0.0042436709159180686,
+            -0.013248839602132967
+          ],
+          "bounds_min_m": [
+            -0.004244481610998219,
+            -0.004250695901575674,
+            -0.018673082993783674
+          ],
+          "filename": "narrow1_Link_coacd_05.stl",
+          "name": "narrow1_Link_coacd_05",
+          "sha256": "842bb0b5b7add883ef8d9fd554847e240b65ca80d4945586c0c70adfcc891a02",
+          "triangles": 540,
+          "vertices": 272
+        },
+        {
+          "bounds_max_m": [
+            0.03709835705939968,
+            0.024808879022934716,
+            0.011773080955527482
+          ],
+          "bounds_min_m": [
+            0.025720107043652463,
+            0.01067724374000345,
+            0.004055055176123146
+          ],
+          "filename": "narrow1_Link_coacd_06.stl",
+          "name": "narrow1_Link_coacd_06",
+          "sha256": "eb5f64e936f4a786830b7e72d0aa2073592e930d889130403a47f7136e01846d",
+          "triangles": 1282,
+          "vertices": 643
+        },
+        {
+          "bounds_max_m": [
+            0.033092168274316824,
+            0.013820485856200992,
+            0.004719707049389288
+          ],
+          "bounds_min_m": [
+            0.01603234132060566,
+            0.006908837653619382,
+            -0.004148024728045097
+          ],
+          "filename": "narrow1_Link_coacd_07.stl",
+          "name": "narrow1_Link_coacd_07",
+          "sha256": "83e8ae3237023d6cfbbff8ed93a63d0b4ebff84b9dd154b787eda73d03dea543",
+          "triangles": 190,
+          "vertices": 97
+        },
+        {
+          "bounds_max_m": [
+            0.020892002844443147,
+            0.02283908728896744,
+            0.008875865817876138
+          ],
+          "bounds_min_m": [
+            0.00393526157281221,
+            0.005529656124989513,
+            0.004337705312925377
+          ],
+          "filename": "narrow1_Link_coacd_08.stl",
+          "name": "narrow1_Link_coacd_08",
+          "sha256": "4032d8e649636560c0d72fb97a1763dc9cada970e7373e78ca74c1bf8415c3aa",
+          "triangles": 568,
+          "vertices": 286
+        },
+        {
+          "bounds_max_m": [
+            0.03708727984878535,
+            0.024808879022934716,
+            -0.004148819339599985
+          ],
+          "bounds_min_m": [
+            0.02589641462680592,
+            0.010691070277003223,
+            -0.012273081028168764
+          ],
+          "filename": "narrow1_Link_coacd_09.stl",
+          "name": "narrow1_Link_coacd_09",
+          "sha256": "650bc4844838328ea4eb93432f6c818595c1c35198ee2ae34e1555bea4640088",
+          "triangles": 1276,
+          "vertices": 640
+        },
+        {
+          "bounds_max_m": [
+            0.0039340777939594895,
+            0.013584308657571209,
+            -0.00421395011221487
+          ],
+          "bounds_min_m": [
+            -0.0037394149648672936,
+            0.005530443707857463,
+            -0.012273955544796211
+          ],
+          "filename": "narrow1_Link_coacd_10.stl",
+          "name": "narrow1_Link_coacd_10",
+          "sha256": "9596662fb7194c9582245cbdec6868b857607ec68d77ee083f96efe90e24cb28",
+          "triangles": 892,
+          "vertices": 448
+        },
+        {
+          "bounds_max_m": [
+            0.025718522259713383,
+            0.02408838090256793,
+            0.012273081768030547
+          ],
+          "bounds_min_m": [
+            0.020892955786419587,
+            0.009428735859616455,
+            0.0040543005171045365
+          ],
+          "filename": "narrow1_Link_coacd_11.stl",
+          "name": "narrow1_Link_coacd_11",
+          "sha256": "293d4242b3400f11d56b0373be09e3f2f29dda23a3ef59a90e7903279076299c",
+          "triangles": 522,
+          "vertices": 263
+        },
+        {
+          "bounds_max_m": [
+            0.016029488413570603,
+            0.012451087519927073,
+            -0.002901892543843154
+          ],
+          "bounds_min_m": [
+            0.003935262312673993,
+            0.00552965538512773,
+            -0.008606606439483522
+          ],
+          "filename": "narrow1_Link_coacd_12.stl",
+          "name": "narrow1_Link_coacd_12",
+          "sha256": "bb1bb7cd228d609d23da66f21788330ec14c12059ba8c75a7ac98200c1b3adda",
+          "triangles": 70,
+          "vertices": 37
+        },
+        {
+          "bounds_max_m": [
+            0.033594525546598586,
+            0.021289523730203763,
+            0.0040543005171045365
+          ],
+          "bounds_min_m": [
+            0.028109888717329223,
+            0.015811192742910485,
+            -0.004148024728045097
+          ],
+          "filename": "narrow1_Link_coacd_13.stl",
+          "name": "narrow1_Link_coacd_13",
+          "sha256": "486b5c3857339df80b4dcecae487d1374c38a343e4b846a90b9911567c9d9c73",
+          "triangles": 384,
+          "vertices": 194
+        },
+        {
+          "bounds_max_m": [
+            0.02589592335858204,
+            0.024122334639511078,
+            0.0040543005171045365
+          ],
+          "bounds_min_m": [
+            0.020893444095196334,
+            0.019720143713445548,
+            -0.01224332896629099
+          ],
+          "filename": "narrow1_Link_coacd_14.stl",
+          "name": "narrow1_Link_coacd_14",
+          "sha256": "4237b616dadb141b5af204e8db8126535ee53cebda612c807e5b047b9c9dc953",
+          "triangles": 466,
+          "vertices": 235
+        },
+        {
+          "bounds_max_m": [
+            0.020892478575569584,
+            0.02283933292307938,
+            0.005409228636627517
+          ],
+          "bounds_min_m": [
+            0.003935262312673993,
+            0.012451087519927073,
+            -0.005531936193053366
+          ],
+          "filename": "narrow1_Link_coacd_15.stl",
+          "name": "narrow1_Link_coacd_15",
+          "sha256": "99f5480595b9f6c1e07d91e928f8bca6a2073fef147a4d5eb2d3216ccf5b091c",
+          "triangles": 230,
+          "vertices": 117
+        },
+        {
+          "bounds_max_m": [
+            0.013260753233975686,
+            0.012451087519927073,
+            0.004336817478785837
+          ],
+          "bounds_min_m": [
+            0.0039340785338212725,
+            0.010095448247948113,
+            -0.0029018927288086
+          ],
+          "filename": "narrow1_Link_coacd_16.stl",
+          "name": "narrow1_Link_coacd_16",
+          "sha256": "98ba346d4292494cd6ce9aa62c9b0cd7d2c2aab756eb459c9611ac7048b591ff",
+          "triangles": 20,
+          "vertices": 12
+        },
+        {
+          "bounds_max_m": [
+            0.020892479315431367,
+            0.01471053144261042,
+            -0.0029028092325922294
+          ],
+          "bounds_min_m": [
+            0.016030672192423323,
+            0.006900773530116117,
+            -0.012273081768030547
+          ],
+          "filename": "narrow1_Link_coacd_17.stl",
+          "name": "narrow1_Link_coacd_17",
+          "sha256": "e7e060bc10b2cbc46d1a638080cd3165afcb2c5cd6b038edb17f9489735abec8",
+          "triangles": 132,
+          "vertices": 68
+        },
+        {
+          "bounds_max_m": [
+            0.0039340777939594895,
+            0.013566178344580015,
+            0.004216837422822833
+          ],
+          "bounds_min_m": [
+            -0.00989087590159754,
+            0.008597824466071102,
+            -0.004213949742283979
+          ],
+          "filename": "narrow1_Link_coacd_18.stl",
+          "name": "narrow1_Link_coacd_18",
+          "sha256": "f5ccc0afb585f7601cac9a196490482ad1e372959a301c54ed2a41829d3adeb9",
+          "triangles": 418,
+          "vertices": 211
+        },
+        {
+          "bounds_max_m": [
+            0.016029489153432386,
+            0.010095448247948113,
+            0.004336817478785837
+          ],
+          "bounds_min_m": [
+            -0.011534203623838057,
+            0.00552965538512773,
+            -0.00421395011221487
+          ],
+          "filename": "narrow1_Link_coacd_19.stl",
+          "name": "narrow1_Link_coacd_19",
+          "sha256": "9aa2d04ec7fd31dd196f5f25d117af2638203d97577361f1523250223e688479",
+          "triangles": 200,
+          "vertices": 102
+        },
+        {
+          "bounds_max_m": [
+            0.020892479315431367,
+            0.022546815249677943,
+            -0.008606606439483522
+          ],
+          "bounds_min_m": [
+            0.003935263052535776,
+            0.00552965538512773,
+            -0.012273081768030547
+          ],
+          "filename": "narrow1_Link_coacd_20.stl",
+          "name": "narrow1_Link_coacd_20",
+          "sha256": "e96207f05e7123876f8a03af8925b2b722e8983f915859e57e29eb2923abf518",
+          "triangles": 1090,
+          "vertices": 547
+        },
+        {
+          "bounds_max_m": [
+            0.02589592335858204,
+            0.019719711634164305,
+            -0.0041484497786394015
+          ],
+          "bounds_min_m": [
+            0.020892955786419587,
+            0.0094406195195742,
+            -0.012273081768030547
+          ],
+          "filename": "narrow1_Link_coacd_21.stl",
+          "name": "narrow1_Link_coacd_21",
+          "sha256": "3e2c96e8167664f1e3cac48f9e0fd3ff03fe6a73bcbc784daefd236cc10611b1",
+          "triangles": 172,
+          "vertices": 88
+        },
+        {
+          "bounds_max_m": [
+            0.020892002844443147,
+            0.022593411744768144,
+            0.012273081768030547
+          ],
+          "bounds_min_m": [
+            0.00393526157281221,
+            0.00552965538512773,
+            0.008652033952956661
+          ],
+          "filename": "narrow1_Link_coacd_22.stl",
+          "name": "narrow1_Link_coacd_22",
+          "sha256": "284e1948b8f39bc9f2cf8bade382141df197c6156ae2d11dfd7c380bbb87d2fd",
+          "triangles": 1152,
+          "vertices": 578
+        },
+        {
+          "bounds_max_m": [
+            0.020892479315431367,
+            0.02283908728896744,
+            -0.005382888077430925
+          ],
+          "bounds_min_m": [
+            0.003935263052535776,
+            0.012451087519927073,
+            -0.008944038162280732
+          ],
+          "filename": "narrow1_Link_coacd_23.stl",
+          "name": "narrow1_Link_coacd_23",
+          "sha256": "57f7dee6807e128c7ce0e5eee08a58992ecda1db2feb1643a01eb987f86ad1ed",
+          "triangles": 608,
+          "vertices": 306
+        }
+      ],
+      "source_bytes": 591984,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/narrow1_Link.stl",
+      "source_sha256": "82a707fe539d02f571e075a06c59b6846567ce61d741285b0f86f2d934cabb99",
+      "triangles": 11838,
+      "vertices_unique": 5917
+    },
+    {
+      "bounds_max_m": [
+        0.023115022107958794,
+        0.004994927905499935,
+        0.005499999970197678
+      ],
+      "bounds_min_m": [
+        -0.010551205836236477,
+        -0.02073969505727291,
+        -0.005499999970197678
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.00468004380112394,
+            0.005160786867178996,
+            0.0017960679796713216
+          ],
+          "bounds_min_m": [
+            -0.004182218244349223,
+            -0.007648838245581074,
+            -0.0026244116729018316
+          ],
+          "filename": "narrow2_Link_coacd_00.stl",
+          "name": "narrow2_Link_coacd_00",
+          "sha256": "c0adaaa1eee46015591005f6190ad00e25dae68849d794059c1ea9e1a1f97c12",
+          "triangles": 366,
+          "vertices": 185
+        },
+        {
+          "bounds_max_m": [
+            0.00468004380112394,
+            0.005174612779090454,
+            -0.002624875713849513
+          ],
+          "bounds_min_m": [
+            -0.0052221957130075825,
+            -0.007648838245581074,
+            -0.005685164309736743
+          ],
+          "filename": "narrow2_Link_coacd_01.stl",
+          "name": "narrow2_Link_coacd_01",
+          "sha256": "5457a8f85e32cf1f06819b3c907652ab28e1885c05cc6001d3eec0e8baea8e33",
+          "triangles": 1380,
+          "vertices": 692
+        },
+        {
+          "bounds_max_m": [
+            0.01811172358007218,
+            -0.0010141909736404026,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.009785540700664341,
+            -0.008784888745383829,
+            -0.005685164309736743
+          ],
+          "filename": "narrow2_Link_coacd_02.stl",
+          "name": "narrow2_Link_coacd_02",
+          "sha256": "5ded5a4daf11daeb5a153840d080038e0523c214e385224a67697def30efdb29",
+          "triangles": 972,
+          "vertices": 488
+        },
+        {
+          "bounds_max_m": [
+            0.022729578158499186,
+            -0.008784888745383829,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.009785540198998452,
+            -0.01338786943185645,
+            -0.005685164309736743
+          ],
+          "filename": "narrow2_Link_coacd_03.stl",
+          "name": "narrow2_Link_coacd_03",
+          "sha256": "9073c96119bc5fc124a2e425beb128eeb8f637cd4d7cfe059f1d18403964af7e",
+          "triangles": 500,
+          "vertices": 252
+        },
+        {
+          "bounds_max_m": [
+            0.009785540951497286,
+            0.0024495917612394613,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.0046800440519568845,
+            -0.004306107991475766,
+            -0.005685164309736743
+          ],
+          "filename": "narrow2_Link_coacd_04.stl",
+          "name": "narrow2_Link_coacd_04",
+          "sha256": "884680dd06e64a5a894ffb7d97a277fbfc5f7ef9c18359222e69be0c5ec1e54f",
+          "triangles": 386,
+          "vertices": 195
+        },
+        {
+          "bounds_max_m": [
+            0.009785540951497286,
+            -0.004306091687334361,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.0046800440519568845,
+            -0.01206865093335429,
+            -0.005685164309736743
+          ],
+          "filename": "narrow2_Link_coacd_05.stl",
+          "name": "narrow2_Link_coacd_05",
+          "sha256": "0f878c7c00688f4793b6cc52db356f3f4eb42e129f88c38f796a5e5eb457f89a",
+          "triangles": 186,
+          "vertices": 95
+        },
+        {
+          "bounds_max_m": [
+            0.023294205123665868,
+            -0.013388102706495014,
+            0.005683145104531967
+          ],
+          "bounds_min_m": [
+            0.018035024885575845,
+            -0.01577084912799978,
+            -0.005683220354415375
+          ],
+          "filename": "narrow2_Link_coacd_06.stl",
+          "name": "narrow2_Link_coacd_06",
+          "sha256": "744019000a8326fa5a141fdec17df65bad5e962eaeeb189c1def852b88fd63dc",
+          "triangles": 410,
+          "vertices": 207
+        },
+        {
+          "bounds_max_m": [
+            0.018035024885575845,
+            -0.013388102706495014,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.011014164610367139,
+            -0.01577084912799978,
+            -0.005685164309736743
+          ],
+          "filename": "narrow2_Link_coacd_07.stl",
+          "name": "narrow2_Link_coacd_07",
+          "sha256": "d75ea0e9c294966aa87391d1acb6ce3ee4961d1ad3cb3bb8ed48b487d6764532",
+          "triangles": 190,
+          "vertices": 97
+        },
+        {
+          "bounds_max_m": [
+            0.023293988404001653,
+            -0.015771082904304234,
+            0.005682834071680548
+          ],
+          "bounds_min_m": [
+            0.018106829327655338,
+            -0.02091523516728533,
+            -0.005682785911755167
+          ],
+          "filename": "narrow2_Link_coacd_08.stl",
+          "name": "narrow2_Link_coacd_08",
+          "sha256": "a3ae2ca8adde746b69772249aafbf9399194a4d69a775455fdce56c26b1b1e0f",
+          "triangles": 1070,
+          "vertices": 537
+        },
+        {
+          "bounds_max_m": [
+            0.01810682832432356,
+            -0.0157715855735254,
+            0.005684297932745774
+          ],
+          "bounds_min_m": [
+            0.012810611096952002,
+            -0.02091372314629472,
+            -0.00568455478568114
+          ],
+          "filename": "narrow2_Link_coacd_09.stl",
+          "name": "narrow2_Link_coacd_09",
+          "sha256": "b0ea339b502c8aedb0a330bea54046ccf71b253eb656c58da0fea727ea417485",
+          "triangles": 900,
+          "vertices": 452
+        },
+        {
+          "bounds_max_m": [
+            0.00468004380112394,
+            0.005151557218146086,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.00046324401130243276,
+            -0.007648837743915185,
+            0.0017960683559207387
+          ],
+          "filename": "narrow2_Link_coacd_10.stl",
+          "name": "narrow2_Link_coacd_10",
+          "sha256": "8970c2193eaed4e08d8f824b782af88b55916614b0d258b86503112d524d1394",
+          "triangles": 492,
+          "vertices": 248
+        },
+        {
+          "bounds_max_m": [
+            0.00046324401130243276,
+            -0.0017556340948480381,
+            0.005685159293077849
+          ],
+          "bounds_min_m": [
+            -0.00486190729790531,
+            -0.005232749604070094,
+            0.0017960683559207387
+          ],
+          "filename": "narrow2_Link_coacd_11.stl",
+          "name": "narrow2_Link_coacd_11",
+          "sha256": "90bdcbf58da7a18eb31abc7d6421c2c078112fc86d7f44abd02e263dac6d1f72",
+          "triangles": 636,
+          "vertices": 320
+        },
+        {
+          "bounds_max_m": [
+            -0.004054478055603272,
+            0.0031793139606074994,
+            -0.0009421793966450775
+          ],
+          "bounds_min_m": [
+            -0.010626847019037988,
+            -0.003174150081998617,
+            -0.0026244116729018316
+          ],
+          "filename": "narrow2_Link_coacd_12.stl",
+          "name": "narrow2_Link_coacd_12",
+          "sha256": "467f8e1f4d8b48bda716bfe53f2e204448b6ecc0b9d94db9b02323c8e830d06a",
+          "triangles": 182,
+          "vertices": 93
+        },
+        {
+          "bounds_max_m": [
+            0.00046269217882410896,
+            0.005173837203625464,
+            0.005685163808070853
+          ],
+          "bounds_min_m": [
+            -0.0051781494479195556,
+            -0.0017546162147584754,
+            0.0017960682305042663
+          ],
+          "filename": "narrow2_Link_coacd_13.stl",
+          "name": "narrow2_Link_coacd_13",
+          "sha256": "6f18c64c689d14072024c72c10f1874b202fe2e171f2fafa4cd4fbf7a398aacd",
+          "triangles": 988,
+          "vertices": 496
+        }
+      ],
+      "source_bytes": 1596384,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/narrow2_Link.stl",
+      "source_sha256": "e113852a3859903e3be17ecb4b27809a5c5da8d73002157844b132abe7e3a17f",
+      "triangles": 31926,
+      "vertices_unique": 15963
+    },
+    {
+      "bounds_max_m": [
+        0.04787776619195938,
+        0.005392441991716623,
+        0.013000000268220901
+      ],
+      "bounds_min_m": [
+        -0.005075199995189905,
+        -0.022280005738139153,
+        -0.013000000268220901
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.048120200353014536,
+            -0.0020117237163743,
+            0.01117468530941114
+          ],
+          "bounds_min_m": [
+            0.018665952945417834,
+            -0.02256552046572953,
+            -0.011173626389972074
+          ],
+          "filename": "narrow3_Link_coacd_00.stl",
+          "name": "narrow3_Link_coacd_00",
+          "sha256": "acc078709af75f01dbb4319280432a548d822bf1df6ff3d9c0cad9e844960bc6",
+          "triangles": 1740,
+          "vertices": 872
+        },
+        {
+          "bounds_max_m": [
+            0.01866595215635715,
+            0.005626470509620729,
+            0.010866520815186853
+          ],
+          "bounds_min_m": [
+            0.005750354367361057,
+            -0.017218485453533453,
+            -0.010866760689635047
+          ],
+          "filename": "narrow3_Link_coacd_01.stl",
+          "name": "narrow3_Link_coacd_01",
+          "sha256": "9d1e19c801d94956ffae8c45f4d1f35fd99047df8403e35acf85abdf0362b0fb",
+          "triangles": 758,
+          "vertices": 381
+        },
+        {
+          "bounds_max_m": [
+            0.0057492701979800775,
+            0.00528787825726737,
+            0.011791239969215578
+          ],
+          "bounds_min_m": [
+            -0.005327153384347055,
+            -0.004954686508891179,
+            0.004055020339811654
+          ],
+          "filename": "narrow3_Link_coacd_02.stl",
+          "name": "narrow3_Link_coacd_02",
+          "sha256": "dba75d57f47437190a976462d374a23e05a4c2bc0a6b8408402efb667daeafdc",
+          "triangles": 602,
+          "vertices": 303
+        },
+        {
+          "bounds_max_m": [
+            0.005750354367361057,
+            0.0027539069223452214,
+            0.00405386712762075
+          ],
+          "bounds_min_m": [
+            -0.0027489843932845676,
+            -0.004953932561406808,
+            5.273095291661797e-06
+          ],
+          "filename": "narrow3_Link_coacd_03.stl",
+          "name": "narrow3_Link_coacd_03",
+          "sha256": "dac195da4e2bb06ed8caa2e1c9b53525cace259034b7a65cf027de081265a574",
+          "triangles": 130,
+          "vertices": 67
+        },
+        {
+          "bounds_max_m": [
+            0.0057492701979800775,
+            0.00528787825726737,
+            -0.004937586293934478
+          ],
+          "bounds_min_m": [
+            -0.005327153384347055,
+            -0.004954686508891179,
+            -0.0122912401080792
+          ],
+          "filename": "narrow3_Link_coacd_04.stl",
+          "name": "narrow3_Link_coacd_04",
+          "sha256": "997bb5565a02de5358ee23ce9df5dbd7c6fb77f3a2a7a2bffae2fff048a1c980",
+          "triangles": 612,
+          "vertices": 308
+        },
+        {
+          "bounds_max_m": [
+            0.005750352789239688,
+            -0.004954686903421521,
+            0.01329124117486713
+          ],
+          "bounds_min_m": [
+            7.0893760262813466e-06,
+            -0.010341662589363188,
+            -0.01329124117486713
+          ],
+          "filename": "narrow3_Link_coacd_05.stl",
+          "name": "narrow3_Link_coacd_05",
+          "sha256": "2323929f240df8c27b2c28aed36e6859d84af4e85d95a418403dfdae8a7f8226",
+          "triangles": 246,
+          "vertices": 125
+        },
+        {
+          "bounds_max_m": [
+            0.005750352789239688,
+            -0.010335280272013803,
+            0.01329124117486713
+          ],
+          "bounds_min_m": [
+            7.0893760262813466e-06,
+            -0.015766924683324662,
+            6.176767040982911e-06
+          ],
+          "filename": "narrow3_Link_coacd_06.stl",
+          "name": "narrow3_Link_coacd_06",
+          "sha256": "69a2c81f06bf49f602f4a5dfbcb4f19277630f9372a5c0eeebaed0483c7494a3",
+          "triangles": 168,
+          "vertices": 86
+        },
+        {
+          "bounds_max_m": [
+            6.527564818670228e-06,
+            -0.004954673489389879,
+            0.01329124117486713
+          ],
+          "bounds_min_m": [
+            -0.005361900460664981,
+            -0.010035239946600702,
+            -0.01329124117486713
+          ],
+          "filename": "narrow3_Link_coacd_07.stl",
+          "name": "narrow3_Link_coacd_07",
+          "sha256": "b7d87cc69b0b740601aa94757fa4de2e5286ea90e38ae8a3b11f702805b740ea",
+          "triangles": 294,
+          "vertices": 149
+        },
+        {
+          "bounds_max_m": [
+            6.527564818670228e-06,
+            -0.010016784606242814,
+            0.01329124117486713
+          ],
+          "bounds_min_m": [
+            -0.005361202931019576,
+            -0.01572341824434425,
+            -0.01329124117486713
+          ],
+          "filename": "narrow3_Link_coacd_08.stl",
+          "name": "narrow3_Link_coacd_08",
+          "sha256": "d5e23794fcfcfee11df465e175bc9575572448e28e38cc9363f91ee87cf22c73",
+          "triangles": 434,
+          "vertices": 219
+        },
+        {
+          "bounds_max_m": [
+            0.005750352789239688,
+            0.001341371515487598,
+            4.876986827868565e-06
+          ],
+          "bounds_min_m": [
+            0.004465861415954939,
+            -0.004954686508891179,
+            -0.00493686706512024
+          ],
+          "filename": "narrow3_Link_coacd_09.stl",
+          "name": "narrow3_Link_coacd_09",
+          "sha256": "301537423ac1e893fcf814b764dd1538b7dc09386567d88d06d5f212e47f91ec",
+          "triangles": 46,
+          "vertices": 25
+        },
+        {
+          "bounds_max_m": [
+            0.004465736744366733,
+            0.0029674677748204523,
+            4.876986827868565e-06
+          ],
+          "bounds_min_m": [
+            -0.0029375083502296007,
+            -0.004953912045829002,
+            -0.00493686706512024
+          ],
+          "filename": "narrow3_Link_coacd_10.stl",
+          "name": "narrow3_Link_coacd_10",
+          "sha256": "72f21f8272a33598e354304083533cd03393668dec6ea8d74a289388b9af7cca",
+          "triangles": 138,
+          "vertices": 71
+        },
+        {
+          "bounds_max_m": [
+            0.005750352789239688,
+            -0.01034166298389353,
+            4.87639503235493e-06
+          ],
+          "bounds_min_m": [
+            7.0893760262813466e-06,
+            -0.015766924683324662,
+            -0.01329124117486713
+          ],
+          "filename": "narrow3_Link_coacd_11.stl",
+          "name": "narrow3_Link_coacd_11",
+          "sha256": "3174fc334d619367c81fcc4823ce1e064c20b89204c102c9adc205bdcba4e827",
+          "triangles": 152,
+          "vertices": 78
+        }
+      ],
+      "source_bytes": 827184,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/narrow3_Link.stl",
+      "source_sha256": "0fb55604e97d18c9545567e082e071746a968f624a0aa31ece3a0cc4fc1217b0",
+      "triangles": 16542,
+      "vertices_unique": 7622
+    },
+    {
+      "bounds_max_m": [
+        0.036518413573503494,
+        0.005186781287193298,
+        0.025499999523162842
+      ],
+      "bounds_min_m": [
+        -0.0049980152398347855,
+        -0.014754822477698326,
+        -0.025499999523162842
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.0027320254571598923,
+            0.002718571798279612,
+            0.016993709246435174
+          ],
+          "bounds_min_m": [
+            -0.002726749365042025,
+            -0.002747107253314951,
+            -0.0060293130566746456
+          ],
+          "filename": "narrow_loop_Link_coacd_00.stl",
+          "name": "narrow_loop_Link_coacd_00",
+          "sha256": "c37660eb3529a8d4f19ef8e2f74997b62ab2f8ac01bf0d6cb78d3c6dd1f025d1",
+          "triangles": 274,
+          "vertices": 139
+        },
+        {
+          "bounds_max_m": [
+            0.0027358997291955234,
+            0.002719484509286829,
+            -0.0060293130566746456
+          ],
+          "bounds_min_m": [
+            -0.0027342136843699905,
+            -0.002749970209636299,
+            -0.017581364422099455
+          ],
+          "filename": "narrow_loop_Link_coacd_01.stl",
+          "name": "narrow_loop_Link_coacd_01",
+          "sha256": "eb6113decc614456c1983ab5c2441a7924fa0ff11cbf5084147cb89683d8420e",
+          "triangles": 242,
+          "vertices": 123
+        },
+        {
+          "bounds_max_m": [
+            0.00679815071443457,
+            0.005461073825410168,
+            -0.017581364422099455
+          ],
+          "bounds_min_m": [
+            -0.005234917210835022,
+            -0.005249662420387047,
+            -0.025763267631376152
+          ],
+          "filename": "narrow_loop_Link_coacd_02.stl",
+          "name": "narrow_loop_Link_coacd_02",
+          "sha256": "a76aec8b91442d7b8ebcaaae742c1c79f5d2ba2f69c086bb0304f66137ddb8e4",
+          "triangles": 1212,
+          "vertices": 608
+        },
+        {
+          "bounds_max_m": [
+            0.0367555511318578,
+            0.00037533181943771865,
+            0.019751739520035727
+          ],
+          "bounds_min_m": [
+            0.025676026821980003,
+            -0.015000779936894304,
+            0.011469073319545942
+          ],
+          "filename": "narrow_loop_Link_coacd_03.stl",
+          "name": "narrow_loop_Link_coacd_03",
+          "sha256": "d9fef6c0dd4c1b2d282275548dbcf3129dfd08aeb7cacc317a0443ea2bb916ad",
+          "triangles": 1354,
+          "vertices": 679
+        },
+        {
+          "bounds_max_m": [
+            0.0342600426865296,
+            -0.007018544609783461,
+            0.011469072559586735
+          ],
+          "bounds_min_m": [
+            0.02878265494343779,
+            -0.012486935955786649,
+            -0.006029313436654249
+          ],
+          "filename": "narrow_loop_Link_coacd_04.stl",
+          "name": "narrow_loop_Link_coacd_04",
+          "sha256": "fc3abebdf1f277a47a256529cacbee6e4d4c60c66852fde0937b2a52821687ff",
+          "triangles": 244,
+          "vertices": 124
+        },
+        {
+          "bounds_max_m": [
+            0.025126629512698173,
+            0.004133314897263318,
+            0.010683380374214124
+          ],
+          "bounds_min_m": [
+            0.010272135516807168,
+            -0.009495326900299972,
+            -0.006029313816633852
+          ],
+          "filename": "narrow_loop_Link_coacd_05.stl",
+          "name": "narrow_loop_Link_coacd_05",
+          "sha256": "0bb4b15cff1d14f21c6299fb09996604aa9bfc250f3244df42fb54f8f7ba61ab",
+          "triangles": 404,
+          "vertices": 204
+        },
+        {
+          "bounds_max_m": [
+            0.004723573794214175,
+            0.005455929661540182,
+            0.024899087619097315
+          ],
+          "bounds_min_m": [
+            -0.005262487010934791,
+            -0.005254281832424823,
+            0.016993709246435174
+          ],
+          "filename": "narrow_loop_Link_coacd_06.stl",
+          "name": "narrow_loop_Link_coacd_06",
+          "sha256": "c033ad7c3b77c2ede2851d6b7254b74bab0df9f1fb4795dea4f8ece5bc00d27e",
+          "triangles": 1128,
+          "vertices": 566
+        },
+        {
+          "bounds_max_m": [
+            0.028647097979906277,
+            0.000658669690340119,
+            -0.010555473160057005
+          ],
+          "bounds_min_m": [
+            0.02511050773808776,
+            -0.014104977262066498,
+            -0.01975718386779235
+          ],
+          "filename": "narrow_loop_Link_coacd_07.stl",
+          "name": "narrow_loop_Link_coacd_07",
+          "sha256": "572756688d144c121069f35c9a87f10cba4566c9504418097757f0d08958751d",
+          "triangles": 540,
+          "vertices": 272
+        },
+        {
+          "bounds_max_m": [
+            0.02511050773808776,
+            0.004355007157197832,
+            -0.006029313436654249
+          ],
+          "bounds_min_m": [
+            0.009671513537178988,
+            -0.011519642398468477,
+            -0.01774966802784661
+          ],
+          "filename": "narrow_loop_Link_coacd_08.stl",
+          "name": "narrow_loop_Link_coacd_08",
+          "sha256": "a7d2d8f175a8da8165e3609c2cb89300b4044e6bdbdb4a282f7de0ef310fa48c",
+          "triangles": 554,
+          "vertices": 279
+        },
+        {
+          "bounds_max_m": [
+            0.025676026821980003,
+            0.002351114802749521,
+            0.021377196508254315
+          ],
+          "bounds_min_m": [
+            0.021203303630194625,
+            -0.01192543021646486,
+            0.01068442607808251
+          ],
+          "filename": "narrow_loop_Link_coacd_09.stl",
+          "name": "narrow_loop_Link_coacd_09",
+          "sha256": "e27b7e1a468be65656860eab19ebc34c57438ff3b882a949b154e5760849c70c",
+          "triangles": 486,
+          "vertices": 245
+        },
+        {
+          "bounds_max_m": [
+            0.010066611388994673,
+            0.005263345359139748,
+            0.025751144762111267
+          ],
+          "bounds_min_m": [
+            0.008647655836128365,
+            -0.005576483637176999,
+            0.017019625375301217
+          ],
+          "filename": "narrow_loop_Link_coacd_10.stl",
+          "name": "narrow_loop_Link_coacd_10",
+          "sha256": "b6153aed847ea12d8b05755c2087c88a47d4d10cbf460cad6ca15a785696e536",
+          "triangles": 352,
+          "vertices": 178
+        },
+        {
+          "bounds_max_m": [
+            0.008647132984194172,
+            0.005430279518396475,
+            0.025756102735975617
+          ],
+          "bounds_min_m": [
+            0.004723574554173382,
+            -0.00535029051884095,
+            0.018562268088849976
+          ],
+          "filename": "narrow_loop_Link_coacd_11.stl",
+          "name": "narrow_loop_Link_coacd_11",
+          "sha256": "140e02be8230041e8112f474f14d77dd3c506b265b9587c9104ff69ff40cf670",
+          "triangles": 510,
+          "vertices": 257
+        },
+        {
+          "bounds_max_m": [
+            0.03426717870348028,
+            -0.007017294856868084,
+            -0.006029313436654249
+          ],
+          "bounds_min_m": [
+            0.02877812710648442,
+            -0.012490716752839859,
+            -0.01197734391644012
+          ],
+          "filename": "narrow_loop_Link_coacd_12.stl",
+          "name": "narrow_loop_Link_coacd_12",
+          "sha256": "844bb3743bc72bb5eb12691024008cf42c53d13db140705a377a6abbe9ae59c3",
+          "triangles": 254,
+          "vertices": 129
+        },
+        {
+          "bounds_max_m": [
+            0.036762380125288985,
+            -0.0012794155165245513,
+            -0.011977344676399326
+          ],
+          "bounds_min_m": [
+            0.028647891377318047,
+            -0.015000779936894304,
+            -0.01927978661366936
+          ],
+          "filename": "narrow_loop_Link_coacd_13.stl",
+          "name": "narrow_loop_Link_coacd_13",
+          "sha256": "cb0a477cab6e261d6b6a7677a6c8ba7d8cb5dedaa9d79689143d119ce63d646a",
+          "triangles": 1024,
+          "vertices": 514
+        },
+        {
+          "bounds_max_m": [
+            0.02510871575427842,
+            0.005401942159497963,
+            -0.01774966802784661
+          ],
+          "bounds_min_m": [
+            0.00679994269824391,
+            -0.01012688491933389,
+            -0.020208649793865163
+          ],
+          "filename": "narrow_loop_Link_coacd_14.stl",
+          "name": "narrow_loop_Link_coacd_14",
+          "sha256": "1a002e02012483dc68b01c37f1e11f43fa9e8f05ac75487ad94653ff48d1186f",
+          "triangles": 514,
+          "vertices": 259
+        },
+        {
+          "bounds_max_m": [
+            0.021203303630194625,
+            0.0042278644620026284,
+            0.017153581864743472
+          ],
+          "bounds_min_m": [
+            0.01006661214895388,
+            -0.009495154009580453,
+            0.010683380374214124
+          ],
+          "filename": "narrow_loop_Link_coacd_15.stl",
+          "name": "narrow_loop_Link_coacd_15",
+          "sha256": "480af9a35b6baa65801d15c2164ceb02e6b1d07ecb902f97d13ed6c0cc3d3b61",
+          "triangles": 336,
+          "vertices": 170
+        },
+        {
+          "bounds_max_m": [
+            0.022658431721380268,
+            0.005401711891858341,
+            -0.020208649793865163
+          ],
+          "bounds_min_m": [
+            0.0067981514743937765,
+            -0.006639179053484767,
+            -0.022724754653612678
+          ],
+          "filename": "narrow_loop_Link_coacd_16.stl",
+          "name": "narrow_loop_Link_coacd_16",
+          "sha256": "465deaa785d3aace3b8f846487fd4ed22a3f4c13d9d6f69c2b15dec4732d1480",
+          "triangles": 686,
+          "vertices": 345
+        },
+        {
+          "bounds_max_m": [
+            0.01991004381019401,
+            0.0048701949027911695,
+            -0.02272529574456783
+          ],
+          "bounds_min_m": [
+            0.0067981514743937765,
+            -0.005641310817363632,
+            -0.025751558179919698
+          ],
+          "filename": "narrow_loop_Link_coacd_17.stl",
+          "name": "narrow_loop_Link_coacd_17",
+          "sha256": "cb830c28e4db03d0b99178d5a36c54b48cae07ea4ab2c4da2fdc64686dd99e5b",
+          "triangles": 1258,
+          "vertices": 631
+        },
+        {
+          "bounds_max_m": [
+            0.020731639888306397,
+            0.00488302757395509,
+            0.02575148218399903
+          ],
+          "bounds_min_m": [
+            0.010066611768974276,
+            -0.005907400654111328,
+            0.021863024749816162
+          ],
+          "filename": "narrow_loop_Link_coacd_18.stl",
+          "name": "narrow_loop_Link_coacd_18",
+          "sha256": "6245e43f9a128ec1862c85a9ce6ccd9104f16dce64a74a4c05331b717004a563",
+          "triangles": 1306,
+          "vertices": 655
+        },
+        {
+          "bounds_max_m": [
+            0.021203303630194625,
+            0.005105338440683838,
+            0.021862644770212825
+          ],
+          "bounds_min_m": [
+            0.01006661214895388,
+            -0.00794576323825602,
+            0.017153581864743472
+          ],
+          "filename": "narrow_loop_Link_coacd_19.stl",
+          "name": "narrow_loop_Link_coacd_19",
+          "sha256": "0f30e49cbb2a193ce5f2dfb45aa7ce34a7a1aecafc6bcc607eefcc62533566c3",
+          "triangles": 698,
+          "vertices": 351
+        }
+      ],
+      "source_bytes": 515184,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/narrow_loop_Link.stl",
+      "source_sha256": "63b895ff646b799c303c41c924ea4c77cf00f9c5d357e2fb4f6761c649237b17",
+      "triangles": 10302,
+      "vertices_unique": 5155
+    },
+    {
+      "bounds_max_m": [
+        0.036851391196250916,
+        0.012799892574548721,
+        0.018400000408291817
+      ],
+      "bounds_min_m": [
+        -0.012785484082996845,
+        -0.024550028145313263,
+        -0.018400000408291817
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.013938677926167709,
+            0.006254419467477346,
+            -0.0034277257513122272
+          ],
+          "bounds_min_m": [
+            -0.006243847084757059,
+            -0.0054783998642478696,
+            -0.01364891762138215
+          ],
+          "filename": "wide1_Link_coacd_00.stl",
+          "name": "wide1_Link_coacd_00",
+          "sha256": "ef41e3fc7efbf1afdca729cc834918bbaabbba2d479ee5021cc467db82eb6704",
+          "triangles": 1480,
+          "vertices": 742
+        },
+        {
+          "bounds_max_m": [
+            0.004256139959062294,
+            0.004257053564409544,
+            -0.013649408747043068
+          ],
+          "bounds_min_m": [
+            -0.004244153512329457,
+            -0.004247099755267596,
+            -0.018673004433975987
+          ],
+          "filename": "wide1_Link_coacd_01.stl",
+          "name": "wide1_Link_coacd_01",
+          "sha256": "32c172884f40dee67eff7e05526763cb366a71410fc641113610e1c05c81d1fb",
+          "triangles": 552,
+          "vertices": 278
+        },
+        {
+          "bounds_max_m": [
+            0.004256308598596464,
+            0.004250978842944009,
+            0.01867251330831507
+          ],
+          "bounds_min_m": [
+            -0.004245313278950419,
+            -0.004243845308116938,
+            0.01364433476807636
+          ],
+          "filename": "wide1_Link_coacd_02.stl",
+          "name": "wide1_Link_coacd_02",
+          "sha256": "bce919ef95b7b0d762613324851668749a944b8d5a0418dd3b3b86f9f01b8512",
+          "triangles": 570,
+          "vertices": 287
+        },
+        {
+          "bounds_max_m": [
+            0.013948596593506418,
+            0.006254419467477346,
+            0.013643334765224613
+          ],
+          "bounds_min_m": [
+            -0.006241870747760114,
+            -0.0054783998642478696,
+            0.0034138229749787405
+          ],
+          "filename": "wide1_Link_coacd_03.stl",
+          "name": "wide1_Link_coacd_03",
+          "sha256": "18ec9ae72df5c4ad6f446b6c15f443aaef6e910d9003c624ecf7e25645c057e0",
+          "triangles": 1460,
+          "vertices": 732
+        },
+        {
+          "bounds_max_m": [
+            0.013939458993483866,
+            0.01306450249752747,
+            0.0034138226051552006
+          ],
+          "bounds_min_m": [
+            -0.013016949240116593,
+            -0.00547839949442433,
+            -0.003427726490959307
+          ],
+          "filename": "wide1_Link_coacd_04.stl",
+          "name": "wide1_Link_coacd_04",
+          "sha256": "5a5ea5436863b1a8661138f2932ca7bcafeb25869e3bf763910519d4a2038c2a",
+          "triangles": 930,
+          "vertices": 467
+        },
+        {
+          "bounds_max_m": [
+            0.020910469997251546,
+            -0.005480576275779872,
+            0.01227262301607511
+          ],
+          "bounds_min_m": [
+            0.003907888965941186,
+            -0.022593219011490084,
+            0.008393203668958113
+          ],
+          "filename": "wide1_Link_coacd_05.stl",
+          "name": "wide1_Link_coacd_05",
+          "sha256": "23b14ae69c0173082665bed75b89339e426e62a6d08964881a878a7f1a19df9e",
+          "triangles": 1096,
+          "vertices": 550
+        },
+        {
+          "bounds_max_m": [
+            0.003907136005214057,
+            -0.005479190916799603,
+            0.012274277606592388
+          ],
+          "bounds_min_m": [
+            -0.0037783755568331356,
+            -0.013564067523057305,
+            0.00422576500936081
+          ],
+          "filename": "wide1_Link_coacd_06.stl",
+          "name": "wide1_Link_coacd_06",
+          "sha256": "5937c7e3b674efc753caf1c46615c2761961a5724e9003b5ce5abe857d5a109b",
+          "triangles": 888,
+          "vertices": 446
+        },
+        {
+          "bounds_max_m": [
+            0.037088433292351564,
+            -0.010673960168798013,
+            0.011773001768800265
+          ],
+          "bounds_min_m": [
+            0.02571976329790196,
+            -0.024808879176129506,
+            0.004055117333368982
+          ],
+          "filename": "wide1_Link_coacd_07.stl",
+          "name": "wide1_Link_coacd_07",
+          "sha256": "ea94fcf82c33fa8c6d39115549e413a534cea875b5d68943cd1fda10e588c09c",
+          "triangles": 1280,
+          "vertices": 642
+        },
+        {
+          "bounds_max_m": [
+            0.0257186508686941,
+            -0.009447165250180162,
+            0.012273002455026993
+          ],
+          "bounds_min_m": [
+            0.02091094485067671,
+            -0.0240866522644555,
+            0.004055118073016062
+          ],
+          "filename": "wide1_Link_coacd_08.stl",
+          "name": "wide1_Link_coacd_08",
+          "sha256": "0dcb543edf90f49a0aabc11d62be8a1d658ff44d1ea8771c27965652de61936d",
+          "triangles": 524,
+          "vertices": 264
+        },
+        {
+          "bounds_max_m": [
+            0.033093421899619835,
+            -0.006917898421985466,
+            0.004718912125747085
+          ],
+          "bounds_min_m": [
+            0.016055071535535426,
+            -0.013820581568178003,
+            -0.005535713271619211
+          ],
+          "filename": "wide1_Link_coacd_09.stl",
+          "name": "wide1_Link_coacd_09",
+          "sha256": "1d5a556761c2c1115736828451aed3fe8345399edd6b8358f7818d19f1f93fe5",
+          "triangles": 162,
+          "vertices": 83
+        },
+        {
+          "bounds_max_m": [
+            0.01605292877794555,
+            -0.005479764513109907,
+            0.008393203668958113
+          ],
+          "bounds_min_m": [
+            0.003907888226294107,
+            -0.012448431205458493,
+            0.0006046984700046332
+          ],
+          "filename": "wide1_Link_coacd_10.stl",
+          "name": "wide1_Link_coacd_10",
+          "sha256": "b809935d8d722a29b5e70c0e439628a9bee025136f340f82fd63538dc42226ff",
+          "triangles": 70,
+          "vertices": 37
+        },
+        {
+          "bounds_max_m": [
+            0.037098252846981594,
+            -0.010737105319285734,
+            -0.004147154208260208
+          ],
+          "bounds_min_m": [
+            0.026321136314636284,
+            -0.024808879176129506,
+            -0.012272206594769242
+          ],
+          "filename": "wide1_Link_coacd_11.stl",
+          "name": "wide1_Link_coacd_11",
+          "sha256": "7a051fbc68955d9980f497f18512c11209ed021409d9925169db9f9d6e03cf11",
+          "triangles": 1280,
+          "vertices": 642
+        },
+        {
+          "bounds_max_m": [
+            0.003906370470486573,
+            -0.005479189067681904,
+            0.00422576500936081
+          ],
+          "bounds_min_m": [
+            -0.011600690763446553,
+            -0.013545222055113756,
+            -0.004220312331089299
+          ],
+          "filename": "wide1_Link_coacd_12.stl",
+          "name": "wide1_Link_coacd_12",
+          "sha256": "90a4779f7e3944da9bdf7c41dabe824328cfba292d7d282f4e5b4411905dfc76",
+          "triangles": 352,
+          "vertices": 178
+        },
+        {
+          "bounds_max_m": [
+            0.003907136005214057,
+            -0.005479188697858364,
+            -0.004220313070736378
+          ],
+          "bounds_min_m": [
+            -0.0037783755568331356,
+            -0.013542747195985097,
+            -0.012274946987199511
+          ],
+          "filename": "wide1_Link_coacd_13.stl",
+          "name": "wide1_Link_coacd_13",
+          "sha256": "35ada4696e0878f0571f50da4c754581885a23d9344988cdfdb51358f0448a9e",
+          "triangles": 922,
+          "vertices": 463
+        },
+        {
+          "bounds_max_m": [
+            0.03358922804725761,
+            -0.015793655242207383,
+            0.004055118073016062
+          ],
+          "bounds_min_m": [
+            0.028114765689955024,
+            -0.021293256724454646,
+            -0.004147154578083748
+          ],
+          "filename": "wide1_Link_coacd_14.stl",
+          "name": "wide1_Link_coacd_14",
+          "sha256": "51490c9d750ec3b2d7556e3da834dfbbb08fa344a4197c1cd6a3ec08fbdfdfd7",
+          "triangles": 342,
+          "vertices": 173
+        },
+        {
+          "bounds_max_m": [
+            0.024309383536221335,
+            -0.01244979659396761,
+            0.005120503507667476
+          ],
+          "bounds_min_m": [
+            0.003907887486647027,
+            -0.0236155370156321,
+            -0.004804279233097161
+          ],
+          "filename": "wide1_Link_coacd_15.stl",
+          "name": "wide1_Link_coacd_15",
+          "sha256": "a1de6211180904e3e8bee84bceb5baf9d121a59f17bbb3d7444f2e170089dadf",
+          "triangles": 212,
+          "vertices": 108
+        },
+        {
+          "bounds_max_m": [
+            0.01605292877794555,
+            -0.01244979585432053,
+            0.00875122687929615
+          ],
+          "bounds_min_m": [
+            0.003907888226294107,
+            -0.02103392166537199,
+            0.005120503507667476
+          ],
+          "filename": "wide1_Link_coacd_16.stl",
+          "name": "wide1_Link_coacd_16",
+          "sha256": "ff77525ccf26e3387e80f718c811311263f531f8e13f22eac8ad3da5d8d8446a",
+          "triangles": 462,
+          "vertices": 233
+        },
+        {
+          "bounds_max_m": [
+            0.01605292803829847,
+            -0.013929325961128919,
+            -0.004804279972744241
+          ],
+          "bounds_min_m": [
+            0.004382662509220758,
+            -0.021033227876411237,
+            -0.012273002455026993
+          ],
+          "filename": "wide1_Link_coacd_17.stl",
+          "name": "wide1_Link_coacd_17",
+          "sha256": "662c497b2370440f008ad07f1c0299e20204571eee76888d24cf4e3839cc9a0b",
+          "triangles": 1040,
+          "vertices": 522
+        },
+        {
+          "bounds_max_m": [
+            0.02632008157790064,
+            -0.009435719951268962,
+            -0.00414794969869442
+          ],
+          "bounds_min_m": [
+            0.02091094485067671,
+            -0.024203716207758824,
+            -0.012273002455026993
+          ],
+          "filename": "wide1_Link_coacd_18.stl",
+          "name": "wide1_Link_coacd_18",
+          "sha256": "39b502049922a537ccadf24a3ffa073d66cc5a91ea38cc7dcac0d8e02249d3a7",
+          "triangles": 544,
+          "vertices": 274
+        },
+        {
+          "bounds_max_m": [
+            0.01605292877794555,
+            -0.0054784000491596395,
+            0.0006046984700046332
+          ],
+          "bounds_min_m": [
+            0.003907888226294107,
+            -0.01244979585432053,
+            -0.005516905895500267
+          ],
+          "filename": "wide1_Link_coacd_19.stl",
+          "name": "wide1_Link_coacd_19",
+          "sha256": "a85dfcda14203bee8502802dc5001cb6c3b59fafa0411a76c8553a7a43b77d08",
+          "triangles": 24,
+          "vertices": 14
+        },
+        {
+          "bounds_max_m": [
+            0.020910469997251546,
+            -0.006913760096574573,
+            0.008672640116725638
+          ],
+          "bounds_min_m": [
+            0.016053404001194253,
+            -0.02284545050001935,
+            0.004667889051248486
+          ],
+          "filename": "wide1_Link_coacd_20.stl",
+          "name": "wide1_Link_coacd_20",
+          "sha256": "ac4539b4480c4a48f1f55d6fd71814eecf72dc8aa7aa1849d7897489a9ed3971",
+          "triangles": 222,
+          "vertices": 113
+        },
+        {
+          "bounds_max_m": [
+            0.020910469997251546,
+            -0.00692649681928692,
+            -0.004720362203846827
+          ],
+          "bounds_min_m": [
+            0.016053404001194253,
+            -0.02284545050001935,
+            -0.012272262807947298
+          ],
+          "filename": "wide1_Link_coacd_21.stl",
+          "name": "wide1_Link_coacd_21",
+          "sha256": "093b94db7f618eb32c4ee044e35714bf63b0288afaa74cac8e6f2ee9c089e315",
+          "triangles": 616,
+          "vertices": 310
+        },
+        {
+          "bounds_max_m": [
+            0.01605292877794555,
+            -0.005479082558502428,
+            -0.004804279972744241
+          ],
+          "bounds_min_m": [
+            0.003907888226294107,
+            -0.01392932448183476,
+            -0.012273002455026993
+          ],
+          "filename": "wide1_Link_coacd_22.stl",
+          "name": "wide1_Link_coacd_22",
+          "sha256": "3dc6e923e606af1b040464990dd4c7da0092df6d6b60bb04f74053acf1cf1a65",
+          "triangles": 438,
+          "vertices": 221
+        },
+        {
+          "bounds_max_m": [
+            0.01605292877794555,
+            -0.005479082003767118,
+            -0.005516906265323807
+          ],
+          "bounds_min_m": [
+            0.003907888226294107,
+            -0.012449113899713052,
+            -0.00900916918292774
+          ],
+          "filename": "wide1_Link_coacd_23.stl",
+          "name": "wide1_Link_coacd_23",
+          "sha256": "cddc558eb8ddef5c5a2874dad2023454d03d785cd47bc166f7dc07e3ba227a1b",
+          "triangles": 68,
+          "vertices": 36
+        }
+      ],
+      "source_bytes": 591984,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/wide1_Link.stl",
+      "source_sha256": "c858476345282813a6311bd0501787f15431f58daf638ce4381d241250c98075",
+      "triangles": 11838,
+      "vertices_unique": 5917
+    },
+    {
+      "bounds_max_m": [
+        0.023115022107958794,
+        0.02073969505727291,
+        0.005499999970197678
+      ],
+      "bounds_min_m": [
+        -0.010551205836236477,
+        -0.004994927905499935,
+        -0.005499999970197678
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.00468004380112394,
+            0.007648838245581074,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            -0.005220795061844419,
+            -0.005174612779090454,
+            0.002625025962783384
+          ],
+          "filename": "wide2_Link_coacd_00.stl",
+          "name": "wide2_Link_coacd_00",
+          "sha256": "724c8d1668fe15e204b6cc16c0ec6c979717050adcfd5ca509139b0be239b2ab",
+          "triangles": 1372,
+          "vertices": 688
+        },
+        {
+          "bounds_max_m": [
+            0.00468004380112394,
+            0.007648838245581074,
+            0.0026248624197034442
+          ],
+          "bounds_min_m": [
+            -0.004209749668358687,
+            -0.005160794893833226,
+            -0.0017833911334795005
+          ],
+          "filename": "wide2_Link_coacd_01.stl",
+          "name": "wide2_Link_coacd_01",
+          "sha256": "fbc6ad6619ca848e06dac4f0221330892446647a4eb4b9d1a62a421be039730e",
+          "triangles": 366,
+          "vertices": 185
+        },
+        {
+          "bounds_max_m": [
+            0.02329449608988171,
+            0.02091573883983827,
+            0.005682785911755167
+          ],
+          "bounds_min_m": [
+            0.018122852536162304,
+            0.015767320410133845,
+            -0.005682834071680548
+          ],
+          "filename": "wide2_Link_coacd_02.stl",
+          "name": "wide2_Link_coacd_02",
+          "sha256": "36d47fc623d42711864c9d9831583f0dedaa14ee7c128a3afee59b3fbf1a49fc",
+          "triangles": 1064,
+          "vertices": 534
+        },
+        {
+          "bounds_max_m": [
+            0.018122852536162304,
+            0.02091347131001825,
+            0.00568455428401525
+          ],
+          "bounds_min_m": [
+            0.012809611778500346,
+            0.015767320911799734,
+            -0.005684298434411664
+          ],
+          "filename": "wide2_Link_coacd_03.stl",
+          "name": "wide2_Link_coacd_03",
+          "sha256": "ec1296e4d9fbd3c72f989e70ea7d60edb3c3b90143410e0d95c475eab362e1dc",
+          "triangles": 890,
+          "vertices": 447
+        },
+        {
+          "bounds_max_m": [
+            0.02329412084379645,
+            0.015767320410133845,
+            0.005683220354415375
+          ],
+          "bounds_min_m": [
+            0.018020847807541818,
+            0.01336549312652631,
+            -0.005683136074545958
+          ],
+          "filename": "wide2_Link_coacd_04.stl",
+          "name": "wide2_Link_coacd_04",
+          "sha256": "964c178ca1edbf872a83879c862a9e507f5da7a34130b05a5cb2b76a44accf57",
+          "triangles": 426,
+          "vertices": 215
+        },
+        {
+          "bounds_max_m": [
+            0.018020847807541818,
+            0.015767320410133845,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.010994700977190769,
+            0.01336549312652631,
+            -0.005685164309736743
+          ],
+          "filename": "wide2_Link_coacd_05.stl",
+          "name": "wide2_Link_coacd_05",
+          "sha256": "0fcc9d61de81faba349b589fb2bf094437cac362b239e0b3a7cf64461dd31b93",
+          "triangles": 182,
+          "vertices": 93
+        },
+        {
+          "bounds_max_m": [
+            0.022718082986309812,
+            0.013364808352587298,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.009783555107074154,
+            0.008770254900557516,
+            -0.005685164309736743
+          ],
+          "filename": "wide2_Link_coacd_06.stl",
+          "name": "wide2_Link_coacd_06",
+          "sha256": "bdcaada1e6d965da4e3e773015d68e82c25f5a43eaae06ebaeb55837bdaaed70",
+          "triangles": 486,
+          "vertices": 245
+        },
+        {
+          "bounds_max_m": [
+            0.018098753510168014,
+            0.008769045885764097,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.00978228915320229,
+            0.0010118145823223845,
+            -0.005685164309736743
+          ],
+          "filename": "wide2_Link_coacd_07.stl",
+          "name": "wide2_Link_coacd_07",
+          "sha256": "1119cbebd1a7d97cd9bf58e4e854cfaa2092b9f38e2a5eee9408c74fa385fc31",
+          "triangles": 972,
+          "vertices": 488
+        },
+        {
+          "bounds_max_m": [
+            0.009782289404035235,
+            0.012065360757618757,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.004680044177373357,
+            0.0043070656716586025,
+            -0.005685164309736743
+          ],
+          "filename": "wide2_Link_coacd_08.stl",
+          "name": "wide2_Link_coacd_08",
+          "sha256": "163a33d0faa908b04a0157aad459f9558d1a37950cdc6bd602b785c50caf1d75",
+          "triangles": 184,
+          "vertices": 94
+        },
+        {
+          "bounds_max_m": [
+            0.009782289404035235,
+            0.0043064047268493374,
+            0.005685164309736743
+          ],
+          "bounds_min_m": [
+            0.004680044177373357,
+            -0.0024495917612394613,
+            -0.005685164309736743
+          ],
+          "filename": "wide2_Link_coacd_09.stl",
+          "name": "wide2_Link_coacd_09",
+          "sha256": "0c4107ede0e18e15f6a0c021eba37263010e56bb52c5fde601183e905f94f428",
+          "triangles": 384,
+          "vertices": 194
+        },
+        {
+          "bounds_max_m": [
+            0.00046269217882410896,
+            0.0007807954335969092,
+            -0.0017833911334795005
+          ],
+          "bounds_min_m": [
+            -0.0051781494479195556,
+            -0.005173837203625464,
+            -0.005685163808070853
+          ],
+          "filename": "wide2_Link_coacd_10.stl",
+          "name": "wide2_Link_coacd_10",
+          "sha256": "fdbbe838138fa3b7821787d9ce337e8fd1df4a38f90157ea4900432a73a7ecbe",
+          "triangles": 930,
+          "vertices": 467
+        },
+        {
+          "bounds_max_m": [
+            -0.004054478055603272,
+            0.0031735400562771243,
+            0.0026248624197034442
+          ],
+          "bounds_min_m": [
+            -0.010626847019037988,
+            -0.0031799480662916824,
+            0.0009530176373523016
+          ],
+          "filename": "wide2_Link_coacd_11.stl",
+          "name": "wide2_Link_coacd_11",
+          "sha256": "1fc7833f2f9fbf426425de978156ce5b9b5365716edfad284f2e7ee86c4fe40a",
+          "triangles": 188,
+          "vertices": 96
+        },
+        {
+          "bounds_max_m": [
+            0.00468004380112394,
+            0.007648837743915185,
+            -0.0017833912588959729
+          ],
+          "bounds_min_m": [
+            0.00046324401130243276,
+            -0.005151557218146086,
+            -0.005685164309736743
+          ],
+          "filename": "wide2_Link_coacd_12.stl",
+          "name": "wide2_Link_coacd_12",
+          "sha256": "bc73cf113b8ed00dad507023049bcd2af15a1c63c7fc41c7fb4b30a2c6398718",
+          "triangles": 498,
+          "vertices": 251
+        },
+        {
+          "bounds_max_m": [
+            0.00046324401130243276,
+            0.005232749604070094,
+            -0.0017833912588959729
+          ],
+          "bounds_min_m": [
+            -0.005111185078340852,
+            0.0007818138153523613,
+            -0.005685159293077849
+          ],
+          "filename": "wide2_Link_coacd_13.stl",
+          "name": "wide2_Link_coacd_13",
+          "sha256": "ab4a220e66798697e1a315e597a06a698753a9b38fd8b0df8f88571388bb5934",
+          "triangles": 704,
+          "vertices": 354
+        }
+      ],
+      "source_bytes": 1596384,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/wide2_Link.stl",
+      "source_sha256": "fd388efb484bb85ba2ce1cb9e3fd3a57953f3eb9bffe1e23ed0c6d53a71e014f",
+      "triangles": 31926,
+      "vertices_unique": 15963
+    },
+    {
+      "bounds_max_m": [
+        0.04784440994262695,
+        0.022279657423496246,
+        0.030190739780664444
+      ],
+      "bounds_min_m": [
+        -0.005075198598206043,
+        -0.00533188646659255,
+        -0.030186962336301804
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.04813929735841915,
+            0.02260608053505564,
+            0.030492908709081945
+          ],
+          "bounds_min_m": [
+            0.018358608634625462,
+            0.0017600394602967917,
+            -0.030492067878572726
+          ],
+          "filename": "wide3_Link_coacd_00.stl",
+          "name": "wide3_Link_coacd_00",
+          "sha256": "4b39e6aac35ed46a5290ea54949380091ce698e58cca8e92e25b3926cba5e786",
+          "triangles": 2104,
+          "vertices": 1054
+        },
+        {
+          "bounds_max_m": [
+            0.018358608184776526,
+            0.017167995302680428,
+            0.030314300687580342
+          ],
+          "bounds_min_m": [
+            0.005917014256095143,
+            -0.005534840440418964,
+            -0.0303089973556272
+          ],
+          "filename": "wide3_Link_coacd_01.stl",
+          "name": "wide3_Link_coacd_01",
+          "sha256": "25424e30d90cb5ab98b814ca9149a2f9700df977a5d7affe3cfc9b162a394d15",
+          "triangles": 1492,
+          "vertices": 748
+        },
+        {
+          "bounds_max_m": [
+            0.005917014256095143,
+            0.004711357525885362,
+            0.011832077217396098
+          ],
+          "bounds_min_m": [
+            -0.005365128678724851,
+            -0.005327230658021209,
+            0.004810800837669493
+          ],
+          "filename": "wide3_Link_coacd_02.stl",
+          "name": "wide3_Link_coacd_02",
+          "sha256": "5a9e54f08d206d79780d4cb19ec19167c0f14d5bf6dc6f3199218fd9f6e3c12d",
+          "triangles": 424,
+          "vertices": 214
+        },
+        {
+          "bounds_max_m": [
+            0.005917014256095143,
+            0.01580864718642694,
+            0.019497787389310517
+          ],
+          "bounds_min_m": [
+            -0.0002523256130926299,
+            0.010276597508325214,
+            -0.019493819208999064
+          ],
+          "filename": "wide3_Link_coacd_03.stl",
+          "name": "wide3_Link_coacd_03",
+          "sha256": "31c609011199ae417b82d8ffac6c1177250f383660b3972144df4b335eee428f",
+          "triangles": 150,
+          "vertices": 77
+        },
+        {
+          "bounds_max_m": [
+            0.005917014256095143,
+            0.010275511572994,
+            0.0193644881526307
+          ],
+          "bounds_min_m": [
+            -0.0002523256130926299,
+            0.00471135775080983,
+            -0.019360825869595644
+          ],
+          "filename": "wide3_Link_coacd_04.stl",
+          "name": "wide3_Link_coacd_04",
+          "sha256": "84d16a9fc8cf742e3fa68975f6bbf7b0bb3b65513d13961c22cd4e6db564f45b",
+          "triangles": 128,
+          "vertices": 66
+        },
+        {
+          "bounds_max_m": [
+            -0.0002523256130926299,
+            0.015728965894263536,
+            0.01933207743649845
+          ],
+          "bounds_min_m": [
+            -0.0054037922950658235,
+            0.009824182634115441,
+            -0.019332075124405712
+          ],
+          "filename": "wide3_Link_coacd_05.stl",
+          "name": "wide3_Link_coacd_05",
+          "sha256": "a69d5ab4142bf1021bcd01019207c71328ed12c280557b8f1e0640922388249e",
+          "triangles": 310,
+          "vertices": 157
+        },
+        {
+          "bounds_max_m": [
+            -0.0002523256130926299,
+            0.009823682402098743,
+            0.019328295106645577
+          ],
+          "bounds_min_m": [
+            -0.0054031463119939005,
+            0.00471135775080983,
+            -0.019328292794552837
+          ],
+          "filename": "wide3_Link_coacd_06.stl",
+          "name": "wide3_Link_coacd_06",
+          "sha256": "7c87738d00daaff9b5305b166841c10e04cf15799e5477031a29e7f620efa918",
+          "triangles": 242,
+          "vertices": 123
+        },
+        {
+          "bounds_max_m": [
+            0.005917014256095143,
+            0.004711357525885362,
+            -0.004155444650470463
+          ],
+          "bounds_min_m": [
+            -0.005365128678724851,
+            -0.005327230658021209,
+            -0.012332075699648337
+          ],
+          "filename": "wide3_Link_coacd_07.stl",
+          "name": "wide3_Link_coacd_07",
+          "sha256": "b925fe4a1fddc96c8440e3188a6039a8e5a5a4e37278a78e106bc12f7e36b392",
+          "triangles": 478,
+          "vertices": 241
+        },
+        {
+          "bounds_max_m": [
+            0.005917014256095143,
+            0.004711357975734298,
+            0.004809923632244528
+          ],
+          "bounds_min_m": [
+            0.0029841863313180284,
+            -0.0030208992489626496,
+            -0.004153767163788569
+          ],
+          "filename": "wide3_Link_coacd_08.stl",
+          "name": "wide3_Link_coacd_08",
+          "sha256": "3db35e837e67a8ab82fa95623f01dbaa0c24108c5e66b49d43c37adb04d13a4e",
+          "triangles": 48,
+          "vertices": 26
+        },
+        {
+          "bounds_max_m": [
+            0.002983900227394809,
+            0.004711357975734298,
+            0.004809923632244528
+          ],
+          "bounds_min_m": [
+            -0.0030341572440524267,
+            -0.002866431920756085,
+            -0.004153767163788569
+          ],
+          "filename": "wide3_Link_coacd_09.stl",
+          "name": "wide3_Link_coacd_09",
+          "sha256": "22f33c08bd9181f84f99387315e76b3a7deedbbb3ca993b0c053b80e80fe03db",
+          "triangles": 144,
+          "vertices": 74
+        }
+      ],
+      "source_bytes": 1411884,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/wide3_Link.stl",
+      "source_sha256": "a06d0c7e16ddd06e28a8e75c5a27c2e5fa025c00b79d973983f389cd08a380fb",
+      "triangles": 28236,
+      "vertices_unique": 12488
+    },
+    {
+      "bounds_max_m": [
+        0.03652513772249222,
+        0.014754821546375751,
+        0.02550000138580799
+      ],
+      "bounds_min_m": [
+        -0.004993135575205088,
+        -0.005201006308197975,
+        -0.02550000138580799
+      ],
+      "parts": [
+        {
+          "bounds_max_m": [
+            0.002725027178433592,
+            0.0027289999877089383,
+            0.017020234585907956
+          ],
+          "bounds_min_m": [
+            -0.00273553242685165,
+            -0.0027242429197897877,
+            -0.0036007417013066423
+          ],
+          "filename": "wide_loop_Link_coacd_00.stl",
+          "name": "wide_loop_Link_coacd_00",
+          "sha256": "2a5ae64e00a37df533b622e965c882f33869309413dff0efb848f6dcf86f23e8",
+          "triangles": 248,
+          "vertices": 126
+        },
+        {
+          "bounds_max_m": [
+            0.002725027178433592,
+            0.0027289999877089383,
+            -0.003602060230626536
+          ],
+          "bounds_min_m": [
+            -0.00273553242685165,
+            -0.0027242429197897877,
+            -0.017067545089816116
+          ],
+          "filename": "wide_loop_Link_coacd_01.stl",
+          "name": "wide_loop_Link_coacd_01",
+          "sha256": "6a4dd6f243e97352cdbfe4255b20fc023219a8b6459663ce62dab2b8da369f00",
+          "triangles": 234,
+          "vertices": 119
+        },
+        {
+          "bounds_max_m": [
+            0.006783963518097735,
+            0.0052497713711047445,
+            -0.017069712493631872
+          ],
+          "bounds_min_m": [
+            -0.005254155975382702,
+            -0.005480389455839452,
+            -0.025756065099446168
+          ],
+          "filename": "wide_loop_Link_coacd_02.stl",
+          "name": "wide_loop_Link_coacd_02",
+          "sha256": "de0f33db228f55ac2d879f867af1909f914ef7080a0d2156c3caeb18fa8c2b9b",
+          "triangles": 1188,
+          "vertices": 596
+        },
+        {
+          "bounds_max_m": [
+            0.03677394101757092,
+            0.015013515563063462,
+            0.02575543281334003
+          ],
+          "bounds_min_m": [
+            0.026433862340171865,
+            1.9113501877277006e-05,
+            0.017589330079396337
+          ],
+          "filename": "wide_loop_Link_coacd_03.stl",
+          "name": "wide_loop_Link_coacd_03",
+          "sha256": "a350394527b2d04ef5e8693bde3e34c46b92c6e4c736c5e4af3016408518f918",
+          "triangles": 1390,
+          "vertices": 697
+        },
+        {
+          "bounds_max_m": [
+            0.03425953676286353,
+            0.012482322288335845,
+            0.017588530602252517
+          ],
+          "bounds_min_m": [
+            0.028801767727989036,
+            0.007029722306372929,
+            -0.0036007417013066423
+          ],
+          "filename": "wide_loop_Link_coacd_04.stl",
+          "name": "wide_loop_Link_coacd_04",
+          "sha256": "f177deb0d7412c818e70c2ef5ce65772f7209fab2cdbb8b07d4555600909b324",
+          "triangles": 282,
+          "vertices": 143
+        },
+        {
+          "bounds_max_m": [
+            0.025081001100649702,
+            0.009513495073089184,
+            0.016072863289992134
+          ],
+          "bounds_min_m": [
+            0.010257318188019254,
+            -0.004146062862762756,
+            -0.0036007417013066423
+          ],
+          "filename": "wide_loop_Link_coacd_05.stl",
+          "name": "wide_loop_Link_coacd_05",
+          "sha256": "7699aabba6fa243c51aa0883b95210bf28240bfbaf539822775299abfa5697ce",
+          "triangles": 354,
+          "vertices": 179
+        },
+        {
+          "bounds_max_m": [
+            0.004215453963718974,
+            0.0052497717510843755,
+            0.024780499314903226
+          ],
+          "bounds_min_m": [
+            -0.005250249784775063,
+            -0.005479580859184485,
+            0.01702099302525162
+          ],
+          "filename": "wide_loop_Link_coacd_06.stl",
+          "name": "wide_loop_Link_coacd_06",
+          "sha256": "8938b906dca892155f86e34ab1e081f3b4ea92b18243504c5ff641a5bfd7a98b",
+          "triangles": 1158,
+          "vertices": 581
+        },
+        {
+          "bounds_max_m": [
+            0.03425953676286353,
+            0.012482270611106017,
+            -0.0036020830294044015
+          ],
+          "bounds_min_m": [
+            0.028801767727989036,
+            0.007029722306372929,
+            -0.017298869089633073
+          ],
+          "filename": "wide_loop_Link_coacd_07.stl",
+          "name": "wide_loop_Link_coacd_07",
+          "sha256": "17db0e39138946ffae0fb1491533c0758f249b21751a2ed34e6f89717c1cc976",
+          "triangles": 284,
+          "vertices": 144
+        },
+        {
+          "bounds_max_m": [
+            0.02525671128165985,
+            0.009513494313129922,
+            -0.0036020830294044015
+          ],
+          "bounds_min_m": [
+            0.00993354666387583,
+            -0.004254137429397564,
+            -0.017298869089633073
+          ],
+          "filename": "wide_loop_Link_coacd_08.stl",
+          "name": "wide_loop_Link_coacd_08",
+          "sha256": "2fce474102bb7a5b4a4eb64eae0e70bef1f17daf56e4f55ddc44599aeb2f8283",
+          "triangles": 356,
+          "vertices": 180
+        },
+        {
+          "bounds_max_m": [
+            0.010040320180253776,
+            0.005542416103807901,
+            0.025749499051420877
+          ],
+          "bounds_min_m": [
+            0.008168306070055975,
+            -0.005268473295660214,
+            0.017093651210390748
+          ],
+          "filename": "wide_loop_Link_coacd_09.stl",
+          "name": "wide_loop_Link_coacd_09",
+          "sha256": "634bf1e361bd6c11839c163d74f33685917175a2d5ece9b76053f536c765f365",
+          "triangles": 426,
+          "vertices": 215
+        },
+        {
+          "bounds_max_m": [
+            0.008168306070055975,
+            0.00530970745821524,
+            0.025751119284567858
+          ],
+          "bounds_min_m": [
+            0.004215453963718974,
+            -0.005480389455839452,
+            0.018725858275507434
+          ],
+          "filename": "wide_loop_Link_coacd_10.stl",
+          "name": "wide_loop_Link_coacd_10",
+          "sha256": "14d8c088f9ec983715d4a63391f294e7cdc6d594d4b2a0f2ce5c3b7533ef11d7",
+          "triangles": 564,
+          "vertices": 284
+        },
+        {
+          "bounds_max_m": [
+            0.03675674921914174,
+            0.015003956035504418,
+            -0.017299695925310332
+          ],
+          "bounds_min_m": [
+            0.025615067031906857,
+            -0.0004100788111573994,
+            -0.025758040993527853
+          ],
+          "filename": "wide_loop_Link_coacd_11.stl",
+          "name": "wide_loop_Link_coacd_11",
+          "sha256": "193d0f57cd1c0ef96e9985cc5e95179a74bf005adcf3aab7568eac55b7494ed4",
+          "triangles": 1404,
+          "vertices": 704
+        },
+        {
+          "bounds_max_m": [
+            0.013945352989956583,
+            0.007655754517753771,
+            -0.017298869089633073
+          ],
+          "bounds_min_m": [
+            0.0067839642780569975,
+            -0.005398615559350395,
+            -0.02225680683809339
+          ],
+          "filename": "wide_loop_Link_coacd_12.stl",
+          "name": "wide_loop_Link_coacd_12",
+          "sha256": "b4eac7521521ad87f691bae349ef4b9c17f44c72425f0343782faa2725249a9c",
+          "triangles": 340,
+          "vertices": 172
+        },
+        {
+          "bounds_max_m": [
+            0.02170811874488371,
+            0.008211442049979395,
+            -0.022257148819761374
+          ],
+          "bounds_min_m": [
+            0.0067839642780569975,
+            -0.005064888568872328,
+            -0.025751906602363484
+          ],
+          "filename": "wide_loop_Link_coacd_13.stl",
+          "name": "wide_loop_Link_coacd_13",
+          "sha256": "e2489cc4851f560d3bf119d36cc0d285f06c8d2a8b86bfff9ae88ef95341eb3d",
+          "triangles": 928,
+          "vertices": 466
+        },
+        {
+          "bounds_max_m": [
+            0.026433861580212603,
+            0.01221636086526695,
+            0.025754745810167012
+          ],
+          "bounds_min_m": [
+            0.010040503710415594,
+            -0.004782863886878597,
+            0.02187096792108867
+          ],
+          "filename": "wide_loop_Link_coacd_14.stl",
+          "name": "wide_loop_Link_coacd_14",
+          "sha256": "7b586c0771789a3260ce03defa82ebf478cbda65c04eb2414f60c1f72d605df4",
+          "triangles": 1070,
+          "vertices": 537
+        },
+        {
+          "bounds_max_m": [
+            0.026433861580212603,
+            0.012517282694274212,
+            0.021870966401170144
+          ],
+          "bounds_min_m": [
+            0.02060975608289925,
+            -0.0025672368561405756,
+            0.016072863289992134
+          ],
+          "filename": "wide_loop_Link_coacd_15.stl",
+          "name": "wide_loop_Link_coacd_15",
+          "sha256": "267f94783bbf727218aa3112721cd051cb1560ed10419e31fd4e06beb428013c",
+          "triangles": 314,
+          "vertices": 159
+        },
+        {
+          "bounds_max_m": [
+            0.021708118364904078,
+            0.009513539910685653,
+            -0.017298869089633073
+          ],
+          "bounds_min_m": [
+            0.013945353369936214,
+            -0.004476852610692472,
+            -0.02235394787082312
+          ],
+          "filename": "wide_loop_Link_coacd_16.stl",
+          "name": "wide_loop_Link_coacd_16",
+          "sha256": "008074a6922e70596229b8cbfb67657e723aa337c1516f0b4ac06cef12e965be",
+          "triangles": 388,
+          "vertices": 196
+        },
+        {
+          "bounds_max_m": [
+            0.02060918611345261,
+            0.009513538390767129,
+            0.022202048733415802
+          ],
+          "bounds_min_m": [
+            0.010040503330435963,
+            -0.005109620531003889,
+            0.01607286480991066
+          ],
+          "filename": "wide_loop_Link_coacd_17.stl",
+          "name": "wide_loop_Link_coacd_17",
+          "sha256": "521064969d5d9384a4d231daf536793658a53d863bcc2959da2abc172561bd8d",
+          "triangles": 496,
+          "vertices": 250
+        },
+        {
+          "bounds_max_m": [
+            0.025615065511988333,
+            0.011874063814189206,
+            -0.017299695925310332
+          ],
+          "bounds_min_m": [
+            0.021708500624412957,
+            -0.002140945307609665,
+            -0.025753432600561954
+          ],
+          "filename": "wide_loop_Link_coacd_18.stl",
+          "name": "wide_loop_Link_coacd_18",
+          "sha256": "14decf971d27662befa263d7d8dabd822a28232d0022b5f67723ec5beab67d52",
+          "triangles": 658,
+          "vertices": 331
+        }
+      ],
+      "source_bytes": 435484,
+      "source_mesh": "X2_URDF-v1.4.0/meshes/wide_loop_Link.stl",
+      "source_sha256": "31aa42a993b3364e16efa657700ffe621eeaa5994d415bbe1b77f0687419b2b8",
+      "triangles": 8708,
+      "vertices_unique": 4026
+    }
+  ],
+  "schema": "robotsim.issue46.coacd-decomposition.v1",
+  "schema_version": "robotsim.x2-omnipicker-collision-proxies.v1",
+  "settings": {
+    "apx_mode": "ch",
+    "decimate": false,
+    "extrude": false,
+    "extrude_margin": 0.01,
+    "max_ch_vertex": 256,
+    "max_convex_hull": 24,
+    "mcts_iterations": 60,
+    "mcts_max_depth": 3,
+    "mcts_nodes": 20,
+    "merge": true,
+    "pca": false,
+    "preprocess_mode": "auto",
+    "preprocess_resolution": 50,
+    "real_metric": true,
+    "resolution": 2000,
+    "seed": 17,
+    "threshold": 0.003
+  },
+  "source": "https://github.com/SarahWeiii/CoACD",
+  "source_repo_commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+  "source_urdf_sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d",
+  "tool": "CoACD",
+  "version": "1.0.14"
+}

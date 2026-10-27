@@ -1,0 +1,37 @@
+{
+  "schema_version": "robotsim.x2-omnipicker-source-assets.v1",
+  "repository": "https://github.com/AgibotTech/agibot_x2_urdf.git",
+  "repository_path": "reference/AgibotTech/agibot_x2_urdf",
+  "commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+  "version": "v1.4.0",
+  "license": {
+    "spdx": "MulanPSL-2.0",
+    "path": "LICENSE",
+    "scope_note": "Repository license is recorded in third_party/asset_registry.json; redistribution rights for individual meshes are not inferred. Vendor files remain in the ignored reference checkout."
+  },
+  "required_assets": {
+    "urdf": {
+      "path": "X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+      "sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d"
+    },
+    "meshes": [
+      {"path": "X2_URDF-v1.4.0/meshes/base_link.stl", "sha256": "ca4911f4e84a6d850bafab3b35f8e7fb6db32eb3bd36165079de3d1342ff8e4a"},
+      {"path": "X2_URDF-v1.4.0/meshes/narrow1_Link.stl", "sha256": "82a707fe539d02f571e075a06c59b6846567ce61d741285b0f86f2d934cabb99"},
+      {"path": "X2_URDF-v1.4.0/meshes/narrow2_Link.stl", "sha256": "e113852a3859903e3be17ecb4b27809a5c5da8d73002157844b132abe7e3a17f"},
+      {"path": "X2_URDF-v1.4.0/meshes/narrow3_Link.stl", "sha256": "0fb55604e97d18c9545567e082e071746a968f624a0aa31ece3a0cc4fc1217b0"},
+      {"path": "X2_URDF-v1.4.0/meshes/narrow_loop_Link.stl", "sha256": "63b895ff646b799c303c41c924ea4c77cf00f9c5d357e2fb4f6761c649237b17"},
+      {"path": "X2_URDF-v1.4.0/meshes/wide1_Link.stl", "sha256": "c858476345282813a6311bd0501787f15431f58daf638ce4381d241250c98075"},
+      {"path": "X2_URDF-v1.4.0/meshes/wide2_Link.stl", "sha256": "fd388efb484bb85ba2ce1cb9e3fd3a57953f3eb9bffe1e23ed0c6d53a71e014f"},
+      {"path": "X2_URDF-v1.4.0/meshes/wide3_Link.stl", "sha256": "a06d0c7e16ddd06e28a8e75c5a27c2e5fa025c00b79d973983f389cd08a380fb"},
+      {"path": "X2_URDF-v1.4.0/meshes/wide_loop_Link.stl", "sha256": "31aa42a993b3364e16efa657700ffe621eeaa5994d415bbe1b77f0687419b2b8"}
+    ]
+  },
+  "provenance_only_assets": {
+    "step": {
+      "filename": "OP1-官网模型.STEP",
+      "sha256": "5d61f8d7e94fa3c789ddd497e4574aa2a508e24aed447d841585dfdbb8e8c20b",
+      "required_for_loading": false,
+      "provenance_status": "unknown"
+    }
+  }
+}

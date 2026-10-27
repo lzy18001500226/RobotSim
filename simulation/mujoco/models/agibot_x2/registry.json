@@ -1,0 +1,239 @@
+{
+  "schema_version": "robotsim.x2-omnipicker-registry.v1",
+  "default_model_id": "X2-OmniPicker-STL",
+  "models": {
+    "X2-OmniPicker-CAD": {
+      "version": "0.1",
+      "classification": "SIMULATION_ONLY_UNVERIFIED_EXPERIMENTAL_GEOMETRY_SELECTED_COUPLING",
+      "package_path": "simulation/mujoco/models/agibot_x2/omnipicker_sim_functional_v0_1",
+      "model_file": "model.xml",
+      "portable_model_sha256": "5e33d30e212ee72271efc3f0a790ebfb46cd31e775c578a10f1a2fb1f33c93e7",
+      "frozen_pr90_reference_model_sha256": "32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45",
+      "frozen_derived_urdf_sha256": "977c9cf45abbba34898d24f8de9258280e9dadcb1d95237ef13560317cb6097d",
+      "portability_manifest": "portability.json",
+      "portability_manifest_sha256": "eb6ddaeef5334d28b71307a2634d4b9db3e6c543cece358edc8d0c1ff9baa9c4",
+      "source_assets_manifest": "source_assets.json",
+      "source_assets_manifest_sha256": "982d01c39f97d16df7d20c78901f170ce448ff90325dd01428dd2fee6e1a6c17",
+      "visual_frame_manifest": "visual_frames.json",
+      "visual_frame_manifest_sha256": "c53724fe5bfead6f3a11624b18f84c6b8d03c0c7bfbab7f80b1cd6a9b37acb19",
+      "collision_proxy_manifest": "collision_proxy_manifest.json",
+      "collision_proxy_manifest_sha256": "7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a",
+      "required_source_commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+      "required_source_origin": "https://github.com/AgibotTech/agibot_x2_urdf.git",
+      "mujoco_version": "3.3.6",
+      "model_dimensions": {
+        "nq": 8,
+        "nv": 8,
+        "nu": 1,
+        "neq": 5
+      },
+      "root_command": {
+        "actuated_joint": "right_claw_joint",
+        "normalized_static_command_range": [
+          0.0,
+          1.0
+        ],
+        "root_formula": "q_root_rad = -0.6841259890668666 * u",
+        "wide_root_mimic": "q_R_hand_wide1_joint = -q_root_rad",
+        "dynamically_validated_command_range": [
+          0.02,
+          1.0
+        ],
+        "dynamic_sequence": "2%-100%-2%"
+      },
+      "quartic_equalities": {
+        "narrow": {
+          "joint1": "R_hand_narrow2_joint",
+          "joint2": "right_claw_joint",
+          "coefficients_ascending": [
+            0.10252605152311378,
+            -0.052265209725381116,
+            -7.725503403156838,
+            -12.559461709155974,
+            -2.6596551253583485
+          ]
+        },
+        "wide": {
+          "joint1": "R_hand_wide2_joint",
+          "joint2": "R_hand_wide1_joint",
+          "coefficients_ascending": [
+            -0.10252605152311378,
+            -0.052265209725381116,
+            7.725503403156838,
+            -12.559461709155974,
+            2.6596551253583485
+          ]
+        }
+      },
+      "actuator": {
+        "name": "servo_right_claw_joint",
+        "joint": "right_claw_joint",
+        "type": "position",
+        "kp": 0.5,
+        "kv": 0.05,
+        "force_range_nm": [
+          -0.5,
+          0.5
+        ],
+        "control_range_rad": [
+          -1.0,
+          0.0
+        ],
+        "passive_actuators": 0
+      },
+      "equality_names": [
+        "official_root_mimic",
+        "candidate_narrow_D",
+        "candidate_wide_D",
+        "candidate_full_open_narrow_q2",
+        "candidate_full_open_wide_q2"
+      ],
+      "collision": {
+        "original_vendor_visual_meshes": 9,
+        "generated_proxy_pieces": 137,
+        "total_hash_locked_proxy_pieces": 161,
+        "coacd_version": "1.0.14",
+        "inherited_exclusions": [
+          [
+            "R_hand_narrow1_Link",
+            "R_hand_narrow_loop_Link"
+          ],
+          [
+            "R_hand_narrow3_Link",
+            "R_hand_narrow_loop_Link"
+          ],
+          [
+            "R_hand_wide1_Link",
+            "R_hand_wide_loop_Link"
+          ],
+          [
+            "R_hand_wide3_Link",
+            "R_hand_wide_loop_Link"
+          ]
+        ],
+        "unclassified_source_stl_baseline_pairs": 10
+      },
+      "qualification": "isolated_unloaded_single_actuator_open_close",
+      "validated_dynamic_evidence": {
+        "status": "EXPERIMENTAL_MUJOCO_PASS",
+        "steps": 17500,
+        "simulated_time_s": 17.5,
+        "attempt_id": "057905e1-0e2c-4b30-bc30-03a49b349d2a",
+        "original_frozen_model_sha256": "32353b81b9893fb049da55962b72a65bbae865189e1d404579502140515d6c45",
+        "evidence_sha256": "c1c6362987067736f9ab29446ad3a601b41a21b1e8d5e20c59514d26da192e7a",
+        "portable_artifact_dynamic_regression": "NOT_RUN"
+      },
+      "unsupported_claims": [
+        "manufacturer_transmission_equivalence",
+        "zero_gap_dynamic_closure",
+        "bottle_grasp",
+        "load_transfer_or_lift",
+        "full_x2_manipulation",
+        "hardware_equivalence"
+      ],
+      "fallback_policy": "NONE_FAIL_CLOSED",
+      "runtime_kind": "cad_quartic_experimental",
+      "selection_status": "PRESERVED_HISTORICAL_EXPERIMENT"
+    },
+    "X2-OmniPicker-STL": {
+      "version": "0.1-stl-table",
+      "classification": "KINEMATIC_SIMULATION_ONLY",
+      "runtime_kind": "source_stl_table_driven_kinematics",
+      "selection_status": "PENDING_HUMAN_FULL_X2_REVIEW",
+      "package_path": "simulation/mujoco/models/agibot_x2/omnipicker_stl_kinematic",
+      "model_file": "model.xml",
+      "portable_model_sha256": "088c1f44963773b6a3cebe0ca3e428b409fa16077bdb930e7b142c5c75981857",
+      "source_assets_manifest": "source_assets.json",
+      "source_assets_manifest_sha256": "982d01c39f97d16df7d20c78901f170ce448ff90325dd01428dd2fee6e1a6c17",
+      "trajectory_file": "trajectory.csv",
+      "trajectory_sha256": "117bc4e81edbef8b341341c1cb81baba5a7bde61b590eaea93553ec77c4b540a",
+      "required_source_commit": "575cc6b988f976c23550e0db85aa1e5475d3652d",
+      "required_source_origin": "https://github.com/AgibotTech/agibot_x2_urdf.git",
+      "mujoco_version": "3.3.6",
+      "model_dimensions": {
+        "nq": 6,
+        "nv": 6,
+        "nu": 0,
+        "neq": 0
+      },
+      "root_command": {
+        "input": "gripper_command_percent",
+        "reviewed_integer_range": [
+          0,
+          100
+        ],
+        "root_formula": "q_right_claw_joint_rad = -0.01 * command_percent",
+        "wide_root_mimic": "q_R_hand_wide1_joint_rad = -q_right_claw_joint_rad",
+        "between_sample_mapping": "linear interpolation between adjacent reviewed source-STL rows",
+        "runtime_semantics": "kinematic qpos/qvel driver followed by mj_forward; no inferred passive dynamics"
+      },
+      "fixed_intermediate_links": [
+        "R_hand_narrow2_Link",
+        "R_hand_wide2_Link"
+      ],
+      "table_driven_joints": [
+        "right_claw_joint",
+        "R_hand_wide1_joint",
+        "R_hand_narrow3_joint",
+        "R_hand_narrow_loop_joint",
+        "R_hand_wide3_joint",
+        "R_hand_wide_loop_joint"
+      ],
+      "collision": {
+        "source_stl_visual_meshes": 9,
+        "source_stl_external_collision_geoms": 8,
+        "internal_exclusions": [
+          [
+            "R_hand_narrow1_Link",
+            "R_hand_narrow_loop_Link"
+          ],
+          [
+            "R_hand_narrow2_Link",
+            "R_hand_narrow_loop_Link"
+          ],
+          [
+            "R_hand_narrow3_Link",
+            "R_hand_narrow_loop_Link"
+          ],
+          [
+            "R_hand_wide1_Link",
+            "R_hand_wide_loop_Link"
+          ],
+          [
+            "R_hand_wide2_Link",
+            "R_hand_wide_loop_Link"
+          ],
+          [
+            "R_hand_wide3_Link",
+            "R_hand_wide_loop_Link"
+          ],
+          [
+            "R_hand_narrow3_Link",
+            "R_hand_wide3_Link"
+          ]
+        ],
+        "external_collision_policy": "enabled_source_stl_geoms"
+      },
+      "qualification": "reviewed_static_source_stl_trajectory_and_empty_kinematic_cycle",
+      "validated_kinematic_evidence": {
+        "status": "PASS",
+        "reviewed_integer_samples": 101,
+        "cycle_steps": 17500,
+        "cycle_duration_s": 17.5,
+        "source_pose_table_sha256": "117bc4e81edbef8b341341c1cb81baba5a7bde61b590eaea93553ec77c4b540a",
+        "historical_evidence_identity": "Issue 46 source-STL table review; provenance only and not a runtime dependency"
+      },
+      "unsupported_claims": [
+        "manufacturer_transmission_equivalence",
+        "dynamic_passive_link_physics",
+        "external_object_contact",
+        "load_transfer_or_lift",
+        "bottle_grasp",
+        "full_x2_dynamic_physics",
+        "hardware_equivalence"
+      ],
+      "fallback_policy": "NONE_FAIL_CLOSED"
+    }
+  },
+  "selection_status": "PENDING_HUMAN_FULL_X2_REVIEW"
+}
