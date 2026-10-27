@@ -727,6 +727,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             raicom_continuous_ten_second_transit=False,
             raicom_forward_gait_yaw_inversion=False,
             raicom_native_nominal_straight_gait_diagnostic=True,
+            raicom_native_mjdata_route_feedback=True,
             run65_ground_truth_point_goal=False,
             heading_change_rad=0.0,
             startup_speed=None,
@@ -738,6 +739,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             .rsplit(" && ", 1)[1]
         )
         self.assertIn("--raicom-native-nominal-straight-gait-diagnostic", child)
+        self.assertIn("--raicom-native-mjdata-route-feedback", child)
         self.assertEqual(child[child.index("--forward-speed") + 1], "0.12")
         self.assertNotIn("--raicom-low-cruise-profile", child)
 
@@ -818,6 +820,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("reliability=ReliabilityPolicy.BEST_EFFORT", odom_qos)
         subscription = source.index("Odometry, \"/aima/hal/odom/state\"")
         self.assertIn("self.odom_state_qos", source[subscription:subscription + 160])
+
+    def test_native_mjdata_route_feedback_stays_read_only_and_replaces_only_route_pose(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("NativeMjDataLivePoseReader(", source)
+        self.assertIn("def route_feedback_snapshot(", source)
+        self.assertIn("sample=route_sample", source)
+        self.assertIn('"native_capture_is_read_only": True', source)
+        self.assertNotIn("mj_step(", source)
+        self.assertNotIn("mjData.qpos", source)
 
     def test_transit_baseline_precedes_all_route_mode_dispatch(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(

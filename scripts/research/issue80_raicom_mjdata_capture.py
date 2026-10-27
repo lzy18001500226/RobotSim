@@ -6,6 +6,7 @@ by the pinned simulator and modifies only the staged per-run launch script.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
 import math
@@ -47,6 +48,190 @@ DEFAULT_INTERVAL_STEPS = 10
 
 class MjDataCaptureError(RuntimeError):
     """The capture overlay cannot safely represent the pinned native state."""
+
+
+@dataclass(frozen=True)
+class NativeMjDataLivePose:
+    """One read-only, native world-frame pelvis sample from the trace tail."""
+
+    generation: int
+    sim_time_s: float
+    host_monotonic_s: float
+    x_m: float
+    y_m: float
+    z_m: float
+    roll_rad: float
+    pitch_rad: float
+    yaw_rad: float
+    vx_m_s: float
+    vy_m_s: float
+    vz_m_s: float
+    wx_rad_s: float
+    wy_rad_s: float
+    wz_rad_s: float
+
+
+class NativeMjDataLivePoseReader:
+    """Tail existing read-only capture evidence without changing simulator state."""
+
+    _SAMPLE_EVENTS = frozenset((
+        "post_forward_initial",
+        "post_forward_reset_generation",
+        "post_step_after_reset_generation",
+        "post_step",
+    ))
+
+    def __init__(
+        self,
+        trace_path: Path,
+        *,
+        maximum_age_s: float,
+        maximum_read_bytes: int = 2 * 1024 * 1024,
+    ) -> None:
+        if not isinstance(maximum_read_bytes, int) or maximum_read_bytes < 4096:
+            raise ValueError("maximum_read_bytes must be an integer of at least 4096")
+        if not math.isfinite(float(maximum_age_s)) or float(maximum_age_s) <= 0.0:
+            raise ValueError("maximum_age_s must be finite and positive")
+        self.trace_path = Path(trace_path)
+        self.maximum_age_s = float(maximum_age_s)
+        self.maximum_read_bytes = maximum_read_bytes
+        self._offset = 0
+        self._partial = b""
+        self._latest: NativeMjDataLivePose | None = None
+        self._latest_generation: int | None = None
+        self._latest_sim_time_s: float | None = None
+        self._generation_changed = False
+        self._accepted_samples = 0
+        self._skipped_initial_bytes = 0
+
+    @staticmethod
+    def _finite_vector(value: Any, length: int, label: str) -> tuple[float, ...]:
+        if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != length:
+            raise MjDataCaptureError(f"native live pose {label} is missing or malformed")
+        parsed = tuple(float(item) for item in value)
+        if not all(math.isfinite(item) for item in parsed):
+            raise MjDataCaptureError(f"native live pose {label} is nonfinite")
+        return parsed
+
+    @staticmethod
+    def _rpy_from_wxyz(quaternion: Sequence[float]) -> tuple[float, float, float]:
+        w, x, y, z = quaternion
+        roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+        pitch_term = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
+        pitch = math.asin(pitch_term)
+        yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+        return roll, pitch, yaw
+
+    def _parse_sample(self, row: Mapping[str, Any]) -> NativeMjDataLivePose | None:
+        if row.get("schema") != CAPTURE_SCHEMA or row.get("event") not in self._SAMPLE_EVENTS:
+            return None
+        generation = row.get("generation")
+        host_ns = row.get("host_monotonic_ns")
+        sim_time = _as_finite_number(row.get("sim_time_s"))
+        if not isinstance(generation, int) or generation < 0 or not isinstance(host_ns, int) or host_ns <= 0 or sim_time is None:
+            raise MjDataCaptureError("native live pose has malformed generation or timestamp")
+        state = row.get("pelvis", {}).get("state")
+        if not isinstance(state, Mapping):
+            raise MjDataCaptureError("native live pose has no pelvis state")
+        position = self._finite_vector(state.get("world_position_m"), 3, "world position")
+        quaternion = self._finite_vector(state.get("world_quaternion_wxyz"), 4, "world quaternion")
+        velocity = self._finite_vector(state.get("world_spatial_velocity_rot_lin"), 6, "world spatial velocity")
+        if self._latest_generation is not None:
+            if generation < self._latest_generation:
+                raise MjDataCaptureError("native live pose generation regressed")
+            if generation > self._latest_generation:
+                self._generation_changed = True
+                self._latest_sim_time_s = None
+            elif self._latest_sim_time_s is not None and sim_time < self._latest_sim_time_s - 1e-12:
+                raise MjDataCaptureError("native live pose simulation time regressed within one generation")
+            elif self._latest_sim_time_s is not None and abs(sim_time - self._latest_sim_time_s) <= 1e-12:
+                return None
+        self._latest_generation = generation
+        self._latest_sim_time_s = sim_time
+        self._accepted_samples += 1
+        roll, pitch, yaw = self._rpy_from_wxyz(quaternion)
+        return NativeMjDataLivePose(
+            generation=generation, sim_time_s=sim_time, host_monotonic_s=host_ns / 1_000_000_000.0,
+            x_m=position[0], y_m=position[1], z_m=position[2],
+            roll_rad=roll, pitch_rad=pitch, yaw_rad=yaw,
+            wx_rad_s=velocity[0], wy_rad_s=velocity[1], wz_rad_s=velocity[2],
+            vx_m_s=velocity[3], vy_m_s=velocity[4], vz_m_s=velocity[5],
+        )
+
+    def poll(self, *, now_monotonic_s: float) -> NativeMjDataLivePose | None:
+        now = float(now_monotonic_s)
+        if not math.isfinite(now):
+            raise ValueError("now_monotonic_s must be finite")
+        if not self.trace_path.exists():
+            return None
+        if self.trace_path.is_symlink() or not self.trace_path.is_file():
+            raise MjDataCaptureError("native live pose trace is missing or unsafe")
+        size = self.trace_path.stat().st_size
+        if self._offset > size:
+            raise MjDataCaptureError("native live pose trace was truncated during route execution")
+        with self.trace_path.open("rb") as stream:
+            start = self._offset
+            if start == 0 and size > self.maximum_read_bytes:
+                start = size - self.maximum_read_bytes
+                stream.seek(start)
+                stream.readline()
+                start = stream.tell()
+                self._skipped_initial_bytes = start
+            elif size - start > self.maximum_read_bytes:
+                start = size - self.maximum_read_bytes
+                stream.seek(start)
+                stream.readline()
+                start = stream.tell()
+                self._partial = b""
+            else:
+                stream.seek(start)
+            payload = stream.read()
+            self._offset = stream.tell()
+        combined = self._partial + payload
+        lines = combined.split(b"\n")
+        self._partial = lines.pop() if combined and not combined.endswith(b"\n") else b""
+        newest: NativeMjDataLivePose | None = None
+        for raw_line in lines:
+            if not raw_line.strip():
+                continue
+            try:
+                row = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise MjDataCaptureError("native live pose trace contains an invalid complete JSONL record") from exc
+            if not isinstance(row, Mapping):
+                raise MjDataCaptureError("native live pose trace record is not an object")
+            candidate = self._parse_sample(row)
+            if candidate is not None:
+                newest = candidate
+        if newest is not None:
+            self._latest = newest
+        if self._latest is not None:
+            age = now - self._latest.host_monotonic_s
+            if age < -0.02 or age > self.maximum_age_s:
+                raise MjDataCaptureError(f"native live pose is stale or clock-skewed: age={age:.6f}s")
+        return self._latest
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "trace": str(self.trace_path),
+            "maximum_age_s": self.maximum_age_s,
+            "accepted_sample_count": self._accepted_samples,
+            "generation_changed": self._generation_changed,
+            "skipped_initial_bytes": self._skipped_initial_bytes,
+            "latest": (
+                {
+                    "generation": self._latest.generation,
+                    "sim_time_s": self._latest.sim_time_s,
+                    "host_monotonic_s": self._latest.host_monotonic_s,
+                    "x_m": self._latest.x_m,
+                    "y_m": self._latest.y_m,
+                    "z_m": self._latest.z_m,
+                    "roll_rad": self._latest.roll_rad,
+                    "pitch_rad": self._latest.pitch_rad,
+                    "yaw_rad": self._latest.yaw_rad,
+                } if self._latest is not None else None
+            ),
+        }
 
 
 def sha256_file(path: Path) -> str:

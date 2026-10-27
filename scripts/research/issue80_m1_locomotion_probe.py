@@ -102,6 +102,12 @@ from issue80_m1_mode_logic import (
     classify_set_mc_action_response,
     run_zero_only_locomotion_activation_observation,
 )
+from issue80_raicom_mjdata_capture import (
+    CAPTURE_TRACE_NAME,
+    MjDataCaptureError,
+    NativeMjDataLivePose,
+    NativeMjDataLivePoseReader,
+)
 from issue80_waypoint_route import (
     DirectiveKind, MotionFeedback, MotionStatus, PhysicalStopEvidence,
     PhysicalStopStatus, PoseEstimate, Profile, RouteState,
@@ -3058,6 +3064,9 @@ class FocusedM1Diagnostic(Node):
             getattr(self.args, "aligned_start_table_approach", False)
         )
         native_x2_timestep_mode = bool(getattr(self.args, "native_x2_timestep", False))
+        native_mjdata_route_feedback_mode = bool(
+            getattr(self.args, "raicom_native_mjdata_route_feedback", False)
+        )
         zero_forward_heading_acquisition_mode = bool(
             getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
         )
@@ -3161,6 +3170,16 @@ class FocusedM1Diagnostic(Node):
                     if native_nominal_straight_gait_diagnostic_mode else None
                 ),
             },
+            "native_mjdata_route_feedback": {
+                "enabled": native_mjdata_route_feedback_mode,
+                "classification": (
+                    "SIMULATION_ONLY_READ_ONLY_NATIVE_MJDATA_GROUND_TRUTH_ROUTE_FEEDBACK"
+                    if native_mjdata_route_feedback_mode else None
+                ),
+                "status": "NOT_INITIALIZED" if native_mjdata_route_feedback_mode else "NOT_ENABLED",
+                "source": str(Path(self.args.output_dir) / CAPTURE_TRACE_NAME)
+                if native_mjdata_route_feedback_mode else None,
+            },
             "route_scope": (
                 "LOCAL01_START_HEADING_TWO_TARGET_SHORT_ROUTE"
                 if short_scene_route_mode else
@@ -3200,7 +3219,28 @@ class FocusedM1Diagnostic(Node):
         evidence_root = Path(self.args.output_dir)
         local01_route_input: Mapping[str, Any] | None = None
         workcell_path = evidence_root / "workcell_geometry_preflight.json"
+        native_route_reader: NativeMjDataLivePoseReader | None = None
         try:
+            if native_mjdata_route_feedback_mode:
+                if not (
+                    native_x2_timestep_mode
+                    and table_approach_mission_mode
+                    and aligned_start_table_approach_mode
+                ):
+                    raise ValueError(
+                        "native MjData route feedback requires the aligned native-timestep TABLE_APPROACH mission"
+                    )
+                native_route_reader = NativeMjDataLivePoseReader(
+                    evidence_root / CAPTURE_TRACE_NAME,
+                    maximum_age_s=MAX_POSE_AGE_S,
+                )
+                result["native_mjdata_route_feedback"].update({
+                    "status": "PENDING_FIRST_FRESH_NATIVE_SAMPLE",
+                    "native_capture_is_read_only": True,
+                    "ros_retained_for": [
+                        "MC mode/source readbacks", "IMU", "leg state", "leg command", "safety status",
+                    ],
+                })
             if native_x2_timestep_mode:
                 capture_path = evidence_root / "set_action_capture_result.json"
                 if capture_path.is_symlink() or not capture_path.is_file():
@@ -3442,6 +3482,68 @@ class FocusedM1Diagnostic(Node):
             result["fault"] = f"route_preflight:{type(exc).__name__}:{exc}"
             return result
 
+        def native_pose_from_snapshot(snapshot: Mapping[str, Any]) -> NativeMjDataLivePose:
+            if native_route_reader is None:
+                raise ValueError("native MjData route feedback is not configured")
+            try:
+                sample_time = float(snapshot["sample_monotonic_s"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("route sample has no monotonic time for native MjData freshness") from exc
+            try:
+                native = native_route_reader.poll(now_monotonic_s=sample_time)
+            except (MjDataCaptureError, OSError, ValueError) as exc:
+                raise ValueError(f"native MjData route feedback unavailable: {exc}") from exc
+            if native is None:
+                raise ValueError("native MjData route feedback has no complete sample yet")
+            reader_snapshot = native_route_reader.snapshot()
+            if reader_snapshot.get("generation_changed") is True:
+                raise ValueError("native MjData generation changed during route execution")
+            result["native_mjdata_route_feedback"].update({
+                "status": "FRESH_NATIVE_SAMPLE",
+                "reader": reader_snapshot,
+            })
+            return native
+
+        def route_feedback_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+            if native_route_reader is None:
+                return dict(snapshot)
+            native = native_pose_from_snapshot(snapshot)
+            result_snapshot = dict(snapshot)
+            native_stamp_ns = int(round(native.sim_time_s * 1_000_000_000.0))
+            ros_pose = result_snapshot.get("pose")
+            result_snapshot["ros_odom_pose"] = dict(ros_pose) if isinstance(ros_pose, Mapping) else None
+            pose = dict(ros_pose) if isinstance(ros_pose, Mapping) else {}
+            pose.update({
+                "x": native.x_m,
+                "y": native.y_m,
+                "z": native.z_m,
+                "roll": native.roll_rad,
+                "pitch": native.pitch_rad,
+                "yaw": native.yaw_rad,
+                "vx": native.vx_m_s,
+                "vy": native.vy_m_s,
+                "vz": native.vz_m_s,
+                "wx": native.wx_rad_s,
+                "wy": native.wy_rad_s,
+                "wz": native.wz_rad_s,
+                "frame_id": "odom",
+                "child_frame_id": "base_link",
+                "twist_frame_id": "base_link",
+                "stamp_sec": native_stamp_ns // 1_000_000_000,
+                "stamp_nanosec": native_stamp_ns % 1_000_000_000,
+            })
+            ages = dict(result_snapshot.get("state_age_s") or {})
+            ages["odom"] = max(0.0, float(result_snapshot["sample_monotonic_s"]) - native.host_monotonic_s)
+            result_snapshot["pose"] = pose
+            result_snapshot["state_age_s"] = ages
+            result_snapshot["native_mjdata_route_pose"] = {
+                "generation": native.generation,
+                "sim_time_s": native.sim_time_s,
+                "host_monotonic_s": native.host_monotonic_s,
+                "source": "READ_ONLY_NATIVE_MJDATA",
+            }
+            return result_snapshot
+
         def pose_from_snapshot(snapshot: Mapping[str, Any]) -> PoseEstimate:
             pose = snapshot.get("pose")
             ages = snapshot.get("state_age_s")
@@ -3562,7 +3664,7 @@ class FocusedM1Diagnostic(Node):
                 return actual_request
 
         try:
-            initial = self.sample_for_first_motion()
+            initial = route_feedback_snapshot(self.sample_for_first_motion())
             initial_fault = snapshot_fault(
                 initial,
                 self.joint_limits,
@@ -3574,6 +3676,40 @@ class FocusedM1Diagnostic(Node):
             if initial_fault or not stand_mode_readback_confirmed(initial):
                 raise ValueError(f"route requires fresh stable STAND preflight: {initial_fault or 'STAND_READBACK_MISSING'}")
             start_pose = pose_from_snapshot(initial)
+            if native_route_reader is not None:
+                ros_pose = initial.get("ros_odom_pose")
+                if not isinstance(ros_pose, Mapping):
+                    raise ValueError("native route feedback requires a fresh ROS odom cross-check at startup")
+                try:
+                    position_delta_m = math.hypot(
+                        float(start_pose.x_m) - float(ros_pose["x"]),
+                        float(start_pose.y_m) - float(ros_pose["y"]),
+                    )
+                    yaw_delta_rad = math.atan2(
+                        math.sin(float(start_pose.yaw_rad) - float(ros_pose["yaw"])),
+                        math.cos(float(start_pose.yaw_rad) - float(ros_pose["yaw"])),
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError("native route feedback ROS cross-check pose is malformed") from exc
+                cross_check = {
+                    "status": "PASS" if position_delta_m <= 0.025 and abs(yaw_delta_rad) <= 0.075 else "FAIL",
+                    "position_delta_m": position_delta_m,
+                    "yaw_delta_rad": yaw_delta_rad,
+                    "maximum_position_delta_m": 0.025,
+                    "maximum_yaw_delta_rad": 0.075,
+                    "ros_pose": dict(ros_pose),
+                    "native_pose": {
+                        "x_m": start_pose.x_m,
+                        "y_m": start_pose.y_m,
+                        "z_m": float(initial["pose"]["z"]),
+                        "yaw_rad": start_pose.yaw_rad,
+                        "generation": initial.get("native_mjdata_route_pose", {}).get("generation"),
+                        "sim_time_s": initial.get("native_mjdata_route_pose", {}).get("sim_time_s"),
+                    },
+                }
+                result["native_mjdata_route_feedback"]["startup_cross_check"] = cross_check
+                if cross_check["status"] != "PASS":
+                    raise ValueError("native route feedback disagrees with fresh ROS odom at startup")
             if short_scene_route_mode:
                 if not isinstance(local01_route_input, Mapping):
                     raise ValueError("Local01 short route input was not retained after preflight")
@@ -3724,7 +3860,7 @@ class FocusedM1Diagnostic(Node):
                         return result
                     self.activation_lifecycle = lifecycle
                     set_action = next_set_action
-                    initial = self.sample_for_first_motion()
+                    initial = route_feedback_snapshot(self.sample_for_first_motion())
                     initial_fault = snapshot_fault(
                         initial, self.joint_limits, state_timeout_s=self.args.state_timeout,
                         min_root_z=self.args.min_root_z, max_tilt_deg=self.args.max_tilt_deg,
@@ -4328,6 +4464,10 @@ class FocusedM1Diagnostic(Node):
                 "yaw_rate_feedback": None,
                 "last_decision": None,
             }
+
+            def route_sample() -> dict[str, Any]:
+                return route_feedback_snapshot(self.sample_for_first_motion())
+
             def transit_termination(snapshot: Mapping[str, Any]) -> bool:
                 nonlocal route_fault, route_stop_reason, latest_transit_snapshot
                 latest_transit_snapshot = snapshot
@@ -5288,7 +5428,7 @@ class FocusedM1Diagnostic(Node):
                         )
 
                     last_result = run_first_motion_window(
-                        sample=self.sample_for_first_motion,
+                        sample=route_sample,
                         publish=publish_window,
                         registration=registration,
                         set_action=set_action,
@@ -8060,6 +8200,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         getattr(args, "aligned_start_table_approach", False)
     )
     native_x2_timestep = bool(getattr(args, "native_x2_timestep", False))
+    native_mjdata_route_feedback = bool(
+        getattr(args, "raicom_native_mjdata_route_feedback", False)
+    )
     configured_route_observation = bool(
         getattr(args, "route_config_post_stand_observation", False)
     )
@@ -8106,6 +8249,15 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "native X2 timestep requires the aligned-start TABLE_APPROACH low-cruise profile "
             "or the isolated nominal straight-gait diagnostic"
+        )
+    if native_mjdata_route_feedback and not (
+        native_x2_timestep
+        and table_approach_mission
+        and aligned_start_table_approach
+        and (low_cruise_native_profile or nominal_straight_native_profile)
+    ):
+        raise ValueError(
+            "native MjData route feedback requires the aligned native-timestep TABLE_APPROACH profile"
         )
     if zero_forward_heading_acquisition and not (
         table_approach_mission
@@ -8701,6 +8853,14 @@ def main() -> int:
         "--native-x2-timestep",
         action="store_true",
         help="require the parent-staged aligned scene whose top-level MuJoCo timestep matches native X2 at 0.001 s",
+    )
+    first.add_argument(
+        "--raicom-native-mjdata-route-feedback",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY: use the parent-staged read-only native MjData trace for route pose feedback, "
+            "while retaining ROS MC/IMU/joint safety telemetry"
+        ),
     )
     first.add_argument("--route-config-post-stand-observation", action="store_true")
     first.add_argument("--point-goal-diagnostic", action="store_true")

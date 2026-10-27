@@ -1416,6 +1416,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 command[-1] += " --aligned-start-table-approach"
             if getattr(args, "native_x2_timestep", False):
                 command[-1] += " --native-x2-timestep"
+            if getattr(args, "raicom_native_mjdata_route_feedback", False):
+                command[-1] += " --raicom-native-mjdata-route-feedback"
         if getattr(args, "raicom_low_cruise_profile", False):
             command[-1] += " --raicom-low-cruise-profile"
         if getattr(args, "raicom_zero_forward_heading_acquisition", False):
@@ -5488,6 +5490,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-native-mjdata-route-feedback",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY route feedback from the staged read-only native MjData trace; "
+            "requires the aligned native-timestep TABLE_APPROACH mission and native capture"
+        ),
+    )
+    parser.add_argument(
         "--synchronized-paused-initialization",
         action="store_true",
         help=(
@@ -5755,6 +5765,15 @@ def main() -> int:
                 "TABLE_APPROACH mission, native capture, and either the explicit 0.105 m/s "
                 "low-cruise profile or the isolated 0.12 m/s straight-gait diagnostic"
             )
+    if args.raicom_native_mjdata_route_feedback and not (
+        args.native_x2_timestep
+        and args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_mjdata_capture
+    ):
+        parser.error(
+            "native MjData route feedback requires native capture and the aligned native-timestep TABLE_APPROACH mission"
+        )
     if args.synchronized_paused_initialization:
         if not (
             args.table_approach_mission

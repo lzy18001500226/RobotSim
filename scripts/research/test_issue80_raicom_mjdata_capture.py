@@ -12,6 +12,7 @@ from issue80_raicom_mjdata_capture import (
     HEADER_SHA256,
     LAUNCH_MARKER,
     MjDataCaptureError,
+    NativeMjDataLivePoseReader,
     instrument_staged_launch,
     summarize_mjdata_capture,
 )
@@ -47,6 +48,7 @@ def sample(
         "pelvis": {
             "state": {
                 "world_position_m": [x, y, 0.68],
+                "world_quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
                 "world_spatial_velocity_rot_lin": [0, 0, 0, vx, vy, 0],
             }
         },
@@ -244,6 +246,36 @@ class MjDataCaptureTests(unittest.TestCase):
             )
             with self.assertRaises(MjDataCaptureError):
                 summarize_mjdata_capture(path)
+
+    def test_live_pose_reader_uses_latest_complete_record_and_ignores_partial_tail(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "native_mjdata_trace.jsonl"
+            first = sample(sim_time=1.0, host_time=10_000_000_000, generation=1, x=1.0)
+            second = sample(sim_time=1.01, host_time=10_010_000_000, generation=1, x=1.2)
+            path.write_bytes(
+                (json.dumps(metadata()) + "\n" + json.dumps(first) + "\n" + json.dumps(second)[:30]).encode()
+            )
+            reader = NativeMjDataLivePoseReader(path, maximum_age_s=0.20)
+            observed = reader.poll(now_monotonic_s=10.02)
+            self.assertIsNotNone(observed)
+            self.assertAlmostEqual(observed.x_m, 1.0)
+            with path.open("ab") as stream:
+                stream.write((json.dumps(second)[30:] + "\n").encode())
+            observed = reader.poll(now_monotonic_s=10.03)
+            self.assertIsNotNone(observed)
+            self.assertAlmostEqual(observed.x_m, 1.2)
+            self.assertAlmostEqual(observed.yaw_rad, 0.0)
+            self.assertEqual(reader.snapshot()["latest"]["generation"], 1)
+
+    def test_live_pose_reader_fails_closed_when_no_fresh_native_sample_arrives(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = self.write_trace(
+                Path(raw), [metadata(), sample(sim_time=1.0, host_time=10_000_000_000, generation=1)],
+            )
+            reader = NativeMjDataLivePoseReader(path, maximum_age_s=0.20)
+            self.assertIsNotNone(reader.poll(now_monotonic_s=10.01))
+            with self.assertRaises(MjDataCaptureError):
+                reader.poll(now_monotonic_s=10.21)
 
 
 if __name__ == "__main__":
