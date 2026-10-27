@@ -352,6 +352,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
         termination_condition=None,
         termination_condition_name="external_condition",
         require_locomotion_confirmation=False,
+        continuous_route_authorized=False,
+        continuous_route_nonzero_limit_s=None,
     ):
         clock = fake_clock or FakeClock()
 
@@ -394,6 +396,8 @@ class FirstMotionSafetyTests(unittest.TestCase):
             max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
             zero_until_stand_timeout_s=zero_until_stand_timeout_s,
             require_locomotion_confirmation=require_locomotion_confirmation,
+            continuous_route_authorized=continuous_route_authorized,
+            continuous_route_nonzero_limit_s=continuous_route_nonzero_limit_s,
             after_zero_stop=after_zero_stop,
             after_zero_abort=after_zero_abort,
             during_zero_callback=during_zero_callback,
@@ -403,6 +407,25 @@ class FirstMotionSafetyTests(unittest.TestCase):
             sleep=clock.sleep,
             timer_factory=timer_factory,
         )
+
+    def test_explicit_continuous_route_uses_existing_aggregate_cap_without_zero_boundary(self):
+        commands = []
+        result = self.run_protocol(
+            lambda: self.snapshot(),
+            lambda value: commands.append(value),
+            forward_command_m_s=0.12,
+            pulse_duration_s=11.0,
+            max_pulse_duration_s=11.0,
+            continuous_route_authorized=True,
+            continuous_route_nonzero_limit_s=75.0,
+            timer_factory=lambda timeout, callback: FakeTimer(timeout, callback),
+            termination_condition=lambda row: float(row["sample_monotonic_s"]) >= 0.06,
+            termination_condition_name="rolling_waypoint_or_terminal_stop",
+        )
+        self.assertIsNone(result["fault"])
+        self.assertTrue(result["continuous_route_authorized"])
+        self.assertGreater(result["nonzero_publish_calls_returned"], 0)
+        self.assertTrue(result["termination_condition_met"])
 
     def test_extended_post_stop_observation_requires_explicit_bounded_allowance(self) -> None:
         sample = self.snapshot

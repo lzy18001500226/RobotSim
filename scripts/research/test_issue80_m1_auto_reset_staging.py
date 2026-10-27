@@ -832,6 +832,19 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertNotIn("mj_step(", source)
         self.assertNotIn("mjData.qpos", source)
 
+    def test_continuous_table_route_uses_one_gait_stream_and_a_rolling_intermediate(self) -> None:
+        probe = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        parent = Path(__file__).with_name("issue80_m1_auto_reset_run.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--raicom-continuous-table-approach", parent)
+        self.assertIn("rolling_intermediate_waypoint=continuous_table_approach_mode", probe)
+        self.assertIn("continuous_route_authorized=continuous_table_approach_mode", probe)
+        self.assertIn("TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S = 75.0", probe)
+        self.assertIn("ROLLING_WAYPOINT_PASSED", probe)
+
     def test_transit_baseline_precedes_all_route_mode_dispatch(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"

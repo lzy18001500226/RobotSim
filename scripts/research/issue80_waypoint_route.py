@@ -572,6 +572,7 @@ def build_table_approach_route_from_mission(
     runtime_robot_footprint_radius_m: float,
     verified_local_clear_radius_m: float,
     segment_timeout_s: float | None = None,
+    rolling_intermediate_waypoint: bool = False,
 ) -> RouteSpec:
     """Adapt the explicit Local01 table-approach mission to RouteSpec.
 
@@ -646,6 +647,10 @@ def build_table_approach_route_from_mission(
         steps=(
             replace(base.steps[0], waypoint_id="WAYPOINT", profile=Profile.TRANSIT,
                     position_tolerance_m=0.15,
+                    stop_behavior=(
+                        StopBehavior.ROLLING if rolling_intermediate_waypoint
+                        else base.steps[0].stop_behavior
+                    ),
                     segment_timeout_s=(
                         resolved_segment_timeout_s
                         if resolved_segment_timeout_s is not None else base.steps[0].segment_timeout_s
@@ -661,6 +666,8 @@ def build_table_approach_route_from_mission(
     route.validate()
     if tuple(step.waypoint_id for step in route.steps) != ("WAYPOINT", "TABLE_APPROACH"):
         raise RouteError("table-approach route generated an unexpected step sequence")
+    if rolling_intermediate_waypoint and route.steps[0].stop_behavior is not StopBehavior.ROLLING:
+        raise RouteError("continuous table-approach route did not retain its rolling intermediate waypoint")
     return route
 
 

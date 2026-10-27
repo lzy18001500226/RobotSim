@@ -1424,6 +1424,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --raicom-zero-forward-heading-acquisition"
         if getattr(args, "raicom_continuous_ten_second_transit", False):
             command[-1] += " --raicom-continuous-ten-second-transit"
+        if getattr(args, "raicom_continuous_table_approach", False):
+            command[-1] += " --raicom-continuous-table-approach"
         if getattr(args, "raicom_forward_gait_yaw_inversion", False):
             command[-1] += " --raicom-forward-gait-yaw-inversion"
         if getattr(args, "raicom_native_nominal_straight_gait_diagnostic", False):
@@ -5498,6 +5500,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-continuous-table-approach",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY: one continuous 50 Hz native-ground-truth TABLE_APPROACH gait stream, "
+            "with a rolling intermediate waypoint and the existing 75 s aggregate motion cap"
+        ),
+    )
+    parser.add_argument(
         "--synchronized-paused-initialization",
         action="store_true",
         help=(
@@ -5751,6 +5761,12 @@ def main() -> int:
             and not args.raicom_low_cruise_profile
             and abs(float(args.forward_speed) - 0.12) <= 1e-9
         )
+        continuous_table_native_profile = (
+            args.raicom_continuous_table_approach
+            and args.raicom_native_mjdata_route_feedback
+            and not args.raicom_low_cruise_profile
+            and abs(float(args.forward_speed) - 0.12) <= 1e-9
+        )
         if not (
             args.table_approach_mission
             and args.aligned_start_table_approach
@@ -5758,12 +5774,17 @@ def main() -> int:
             and args.maintainer_authorized_first_motion
             and args.require_stand_warmup_composite
             and args.native_mjdata_capture
-            and (low_cruise_native_profile or nominal_straight_native_profile)
+            and (
+                low_cruise_native_profile
+                or nominal_straight_native_profile
+                or continuous_table_native_profile
+            )
         ):
             parser.error(
                 "native X2 timestep synchronization requires direct-stand, the aligned-start "
                 "TABLE_APPROACH mission, native capture, and either the explicit 0.105 m/s "
-                "low-cruise profile or the isolated 0.12 m/s straight-gait diagnostic"
+                "low-cruise profile, the isolated 0.12 m/s straight-gait diagnostic, or the explicit "
+                "continuous 0.12 m/s native-ground-truth route"
             )
     if args.raicom_native_mjdata_route_feedback and not (
         args.native_x2_timestep
@@ -5773,6 +5794,22 @@ def main() -> int:
     ):
         parser.error(
             "native MjData route feedback requires native capture and the aligned native-timestep TABLE_APPROACH mission"
+        )
+    if args.raicom_continuous_table_approach and not (
+        args.raicom_native_mjdata_route_feedback
+        and args.native_x2_timestep
+        and args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_mjdata_capture
+        and not args.raicom_native_nominal_straight_gait_diagnostic
+        and not args.raicom_low_cruise_profile
+        and not args.raicom_zero_forward_heading_acquisition
+        and not args.raicom_continuous_ten_second_transit
+        and not args.raicom_forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    ):
+        parser.error(
+            "continuous table approach requires native MjData feedback and the aligned 0.12 m/s native TABLE_APPROACH profile"
         )
     if args.synchronized_paused_initialization:
         if not (

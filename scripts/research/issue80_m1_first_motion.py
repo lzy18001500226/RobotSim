@@ -41,6 +41,7 @@ MC_SIM_CONFIG_PATH = (
 FORWARD_COMMAND_M_S = 0.2
 PULSE_LIMIT_S = 1.0  # conservative default for unextended first-motion probes
 MAX_AUTHORIZED_PULSE_S = 10.0  # current maintainer-reviewed simulation-only ceiling
+MAX_CONTINUOUS_ROUTE_NONZERO_S = 75.0  # existing TABLE_APPROACH aggregate allowance
 PUBLISH_HZ = 50.0
 COMMAND_QOS_RELIABILITY = "reliable"
 COMMAND_QOS_DEPTH = 10
@@ -3701,6 +3702,8 @@ def run_first_motion_window(
     source_grounded_route_activation: bool = False,
     source_grounded_activation_timeout_s: float = ACTIVATION_PROBE_DURATION_S,
     allow_raicom_low_cruise_source_activation: bool = False,
+    continuous_route_authorized: bool = False,
+    continuous_route_nonzero_limit_s: float | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     timer_factory: Callable[[float, Callable[[], None]], Any] | None = None,
@@ -3752,6 +3755,8 @@ def run_first_motion_window(
         "pre_motion_abort_reason": pre_motion_abort_reason,
         "activation_probe_only": bool(activation_probe_only),
         "source_contract_supported": bool(source_contract_supported),
+        "continuous_route_authorized": bool(continuous_route_authorized),
+        "continuous_route_nonzero_limit_s": continuous_route_nonzero_limit_s,
         "source_grounded_route_activation": {
             "enabled": bool(source_grounded_route_activation),
             "maximum_qualification_s": source_grounded_activation_timeout_s
@@ -3834,52 +3839,69 @@ def run_first_motion_window(
         or not 0.0 <= zero_until_stand_timeout_s <= 3.5
     ):
         pulse_fault = "zero_until_stand_timeout_outside_measured_3p5s_budget"
+    continuous_limit_s = (
+        float(continuous_route_nonzero_limit_s)
+        if continuous_route_nonzero_limit_s is not None else math.nan
+    )
+    maximum_authorized_duration_s = (
+        continuous_limit_s if continuous_route_authorized else MAX_AUTHORIZED_PULSE_S
+    )
+    if continuous_route_authorized and (
+        not math.isfinite(continuous_limit_s)
+        or not 0.0 < continuous_limit_s <= MAX_CONTINUOUS_ROUTE_NONZERO_S
+    ):
+        pulse_fault = pulse_fault or "continuous_route_nonzero_limit_outside_existing_aggregate_allowance"
+    elif not continuous_route_authorized and continuous_route_nonzero_limit_s is not None:
+        pulse_fault = pulse_fault or "continuous_route_limit_requires_explicit_authorization"
     elif (
         not math.isfinite(max_pulse_duration_s)
-        or not 0.0 < max_pulse_duration_s <= MAX_AUTHORIZED_PULSE_S
+        or not 0.0 < max_pulse_duration_s <= maximum_authorized_duration_s
         or not math.isfinite(pulse_duration_s)
         or not 0.0 < pulse_duration_s <= max_pulse_duration_s
     ):
-        pulse_fault = "pulse_duration_outside_authorized_cap"
+        pulse_fault = pulse_fault or (
+            "continuous_route_pulse_duration_outside_authorized_cap"
+            if continuous_route_authorized else "pulse_duration_outside_authorized_cap"
+        )
     elif not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
-        pulse_fault = "forward_command_outside_authorized_cap"
+        pulse_fault = pulse_fault or "forward_command_outside_authorized_cap"
     elif max_observed_planar_speed_m_s is not None and (
         not math.isfinite(max_observed_planar_speed_m_s)
         or not 0.0 < max_observed_planar_speed_m_s <= FORWARD_COMMAND_M_S
     ):
-        pulse_fault = "observed_planar_speed_gate_outside_authorized_cap"
+        pulse_fault = pulse_fault or "observed_planar_speed_gate_outside_authorized_cap"
     elif not math.isfinite(ramp_duration_s) or not 0.0 <= ramp_duration_s <= pulse_duration_s:
-        pulse_fault = "velocity_ramp_duration_outside_pulse"
+        pulse_fault = pulse_fault or "velocity_ramp_duration_outside_pulse"
     elif (
         not math.isfinite(deceleration_duration_s)
         or not 0.0 <= deceleration_duration_s <= min(1.0, pulse_duration_s)
     ):
-        pulse_fault = "velocity_deceleration_duration_outside_one_second_bound"
+        pulse_fault = pulse_fault or "velocity_deceleration_duration_outside_one_second_bound"
     elif (
         not math.isfinite(deceleration_end_speed_m_s)
         or not 0.0 <= deceleration_end_speed_m_s < forward_command_m_s
         or (deceleration_duration_s == 0.0 and deceleration_end_speed_m_s != 0.0)
     ):
-        pulse_fault = "velocity_deceleration_end_speed_invalid"
+        pulse_fault = pulse_fault or "velocity_deceleration_end_speed_invalid"
     elif deceleration_duration_s > 0.0 and (
         ramp_duration_s > 0.0 or startup_speed_m_s is not None
     ):
-        pulse_fault = "velocity_deceleration_profile_conflicts_with_startup_or_ramp"
+        pulse_fault = pulse_fault or "velocity_deceleration_profile_conflicts_with_startup_or_ramp"
     elif ramp_duration_s > 0.0 and (
         ramp_start_speed_m_s is None
         or not math.isfinite(ramp_start_speed_m_s)
         or not 0.0 < ramp_start_speed_m_s <= forward_command_m_s
     ):
-        pulse_fault = "velocity_ramp_start_outside_command_range"
+        pulse_fault = pulse_fault or "velocity_ramp_start_outside_command_range"
     elif startup_speed_m_s is None and (
         startup_transition_displacement_m is not None or startup_transition_timeout_s != 0.0
     ):
-        pulse_fault = "startup_profile_parameters_incomplete"
+        pulse_fault = pulse_fault or "startup_profile_parameters_incomplete"
     elif startup_speed_m_s is not None and (
         not math.isfinite(startup_speed_m_s)
         or not 0.0 < forward_command_m_s < startup_speed_m_s <= FORWARD_COMMAND_M_S
     ):
-        pulse_fault = "startup_profile_speed_outside_command_range"
+        pulse_fault = pulse_fault or "startup_profile_speed_outside_command_range"
     elif startup_speed_m_s is not None and (
         ramp_duration_s > 0.0
         or startup_transition_displacement_m is None
@@ -3888,11 +3910,11 @@ def run_first_motion_window(
         or not math.isfinite(startup_transition_timeout_s)
         or not 0.0 < startup_transition_timeout_s <= min(0.75, pulse_duration_s)
     ):
-        pulse_fault = "startup_profile_transition_gate_invalid"
+        pulse_fault = pulse_fault or "startup_profile_transition_gate_invalid"
     elif not registration.get("success"):
-        pulse_fault = "source_registration_rejected"
+        pulse_fault = pulse_fault or "source_registration_rejected"
     elif not set_action.get("accepted_by_service"):
-        pulse_fault = "set_mc_action_rejected"
+        pulse_fault = pulse_fault or "set_mc_action_rejected"
     baseline_values: list[float] = []
     if baseline_forward_displacements_m is not None:
         try:

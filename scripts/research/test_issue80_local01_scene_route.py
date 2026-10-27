@@ -184,6 +184,15 @@ class Local01SceneRouteTests(unittest.TestCase):
             all(step.segment_timeout_s == 300.0 for step in bounded_wall_time.steps)
         )
 
+        rolling = build_table_approach_route_from_mission(
+            mission,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+            rolling_intermediate_waypoint=True,
+        )
+        self.assertEqual(rolling.steps[0].stop_behavior.value, "ROLLING")
+        self.assertEqual(rolling.steps[-1].stop_behavior.value, "VERIFY_PHYSICAL_STOP")
+
     def test_runtime_raw_odom_route_uses_scene_numeric_start_and_static_envelope(self):
         route_input = build_runtime_raw_odom_short_route_config(local01_source_fixture())
         validate_local01_short_scene_route_input(route_input)

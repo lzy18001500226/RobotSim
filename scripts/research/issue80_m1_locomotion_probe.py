@@ -110,7 +110,7 @@ from issue80_raicom_mjdata_capture import (
 )
 from issue80_waypoint_route import (
     DirectiveKind, MotionFeedback, MotionStatus, PhysicalStopEvidence,
-    PhysicalStopStatus, PoseEstimate, Profile, RouteState,
+    PhysicalStopStatus, PoseEstimate, Profile, RouteState, StopBehavior,
     SafetyObservation, WaypointRouteExecutor, YawPolicy,
     build_table_approach_route_from_mission,
     build_waypoint_docking_route_from_poses, load_waypoint_docking_pose_input,
@@ -196,6 +196,7 @@ ROUTE_STEERING_WARMUP_S = 0.5
 TABLE_APPROACH_SEGMENT_TIMEOUT_S = 300.0
 TABLE_APPROACH_CONTINUOUS_WINDOW_S = 10.0
 TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS = 8
+TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S = 75.0
 # Run80's 0.15 m taper still missed the yaw stop gate by 0.13 deg. A saved-pose
 # command-only replay showed 0.25 m start reduces angular command integral
 # further; this is one bounded terminal-settling diagnostic, not a new goal
@@ -3060,6 +3061,7 @@ class FocusedM1Diagnostic(Node):
         route_config_mode = bool(getattr(self.args, "route_config", None))
         short_scene_route_mode = bool(getattr(self.args, "short_scene_route", False))
         table_approach_mission_mode = bool(getattr(self.args, "table_approach_mission", False))
+        configured_docking_route_mode = route_config_mode and not table_approach_mission_mode
         aligned_start_table_approach_mode = bool(
             getattr(self.args, "aligned_start_table_approach", False)
         )
@@ -3072,6 +3074,9 @@ class FocusedM1Diagnostic(Node):
         )
         continuous_ten_second_transit_mode = bool(
             getattr(self.args, "raicom_continuous_ten_second_transit", False)
+        )
+        continuous_table_approach_mode = bool(
+            getattr(self.args, "raicom_continuous_table_approach", False)
         )
         forward_gait_yaw_inversion_mode = bool(
             getattr(self.args, "raicom_forward_gait_yaw_inversion", False)
@@ -3144,6 +3149,23 @@ class FocusedM1Diagnostic(Node):
                 ),
                 "aggregate_nonzero_limit_s": 75.0 if continuous_ten_second_transit_mode else None,
                 "physical_stop_after_each_window": True,
+            },
+            "continuous_table_approach": {
+                "enabled": continuous_table_approach_mode,
+                "classification": (
+                    "SIMULATION_ONLY_CONTINUOUS_TABLE_APPROACH_SINGLE_GAIT_STREAM"
+                    if continuous_table_approach_mode else None
+                ),
+                "maximum_aggregate_nonzero_s": (
+                    TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
+                    if continuous_table_approach_mode else None
+                ),
+                "intermediate_waypoint_stop_behavior": (
+                    "ROLLING" if continuous_table_approach_mode else None
+                ),
+                "terminal_stop_behavior": (
+                    "VERIFY_PHYSICAL_STOP" if continuous_table_approach_mode else None
+                ),
             },
             "forward_gait_yaw_mapping": {
                 "enabled": forward_gait_yaw_inversion_mode,
@@ -3908,6 +3930,7 @@ class FocusedM1Diagnostic(Node):
                     runtime_robot_footprint_radius_m=footprint,
                     verified_local_clear_radius_m=clear_radius,
                     segment_timeout_s=TABLE_APPROACH_SEGMENT_TIMEOUT_S,
+                    rolling_intermediate_waypoint=continuous_table_approach_mode,
                 )
                 if (
                     continuous_ten_second_transit_mode
@@ -4148,11 +4171,14 @@ class FocusedM1Diagnostic(Node):
                     ),
                     "maximum_windows_total": (
                         1 if native_nominal_straight_gait_diagnostic_mode
+                        else 1 if continuous_table_approach_mode
                         else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                         if continuous_ten_second_transit_mode
                         else int(limits["max_windows"])
                     ),
                     "maximum_window_s": (
+                        TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
+                        if continuous_table_approach_mode else
                         TABLE_APPROACH_CONTINUOUS_WINDOW_S
                         if (
                             continuous_ten_second_transit_mode
@@ -4571,7 +4597,7 @@ class FocusedM1Diagnostic(Node):
                 window_control["last_unique_odom_stamp_ns"] = odom_freshness.get(
                     "last_unique_stamp_ns"
                 )
-                if route_config_mode and odom_stamp_action == "NEW":
+                if configured_docking_route_mode and odom_stamp_action == "NEW":
                     yaw_rate_sample = configured_docking_control["yaw_rate_monitor"].update(snapshot)
                     if yaw_rate_sample.get("status") == "MEASURED":
                         configured_docking_control["yaw_rate_feedback"] = {
@@ -4580,7 +4606,7 @@ class FocusedM1Diagnostic(Node):
                         }
                     elif yaw_rate_sample.get("status") == "HOST_MONOTONIC_RESET":
                         configured_docking_control["yaw_rate_feedback"] = None
-                if route_config_mode:
+                if configured_docking_route_mode:
                     active_for_axis = executor.active_step
                     if active_for_axis is None:
                         route_fault = "configured_route_active_step_missing"
@@ -4839,7 +4865,7 @@ class FocusedM1Diagnostic(Node):
                     return False
                 distance = math.hypot(active.x_m - pose.x_m, active.y_m - pose.y_m)
                 docking_decision = None
-                if route_config_mode and active.yaw_policy is YawPolicy.EXPLICIT:
+                if configured_docking_route_mode and active.yaw_policy is YawPolicy.EXPLICIT:
                     if configured_docking_control["step_id"] != active.waypoint_id:
                         segment_length = math.hypot(
                             active.x_m - float(route_segment_origin["x_m"]),
@@ -4953,6 +4979,21 @@ class FocusedM1Diagnostic(Node):
                 )
                 prior_clock_rebases = executor.verified_wall_clock_step_rebases
                 directive = executor.tick(float(snapshot["sample_monotonic_s"]), feedback)
+                if (
+                    active.stop_behavior is StopBehavior.ROLLING
+                    and feedback.status is MotionStatus.ARRIVED
+                    and executor.active_step is not None
+                    and executor.active_step.waypoint_id != active.waypoint_id
+                ):
+                    route_events.append({
+                        "kind": "ROLLING_WAYPOINT_PASSED",
+                        "waypoint_id": active.waypoint_id,
+                        "next_waypoint_id": executor.active_step.waypoint_id,
+                        "sample_monotonic_s": sample_time,
+                        "position_error_m": distance,
+                        "position_tolerance_m": active.position_tolerance_m,
+                        "zero_velocity_published": False,
+                    })
                 result["pose_clock_diagnostics"] = {
                     "policy": "strict_header_order_except_fresh_wall-aligned_MuJoCo_clock_rollback",
                     "verified_wall_clock_step_rebases": executor.verified_wall_clock_step_rebases,
@@ -5009,6 +5050,7 @@ class FocusedM1Diagnostic(Node):
                 SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                 (
                     1 if native_nominal_straight_gait_diagnostic_mode
+                    else 1 if continuous_table_approach_mode
                     else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                     if continuous_ten_second_transit_mode
                     else int(local01_route_input["limits"]["max_windows"])
@@ -5021,6 +5063,8 @@ class FocusedM1Diagnostic(Node):
             )
             transit_aggregate_limit_s = (
                 SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode else
+                TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
+                if continuous_table_approach_mode else
                 float(local01_route_input["limits"]["max_aggregate_nonzero_s"])
                 if table_approach_mission_mode else
                 15.0 if route_config_mode else
@@ -5057,6 +5101,7 @@ class FocusedM1Diagnostic(Node):
                         SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                         (
                             1 if native_nominal_straight_gait_diagnostic_mode
+                            else 1 if continuous_table_approach_mode
                             else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                             if continuous_ten_second_transit_mode
                             else int(local01_route_input["limits"]["max_windows"])
@@ -5126,14 +5171,20 @@ class FocusedM1Diagnostic(Node):
                         self.activation_lifecycle = lifecycle
                     remaining_route_s = (
                         SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode else
+                        TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
+                        if continuous_table_approach_mode else
                         float(local01_route_input["limits"]["max_aggregate_nonzero_s"])
                         if table_approach_mission_mode else
                         15.0 if route_config_mode else 30.0
                     ) - route_total_nonzero_s
                     remaining_transit_s = transit_aggregate_limit_s - segment_nonzero_s
                     window_cap_s = min(
+                        TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
+                        if continuous_table_approach_mode else
                         float(current_plan.maximum_duration_s),
                         SHORT_ROUTE_MAX_WINDOW_S if short_scene_route_mode else
+                        TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
+                        if continuous_table_approach_mode else
                         CURVED_PATH_MAX_WINDOW_S if curved_path_diagnostic else
                         TABLE_APPROACH_CONTINUOUS_WINDOW_S
                         if (
@@ -5285,7 +5336,7 @@ class FocusedM1Diagnostic(Node):
                                         "locomotion_handshake_confirmed": True,
                                     })
                                 elif (
-                                    route_config_mode
+                                    configured_docking_route_mode
                                     and active.yaw_policy is YawPolicy.EXPLICIT
                                     and configured_docking_control.get("phase_controller") is not None
                                     and configured_docking_control["phase_controller"].phase == TERMINAL_POSE_CONTROL
@@ -5439,6 +5490,11 @@ class FocusedM1Diagnostic(Node):
                         forward_command_m_s=transit_forward_m_s,
                         pulse_duration_s=pulse_duration_s,
                         max_pulse_duration_s=window_cap_s,
+                        continuous_route_authorized=continuous_table_approach_mode,
+                        continuous_route_nonzero_limit_s=(
+                            TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
+                            if continuous_table_approach_mode else None
+                        ),
                         extra_post_stop_observe_s=float(self.args.extra_stop_observation),
                         extra_post_stop_observe_limit_s=(
                             MAX_EXTRA_POST_STOP_OBSERVE_S
@@ -5559,19 +5615,27 @@ class FocusedM1Diagnostic(Node):
                             "last_gate": last_result.get("physical_stop_gate") or {},
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
-                    try:
-                        bridge.complete_window(
-                            current_plan.window_id,
-                            actual_elapsed_s=measured_window_s,
-                        )
-                    except RouteMotionBridgeError as exc:
-                        return {
-                            "status": "BLOCKED",
-                            "fault": f"route_window_completion_rejected:{exc}",
-                            "last_result": last_result,
-                            "last_gate": last_result.get("physical_stop_gate") or {},
-                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                    if continuous_table_approach_mode:
+                        last_result["route_bridge_accounting"] = {
+                            "status": "CONTINUOUS_TERMINAL_WINDOW_NOT_SPLIT_AT_LEGACY_10_S_PLAN_BOUNDARY",
+                            "existing_aggregate_nonzero_cap_s": TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S,
+                            "measured_nonzero_elapsed_s": measured_window_s,
+                            "physical_stop_remains_required_at_terminal": True,
                         }
+                    else:
+                        try:
+                            bridge.complete_window(
+                                current_plan.window_id,
+                                actual_elapsed_s=measured_window_s,
+                            )
+                        except RouteMotionBridgeError as exc:
+                            return {
+                                "status": "BLOCKED",
+                                "fault": f"route_window_completion_rejected:{exc}",
+                                "last_result": last_result,
+                                "last_gate": last_result.get("physical_stop_gate") or {},
+                                "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                            }
                     route_total_nonzero_s += measured_window_s
                     segment_nonzero_s += measured_window_s
                     window_index += 1
@@ -5972,6 +6036,171 @@ class FocusedM1Diagnostic(Node):
                     "route_events": route_events + route_motion.events,
                     "route_total_nonzero_command_time_s": route_total_nonzero_s,
                 })
+                return result
+
+            if continuous_table_approach_mode:
+                transit_summary = run_transit_windows(
+                    current_directive,
+                    transit_plan,
+                    "CONTINUOUS_TABLE_APPROACH",
+                )
+                last_result = transit_summary.get("last_result") or {}
+                last_gate = transit_summary.get("last_gate") or {}
+                if (
+                    transit_summary.get("status") not in (
+                        "ARRIVAL_DURING_WINDOW", "ARRIVAL_AFTER_VERIFIED_STOP",
+                    )
+                    or last_result.get("physical_motion_status") != "PHYSICAL_MOTION_CONFIRMED"
+                    or last_gate.get("status") != "PASS"
+                    or route_fault
+                ):
+                    result.update({
+                        "status": "BLOCKED",
+                        "fault": (
+                            transit_summary.get("fault") or route_fault
+                            or last_result.get("fault") or "continuous_table_route_or_stop_gate_failed"
+                        ),
+                        "route_events": route_events + route_motion.events,
+                        "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                    })
+                    return result
+                evidence = stop_mapping(last_gate)
+                zero_start = float(last_gate.get("zero_start_monotonic_s", 0.0))
+                bridge.zero_window(
+                    route_motion.latest,
+                    now_steady_s=time.monotonic(),
+                    reason="TABLE_APPROACH terminal stop; consume the existing composite physical stop",
+                    physical_stop_gate_required=True,
+                )
+                bridge_rearmed = bridge.confirm_physical_stop(
+                    evidence,
+                    zero_request_started_s=zero_start,
+                    now_steady_s=time.monotonic(),
+                    expected_generation=str(self.args.attempt_id),
+                )
+                final_snapshot = route_sample()
+                try:
+                    final_pose = pose_provider.update(final_snapshot)
+                except (KeyError, TypeError, ValueError) as exc:
+                    result.update({
+                        "status": "BLOCKED",
+                        "fault": f"continuous_table_final_native_pose:{type(exc).__name__}:{exc}",
+                        "route_events": route_events + route_motion.events,
+                    })
+                    return result
+                final_active = executor.active_step
+                safety_provider.update(
+                    final_snapshot,
+                    final_active.waypoint_id if final_active is not None else "TABLE_APPROACH",
+                )
+                final_fault = snapshot_fault(
+                    final_snapshot,
+                    self.joint_limits,
+                    state_timeout_s=self.args.state_timeout,
+                    min_root_z=self.args.min_root_z,
+                    max_tilt_deg=self.args.max_tilt_deg,
+                    max_observed_planar_speed_m_s=0.2,
+                )
+                stand_ok = fresh_stand_mode_readback_valid(
+                    final_snapshot, maximum_age_s=float(self.args.state_timeout),
+                )
+                source_ok = fresh_input_source_readback_valid(
+                    final_snapshot,
+                    expected_source=self.source,
+                    maximum_age_s=float(self.args.state_timeout),
+                )
+                if (
+                    final_active is None
+                    or not bridge_rearmed
+                    or final_fault
+                    or not stand_ok
+                    or not source_ok
+                ):
+                    result.update({
+                        "status": "BLOCKED",
+                        "fault": (
+                            "continuous_table_terminal_stop_rearm_or_safety_failed:"
+                            f"active={final_active is not None},rearmed={bridge_rearmed},"
+                            f"stand={stand_ok},source={source_ok},fault={final_fault}"
+                        ),
+                        "route_events": route_events + route_motion.events,
+                    })
+                    return result
+                stop_evidence = PhysicalStopEvidence(
+                    status=PhysicalStopStatus.PASS,
+                    window_start_steady_s=float(evidence["window_start_steady_s"]),
+                    window_end_steady_s=float(evidence["window_end_steady_s"]),
+                    sample_count=int(evidence["sample_count"]),
+                    maximum_sample_gap_s=float(evidence["maximum_sample_gap_s"]),
+                    maximum_state_age_s=float(evidence["maximum_state_age_s"]),
+                    generation=str(self.args.attempt_id),
+                )
+                after = executor.accept_arrival_after_verified_stop(
+                    float(final_snapshot["sample_monotonic_s"]),
+                    MotionFeedback(
+                        status=MotionStatus.ARRIVED,
+                        physical_stop_evidence=stop_evidence,
+                        reset_gate_pass=True,
+                        standing_gate_pass=True,
+                        source_mode_handshake_pass=False,
+                        safety_gates_pass=True,
+                        stand_readback_pass=stand_ok,
+                        input_source_readback_pass=source_ok,
+                    ),
+                    zero_request_started_s=zero_start,
+                    bridge_rearmed=True,
+                )
+                final_error_m = math.hypot(
+                    final_active.x_m - final_pose.x_m,
+                    final_active.y_m - final_pose.y_m,
+                )
+                final_yaw_error_rad = math.atan2(
+                    math.sin(float(final_active.yaw_rad) - final_pose.yaw_rad),
+                    math.cos(float(final_active.yaw_rad) - final_pose.yaw_rad),
+                )
+                rolling_events = [
+                    event for event in route_events
+                    if event.get("kind") == "ROLLING_WAYPOINT_PASSED"
+                ]
+                passed = bool(
+                    after.kind is DirectiveKind.COMPLETE
+                    and executor.state is RouteState.COMPLETE
+                    and final_active.waypoint_id == "TABLE_APPROACH"
+                    and final_error_m <= final_active.position_tolerance_m
+                    and abs(final_yaw_error_rad) <= float(final_active.yaw_tolerance_rad)
+                    and bool(rolling_events)
+                )
+                result.update({
+                    "status": "PASS" if passed else "BLOCKED",
+                    "classification": (
+                        "SIMULATION_ONLY_CONTINUOUS_NATIVE_GROUND_TRUTH_TABLE_APPROACH_PASS"
+                        if passed else "SIMULATION_ONLY_CONTINUOUS_NATIVE_GROUND_TRUTH_TABLE_APPROACH_BLOCKED"
+                    ),
+                    "continuous_table_approach" : {
+                        **result["continuous_table_approach"],
+                        "status": "PASS" if passed else "FAIL",
+                        "rolling_waypoint_events": rolling_events,
+                        "terminal_waypoint": final_active.waypoint_id,
+                        "final_position_error_m": final_error_m,
+                        "final_yaw_error_rad": final_yaw_error_rad,
+                        "physical_stop_gate": last_gate.get("status"),
+                    },
+                    "route_events": route_events + route_motion.events,
+                    "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                    "route_total_windows": 1,
+                    "route_window_limit": 1,
+                    "aggregate_nonzero_limit_s": TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S,
+                    "final_composite_physical_stop": last_gate.get("status"),
+                    "route_manager_state": {
+                        "status": executor.state.value,
+                        "active_step": executor.active_step.waypoint_id if executor.active_step else None,
+                        "phase": executor.phase.value,
+                        "steps_completed": executor.step_index,
+                    },
+                    "manipulator_handoff": "NOT_REQUESTED",
+                })
+                if not passed:
+                    result["fault"] = "continuous_table_approach_terminal_acceptance_failed"
                 return result
 
             if route_config_mode:
@@ -8189,6 +8418,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     continuous_ten_second_transit = bool(
         getattr(args, "raicom_continuous_ten_second_transit", False)
     )
+    continuous_table_approach = bool(
+        getattr(args, "raicom_continuous_table_approach", False)
+    )
     forward_gait_yaw_inversion = bool(
         getattr(args, "raicom_forward_gait_yaw_inversion", False)
     )
@@ -8241,10 +8473,20 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         and not low_cruise_profile
         and abs(float(args.forward_speed) - 0.12) <= 1e-9
     )
+    continuous_table_native_profile = (
+        continuous_table_approach
+        and native_mjdata_route_feedback
+        and not low_cruise_profile
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    )
     if native_x2_timestep and not (
         table_approach_mission
         and aligned_start_table_approach
-        and (low_cruise_native_profile or nominal_straight_native_profile)
+        and (
+            low_cruise_native_profile
+            or nominal_straight_native_profile
+            or continuous_table_native_profile
+        )
     ):
         raise ValueError(
             "native X2 timestep requires the aligned-start TABLE_APPROACH low-cruise profile "
@@ -8280,6 +8522,22 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "continuous ten-second transit requires the native-timestep aligned TABLE_APPROACH "
             "low-cruise heading-acquisition profile"
+        )
+    if continuous_table_approach and not (
+        native_mjdata_route_feedback
+        and native_x2_timestep
+        and table_approach_mission
+        and aligned_start_table_approach
+        and native_nominal_straight_gait_diagnostic is False
+        and not low_cruise_profile
+        and not zero_forward_heading_acquisition
+        and not continuous_ten_second_transit
+        and not forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    ):
+        raise ValueError(
+            "continuous table approach requires native MjData feedback, the aligned native-timestep "
+            "TABLE_APPROACH mission, and exactly 0.12 m/s without legacy stop/rearm profiles"
         )
     if forward_gait_yaw_inversion and not (
         continuous_ten_second_transit
@@ -8818,6 +9076,14 @@ def main() -> int:
         help=(
             "SIMULATION_ONLY native-timestep aligned TABLE_APPROACH profile: extend each "
             "continuous transit command to the existing 10 s M1 ceiling before the full stop gate"
+        ),
+    )
+    first.add_argument(
+        "--raicom-continuous-table-approach",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY: keep one 50 Hz gait stream through the rolling WAYPOINT and stop only "
+            "at TABLE_APPROACH, bounded by the existing 75 s aggregate route allowance"
         ),
     )
     first.add_argument(
