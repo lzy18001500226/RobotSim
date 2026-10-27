@@ -796,6 +796,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
             callback.index("self.latest[key] = msg"),
         )
 
+    def test_high_rate_raw_debug_subscription_requires_explicit_capture_request(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        enabled = source.index("self.mc_debug_f64_subscription_enabled = bool(")
+        subscription = source.index("Float64MultiArray, MC_DEBUG_F64_TOPIC")
+        self.assertLess(enabled, subscription)
+        guarded = source[enabled:subscription]
+        self.assertIn('getattr(args, "capture_mc_rl_debug", False)', guarded)
+        self.assertIn("if self.mc_debug_f64_subscription_enabled:", source[enabled:subscription + 160])
+
     def test_transit_baseline_precedes_all_route_mode_dispatch(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"

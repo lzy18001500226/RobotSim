@@ -348,6 +348,13 @@ class FocusedM1Diagnostic(Node):
         self.mc_debug_f64_message_count = 0
         self.mc_debug_f64_first_layout: dict[str, Any] | None = None
         self.latest_mc_debug_f64_snapshot: dict[str, Any] | None = None
+        # This raw stream is not a safety input and the installed runtime
+        # publishes an empty payload at a high rate.  Do not let optional
+        # diagnostics compete with the five live state subscriptions unless a
+        # caller explicitly requested debug capture.
+        self.mc_debug_f64_subscription_enabled = bool(
+            getattr(args, "capture_mc_rl_debug", False)
+        )
         self.interrupted = threading.Event()
         self.publisher_lock = threading.RLock()
         self.trace_lock = threading.RLock()
@@ -399,9 +406,10 @@ class FocusedM1Diagnostic(Node):
         )
         # Optional raw diagnostic only: its values are not safety gates and are
         # never assigned semantics from the generic Float64MultiArray type.
-        self.create_subscription(
-            Float64MultiArray, MC_DEBUG_F64_TOPIC, self._store_mc_debug_f64, self.state_qos
-        )
+        if self.mc_debug_f64_subscription_enabled:
+            self.create_subscription(
+                Float64MultiArray, MC_DEBUG_F64_TOPIC, self._store_mc_debug_f64, self.state_qos
+            )
 
     def _store(self, key: str, msg: Any) -> None:
         received = time.monotonic()
@@ -1526,6 +1534,7 @@ class FocusedM1Diagnostic(Node):
                 self.latest.get("leg_command"), self.received_at.get("leg_command")
             ),
             "mc_debug_f64_latest": self.latest_mc_debug_f64_snapshot,
+            "mc_debug_f64_subscription_enabled": self.mc_debug_f64_subscription_enabled,
             "get_mode_readback_fault": self.async_mode_readback_fault,
             "get_source_readback_fault": self.async_source_readback_fault,
             "readback_fault": "; ".join(
@@ -7814,6 +7823,7 @@ class FocusedM1Diagnostic(Node):
             result["optional_debug_capture"] = {
                 "mc_debug_f64_topic": MC_DEBUG_F64_TOPIC,
                 "mc_debug_f64_type": "std_msgs/msg/Float64MultiArray",
+                "mc_debug_f64_subscription_enabled": self.mc_debug_f64_subscription_enabled,
                 "mc_debug_f64_message_count": self.mc_debug_f64_message_count,
                 "mc_debug_f64_first_layout": self.mc_debug_f64_first_layout,
                 "mc_debug_f64_last_layout": (
