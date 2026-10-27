@@ -315,6 +315,7 @@ class OdomSourceStampFence:
         *,
         current_stamp_ns: int | None,
         received_steady_s: float,
+        received_wall_time_ns: int | None = None,
     ) -> dict[str, object]:
         try:
             received = float(received_steady_s)
@@ -334,6 +335,37 @@ class OdomSourceStampFence:
                 "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
                 "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
             }
+        valid_wall_time = (
+            not isinstance(received_wall_time_ns, bool)
+            and isinstance(received_wall_time_ns, int)
+            and received_wall_time_ns > 0
+        )
+        try:
+            maximum_lead_s = float(self.maximum_forward_source_lead_s)
+        except (TypeError, ValueError, OverflowError):
+            maximum_lead_s = math.nan
+        if (
+            valid_wall_time
+            and math.isfinite(maximum_lead_s)
+            and maximum_lead_s > 0.0
+        ):
+            source_wall_lead_s = (current_stamp_ns - received_wall_time_ns) / 1_000_000_000.0
+            if source_wall_lead_s > maximum_lead_s:
+                self.dropped_future_leap_count += 1
+                record = {
+                    "action": "DROP_FUTURE_LEAP",
+                    "source_stamp_relation": "FUTURE_WALL_CLOCK",
+                    "current_stamp_ns": current_stamp_ns,
+                    "received_steady_s": received,
+                    "received_wall_time_ns": received_wall_time_ns,
+                    "source_wall_lead_s": source_wall_lead_s,
+                    "maximum_forward_source_lead_s": maximum_lead_s,
+                    "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
+                    "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
+                    "dropped_future_leap_count": self.dropped_future_leap_count,
+                }
+                self.last_dropped_future_leap = dict(record)
+                return record
         if self.last_accepted_stamp_ns is None:
             relation = "INITIAL"
         elif current_stamp_ns > self.last_accepted_stamp_ns:

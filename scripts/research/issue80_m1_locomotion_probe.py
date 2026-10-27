@@ -433,6 +433,7 @@ class FocusedM1Diagnostic(Node):
             fence = self.odom_source_stamp_fence.observe(
                 current_stamp_ns=stamp_ns,
                 received_steady_s=received,
+                received_wall_time_ns=time.time_ns(),
             )
             if fence["action"] in {
                 "DROP_INVALID", "DROP_OUT_OF_ORDER", "DROP_FUTURE_LEAP",

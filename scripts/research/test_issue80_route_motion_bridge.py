@@ -312,21 +312,27 @@ class RouteMotionBridgeTests(unittest.TestCase):
     def test_odom_input_fence_rejects_future_timestamp_leap_before_it_poisoning_anchor(self):
         fence = OdomSourceStampFence(maximum_forward_source_lead_s=0.20)
         self.assertEqual(
-            fence.observe(current_stamp_ns=1_000_000_000, received_steady_s=10.0)["action"],
+            fence.observe(
+                current_stamp_ns=1_000_000_000,
+                received_steady_s=10.0,
+                received_wall_time_ns=1_000_000_000,
+            )["action"],
             "ACCEPT_NEW",
         )
         future = fence.observe(
             current_stamp_ns=1_260_000_000,
             received_steady_s=10.01,
+            received_wall_time_ns=1_010_000_000,
         )
         resumed = fence.observe(
             current_stamp_ns=1_012_000_000,
             received_steady_s=10.012,
+            received_wall_time_ns=1_012_000_000,
         )
 
         self.assertEqual(future["action"], "DROP_FUTURE_LEAP")
-        self.assertAlmostEqual(float(future["source_advance_s"]), 0.26)
-        self.assertAlmostEqual(float(future["receipt_advance_s"]), 0.01)
+        self.assertEqual(future["source_stamp_relation"], "FUTURE_WALL_CLOCK")
+        self.assertAlmostEqual(float(future["source_wall_lead_s"]), 0.25)
         self.assertEqual(fence.last_accepted_stamp_ns, 1_012_000_000)
         self.assertEqual(resumed["action"], "ACCEPT_NEW")
 
