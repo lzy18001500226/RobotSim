@@ -2395,8 +2395,19 @@ def prepare_local01_scene_runtime_bundle(
         ET.tostring(host_scene, encoding="unicode"),
         assets={"offline_mug.xml": ET.tostring(host_mug)},
     )
+    # The immutable Local01 mug uses a relative compiler asset directory.  A
+    # managed navigation worktree intentionally does not duplicate that
+    # reference tree, so compile the unmodified mug XML through the same VFS
+    # asset path used for the generated wrapper.  This is an offline path
+    # resolution only; mesh, texture, collision and source XML bytes remain
+    # identical to the pinned inputs.
+    source_compile_scene = native_name_scene_tree(source_root / LOCAL01_SCENE_RELATIVE)
+    for item in source_compile_scene.findall("./asset/model"):
+        if item.get("name") == "raicom_mug":
+            item.set("file", "offline_mug.xml")
     corrected_source_model = mujoco.MjModel.from_xml_string(
-        ET.tostring(native_name_scene_tree(source_root / LOCAL01_SCENE_RELATIVE), encoding="unicode")
+        ET.tostring(source_compile_scene, encoding="unicode"),
+        assets={"offline_mug.xml": ET.tostring(host_mug)},
     )
     native_model = mujoco.MjModel.from_xml_path(str(runtime_x2_path.with_name("scene.xml")))
     base_equivalence = (
