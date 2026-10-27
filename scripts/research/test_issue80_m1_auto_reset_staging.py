@@ -834,6 +834,22 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("invert_from_measured_response=True", fixed)
         self.assertIn("NEGATIVE_OF_STANDARD_BEARING_COMMAND", fixed)
 
+    def test_route_bridge_stop_evidence_is_timestamped_before_result_bookkeeping(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        completion = source.index("last_result = run_first_motion_window(")
+        observed = source.index("bridge_stop_evidence_observed_s = time.monotonic()", completion)
+        result_append = source.index('result["segments"].append({', observed)
+        confirm = source.index("bridge.confirm_physical_stop(", result_append)
+        confirmation = source.index("bridge_stop_confirmation_started_s = time.monotonic()", result_append)
+        self.assertLess(completion, observed)
+        self.assertLess(observed, result_append)
+        self.assertLess(result_append, confirmation)
+        self.assertLess(confirmation, confirm)
+        confirmation_block = source[confirmation:confirm + 300]
+        self.assertIn("now_steady_s=bridge_stop_evidence_observed_s", confirmation_block)
+
     def test_transit_termination_reads_explicit_window_heading_state(self) -> None:
         """The route callback must not close over a per-window local name."""
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(

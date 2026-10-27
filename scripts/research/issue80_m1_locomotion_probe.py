@@ -5815,6 +5815,12 @@ class FocusedM1Diagnostic(Node):
                             getattr(self.args, "raicom_low_cruise_profile", False)
                         ),
                     )
+                    # The complete physical-stop window is fresh when the
+                    # bounded motion helper returns.  Preserve that actual
+                    # observation instant before route diagnostics enumerate
+                    # the captured samples.  The subsequent replan path still
+                    # requires a new odom stamp and fresh source/mode state.
+                    bridge_stop_evidence_observed_s = time.monotonic()
                     raw_stop_gate = last_result.get("physical_stop_gate")
                     final_stop_window = (
                         raw_stop_gate.get("final_window")
@@ -5989,18 +5995,35 @@ class FocusedM1Diagnostic(Node):
 
                     evidence = stop_mapping(last_gate)
                     zero_start_s = float(last_gate.get("zero_start_monotonic_s", 0.0))
+                    bridge_stop_confirmation_started_s = time.monotonic()
                     zero_plan = bridge.zero_window(
                         route_motion.latest,
-                        now_steady_s=time.monotonic(),
+                        now_steady_s=bridge_stop_evidence_observed_s,
                         reason=f"{segment_id} action window ended without waypoint arrival; verify stop before replanning",
                         physical_stop_gate_required=True,
                     )
                     bridge_rearmed = bridge.confirm_physical_stop(
                         evidence,
                         zero_request_started_s=zero_start_s,
-                        now_steady_s=time.monotonic(),
+                        now_steady_s=bridge_stop_evidence_observed_s,
                         expected_generation=str(self.args.attempt_id),
                     )
+                    last_result["route_bridge_stop_evidence"] = {
+                        "evidence_observed_monotonic_s": bridge_stop_evidence_observed_s,
+                        "confirmation_started_monotonic_s": bridge_stop_confirmation_started_s,
+                        "confirmation_lag_s": max(
+                            0.0,
+                            bridge_stop_confirmation_started_s - bridge_stop_evidence_observed_s,
+                        ),
+                        "final_window_end_monotonic_s": evidence.get("window_end_steady_s"),
+                        "evidence_age_at_observation_s": (
+                            bridge_stop_evidence_observed_s
+                            - float(evidence["window_end_steady_s"])
+                            if isinstance(evidence.get("window_end_steady_s"), (int, float)) else None
+                        ),
+                        "bridge_rearmed": bridge_rearmed,
+                        "next_rearm_requires_fresh_odom_and_source_mode": True,
+                    }
                     if not bridge_rearmed:
                         return {
                             "status": "BLOCKED",
