@@ -40,6 +40,12 @@ MAX_ANGULAR_RAD_S = 0.075
 MIN_EFFECTIVE_FORWARD_M_S = 0.12
 MIN_VALIDATED_TRANSIT_FORWARD_M_S = RAICOM_LOW_CRUISE_FORWARD_M_S
 CONFIGURED_ROUTE_MAX_CROSS_TRACK_M = 0.05
+# The aligned RAICOM table route has a separately reviewed static envelope:
+# the open START->WAYPOINT transit admits 80 mm, while the table-facing
+# WAYPOINT->TABLE_APPROACH transit remains at 60 mm.  These values are route
+# geometry only; the robot footprint and 100 mm boundary margin stay intact.
+TABLE_APPROACH_OPEN_SEGMENT_MAX_CROSS_TRACK_M = 0.08
+TABLE_APPROACH_TABLE_SEGMENT_MAX_CROSS_TRACK_M = 0.06
 MAX_ACTION_WINDOW_S = 10.0
 REALTIME_CLOCK_ALIGNMENT_TOLERANCE_NS = 50_000_000
 REALTIME_CLOCK_BACKSTEP_MIN_NS = 50_000_000
@@ -48,6 +54,46 @@ REALTIME_CLOCK_BACKSTEP_MAX_NS = 2_000_000_000
 
 class RouteError(ValueError):
     """Route configuration or provider data is invalid."""
+
+
+def _corridor_polygon(
+    start_xy: tuple[float, float],
+    end_xy: tuple[float, float],
+    *,
+    half_width_m: float,
+    extension_m: float,
+) -> tuple[tuple[float, float], ...]:
+    """Build one rectangular route corridor around a validated line segment."""
+    try:
+        sx, sy = (float(value) for value in start_xy)
+        ex, ey = (float(value) for value in end_xy)
+        half_width = float(half_width_m)
+        extension = float(extension_m)
+    except (TypeError, ValueError) as exc:
+        raise RouteError("corridor geometry inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (sx, sy, ex, ey, half_width, extension)):
+        raise RouteError("corridor geometry inputs must be finite")
+    if half_width <= 0.0 or extension <= 0.0:
+        raise RouteError("corridor width and extension must be positive")
+    length = math.hypot(ex - sx, ey - sy)
+    if length <= 0.05:
+        raise RouteError("configured route segment is too short for the existing stop/noise envelope")
+    heading = math.atan2(ey - sy, ex - sx)
+    ux, uy = math.cos(heading), math.sin(heading)
+    nx, ny = -uy, ux
+
+    def point(along: float, lateral: float) -> tuple[float, float]:
+        return (
+            sx + along * ux + lateral * nx,
+            sy + along * uy + lateral * ny,
+        )
+
+    return tuple(point(along, lateral) for along, lateral in (
+        (-extension, -half_width),
+        (length + extension, -half_width),
+        (length + extension, half_width),
+        (-extension, half_width),
+    ))
 
 
 class Profile(str, Enum):
@@ -489,31 +535,18 @@ def build_waypoint_docking_route_from_poses(
     corridor_half_width = footprint + boundary_margin + cross_track_allowance
     corridor_extension = footprint + boundary_margin + cross_track_allowance
 
-    def corridor(start_xy: tuple[float, float], end_xy: tuple[float, float]) -> tuple[tuple[float, float], ...]:
-        sx, sy = start_xy
-        ex, ey = end_xy
-        length = math.hypot(ex - sx, ey - sy)
-        if length <= 0.05:
-            raise RouteError("configured route segment is too short for the existing stop/noise envelope")
-        heading = math.atan2(ey - sy, ex - sx)
-        ux, uy = math.cos(heading), math.sin(heading)
-        nx, ny = -uy, ux
-
-        def point(along: float, lateral: float) -> tuple[float, float]:
-            return (
-                sx + along * ux + lateral * nx,
-                sy + along * uy + lateral * ny,
-            )
-
-        return tuple(point(along, lateral) for along, lateral in (
-            (-corridor_extension, -corridor_half_width),
-            (length + corridor_extension, -corridor_half_width),
-            (length + corridor_extension, corridor_half_width),
-            (-corridor_extension, corridor_half_width),
-        ))
-
-    waypoint_corridor = corridor((start_x, start_y), (waypoint_x, waypoint_y))
-    docking_corridor = corridor((waypoint_x, waypoint_y), (docking_x, docking_y))
+    waypoint_corridor = _corridor_polygon(
+        (start_x, start_y),
+        (waypoint_x, waypoint_y),
+        half_width_m=corridor_half_width,
+        extension_m=corridor_extension,
+    )
+    docking_corridor = _corridor_polygon(
+        (waypoint_x, waypoint_y),
+        (docking_x, docking_y),
+        half_width_m=corridor_half_width,
+        extension_m=corridor_extension,
+    )
     common = {
         "max_position_std_m": 0.01,
         "max_yaw_std_rad": 0.05,
@@ -639,6 +672,28 @@ def build_table_approach_route_from_mission(
         runtime_robot_footprint_radius_m=runtime_robot_footprint_radius_m,
         verified_local_clear_radius_m=verified_local_clear_radius_m,
     )
+    open_half_width = (
+        base.robot_footprint_radius_m
+        + base.corridor_boundary_margin_m
+        + TABLE_APPROACH_OPEN_SEGMENT_MAX_CROSS_TRACK_M
+    )
+    table_half_width = (
+        base.robot_footprint_radius_m
+        + base.corridor_boundary_margin_m
+        + TABLE_APPROACH_TABLE_SEGMENT_MAX_CROSS_TRACK_M
+    )
+    waypoint_corridor = _corridor_polygon(
+        (base.start_x_m, base.start_y_m),
+        (base.steps[0].x_m, base.steps[0].y_m),
+        half_width_m=open_half_width,
+        extension_m=open_half_width,
+    )
+    approach_corridor = _corridor_polygon(
+        (base.steps[0].x_m, base.steps[0].y_m),
+        (base.steps[1].x_m, base.steps[1].y_m),
+        half_width_m=table_half_width,
+        extension_m=table_half_width,
+    )
     route = replace(
         base,
         route_id=str(mission.get("mission_id")),
@@ -647,6 +702,7 @@ def build_table_approach_route_from_mission(
         steps=(
             replace(base.steps[0], waypoint_id="WAYPOINT", profile=Profile.TRANSIT,
                     position_tolerance_m=0.15,
+                    corridor_polygon=waypoint_corridor,
                     stop_behavior=(
                         StopBehavior.ROLLING if rolling_intermediate_waypoint
                         else base.steps[0].stop_behavior
@@ -657,6 +713,7 @@ def build_table_approach_route_from_mission(
                     )),
             replace(base.steps[1], waypoint_id="TABLE_APPROACH", profile=Profile.TRANSIT,
                     position_tolerance_m=0.15,
+                    corridor_polygon=approach_corridor,
                     segment_timeout_s=(
                         resolved_segment_timeout_s
                         if resolved_segment_timeout_s is not None else base.steps[1].segment_timeout_s

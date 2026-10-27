@@ -114,6 +114,7 @@ from issue80_waypoint_route import (
     SafetyObservation, WaypointRouteExecutor, YawPolicy,
     build_table_approach_route_from_mission,
     build_waypoint_docking_route_from_poses, load_waypoint_docking_pose_input,
+    distance_to_polygon_boundary,
     validate_waypoint_docking_scene_clearance,
     build_local01_short_scene_route, build_runtime_raw_odom_short_scene_route,
     validate_local01_short_scene_route_input, validate_local01_reset_odom_pose,
@@ -4291,6 +4292,21 @@ class FocusedM1Diagnostic(Node):
                     for step in route.steps
                 ],
                 "corridor_half_width_m": corridor_half_width,
+                "corridor_half_width_m_by_step": {
+                    step.waypoint_id: min(
+                        distance_to_polygon_boundary(
+                            step.x_m,
+                            step.y_m,
+                            step.corridor_polygon,
+                        ),
+                        distance_to_polygon_boundary(
+                            route.start_x_m,
+                            route.start_y_m,
+                            step.corridor_polygon,
+                        ),
+                    )
+                    for step in route.steps
+                },
                 "corridor_longitudinal_limits_m": [-0.75, 1.25],
                 "maximum_centerline_lateral_error_m": (
                     CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M

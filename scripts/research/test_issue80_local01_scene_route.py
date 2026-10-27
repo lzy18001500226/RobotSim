@@ -33,6 +33,7 @@ from issue80_local01_scene_route import (
 from issue80_waypoint_route import (
     build_table_approach_route_from_mission,
     build_local01_short_scene_route,
+    distance_to_polygon_boundary,
     validate_local01_reset_odom_pose,
     validate_local01_short_scene_route_input,
 )
@@ -114,6 +115,44 @@ class Local01SceneRouteTests(unittest.TestCase):
         self.assertEqual([step.waypoint_id for step in route.steps], ["WAYPOINT", "TABLE_APPROACH"])
         self.assertAlmostEqual(route.start_x_m, -1.5)
         self.assertAlmostEqual(route.start_yaw_rad, 0.0)
+
+    def test_table_route_corridors_match_the_segmented_static_envelope(self):
+        mission = build_runtime_raw_odom_aligned_start_table_approach_mission(
+            local01_source_fixture()
+        )
+        route = build_table_approach_route_from_mission(
+            mission,
+            runtime_robot_footprint_radius_m=0.41565748847422734,
+            verified_local_clear_radius_m=2.0,
+        )
+        required_margin = (
+            route.robot_footprint_radius_m + route.corridor_boundary_margin_m
+        )
+        # Regression: the real fixed-window run stopped at y=-1.5504109 m.
+        # This is 50.4109 mm from the centerline: inside the statically
+        # certified 80 mm open segment and outside the old generic 50 mm
+        # corridor by less than one millimetre.
+        observed_open_clearance = distance_to_polygon_boundary(
+            -1.2420052865823277, -1.5504109039747291,
+            route.steps[0].corridor_polygon,
+        )
+        open_clearance = distance_to_polygon_boundary(
+            -1.0, -1.579, route.steps[0].corridor_polygon
+        )
+        table_clearance = distance_to_polygon_boundary(
+            0.5, -1.559, route.steps[1].corridor_polygon
+        )
+        self.assertGreaterEqual(observed_open_clearance, required_margin)
+        self.assertGreaterEqual(open_clearance, required_margin)
+        self.assertGreaterEqual(table_clearance, required_margin)
+        self.assertLess(
+            distance_to_polygon_boundary(-1.0, -1.581, route.steps[0].corridor_polygon),
+            required_margin,
+        )
+        self.assertLess(
+            distance_to_polygon_boundary(-1.0, -1.561, route.steps[1].corridor_polygon),
+            required_margin,
+        )
 
     def test_table_approach_mission_preserves_docking_and_declares_turn_gate(self):
         mission = build_runtime_raw_odom_table_approach_mission(local01_source_fixture())

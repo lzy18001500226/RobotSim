@@ -33,6 +33,8 @@ from issue80_m1_first_motion import (
 from issue80_waypoint_route import (
     DirectiveKind, PoseEstimate, Profile, RouteDirective, RouteSpec, RouteStep,
     StopBehavior, YawPolicy, MIN_VALIDATED_TRANSIT_FORWARD_M_S,
+    TABLE_APPROACH_OPEN_SEGMENT_MAX_CROSS_TRACK_M,
+    TABLE_APPROACH_TABLE_SEGMENT_MAX_CROSS_TRACK_M,
 )
 
 
@@ -78,10 +80,10 @@ WAYPOINT_B_MAX_CROSS_TRACK_M = 0.05
 # run only with a separately generated static plan using this same 60 mm XY
 # tracking-inflation assumption and retaining the existing 20 mm clearance
 # lower bound for every required table-approach segment.
-CONTINUOUS_TABLE_MAX_CROSS_TRACK_M = 0.06
+CONTINUOUS_TABLE_MAX_CROSS_TRACK_M = TABLE_APPROACH_TABLE_SEGMENT_MAX_CROSS_TRACK_M
 # START -> WAYPOINT is the open-room transit segment. Its separately certified
 # 80 mm envelope is never carried into the table-facing segment.
-CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M = 0.08
+CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M = TABLE_APPROACH_OPEN_SEGMENT_MAX_CROSS_TRACK_M
 # The existing route planner produces a bounded bearing rate.  In the fixed
 # window profile, turn that fresh pre-window bearing into one of the already
 # physically observed Run65 arc commands, rather than perturbing the gait with
