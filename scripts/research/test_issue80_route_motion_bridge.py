@@ -75,6 +75,8 @@ from issue80_route_motion_bridge import (
     forward_gait_yaw_command,
     segment_lookahead_point,
     CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
+    CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
+    continuous_table_segment_cross_track_limit_m,
 )
 
 
@@ -168,6 +170,13 @@ class RouteMotionBridgeTests(unittest.TestCase):
     def test_continuous_table_expanded_cross_track_profile_is_scoped_to_sixty_mm(self):
         self.assertEqual(CONTINUOUS_TABLE_MAX_CROSS_TRACK_M, 0.06)
         self.assertGreater(CONTINUOUS_TABLE_MAX_CROSS_TRACK_M, WAYPOINT_B_MAX_CROSS_TRACK_M)
+
+    def test_continuous_table_open_transit_envelope_does_not_leak_to_table_approach(self):
+        self.assertEqual(CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M, 0.08)
+        self.assertEqual(continuous_table_segment_cross_track_limit_m("WAYPOINT"), 0.08)
+        self.assertEqual(continuous_table_segment_cross_track_limit_m("TABLE_APPROACH"), 0.06)
+        with self.assertRaises(RouteMotionBridgeError):
+            continuous_table_segment_cross_track_limit_m("TABLE_DOCKING")
 
     def test_segment_lookahead_advances_reference_without_changing_terminal_target(self):
         reference = segment_lookahead_point(

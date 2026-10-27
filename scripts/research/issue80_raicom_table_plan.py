@@ -183,9 +183,26 @@ def main(argv: list[str] | None = None):
             "does not alter the scene, robot, or controller"
         ),
     )
+    parser.add_argument(
+        "--start-waypoint-xy-tracking-inflation-m",
+        type=float,
+        default=None,
+        help=(
+            "optional conservative envelope for the aligned START->WAYPOINT open-room segment; "
+            "all later table-facing segments retain --xy-tracking-inflation-m"
+        ),
+    )
     args = parser.parse_args(argv)
     if not math.isfinite(args.xy_tracking_inflation_m) or not 0.0 < args.xy_tracking_inflation_m <= 0.10:
         parser.error("--xy-tracking-inflation-m must be finite and in (0, 0.10]")
+    if args.start_waypoint_xy_tracking_inflation_m is not None and (
+        not math.isfinite(args.start_waypoint_xy_tracking_inflation_m)
+        or args.start_waypoint_xy_tracking_inflation_m < args.xy_tracking_inflation_m
+        or args.start_waypoint_xy_tracking_inflation_m > 0.10
+    ):
+        parser.error(
+            "--start-waypoint-xy-tracking-inflation-m must be finite, no smaller than the base envelope, and <= 0.10"
+        )
     source = load_local01_scene_inputs(LOCAL01_POSES_DEFAULT)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"agent"))
     from path_governance import create_unique_output_directory, write_artifact_manifest
@@ -257,8 +274,18 @@ def main(argv: list[str] | None = None):
     rows = []
     segments = list(zip(waypoints,waypoints[1:]))
     segments.append((waypoints[-2], ("TABLE_REVIEW_CANDIDATE",(.95,-1.50,.68,0.0))))
+
+    def segment_tracking_inflation_m(start_name: str, end_name: str) -> float:
+        if (
+            args.start_waypoint_xy_tracking_inflation_m is not None
+            and (start_name, end_name) == ("START", "WAYPOINT")
+        ):
+            return float(args.start_waypoint_xy_tracking_inflation_m)
+        return float(args.xy_tracking_inflation_m)
+
     for posture, posture_qpos, posture_provenance in posture_specs:
         for index, ((aname,a),(bname,b)) in enumerate(segments):
+            segment_tracking_inflation = segment_tracking_inflation_m(aname, bname)
             samples = sample_segment(a,b)
             contacts = []
             self_contacts = {}
@@ -297,8 +324,8 @@ def main(argv: list[str] | None = None):
                         radius = float(np.linalg.norm(data.geom_xpos[g]-data.xpos[pelvis])+model.geom_rbound[g])
                         yaw_pad = radius*RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD
                         ilo,ihi = lo.copy(),hi.copy()
-                        ilo[:2] -= args.xy_tracking_inflation_m+yaw_pad
-                        ihi[:2] += args.xy_tracking_inflation_m+yaw_pad
+                        ilo[:2] -= segment_tracking_inflation+yaw_pad
+                        ihi[:2] += segment_tracking_inflation+yaw_pad
                         for eg,(elo,ehi) in envboxes.items():
                             if not ((model.geom_contype[g]&model.geom_conaffinity[eg]) or
                                     (model.geom_contype[eg]&model.geom_conaffinity[g])):
@@ -340,6 +367,7 @@ def main(argv: list[str] | None = None):
                                 and row["segment"] == index
                                 and row["minimum_inflated_clearance_m"] < .020), None)
             results.append({"posture":posture,"posture_provenance":posture_provenance,"from":aname,"to":bname,
+                            "xy_tracking_inflation_m":segment_tracking_inflation,
                             "samples":len(samples)*3,"active_environment_contacts":contacts,
                             "active_robot_self_penetrations_m":self_contacts,
                             "source_limit_violations":limit_violations,
@@ -430,6 +458,10 @@ def main(argv: list[str] | None = None):
                  "reason":"50 mm retreat from source docking to preserve nominal-posture uncertainty clearance",
                  "source_docking_unchanged":True,"manipulation_reach":"UNKNOWN_NOT_AN_ACCEPTED_DOCK"},
             "clearance_assumptions":{"xy_tracking_inflation_m":args.xy_tracking_inflation_m,
+                                     "xy_tracking_inflation_by_segment_m":{
+                                         "START->WAYPOINT":segment_tracking_inflation_m("START", "WAYPOINT"),
+                                         "WAYPOINT->TABLE_APPROACH":segment_tracking_inflation_m("WAYPOINT", "TABLE_APPROACH"),
+                                     },
                                      "yaw_error_samples_rad":[-RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,0,RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD],
                                      "extra_rotation_interpolation_bound_rad":RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,"additional_clearance_gate_m":.02,
                                      "postures":[name for name,_,_ in posture_specs],

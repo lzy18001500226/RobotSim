@@ -70,11 +70,14 @@ WAYPOINT_B_CORRIDOR_MAX_FORWARD_M = 1.25
 WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M = 1.10
 WAYPOINT_B_MAX_CROSS_TRACK_M = 0.05
 # This is deliberately scoped to the continuous RAICOM TABLE_APPROACH profile.
-# The normal 50 mm route guard remains unchanged.  The 60 mm profile can run
-# only with a separately generated static plan using the same 60 mm XY
+# The normal 50 mm route guard remains unchanged. The table-facing segment can
+# run only with a separately generated static plan using this same 60 mm XY
 # tracking-inflation assumption and retaining the existing 20 mm clearance
 # lower bound for every required table-approach segment.
 CONTINUOUS_TABLE_MAX_CROSS_TRACK_M = 0.06
+# START -> WAYPOINT is the open-room transit segment. Its separately certified
+# 80 mm envelope is never carried into the table-facing segment.
+CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M = 0.08
 CURVED_PATH_RADIUS_M = 4.4
 CURVED_PATH_SWEEP_RAD = 0.22
 CURVED_PATH_TURN_SIGN = -1
@@ -1012,6 +1015,17 @@ def segment_lookahead_point(
         "reference_progress_m": reference_progress,
         "lookahead_m": lookahead,
     }
+
+
+def continuous_table_segment_cross_track_limit_m(waypoint_id: str) -> float:
+    """Return the static-plan-certified corridor bound for one table-route step."""
+    if waypoint_id == "WAYPOINT":
+        return CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M
+    if waypoint_id == "TABLE_APPROACH":
+        return CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+    raise RouteMotionBridgeError(
+        f"continuous table route has no certified cross-track envelope for {waypoint_id!r}"
+    )
 
 
 def active_locomotion_source_readbacks_valid(

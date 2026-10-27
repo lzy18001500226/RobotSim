@@ -138,6 +138,7 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M,
     WAYPOINT_B_CORRIDOR_MAX_FORWARD_M, WAYPOINT_B_MAX_CROSS_TRACK_M,
     CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
+    CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
     WAYPOINT_B_WINDOW_MAX_S,
     CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
     CURVED_PATH_FORWARD_M_S,
@@ -155,6 +156,7 @@ from issue80_route_motion_bridge import (
     waypoint_bearing_angular_command,
     segment_lookahead_point,
     CONTINUOUS_TABLE_LOOKAHEAD_M,
+    continuous_table_segment_cross_track_limit_m,
     waypoint_b_arrival_passes, waypoint_b_arrival_trigger_radius_m,
     waypoint_b_arrival_after_verified_stop_passes,
     waypoint_b_window_budget_passes, waypoint_b_forward_guard_reached,
@@ -3169,12 +3171,18 @@ class FocusedM1Diagnostic(Node):
                 "terminal_stop_behavior": (
                     "VERIFY_PHYSICAL_STOP" if continuous_table_approach_mode else None
                 ),
-                "maximum_cross_track_m": (
-                    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                "cross_track_limit_by_step_m": (
+                    {
+                        "WAYPOINT": CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
+                        "TABLE_APPROACH": CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
+                    }
                     if continuous_table_approach_mode else None
                 ),
-                "static_tracking_inflation_requirement_m": (
-                    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                "static_tracking_inflation_by_step_requirement_m": (
+                    {
+                        "START->WAYPOINT": CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
+                        "WAYPOINT->TABLE_APPROACH": CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
+                    }
                     if continuous_table_approach_mode else None
                 ),
             },
@@ -3398,17 +3406,28 @@ class FocusedM1Diagnostic(Node):
                 )
                 if continuous_table_approach_mode:
                     try:
-                        tracking_inflation_m = float(
-                            table_plan["clearance_assumptions"]["xy_tracking_inflation_m"]
-                        )
+                        tracking_by_segment = table_plan["clearance_assumptions"][
+                            "xy_tracking_inflation_by_segment_m"
+                        ]
+                        expected_tracking_by_segment = {
+                            "START->WAYPOINT": CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
+                            "WAYPOINT->TABLE_APPROACH": CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
+                        }
+                        observed_tracking_by_segment = {
+                            key: float(tracking_by_segment[key])
+                            for key in expected_tracking_by_segment
+                        }
                     except (KeyError, TypeError, ValueError) as exc:
                         raise ValueError(
-                            "continuous table route static plan lacks a numeric tracking envelope"
+                            "continuous table route static plan lacks its per-segment numeric tracking envelope"
                         ) from exc
-                    if abs(tracking_inflation_m - CONTINUOUS_TABLE_MAX_CROSS_TRACK_M) > 1e-9:
+                    if any(
+                        abs(observed_tracking_by_segment[key] - expected) > 1e-9
+                        for key, expected in expected_tracking_by_segment.items()
+                    ):
                         raise ValueError(
                             "continuous table route requires a static plan generated with its exact "
-                            f"{CONTINUOUS_TABLE_MAX_CROSS_TRACK_M:.3f} m tracking envelope"
+                            "per-segment tracking envelopes"
                         )
                 if (
                     static_scene.get("status") != "PASS_STATIC_SCENE_CLEARANCE"
@@ -4174,7 +4193,7 @@ class FocusedM1Diagnostic(Node):
                 "corridor_half_width_m": corridor_half_width,
                 "corridor_longitudinal_limits_m": [-0.75, 1.25],
                 "maximum_centerline_lateral_error_m": (
-                    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                    CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M
                     if continuous_table_approach_mode else WAYPOINT_B_MAX_CROSS_TRACK_M
                 ),
                 "robot_footprint_radial_upper_bound_m": footprint,
@@ -4218,7 +4237,10 @@ class FocusedM1Diagnostic(Node):
                     "maximum_forward_m_s": float(route.steps[0].max_forward_m_s),
                     "maximum_angular_rad_s": float(limits["angular_rad_s"]),
                     "maximum_segment_cross_track_m": (
-                        CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                        {
+                            "WAYPOINT": CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
+                            "TABLE_APPROACH": CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
+                        }
                         if continuous_table_approach_mode else float(limits["max_cross_track_m"])
                     ),
                     "segment_timeout_s": TABLE_APPROACH_SEGMENT_TIMEOUT_S,
@@ -4470,7 +4492,7 @@ class FocusedM1Diagnostic(Node):
             route_progress_monitor: dict[str, Any] = {
                 "cross_track_limit_m": (
                     CURVED_PATH_MAX_CROSS_TRACK_M if curved_path_diagnostic else
-                    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M if continuous_table_approach_mode else
+                    CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M if continuous_table_approach_mode else
                     WAYPOINT_B_MAX_CROSS_TRACK_M if route_config_mode else
                     WAYPOINT_B_MAX_CROSS_TRACK_M if waypoint_b_only else None
                 ),
@@ -4708,7 +4730,8 @@ class FocusedM1Diagnostic(Node):
                 )
                 cross_track_limit = (
                     CURVED_PATH_MAX_CROSS_TRACK_M if curved_path_diagnostic
-                    else CONTINUOUS_TABLE_MAX_CROSS_TRACK_M if continuous_table_approach_mode
+                    else continuous_table_segment_cross_track_limit_m(active.waypoint_id)
+                    if continuous_table_approach_mode
                     else WAYPOINT_B_MAX_CROSS_TRACK_M if waypoint_b_only or route_config_mode
                     else None
                 )
@@ -4724,6 +4747,8 @@ class FocusedM1Diagnostic(Node):
                 )
                 route_progress_monitor["last_sample"]["sample_disposition"] = sample_disposition
                 route_progress_monitor["samples"][-1]["sample_disposition"] = sample_disposition
+                route_progress_monitor["last_sample"]["cross_track_limit_m"] = cross_track_limit
+                route_progress_monitor["samples"][-1]["cross_track_limit_m"] = cross_track_limit
                 if sample_disposition == "ABORT_CROSS_TRACK_GUARD":
                     route_fault = (
                         "curved_path_reference_cross_track_limit_exceeded"
@@ -6606,8 +6631,17 @@ class FocusedM1Diagnostic(Node):
                         if table_approach_mission_mode else 15.0
                     ),
                     "cross_track_limit_m": (
-                        CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
-                        if continuous_table_approach_mode else WAYPOINT_B_MAX_CROSS_TRACK_M
+                        route_progress_monitor["last_sample"].get("cross_track_limit_m")
+                        if continuous_table_approach_mode and isinstance(
+                            route_progress_monitor.get("last_sample"), Mapping
+                        ) else WAYPOINT_B_MAX_CROSS_TRACK_M
+                    ),
+                    "cross_track_limit_by_step_m": (
+                        {
+                            "WAYPOINT": CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
+                            "TABLE_APPROACH": CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
+                        }
+                        if continuous_table_approach_mode else None
                     ),
                     "maximum_cross_track_m": route_progress_monitor["maximum_abs_cross_track_m"],
                     "manipulator_handoff": "NOT_REQUESTED",
