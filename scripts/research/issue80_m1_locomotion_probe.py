@@ -3246,6 +3246,10 @@ class FocusedM1Diagnostic(Node):
                 "terminal_stop_behavior": (
                     "VERIFY_PHYSICAL_STOP" if continuous_table_approach_mode else None
                 ),
+                "forward_gait_yaw_mapping": (
+                    "ZERO_YAW_STATIC_COLLINEAR_ROUTE"
+                    if continuous_table_approach_mode else None
+                ),
                 "cross_track_limit_by_step_m": (
                     {
                         "WAYPOINT": CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
@@ -5633,6 +5637,26 @@ class FocusedM1Diagnostic(Node):
                                             if native_nominal_straight_gait_diagnostic_mode else
                                             "ZERO_YAW_STATIC_COLLINEAR_ROUTE"
                                         ),
+                                        "locomotion_handshake_confirmed": True,
+                                    })
+                                elif continuous_table_approach_mode:
+                                    # The route is a static collinear corridor.
+                                    # Earlier continuous bearing updates at
+                                    # 50 Hz suppressed the gait, while the
+                                    # real zero-yaw ten-second gait retained
+                                    # physical forward progress.  Keep one
+                                    # zero-yaw stream and stop only on the
+                                    # route's measured endpoint or guards.
+                                    angular = 0.0
+                                    control_row.update({
+                                        "control_phase": "CONTINUOUS_STATIC_COLLINEAR_ZERO_YAW_GAIT",
+                                        "target_x_m": float(active.x_m),
+                                        "target_y_m": float(active.y_m),
+                                        "current_x_m": float(pose["x"]),
+                                        "current_y_m": float(pose["y"]),
+                                        "current_yaw_rad": float(pose["yaw"]),
+                                        "raw_angular_velocity_rad_s": 0.0,
+                                        "forward_gait_yaw_mapping": "ZERO_YAW_STATIC_COLLINEAR_ROUTE",
                                         "locomotion_handshake_confirmed": True,
                                     })
                                 elif fixed_window_table_approach_mode:

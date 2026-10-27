@@ -853,6 +853,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
         bridge = source[source.index("bridge = RouteMotionBridge("):]
         self.assertIn("or straight_ten_second_table_approach_mode", bridge)
 
+    def test_continuous_table_route_uses_the_static_zero_yaw_gait(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        continuous_start = source.index("elif continuous_table_approach_mode:")
+        continuous_end = source.index("elif fixed_window_table_approach_mode:", continuous_start)
+        continuous = source[continuous_start:continuous_end]
+        self.assertIn("angular = 0.0", continuous)
+        self.assertIn("CONTINUOUS_STATIC_COLLINEAR_ZERO_YAW_GAIT", continuous)
+        self.assertIn("ZERO_YAW_STATIC_COLLINEAR_ROUTE", continuous)
+
     def test_route_bridge_stop_evidence_is_timestamped_before_result_bookkeeping(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"
