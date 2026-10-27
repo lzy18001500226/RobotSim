@@ -376,6 +376,17 @@ class FocusedM1Diagnostic(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
+        # The vendor simulator publishes odometry at 500 Hz while this route
+        # controller consumes only the most recent ground-truth pose.  Keep
+        # one BEST_EFFORT sample so a slower Python callback cannot build an
+        # obsolete pose queue; IMU, joint, and MC-state subscriptions retain
+        # their existing depth-10 history.
+        self.odom_state_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.odom_subscription_configured_qos = self._qos_profile(self.odom_state_qos)
         self.command_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST, depth=COMMAND_QOS_DEPTH,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -390,7 +401,7 @@ class FocusedM1Diagnostic(Node):
         self.set_mode_client = self.create_client(SetMcAction, SET_MC_ACTION_SERVICE)
         self.get_mode_client = self.create_client(GetMcAction, GET_MC_ACTION_SERVICE)
         self.create_subscription(
-            Odometry, "/aima/hal/odom/state", lambda msg: self._store("odom", msg), self.state_qos
+            Odometry, "/aima/hal/odom/state", lambda msg: self._store("odom", msg), self.odom_state_qos
         )
         self.create_subscription(
             Imu, "/aima/hal/imu/torso/state", lambda msg: self._store("imu", msg), self.state_qos
@@ -1546,6 +1557,7 @@ class FocusedM1Diagnostic(Node):
                 ) if fault
             ) or None,
             "odom_source_stamp_fence": self.odom_source_stamp_fence.snapshot(),
+            "odom_subscription_configured_qos": self.odom_subscription_configured_qos,
         }
 
     def collect_stationary_odom_baseline(self) -> dict[str, Any]:
@@ -7822,6 +7834,7 @@ class FocusedM1Diagnostic(Node):
                 **self.odom_source_stamp_fence.snapshot(),
                 "recorded_drop_events": self.odom_source_stamp_drop_events,
             }
+            result["odom_subscription_configured_qos"] = self.odom_subscription_configured_qos
             result["optional_debug_capture"] = {
                 "mc_debug_f64_topic": MC_DEBUG_F64_TOPIC,
                 "mc_debug_f64_type": "std_msgs/msg/Float64MultiArray",

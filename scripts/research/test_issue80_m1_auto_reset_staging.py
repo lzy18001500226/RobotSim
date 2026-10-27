@@ -807,6 +807,18 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn('getattr(args, "capture_mc_rl_debug", False)', guarded)
         self.assertIn("if self.mc_debug_f64_subscription_enabled:", source[enabled:subscription + 160])
 
+    def test_high_rate_odom_subscription_uses_latest_only_compatible_qos(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("self.odom_state_qos = QoSProfile(")
+        end = source.index("self.command_qos = QoSProfile(", start)
+        odom_qos = source[start:end]
+        self.assertIn("history=HistoryPolicy.KEEP_LAST, depth=1", odom_qos)
+        self.assertIn("reliability=ReliabilityPolicy.BEST_EFFORT", odom_qos)
+        subscription = source.index("Odometry, \"/aima/hal/odom/state\"")
+        self.assertIn("self.odom_state_qos", source[subscription:subscription + 160])
+
     def test_transit_baseline_precedes_all_route_mode_dispatch(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"
