@@ -3179,7 +3179,7 @@ class FocusedM1Diagnostic(Node):
                 "scope": (
                     "INITIAL_WAYPOINT_DEPARTURE_ONLY"
                     if zero_forward_heading_acquisition_mode else
-                    "EACH_FIXED_WINDOW_IN_OPEN_START_TO_WAYPOINT_SEGMENT_ONLY"
+                    "INITIAL_FIXED_WINDOW_IN_OPEN_START_TO_WAYPOINT_SEGMENT_ONLY"
                     if fixed_window_open_segment_yaw_acquisition_mode else None
                 ),
                 "forward_velocity_m_s": 0.0,
@@ -3273,7 +3273,7 @@ class FocusedM1Diagnostic(Node):
                 ),
                 "open_segment_yaw_acquisition": (
                     {
-                        "scope": "START_TO_WAYPOINT_ONLY",
+                        "scope": "INITIAL_START_TO_WAYPOINT_WINDOW_ONLY",
                         "forward_velocity_m_s": 0.0,
                         "angular_command_magnitude_rad_s": ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
                         "maximum_duration_s": ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
@@ -3283,7 +3283,7 @@ class FocusedM1Diagnostic(Node):
                     if fixed_window_table_approach_mode else None
                 ),
                 "control_lifecycle": (
-                    "OPEN_SEGMENT_ZERO_FORWARD_YAW_ACQUISITION_IF_NEEDED->FIXED_5S_STRAIGHT_OR_ARC->COMPOSITE_STOP->REPLAN"
+                    "INITIAL_OPEN_SEGMENT_ZERO_FORWARD_YAW_ACQUISITION_IF_NEEDED->FIXED_5S_STRAIGHT_OR_ARC->COMPOSITE_STOP->REPLAN"
                     if fixed_window_table_approach_mode else None
                 ),
             },
@@ -5265,13 +5265,15 @@ class FocusedM1Diagnostic(Node):
                 segment_nonzero_s = 0.0
                 while True:
                     # The legacy low-cruise acquisition remains scoped to the
-                    # first departure. The fixed-window profile may use the
-                    # measured zero-forward yaw response before every open
-                    # START->WAYPOINT window, never near the table.
+                    # first departure. The fixed-window profile uses the
+                    # measured yaw-only response only before the first open
+                    # START->WAYPOINT window; later windows retain the
+                    # physically qualified forward-arc behavior.
                     fixed_window_open_segment_acquisition = (
                         fixed_window_heading_acquisition_required(
                             fixed_window_table_approach=fixed_window_table_approach_mode,
                             segment_id=segment_id,
+                            window_index=window_index,
                         )
                     )
                     heading_acquisition_this_window = bool(
@@ -6526,6 +6528,7 @@ class FocusedM1Diagnostic(Node):
                                 fixed_window_heading_acquisition_required(
                                     fixed_window_table_approach=fixed_window_table_approach_mode,
                                     segment_id=configured_step.waypoint_id,
+                                    window_index=0,
                                 )
                             ),
                         )
@@ -8034,6 +8037,7 @@ class FocusedM1Diagnostic(Node):
                                     getattr(self.args, "raicom_fixed_window_table_approach", False)
                                 ),
                                 segment_id="WAYPOINT",
+                                window_index=0,
                             )
                         ),
                     )
@@ -9002,7 +9006,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                         "aggregate_nonzero_limit_s": 75.0,
                         "angular_command_policy": "fresh pre-window bearing quantized to 0 or existing +/-0.075 rad/s Run65 arc",
                         "open_segment_yaw_acquisition": {
-                            "scope": "START_TO_WAYPOINT_ONLY",
+                            "scope": "INITIAL_START_TO_WAYPOINT_WINDOW_ONLY",
                             "forward_velocity_m_s": 0.0,
                             "angular_command_magnitude_rad_s": ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
                             "maximum_duration_s": ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,

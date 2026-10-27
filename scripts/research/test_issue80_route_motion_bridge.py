@@ -215,24 +215,41 @@ class RouteMotionBridgeTests(unittest.TestCase):
             fixed_window_heading_acquisition_required(
                 fixed_window_table_approach=True,
                 segment_id="WAYPOINT",
+                window_index=0,
             )
         )
         self.assertFalse(
             fixed_window_heading_acquisition_required(
                 fixed_window_table_approach=True,
                 segment_id="TABLE_APPROACH",
+                window_index=0,
             )
         )
         self.assertFalse(
             fixed_window_heading_acquisition_required(
                 fixed_window_table_approach=False,
                 segment_id="WAYPOINT",
+                window_index=0,
+            )
+        )
+        self.assertFalse(
+            fixed_window_heading_acquisition_required(
+                fixed_window_table_approach=True,
+                segment_id="WAYPOINT",
+                window_index=1,
             )
         )
         with self.assertRaises(RouteMotionBridgeError):
             fixed_window_heading_acquisition_required(
                 fixed_window_table_approach=True,
                 segment_id=object(),  # type: ignore[arg-type]
+                window_index=0,
+            )
+        with self.assertRaises(RouteMotionBridgeError):
+            fixed_window_heading_acquisition_required(
+                fixed_window_table_approach=True,
+                segment_id="WAYPOINT",
+                window_index=-1,
             )
 
     def test_route_replan_requires_new_fresh_odom_after_a_stop(self):

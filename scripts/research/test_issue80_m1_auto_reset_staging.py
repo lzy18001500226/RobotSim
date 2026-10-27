@@ -818,6 +818,8 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("segment_id=segment_id", source)
         self.assertIn("segment_id=configured_step.waypoint_id", source)
         self.assertIn('segment_id="WAYPOINT"', source)
+        self.assertIn("window_index=window_index", source)
+        self.assertIn("window_index=0", source)
         self.assertIn('segment_id == "WAYPOINT"', source)
         self.assertIn("and window_index == 0", source)
 

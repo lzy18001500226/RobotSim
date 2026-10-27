@@ -1236,16 +1236,25 @@ def fixed_window_heading_acquisition_required(
     *,
     fixed_window_table_approach: bool,
     segment_id: str,
+    window_index: int,
 ) -> bool:
-    """Limit yaw-only source acquisition to the open first table segment.
+    """Limit yaw-only source acquisition to the initial open-table departure.
 
-    The existing zero-forward acquisition has physical evidence only in the
-    open START->WAYPOINT corridor.  It is deliberately never applied in the
-    table-facing segment, whose static review retains the smaller yaw envelope.
+    The installed runtime showed repeatable signed response for the initial
+    negative yaw-only acquisition, but a later positive rearm produced the
+    opposite yaw response.  Do not generalize that unverified rearm behavior:
+    use yaw-only acquisition once before the first open-segment gait window,
+    then retain the existing bounded forward-arc controller after each stop.
     """
     if not isinstance(segment_id, str):
         raise RouteMotionBridgeError("fixed-window segment identifier must be a string")
-    return bool(fixed_window_table_approach and segment_id == "WAYPOINT")
+    if not isinstance(window_index, int) or window_index < 0:
+        raise RouteMotionBridgeError("fixed-window index must be a non-negative integer")
+    return bool(
+        fixed_window_table_approach
+        and segment_id == "WAYPOINT"
+        and window_index == 0
+    )
 
 
 def active_locomotion_source_readbacks_valid(
