@@ -137,6 +137,7 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_EXTENDED_DIAGNOSTIC_STOP_RESERVE_M,
     WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M,
     WAYPOINT_B_CORRIDOR_MAX_FORWARD_M, WAYPOINT_B_MAX_CROSS_TRACK_M,
+    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
     WAYPOINT_B_WINDOW_MAX_S,
     CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
     CURVED_PATH_FORWARD_M_S,
@@ -3168,6 +3169,14 @@ class FocusedM1Diagnostic(Node):
                 "terminal_stop_behavior": (
                     "VERIFY_PHYSICAL_STOP" if continuous_table_approach_mode else None
                 ),
+                "maximum_cross_track_m": (
+                    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                    if continuous_table_approach_mode else None
+                ),
+                "static_tracking_inflation_requirement_m": (
+                    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                    if continuous_table_approach_mode else None
+                ),
             },
             "forward_gait_yaw_mapping": {
                 "enabled": forward_gait_yaw_inversion_mode,
@@ -3387,6 +3396,20 @@ class FocusedM1Diagnostic(Node):
                     if aligned_start_table_approach_mode
                     else "STATIC_GEOMETRY_REVIEW_ONLY_TABLE_APPROACH_NOT_DYNAMICALLY_QUALIFIED"
                 )
+                if continuous_table_approach_mode:
+                    try:
+                        tracking_inflation_m = float(
+                            table_plan["clearance_assumptions"]["xy_tracking_inflation_m"]
+                        )
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ValueError(
+                            "continuous table route static plan lacks a numeric tracking envelope"
+                        ) from exc
+                    if abs(tracking_inflation_m - CONTINUOUS_TABLE_MAX_CROSS_TRACK_M) > 1e-9:
+                        raise ValueError(
+                            "continuous table route requires a static plan generated with its exact "
+                            f"{CONTINUOUS_TABLE_MAX_CROSS_TRACK_M:.3f} m tracking envelope"
+                        )
                 if (
                     static_scene.get("status") != "PASS_STATIC_SCENE_CLEARANCE"
                     or static_scene.get("native_runtime_name_contract", {}).get("status") != "PASS_NATIVE_RUNTIME_NAMES"
@@ -4150,7 +4173,10 @@ class FocusedM1Diagnostic(Node):
                 ],
                 "corridor_half_width_m": corridor_half_width,
                 "corridor_longitudinal_limits_m": [-0.75, 1.25],
-                "maximum_centerline_lateral_error_m": 0.05,
+                "maximum_centerline_lateral_error_m": (
+                    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                    if continuous_table_approach_mode else WAYPOINT_B_MAX_CROSS_TRACK_M
+                ),
                 "robot_footprint_radial_upper_bound_m": footprint,
                 "boundary_margin_m": route.corridor_boundary_margin_m,
                 "pose_uncertainty_note": "installed simulator ground-truth odometry publishes no covariance; route uses zero covariance only as the deterministic ground-truth contract, not as an estimated localization confidence",
@@ -4191,7 +4217,10 @@ class FocusedM1Diagnostic(Node):
                     "aggregate_nonzero_limit_s": float(limits["max_aggregate_nonzero_s"]),
                     "maximum_forward_m_s": float(route.steps[0].max_forward_m_s),
                     "maximum_angular_rad_s": float(limits["angular_rad_s"]),
-                    "maximum_segment_cross_track_m": float(limits["max_cross_track_m"]),
+                    "maximum_segment_cross_track_m": (
+                        CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                        if continuous_table_approach_mode else float(limits["max_cross_track_m"])
+                    ),
                     "segment_timeout_s": TABLE_APPROACH_SEGMENT_TIMEOUT_S,
                     "segment_timeout_basis": (
                         "the unchanged 75 s aggregate nonzero allowance plus complete zero/stand/"
@@ -4441,6 +4470,7 @@ class FocusedM1Diagnostic(Node):
             route_progress_monitor: dict[str, Any] = {
                 "cross_track_limit_m": (
                     CURVED_PATH_MAX_CROSS_TRACK_M if curved_path_diagnostic else
+                    CONTINUOUS_TABLE_MAX_CROSS_TRACK_M if continuous_table_approach_mode else
                     WAYPOINT_B_MAX_CROSS_TRACK_M if route_config_mode else
                     WAYPOINT_B_MAX_CROSS_TRACK_M if waypoint_b_only else None
                 ),
@@ -4678,6 +4708,7 @@ class FocusedM1Diagnostic(Node):
                 )
                 cross_track_limit = (
                     CURVED_PATH_MAX_CROSS_TRACK_M if curved_path_diagnostic
+                    else CONTINUOUS_TABLE_MAX_CROSS_TRACK_M if continuous_table_approach_mode
                     else WAYPOINT_B_MAX_CROSS_TRACK_M if waypoint_b_only or route_config_mode
                     else None
                 )
@@ -6574,7 +6605,10 @@ class FocusedM1Diagnostic(Node):
                         float(local01_route_input["limits"]["max_aggregate_nonzero_s"])
                         if table_approach_mission_mode else 15.0
                     ),
-                    "cross_track_limit_m": WAYPOINT_B_MAX_CROSS_TRACK_M,
+                    "cross_track_limit_m": (
+                        CONTINUOUS_TABLE_MAX_CROSS_TRACK_M
+                        if continuous_table_approach_mode else WAYPOINT_B_MAX_CROSS_TRACK_M
+                    ),
                     "maximum_cross_track_m": route_progress_monitor["maximum_abs_cross_track_m"],
                     "manipulator_handoff": "NOT_REQUESTED",
                     "mc_zero_receipt_ack_available": False,

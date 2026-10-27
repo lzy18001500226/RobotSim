@@ -174,7 +174,18 @@ def main(argv: list[str] | None = None):
             "the immutable Local01 input and original yaw+pi/2 mission remain references"
         ),
     )
+    parser.add_argument(
+        "--xy-tracking-inflation-m",
+        type=float,
+        default=0.05,
+        help=(
+            "offline XY tracking envelope used only for conservative static AABB inflation; "
+            "does not alter the scene, robot, or controller"
+        ),
+    )
     args = parser.parse_args(argv)
+    if not math.isfinite(args.xy_tracking_inflation_m) or not 0.0 < args.xy_tracking_inflation_m <= 0.10:
+        parser.error("--xy-tracking-inflation-m must be finite and in (0, 0.10]")
     source = load_local01_scene_inputs(LOCAL01_POSES_DEFAULT)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"agent"))
     from path_governance import create_unique_output_directory, write_artifact_manifest
@@ -286,7 +297,8 @@ def main(argv: list[str] | None = None):
                         radius = float(np.linalg.norm(data.geom_xpos[g]-data.xpos[pelvis])+model.geom_rbound[g])
                         yaw_pad = radius*RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD
                         ilo,ihi = lo.copy(),hi.copy()
-                        ilo[:2] -= .05+yaw_pad; ihi[:2] += .05+yaw_pad
+                        ilo[:2] -= args.xy_tracking_inflation_m+yaw_pad
+                        ihi[:2] += args.xy_tracking_inflation_m+yaw_pad
                         for eg,(elo,ehi) in envboxes.items():
                             if not ((model.geom_contype[g]&model.geom_conaffinity[eg]) or
                                     (model.geom_contype[eg]&model.geom_conaffinity[g])):
@@ -417,7 +429,7 @@ def main(argv: list[str] | None = None):
             "separate_review_candidate":{"scene_world_xyz_yaw":[.95,-1.50,.68,0.0],
                  "reason":"50 mm retreat from source docking to preserve nominal-posture uncertainty clearance",
                  "source_docking_unchanged":True,"manipulation_reach":"UNKNOWN_NOT_AN_ACCEPTED_DOCK"},
-            "clearance_assumptions":{"xy_tracking_inflation_m":.05,
+            "clearance_assumptions":{"xy_tracking_inflation_m":args.xy_tracking_inflation_m,
                                      "yaw_error_samples_rad":[-RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,0,RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD],
                                      "extra_rotation_interpolation_bound_rad":RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,"additional_clearance_gate_m":.02,
                                      "postures":[name for name,_,_ in posture_specs],

@@ -69,6 +69,12 @@ WAYPOINT_B_CORRIDOR_MAX_FORWARD_M = 1.25
 # Keep an additional 0.15 m before the existing corridor edge for stopping and drift.
 WAYPOINT_B_EXTENDED_DIAGNOSTIC_FORWARD_GUARD_M = 1.10
 WAYPOINT_B_MAX_CROSS_TRACK_M = 0.05
+# This is deliberately scoped to the continuous RAICOM TABLE_APPROACH profile.
+# The normal 50 mm route guard remains unchanged.  The 60 mm profile can run
+# only with a separately generated static plan using the same 60 mm XY
+# tracking-inflation assumption and retaining the existing 20 mm clearance
+# lower bound for every required table-approach segment.
+CONTINUOUS_TABLE_MAX_CROSS_TRACK_M = 0.06
 CURVED_PATH_RADIUS_M = 4.4
 CURVED_PATH_SWEEP_RAD = 0.22
 CURVED_PATH_TURN_SIGN = -1
