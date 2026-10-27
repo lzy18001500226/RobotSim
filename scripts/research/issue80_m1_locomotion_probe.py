@@ -152,6 +152,8 @@ from issue80_route_motion_bridge import (
     build_short_right_corner_route, build_shallow_curved_path_reference,
     build_curved_waypoint_route, curved_path_metrics, measured_m1_nonzero_window_s,
     waypoint_bearing_angular_command,
+    segment_lookahead_point,
+    CONTINUOUS_TABLE_LOOKAHEAD_M,
     waypoint_b_arrival_passes, waypoint_b_arrival_trigger_radius_m,
     waypoint_b_arrival_after_verified_stop_passes,
     waypoint_b_window_budget_passes, waypoint_b_forward_guard_reached,
@@ -4985,6 +4987,8 @@ class FocusedM1Diagnostic(Node):
                     and executor.active_step is not None
                     and executor.active_step.waypoint_id != active.waypoint_id
                 ):
+                    route_segment_origin["x_m"] = active.x_m
+                    route_segment_origin["y_m"] = active.y_m
                     route_events.append({
                         "kind": "ROLLING_WAYPOINT_PASSED",
                         "waypoint_id": active.waypoint_id,
@@ -5431,12 +5435,31 @@ class FocusedM1Diagnostic(Node):
                                         "locomotion_handshake_confirmed": True,
                                     })
                                 else:
+                                    lookahead_reference = None
+                                    if continuous_table_approach_mode:
+                                        lookahead_reference = segment_lookahead_point(
+                                            segment_start_x_m=float(route_segment_origin["x_m"]),
+                                            segment_start_y_m=float(route_segment_origin["y_m"]),
+                                            segment_end_x_m=float(active.x_m),
+                                            segment_end_y_m=float(active.y_m),
+                                            current_x_m=float(pose["x"]),
+                                            current_y_m=float(pose["y"]),
+                                            lookahead_m=CONTINUOUS_TABLE_LOOKAHEAD_M,
+                                        )
+                                    steering_target_x_m = float(
+                                        lookahead_reference["x_m"]
+                                        if lookahead_reference is not None else active.x_m
+                                    )
+                                    steering_target_y_m = float(
+                                        lookahead_reference["y_m"]
+                                        if lookahead_reference is not None else active.y_m
+                                    )
                                     steering = waypoint_bearing_angular_command(
                                         current_x_m=float(pose["x"]),
                                         current_y_m=float(pose["y"]),
                                         current_yaw_rad=float(pose["yaw"]),
-                                        target_x_m=float(active.x_m),
-                                        target_y_m=float(active.y_m),
+                                        target_x_m=steering_target_x_m,
+                                        target_y_m=steering_target_y_m,
                                         maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                                     )
                                     standard_angular = float(steering["angular_rad_s"])
@@ -5449,8 +5472,11 @@ class FocusedM1Diagnostic(Node):
                                     )
                                     control_row.update({
                                         "control_phase": "CLOSED_LOOP_WAYPOINT_BEARING",
-                                        "target_x_m": float(active.x_m),
-                                        "target_y_m": float(active.y_m),
+                                        "target_x_m": steering_target_x_m,
+                                        "target_y_m": steering_target_y_m,
+                                        "terminal_target_x_m": float(active.x_m),
+                                        "terminal_target_y_m": float(active.y_m),
+                                        "segment_lookahead": lookahead_reference,
                                         "current_x_m": float(pose["x"]),
                                         "current_y_m": float(pose["y"]),
                                         "current_yaw_rad": float(pose["yaw"]),
@@ -5563,6 +5589,10 @@ class FocusedM1Diagnostic(Node):
                         "policy": (
                             "FRESH_ODOM_ARC_TANGENT_CURVATURE_AND_YAW_RATE_FEEDBACK_EVERY_PUBLISH"
                             if curved_path_diagnostic else "FRESH_ODOM_WAYPOINT_BEARING_EVERY_PUBLISH"
+                        ),
+                        "continuous_table_segment_lookahead_m": (
+                            CONTINUOUS_TABLE_LOOKAHEAD_M
+                            if continuous_table_approach_mode else None
                         ),
                         "heading_gain": 0.8,
                         "maximum_angular_rad_s": POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,

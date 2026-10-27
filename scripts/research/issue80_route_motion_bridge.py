@@ -39,6 +39,7 @@ from issue80_waypoint_route import (
 MAX_FORWARD_M_S = 0.14
 MIN_EFFECTIVE_FORWARD_M_S = 0.12
 MAX_ANGULAR_RAD_S = 0.075
+CONTINUOUS_TABLE_LOOKAHEAD_M = 0.20
 RUN73_BEARING_HEADING_GAIN = 0.8
 MAX_INCREMENTAL_WINDOW_S = 1.0
 # The existing M1 primitive caps any one continuous command window at 10 s.
@@ -958,6 +959,52 @@ def waypoint_bearing_angular_command(
         "raw_angular_rad_s": raw,
         "angular_rad_s": command,
         "saturated": abs(raw) > maximum,
+    }
+
+
+def segment_lookahead_point(
+    *,
+    segment_start_x_m: float,
+    segment_start_y_m: float,
+    segment_end_x_m: float,
+    segment_end_y_m: float,
+    current_x_m: float,
+    current_y_m: float,
+    lookahead_m: float = CONTINUOUS_TABLE_LOOKAHEAD_M,
+) -> dict[str, float]:
+    """Return a bounded forward reference point on one straight route segment.
+
+    This is a pure geometry helper for the continuous table route.  It does
+    not alter the path, speed cap, or endpoint.  The lookahead is derived from
+    the observed 0.8 s yaw response at the existing 0.12 m/s command cap and
+    lets feedback correct lateral error before the 50 mm hard corridor guard.
+    """
+    values = (
+        segment_start_x_m, segment_start_y_m, segment_end_x_m, segment_end_y_m,
+        current_x_m, current_y_m, lookahead_m,
+    )
+    try:
+        sx, sy, ex, ey, cx, cy, lookahead = (float(value) for value in values)
+    except (TypeError, ValueError) as exc:
+        raise RouteMotionBridgeError("segment lookahead inputs must be numeric") from exc
+    if not all(math.isfinite(value) for value in (sx, sy, ex, ey, cx, cy, lookahead)):
+        raise RouteMotionBridgeError("segment lookahead inputs must be finite")
+    if lookahead <= 0.0:
+        raise RouteMotionBridgeError("segment lookahead must be positive")
+    dx, dy = ex - sx, ey - sy
+    length = math.hypot(dx, dy)
+    if length <= 1e-9:
+        raise RouteMotionBridgeError("segment lookahead requires a nonzero segment")
+    ux, uy = dx / length, dy / length
+    progress = (cx - sx) * ux + (cy - sy) * uy
+    reference_progress = min(length, max(0.0, progress + lookahead))
+    return {
+        "x_m": sx + reference_progress * ux,
+        "y_m": sy + reference_progress * uy,
+        "segment_length_m": length,
+        "along_track_progress_m": progress,
+        "reference_progress_m": reference_progress,
+        "lookahead_m": lookahead,
     }
 
 

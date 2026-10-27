@@ -73,6 +73,7 @@ from issue80_route_motion_bridge import (
     ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD,
     zero_forward_heading_acquisition_plan,
     forward_gait_yaw_command,
+    segment_lookahead_point,
 )
 
 
@@ -163,6 +164,30 @@ def turn_directive(**overrides) -> RouteDirective:
 
 
 class RouteMotionBridgeTests(unittest.TestCase):
+    def test_segment_lookahead_advances_reference_without_changing_terminal_target(self):
+        reference = segment_lookahead_point(
+            segment_start_x_m=0.0,
+            segment_start_y_m=0.0,
+            segment_end_x_m=1.0,
+            segment_end_y_m=0.0,
+            current_x_m=0.30,
+            current_y_m=-0.04,
+            lookahead_m=0.20,
+        )
+        self.assertAlmostEqual(reference["x_m"], 0.50)
+        self.assertAlmostEqual(reference["y_m"], 0.0)
+        self.assertAlmostEqual(reference["along_track_progress_m"], 0.30)
+        terminal = segment_lookahead_point(
+            segment_start_x_m=0.0,
+            segment_start_y_m=0.0,
+            segment_end_x_m=1.0,
+            segment_end_y_m=0.0,
+            current_x_m=0.95,
+            current_y_m=0.0,
+            lookahead_m=0.20,
+        )
+        self.assertAlmostEqual(terminal["x_m"], 1.0)
+
     def test_zero_forward_heading_acquisition_uses_the_documented_start_band(self) -> None:
         right = zero_forward_heading_acquisition_plan(-0.04)
         self.assertTrue(right["required"])
