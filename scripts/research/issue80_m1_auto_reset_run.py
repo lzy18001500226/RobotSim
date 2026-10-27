@@ -1469,6 +1469,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --raicom-forward-gait-yaw-inversion"
         if getattr(args, "raicom_native_nominal_straight_gait_diagnostic", False):
             command[-1] += " --raicom-native-nominal-straight-gait-diagnostic"
+        if getattr(args, "raicom_vendor_example_forward_baseline", False):
+            command[-1] += " --raicom-vendor-example-forward-baseline"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -5669,6 +5671,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-vendor-example-forward-baseline",
+        action="store_true",
+        help=(
+            "one SIMULATION_ONLY 0.20 m/s, 5 s forward baseline matching the pinned vendor "
+            "locomotion example's command envelope; never a TABLE_APPROACH acceptance claim"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5856,6 +5866,12 @@ def main() -> int:
             and not args.raicom_low_cruise_profile
             and abs(float(args.forward_speed) - 0.12) <= 1e-9
         )
+        vendor_example_native_profile = (
+            args.raicom_vendor_example_forward_baseline
+            and not args.raicom_low_cruise_profile
+            and abs(float(args.forward_speed) - 0.2) <= 1e-9
+            and abs(float(args.pulse_duration) - 5.0) <= 1e-9
+        )
         continuous_table_native_profile = (
             args.raicom_continuous_table_approach
             and args.raicom_native_mjdata_route_feedback
@@ -5884,6 +5900,7 @@ def main() -> int:
             and (
                 low_cruise_native_profile
                 or nominal_straight_native_profile
+                or vendor_example_native_profile
                 or continuous_table_native_profile
                 or fixed_window_table_native_profile
                 or straight_ten_second_table_native_profile
@@ -5892,7 +5909,8 @@ def main() -> int:
             parser.error(
                 "native X2 timestep synchronization requires direct-stand, the aligned-start "
                 "TABLE_APPROACH mission, native capture, and either the explicit 0.105 m/s "
-                "low-cruise profile, the isolated 0.12 m/s straight-gait diagnostic, or the explicit "
+                "low-cruise profile, the isolated 0.12 m/s straight-gait diagnostic, the isolated "
+                "0.20 m/s vendor-example compatibility baseline, or the explicit "
                 "continuous 0.12 m/s native-ground-truth route, the fixed-window 0.12 m/s route, "
                 "or the straight-ten-second 0.12 m/s route"
             )
@@ -6072,6 +6090,26 @@ def main() -> int:
         parser.error(
             "native nominal straight-gait diagnostic requires the aligned native-timestep "
             "TABLE_APPROACH profile at exactly 0.12 m/s without yaw correction"
+        )
+    if args.raicom_vendor_example_forward_baseline and not (
+        args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_x2_timestep
+        and args.direct_stand_from_passive
+        and args.maintainer_authorized_first_motion
+        and args.require_stand_warmup_composite
+        and args.native_mjdata_capture
+        and not args.raicom_native_nominal_straight_gait_diagnostic
+        and not args.raicom_low_cruise_profile
+        and not args.raicom_zero_forward_heading_acquisition
+        and not args.raicom_continuous_ten_second_transit
+        and not args.raicom_forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.2) <= 1e-9
+        and abs(float(args.pulse_duration) - 5.0) <= 1e-9
+    ):
+        parser.error(
+            "vendor-example forward baseline requires the aligned native-timestep TABLE_APPROACH "
+            "startup and exactly 0.20 m/s for 5 s, without route steering"
         )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:

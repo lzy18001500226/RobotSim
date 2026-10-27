@@ -3702,6 +3702,7 @@ def run_first_motion_window(
     source_grounded_route_activation: bool = False,
     source_grounded_activation_timeout_s: float = ACTIVATION_PROBE_DURATION_S,
     allow_raicom_low_cruise_source_activation: bool = False,
+    allow_vendor_example_source_activation: bool = False,
     continuous_route_authorized: bool = False,
     continuous_route_nonzero_limit_s: float | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -3765,6 +3766,7 @@ def run_first_motion_window(
             "confirmation_monotonic_s": None,
             "first_nonzero_is_part_of_this_window": bool(source_grounded_route_activation),
             "allow_raicom_low_cruise": bool(allow_raicom_low_cruise_source_activation),
+            "allow_vendor_example": bool(allow_vendor_example_source_activation),
             "selected_forward_command_m_s": (
                 forward_command_m_s if source_grounded_route_activation else None
             ),
@@ -3814,6 +3816,7 @@ def run_first_motion_window(
         or not source_grounded_route_activation_speed_is_supported(
             forward_command_m_s,
             allow_raicom_low_cruise=allow_raicom_low_cruise_source_activation,
+            allow_vendor_example=allow_vendor_example_source_activation,
         )
         or not math.isfinite(float(source_grounded_activation_timeout_s))
         or abs(float(source_grounded_activation_timeout_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
@@ -3824,6 +3827,8 @@ def run_first_motion_window(
         pulse_fault = pulse_fault or "source_contract_flag_requires_explicit_activation_probe_mode"
     elif allow_raicom_low_cruise_source_activation and not source_grounded_route_activation:
         pulse_fault = pulse_fault or "low_cruise_source_activation_requires_route_mode"
+    elif allow_vendor_example_source_activation and not source_grounded_route_activation:
+        pulse_fault = pulse_fault or "vendor_example_source_activation_requires_route_mode"
     if (
         not math.isfinite(extra_post_stop_observe_limit_s)
         or not 0.0 <= extra_post_stop_observe_limit_s <= MAX_EXTRA_POST_STOP_OBSERVE_S
@@ -4048,6 +4053,10 @@ def run_first_motion_window(
                         allow_raicom_low_cruise=(
                             source_grounded_route_activation
                             and allow_raicom_low_cruise_source_activation
+                        ),
+                        allow_vendor_example=(
+                            source_grounded_route_activation
+                            and allow_vendor_example_source_activation
                         ),
                     )
                 else:

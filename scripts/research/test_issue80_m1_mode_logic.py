@@ -12,6 +12,7 @@ from issue80_m1_mode_logic import (
     ACTIVATION_PROBE,
     ACTIVATION_PROBE_DURATION_S,
     ACTIVATION_PROBE_FORWARD_M_S,
+    VENDOR_EXAMPLE_FORWARD_M_S,
     MOTION_ACTIVE,
     MODE_LD,
     MODE_SD,
@@ -27,6 +28,7 @@ from issue80_m1_mode_logic import (
     classify_set_mc_action_response,
     is_valid_input_source_name,
     run_zero_only_locomotion_activation_observation,
+    source_grounded_route_activation_speed_is_supported,
 )
 
 
@@ -193,6 +195,27 @@ class ActionResponseAndTransitionTests(unittest.TestCase):
 
 
 class ActivationAbortLifecycleTests(unittest.TestCase):
+    def test_vendor_example_speed_is_opt_in_and_keeps_the_activation_timeout(self) -> None:
+        self.assertFalse(source_grounded_route_activation_speed_is_supported(
+            VENDOR_EXAMPLE_FORWARD_M_S, allow_raicom_low_cruise=False,
+        ))
+        self.assertTrue(source_grounded_route_activation_speed_is_supported(
+            VENDOR_EXAMPLE_FORWARD_M_S,
+            allow_raicom_low_cruise=False,
+            allow_vendor_example=True,
+        ))
+        lifecycle = MCLocomotionAbortLifecycle()
+        lifecycle.verify_initial_stand(confirmed=True, now_s=0.0)
+        lifecycle.request_locomotion(accepted=True, now_s=0.1)
+        lifecycle.begin_activation_probe(
+            source_contract_supported=True,
+            forward_command_m_s=VENDOR_EXAMPLE_FORWARD_M_S,
+            duration_s=ACTIVATION_PROBE_DURATION_S,
+            now_s=0.2,
+            allow_vendor_example=True,
+        )
+        self.assertEqual(lifecycle.state, ACTIVATION_PROBE)
+
     def test_probe_pass_requires_exact_intentional_abort_marker_and_fresh_mode_confirmation(self) -> None:
         expected = {
             "activation_probe_only": True,

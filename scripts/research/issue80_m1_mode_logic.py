@@ -30,6 +30,11 @@ ACTIVATION_PROBE_DURATION_S = 1.8
 # RAICOM recovery route.  It is backed by the preserved 0.105 m/s physical
 # pass and does not alter the 0.12 m/s generic activation probe.
 RAICOM_LOW_CRUISE_FORWARD_M_S = 0.105
+# The pinned RAICOM vendor `mc_locomotion_velocity.py` example accepts
+# forward/lateral commands at 0.2..1.0 m/s and publishes at 50 Hz for 5 s.
+# Keep this as an explicitly named compatibility baseline; it does not expand
+# the existing table-route speed profile.
+VENDOR_EXAMPLE_FORWARD_M_S = 0.2
 TASK_STATES = {
     0: "UNKNOWN",
     1: "SUCCESS",
@@ -49,6 +54,7 @@ def source_grounded_route_activation_speed_is_supported(
     forward_command_m_s: float,
     *,
     allow_raicom_low_cruise: bool,
+    allow_vendor_example: bool = False,
 ) -> bool:
     """Accept only the reviewed source-acquisition speeds for a route window."""
     try:
@@ -62,6 +68,10 @@ def source_grounded_route_activation_speed_is_supported(
         or (
             allow_raicom_low_cruise
             and abs(speed - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        )
+        or (
+            allow_vendor_example
+            and abs(speed - VENDOR_EXAMPLE_FORWARD_M_S) <= 1e-9
         )
     )
 
@@ -465,6 +475,7 @@ class MCLocomotionAbortLifecycle:
         duration_s: float,
         now_s: float,
         allow_raicom_low_cruise: bool = False,
+        allow_vendor_example: bool = False,
     ) -> None:
         """Allow only the explicitly source-grounded, short activation qualification probe."""
         if self.rearm_forbidden:
@@ -479,9 +490,16 @@ class MCLocomotionAbortLifecycle:
             or not source_grounded_route_activation_speed_is_supported(
                 forward_command_m_s,
                 allow_raicom_low_cruise=allow_raicom_low_cruise,
+                allow_vendor_example=allow_vendor_example,
             )
             or abs(float(duration_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
         ):
+            if allow_vendor_example:
+                raise ValueError(
+                    "activation probe accepts 0.12 m/s, 0.105 m/s for the explicit "
+                    "RAICOM low-cruise route, or the pinned 0.20 m/s vendor-example baseline, "
+                    "for at most 1.80 s"
+                )
             if allow_raicom_low_cruise:
                 raise ValueError(
                     "activation probe accepts 0.12 m/s, or the explicit 0.105 m/s "
