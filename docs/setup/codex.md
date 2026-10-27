@@ -27,11 +27,17 @@ Confirm the root and branch are the intended ones, and preserve any existing cha
 
 ## Project-local Codex hooks
 
-`.codex/hooks.json` contains an optional `PreToolUse` guard for plainly destructive Git commands and obvious attempts to stage or write credential files, plus a local `Stop` handler for one best-effort notification when a Codex turn ends. The guard is a last-line check, not a substitute for reviewing a command or protecting secrets. The repository remains usable when hooks are disabled.
+`.codex/hooks.json` contains an optional `PreToolUse` guard for plainly destructive Git commands and obvious attempts to stage or write credential files, plus local `UserPromptSubmit`, `Interrupt`, and `Stop` lifecycle handlers. The guard is a last-line check, not a substitute for reviewing a command or protecting secrets. The repository remains usable when hooks are disabled.
 
 Codex discovers project hooks from `.codex/hooks.json`; discovery is distinct from project/folder trust and hook approval. Review the hook and trust the real repository checkout through the normal UI before enabling it. Then run `/hooks` in that trusted checkout and confirm both `PreToolUse` and `Stop` are listed and enabled. If a hook is absent or disabled, do not assume it ran. Recheck `/hooks` after changing hook configuration; a changed handler may need renewed trust. Check the repository root, branch, and working-tree status before acting, especially after opening another checkout or worktree. Never bypass hook trust or approval policy, and do not copy project settings into global `~/.codex` configuration.
 
-The local `Stop` hook receives Codex's stop payload, including `session_id`, `turn_id`, `last_assistant_message`, and `stop_hook_active`. For ordinary turns it sends one `completed` notification per session/turn. If the final message contains one valid marked task-closeout envelope, it persists that structured closeout instead of sending the generic notification. Both paths require the local-only `ROBOTSIM_LOCAL_STOP_HOOK=1` opt-in; recursive Stop events are ignored. Normal hook outcomes leave stdout empty, as Codex expects; failures may be diagnosed on stderr. A manual `stop --dry-run` still prints formatted output without sending mail or writing a GitHub comment. The hook does not run for individual tool calls, tests, commits, or progress updates. Notification errors are best-effort and do not change the task result.
+The production `task_lifecycle.py` ledger correlates only the Codex-provided `session_id` and `turn_id`. It records event type, prompt/completion presence and length, interruption/resume hints, and whether a structured closeout marker exists; it does not save prompt text, completion text, or `cwd`. The separate optional research probe stores prompt length, a SHA-256 prompt fingerprint, heuristic classification, and `cwd` for manual Hook validation, but never raw prompt text. Its `/tmp/robotsim-codex-hook-probe` directory is mode `0700`; its SQLite and JSONL files are mode `0600`. Turns without structured task-closeout evidence remain `UNCERTAIN`; Stop alone does not classify CHAT versus TASK or prove success. An ordinary Stop creates no task outcome and sends no email. Recursive Stop events are ignored.
+
+With the local-only `ROBOTSIM_LOCAL_STOP_HOOK=1` opt-in, a valid structured closeout is validated and durably recorded in the local outbox, then the Stop process starts a detached worker and returns. The worker runs the existing GitHub publication gate and independently attempts AgentMail; the email states whether GitHub publication was verified, blocked, or still pending. A GitHub publication failure does not erase the task outcome or silently suppress AgentMail. A PR rejected because its canonical repository, head, or originating-Issue association cannot be verified is untrusted evidence, so its email is suppressed and the delivery state is marked unavailable. With the opt-in unset, the local Stop path records eligible structured outcomes as `not_attempted` and starts neither publication nor delivery. Normal hook outcomes leave stdout empty; local persistence errors may be diagnosed on stderr. A manual `stop --dry-run` sends no email and writes no GitHub comment. The hook does not run for individual tool calls, tests, commits, or progress updates. `ready_for_review` remains a separate explicit attention command, not a generic Stop event.
+
+The local outbox defaults to `$XDG_STATE_HOME/robotsim/task-notifications.sqlite3`, or `~/.local/state/robotsim/task-notifications.sqlite3`; override it with `ROBOTSIM_TASK_NOTIFICATION_DB` for isolated tests. The directory and database are restricted to the current user where the filesystem supports Unix permissions. GitHub publication and AgentMail each have independent durable states, atomic worker claims, bounded retries, and stable event/idempotency keys. A crash after an external service accepted a request but before local confirmation can leave delivery `uncertain`; the system does not claim exactly-once effects from local state alone. Telephone delivery remains `unavailable` until an authorized integration exists.
+
+The existing local telephone baseline is Windows MicroSIP dialing HT802 extension 2001 at `sip:2001@192.168.137.2:5060`. RobotSim currently has no Windows MicroSIP launcher or verified WSL-to-Windows telephone bridge; the outbox records the telephone channel as `unavailable`. This documentation does not change MicroSIP/HT802 settings or authorize a call. Add and test a notifier bridge only under separate maintainer approval.
 
 Project command hooks must not be assumed to run in Codex Cloud. Explicitly call `scripts/agent/notify_task.py task-closeout` exactly once before the final response for every task kind. Leave `ROBOTSIM_LOCAL_STOP_HOOK` unset in Cloud: even if project hooks become active there, the Stop handler will skip, so the explicit closeout remains the only path. Reuse the same attempt ID and exact payload when retrying; a genuine rerun gets a new attempt ID. Do not make a second generic notification call for the same task.
 
@@ -48,16 +54,49 @@ When notifications are enabled, configure:
 | `AGENTMAIL_API_KEY` | AgentMail API key | Secret. Never put it in Git, a command line, a log, or chat. |
 | `AGENTMAIL_INBOX_ID` | `lzy18001500226@agentmail.to` | Non-secret inbox identifier. |
 | `ROBOTSIM_NOTIFY_TO` | Maintainer's normal QQ mailbox | Personal configuration; do not hard-code it in the repository. |
-| `ROBOTSIM_NOTIFY_STATE_DIR` | Optional local state path | Optional; defaults under the user's cache directory, outside the checkout. |
+| `ROBOTSIM_NOTIFY_STATE_DIR` | Optional generic-notification state path | Optional; defaults under the user's cache directory, outside the checkout. |
+| `ROBOTSIM_TASK_NOTIFICATION_DB` | Optional task lifecycle/outbox database path | Optional; defaults under the user's state directory, outside the checkout. |
 | `GH_TOKEN` or `GITHUB_TOKEN` | Optional GitHub API token | Secret. Needs Issue and pull-request comment read/write access to `lzy18001500226/RobotSim`; never put it in Git, a command line, a log, or chat. When absent, the notifier can use an already-authenticated `gh auth token` installation. |
 | `ROBOTSIM_LOCAL_STOP_HOOK` | Set to `1` in the local Codex environment only | Local Stop-hook opt-in. Leave unset in Codex Cloud. |
 
 ### Local Codex setup
 
+The local Stop adapter loads the AgentMail API key from a Windows current-user DPAPI protected file only when the local opt-in is enabled and the Stop payload contains a valid structured closeout. The key is entered through PowerShell's masked `Read-Host -AsSecureString` prompt. The inbox ID and recipient are stored in the same user-only local directory; none of these values are written to RobotSim. WSL invokes the PowerShell bridge under the same Windows user and passes the configuration internally to the notifier process. Ordinary chat Stops, malformed closeouts, recursive Stops, and an unset opt-in do not decrypt or pass credentials.
+
 1. Create an AgentMail API key in the AgentMail account that owns the inbox.
-2. Store the AgentMail key and, if needed, GitHub token with Issue/PR comment read/write access in the operating system's secret manager. Expose them as `AGENTMAIL_API_KEY` and optionally `GH_TOKEN` (or `GITHUB_TOKEN`) to Codex, or use an already-authenticated GitHub CLI. The notifier captures `gh auth token` without printing it. Do not put a credential in a shell command, plaintext shell startup file, repository file, or chat.
-3. Set `AGENTMAIL_INBOX_ID=lzy18001500226@agentmail.to` and set `ROBOTSIM_NOTIFY_TO` to the maintainer's normal QQ mailbox through the user's local environment/secret manager.
-4. Set `ROBOTSIM_LOCAL_STOP_HOOK=1` in the local Codex environment. Restart local Codex so it receives the configured environment. Trust the actual RobotSim checkout, run `/hooks`, and verify that `Stop` and `PreToolUse` are active.
+2. Open a local Windows PowerShell window and run the following command. Enter the key only at the hidden prompt; do not paste it into Codex, a shell command, or a file:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu-22.04\home\lzy18001500226\projects\RobotSim\scripts\agent\agentmail_local_credential.ps1' -Action Set
+   ```
+
+3. Confirm the DPAPI and WSL bridge path with a synthetic-only self-test, then check configuration presence. These commands print statuses only, never values:
+
+   ```bash
+   python3 scripts/agent/agentmail_stop_hook.py --self-test-bridge
+   python3 scripts/agent/agentmail_stop_hook.py --check-config
+   ```
+
+   `--check-config` reports only whether the key, inbox, and recipient are present and whether the Stop opt-in is enabled. It does not send mail. Before setup, `CONFIG_READY=no` is expected. After setup, expect all three settings to show `present` and `CONFIG_READY=yes`.
+
+4. Run the focused dry-run and regression tests before enabling notifications:
+
+   ```bash
+   python3 -m unittest tests.test_agentmail_stop_hook tests.test_notify_task tests.test_pre_tool_guard
+   printf '%s\n' '{"hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"ordinary dry-run probe"}' | python3 scripts/agent/agentmail_stop_hook.py --dry-run
+   ```
+
+   The ordinary Stop probe must remain a no-op. No AgentMail request is made by either command.
+
+5. Keep `ROBOTSIM_LOCAL_STOP_HOOK` unset until the maintainer separately approves a live email test. To enable later, set `ROBOTSIM_LOCAL_STOP_HOOK=1` only in the local Codex App launch environment, restart Codex, trust this checkout, and review `/hooks` to confirm the project `Stop` and `PreToolUse` entries. This task does not enable the opt-in or send a message.
+
+To roll back the stored local settings, run from Windows PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu-22.04\home\lzy18001500226\projects\RobotSim\scripts\agent\agentmail_local_credential.ps1' -Action Remove
+```
+
+Then remove `ROBOTSIM_LOCAL_STOP_HOOK` from the local Codex launch environment. `Remove` deletes only this adapter's two files under `%LOCALAPPDATA%\RobotSim\AgentMail`; it does not touch GitHub credentials, repository files, or other credential stores.
 
 ### Codex Cloud setup
 
@@ -79,7 +118,7 @@ python3 scripts/agent/notify_task.py ready_for_review \
   --issue 28
 ```
 
-Do not send per-tool, per-test, per-commit, or progress notifications. Messages contain a short task label, worker, branch/issue when available, and final summary. Local state markers and AgentMail's idempotency key prevent duplicate sends for the same generic event.
+Do not send per-tool, per-test, per-commit, or progress notifications. Messages contain the structured task outcome, worker, branch/issue when available, and publication state. Local state markers and AgentMail's idempotency key reduce duplicate sends for the same event; an ambiguous response is marked `uncertain` for review rather than reported as a confirmed send.
 
 ## Durable task closeout
 
@@ -111,7 +150,7 @@ Include concise `validation` entries for `Reproduction command: <exact command>`
 
 The notifier re-runs the gate immediately before writing GitHub. On a failed gate it never writes a `completed` record: it changes the closeout to BLOCKED and attempts to persist that diagnostic on the originating Issue. The CLI exits `2` even if that blocked record was saved. If GitHub persistence itself fails, no durable closeout exists and the final answer remains `CLOSEOUT BLOCKED`. A successful gate appends the exact branch, local/remote SHA, result label, and PR/Issue URL to the canonical record. The Stop hook without a structured envelope now records no terminal completion and sends no generic `completed` notification.
 
-`task_id` has the form `issue-<number>-<stable-slug>`. At task start, create one random attempt ID (for example `python3 -c 'import uuid; print(uuid.uuid4())'`) and retain it with the task notes. A retry of the same closeout reuses that ID and the exact payload. A genuine rerun gets a new ID, including a later `blocked` → `completed` run. Worker is also part of event identity. The `sha256:` event ID is derived from schema version, repository, task ID, attempt ID, and worker, but not status or summary: retries deduplicate, a later attempt is distinct, and changed content under one attempt is rejected. The legacy research envelope derives a compatibility attempt from its timestamp; use the explicit attempt ID for all new work.
+`task_id` uses `issue-<number>-<stable-slug>` when a real GitHub Issue is the destination. Local-only terminal records may use `codex-<stable-slug>` or `local-<stable-slug>`; they cannot name a PR, pass the GitHub publication gate, or be published to GitHub. Do not invent an Issue number for an internal task. At task start, create one random attempt ID (for example `python3 -c 'import uuid; print(uuid.uuid4())'`) and retain it with the task notes. A retry of the same closeout reuses that ID and the exact payload. A genuine rerun gets a new ID, including a later `blocked` → `completed` run. Worker is also part of event identity. The `sha256:` event ID is derived from schema version, repository, task ID, attempt ID, and worker, but not status or summary: retries deduplicate, a later attempt is distinct, and changed content under one attempt is rejected. The legacy research envelope derives a compatibility attempt from its timestamp; use the explicit attempt ID for all new work.
 
 Use a concise summary. `evidence` must contain durable public HTTPS references; local paths, private/local hosts, and credential-bearing query/fragment URLs are rejected. Recognized credentials and local filesystem paths in text fields are redacted before persistence. The notifier sends only the structured event, never surrounding final-answer text or a transcript. Local-only Windows/WSL paths are not durable evidence; if useful, describe the diagnostic without the path.
 
