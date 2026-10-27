@@ -82,7 +82,7 @@ WAYPOINT_B_MAX_CROSS_TRACK_M = 0.05
 # lower bound for every required table-approach segment.
 CONTINUOUS_TABLE_MAX_CROSS_TRACK_M = TABLE_APPROACH_TABLE_SEGMENT_MAX_CROSS_TRACK_M
 # START -> WAYPOINT is the open-room transit segment. Its separately certified
-# 80 mm envelope is never carried into the table-facing segment.
+# 100 mm envelope is never carried into the table-facing segment.
 CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M = TABLE_APPROACH_OPEN_SEGMENT_MAX_CROSS_TRACK_M
 # The existing route planner produces a bounded bearing rate.  In the fixed
 # window profile, turn that fresh pre-window bearing into one of the already

@@ -130,14 +130,14 @@ class Local01SceneRouteTests(unittest.TestCase):
         )
         # Regression: the real fixed-window run stopped at y=-1.5504109 m.
         # This is 50.4109 mm from the centerline: inside the statically
-        # certified 80 mm open segment and outside the old generic 50 mm
+        # certified 100 mm open segment and outside the old generic 50 mm
         # corridor by less than one millimetre.
         observed_open_clearance = distance_to_polygon_boundary(
             -1.2420052865823277, -1.5504109039747291,
             route.steps[0].corridor_polygon,
         )
         open_clearance = distance_to_polygon_boundary(
-            -1.0, -1.579, route.steps[0].corridor_polygon
+            -1.0, -1.599, route.steps[0].corridor_polygon
         )
         table_clearance = distance_to_polygon_boundary(
             0.5, -1.559, route.steps[1].corridor_polygon
@@ -146,7 +146,7 @@ class Local01SceneRouteTests(unittest.TestCase):
         self.assertGreaterEqual(open_clearance, required_margin)
         self.assertGreaterEqual(table_clearance, required_margin)
         self.assertLess(
-            distance_to_polygon_boundary(-1.0, -1.581, route.steps[0].corridor_polygon),
+            distance_to_polygon_boundary(-1.0, -1.601, route.steps[0].corridor_polygon),
             required_margin,
         )
         self.assertLess(

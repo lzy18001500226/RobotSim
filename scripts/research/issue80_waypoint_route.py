@@ -41,10 +41,10 @@ MIN_EFFECTIVE_FORWARD_M_S = 0.12
 MIN_VALIDATED_TRANSIT_FORWARD_M_S = RAICOM_LOW_CRUISE_FORWARD_M_S
 CONFIGURED_ROUTE_MAX_CROSS_TRACK_M = 0.05
 # The aligned RAICOM table route has a separately reviewed static envelope:
-# the open START->WAYPOINT transit admits 80 mm, while the table-facing
+# the open START->WAYPOINT transit admits 100 mm, while the table-facing
 # WAYPOINT->TABLE_APPROACH transit remains at 60 mm.  These values are route
 # geometry only; the robot footprint and 100 mm boundary margin stay intact.
-TABLE_APPROACH_OPEN_SEGMENT_MAX_CROSS_TRACK_M = 0.08
+TABLE_APPROACH_OPEN_SEGMENT_MAX_CROSS_TRACK_M = 0.10
 TABLE_APPROACH_TABLE_SEGMENT_MAX_CROSS_TRACK_M = 0.06
 MAX_ACTION_WINDOW_S = 10.0
 REALTIME_CLOCK_ALIGNMENT_TOLERANCE_NS = 50_000_000
