@@ -44,6 +44,9 @@ LOCAL01_POSES_PATH = Path(os.environ.get(
     "/home/lzy18001500226/robotsim-issue77-raicom-x2-reuse/simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json",
 ))
 ROBOTSIM_ROOT = Path("/home/lzy18001500226/projects/RobotSim")
+CURRENT_NAVIGATION_POSES_PATH = (
+    ROBOTSIM_ROOT / "simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json"
+)
 
 
 def local01_source_fixture():
@@ -71,6 +74,22 @@ def local01_source_fixture():
 
 
 class Local01SceneRouteTests(unittest.TestCase):
+    @unittest.skipUnless(
+        CURRENT_NAVIGATION_POSES_PATH.is_file(),
+        "materialized Local01 inputs are unavailable in the navigation worktree",
+    )
+    def test_materialized_pinned_inputs_are_accepted_on_a_newer_navigation_head(self):
+        source = load_local01_scene_inputs(
+            CURRENT_NAVIGATION_POSES_PATH,
+            require_clean_commit=False,
+        )
+        self.assertEqual(source["source_commit"], LOCAL01_COMMIT)
+        self.assertEqual(
+            source["source_provenance"],
+            "PINNED_LOCAL01_COMMIT_PATHS_MATERIALIZED_IN_NAVIGATION_WORKTREE",
+        )
+        self.assertEqual(source["source_hashes"]["scene_world_poses"], LOCAL01_POSES_SHA256)
+
     def test_aligned_start_mission_retains_original_reference_without_runtime_turn(self):
         mission = build_runtime_raw_odom_aligned_start_table_approach_mission(
             local01_source_fixture()

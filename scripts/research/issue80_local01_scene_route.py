@@ -370,10 +370,39 @@ def load_local01_scene_inputs(
         ).stdout
     except (OSError, subprocess.SubprocessError) as exc:
         raise Local01SceneRouteError("unable to verify Local01 worktree provenance") from exc
+    source_provenance = "PINNED_LOCAL01_WORKTREE_HEAD"
     if head != LOCAL01_COMMIT:
-        raise Local01SceneRouteError(
-            f"Local01 commit mismatch: expected {LOCAL01_COMMIT}, got {head}"
+        # The navigation branch deliberately carries the four immutable
+        # Local01 scene inputs after the former Local01 worktree was retired.
+        # Accept that layout only when the current paths are byte-identical to
+        # the pinned commit; a newer branch head alone is never provenance.
+        pinned_paths = (
+            LOCAL01_POSES_RELATIVE,
+            LOCAL01_ROUTE_RELATIVE,
+            LOCAL01_SCENE_RELATIVE,
+            LOCAL01_MUG_RELATIVE,
         )
+        try:
+            comparison = subprocess.run(
+                [
+                    "git", "-C", str(root), "diff", "--quiet", LOCAL01_COMMIT,
+                    "--", *(str(path) for path in pinned_paths),
+                ],
+                check=False, capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise Local01SceneRouteError(
+                "unable to compare materialized Local01 inputs against the pinned commit"
+            ) from exc
+        if comparison.returncode not in (0, 1):
+            raise Local01SceneRouteError(
+                "unable to compare materialized Local01 inputs against the pinned commit"
+            )
+        if comparison.returncode == 1:
+            raise Local01SceneRouteError(
+                "materialized Local01 inputs differ from the pinned commit"
+            )
+        source_provenance = "PINNED_LOCAL01_COMMIT_PATHS_MATERIALIZED_IN_NAVIGATION_WORKTREE"
     if require_clean_commit and status:
         raise Local01SceneRouteError("Local01 worktree is dirty; refuse uncommitted scene inputs")
 
@@ -502,7 +531,9 @@ def load_local01_scene_inputs(
 
     return {
         "repository_root": str(root),
-        "source_commit": head,
+        "source_commit": LOCAL01_COMMIT,
+        "repository_head": head,
+        "source_provenance": source_provenance,
         "source_hashes": hashes,
         "reference_root": str(reference_root),
         "reference_files": {name: str(path) for name, path in required_reference_files.items()},
