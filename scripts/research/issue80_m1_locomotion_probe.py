@@ -158,6 +158,7 @@ from issue80_route_motion_bridge import (
     forward_gait_yaw_command,
     active_locomotion_source_readbacks_valid,
     RouteOdomFreshnessTracker,
+    OdomSourceStampFence,
     route_feedback_sample_disposition,
     fresh_stand_mode_readback_valid,
     fresh_input_source_readback_valid,
@@ -326,6 +327,8 @@ class FocusedM1Diagnostic(Node):
         )
         self.latest: dict[str, Any] = {}
         self.received_at: dict[str, float] = {}
+        self.odom_source_stamp_fence = OdomSourceStampFence()
+        self.odom_source_stamp_drop_events: list[dict[str, Any]] = []
         self.last_mode: dict[str, Any] | None = None
         self.last_source: dict[str, Any] | None = None
         self.readback_at: dict[str, float] = {}
@@ -401,8 +404,33 @@ class FocusedM1Diagnostic(Node):
         )
 
     def _store(self, key: str, msg: Any) -> None:
+        received = time.monotonic()
+        if key == "odom":
+            try:
+                stamp = msg.header.stamp
+                stamp_ns: int | None = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                stamp_ns = None
+            fence = self.odom_source_stamp_fence.observe(
+                current_stamp_ns=stamp_ns,
+                received_steady_s=received,
+            )
+            if fence["action"] in {"DROP_INVALID", "DROP_OUT_OF_ORDER"}:
+                event = {
+                    "event": "odom_source_stamp_packet_dropped",
+                    "phase": self.current_phase,
+                    "wall_utc": datetime.now(timezone.utc).isoformat(),
+                    "wall_monotonic_sec": received,
+                    **fence,
+                }
+                # Preserve bounded evidence while the fence itself retains the
+                # complete count and final dropped-packet diagnostic.
+                if len(self.odom_source_stamp_drop_events) < 32:
+                    self.odom_source_stamp_drop_events.append(event)
+                self._write_trace_row(event)
+                return
         self.latest[key] = msg
-        self.received_at[key] = time.monotonic()
+        self.received_at[key] = received
 
     def _store_mc_debug_f64(self, msg: Float64MultiArray) -> None:
         received = time.monotonic()
@@ -1506,6 +1534,7 @@ class FocusedM1Diagnostic(Node):
                     self.async_source_readback_fault,
                 ) if fault
             ) or None,
+            "odom_source_stamp_fence": self.odom_source_stamp_fence.snapshot(),
         }
 
     def collect_stationary_odom_baseline(self) -> dict[str, Any]:
@@ -7778,6 +7807,10 @@ class FocusedM1Diagnostic(Node):
             result["final_joint_state"] = _json_safe(self.latest.get("leg_state"))
         finally:
             result["events"] = self.events
+            result["odom_source_stamp_fence"] = {
+                **self.odom_source_stamp_fence.snapshot(),
+                "recorded_drop_events": self.odom_source_stamp_drop_events,
+            }
             result["optional_debug_capture"] = {
                 "mc_debug_f64_topic": MC_DEBUG_F64_TOPIC,
                 "mc_debug_f64_type": "std_msgs/msg/Float64MultiArray",

@@ -289,6 +289,94 @@ class RouteOdomFreshnessTracker:
         return {"action": "NEW", **common}
 
 
+@dataclass
+class OdomSourceStampFence:
+    """Reject an out-of-order odometry packet before it can replace live pose.
+
+    The route tracker remains strict about the stamps it receives.  This
+    narrower transport fence handles a packet that arrives late after a newer
+    packet has already been accepted: it is recorded and discarded, cannot
+    refresh pose freshness, and cannot drive a route tick.  If no subsequent
+    strictly newer source packet arrives within the existing freshness limit,
+    the caller still fails closed on stale telemetry.
+    """
+
+    last_accepted_stamp_ns: int | None = None
+    last_accepted_received_steady_s: float | None = None
+    accepted_message_count: int = 0
+    dropped_regression_count: int = 0
+    last_dropped_regression: dict[str, object] | None = None
+
+    def observe(
+        self,
+        *,
+        current_stamp_ns: int | None,
+        received_steady_s: float,
+    ) -> dict[str, object]:
+        try:
+            received = float(received_steady_s)
+        except (TypeError, ValueError, OverflowError):
+            received = math.nan
+        valid_stamp = (
+            not isinstance(current_stamp_ns, bool)
+            and isinstance(current_stamp_ns, int)
+            and current_stamp_ns > 0
+        )
+        if not valid_stamp or not math.isfinite(received):
+            return {
+                "action": "DROP_INVALID",
+                "source_stamp_relation": "INVALID",
+                "current_stamp_ns": current_stamp_ns,
+                "received_steady_s": received_steady_s,
+                "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
+                "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
+            }
+        if self.last_accepted_stamp_ns is None:
+            relation = "INITIAL"
+        elif current_stamp_ns > self.last_accepted_stamp_ns:
+            relation = "NEW"
+        elif current_stamp_ns == self.last_accepted_stamp_ns:
+            relation = "DUPLICATE"
+        else:
+            relation = "REGRESSION"
+        record: dict[str, object] = {
+            "source_stamp_relation": relation,
+            "current_stamp_ns": current_stamp_ns,
+            "received_steady_s": received,
+            "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
+            "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
+        }
+        if relation == "REGRESSION":
+            self.dropped_regression_count += 1
+            record["action"] = "DROP_OUT_OF_ORDER"
+            record["dropped_regression_count"] = self.dropped_regression_count
+            self.last_dropped_regression = dict(record)
+            return record
+        self.last_accepted_stamp_ns = current_stamp_ns
+        self.last_accepted_received_steady_s = received
+        self.accepted_message_count += 1
+        record.update({
+            "action": "ACCEPT_DUPLICATE" if relation == "DUPLICATE" else "ACCEPT_NEW",
+            "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
+            "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
+            "accepted_message_count": self.accepted_message_count,
+        })
+        return record
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "policy": (
+                "out-of-order header-stamp packets are dropped before live pose replacement; "
+                "they never refresh accepted-pose freshness or route feedback"
+            ),
+            "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
+            "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
+            "accepted_message_count": self.accepted_message_count,
+            "dropped_regression_count": self.dropped_regression_count,
+            "last_dropped_regression": self.last_dropped_regression,
+        }
+
+
 def route_feedback_sample_disposition(
     *,
     odom_action: str,

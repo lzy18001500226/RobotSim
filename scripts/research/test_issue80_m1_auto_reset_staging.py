@@ -782,6 +782,20 @@ class ResearchScriptStagingTests(unittest.TestCase):
             route,
         )
 
+    def test_odom_source_stamp_fence_prevents_late_packet_pose_replacement(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("    def _store(self, key: str, msg: Any) -> None:")
+        end = source.index("    def _store_mc_debug_f64", start)
+        callback = source[start:end]
+        self.assertIn("self.odom_source_stamp_fence.observe(", callback)
+        self.assertIn('"DROP_OUT_OF_ORDER"', callback)
+        self.assertLess(
+            callback.index('if fence["action"] in {"DROP_INVALID", "DROP_OUT_OF_ORDER"}:'),
+            callback.index("self.latest[key] = msg"),
+        )
+
     def test_transit_baseline_precedes_all_route_mode_dispatch(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"

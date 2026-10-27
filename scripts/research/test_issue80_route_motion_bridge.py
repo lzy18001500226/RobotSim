@@ -50,6 +50,7 @@ from issue80_route_motion_bridge import (
     curved_path_metrics,
     classify_route_odom_stamp,
     RouteOdomFreshnessTracker,
+    OdomSourceStampFence,
     route_feedback_sample_disposition,
     evaluate_route_odom_freshness_window,
     evaluate_route_window_rearm_gate,
@@ -290,6 +291,23 @@ class RouteMotionBridgeTests(unittest.TestCase):
             current_stamp_ns=30_001, sample_steady_s=20.04, received_steady_s=20.039,
         )
         self.assertEqual(resumed["action"], "NEW")
+
+    def test_odom_input_fence_discards_out_of_order_packet_without_refreshing_anchor(self):
+        fence = OdomSourceStampFence()
+        initial = fence.observe(current_stamp_ns=30_000, received_steady_s=20.0)
+        newer = fence.observe(current_stamp_ns=30_010, received_steady_s=20.01)
+        regression = fence.observe(current_stamp_ns=29_900, received_steady_s=20.02)
+        resumed = fence.observe(current_stamp_ns=30_020, received_steady_s=20.03)
+
+        self.assertEqual(initial["action"], "ACCEPT_NEW")
+        self.assertEqual(newer["action"], "ACCEPT_NEW")
+        self.assertEqual(regression["action"], "DROP_OUT_OF_ORDER")
+        self.assertEqual(regression["source_stamp_relation"], "REGRESSION")
+        self.assertEqual(regression["last_accepted_stamp_ns"], 30_010)
+        self.assertAlmostEqual(float(regression["last_accepted_received_steady_s"]), 20.01)
+        self.assertEqual(fence.dropped_regression_count, 1)
+        self.assertEqual(resumed["action"], "ACCEPT_NEW")
+        self.assertEqual(fence.last_accepted_stamp_ns, 30_020)
 
     def test_actual_stale_odometry_delivery_is_rejected_even_with_advancing_stamp(self):
         tracker = RouteOdomFreshnessTracker(40_000, 30.0, maximum_age_s=0.20)
