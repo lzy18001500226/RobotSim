@@ -5513,10 +5513,38 @@ class FocusedM1Diagnostic(Node):
                                         "locomotion_handshake_confirmed": True,
                                     })
                                 elif fixed_window_table_approach_mode:
-                                    fixed_arc = fixed_window_arc_angular_command(
-                                        float(current_plan.angular_rad_s),
-                                        maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                                    fixed_arc = window_control.get(
+                                        "fixed_window_arc_decision"
                                     )
+                                    if not isinstance(fixed_arc, Mapping):
+                                        fixed_bearing = waypoint_bearing_angular_command(
+                                            current_x_m=float(pose["x"]),
+                                            current_y_m=float(pose["y"]),
+                                            current_yaw_rad=float(pose["yaw"]),
+                                            target_x_m=float(active.x_m),
+                                            target_y_m=float(active.y_m),
+                                            maximum_angular_rad_s=
+                                            POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                                        )
+                                        fixed_arc = {
+                                            **fixed_window_arc_angular_command(
+                                                float(fixed_bearing["angular_rad_s"]),
+                                                maximum_angular_rad_s=
+                                                POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                                            ),
+                                            "decision_pose": {
+                                                "x_m": float(pose["x"]),
+                                                "y_m": float(pose["y"]),
+                                                "yaw_rad": float(pose["yaw"]),
+                                            },
+                                            "decision_bearing_error_rad": float(
+                                                fixed_bearing["bearing_error_rad"]
+                                            ),
+                                            "decision_raw_angular_rad_s": float(
+                                                fixed_bearing["raw_angular_rad_s"]
+                                            ),
+                                        }
+                                        window_control["fixed_window_arc_decision"] = fixed_arc
                                     angular = float(fixed_arc["angular_rad_s"])
                                     control_row.update({
                                         "control_phase": "FIXED_PREWINDOW_STRAIGHT_OR_RUN65_ARC",
@@ -5527,6 +5555,12 @@ class FocusedM1Diagnostic(Node):
                                         "current_yaw_rad": float(pose["yaw"]),
                                         "planned_angular_velocity_rad_s": float(
                                             fixed_arc["planned_angular_rad_s"]
+                                        ),
+                                        "fixed_decision_pose": dict(
+                                            fixed_arc["decision_pose"]
+                                        ),
+                                        "fixed_decision_bearing_error_rad": float(
+                                            fixed_arc["decision_bearing_error_rad"]
                                         ),
                                         "fixed_arc_mode": str(fixed_arc["mode"]),
                                         "fixed_arc_deadband_rad_s": float(

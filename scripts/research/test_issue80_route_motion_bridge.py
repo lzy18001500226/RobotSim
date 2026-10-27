@@ -193,6 +193,20 @@ class RouteMotionBridgeTests(unittest.TestCase):
         left = fixed_window_arc_angular_command(0.04)
         self.assertEqual(left["angular_rad_s"], 0.075)
 
+    def test_fixed_window_arc_uses_current_pose_bearing_not_a_stale_prior_plan(self):
+        fresh = waypoint_bearing_angular_command(
+            current_x_m=-1.03,
+            current_y_m=-1.526,
+            current_yaw_rad=-0.028,
+            target_x_m=-0.25,
+            target_y_m=-1.5,
+        )
+        self.assertGreater(fresh["angular_rad_s"], 0.0)
+        self.assertEqual(
+            fixed_window_arc_angular_command(fresh["angular_rad_s"])["angular_rad_s"],
+            0.075,
+        )
+
     def test_route_replan_requires_new_fresh_odom_after_a_stop(self):
         snapshot = {
             "pose": {"stamp_sec": 12, "stamp_nanosec": 50},
