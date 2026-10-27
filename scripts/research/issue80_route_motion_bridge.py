@@ -335,6 +335,9 @@ class OdomSourceStampFence:
     maximum_clock_rebase_s: float = 0.75
     accepted_clock_rebase_count: int = 0
     last_accepted_clock_rebase: dict[str, object] | None = None
+    allow_forward_sim_clock_leaps: bool = False
+    accepted_forward_sim_clock_leap_count: int = 0
+    last_accepted_forward_sim_clock_leap: dict[str, object] | None = None
 
     def observe(
         self,
@@ -494,6 +497,32 @@ class OdomSourceStampFence:
                 or maximum_lead_s <= 0.0
                 or source_advance_s > receipt_advance_s + maximum_lead_s
             ):
+                if (
+                    self.allow_forward_sim_clock_leaps
+                    and math.isfinite(source_advance_s)
+                    and math.isfinite(receipt_advance_s)
+                    and source_advance_s > 0.0
+                    and receipt_advance_s >= 0.0
+                ):
+                    self.last_accepted_stamp_ns = current_stamp_ns
+                    self.last_accepted_received_steady_s = received
+                    self.accepted_message_count += 1
+                    self.accepted_forward_sim_clock_leap_count += 1
+                    record.update({
+                        "action": "ACCEPT_FORWARD_SIM_CLOCK_LEAP",
+                        "source_stamp_relation": "FORWARD_SIM_CLOCK_LEAP",
+                        "source_advance_s": source_advance_s,
+                        "receipt_advance_s": receipt_advance_s,
+                        "maximum_forward_source_lead_s": maximum_lead_s,
+                        "accepted_forward_sim_clock_leap_count": (
+                            self.accepted_forward_sim_clock_leap_count
+                        ),
+                        "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
+                        "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
+                        "accepted_message_count": self.accepted_message_count,
+                    })
+                    self.last_accepted_forward_sim_clock_leap = dict(record)
+                    return record
                 self.dropped_future_leap_count += 1
                 record.update({
                     "action": "DROP_FUTURE_LEAP",
@@ -536,6 +565,13 @@ class OdomSourceStampFence:
             "maximum_clock_rebase_s": self.maximum_clock_rebase_s,
             "accepted_clock_rebase_count": self.accepted_clock_rebase_count,
             "last_accepted_clock_rebase": self.last_accepted_clock_rebase,
+            "allow_forward_sim_clock_leaps": self.allow_forward_sim_clock_leaps,
+            "accepted_forward_sim_clock_leap_count": (
+                self.accepted_forward_sim_clock_leap_count
+            ),
+            "last_accepted_forward_sim_clock_leap": (
+                self.last_accepted_forward_sim_clock_leap
+            ),
         }
 
 

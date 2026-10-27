@@ -346,7 +346,11 @@ class FocusedM1Diagnostic(Node):
             allow_bounded_clock_rebase=bool(
                 getattr(args, "raicom_native_mjdata_route_feedback", False)
                 and getattr(args, "native_x2_timestep", False)
-            )
+            ),
+            allow_forward_sim_clock_leaps=bool(
+                getattr(args, "raicom_native_mjdata_route_feedback", False)
+                and getattr(args, "native_x2_timestep", False)
+            ),
         )
         self.odom_source_stamp_drop_events: list[dict[str, Any]] = []
         self.last_mode: dict[str, Any] | None = None

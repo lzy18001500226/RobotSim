@@ -452,6 +452,26 @@ class RouteMotionBridgeTests(unittest.TestCase):
         )
         self.assertEqual(rejected["action"], "DROP_OUT_OF_ORDER")
 
+    def test_native_profile_can_accept_forward_sim_clock_leap_but_default_cannot(self):
+        generic = OdomSourceStampFence(maximum_forward_source_lead_s=0.20)
+        generic.observe(current_stamp_ns=1_000_000_000, received_steady_s=10.0)
+        self.assertEqual(
+            generic.observe(
+                current_stamp_ns=2_100_000_000, received_steady_s=10.002
+            )["action"],
+            "DROP_FUTURE_LEAP",
+        )
+        native = OdomSourceStampFence(
+            maximum_forward_source_lead_s=0.20,
+            allow_forward_sim_clock_leaps=True,
+        )
+        native.observe(current_stamp_ns=1_000_000_000, received_steady_s=10.0)
+        accepted = native.observe(
+            current_stamp_ns=2_100_000_000, received_steady_s=10.002
+        )
+        self.assertEqual(accepted["action"], "ACCEPT_FORWARD_SIM_CLOCK_LEAP")
+        self.assertEqual(native.last_accepted_stamp_ns, 2_100_000_000)
+
     def test_actual_stale_odometry_delivery_is_rejected_even_with_advancing_stamp(self):
         tracker = RouteOdomFreshnessTracker(40_000, 30.0, maximum_age_s=0.20)
         stale = tracker.observe(
