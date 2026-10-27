@@ -93,6 +93,17 @@ class Local01SceneRouteTests(unittest.TestCase):
             Path(source["reference_root"]),
             ROBOTSIM_ROOT / "reference/AgiBot/raicom2026-x2-mujoco-scene",
         )
+        with tempfile.TemporaryDirectory() as temp:
+            evidence = Path(temp) / "evidence"
+            evidence.mkdir()
+            bundle = prepare_local01_scene_runtime_bundle(
+                source,
+                evidence,
+                runtime_root=ROBOTSIM_ROOT / "simulation/mujoco/raicom2026",
+                aligned_start=True,
+                native_x2_timestep=True,
+            )
+        self.assertEqual(bundle["classification"], "SIMULATION_ONLY_PATH_RESOLVED_SCENE_WRAPPER")
 
     def test_aligned_start_mission_retains_original_reference_without_runtime_turn(self):
         mission = build_runtime_raw_odom_aligned_start_table_approach_mission(

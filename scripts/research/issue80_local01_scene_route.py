@@ -1268,6 +1268,33 @@ def _world_geom_aabb(model: Any, data: Any, geom_id: int, np: Any) -> tuple[Any,
     return center_world - half_world, center_world + half_world
 
 
+def _resolve_scene_model_path(scene_path: Path, declared_path: str) -> Path:
+    """Resolve one immutable Local01 model reference across managed worktrees."""
+    direct = (scene_path.parent / declared_path).resolve(strict=False)
+    if direct.is_file() and not direct.is_symlink():
+        return direct.resolve(strict=True)
+    root = _find_repository_root(scene_path)
+    normalized = declared_path.replace("\\", "/")
+    runtime_marker = "raicom2026/"
+    reference_marker = "reference/AgiBot/raicom2026-x2-mujoco-scene/"
+    if runtime_marker in normalized and "/sim_mujoco/" in normalized:
+        suffix = normalized.split(runtime_marker, 1)[1]
+        runtime_root = _resolve_runtime_x2_path(root).parents[5]
+        candidate = runtime_root / suffix
+    elif reference_marker in normalized:
+        suffix = normalized.split(reference_marker, 1)[1]
+        candidate = _resolve_raicom_reference_root(root) / suffix
+    else:
+        raise Local01SceneRouteError(
+            f"Local01 scene model path is unavailable outside its source worktree: {declared_path}"
+        )
+    if candidate.is_symlink() or not candidate.is_file():
+        raise Local01SceneRouteError(
+            f"resolved Local01 scene model path is missing or unsafe: {declared_path}"
+        )
+    return candidate.resolve(strict=True)
+
+
 def native_name_scene_tree(scene_path: str | Path) -> ET.Element:
     """Resolve include paths and change exactly the X2 attach namespace.
 
@@ -1277,7 +1304,7 @@ def native_name_scene_tree(scene_path: str | Path) -> ET.Element:
     path = Path(scene_path).resolve(strict=True)
     tree = ET.parse(path).getroot()
     for item in tree.findall("./asset/model"):
-        item.set("file", str((path.parent / item.attrib["file"]).resolve(strict=True)))
+        item.set("file", str(_resolve_scene_model_path(path, item.attrib["file"])))
     attach = tree.findall("./worldbody/frame/attach[@model='x2_mc_runtime']")
     if len(attach) != 1 or attach[0].get("prefix") != "x2_":
         raise Local01SceneRouteError("expected exactly one source X2 attach with prefix x2_")
