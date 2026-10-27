@@ -843,6 +843,14 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("FIXED_STATIC_COLLINEAR_STRAIGHT_GAIT", fixed)
         self.assertIn("ZERO_YAW_STATIC_COLLINEAR_ROUTE", fixed)
 
+    def test_straight_ten_second_profile_remains_in_native_feedback_allowlist(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        validation = source[source.index("if native_mjdata_route_feedback and not ("):]
+        self.assertIn("or straight_ten_second_table_native_profile", validation)
+        self.assertIn("STRAIGHT_TEN_SECOND_STATIC_COLLINEAR_GAIT", source)
+
     def test_route_bridge_stop_evidence_is_timestamped_before_result_bookkeeping(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"

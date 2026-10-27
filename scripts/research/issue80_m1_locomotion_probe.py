@@ -8948,6 +8948,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             or nominal_straight_native_profile
             or continuous_table_native_profile
             or fixed_window_table_native_profile
+            or straight_ten_second_table_native_profile
         )
     ):
         raise ValueError(
