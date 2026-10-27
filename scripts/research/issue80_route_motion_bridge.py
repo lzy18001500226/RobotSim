@@ -326,6 +326,11 @@ class OdomSourceStampFence:
     last_dropped_regression: dict[str, object] | None = None
     last_dropped_future_leap: dict[str, object] | None = None
     maximum_forward_source_lead_s: float = MAX_POSE_AGE_S
+    last_received_wall_time_ns: int | None = None
+    last_received_wall_steady_s: float | None = None
+    wall_clock_alignment_reliable: bool = True
+    wall_clock_rebase_count: int = 0
+    last_wall_clock_rebase: dict[str, object] | None = None
 
     def observe(
         self,
@@ -361,10 +366,41 @@ class OdomSourceStampFence:
             maximum_lead_s = float(self.maximum_forward_source_lead_s)
         except (TypeError, ValueError, OverflowError):
             maximum_lead_s = math.nan
+        wall_clock_rebased = False
+        wall_advance_s: float | None = None
+        receipt_advance_s: float | None = None
+        if valid_wall_time and self.last_received_wall_time_ns is not None and (
+            self.last_received_wall_steady_s is not None
+        ):
+            wall_advance_s = (
+                int(received_wall_time_ns) - int(self.last_received_wall_time_ns)
+            ) / 1_000_000_000.0
+            receipt_advance_s = received - float(self.last_received_wall_steady_s)
+            if (
+                not math.isfinite(wall_advance_s)
+                or not math.isfinite(receipt_advance_s)
+                or wall_advance_s < 0.0
+                or receipt_advance_s < 0.0
+                or abs(wall_advance_s - receipt_advance_s) > maximum_lead_s
+            ):
+                wall_clock_rebased = True
+                self.wall_clock_alignment_reliable = False
+                self.wall_clock_rebase_count += 1
+                self.last_wall_clock_rebase = {
+                    "received_wall_time_ns": int(received_wall_time_ns),
+                    "received_steady_s": received,
+                    "wall_advance_s": wall_advance_s,
+                    "receipt_advance_s": receipt_advance_s,
+                    "maximum_forward_source_lead_s": maximum_lead_s,
+                }
+        if valid_wall_time:
+            self.last_received_wall_time_ns = int(received_wall_time_ns)
+            self.last_received_wall_steady_s = received
         if (
             valid_wall_time
             and math.isfinite(maximum_lead_s)
             and maximum_lead_s > 0.0
+            and self.wall_clock_alignment_reliable
         ):
             source_wall_lead_s = (current_stamp_ns - received_wall_time_ns) / 1_000_000_000.0
             if source_wall_lead_s > maximum_lead_s:
@@ -397,6 +433,8 @@ class OdomSourceStampFence:
             "received_steady_s": received,
             "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
             "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
+            "wall_clock_rebased": wall_clock_rebased,
+            "wall_clock_alignment_reliable": self.wall_clock_alignment_reliable,
         }
         if relation == "REGRESSION":
             self.dropped_regression_count += 1
@@ -456,6 +494,9 @@ class OdomSourceStampFence:
             "maximum_forward_source_lead_s": self.maximum_forward_source_lead_s,
             "dropped_future_leap_count": self.dropped_future_leap_count,
             "last_dropped_future_leap": self.last_dropped_future_leap,
+            "wall_clock_alignment_reliable": self.wall_clock_alignment_reliable,
+            "wall_clock_rebase_count": self.wall_clock_rebase_count,
+            "last_wall_clock_rebase": self.last_wall_clock_rebase,
         }
 
 

@@ -409,6 +409,32 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual(fence.last_accepted_stamp_ns, 1_012_000_000)
         self.assertEqual(resumed["action"], "ACCEPT_NEW")
 
+    def test_odom_input_fence_uses_monotonic_continuity_after_host_wall_clock_rebase(self):
+        fence = OdomSourceStampFence(maximum_forward_source_lead_s=0.20)
+        self.assertEqual(
+            fence.observe(
+                current_stamp_ns=1_000_000_000,
+                received_steady_s=10.0,
+                received_wall_time_ns=1_000_000_000,
+            )["action"],
+            "ACCEPT_NEW",
+        )
+        rebased = fence.observe(
+            current_stamp_ns=1_002_000_000,
+            received_steady_s=10.002,
+            received_wall_time_ns=400_000_000,
+        )
+        self.assertEqual(rebased["action"], "ACCEPT_NEW")
+        self.assertTrue(rebased["wall_clock_rebased"])
+        self.assertFalse(rebased["wall_clock_alignment_reliable"])
+        continued = fence.observe(
+            current_stamp_ns=1_004_000_000,
+            received_steady_s=10.004,
+            received_wall_time_ns=402_000_000,
+        )
+        self.assertEqual(continued["action"], "ACCEPT_NEW")
+        self.assertEqual(fence.wall_clock_rebase_count, 1)
+
     def test_actual_stale_odometry_delivery_is_rejected_even_with_advancing_stamp(self):
         tracker = RouteOdomFreshnessTracker(40_000, 30.0, maximum_age_s=0.20)
         stale = tracker.observe(
