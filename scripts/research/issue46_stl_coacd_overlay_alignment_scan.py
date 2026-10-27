@@ -83,7 +83,10 @@ def main() -> None:
         raise SystemExit("overlay static result or prior config is missing")
 
     static = json.loads(args.overlay_static_result.read_text(encoding="utf-8"))
-    if static["gates"].get("LOCKED_COACD_PROXY_HASHES") != "PASS":
+    if (
+        static["gates"].get("LOCKED_COACD_PROXY_HASHES") != "PASS"
+        and static["gates"].get("COACD_OVERLAY_INTEGRITY") != "PASS"
+    ):
         raise SystemExit("CoACD overlay proxy hashes have not passed")
     scene = Path(static["generated_scene"]["path"])
     if not scene.is_file() or sha256(scene) != static["generated_scene"]["sha256"]:

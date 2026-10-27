@@ -69,7 +69,9 @@ def main() -> None:
         raise SystemExit("overlay static result or prior maximum-friction config is missing")
     static = json.loads(args.overlay_static_result.read_text(encoding="utf-8"))
     required = ("LOCKED_COACD_PROXY_HASHES", "OVERLAY_VISUAL_GEOMS_UNCHANGED", "OVERLAY_COMPILED")
-    if any(static["gates"].get(gate) != "PASS" for gate in required):
+    source_integrity_pass = all(static["gates"].get(gate) == "PASS" for gate in required)
+    derived_integrity_pass = static["gates"].get("COACD_OVERLAY_INTEGRITY") == "PASS"
+    if not source_integrity_pass and not derived_integrity_pass:
         raise SystemExit("source CoACD overlay integrity preflight has not passed")
     source_scene = Path(static["generated_scene"]["path"])
     if not source_scene.is_file() or sha256(source_scene) != static["generated_scene"]["sha256"]:
