@@ -1034,6 +1034,12 @@ def main() -> int:
                 if (
                     native_ready_ns is not None
                     and jd_ns is None
+                    # The direct PASSIVE->SD branch never sends JD.  Its
+                    # own bilateral-support/posture gate already qualified
+                    # the native state; applying a JD-specific pre-action
+                    # transient monitor here can reject that distinct action
+                    # graph before its sole SD request is issued.
+                    and not self.direct_stand_from_passive
                     and (not self.synchronized_initialization or self.physics_release_ns is not None)
                     and host_ns > native_ready_ns
                     and not native_root_within_existing_safety_gate(support)
