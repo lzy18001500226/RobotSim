@@ -346,6 +346,39 @@ def _find_repository_root(path: Path) -> Path:
     raise Local01SceneRouteError("Local01 input is not inside a RobotSim Git worktree")
 
 
+def _resolve_raicom_reference_root(repository_root: Path) -> Path:
+    """Locate the one shared read-only RAICOM reference checkout for this worktree.
+
+    Managed task worktrees normally do not duplicate ignored ``reference/``
+    checkouts.  Resolve it from the repository's registered worktrees rather
+    than silently falling back to an evidence copy or creating a second vendor
+    checkout.
+    """
+    candidates = [repository_root]
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(repository_root), "worktree", "list", "--porcelain"],
+            check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Local01SceneRouteError("unable to resolve the shared RAICOM reference checkout") from exc
+    for line in listing:
+        if line.startswith("worktree "):
+            candidates.append(Path(line.removeprefix("worktree ")))
+    resolved: list[Path] = []
+    for worktree in candidates:
+        candidate = worktree / LOCAL01_SCENE_REPO_RELATIVE
+        if candidate.is_dir() and not candidate.is_symlink():
+            canonical = candidate.resolve(strict=True)
+            if canonical not in resolved:
+                resolved.append(canonical)
+    if not resolved:
+        raise Local01SceneRouteError("resolved RAICOM scene reference root is not a directory")
+    if len(resolved) > 1:
+        raise Local01SceneRouteError("multiple distinct RAICOM scene reference roots are present")
+    return resolved[0]
+
+
 def load_local01_scene_inputs(
     poses_path: str | Path,
     *,
@@ -423,9 +456,7 @@ def load_local01_scene_inputs(
             )
         hashes[label] = actual
 
-    reference_root = (root / LOCAL01_SCENE_REPO_RELATIVE).resolve(strict=True)
-    if not reference_root.is_dir():
-        raise Local01SceneRouteError("resolved RAICOM scene reference root is not a directory")
+    reference_root = _resolve_raicom_reference_root(root)
     required_reference_files = {
         "room": reference_root / "robot/lx2501_3_t2d5/model_info/scene/room/room_with_chair_review.xml",
         "table": reference_root / "robot/lx2501_3_t2d5/model_info/object/mesh/table.stl",

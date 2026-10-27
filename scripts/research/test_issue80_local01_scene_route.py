@@ -89,6 +89,10 @@ class Local01SceneRouteTests(unittest.TestCase):
             "PINNED_LOCAL01_COMMIT_PATHS_MATERIALIZED_IN_NAVIGATION_WORKTREE",
         )
         self.assertEqual(source["source_hashes"]["scene_world_poses"], LOCAL01_POSES_SHA256)
+        self.assertEqual(
+            Path(source["reference_root"]),
+            ROBOTSIM_ROOT / "reference/AgiBot/raicom2026-x2-mujoco-scene",
+        )
 
     def test_aligned_start_mission_retains_original_reference_without_runtime_turn(self):
         mission = build_runtime_raw_odom_aligned_start_table_approach_mission(
