@@ -353,10 +353,16 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
     if not (getattr(args, "route_config", None) or getattr(args, "local01_scene_world_poses", None)):
         return
     low_cruise = bool(getattr(args, "raicom_low_cruise_profile", False))
-    expected_forward = RAICOM_LOW_CRUISE_FORWARD_M_S if low_cruise else 0.12
+    vendor_example = bool(getattr(args, "raicom_vendor_example_forward_baseline", False))
+    if vendor_example and low_cruise:
+        raise ValueError("vendor-example baseline cannot combine with the RAICOM low-cruise profile")
+    expected_forward = (
+        0.2 if vendor_example else RAICOM_LOW_CRUISE_FORWARD_M_S if low_cruise else 0.12
+    )
+    expected_pulse = 5.0 if vendor_example else 1.0
     if (
         abs(float(args.forward_speed) - expected_forward) > 1e-9
-        or abs(float(args.pulse_duration) - 1.0) > 1e-9
+        or abs(float(args.pulse_duration) - expected_pulse) > 1e-9
         or abs(float(args.extra_stop_observation) - 7.0) > 1e-9
         or float(args.ramp_duration_s) != 0.0
         or args.ramp_start_speed is not None
@@ -369,7 +375,7 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
         or getattr(args, "route_turn_evidence", None) is not None
     ):
         raise ValueError(
-            f"configured route requires {expected_forward:g} m/s, the default generic pulse fields, "
+            f"configured route requires {expected_forward:g} m/s for {expected_pulse:g} s, "
             "7 s existing post-STAND observation, and no ramp/debug/turn overlays"
         )
 
