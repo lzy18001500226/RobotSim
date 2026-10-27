@@ -325,6 +325,17 @@ class RouteMotionBridgeTests(unittest.TestCase):
         with self.assertRaises(RouteMotionBridgeError):
             forward_gait_yaw_command(0.076, invert_from_measured_response=True)
 
+    def test_fixed_window_forward_gait_mapping_uses_the_measured_inverse_sign(self) -> None:
+        standard = fixed_window_arc_angular_command(0.04)
+        self.assertEqual(standard["angular_rad_s"], 0.075)
+        self.assertEqual(
+            forward_gait_yaw_command(
+                standard["angular_rad_s"],
+                invert_from_measured_response=True,
+            ),
+            -0.075,
+        )
+
     def test_verified_yaw_only_acquisition_still_requires_fresh_handshake(self) -> None:
         gate = TransitSteeringGate(warmup_s=0.5)
         gate.seed_verified_acquisition(started_steady_s=10.0, observed_steady_s=10.75)

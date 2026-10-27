@@ -3282,6 +3282,10 @@ class FocusedM1Diagnostic(Node):
                     }
                     if fixed_window_table_approach_mode else None
                 ),
+                "forward_gait_yaw_mapping": (
+                    "NEGATIVE_OF_STANDARD_BEARING_COMMAND"
+                    if fixed_window_table_approach_mode else None
+                ),
                 "control_lifecycle": (
                     "INITIAL_OPEN_SEGMENT_ZERO_FORWARD_YAW_ACQUISITION_IF_NEEDED->FIXED_5S_STRAIGHT_OR_ARC->COMPOSITE_STOP->REPLAN"
                     if fixed_window_table_approach_mode else None
@@ -5609,7 +5613,19 @@ class FocusedM1Diagnostic(Node):
                                             ),
                                         }
                                         window_control["fixed_window_arc_decision"] = fixed_arc
-                                    angular = float(fixed_arc["angular_rad_s"])
+                                    # The completed 20261027 fixed-window run
+                                    # measured +0.075 rad/s forward gait
+                                    # producing a negative yaw change.  This
+                                    # mapping is deliberately scoped to the
+                                    # fixed forward-gait profile; stationary
+                                    # source acquisition retains its measured
+                                    # direct sign contract.
+                                    angular = forward_gait_yaw_command(
+                                        float(fixed_arc["angular_rad_s"]),
+                                        invert_from_measured_response=True,
+                                        maximum_angular_rad_s=
+                                        POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
+                                    )
                                     control_row.update({
                                         "control_phase": "FIXED_PREWINDOW_STRAIGHT_OR_RUN65_ARC",
                                         "target_x_m": float(active.x_m),
@@ -5619,6 +5635,12 @@ class FocusedM1Diagnostic(Node):
                                         "current_yaw_rad": float(pose["yaw"]),
                                         "planned_angular_velocity_rad_s": float(
                                             fixed_arc["planned_angular_rad_s"]
+                                        ),
+                                        "standard_fixed_arc_angular_velocity_rad_s": float(
+                                            fixed_arc["angular_rad_s"]
+                                        ),
+                                        "forward_gait_yaw_mapping": (
+                                            "NEGATIVE_OF_STANDARD_BEARING_COMMAND"
                                         ),
                                         "fixed_decision_pose": dict(
                                             fixed_arc["decision_pose"]
@@ -9013,6 +9035,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                             "minimum_measured_response_rad": ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
                             "static_yaw_envelope_rad": FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
                         },
+                        "forward_gait_yaw_mapping": "NEGATIVE_OF_STANDARD_BEARING_COMMAND",
                         "physical_stop_after_each_window": True,
                     }
                     if fixed_window_table_approach else None

@@ -823,6 +823,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn('segment_id == "WAYPOINT"', source)
         self.assertIn("and window_index == 0", source)
 
+    def test_fixed_window_forward_yaw_mapping_is_explicit_and_scoped(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        fixed_start = source.index("elif fixed_window_table_approach_mode:")
+        fixed_end = source.index("elif curved_path_diagnostic:", fixed_start)
+        fixed = source[fixed_start:fixed_end]
+        self.assertIn("forward_gait_yaw_command(", fixed)
+        self.assertIn("invert_from_measured_response=True", fixed)
+        self.assertIn("NEGATIVE_OF_STANDARD_BEARING_COMMAND", fixed)
+
     def test_transit_termination_reads_explicit_window_heading_state(self) -> None:
         """The route callback must not close over a per-window local name."""
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
