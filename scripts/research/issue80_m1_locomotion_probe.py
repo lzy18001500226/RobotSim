@@ -3157,6 +3157,9 @@ class FocusedM1Diagnostic(Node):
         vendor_example_forward_baseline_mode = bool(
             getattr(self.args, "raicom_vendor_example_forward_baseline", False)
         )
+        vendor_example_planar_speed_guard_m_s = (
+            0.25 if vendor_example_forward_baseline_mode else 0.2
+        )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
             or waypoint_b_short_diagnostic
@@ -3854,7 +3857,7 @@ class FocusedM1Diagnostic(Node):
                     state_timeout_s=self.state_timeout_s,
                     min_root_z=self.min_root_z,
                     max_tilt_deg=self.max_tilt_deg,
-                    max_observed_planar_speed_m_s=0.2,
+                    max_observed_planar_speed_m_s=vendor_example_planar_speed_guard_m_s,
                 )
                 self.robot_safe = fault is None
                 self.reason = fault or (
@@ -4111,7 +4114,7 @@ class FocusedM1Diagnostic(Node):
                     initial_fault = snapshot_fault(
                         initial, self.joint_limits, state_timeout_s=self.args.state_timeout,
                         min_root_z=self.args.min_root_z, max_tilt_deg=self.args.max_tilt_deg,
-                        max_observed_planar_speed_m_s=0.2,
+                        max_observed_planar_speed_m_s=vendor_example_planar_speed_guard_m_s,
                     )
                     if initial_fault or not stand_mode_readback_confirmed(initial):
                         raise ValueError("post-alignment route start is not fresh stable STAND")
@@ -8543,6 +8546,11 @@ class FocusedM1Diagnostic(Node):
                 )
                 self.pulse_result = route_result
                 result["route_integration"] = route_result
+                if bool(getattr(self.args, "raicom_vendor_example_forward_baseline", False)):
+                    result["forward_command_m_s"] = VENDOR_EXAMPLE_FORWARD_M_S
+                    result["vendor_example_forward_baseline"] = route_result.get(
+                        "vendor_example_forward_baseline"
+                    )
                 result["nonzero_publish_calls_returned"] = int(self.nonzero_publish_calls_returned)
                 result["zero_publish_calls_returned"] = int(self.zero_publish_calls_returned)
                 result["mc_velocity_receipt_confirmed"] = False
@@ -8966,6 +8974,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     vendor_example_forward_baseline = bool(
         getattr(args, "raicom_vendor_example_forward_baseline", False)
     )
+    expected_observed_planar_speed_guard_m_s = (
+        0.25 if vendor_example_forward_baseline else 0.2
+    )
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
         getattr(args, "aligned_start_table_approach", False)
@@ -9208,7 +9219,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         if not configured_route_observation or abs(float(args.extra_stop_observation) - 7.0) > 1e-9:
             raise ValueError("configured route requires the explicit bounded 7 s post-STAND observation")
         if (
-            args.max_observed_planar_speed_m_s != 0.2
+            args.max_observed_planar_speed_m_s != expected_observed_planar_speed_guard_m_s
             or args.zero_until_stand_timeout_s != 3.5
             or not args.zero_only_stop
             or args.ramp_duration_s != 0.0
@@ -9646,9 +9657,14 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)
-        or not 0.0 < args.max_observed_planar_speed_m_s <= 0.2
+        or not 0.0 < args.max_observed_planar_speed_m_s <= (
+            0.25 if vendor_example_forward_baseline else 0.2
+        )
     ):
-        raise ValueError("observed planar speed gate must be positive and no greater than 0.2 m/s")
+        raise ValueError(
+            "observed planar speed gate must be positive and no greater than "
+            + ("0.25 m/s for the vendor-example baseline" if vendor_example_forward_baseline else "0.2 m/s")
+        )
     if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 3.5:
         raise ValueError("zero-until-stand timeout must remain within 0..3.5 seconds")
     return profile

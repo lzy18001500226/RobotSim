@@ -805,6 +805,10 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertNotIn("--raicom-native-nominal-straight-gait-diagnostic", child)
         self.assertEqual(child[child.index("--forward-speed") + 1], "0.2")
         self.assertEqual(child[child.index("--pulse-duration") + 1], "5.0")
+        self.assertEqual(
+            child[child.index("--max-observed-planar-speed-m-s") + 1],
+            "0.25",
+        )
 
     def test_parent_child_fixed_window_table_profile_is_explicit(self) -> None:
         args = argparse.Namespace(
