@@ -4307,7 +4307,7 @@ class FocusedM1Diagnostic(Node):
                     state_timeout_s=self.args.state_timeout,
                     min_root_z=self.args.min_root_z,
                     max_tilt_deg=self.args.max_tilt_deg,
-                    max_observed_planar_speed_m_s=0.2,
+                    max_observed_planar_speed_m_s=vendor_example_planar_speed_guard_m_s,
                 )
                 return RuntimeReadiness(
                     observed_steady_s=float(snapshot.get("sample_monotonic_s", time.monotonic())),
@@ -5949,7 +5949,7 @@ class FocusedM1Diagnostic(Node):
                         state_timeout_s=self.args.state_timeout,
                         min_root_z=self.args.min_root_z,
                         max_tilt_deg=self.args.max_tilt_deg,
-                        max_observed_planar_speed_m_s=0.2,
+                        max_observed_planar_speed_m_s=vendor_example_planar_speed_guard_m_s,
                         zero_until_stand_timeout_s=3.5,
                         require_locomotion_confirmation=True,
                         activation_lifecycle=self.activation_lifecycle,
