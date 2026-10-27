@@ -8496,7 +8496,11 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         native_x2_timestep
         and table_approach_mission
         and aligned_start_table_approach
-        and (low_cruise_native_profile or nominal_straight_native_profile)
+        and (
+            low_cruise_native_profile
+            or nominal_straight_native_profile
+            or continuous_table_native_profile
+        )
     ):
         raise ValueError(
             "native MjData route feedback requires the aligned native-timestep TABLE_APPROACH profile"
