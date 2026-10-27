@@ -77,6 +77,8 @@ from issue80_route_motion_bridge import (
     CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
     CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
     continuous_table_segment_cross_track_limit_m,
+    FIXED_WINDOW_ARC_DEADBAND_RAD_S,
+    fixed_window_arc_angular_command,
 )
 
 
@@ -177,6 +179,18 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual(continuous_table_segment_cross_track_limit_m("TABLE_APPROACH"), 0.06)
         with self.assertRaises(RouteMotionBridgeError):
             continuous_table_segment_cross_track_limit_m("TABLE_DOCKING")
+
+    def test_fixed_window_arc_quantizes_only_fresh_prewindow_turn_requests(self):
+        straight = fixed_window_arc_angular_command(
+            FIXED_WINDOW_ARC_DEADBAND_RAD_S * 0.5
+        )
+        self.assertEqual(straight["mode"], "STRAIGHT")
+        self.assertEqual(straight["angular_rad_s"], 0.0)
+        right = fixed_window_arc_angular_command(-0.04)
+        self.assertEqual(right["mode"], "FIXED_ARC")
+        self.assertEqual(right["angular_rad_s"], -0.075)
+        left = fixed_window_arc_angular_command(0.04)
+        self.assertEqual(left["angular_rad_s"], 0.075)
 
     def test_segment_lookahead_advances_reference_without_changing_terminal_target(self):
         reference = segment_lookahead_point(

@@ -78,6 +78,13 @@ CONTINUOUS_TABLE_MAX_CROSS_TRACK_M = 0.06
 # START -> WAYPOINT is the open-room transit segment. Its separately certified
 # 80 mm envelope is never carried into the table-facing segment.
 CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M = 0.08
+# The existing route planner produces a bounded bearing rate.  In the fixed
+# window profile, turn that fresh pre-window bearing into one of the already
+# physically observed Run65 arc commands, rather than perturbing the gait with
+# a different sub-threshold yaw value at every 50 Hz publish.
+FIXED_WINDOW_ARC_DEADBAND_RAD_S = (
+    RUN73_BEARING_HEADING_GAIN * ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD
+)
 CURVED_PATH_RADIUS_M = 4.4
 CURVED_PATH_SWEEP_RAD = 0.22
 CURVED_PATH_TURN_SIGN = -1
@@ -1026,6 +1033,36 @@ def continuous_table_segment_cross_track_limit_m(waypoint_id: str) -> float:
     raise RouteMotionBridgeError(
         f"continuous table route has no certified cross-track envelope for {waypoint_id!r}"
     )
+
+
+def fixed_window_arc_angular_command(
+    planned_angular_rad_s: float,
+    *,
+    maximum_angular_rad_s: float = MAX_ANGULAR_RAD_S,
+) -> dict[str, float | bool]:
+    """Quantize one fresh plan into a validated 5 s straight or fixed arc."""
+    try:
+        planned = float(planned_angular_rad_s)
+        maximum = float(maximum_angular_rad_s)
+    except (TypeError, ValueError) as exc:
+        raise RouteMotionBridgeError("fixed arc command inputs must be numeric") from exc
+    if not math.isfinite(planned) or not math.isfinite(maximum) or maximum <= 0.0:
+        raise RouteMotionBridgeError("fixed arc command inputs must be finite with positive maximum")
+    if abs(planned) < FIXED_WINDOW_ARC_DEADBAND_RAD_S:
+        return {
+            "angular_rad_s": 0.0,
+            "mode": "STRAIGHT",
+            "planned_angular_rad_s": planned,
+            "deadband_rad_s": FIXED_WINDOW_ARC_DEADBAND_RAD_S,
+            "saturated_to_validated_arc": False,
+        }
+    return {
+        "angular_rad_s": math.copysign(maximum, planned),
+        "mode": "FIXED_ARC",
+        "planned_angular_rad_s": planned,
+        "deadband_rad_s": FIXED_WINDOW_ARC_DEADBAND_RAD_S,
+        "saturated_to_validated_arc": True,
+    }
 
 
 def active_locomotion_source_readbacks_valid(

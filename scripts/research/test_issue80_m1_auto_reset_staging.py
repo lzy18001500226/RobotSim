@@ -743,6 +743,44 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(child[child.index("--forward-speed") + 1], "0.12")
         self.assertNotIn("--raicom-low-cruise-profile", child)
 
+    def test_parent_child_fixed_window_table_profile_is_explicit(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=1.0,
+            forward_speed=0.12,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="aligned-start-fixed-window-table-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/aligned-start-table-approach.json",
+            aligned_start_table_approach=True,
+            native_x2_timestep=True,
+            route_config=None,
+            raicom_low_cruise_profile=False,
+            raicom_zero_forward_heading_acquisition=False,
+            raicom_continuous_ten_second_transit=False,
+            raicom_continuous_table_approach=False,
+            raicom_forward_gait_yaw_inversion=False,
+            raicom_native_nominal_straight_gait_diagnostic=False,
+            raicom_native_mjdata_route_feedback=True,
+            raicom_fixed_window_table_approach=True,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "aligned-start-fixed-window-table-test")[-1]
+            .rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--raicom-fixed-window-table-approach", child)
+        self.assertIn("--raicom-native-mjdata-route-feedback", child)
+        self.assertNotIn("--raicom-continuous-table-approach", child)
+
     def test_route_zero_stop_precedes_zero_forward_heading_acquisition(self) -> None:
         """A stop callback must never be reinterpreted as a yaw command."""
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(

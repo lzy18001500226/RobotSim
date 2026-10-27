@@ -1426,6 +1426,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --raicom-continuous-ten-second-transit"
         if getattr(args, "raicom_continuous_table_approach", False):
             command[-1] += " --raicom-continuous-table-approach"
+        if getattr(args, "raicom_fixed_window_table_approach", False):
+            command[-1] += " --raicom-fixed-window-table-approach"
         if getattr(args, "raicom_forward_gait_yaw_inversion", False):
             command[-1] += " --raicom-forward-gait-yaw-inversion"
         if getattr(args, "raicom_native_nominal_straight_gait_diagnostic", False):
@@ -5535,6 +5537,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-fixed-window-table-approach",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY: use fresh per-window 5 s straight or existing Run65 fixed-arc commands, "
+            "with the unchanged full stop/rearm gate between windows"
+        ),
+    )
+    parser.add_argument(
         "--synchronized-paused-initialization",
         action="store_true",
         help=(
@@ -5778,6 +5788,8 @@ def main() -> int:
         args.extra_stop_observation = 7.0
     elif args.aligned_start_table_approach:
         parser.error("--aligned-start-table-approach requires --table-approach-mission")
+    if args.raicom_continuous_table_approach and args.raicom_fixed_window_table_approach:
+        parser.error("continuous and fixed-window TABLE_APPROACH profiles are mutually exclusive")
     if args.native_x2_timestep:
         low_cruise_native_profile = (
             args.raicom_low_cruise_profile
@@ -5794,6 +5806,12 @@ def main() -> int:
             and not args.raicom_low_cruise_profile
             and abs(float(args.forward_speed) - 0.12) <= 1e-9
         )
+        fixed_window_table_native_profile = (
+            args.raicom_fixed_window_table_approach
+            and args.raicom_native_mjdata_route_feedback
+            and not args.raicom_low_cruise_profile
+            and abs(float(args.forward_speed) - 0.12) <= 1e-9
+        )
         if not (
             args.table_approach_mission
             and args.aligned_start_table_approach
@@ -5805,13 +5823,14 @@ def main() -> int:
                 low_cruise_native_profile
                 or nominal_straight_native_profile
                 or continuous_table_native_profile
+                or fixed_window_table_native_profile
             )
         ):
             parser.error(
                 "native X2 timestep synchronization requires direct-stand, the aligned-start "
                 "TABLE_APPROACH mission, native capture, and either the explicit 0.105 m/s "
                 "low-cruise profile, the isolated 0.12 m/s straight-gait diagnostic, or the explicit "
-                "continuous 0.12 m/s native-ground-truth route"
+                "continuous 0.12 m/s native-ground-truth route, or the fixed-window 0.12 m/s route"
             )
     if args.raicom_native_mjdata_route_feedback and not (
         args.native_x2_timestep
@@ -5837,6 +5856,22 @@ def main() -> int:
     ):
         parser.error(
             "continuous table approach requires native MjData feedback and the aligned 0.12 m/s native TABLE_APPROACH profile"
+        )
+    if args.raicom_fixed_window_table_approach and not (
+        args.raicom_native_mjdata_route_feedback
+        and args.native_x2_timestep
+        and args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_mjdata_capture
+        and not args.raicom_native_nominal_straight_gait_diagnostic
+        and not args.raicom_low_cruise_profile
+        and not args.raicom_zero_forward_heading_acquisition
+        and not args.raicom_continuous_ten_second_transit
+        and not args.raicom_forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    ):
+        parser.error(
+            "fixed-window table approach requires native MjData feedback and the aligned 0.12 m/s native TABLE_APPROACH profile"
         )
     if args.synchronized_paused_initialization:
         if not (
