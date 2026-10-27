@@ -1035,6 +1035,51 @@ def continuous_table_segment_cross_track_limit_m(waypoint_id: str) -> float:
     )
 
 
+def route_replan_odom_freshness(
+    snapshot: Mapping[str, object],
+    *,
+    previous_stamp_ns: int,
+    maximum_age_s: float,
+) -> dict[str, object]:
+    """Require an advancing, fresh odometry sample before a stopped route rearms."""
+    try:
+        pose = snapshot["pose"]
+        ages = snapshot["state_age_s"]
+        if not isinstance(pose, Mapping) or not isinstance(ages, Mapping):
+            raise ValueError("pose/state age mappings are required")
+        stamp_ns = int(pose["stamp_sec"]) * 1_000_000_000 + int(pose["stamp_nanosec"])
+        age_s = float(ages["odom"])
+        prior = int(previous_stamp_ns)
+        limit = float(maximum_age_s)
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        return {"status": "INVALID", "reason": f"{type(exc).__name__}: {exc}"}
+    if prior <= 0 or stamp_ns <= 0 or not math.isfinite(age_s) or not math.isfinite(limit) or limit <= 0.0:
+        return {"status": "INVALID", "reason": "invalid odometry stamp or age"}
+    if age_s < 0.0 or age_s > limit:
+        return {
+            "status": "WAITING_STALE",
+            "odom_stamp_ns": stamp_ns,
+            "previous_stamp_ns": prior,
+            "odom_age_s": age_s,
+            "maximum_age_s": limit,
+        }
+    if stamp_ns <= prior:
+        return {
+            "status": "WAITING_NO_ADVANCING_SAMPLE",
+            "odom_stamp_ns": stamp_ns,
+            "previous_stamp_ns": prior,
+            "odom_age_s": age_s,
+            "maximum_age_s": limit,
+        }
+    return {
+        "status": "PASS",
+        "odom_stamp_ns": stamp_ns,
+        "previous_stamp_ns": prior,
+        "odom_age_s": age_s,
+        "maximum_age_s": limit,
+    }
+
+
 def fixed_window_arc_angular_command(
     planned_angular_rad_s: float,
     *,

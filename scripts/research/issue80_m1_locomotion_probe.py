@@ -159,6 +159,7 @@ from issue80_route_motion_bridge import (
     CONTINUOUS_TABLE_LOOKAHEAD_M,
     continuous_table_segment_cross_track_limit_m,
     fixed_window_arc_angular_command,
+    route_replan_odom_freshness,
     waypoint_b_arrival_passes, waypoint_b_arrival_trigger_radius_m,
     waypoint_b_arrival_after_verified_stop_passes,
     waypoint_b_window_budget_passes, waypoint_b_forward_guard_reached,
@@ -1675,6 +1676,29 @@ class FocusedM1Diagnostic(Node):
         snapshot["readback_refresh_stale_keys"] = list(stale)
         snapshot["readback_refresh_faults_seen"] = refresh_faults
         return snapshot
+
+    def wait_for_fresh_route_replan_snapshot(
+        self, *, previous_odom_stamp_ns: int,
+    ) -> tuple[dict[str, Any], dict[str, object]]:
+        """Do not rearm a stopped route from a stale or duplicate odometry snapshot."""
+        deadline = time.monotonic() + float(self.args.state_timeout)
+        last: dict[str, object] = {"status": "NOT_OBSERVED"}
+        while time.monotonic() < deadline:
+            snapshot = self.sample_for_first_motion()
+            freshness = route_replan_odom_freshness(
+                snapshot,
+                previous_stamp_ns=previous_odom_stamp_ns,
+                maximum_age_s=float(self.args.state_timeout),
+            )
+            last = freshness
+            if freshness.get("status") == "PASS":
+                snapshot["route_replan_freshness"] = freshness
+                return snapshot, freshness
+            self._spin_for(0.005)
+        raise TimeoutError(
+            "route replan did not receive a fresh advancing odometry sample within "
+            f"{float(self.args.state_timeout):.3f} s: {last}"
+        )
 
     def _trace_first_motion_sample(self, phase: str, snapshot: dict[str, Any]) -> None:
         self.current_phase = phase
@@ -5870,7 +5894,30 @@ class FocusedM1Diagnostic(Node):
                             "segment_nonzero_command_time_s": segment_nonzero_s,
                         }
 
-                    snapshot = self.sample_for_first_motion()
+                    previous_odom_stamp_ns = int(
+                        self.odom_source_stamp_fence.last_accepted_stamp_ns or 0
+                    )
+                    try:
+                        raw_replan_snapshot, replan_freshness = (
+                            self.wait_for_fresh_route_replan_snapshot(
+                                previous_odom_stamp_ns=previous_odom_stamp_ns
+                            )
+                        )
+                    except TimeoutError as exc:
+                        return {
+                            "status": "BLOCKED",
+                            "fault": f"route_replan_fresh_odom_timeout:{exc}",
+                            "last_result": last_result,
+                            "last_gate": last_gate,
+                            "zero_plan": dict(zero_plan.__dict__),
+                            "route_total_nonzero_command_time_s": route_total_nonzero_s,
+                        }
+                    route_events.append({
+                        "kind": "ROUTE_REPLAN_FRESH_ODOM",
+                        "completed_window_index": window_index,
+                        **replan_freshness,
+                    })
+                    snapshot = route_feedback_snapshot(raw_replan_snapshot)
                     try:
                         pose = pose_provider.update(snapshot)
                     except (KeyError, TypeError, ValueError) as exc:

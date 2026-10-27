@@ -79,6 +79,7 @@ from issue80_route_motion_bridge import (
     continuous_table_segment_cross_track_limit_m,
     FIXED_WINDOW_ARC_DEADBAND_RAD_S,
     fixed_window_arc_angular_command,
+    route_replan_odom_freshness,
 )
 
 
@@ -191,6 +192,25 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual(right["angular_rad_s"], -0.075)
         left = fixed_window_arc_angular_command(0.04)
         self.assertEqual(left["angular_rad_s"], 0.075)
+
+    def test_route_replan_requires_new_fresh_odom_after_a_stop(self):
+        snapshot = {
+            "pose": {"stamp_sec": 12, "stamp_nanosec": 50},
+            "state_age_s": {"odom": 0.01},
+        }
+        waiting = route_replan_odom_freshness(
+            snapshot, previous_stamp_ns=12_000_000_050, maximum_age_s=0.5
+        )
+        self.assertEqual(waiting["status"], "WAITING_NO_ADVANCING_SAMPLE")
+        fresh = route_replan_odom_freshness(
+            snapshot, previous_stamp_ns=12_000_000_040, maximum_age_s=0.5
+        )
+        self.assertEqual(fresh["status"], "PASS")
+        snapshot["state_age_s"]["odom"] = 0.6
+        stale = route_replan_odom_freshness(
+            snapshot, previous_stamp_ns=12_000_000_040, maximum_age_s=0.5
+        )
+        self.assertEqual(stale["status"], "WAITING_STALE")
 
     def test_segment_lookahead_advances_reference_without_changing_terminal_target(self):
         reference = segment_lookahead_point(
