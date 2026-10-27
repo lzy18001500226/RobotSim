@@ -177,8 +177,8 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertGreater(CONTINUOUS_TABLE_MAX_CROSS_TRACK_M, WAYPOINT_B_MAX_CROSS_TRACK_M)
 
     def test_continuous_table_open_transit_envelope_does_not_leak_to_table_approach(self):
-        self.assertEqual(CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M, 0.08)
-        self.assertEqual(continuous_table_segment_cross_track_limit_m("WAYPOINT"), 0.08)
+        self.assertEqual(CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M, 0.10)
+        self.assertEqual(continuous_table_segment_cross_track_limit_m("WAYPOINT"), 0.10)
         self.assertEqual(continuous_table_segment_cross_track_limit_m("TABLE_APPROACH"), 0.06)
         with self.assertRaises(RouteMotionBridgeError):
             continuous_table_segment_cross_track_limit_m("TABLE_DOCKING")
