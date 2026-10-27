@@ -792,7 +792,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("self.odom_source_stamp_fence.observe(", callback)
         self.assertIn('"DROP_OUT_OF_ORDER"', callback)
         self.assertLess(
-            callback.index('if fence["action"] in {"DROP_INVALID", "DROP_OUT_OF_ORDER"}:'),
+            callback.index('"DROP_FUTURE_LEAP",'),
             callback.index("self.latest[key] = msg"),
         )
 

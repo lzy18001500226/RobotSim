@@ -423,7 +423,9 @@ class FocusedM1Diagnostic(Node):
                 current_stamp_ns=stamp_ns,
                 received_steady_s=received,
             )
-            if fence["action"] in {"DROP_INVALID", "DROP_OUT_OF_ORDER"}:
+            if fence["action"] in {
+                "DROP_INVALID", "DROP_OUT_OF_ORDER", "DROP_FUTURE_LEAP",
+            }:
                 event = {
                     "event": "odom_source_stamp_packet_dropped",
                     "phase": self.current_phase,

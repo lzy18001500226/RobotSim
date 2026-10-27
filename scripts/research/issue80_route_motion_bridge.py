@@ -305,7 +305,10 @@ class OdomSourceStampFence:
     last_accepted_received_steady_s: float | None = None
     accepted_message_count: int = 0
     dropped_regression_count: int = 0
+    dropped_future_leap_count: int = 0
     last_dropped_regression: dict[str, object] | None = None
+    last_dropped_future_leap: dict[str, object] | None = None
+    maximum_forward_source_lead_s: float = MAX_POSE_AGE_S
 
     def observe(
         self,
@@ -352,6 +355,33 @@ class OdomSourceStampFence:
             record["dropped_regression_count"] = self.dropped_regression_count
             self.last_dropped_regression = dict(record)
             return record
+        if relation == "NEW" and self.last_accepted_received_steady_s is not None:
+            try:
+                source_advance_s = (
+                    current_stamp_ns - int(self.last_accepted_stamp_ns)
+                ) / 1_000_000_000.0
+                receipt_advance_s = received - float(self.last_accepted_received_steady_s)
+                maximum_lead_s = float(self.maximum_forward_source_lead_s)
+            except (TypeError, ValueError, OverflowError):
+                source_advance_s = receipt_advance_s = maximum_lead_s = math.nan
+            if (
+                not all(math.isfinite(value) for value in (
+                    source_advance_s, receipt_advance_s, maximum_lead_s,
+                ))
+                or receipt_advance_s < 0.0
+                or maximum_lead_s <= 0.0
+                or source_advance_s > receipt_advance_s + maximum_lead_s
+            ):
+                self.dropped_future_leap_count += 1
+                record.update({
+                    "action": "DROP_FUTURE_LEAP",
+                    "source_advance_s": source_advance_s,
+                    "receipt_advance_s": receipt_advance_s,
+                    "maximum_forward_source_lead_s": maximum_lead_s,
+                    "dropped_future_leap_count": self.dropped_future_leap_count,
+                })
+                self.last_dropped_future_leap = dict(record)
+                return record
         self.last_accepted_stamp_ns = current_stamp_ns
         self.last_accepted_received_steady_s = received
         self.accepted_message_count += 1
@@ -374,6 +404,9 @@ class OdomSourceStampFence:
             "accepted_message_count": self.accepted_message_count,
             "dropped_regression_count": self.dropped_regression_count,
             "last_dropped_regression": self.last_dropped_regression,
+            "maximum_forward_source_lead_s": self.maximum_forward_source_lead_s,
+            "dropped_future_leap_count": self.dropped_future_leap_count,
+            "last_dropped_future_leap": self.last_dropped_future_leap,
         }
 
 

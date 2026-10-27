@@ -309,6 +309,27 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual(resumed["action"], "ACCEPT_NEW")
         self.assertEqual(fence.last_accepted_stamp_ns, 30_020)
 
+    def test_odom_input_fence_rejects_future_timestamp_leap_before_it_poisoning_anchor(self):
+        fence = OdomSourceStampFence(maximum_forward_source_lead_s=0.20)
+        self.assertEqual(
+            fence.observe(current_stamp_ns=1_000_000_000, received_steady_s=10.0)["action"],
+            "ACCEPT_NEW",
+        )
+        future = fence.observe(
+            current_stamp_ns=1_260_000_000,
+            received_steady_s=10.01,
+        )
+        resumed = fence.observe(
+            current_stamp_ns=1_012_000_000,
+            received_steady_s=10.012,
+        )
+
+        self.assertEqual(future["action"], "DROP_FUTURE_LEAP")
+        self.assertAlmostEqual(float(future["source_advance_s"]), 0.26)
+        self.assertAlmostEqual(float(future["receipt_advance_s"]), 0.01)
+        self.assertEqual(fence.last_accepted_stamp_ns, 1_012_000_000)
+        self.assertEqual(resumed["action"], "ACCEPT_NEW")
+
     def test_actual_stale_odometry_delivery_is_rejected_even_with_advancing_stamp(self):
         tracker = RouteOdomFreshnessTracker(40_000, 30.0, maximum_age_s=0.20)
         stale = tracker.observe(
