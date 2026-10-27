@@ -342,7 +342,12 @@ class FocusedM1Diagnostic(Node):
         )
         self.latest: dict[str, Any] = {}
         self.received_at: dict[str, float] = {}
-        self.odom_source_stamp_fence = OdomSourceStampFence()
+        self.odom_source_stamp_fence = OdomSourceStampFence(
+            allow_bounded_clock_rebase=bool(
+                getattr(args, "raicom_native_mjdata_route_feedback", False)
+                and getattr(args, "native_x2_timestep", False)
+            )
+        )
         self.odom_source_stamp_drop_events: list[dict[str, Any]] = []
         self.last_mode: dict[str, Any] | None = None
         self.last_source: dict[str, Any] | None = None

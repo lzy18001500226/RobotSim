@@ -435,6 +435,23 @@ class RouteMotionBridgeTests(unittest.TestCase):
         self.assertEqual(continued["action"], "ACCEPT_NEW")
         self.assertEqual(fence.wall_clock_rebase_count, 1)
 
+    def test_native_profile_can_reanchor_a_bounded_source_clock_rebase_only(self):
+        fence = OdomSourceStampFence(
+            allow_bounded_clock_rebase=True,
+            maximum_clock_rebase_s=0.75,
+        )
+        fence.observe(current_stamp_ns=2_000_000_000, received_steady_s=10.0)
+        accepted = fence.observe(
+            current_stamp_ns=1_600_000_000, received_steady_s=10.01
+        )
+        self.assertEqual(accepted["action"], "ACCEPT_BOUNDED_CLOCK_REBASE")
+        self.assertEqual(accepted["source_stamp_relation"], "BOUNDED_CLOCK_REBASE")
+        self.assertEqual(fence.last_accepted_stamp_ns, 1_600_000_000)
+        rejected = fence.observe(
+            current_stamp_ns=200_000_000, received_steady_s=10.02
+        )
+        self.assertEqual(rejected["action"], "DROP_OUT_OF_ORDER")
+
     def test_actual_stale_odometry_delivery_is_rejected_even_with_advancing_stamp(self):
         tracker = RouteOdomFreshnessTracker(40_000, 30.0, maximum_age_s=0.20)
         stale = tracker.observe(

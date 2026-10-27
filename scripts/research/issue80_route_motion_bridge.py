@@ -331,6 +331,10 @@ class OdomSourceStampFence:
     wall_clock_alignment_reliable: bool = True
     wall_clock_rebase_count: int = 0
     last_wall_clock_rebase: dict[str, object] | None = None
+    allow_bounded_clock_rebase: bool = False
+    maximum_clock_rebase_s: float = 0.75
+    accepted_clock_rebase_count: int = 0
+    last_accepted_clock_rebase: dict[str, object] | None = None
 
     def observe(
         self,
@@ -437,6 +441,37 @@ class OdomSourceStampFence:
             "wall_clock_alignment_reliable": self.wall_clock_alignment_reliable,
         }
         if relation == "REGRESSION":
+            try:
+                backward_rebase_s = (
+                    int(self.last_accepted_stamp_ns) - current_stamp_ns
+                ) / 1_000_000_000.0
+                maximum_rebase_s = float(self.maximum_clock_rebase_s)
+            except (TypeError, ValueError, OverflowError):
+                backward_rebase_s = maximum_rebase_s = math.nan
+            if (
+                self.allow_bounded_clock_rebase
+                and math.isfinite(backward_rebase_s)
+                and math.isfinite(maximum_rebase_s)
+                and 0.0 < backward_rebase_s <= maximum_rebase_s
+                and self.last_accepted_received_steady_s is not None
+                and received >= float(self.last_accepted_received_steady_s)
+            ):
+                self.last_accepted_stamp_ns = current_stamp_ns
+                self.last_accepted_received_steady_s = received
+                self.accepted_message_count += 1
+                self.accepted_clock_rebase_count += 1
+                record.update({
+                    "action": "ACCEPT_BOUNDED_CLOCK_REBASE",
+                    "source_stamp_relation": "BOUNDED_CLOCK_REBASE",
+                    "backward_rebase_s": backward_rebase_s,
+                    "maximum_clock_rebase_s": maximum_rebase_s,
+                    "accepted_clock_rebase_count": self.accepted_clock_rebase_count,
+                    "last_accepted_stamp_ns": self.last_accepted_stamp_ns,
+                    "last_accepted_received_steady_s": self.last_accepted_received_steady_s,
+                    "accepted_message_count": self.accepted_message_count,
+                })
+                self.last_accepted_clock_rebase = dict(record)
+                return record
             self.dropped_regression_count += 1
             record["action"] = "DROP_OUT_OF_ORDER"
             record["dropped_regression_count"] = self.dropped_regression_count
@@ -497,6 +532,10 @@ class OdomSourceStampFence:
             "wall_clock_alignment_reliable": self.wall_clock_alignment_reliable,
             "wall_clock_rebase_count": self.wall_clock_rebase_count,
             "last_wall_clock_rebase": self.last_wall_clock_rebase,
+            "allow_bounded_clock_rebase": self.allow_bounded_clock_rebase,
+            "maximum_clock_rebase_s": self.maximum_clock_rebase_s,
+            "accepted_clock_rebase_count": self.accepted_clock_rebase_count,
+            "last_accepted_clock_rebase": self.last_accepted_clock_rebase,
         }
 
 
