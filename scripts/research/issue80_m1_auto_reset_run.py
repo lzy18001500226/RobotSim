@@ -1648,8 +1648,25 @@ def assess_container_absence(
     }
 
 
-def first_post_action_fall(serialized_trace: str, *, action_monotonic_ns: int) -> dict[str, Any] | None:
-    """Return the first post-SD odometry sample outside the existing height/tilt gate."""
+def first_post_action_fall(
+    serialized_trace: str,
+    *,
+    action_monotonic_ns: int,
+    post_reset_upright_anchor_monotonic_ns: int | None = None,
+) -> dict[str, Any] | None:
+    """Return the first unsafe physical odometry sample after the Reset anchor.
+
+    The simulator can deliver queued pre-Reset odometry after the SD service
+    request. Those samples cannot establish a post-SD fall. When the parent
+    has independently observed a fresh, upright post-Reset odometry anchor,
+    fence this detector at that anchor while retaining the unchanged root
+    height and tilt thresholds for every later sample.
+    """
+    observation_start_ns = int(action_monotonic_ns)
+    if post_reset_upright_anchor_monotonic_ns is not None:
+        observation_start_ns = max(
+            observation_start_ns, int(post_reset_upright_anchor_monotonic_ns)
+        )
     rows: list[dict[str, Any]] = []
     for line in serialized_trace.splitlines():
         try:
@@ -1659,7 +1676,7 @@ def first_post_action_fall(serialized_trace: str, *, action_monotonic_ns: int) -
         if (
             row.get("event") == "state"
             and row.get("topic_key") == "odom"
-            and int(row.get("wall_monotonic_ns", 0)) >= action_monotonic_ns
+            and int(row.get("wall_monotonic_ns", 0)) >= observation_start_ns
         ):
             rows.append(row)
     rows.sort(key=lambda row: int(row.get("wall_monotonic_ns", 0)))
@@ -1674,6 +1691,7 @@ def first_post_action_fall(serialized_trace: str, *, action_monotonic_ns: int) -
             return {
                 "wall_utc": row.get("wall_utc"),
                 "wall_monotonic_ns": int(row.get("wall_monotonic_ns", 0)),
+                "observation_start_monotonic_ns": observation_start_ns,
                 "odom": data,
                 "reason": "post-action odometry crossed the unchanged root-height or tilt gate",
             }
@@ -3258,6 +3276,9 @@ class BoundedRun:
                             "status": "POST_RESET_UPRIGHT_OBSERVED",
                             "wall_utc": datetime.now(timezone.utc).isoformat(),
                             "dispatch_to_upright_ms": (int(upright_tail[0]["wall_monotonic_ns"]) - dispatch_ns) / 1e6,
+                            "first_post_reset_upright_odom_monotonic_ns": int(
+                                upright_tail[0]["wall_monotonic_ns"]
+                            ),
                             "pose": upright_tail[-1].get("data"),
                             "raw_common_state": latest.get("common", {}).get("data"),
                             "imu": latest.get("imu", {}).get("data"),
@@ -4222,9 +4243,15 @@ class BoundedRun:
         )
         while time.monotonic() < deadline and not summary.exists():
             if trace.exists() and action_ns:
+                anchor_ns = (self.immediate_reset_pose or {}).get(
+                    "first_post_reset_upright_odom_monotonic_ns"
+                )
                 fall = first_post_action_fall(
                     trace.read_text(encoding="utf-8"),
                     action_monotonic_ns=action_ns,
+                    post_reset_upright_anchor_monotonic_ns=(
+                        int(anchor_ns) if isinstance(anchor_ns, int) else None
+                    ),
                 )
                 if fall:
                     self.reset_classification = "RESET_APPLIED_THEN_FELL"

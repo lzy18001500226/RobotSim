@@ -423,6 +423,24 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertEqual(result["wall_utc"], "fell")
         self.assertEqual(result["wall_monotonic_ns"], 120)
 
+    def test_post_sd_fall_detector_fences_queued_prereset_odom_at_upright_anchor(self) -> None:
+        rows = [
+            {"event": "state", "topic_key": "odom", "wall_monotonic_ns": 110,
+             "wall_utc": "queued-pre-reset", "data": {"z": 0.066, "roll_deg": 0.0, "pitch_deg": -5.0}},
+            {"event": "state", "topic_key": "odom", "wall_monotonic_ns": 120,
+             "wall_utc": "fresh-reset-upright", "data": {"z": 0.68, "roll_deg": 0.1, "pitch_deg": 0.2}},
+            {"event": "state", "topic_key": "odom", "wall_monotonic_ns": 130,
+             "wall_utc": "fresh-reset-fall", "data": {"z": 0.35, "roll_deg": -170.0, "pitch_deg": -88.0}},
+        ]
+        trace = "".join(json.dumps(row) + "\n" for row in rows)
+        result = first_post_action_fall(
+            trace,
+            action_monotonic_ns=100,
+            post_reset_upright_anchor_monotonic_ns=120,
+        )
+        self.assertEqual(result["wall_utc"], "fresh-reset-fall")
+        self.assertEqual(result["observation_start_monotonic_ns"], 120)
+
     def test_reset_and_immediate_posture_precede_sd_and_standing_hold(self) -> None:
         events: list[str] = []
         with tempfile.TemporaryDirectory() as temp_dir:
