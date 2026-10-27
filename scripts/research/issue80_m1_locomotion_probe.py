@@ -4780,7 +4780,7 @@ class FocusedM1Diagnostic(Node):
                     state_timeout_s=self.args.state_timeout,
                     min_root_z=self.args.min_root_z,
                     max_tilt_deg=self.args.max_tilt_deg,
-                    max_observed_planar_speed_m_s=0.2,
+                    max_observed_planar_speed_m_s=vendor_example_planar_speed_guard_m_s,
                 )
                 if fault:
                     route_fault = "transit_safety:" + fault
