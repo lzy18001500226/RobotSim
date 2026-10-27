@@ -60,6 +60,10 @@ ZERO_FORWARD_HEADING_ACQUISITION_MAX_S = 0.75
 # measured up to 0.097694 rad.  The static review rounds this outward to
 # 0.10 rad; it is not a controller command or goal tolerance.
 FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD = 0.10
+# The aligned table route's validated post-SD start gate already accepts this
+# heading error.  Below it, the measured zero-yaw straight gait is preferred
+# over an unnecessary source-acquisition turn.
+FIXED_STRAIGHT_ROUTE_INITIAL_YAW_TRIGGER_RAD = 0.075
 WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M = 0.20
 WAYPOINT_B_POSITION_TOLERANCE_M = 0.15
 # Run d5df79e0 drifted 36.811 mm from arrival to settled pose; reserve 45 mm.

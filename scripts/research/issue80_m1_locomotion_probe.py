@@ -142,6 +142,7 @@ from issue80_route_motion_bridge import (
     CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
     FIXED_WINDOW_ARC_DEADBAND_RAD_S,
     FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+    FIXED_STRAIGHT_ROUTE_INITIAL_YAW_TRIGGER_RAD,
     WAYPOINT_B_WINDOW_MAX_S,
     CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
     CURVED_PATH_FORWARD_M_S,
@@ -171,6 +172,7 @@ from issue80_route_motion_bridge import (
     ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
     ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
     ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
+    ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD,
     zero_forward_heading_acquisition_plan,
     forward_gait_yaw_command,
     active_locomotion_source_readbacks_valid,
@@ -3279,11 +3281,12 @@ class FocusedM1Diagnostic(Node):
                         "maximum_duration_s": ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
                         "minimum_measured_response_rad": ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
                         "static_yaw_envelope_rad": FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+                        "skip_if_initial_heading_error_below_rad": FIXED_STRAIGHT_ROUTE_INITIAL_YAW_TRIGGER_RAD,
                     }
                     if fixed_window_table_approach_mode else None
                 ),
                 "forward_gait_yaw_mapping": (
-                    "NEGATIVE_OF_STANDARD_BEARING_COMMAND"
+                    "ZERO_YAW_STATIC_COLLINEAR_ROUTE"
                     if fixed_window_table_approach_mode else None
                 ),
                 "control_lifecycle": (
@@ -5456,6 +5459,11 @@ class FocusedM1Diagnostic(Node):
                                     )
                                     source_plan = zero_forward_heading_acquisition_plan(
                                         heading_error,
+                                        trigger_rad=(
+                                            FIXED_STRAIGHT_ROUTE_INITIAL_YAW_TRIGGER_RAD
+                                            if fixed_window_table_approach_mode else
+                                            ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD
+                                        ),
                                         maximum_angular_rad_s=POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
                                     )
                                 except (KeyError, TypeError, ValueError, RouteMotionBridgeError) as exc:
@@ -5613,21 +5621,17 @@ class FocusedM1Diagnostic(Node):
                                             ),
                                         }
                                         window_control["fixed_window_arc_decision"] = fixed_arc
-                                    # The completed 20261027 fixed-window run
-                                    # measured +0.075 rad/s forward gait
-                                    # producing a negative yaw change.  This
-                                    # mapping is deliberately scoped to the
-                                    # fixed forward-gait profile; stationary
-                                    # source acquisition retains its measured
-                                    # direct sign contract.
-                                    angular = forward_gait_yaw_command(
-                                        float(fixed_arc["angular_rad_s"]),
-                                        invert_from_measured_response=True,
-                                        maximum_angular_rad_s=
-                                        POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S,
-                                    )
+                                    # Both mission segments are statically
+                                    # collinear.  The native 0-yaw gait has a
+                                    # measured forward pass, while either
+                                    # sign of a long forward arc showed an
+                                    # unbounded negative yaw response in this
+                                    # runtime.  Hold zero yaw and let the
+                                    # existing cross-track guard stop before
+                                    # the certified corridor is exceeded.
+                                    angular = 0.0
                                     control_row.update({
-                                        "control_phase": "FIXED_PREWINDOW_STRAIGHT_OR_RUN65_ARC",
+                                        "control_phase": "FIXED_STATIC_COLLINEAR_STRAIGHT_GAIT",
                                         "target_x_m": float(active.x_m),
                                         "target_y_m": float(active.y_m),
                                         "current_x_m": float(pose["x"]),
@@ -5640,7 +5644,7 @@ class FocusedM1Diagnostic(Node):
                                             fixed_arc["angular_rad_s"]
                                         ),
                                         "forward_gait_yaw_mapping": (
-                                            "NEGATIVE_OF_STANDARD_BEARING_COMMAND"
+                                            "ZERO_YAW_STATIC_COLLINEAR_ROUTE"
                                         ),
                                         "fixed_decision_pose": dict(
                                             fixed_arc["decision_pose"]
@@ -9049,7 +9053,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                         "maximum_window_s": 5.0,
                         "maximum_windows_total": 15,
                         "aggregate_nonzero_limit_s": 75.0,
-                        "angular_command_policy": "fresh pre-window bearing quantized to 0 or existing +/-0.075 rad/s Run65 arc",
+                        "angular_command_policy": "validated zero-yaw gait through the static collinear corridor; forward arcs remain disabled after observed nonconvergent yaw response",
                         "open_segment_yaw_acquisition": {
                             "scope": "INITIAL_START_TO_WAYPOINT_WINDOW_ONLY",
                             "forward_velocity_m_s": 0.0,
@@ -9057,8 +9061,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                             "maximum_duration_s": ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
                             "minimum_measured_response_rad": ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
                             "static_yaw_envelope_rad": FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+                            "skip_if_initial_heading_error_below_rad": FIXED_STRAIGHT_ROUTE_INITIAL_YAW_TRIGGER_RAD,
                         },
-                        "forward_gait_yaw_mapping": "NEGATIVE_OF_STANDARD_BEARING_COMMAND",
+                        "forward_gait_yaw_mapping": "ZERO_YAW_STATIC_COLLINEAR_ROUTE",
                         "physical_stop_after_each_window": True,
                     }
                     if fixed_window_table_approach else None

@@ -79,6 +79,7 @@ from issue80_route_motion_bridge import (
     continuous_table_segment_cross_track_limit_m,
     FIXED_WINDOW_ARC_DEADBAND_RAD_S,
     FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+    FIXED_STRAIGHT_ROUTE_INITIAL_YAW_TRIGGER_RAD,
     fixed_window_arc_angular_command,
     fixed_window_heading_acquisition_required,
     route_replan_odom_freshness,
@@ -211,6 +212,7 @@ class RouteMotionBridgeTests(unittest.TestCase):
 
     def test_fixed_window_yaw_acquisition_stays_in_open_waypoint_segment(self):
         self.assertAlmostEqual(FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD, .10)
+        self.assertAlmostEqual(FIXED_STRAIGHT_ROUTE_INITIAL_YAW_TRIGGER_RAD, .075)
         self.assertTrue(
             fixed_window_heading_acquisition_required(
                 fixed_window_table_approach=True,
@@ -325,15 +327,13 @@ class RouteMotionBridgeTests(unittest.TestCase):
         with self.assertRaises(RouteMotionBridgeError):
             forward_gait_yaw_command(0.076, invert_from_measured_response=True)
 
-    def test_fixed_window_forward_gait_mapping_uses_the_measured_inverse_sign(self) -> None:
-        standard = fixed_window_arc_angular_command(0.04)
-        self.assertEqual(standard["angular_rad_s"], 0.075)
+    def test_straight_route_trigger_skips_measured_start_yaw_drift(self) -> None:
         self.assertEqual(
-            forward_gait_yaw_command(
-                standard["angular_rad_s"],
-                invert_from_measured_response=True,
-            ),
-            -0.075,
+            zero_forward_heading_acquisition_plan(
+                0.052,
+                trigger_rad=FIXED_STRAIGHT_ROUTE_INITIAL_YAW_TRIGGER_RAD,
+            )["angular_velocity_rad_s"],
+            0.0,
         )
 
     def test_verified_yaw_only_acquisition_still_requires_fresh_handshake(self) -> None:

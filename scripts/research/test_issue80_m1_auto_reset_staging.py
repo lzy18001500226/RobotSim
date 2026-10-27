@@ -823,16 +823,16 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn('segment_id == "WAYPOINT"', source)
         self.assertIn("and window_index == 0", source)
 
-    def test_fixed_window_forward_yaw_mapping_is_explicit_and_scoped(self) -> None:
+    def test_fixed_window_uses_zero_yaw_for_the_static_collinear_route(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"
         )
         fixed_start = source.index("elif fixed_window_table_approach_mode:")
         fixed_end = source.index("elif curved_path_diagnostic:", fixed_start)
         fixed = source[fixed_start:fixed_end]
-        self.assertIn("forward_gait_yaw_command(", fixed)
-        self.assertIn("invert_from_measured_response=True", fixed)
-        self.assertIn("NEGATIVE_OF_STANDARD_BEARING_COMMAND", fixed)
+        self.assertIn("angular = 0.0", fixed)
+        self.assertIn("FIXED_STATIC_COLLINEAR_STRAIGHT_GAIT", fixed)
+        self.assertIn("ZERO_YAW_STATIC_COLLINEAR_ROUTE", fixed)
 
     def test_route_bridge_stop_evidence_is_timestamped_before_result_bookkeeping(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
