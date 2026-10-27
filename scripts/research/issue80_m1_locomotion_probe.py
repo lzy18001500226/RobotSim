@@ -140,6 +140,7 @@ from issue80_route_motion_bridge import (
     CONTINUOUS_TABLE_MAX_CROSS_TRACK_M,
     CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
     FIXED_WINDOW_ARC_DEADBAND_RAD_S,
+    FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
     WAYPOINT_B_WINDOW_MAX_S,
     CURVED_PATH_AGGREGATE_NONZERO_MAX_S,
     CURVED_PATH_FORWARD_M_S,
@@ -159,6 +160,7 @@ from issue80_route_motion_bridge import (
     CONTINUOUS_TABLE_LOOKAHEAD_M,
     continuous_table_segment_cross_track_limit_m,
     fixed_window_arc_angular_command,
+    fixed_window_heading_acquisition_required,
     route_replan_odom_freshness,
     waypoint_b_arrival_passes, waypoint_b_arrival_trigger_radius_m,
     waypoint_b_arrival_after_verified_stop_passes,
@@ -3121,6 +3123,9 @@ class FocusedM1Diagnostic(Node):
         fixed_window_table_approach_mode = bool(
             getattr(self.args, "raicom_fixed_window_table_approach", False)
         )
+        fixed_window_open_segment_yaw_acquisition_mode = bool(
+            fixed_window_table_approach_mode
+        )
         segmented_table_envelope_mode = (
             continuous_table_approach_mode or fixed_window_table_approach_mode
         )
@@ -3159,23 +3164,44 @@ class FocusedM1Diagnostic(Node):
             "route_attempt_id": self.args.attempt_id,
             "segments": [],
             "zero_forward_heading_acquisition": {
-                "enabled": zero_forward_heading_acquisition_mode,
+                "enabled": bool(
+                    zero_forward_heading_acquisition_mode
+                    or fixed_window_open_segment_yaw_acquisition_mode
+                ),
                 "classification": (
                     "SIMULATION_ONLY_AIMDK_YAW_SOURCE_ACQUISITION"
-                    if zero_forward_heading_acquisition_mode else None
+                    if (
+                        zero_forward_heading_acquisition_mode
+                        or fixed_window_open_segment_yaw_acquisition_mode
+                    ) else None
+                ),
+                "scope": (
+                    "INITIAL_WAYPOINT_DEPARTURE_ONLY"
+                    if zero_forward_heading_acquisition_mode else
+                    "EACH_FIXED_WINDOW_IN_OPEN_START_TO_WAYPOINT_SEGMENT_ONLY"
+                    if fixed_window_open_segment_yaw_acquisition_mode else None
                 ),
                 "forward_velocity_m_s": 0.0,
                 "angular_command_magnitude_rad_s": (
                     ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S
-                    if zero_forward_heading_acquisition_mode else None
+                    if (
+                        zero_forward_heading_acquisition_mode
+                        or fixed_window_open_segment_yaw_acquisition_mode
+                    ) else None
                 ),
                 "maximum_duration_s": (
                     ZERO_FORWARD_HEADING_ACQUISITION_MAX_S
-                    if zero_forward_heading_acquisition_mode else None
+                    if (
+                        zero_forward_heading_acquisition_mode
+                        or fixed_window_open_segment_yaw_acquisition_mode
+                    ) else None
                 ),
                 "minimum_response_rad": (
                     ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD
-                    if zero_forward_heading_acquisition_mode else None
+                    if (
+                        zero_forward_heading_acquisition_mode
+                        or fixed_window_open_segment_yaw_acquisition_mode
+                    ) else None
                 ),
                 "windows": [],
             },
@@ -3244,8 +3270,19 @@ class FocusedM1Diagnostic(Node):
                     FIXED_WINDOW_ARC_DEADBAND_RAD_S
                     if fixed_window_table_approach_mode else None
                 ),
+                "open_segment_yaw_acquisition": (
+                    {
+                        "scope": "START_TO_WAYPOINT_ONLY",
+                        "forward_velocity_m_s": 0.0,
+                        "angular_command_magnitude_rad_s": ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
+                        "maximum_duration_s": ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
+                        "minimum_measured_response_rad": ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
+                        "static_yaw_envelope_rad": FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+                    }
+                    if fixed_window_table_approach_mode else None
+                ),
                 "control_lifecycle": (
-                    "FRESH_PREWINDOW_PLAN->FIXED_5S_STRAIGHT_OR_ARC->COMPOSITE_STOP->REPLAN"
+                    "OPEN_SEGMENT_ZERO_FORWARD_YAW_ACQUISITION_IF_NEEDED->FIXED_5S_STRAIGHT_OR_ARC->COMPOSITE_STOP->REPLAN"
                     if fixed_window_table_approach_mode else None
                 ),
             },
@@ -5211,14 +5248,23 @@ class FocusedM1Diagnostic(Node):
                 window_index = 0
                 segment_nonzero_s = 0.0
                 while True:
-                    # The stationary yaw-only response is qualified only at
-                    # the initial route departure. After a verified stop, the
-                    # installed MC has shown a different yaw response, so a
-                    # rearm falls back to the existing forward acquisition.
+                    # The legacy low-cruise acquisition remains scoped to the
+                    # first departure. The fixed-window profile may use the
+                    # measured zero-forward yaw response before every open
+                    # START->WAYPOINT window, never near the table.
+                    fixed_window_open_segment_acquisition = (
+                        fixed_window_heading_acquisition_required(
+                            fixed_window_table_approach=fixed_window_table_approach_mode,
+                            segment_id=segment_id,
+                        )
+                    )
                     heading_acquisition_this_window = bool(
-                        zero_forward_heading_acquisition_mode
-                        and segment_id == "WAYPOINT"
-                        and window_index == 0
+                        (
+                            zero_forward_heading_acquisition_mode
+                            and segment_id == "WAYPOINT"
+                            and window_index == 0
+                        )
+                        or fixed_window_open_segment_acquisition
                     )
                     if route_config_mode and len(result["segments"]) >= (
                         SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
@@ -6460,7 +6506,12 @@ class FocusedM1Diagnostic(Node):
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
                             ),
-                            zero_forward_heading_acquisition=False,
+                            zero_forward_heading_acquisition=(
+                                fixed_window_heading_acquisition_required(
+                                    fixed_window_table_approach=fixed_window_table_approach_mode,
+                                    segment_id=configured_step.waypoint_id,
+                                )
+                            ),
                         )
                         result.setdefault("activation_rearms", []).append({
                             "step_id": configured_step.waypoint_id,
@@ -7962,6 +8013,12 @@ class FocusedM1Diagnostic(Node):
                         ),
                         zero_forward_heading_acquisition=bool(
                             getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
+                            or fixed_window_heading_acquisition_required(
+                                fixed_window_table_approach=bool(
+                                    getattr(self.args, "raicom_fixed_window_table_approach", False)
+                                ),
+                                segment_id="WAYPOINT",
+                            )
                         ),
                     )
                 else:
@@ -8928,6 +8985,14 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                         "maximum_windows_total": 15,
                         "aggregate_nonzero_limit_s": 75.0,
                         "angular_command_policy": "fresh pre-window bearing quantized to 0 or existing +/-0.075 rad/s Run65 arc",
+                        "open_segment_yaw_acquisition": {
+                            "scope": "START_TO_WAYPOINT_ONLY",
+                            "forward_velocity_m_s": 0.0,
+                            "angular_command_magnitude_rad_s": ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S,
+                            "maximum_duration_s": ZERO_FORWARD_HEADING_ACQUISITION_MAX_S,
+                            "minimum_measured_response_rad": ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD,
+                            "static_yaw_envelope_rad": FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+                        },
                         "physical_stop_after_each_window": True,
                     }
                     if fixed_window_table_approach else None

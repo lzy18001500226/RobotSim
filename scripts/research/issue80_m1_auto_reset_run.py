@@ -61,6 +61,7 @@ from issue80_route_motion_bridge import (
     WAYPOINT_B_CORRIDOR_MAX_FORWARD_M,
     WAYPOINT_B_MAX_CROSS_TRACK_M,
     WAYPOINT_B_WINDOW_MAX_S,
+    FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
     waypoint_b_arrival_trigger_radius_m,
 )
 from issue80_waypoint_route import (
@@ -573,6 +574,40 @@ def validate_static_nominal_start_table_approach_clearance(
         "minimum_conservative_transferred_lower_bound_m": minimum,
         "minimum_required_clearance_m": 0.020,
         "classification": "STATIC_GEOMETRY_TRANSFER_ONLY_NOT_DYNAMIC_NAVIGATION_OR_TABLE_DOCKING",
+    }
+
+
+def validate_fixed_window_open_segment_yaw_envelope(
+    static_plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Require the static plan that bounds the fixed-profile yaw-only phase.
+
+    The per-window source acquisition is intentionally available only in the
+    open START->WAYPOINT segment.  This prevents a plan generated with the
+    legacy +/-0.075 rad envelope from silently qualifying a measured
+    +/-0.10 rad open-segment yaw response.
+    """
+    try:
+        assumptions = static_plan["clearance_assumptions"]
+        observed = assumptions["yaw_envelope_by_segment_rad"]
+        expected = {
+            "START->WAYPOINT": FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+            "WAYPOINT->TABLE_APPROACH": 0.075,
+        }
+        actual = {key: float(observed[key]) for key in expected}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "fixed-window table route static plan lacks its per-segment yaw envelope"
+        ) from exc
+    if any(abs(actual[key] - value) > 1e-9 for key, value in expected.items()):
+        raise ValueError(
+            "fixed-window table route requires the measured open-segment yaw envelope "
+            "and the reviewed table-facing yaw envelope"
+        )
+    return {
+        "status": "PASS_FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE",
+        "yaw_envelope_by_segment_rad": actual,
+        "classification": "STATIC_GEOMETRY_ENVELOPE_ONLY_NOT_DYNAMIC_YAW_QUALIFICATION",
     }
 
 
@@ -5783,6 +5818,12 @@ def main() -> int:
             )
             args.configured_table_approach_preflight = table_preflight
             args.local01_scene_source = table_preflight["source"]
+            if args.raicom_fixed_window_table_approach:
+                args.fixed_window_open_segment_yaw_preflight = (
+                    validate_fixed_window_open_segment_yaw_envelope(
+                        table_preflight["plan"]
+                    )
+                )
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, RuntimeError) as exc:
             parser.error(f"table-approach mission rejected before runtime: {type(exc).__name__}: {exc}")
         args.extra_stop_observation = 7.0

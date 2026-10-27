@@ -9,7 +9,9 @@ import mujoco
 
 from issue80_raicom_table_plan import (
     _load_native_standing_qpos, sample_segment, build_raw_world_odom_route_config,
+    segment_yaw_envelope_rad,
 )
+from issue80_route_motion_bridge import FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD
 from issue80_local01_scene_route import RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD
 
 
@@ -67,6 +69,24 @@ class TablePlanTests(unittest.TestCase):
 
     def test_full_plan_uses_the_reviewed_runtime_start_yaw_envelope(self):
         self.assertAlmostEqual(RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD, .075)
+
+    def test_open_segment_can_use_a_separate_measured_yaw_envelope(self):
+        self.assertAlmostEqual(
+            segment_yaw_envelope_rad(
+                "START", "WAYPOINT",
+                yaw_envelope_rad=.075,
+                start_waypoint_yaw_envelope_rad=FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+            ),
+            FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+        )
+        self.assertAlmostEqual(
+            segment_yaw_envelope_rad(
+                "WAYPOINT", "TABLE_APPROACH",
+                yaw_envelope_rad=.075,
+                start_waypoint_yaw_envelope_rad=FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
+            ),
+            .075,
+        )
 
 
 if __name__ == "__main__":

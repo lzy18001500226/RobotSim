@@ -78,7 +78,9 @@ from issue80_route_motion_bridge import (
     CONTINUOUS_TABLE_WAYPOINT_TRANSIT_MAX_CROSS_TRACK_M,
     continuous_table_segment_cross_track_limit_m,
     FIXED_WINDOW_ARC_DEADBAND_RAD_S,
+    FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD,
     fixed_window_arc_angular_command,
+    fixed_window_heading_acquisition_required,
     route_replan_odom_freshness,
 )
 
@@ -206,6 +208,32 @@ class RouteMotionBridgeTests(unittest.TestCase):
             fixed_window_arc_angular_command(fresh["angular_rad_s"])["angular_rad_s"],
             0.075,
         )
+
+    def test_fixed_window_yaw_acquisition_stays_in_open_waypoint_segment(self):
+        self.assertAlmostEqual(FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD, .10)
+        self.assertTrue(
+            fixed_window_heading_acquisition_required(
+                fixed_window_table_approach=True,
+                segment_id="WAYPOINT",
+            )
+        )
+        self.assertFalse(
+            fixed_window_heading_acquisition_required(
+                fixed_window_table_approach=True,
+                segment_id="TABLE_APPROACH",
+            )
+        )
+        self.assertFalse(
+            fixed_window_heading_acquisition_required(
+                fixed_window_table_approach=False,
+                segment_id="WAYPOINT",
+            )
+        )
+        with self.assertRaises(RouteMotionBridgeError):
+            fixed_window_heading_acquisition_required(
+                fixed_window_table_approach=True,
+                segment_id=object(),  # type: ignore[arg-type]
+            )
 
     def test_route_replan_requires_new_fresh_odom_after_a_stop(self):
         snapshot = {

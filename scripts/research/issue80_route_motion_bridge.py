@@ -54,6 +54,10 @@ ZERO_FORWARD_HEADING_ACQUISITION_TRIGGER_RAD = 0.03
 ZERO_FORWARD_HEADING_ACQUISITION_COMMAND_RAD_S = 0.05
 ZERO_FORWARD_HEADING_ACQUISITION_MIN_RESPONSE_RAD = 0.01
 ZERO_FORWARD_HEADING_ACQUISITION_MAX_S = 0.75
+# Two physical yaw-only acquisitions in the open START->WAYPOINT corridor
+# measured up to 0.097694 rad.  The static review rounds this outward to
+# 0.10 rad; it is not a controller command or goal tolerance.
+FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD = 0.10
 WAYPOINT_B_SHORT_DIAGNOSTIC_DISTANCE_M = 0.20
 WAYPOINT_B_POSITION_TOLERANCE_M = 0.15
 # Run d5df79e0 drifted 36.811 mm from arrival to settled pose; reserve 45 mm.
@@ -1224,6 +1228,22 @@ def fixed_window_arc_angular_command(
         "deadband_rad_s": FIXED_WINDOW_ARC_DEADBAND_RAD_S,
         "saturated_to_validated_arc": True,
     }
+
+
+def fixed_window_heading_acquisition_required(
+    *,
+    fixed_window_table_approach: bool,
+    segment_id: str,
+) -> bool:
+    """Limit yaw-only source acquisition to the open first table segment.
+
+    The existing zero-forward acquisition has physical evidence only in the
+    open START->WAYPOINT corridor.  It is deliberately never applied in the
+    table-facing segment, whose static review retains the smaller yaw envelope.
+    """
+    if not isinstance(segment_id, str):
+        raise RouteMotionBridgeError("fixed-window segment identifier must be a string")
+    return bool(fixed_window_table_approach and segment_id == "WAYPOINT")
 
 
 def active_locomotion_source_readbacks_valid(

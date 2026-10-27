@@ -28,6 +28,7 @@ from issue80_local01_scene_route import (
     validate_runtime_raw_odom_aligned_start_table_approach_mission,
 )
 from issue80_raicom_reset_only import LOCAL01_POSES_DEFAULT, RUNTIME
+from issue80_route_motion_bridge import FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD
 from issue80_waypoint_route import WAYPOINT_DOCKING_POSE_SCHEMA_VERSION, load_waypoint_docking_pose_input
 
 
@@ -37,6 +38,22 @@ def sample_segment(a, b, spacing=0.025, yaw_spacing=0.02):
                 math.ceil(abs(delta)/yaw_spacing)+1)
     return [tuple(a[k]+(b[k]-a[k])*t/(count-1) for k in range(3))
             + (a[3]+delta*t/(count-1),) for t in range(count)]
+
+
+def segment_yaw_envelope_rad(
+    start_name: str,
+    end_name: str,
+    *,
+    yaw_envelope_rad: float,
+    start_waypoint_yaw_envelope_rad: float | None,
+) -> float:
+    """Return the statically reviewed yaw envelope for one route segment."""
+    if (
+        start_waypoint_yaw_envelope_rad is not None
+        and (start_name, end_name) == ("START", "WAYPOINT")
+    ):
+        return float(start_waypoint_yaw_envelope_rad)
+    return float(yaw_envelope_rad)
 
 
 def build_raw_world_odom_route_config(poses):
@@ -192,6 +209,24 @@ def main(argv: list[str] | None = None):
             "all later table-facing segments retain --xy-tracking-inflation-m"
         ),
     )
+    parser.add_argument(
+        "--yaw-envelope-rad",
+        type=float,
+        default=RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,
+        help=(
+            "offline yaw envelope for conservative static AABB inflation; "
+            "does not alter scene geometry or the controller"
+        ),
+    )
+    parser.add_argument(
+        "--start-waypoint-yaw-envelope-rad",
+        type=float,
+        default=None,
+        help=(
+            "optional yaw envelope only for the aligned START->WAYPOINT open-room segment; "
+            "all later table-facing segments retain --yaw-envelope-rad"
+        ),
+    )
     args = parser.parse_args(argv)
     if not math.isfinite(args.xy_tracking_inflation_m) or not 0.0 < args.xy_tracking_inflation_m <= 0.10:
         parser.error("--xy-tracking-inflation-m must be finite and in (0, 0.10]")
@@ -202,6 +237,16 @@ def main(argv: list[str] | None = None):
     ):
         parser.error(
             "--start-waypoint-xy-tracking-inflation-m must be finite, no smaller than the base envelope, and <= 0.10"
+        )
+    if not math.isfinite(args.yaw_envelope_rad) or not 0.0 < args.yaw_envelope_rad <= 0.10:
+        parser.error("--yaw-envelope-rad must be finite and in (0, 0.10]")
+    if args.start_waypoint_yaw_envelope_rad is not None and (
+        not math.isfinite(args.start_waypoint_yaw_envelope_rad)
+        or args.start_waypoint_yaw_envelope_rad < args.yaw_envelope_rad
+        or args.start_waypoint_yaw_envelope_rad > FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE_RAD
+    ):
+        parser.error(
+            "--start-waypoint-yaw-envelope-rad must be finite, no smaller than the base envelope, and <= the fixed-window observed envelope"
         )
     source = load_local01_scene_inputs(LOCAL01_POSES_DEFAULT)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"agent"))
@@ -286,6 +331,12 @@ def main(argv: list[str] | None = None):
     for posture, posture_qpos, posture_provenance in posture_specs:
         for index, ((aname,a),(bname,b)) in enumerate(segments):
             segment_tracking_inflation = segment_tracking_inflation_m(aname, bname)
+            segment_yaw_envelope = segment_yaw_envelope_rad(
+                aname,
+                bname,
+                yaw_envelope_rad=args.yaw_envelope_rad,
+                start_waypoint_yaw_envelope_rad=args.start_waypoint_yaw_envelope_rad,
+            )
             samples = sample_segment(a,b)
             contacts = []
             self_contacts = {}
@@ -297,8 +348,7 @@ def main(argv: list[str] | None = None):
             for step, p in enumerate(samples):
                 sample_min_inflated = math.inf
                 sample_limiting = None
-                for yaw_offset in (-RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD, 0,
-                                   RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD):
+                for yaw_offset in (-segment_yaw_envelope, 0, segment_yaw_envelope):
                     data = mujoco.MjData(model)
                     configure(data, posture, posture_qpos, p, yaw_offset)
                     for jid in range(model.njnt):
@@ -322,7 +372,7 @@ def main(argv: list[str] | None = None):
                         if previous_boxes is not None:
                             lo = np.minimum(lo,previous_boxes[g][0]); hi=np.maximum(hi,previous_boxes[g][1])
                         radius = float(np.linalg.norm(data.geom_xpos[g]-data.xpos[pelvis])+model.geom_rbound[g])
-                        yaw_pad = radius*RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD
+                        yaw_pad = radius*segment_yaw_envelope
                         ilo,ihi = lo.copy(),hi.copy()
                         ilo[:2] -= segment_tracking_inflation+yaw_pad
                         ihi[:2] += segment_tracking_inflation+yaw_pad
@@ -368,6 +418,7 @@ def main(argv: list[str] | None = None):
                                 and row["minimum_inflated_clearance_m"] < .020), None)
             results.append({"posture":posture,"posture_provenance":posture_provenance,"from":aname,"to":bname,
                             "xy_tracking_inflation_m":segment_tracking_inflation,
+                            "yaw_envelope_rad":segment_yaw_envelope,
                             "samples":len(samples)*3,"active_environment_contacts":contacts,
                             "active_robot_self_penetrations_m":self_contacts,
                             "source_limit_violations":limit_violations,
@@ -462,8 +513,12 @@ def main(argv: list[str] | None = None):
                                          "START->WAYPOINT":segment_tracking_inflation_m("START", "WAYPOINT"),
                                          "WAYPOINT->TABLE_APPROACH":segment_tracking_inflation_m("WAYPOINT", "TABLE_APPROACH"),
                                      },
-                                     "yaw_error_samples_rad":[-RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,0,RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD],
-                                     "extra_rotation_interpolation_bound_rad":RUNTIME_RAW_ODOM_START_YAW_ENVELOPE_RAD,"additional_clearance_gate_m":.02,
+                                     "yaw_error_samples_rad":[-args.yaw_envelope_rad,0,args.yaw_envelope_rad],
+                                     "yaw_envelope_by_segment_rad":{
+                                         "START->WAYPOINT":segment_yaw_envelope_rad("START", "WAYPOINT", yaw_envelope_rad=args.yaw_envelope_rad, start_waypoint_yaw_envelope_rad=args.start_waypoint_yaw_envelope_rad),
+                                         "WAYPOINT->TABLE_APPROACH":segment_yaw_envelope_rad("WAYPOINT", "TABLE_APPROACH", yaw_envelope_rad=args.yaw_envelope_rad, start_waypoint_yaw_envelope_rad=args.start_waypoint_yaw_envelope_rad),
+                                     },
+                                     "extra_rotation_interpolation_bound_rad":args.yaw_envelope_rad,"additional_clearance_gate_m":.02,
                                      "postures":[name for name,_,_ in posture_specs],
                                      "dynamic_gait_envelope":"NOT_PROVEN_BY_STATIC_POSTURES"},
             "narrow_phase_interpretation": {

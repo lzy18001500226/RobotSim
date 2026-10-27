@@ -31,10 +31,26 @@ from issue80_m1_auto_reset_run import (
     assess_prearmed_nominal_handoff_sample,
     stage_mc_generated_config_writeback,
     validate_static_nominal_start_table_approach_clearance,
+    validate_fixed_window_open_segment_yaw_envelope,
 )
 
 
 class ResearchScriptStagingTests(unittest.TestCase):
+    def test_fixed_window_static_plan_requires_open_only_yaw_envelope(self) -> None:
+        plan = {
+            "clearance_assumptions": {
+                "yaw_envelope_by_segment_rad": {
+                    "START->WAYPOINT": 0.10,
+                    "WAYPOINT->TABLE_APPROACH": 0.075,
+                }
+            }
+        }
+        accepted = validate_fixed_window_open_segment_yaw_envelope(plan)
+        self.assertEqual(accepted["status"], "PASS_FIXED_WINDOW_OPEN_SEGMENT_YAW_ENVELOPE")
+        plan["clearance_assumptions"]["yaw_envelope_by_segment_rad"]["WAYPOINT->TABLE_APPROACH"] = 0.10
+        with self.assertRaises(ValueError):
+            validate_fixed_window_open_segment_yaw_envelope(plan)
+
     def test_local01_short_route_preserves_static_sample_count_for_runtime_evidence(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"
@@ -794,13 +810,16 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertLess(zero_guard, acquisition)
         self.assertIn("self._publish(0.0, 0.0, 0.0)", callback[:acquisition])
 
-    def test_zero_forward_heading_acquisition_is_scoped_to_initial_waypoint_departure(self) -> None:
+    def test_fixed_window_yaw_acquisition_is_scoped_to_open_waypoint_segment(self) -> None:
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
             encoding="utf-8"
         )
+        self.assertIn("fixed_window_heading_acquisition_required(", source)
+        self.assertIn("segment_id=segment_id", source)
+        self.assertIn("segment_id=configured_step.waypoint_id", source)
+        self.assertIn('segment_id="WAYPOINT"', source)
         self.assertIn('segment_id == "WAYPOINT"', source)
         self.assertIn("and window_index == 0", source)
-        self.assertIn("zero_forward_heading_acquisition=False", source)
 
     def test_transit_termination_reads_explicit_window_heading_state(self) -> None:
         """The route callback must not close over a per-window local name."""
