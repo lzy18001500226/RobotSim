@@ -6187,7 +6187,10 @@ class FocusedM1Diagnostic(Node):
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
 
-                    if native_nominal_straight_gait_diagnostic_mode:
+                    if (
+                        native_nominal_straight_gait_diagnostic_mode
+                        or vendor_example_forward_baseline_mode
+                    ):
                         return {
                             "status": "STRAIGHT_GAIT_DIAGNOSTIC_COMPLETE",
                             "fault": None,

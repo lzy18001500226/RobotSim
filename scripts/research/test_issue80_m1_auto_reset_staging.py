@@ -1018,7 +1018,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
         )
         baseline = source.index("baseline_displacements = [")
         shared_executor = source.index("def run_transit_windows(")
-        straight_dispatch = source.index("if native_nominal_straight_gait_diagnostic_mode:")
+        straight_dispatch = source.index("native_nominal_straight_gait_diagnostic_mode\n                        or vendor_example_forward_baseline_mode")
         self.assertLess(baseline, shared_executor)
         self.assertLess(baseline, straight_dispatch)
 
