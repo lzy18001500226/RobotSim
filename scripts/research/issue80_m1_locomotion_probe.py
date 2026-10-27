@@ -4785,6 +4785,13 @@ class FocusedM1Diagnostic(Node):
                 if fault:
                     route_fault = "transit_safety:" + fault
                     return True
+                if vendor_example_forward_baseline_mode:
+                    # This is deliberately a vendor-command compatibility
+                    # baseline, not a TABLE_APPROACH attempt.  Keep the
+                    # physical-state guard above, but do not let a route
+                    # cross-track condition terminate the five-second gait
+                    # measurement before its own evidence is collected.
+                    return False
                 try:
                     pose_provider.update(snapshot)
                 except (KeyError, TypeError, ValueError) as exc:
