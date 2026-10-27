@@ -3126,11 +3126,16 @@ class FocusedM1Diagnostic(Node):
         fixed_window_table_approach_mode = bool(
             getattr(self.args, "raicom_fixed_window_table_approach", False)
         )
+        straight_ten_second_table_approach_mode = bool(
+            getattr(self.args, "raicom_straight_ten_second_table_approach", False)
+        )
         fixed_window_open_segment_yaw_acquisition_mode = bool(
             fixed_window_table_approach_mode
         )
         segmented_table_envelope_mode = (
-            continuous_table_approach_mode or fixed_window_table_approach_mode
+            continuous_table_approach_mode
+            or fixed_window_table_approach_mode
+            or straight_ten_second_table_approach_mode
         )
         forward_gait_yaw_inversion_mode = bool(
             getattr(self.args, "raicom_forward_gait_yaw_inversion", False)
@@ -3293,6 +3298,30 @@ class FocusedM1Diagnostic(Node):
                     "INITIAL_OPEN_SEGMENT_ZERO_FORWARD_YAW_ACQUISITION_IF_NEEDED->FIXED_5S_STRAIGHT_OR_ARC->COMPOSITE_STOP->REPLAN"
                     if fixed_window_table_approach_mode else None
                 ),
+            },
+            "straight_ten_second_table_approach": {
+                "enabled": straight_ten_second_table_approach_mode,
+                "classification": (
+                    "SIMULATION_ONLY_MEASURED_TEN_SECOND_ZERO_YAW_TABLE_CORRIDOR_GAIT"
+                    if straight_ten_second_table_approach_mode else None
+                ),
+                "maximum_window_s": (
+                    TABLE_APPROACH_CONTINUOUS_WINDOW_S
+                    if straight_ten_second_table_approach_mode else None
+                ),
+                "maximum_windows_total": (
+                    7 if straight_ten_second_table_approach_mode else None
+                ),
+                "aggregate_nonzero_limit_s": (
+                    75.0 if straight_ten_second_table_approach_mode else None
+                ),
+                "forward_velocity_m_s": (
+                    0.12 if straight_ten_second_table_approach_mode else None
+                ),
+                "angular_velocity_rad_s": (
+                    0.0 if straight_ten_second_table_approach_mode else None
+                ),
+                "physical_stop_after_each_window": True,
             },
             "forward_gait_yaw_mapping": {
                 "enabled": forward_gait_yaw_inversion_mode,
@@ -4087,6 +4116,7 @@ class FocusedM1Diagnostic(Node):
                 if (
                     continuous_ten_second_transit_mode
                     or native_nominal_straight_gait_diagnostic_mode
+                    or straight_ten_second_table_approach_mode
                 ):
                     route = replace(
                         route,
@@ -4344,6 +4374,7 @@ class FocusedM1Diagnostic(Node):
                         else 1 if continuous_table_approach_mode
                         else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                         if continuous_ten_second_transit_mode
+                        else 7 if straight_ten_second_table_approach_mode
                         else int(limits["max_windows"])
                     ),
                     "maximum_window_s": (
@@ -4353,6 +4384,7 @@ class FocusedM1Diagnostic(Node):
                         if (
                             continuous_ten_second_transit_mode
                             or native_nominal_straight_gait_diagnostic_mode
+                            or straight_ten_second_table_approach_mode
                         )
                         else float(limits["max_window_s"])
                     ),
@@ -5236,6 +5268,7 @@ class FocusedM1Diagnostic(Node):
                     else 1 if continuous_table_approach_mode
                     else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                     if continuous_ten_second_transit_mode
+                    else 7 if straight_ten_second_table_approach_mode
                     else int(local01_route_input["limits"]["max_windows"])
                 )
                 if table_approach_mission_mode else
@@ -5298,6 +5331,7 @@ class FocusedM1Diagnostic(Node):
                             else 1 if continuous_table_approach_mode
                             else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                             if continuous_ten_second_transit_mode
+                            else 7 if straight_ten_second_table_approach_mode
                             else int(local01_route_input["limits"]["max_windows"])
                         )
                         if table_approach_mission_mode else 3
@@ -5384,6 +5418,7 @@ class FocusedM1Diagnostic(Node):
                         if (
                             continuous_ten_second_transit_mode
                             or native_nominal_straight_gait_diagnostic_mode
+                            or straight_ten_second_table_approach_mode
                         ) else WAYPOINT_B_WINDOW_MAX_S,
                         remaining_transit_s,
                         remaining_route_s,
@@ -5574,10 +5609,17 @@ class FocusedM1Diagnostic(Node):
                                         "saturated": abs(float(terminal["raw_yaw_rate_command_rad_s"])) > float(active.max_angular_rad_s),
                                         "locomotion_handshake_confirmed": True,
                                     })
-                                elif native_nominal_straight_gait_diagnostic_mode:
+                                elif (
+                                    native_nominal_straight_gait_diagnostic_mode
+                                    or straight_ten_second_table_approach_mode
+                                ):
                                     angular = 0.0
                                     control_row.update({
-                                        "control_phase": "NATIVE_NOMINAL_STRAIGHT_GAIT_DIAGNOSTIC",
+                                        "control_phase": (
+                                            "NATIVE_NOMINAL_STRAIGHT_GAIT_DIAGNOSTIC"
+                                            if native_nominal_straight_gait_diagnostic_mode else
+                                            "STRAIGHT_TEN_SECOND_STATIC_COLLINEAR_GAIT"
+                                        ),
                                         "target_x_m": float(active.x_m),
                                         "target_y_m": float(active.y_m),
                                         "current_x_m": float(pose["x"]),
@@ -5585,7 +5627,11 @@ class FocusedM1Diagnostic(Node):
                                         "current_yaw_rad": float(pose["yaw"]),
                                         "heading_error_rad": None,
                                         "raw_angular_velocity_rad_s": 0.0,
-                                        "forward_gait_yaw_mapping": "ZERO_YAW_DIAGNOSTIC",
+                                        "forward_gait_yaw_mapping": (
+                                            "ZERO_YAW_DIAGNOSTIC"
+                                            if native_nominal_straight_gait_diagnostic_mode else
+                                            "ZERO_YAW_STATIC_COLLINEAR_ROUTE"
+                                        ),
                                         "locomotion_handshake_confirmed": True,
                                     })
                                 elif fixed_window_table_approach_mode:
@@ -8797,6 +8843,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     fixed_window_table_approach = bool(
         getattr(args, "raicom_fixed_window_table_approach", False)
     )
+    straight_ten_second_table_approach = bool(
+        getattr(args, "raicom_straight_ten_second_table_approach", False)
+    )
     forward_gait_yaw_inversion = bool(
         getattr(args, "raicom_forward_gait_yaw_inversion", False)
     )
@@ -8840,9 +8889,13 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("table-approach mission cannot be combined with the short-scene route")
     if aligned_start_table_approach and not table_approach_mission:
         raise ValueError("--aligned-start-table-approach requires --table-approach-mission")
-    if continuous_table_approach and fixed_window_table_approach:
+    if sum((
+        bool(continuous_table_approach),
+        bool(fixed_window_table_approach),
+        bool(straight_ten_second_table_approach),
+    )) > 1:
         raise ValueError(
-            "continuous and fixed-window TABLE_APPROACH profiles are mutually exclusive"
+            "continuous, fixed-window, and straight-ten-second TABLE_APPROACH profiles are mutually exclusive"
         )
     low_cruise_native_profile = (
         low_cruise_profile
@@ -8865,6 +8918,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         and not low_cruise_profile
         and abs(float(args.forward_speed) - 0.12) <= 1e-9
     )
+    straight_ten_second_table_native_profile = (
+        straight_ten_second_table_approach
+        and native_mjdata_route_feedback
+        and not low_cruise_profile
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    )
     if native_x2_timestep and not (
         table_approach_mission
         and aligned_start_table_approach
@@ -8873,11 +8932,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             or nominal_straight_native_profile
             or continuous_table_native_profile
             or fixed_window_table_native_profile
+            or straight_ten_second_table_native_profile
         )
     ):
         raise ValueError(
             "native X2 timestep requires the aligned-start TABLE_APPROACH low-cruise profile "
-            "the fixed-window table route, or the isolated nominal straight-gait diagnostic"
+            "the fixed-window table route, the straight-ten-second table route, or the isolated nominal straight-gait diagnostic"
         )
     if native_mjdata_route_feedback and not (
         native_x2_timestep
@@ -8946,6 +9006,22 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "fixed-window table approach requires native MjData feedback, the aligned native-timestep "
             "TABLE_APPROACH mission, and exactly 0.12 m/s without continuous steering profiles"
+        )
+    if straight_ten_second_table_approach and not (
+        native_mjdata_route_feedback
+        and native_x2_timestep
+        and table_approach_mission
+        and aligned_start_table_approach
+        and not native_nominal_straight_gait_diagnostic
+        and not low_cruise_profile
+        and not zero_forward_heading_acquisition
+        and not continuous_ten_second_transit
+        and not forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.12) <= 1e-9
+    ):
+        raise ValueError(
+            "straight-ten-second table approach requires native MjData feedback, the aligned native-timestep "
+            "TABLE_APPROACH mission, and exactly 0.12 m/s without steering profiles"
         )
     if forward_gait_yaw_inversion and not (
         continuous_ten_second_transit
@@ -9025,6 +9101,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                 "raicom_zero_forward_heading_acquisition": zero_forward_heading_acquisition,
                 "raicom_continuous_ten_second_transit": continuous_ten_second_transit,
                 "raicom_fixed_window_table_approach": fixed_window_table_approach,
+                "raicom_straight_ten_second_table_approach": straight_ten_second_table_approach,
                 "raicom_forward_gait_yaw_inversion": forward_gait_yaw_inversion,
                 "raicom_native_nominal_straight_gait_diagnostic": native_nominal_straight_gait_diagnostic,
                 "zero_forward_heading_profile": (
@@ -9067,6 +9144,18 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                         "physical_stop_after_each_window": True,
                     }
                     if fixed_window_table_approach else None
+                ),
+                "straight_ten_second_table_profile": (
+                    {
+                        "classification": "SIMULATION_ONLY_MEASURED_TEN_SECOND_ZERO_YAW_TABLE_CORRIDOR_GAIT",
+                        "maximum_window_s": TABLE_APPROACH_CONTINUOUS_WINDOW_S,
+                        "maximum_windows_total": 7,
+                        "aggregate_nonzero_limit_s": 75.0,
+                        "forward_velocity_m_s": 0.12,
+                        "angular_velocity_rad_s": 0.0,
+                        "physical_stop_after_each_window": True,
+                    }
+                    if straight_ten_second_table_approach else None
                 ),
                 "forward_gait_yaw_mapping": (
                     {
@@ -9522,6 +9611,15 @@ def main() -> int:
         help=(
             "SIMULATION_ONLY: replan only after each composite-stopped 5 s table-route window, "
             "then publish either straight or the existing Run65 fixed +/-0.075 rad/s arc for that full window"
+        ),
+    )
+    first.add_argument(
+        "--raicom-straight-ten-second-table-approach",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY: use the measured 0.12 m/s zero-yaw 10 s gait window through "
+            "the static collinear TABLE_APPROACH corridor, requiring a complete physical stop "
+            "and fresh rearm evidence before every next window"
         ),
     )
     first.add_argument(

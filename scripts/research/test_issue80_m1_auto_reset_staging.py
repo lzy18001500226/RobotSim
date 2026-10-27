@@ -797,6 +797,15 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--raicom-native-mjdata-route-feedback", child)
         self.assertNotIn("--raicom-continuous-table-approach", child)
 
+        args.raicom_fixed_window_table_approach = False
+        args.raicom_straight_ten_second_table_approach = True
+        straight_child = shlex.split(
+            build_m1_child_command(args, "aligned-start-straight-ten-second-table-test")[-1]
+            .rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--raicom-straight-ten-second-table-approach", straight_child)
+        self.assertNotIn("--raicom-fixed-window-table-approach", straight_child)
+
     def test_route_zero_stop_precedes_zero_forward_heading_acquisition(self) -> None:
         """A stop callback must never be reinterpreted as a yaw command."""
         source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
