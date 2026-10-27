@@ -1384,7 +1384,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += (
             " --max-observed-planar-speed-m-s "
-            + ("0.25" if getattr(args, "raicom_vendor_example_forward_baseline", False) else "0.2")
+            + ("0.8" if getattr(args, "raicom_vendor_example_forward_baseline", False) else "0.2")
         )
     stand_timeout_diagnostics = (
         "run42_stop_confirmation_diagnostic", "run43_zero_only_stop_diagnostic",

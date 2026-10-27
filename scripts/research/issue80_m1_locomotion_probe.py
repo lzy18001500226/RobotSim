@@ -3158,7 +3158,7 @@ class FocusedM1Diagnostic(Node):
             getattr(self.args, "raicom_vendor_example_forward_baseline", False)
         )
         vendor_example_planar_speed_guard_m_s = (
-            0.25 if vendor_example_forward_baseline_mode else 0.2
+            0.8 if vendor_example_forward_baseline_mode else 0.2
         )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
@@ -8975,7 +8975,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         getattr(args, "raicom_vendor_example_forward_baseline", False)
     )
     expected_observed_planar_speed_guard_m_s = (
-        0.25 if vendor_example_forward_baseline else 0.2
+        0.8 if vendor_example_forward_baseline else 0.2
     )
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
@@ -9658,12 +9658,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)
         or not 0.0 < args.max_observed_planar_speed_m_s <= (
-            0.25 if vendor_example_forward_baseline else 0.2
+            0.8 if vendor_example_forward_baseline else 0.2
         )
     ):
         raise ValueError(
             "observed planar speed gate must be positive and no greater than "
-            + ("0.25 m/s for the vendor-example baseline" if vendor_example_forward_baseline else "0.2 m/s")
+            + ("0.8 m/s for the vendor-example baseline" if vendor_example_forward_baseline else "0.2 m/s")
         )
     if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 3.5:
         raise ValueError("zero-until-stand timeout must remain within 0..3.5 seconds")

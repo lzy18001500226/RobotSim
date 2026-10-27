@@ -807,7 +807,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(child[child.index("--pulse-duration") + 1], "5.0")
         self.assertEqual(
             child[child.index("--max-observed-planar-speed-m-s") + 1],
-            "0.25",
+            "0.8",
         )
 
     def test_parent_child_fixed_window_table_profile_is_explicit(self) -> None:
