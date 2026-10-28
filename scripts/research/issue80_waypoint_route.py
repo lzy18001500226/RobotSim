@@ -1429,6 +1429,18 @@ class WaypointRouteExecutor:
             return self._complete(pose)
         if self._step_started_s is not None and now_steady_s - self._step_started_s > step.segment_timeout_s:
             return self._abort(f"SEGMENT_TIMEOUT:{step.waypoint_id}")
+        # A rolling waypoint is an explicit route hand-off, not a stopped
+        # pose.  Once its measured arrival criterion is met, advance before
+        # evaluating the next segment's footprint corridor; otherwise a
+        # narrow downstream corridor can reject the outgoing waypoint pose
+        # even though it was valid for the segment just traversed.
+        if (
+            self.phase is RoutePhase.FOLLOW
+            and step.stop_behavior is StopBehavior.ROLLING
+            and feedback.status is MotionStatus.ARRIVED
+            and self._position_reached(step, pose)
+        ):
+            return self._advance(pose, now_steady_s)
         safety_error = self._safety_error(step, pose, now_steady_s)
         if safety_error:
             return self._abort(safety_error)
