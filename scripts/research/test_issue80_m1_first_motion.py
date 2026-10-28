@@ -77,6 +77,7 @@ from issue80_m1_first_motion import (
     stand_mode_readback_confirmed,
     stand_action_and_common_confirmed,
     target_bearing_heading_error_rad,
+    speed_based_stop_trigger,
     source_readback_gap,
     validate_first_motion_authorization,
     validate_local_sim_publishers,
@@ -308,6 +309,22 @@ class FirstMotionSafetyTests(unittest.TestCase):
             target_bearing_heading_error_rad(0.0, 0.20, 0.0, 1.0, 0.0),
             -math.atan2(0.20, 1.0),
         )
+
+    def test_speed_based_stop_reserve_is_capped_without_relaxing_acceptance(self) -> None:
+        trigger = speed_based_stop_trigger(
+            target_error_m=0.39, planar_speed_m_s=0.294,
+            target_tolerance_m=0.15,
+        )
+        self.assertAlmostEqual(float(trigger["reserve_m"]), 0.2352)
+        self.assertAlmostEqual(float(trigger["trigger_threshold_m"]), 0.3852)
+        self.assertFalse(bool(trigger["triggered"]))
+        capped = speed_based_stop_trigger(
+            target_error_m=0.40, planar_speed_m_s=1.0,
+            target_tolerance_m=0.15,
+        )
+        self.assertAlmostEqual(float(capped["reserve_m"]), 0.25)
+        self.assertAlmostEqual(float(capped["trigger_threshold_m"]), 0.40)
+        self.assertTrue(bool(capped["triggered"]))
 
     def snapshot(self, **overrides):
         value = {

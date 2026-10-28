@@ -2625,6 +2625,29 @@ def target_bearing_heading_error_rad(
     )
 
 
+def speed_based_stop_trigger(
+    *, target_error_m: float, planar_speed_m_s: float, target_tolerance_m: float,
+    settling_horizon_s: float = 0.8, maximum_reserve_m: float = 0.25,
+) -> dict[str, float | bool]:
+    """Predict a bounded braking reserve without changing final acceptance."""
+    if not all(math.isfinite(value) for value in (
+        target_error_m, planar_speed_m_s, target_tolerance_m,
+        settling_horizon_s, maximum_reserve_m,
+    )):
+        raise ValueError("stop-trigger values must be finite")
+    if planar_speed_m_s < 0.0 or target_tolerance_m <= 0.0 or settling_horizon_s < 0.0 or maximum_reserve_m < 0.0:
+        raise ValueError("stop-trigger bounds are invalid")
+    reserve = min(maximum_reserve_m, planar_speed_m_s * settling_horizon_s)
+    threshold = target_tolerance_m + reserve
+    return {
+        "target_error_m": target_error_m,
+        "planar_speed_m_s": planar_speed_m_s,
+        "reserve_m": reserve,
+        "trigger_threshold_m": threshold,
+        "triggered": target_error_m <= threshold,
+    }
+
+
 def classify_turning_rotation(
     *, start_yaw_rad: float | None, end_yaw_rad: float | None,
     commanded_angular_velocity_rad_s: float, baseline_yaw_noise_rad: float | None,

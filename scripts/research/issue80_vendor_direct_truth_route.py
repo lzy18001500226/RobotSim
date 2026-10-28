@@ -29,6 +29,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from issue80_m1_first_motion import (
     stand_action_and_common_confirmed,
+    speed_based_stop_trigger,
     target_bearing_heading_error_rad,
 )
 
@@ -45,6 +46,8 @@ HEADING_HOLD_COMMAND_RAD_S = 0.075
 HEADING_HOLD_DEADBAND_RAD = 0.04
 MODE_STAND = "STAND_DEFAULT"
 ACTION_SOURCE = "rc"  # Exact source used by the delivered SetMcAction example.
+STOP_RESERVE_HORIZON_S = 0.8
+STOP_RESERVE_MAX_M = 0.25
 
 
 def wrap_angle(angle_rad: float) -> float:
@@ -464,6 +467,8 @@ def main() -> int:
         "target_pose_source": "map_localization" if args.localization_topic else "odom",
         "target_tolerance_m": args.target_tolerance_m,
         "final_target_error_m": None,
+        "final_odom_target_error_m": None,
+        "target_stop_trigger": None,
         "command": {"source": "node", "forward_m_s": 0.2, "publish_hz": 50.0},
         "heading_hold": {
             "enabled": bool(args.heading_hold),
@@ -514,8 +519,17 @@ def main() -> int:
                     target_pose.x_m - float(target["x_m"]),
                     target_pose.y_m - float(target["y_m"]),
                 )
-                if target_error <= float(args.target_tolerance_m):
-                    terminal_reason = "target_reached"
+                measured_speed = math.hypot(node.last.linear_x_m_s, node.last.linear_y_m_s)
+                trigger = speed_based_stop_trigger(
+                    target_error_m=target_error,
+                    planar_speed_m_s=measured_speed,
+                    target_tolerance_m=float(args.target_tolerance_m),
+                    settling_horizon_s=STOP_RESERVE_HORIZON_S,
+                    maximum_reserve_m=STOP_RESERVE_MAX_M,
+                )
+                result["target_stop_trigger"] = trigger
+                if bool(trigger["triggered"]):
+                    terminal_reason = "predicted_settled_endpoint_trigger"
                     break
             distance = node.distance_m()
             if distance is not None and distance >= args.distance_m:
@@ -559,6 +573,12 @@ def main() -> int:
                     (node.last_localization if args.localization_topic else node.last).y_m - float(target["y_m"]),
                 ) if target is not None and node.last is not None else None
             ),
+            "final_odom_target_error_m": (
+                math.hypot(
+                    node.last.x_m - float(target["x_m"]),
+                    node.last.y_m - float(target["y_m"]),
+                ) if target is not None and node.last is not None else None
+            ),
             "final_target_yaw_error_rad": (
                 wrap_angle(float(target["yaw_rad"]) - (node.last_localization if args.localization_topic else node.last).yaw_rad)
                 if target is not None and node.last is not None else None
@@ -569,11 +589,11 @@ def main() -> int:
             ),
         })
         reached = (
-            terminal_reason == ("target_reached" if target is not None else "distance_reached")
+            terminal_reason in ({"target_reached", "predicted_settled_endpoint_trigger"} if target is not None else {"distance_reached"})
             and node.distance_m() is not None
             and (
-                result["final_target_error_m"] is not None
-                and float(result["final_target_error_m"]) <= float(args.target_tolerance_m)
+                result["final_odom_target_error_m"] is not None
+                and float(result["final_odom_target_error_m"]) <= float(args.target_tolerance_m)
                 if target is not None else node.distance_m() >= args.distance_m
             )
         )
@@ -608,6 +628,12 @@ def main() -> int:
         result["final_target_yaw_error_rad"] = (
             wrap_angle(float(target["yaw_rad"]) - (node.last_localization if args.localization_topic else node.last).yaw_rad)
             if target is not None and node.last is not None else None
+        )
+        result["final_odom_target_error_m"] = (
+            math.hypot(
+                node.last.x_m - float(target["x_m"]),
+                node.last.y_m - float(target["y_m"]),
+            ) if target is not None and node.last is not None else None
         )
         result["heading_hold_command_count"] = len(node.heading_hold_commands)
         result["heading_hold_nonzero_command_count"] = sum(
