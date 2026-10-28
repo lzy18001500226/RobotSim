@@ -108,7 +108,7 @@ def generate_overlay(output_dir: Path, scene_source: Path) -> dict[str, Any]:
         ("size", "90 5"),
         ("dis_range", "0.08 8"),
         ("n_step_update", "200"),
-        ("sensor_data_types", "pos_w data"),
+        ("sensor_data_types", "pos_b data"),
     ):
         ET.SubElement(instance, "config", key=key, value=value)
     x2_root.insert(0, extension)

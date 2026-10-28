@@ -46,6 +46,10 @@ class RaicomLidarOverlayTests(unittest.TestCase):
             stored = json.loads((output / "LIDAR_OVERLAY_PROVENANCE.json").read_text())
             self.assertEqual(stored["vendor_plugin"]["name"], PLUGIN_NAME)
             self.assertFalse(stored["mechanical_equivalence"]["collision_geometry_changed"])
+            self.assertIn(
+                'key="sensor_data_types" value="pos_b data"',
+                (output / "x2_lidar_overlay.xml").read_text(encoding="utf-8"),
+            )
 
 
 if __name__ == "__main__":

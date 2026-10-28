@@ -58,6 +58,30 @@ int RootBody(const mjModel* model, int body_id) {
   return body_id;
 }
 
+mjtNum RaySkippingRobot(const mjModel* model, const mjData* data,
+                        const mjtNum origin[3], const mjtNum direction[3],
+                        int robot_root_body, mjtNum max_range, int* geom_id) {
+  mjtNum shifted_origin[3] = {origin[0], origin[1], origin[2]};
+  mjtNum travelled = 0;
+  for (int attempt = 0; attempt < 64 && travelled < max_range; ++attempt) {
+    int hit_geom = -1;
+    const mjtNum hit = mj_ray(model, data, shifted_origin, direction, nullptr, 1, -1, &hit_geom);
+    if (hit < 0 || hit_geom < 0) {
+      *geom_id = -1;
+      return -1;
+    }
+    if (RootBody(model, model->geom_bodyid[hit_geom]) != robot_root_body) {
+      *geom_id = hit_geom;
+      return travelled + hit;
+    }
+    const mjtNum advance = hit + 1e-3;
+    travelled += advance;
+    for (int axis = 0; axis < 3; ++axis) shifted_origin[axis] += advance * direction[axis];
+  }
+  *geom_id = -1;
+  return -1;
+}
+
 void WriteMetadata(mjtNum* state, const LidarState* lidar) {
   const int rays = lidar->horizontal * lidar->vertical;
   state[0] = lidar->horizontal;
@@ -165,13 +189,16 @@ void Compute(const mjModel* model, mjData* data, int instance, int) {
       mjtNum world_direction[3];
       mju_mulMatVec3(world_direction, rotation, local_direction);
       int geom_id = -1;
-      const mjtNum hit = mj_ray(model, data, origin, world_direction, nullptr, 1,
-                                lidar->robot_root_body, &geom_id);
+      const mjtNum hit = RaySkippingRobot(model, data, origin, world_direction,
+                                           lidar->robot_root_body, lidar->max_range, &geom_id);
       mjtNum* point = xyz + ray_index * 3;
       if (hit >= lidar->min_range && hit <= lidar->max_range && geom_id >= 0) {
-        point[0] = origin[0] + hit * world_direction[0];
-        point[1] = origin[1] + hit * world_direction[1];
-        point[2] = origin[2] + hit * world_direction[2];
+        // Publish LiDAR-frame coordinates.  The precompiled converter maps
+        // pos_b fields to the attached body frame; no MuJoCo world pose is
+        // leaked to the downstream localization consumer.
+        point[0] = hit * local_direction[0];
+        point[1] = hit * local_direction[1];
+        point[2] = hit * local_direction[2];
         distance[ray_index] = hit;
       } else {
         point[0] = nan;

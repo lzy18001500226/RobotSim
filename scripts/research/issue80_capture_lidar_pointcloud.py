@@ -23,6 +23,9 @@ def summarize(message: PointCloud2) -> dict[str, Any]:
     fields = [{"name": field.name, "offset": int(field.offset), "datatype": int(field.datatype)} for field in message.fields]
     offsets = {field["name"]: field["offset"] for field in fields}
     valid_xyz = 0
+    sample_xyz: list[list[float]] = []
+    xyz_min: list[float] | None = None
+    xyz_max: list[float] | None = None
     if all(axis in offsets for axis in ("x", "y", "z")) and message.point_step >= 12:
         count = min(int(message.width) * int(message.height), 1_000)
         for index in range(count):
@@ -30,7 +33,15 @@ def summarize(message: PointCloud2) -> dict[str, Any]:
             if start + max(offsets[axis] for axis in ("x", "y", "z")) + 4 > len(message.data):
                 break
             xyz = [struct.unpack_from("<f", message.data, start + offsets[axis])[0] for axis in ("x", "y", "z")]
-            valid_xyz += int(all(math.isfinite(value) for value in xyz))
+            if all(math.isfinite(value) for value in xyz):
+                valid_xyz += 1
+                if len(sample_xyz) < 8:
+                    sample_xyz.append(xyz)
+                if xyz_min is None:
+                    xyz_min, xyz_max = list(xyz), list(xyz)
+                else:
+                    xyz_min = [min(lower, value) for lower, value in zip(xyz_min, xyz)]
+                    xyz_max = [max(upper, value) for upper, value in zip(xyz_max, xyz)]
     return {
         "frame_id": str(message.header.frame_id),
         "stamp_sec": int(message.header.stamp.sec),
@@ -42,6 +53,8 @@ def summarize(message: PointCloud2) -> dict[str, Any]:
         "data_bytes": len(message.data),
         "fields": fields,
         "valid_xyz_sample_count": valid_xyz,
+        "valid_xyz_examples": sample_xyz,
+        "valid_xyz_bounds": {"min": xyz_min, "max": xyz_max},
     }
 
 
