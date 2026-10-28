@@ -29,16 +29,16 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from issue80_m1_first_motion import (
     stand_action_and_common_confirmed,
-    speed_based_stop_trigger,
     target_bearing_heading_error_rad,
 )
 
 
 PUBLISH_PERIOD_S = 0.02
 ZERO_HOLD_S = 2.0
-ZERO_PRIMING_S = 1.0
 STAND_READBACK_TIMEOUT_S = 3.0
 STAND_READBACK_PERIOD_S = 0.20
+POST_STAND_SETTLE_TIMEOUT_S = 3.0
+POST_STAND_SETTLE_CONTINUOUS_S = 0.50
 ODOM_FRESHNESS_S = 0.5
 MIN_ROOT_Z_M = 0.52
 MAX_TILT_RAD = math.radians(15.0)
@@ -46,8 +46,6 @@ HEADING_HOLD_COMMAND_RAD_S = 0.075
 HEADING_HOLD_DEADBAND_RAD = 0.04
 MODE_STAND = "STAND_DEFAULT"
 ACTION_SOURCE = "rc"  # Exact source used by the delivered SetMcAction example.
-STOP_RESERVE_HORIZON_S = 0.8
-STOP_RESERVE_MAX_M = 0.25
 
 
 def wrap_angle(angle_rad: float) -> float:
@@ -301,12 +299,13 @@ class DirectTruthRoute(Node):
         return result
 
     def zero_stop_to_confirmed_stand(self) -> dict[str, Any]:
-        """Prime zero, request SD once, then collect a final independent hold."""
-        start = time.monotonic()
-        prime_deadline = start + ZERO_PRIMING_S
-        while rclpy.ok() and time.monotonic() < prime_deadline:
-            self.publish_velocity(0.0)
-            rclpy.spin_once(self, timeout_sec=PUBLISH_PERIOD_S)
+        """Start zero, request SD once, settle, then collect the final hold."""
+        # The safe command must be issued before the mutating action request.
+        # A fixed one-second wait here only extended active gait after target
+        # arrival, so it is intentionally replaced by this observable zero
+        # publication followed immediately by the supported SD request.
+        self.publish_velocity(0.0)
+        rclpy.spin_once(self, timeout_sec=PUBLISH_PERIOD_S)
         request = self.request_stand_once()
         readbacks: list[dict[str, Any]] = []
         confirmed_at: float | None = None
@@ -330,22 +329,52 @@ class DirectTruthRoute(Node):
                     break
         if confirmed_at is None:
             return {
-                "status": "FAIL_STAND_UNCONFIRMED", "zero_priming_s": ZERO_PRIMING_S,
+                "status": "FAIL_STAND_UNCONFIRMED",
                 "stand_request": request, "readbacks": readbacks,
             }
-        # The stop gate starts only after a positive STAND_DEFAULT readback;
-        # braking motion before this point is deliberately not considered a
-        # physical-stop sample.
+        # SD acceptance does not itself prove that the base stopped.  Preserve
+        # the 0.05 m/s threshold, but let an observed bounded braking phase
+        # converge before opening the unchanged 2 s acceptance window.
+        settle_deadline = time.monotonic() + POST_STAND_SETTLE_TIMEOUT_S
+        settled_since: float | None = None
+        max_settle_speed = 0.0
+        while rclpy.ok() and time.monotonic() < settle_deadline:
+            self.publish_velocity(0.0)
+            rclpy.spin_once(self, timeout_sec=PUBLISH_PERIOD_S)
+            if self.last is None or time.monotonic() - self.last.received_monotonic_s > ODOM_FRESHNESS_S:
+                settled_since = None
+                continue
+            speed = math.hypot(self.last.linear_x_m_s, self.last.linear_y_m_s)
+            max_settle_speed = max(max_settle_speed, speed)
+            safe = (
+                speed <= 0.05
+                and self.last.z_m >= MIN_ROOT_Z_M
+                and max(abs(self.last.roll_rad), abs(self.last.pitch_rad)) <= MAX_TILT_RAD
+            )
+            if safe:
+                settled_since = time.monotonic() if settled_since is None else settled_since
+                if time.monotonic() - settled_since >= POST_STAND_SETTLE_CONTINUOUS_S:
+                    break
+            else:
+                settled_since = None
+        if settled_since is None or time.monotonic() - settled_since < POST_STAND_SETTLE_CONTINUOUS_S:
+            return {
+                "status": "FAIL_POST_STAND_SETTLE", "stand_request": request,
+                "readbacks": readbacks, "stand_confirmed_monotonic_s": confirmed_at,
+                "maximum_settle_speed_m_s": max_settle_speed,
+            }
         self.post_stop_samples.clear()
-        self.post_stop_started_monotonic_s = confirmed_at
-        hold_deadline = confirmed_at + ZERO_HOLD_S
+        self.post_stop_started_monotonic_s = time.monotonic()
+        hold_deadline = self.post_stop_started_monotonic_s + ZERO_HOLD_S
         while rclpy.ok() and time.monotonic() < hold_deadline:
             self.publish_velocity(0.0)
             rclpy.spin_once(self, timeout_sec=PUBLISH_PERIOD_S)
         return {
-            "status": "PASS_STAND_CONFIRMED", "zero_priming_s": ZERO_PRIMING_S,
+            "status": "PASS_STAND_CONFIRMED",
             "stand_request": request, "readbacks": readbacks,
             "stand_confirmed_monotonic_s": confirmed_at,
+            "settle_started_monotonic_s": settled_since,
+            "maximum_settle_speed_m_s": max_settle_speed,
             "post_stand_hold_s": ZERO_HOLD_S,
         }
 
@@ -468,7 +497,6 @@ def main() -> int:
         "target_tolerance_m": args.target_tolerance_m,
         "final_target_error_m": None,
         "final_odom_target_error_m": None,
-        "target_stop_trigger": None,
         "command": {"source": "node", "forward_m_s": 0.2, "publish_hz": 50.0},
         "heading_hold": {
             "enabled": bool(args.heading_hold),
@@ -519,17 +547,8 @@ def main() -> int:
                     target_pose.x_m - float(target["x_m"]),
                     target_pose.y_m - float(target["y_m"]),
                 )
-                measured_speed = math.hypot(node.last.linear_x_m_s, node.last.linear_y_m_s)
-                trigger = speed_based_stop_trigger(
-                    target_error_m=target_error,
-                    planar_speed_m_s=measured_speed,
-                    target_tolerance_m=float(args.target_tolerance_m),
-                    settling_horizon_s=STOP_RESERVE_HORIZON_S,
-                    maximum_reserve_m=STOP_RESERVE_MAX_M,
-                )
-                result["target_stop_trigger"] = trigger
-                if bool(trigger["triggered"]):
-                    terminal_reason = "predicted_settled_endpoint_trigger"
+                if target_error <= float(args.target_tolerance_m):
+                    terminal_reason = "target_reached"
                     break
             distance = node.distance_m()
             if distance is not None and distance >= args.distance_m:
@@ -589,7 +608,7 @@ def main() -> int:
             ),
         })
         reached = (
-            terminal_reason in ({"target_reached", "predicted_settled_endpoint_trigger"} if target is not None else {"distance_reached"})
+            terminal_reason in ({"target_reached"} if target is not None else {"distance_reached"})
             and node.distance_m() is not None
             and (
                 result["final_odom_target_error_m"] is not None
