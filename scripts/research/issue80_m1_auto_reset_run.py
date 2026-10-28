@@ -105,6 +105,7 @@ ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 LIDAR_LOCALIZER = Path(__file__).with_name("issue80_lidar_localization.py")
 LIDAR_SCAN_MATH = Path(__file__).with_name("issue80_lidar_scan_math.py")
+LIDAR_RAW_BRIDGE = Path(__file__).with_name("issue80_lidar_raw_bridge.py")
 VENDOR_DIRECT_TRUTH_ROUTE = Path(__file__).with_name("issue80_vendor_direct_truth_route.py")
 POSE_GOAL_CONTROLLER = Path(__file__).with_name("issue80_coordinated_pose_goal.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
@@ -2874,6 +2875,7 @@ class BoundedRun:
             (VENDOR_DIRECT_TRUTH_ROUTE, VENDOR_DIRECT_TRUTH_ROUTE.name),
             (LIDAR_LOCALIZER, LIDAR_LOCALIZER.name),
             (LIDAR_SCAN_MATH, LIDAR_SCAN_MATH.name),
+            (LIDAR_RAW_BRIDGE, LIDAR_RAW_BRIDGE.name),
             (POSE_GOAL_CONTROLLER, POSE_GOAL_CONTROLLER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
@@ -3265,6 +3267,7 @@ class BoundedRun:
         if self.lidar_overlay_source is not None:
             config_path = "/workspace/evidence/lidar_overlay/simulator_lidar_overlay.yaml"
             launch_command = (
+                "ROBOTSIM_LIDAR_RAW_TRACE=/workspace/evidence/lidar_raw_frames.jsonl "
                 "ROBOTSIM_SIMULATOR_CFG_OVERRIDE=" + config_path
                 + " bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
             )
@@ -3294,6 +3297,16 @@ class BoundedRun:
         # plugin initialization record additionally proves this is the
         # evidence-local LiDAR model, not the normal no-sensor fallback.
         if self.lidar_overlay_source is not None:
+            self.docker_exec(
+                "start_lidar_raw_bridge",
+                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+                "timeout 31s python3 /workspace/evidence/issue80_lidar_raw_bridge.py "
+                "--trace /workspace/evidence/lidar_raw_frames.jsonl --duration-s 28 "
+                "--result /workspace/evidence/lidar_raw_bridge_result.json "
+                "> /workspace/evidence/lidar_raw_bridge_runtime.json 2> /workspace/evidence/lidar_raw_bridge_runtime.stderr",
+                timeout_s=4.0,
+                detached=True,
+            )
             self.docker_exec(
                 "wait_lidar_overlay_model_loaded",
                 "timeout 20s bash -lc 'until grep -q \"Odom initialized: body_id=1, name=pelvis\" /workspace/evidence/mujoco-console.log && grep -q \"issue80_lidar_init ok\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
@@ -4656,6 +4669,7 @@ class BoundedRun:
                 "timeout 31s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s 28 "
                 "--trace /workspace/evidence/lidar_localization_trace.jsonl "
                 "--result /workspace/evidence/lidar_localizer_result.json "
+                "--topic /robotsim/lidar_chest_front/points "
                 "> /workspace/evidence/lidar_localizer_runtime.json 2> /workspace/evidence/lidar_localizer_runtime.stderr",
                 timeout_s=4.0,
                 detached=True,

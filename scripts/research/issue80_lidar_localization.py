@@ -53,7 +53,7 @@ def xy_from_cloud(message: PointCloud2) -> np.ndarray:
 
 
 class LidarLocalizer(Node):
-    def __init__(self, start: Pose2, trace_path: Path | None = None) -> None:
+    def __init__(self, start: Pose2, trace_path: Path | None = None, topic: str = LIDAR_TOPIC) -> None:
         super().__init__("issue80_lidar_localizer")
         self.pose = start
         self.start = start
@@ -67,7 +67,7 @@ class LidarLocalizer(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.create_subscription(PointCloud2, LIDAR_TOPIC, self._scan, qos)
+        self.create_subscription(PointCloud2, topic, self._scan, qos)
         self.publisher = self.create_publisher(PoseStamped, LOCALIZATION_TOPIC, 10)
 
     def _publish(self, stamp) -> None:
@@ -148,6 +148,7 @@ def main() -> int:
     parser.add_argument("--duration-s", type=float, default=30.0)
     parser.add_argument("--trace", type=Path, default=None)
     parser.add_argument("--result", type=Path, default=None)
+    parser.add_argument("--topic", default=LIDAR_TOPIC)
     args = parser.parse_args()
     if not 1.0 <= args.duration_s <= 120.0:
         parser.error("duration must be in [1, 120]")
@@ -156,7 +157,7 @@ def main() -> int:
     if args.result is not None and args.result.exists():
         parser.error("--result must be new")
     rclpy.init()
-    node = LidarLocalizer(Pose2(args.start_x, args.start_y, args.start_yaw), args.trace)
+    node = LidarLocalizer(Pose2(args.start_x, args.start_y, args.start_yaw), args.trace, args.topic)
     try:
         deadline = time.monotonic() + args.duration_s
         while rclpy.ok() and time.monotonic() < deadline:
