@@ -106,6 +106,8 @@ M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
 LIDAR_LOCALIZER = Path(__file__).with_name("issue80_lidar_localization.py")
 LIDAR_SCAN_MATH = Path(__file__).with_name("issue80_lidar_scan_math.py")
 LIDAR_RAW_BRIDGE = Path(__file__).with_name("issue80_lidar_raw_bridge.py")
+LIDAR_MAP_DATABASE = Path(__file__).with_name("issue80_lidar_map_database.cc")
+LIDAR_MAP_LOCALIZER = Path(__file__).with_name("issue80_lidar_map_localizer.py")
 VENDOR_DIRECT_TRUTH_ROUTE = Path(__file__).with_name("issue80_vendor_direct_truth_route.py")
 POSE_GOAL_CONTROLLER = Path(__file__).with_name("issue80_coordinated_pose_goal.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
@@ -2099,6 +2101,9 @@ class BoundedRun:
         lidar_source = getattr(args, "raicom_lidar_overlay_source", None)
         self.lidar_overlay_source = Path(lidar_source).resolve(strict=True) if lidar_source else None
         self.lidar_overlay_dir: Path | None = None
+        map_source = getattr(args, "raicom_lidar_static_map_source", None)
+        self.lidar_static_map_source = Path(map_source).resolve(strict=True) if map_source else None
+        self.lidar_static_map: Path | None = None
         if self.lidar_overlay_source is not None:
             source_overlay = self.lidar_overlay_source / "lidar_overlay"
             target_overlay = self.evidence / "lidar_overlay"
@@ -2109,6 +2114,31 @@ class BoundedRun:
                     raise ValueError("LiDAR overlay source contains an unsafe path")
             shutil.copytree(source_overlay, target_overlay)
             self.lidar_overlay_dir = target_overlay
+        if self.lidar_static_map_source is not None:
+            source_map = self.lidar_static_map_source / "lidar_static_map.bin"
+            source_result = self.lidar_static_map_source / "lidar_static_map_result.json"
+            if any(path.is_symlink() or not path.is_file() for path in (source_map, source_result)):
+                raise ValueError("LiDAR static map source is incomplete or unsafe")
+            try:
+                source_status = json.loads(source_result.read_text(encoding="utf-8")).get("status")
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError("LiDAR static map result is unreadable") from exc
+            if source_status != "PASS":
+                raise ValueError("LiDAR static map source did not pass static generation")
+            target_map = self.evidence / "lidar_static_map.bin"
+            target_result = self.evidence / "lidar_static_map_result.json"
+            shutil.copyfile(source_map, target_map)
+            shutil.copyfile(source_result, target_result)
+            with (self.evidence / "lidar_static_map_input.json").open("x", encoding="utf-8") as stream:
+                json.dump({
+                    "schema": "robotsim.issue80.lidar-static-map-input.v1",
+                    "source": str(self.lidar_static_map_source),
+                    "source_sha256": hashlib.sha256(source_map.read_bytes()).hexdigest(),
+                    "staged_sha256": hashlib.sha256(target_map.read_bytes()).hexdigest(),
+                    "status": "PASS_STATIC_MAP_STAGED",
+                }, stream, indent=2)
+                stream.write("\n")
+            self.lidar_static_map = target_map
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
@@ -2876,6 +2906,8 @@ class BoundedRun:
             (LIDAR_LOCALIZER, LIDAR_LOCALIZER.name),
             (LIDAR_SCAN_MATH, LIDAR_SCAN_MATH.name),
             (LIDAR_RAW_BRIDGE, LIDAR_RAW_BRIDGE.name),
+            (LIDAR_MAP_DATABASE, LIDAR_MAP_DATABASE.name),
+            (LIDAR_MAP_LOCALIZER, LIDAR_MAP_LOCALIZER.name),
             (POSE_GOAL_CONTROLLER, POSE_GOAL_CONTROLLER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
@@ -4654,17 +4686,30 @@ class BoundedRun:
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
         if self.lidar_overlay_source is not None:
-            self.docker_exec(
-                "start_lidar_localizer",
-                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                "timeout 31s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s 28 "
-                "--trace /workspace/evidence/lidar_localization_trace.jsonl "
-                "--result /workspace/evidence/lidar_localizer_result.json "
-                "--topic /robotsim/lidar_chest_front/points "
-                "> /workspace/evidence/lidar_localizer_runtime.json 2> /workspace/evidence/lidar_localizer_runtime.stderr",
-                timeout_s=4.0,
-                detached=True,
-            )
+            if self.lidar_static_map is not None:
+                self.docker_exec(
+                    "start_lidar_map_localizer",
+                    "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+                    "timeout 31s python3 /workspace/evidence/issue80_lidar_map_localizer.py "
+                    "--trace /workspace/evidence/lidar_raw_frames.jsonl --database /workspace/evidence/lidar_static_map.bin "
+                    "--duration-s 28 --result /workspace/evidence/lidar_map_localizer_result.json "
+                    "--trace-output /workspace/evidence/lidar_map_localization_trace.jsonl "
+                    "> /workspace/evidence/lidar_map_localizer_runtime.json 2> /workspace/evidence/lidar_map_localizer_runtime.stderr",
+                    timeout_s=4.0,
+                    detached=True,
+                )
+            else:
+                self.docker_exec(
+                    "start_lidar_localizer",
+                    "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+                    "timeout 31s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s 28 "
+                    "--trace /workspace/evidence/lidar_localization_trace.jsonl "
+                    "--result /workspace/evidence/lidar_localizer_result.json "
+                    "--topic /robotsim/lidar_chest_front/points "
+                    "> /workspace/evidence/lidar_localizer_runtime.json 2> /workspace/evidence/lidar_localizer_runtime.stderr",
+                    timeout_s=4.0,
+                    detached=True,
+                )
             self.docker_exec(
                 "start_lidar_raw_bridge",
                 "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
@@ -5922,6 +5967,11 @@ def main() -> int:
         help="governed evidence directory containing a verified SIMULATION_ONLY LiDAR overlay and plugin directory",
     )
     parser.add_argument(
+        "--raicom-lidar-static-map-source",
+        default=None,
+        help="governed evidence directory containing a PASS static RAICOM LiDAR signature map",
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -6415,6 +6465,19 @@ def main() -> int:
             and args.require_stand_warmup_composite
         ):
             parser.error("LiDAR overlay runtime requires the existing aligned direct-stand table route gates")
+    if args.raicom_lidar_static_map_source:
+        try:
+            static_map_source = Path(args.raicom_lidar_static_map_source).resolve(strict=True)
+            static_map_source.relative_to(REPO / "reviews/issue-80")
+            static_map = static_map_source / "lidar_static_map.bin"
+            static_result = static_map_source / "lidar_static_map_result.json"
+            static_status = json.loads(static_result.read_text(encoding="utf-8")).get("status")
+            if static_map.is_symlink() or not static_map.is_file() or static_status != "PASS":
+                raise ValueError("static map binary/result did not pass")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"LiDAR static map source is invalid: {exc}")
+        if not args.raicom_lidar_overlay_source:
+            parser.error("LiDAR static map localization requires --raicom-lidar-overlay-source")
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
