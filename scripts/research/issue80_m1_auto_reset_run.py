@@ -3250,7 +3250,10 @@ class BoundedRun:
             )
         if self.lidar_overlay_source is not None:
             config_path = "/workspace/evidence/lidar_overlay/simulator_lidar_overlay.yaml"
-            launch_command = "ROBOTSIM_SIMULATOR_CFG_OVERRIDE=" + config_path + " " + launch_command
+            launch_command = (
+                "ROBOTSIM_SIMULATOR_CFG_OVERRIDE=" + config_path
+                + " bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
+            )
         self.docker_exec(
             "launch_simulator",
             launch_command,
