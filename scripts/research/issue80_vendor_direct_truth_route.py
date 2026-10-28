@@ -30,6 +30,12 @@ ZERO_HOLD_S = 1.0
 ODOM_FRESHNESS_S = 0.5
 MIN_ROOT_Z_M = 0.52
 MAX_TILT_RAD = math.radians(15.0)
+HEADING_HOLD_COMMAND_RAD_S = 0.075
+HEADING_HOLD_DEADBAND_RAD = 0.04
+
+
+def wrap_angle(angle_rad: float) -> float:
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
 def roll_pitch_yaw(q: Any) -> tuple[float, float, float]:
@@ -82,6 +88,7 @@ class DirectTruthRoute(Node):
         self.start: PoseSample | None = None
         self.last: PoseSample | None = None
         self.publish_times: list[float] = []
+        self.heading_hold_commands: list[dict[str, float]] = []
         self.nonzero_publish_calls = 0
         self.zero_publish_calls = 0
         self.create_subscription(Odometry, "/aima/hal/odom/state", self._odom, self.odom_qos)
@@ -134,14 +141,14 @@ class DirectTruthRoute(Node):
         self._trace({"event": "source_registration", **result})
         return result
 
-    def publish_velocity(self, forward_m_s: float) -> None:
+    def publish_velocity(self, forward_m_s: float, angular_rad_s: float = 0.0) -> None:
         message = McLocomotionVelocity()
         message.header = MessageHeader()
         message.header.stamp = self.get_clock().now().to_msg()
         message.source = "node"
         message.forward_velocity = forward_m_s
         message.lateral_velocity = 0.0
-        message.angular_velocity = 0.0
+        message.angular_velocity = angular_rad_s
         self.publisher.publish(message)
         now = time.monotonic()
         if forward_m_s == 0.0:
@@ -154,7 +161,7 @@ class DirectTruthRoute(Node):
             "source": "node",
             "forward_velocity_m_s": forward_m_s,
             "lateral_velocity_m_s": 0.0,
-            "angular_velocity_rad_s": 0.0,
+            "angular_velocity_rad_s": angular_rad_s,
         })
 
     def distance_m(self) -> float | None:
@@ -201,12 +208,22 @@ def load_truth_target(path: Path, name: str) -> dict[str, float | str]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
         target = document["poses"][name]
-        x_m, y_m = float(target["x_m"]), float(target["y_m"])
+        x_m, y_m, yaw_rad = float(target["x_m"]), float(target["y_m"]), float(target["yaw_rad"])
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid truth target {name!r}: {exc}") from exc
-    if not math.isfinite(x_m) or not math.isfinite(y_m):
-        raise ValueError(f"truth target {name!r} has nonfinite XY")
-    return {"name": name, "x_m": x_m, "y_m": y_m}
+    if not all(math.isfinite(value) for value in (x_m, y_m, yaw_rad)):
+        raise ValueError(f"truth target {name!r} has nonfinite pose")
+    return {"name": name, "x_m": x_m, "y_m": y_m, "yaw_rad": yaw_rad}
+
+
+def heading_hold_command(current_yaw_rad: float, target_yaw_rad: float) -> tuple[float, float]:
+    """Use only the measured, symmetric Run65 angular response and a deadband."""
+    error = wrap_angle(target_yaw_rad - current_yaw_rad)
+    if error > HEADING_HOLD_DEADBAND_RAD:
+        return error, HEADING_HOLD_COMMAND_RAD_S
+    if error < -HEADING_HOLD_DEADBAND_RAD:
+        return error, -HEADING_HOLD_COMMAND_RAD_S
+    return error, 0.0
 
 
 def main() -> int:
@@ -218,6 +235,7 @@ def main() -> int:
     parser.add_argument("--target-route-config", type=Path, default=None)
     parser.add_argument("--target-name", default=None)
     parser.add_argument("--target-tolerance-m", type=float, default=None)
+    parser.add_argument("--heading-hold", action="store_true")
     args = parser.parse_args()
     if not 1.0 < args.distance_m <= 2.5:
         parser.error("--distance-m must be in (1.0, 2.5] for the bounded direct-gait baseline")
@@ -230,6 +248,8 @@ def main() -> int:
         parser.error("target route, target name, and target tolerance must be supplied together")
     if target_requested and not 0.0 < float(args.target_tolerance_m) <= 0.15:
         parser.error("--target-tolerance-m must be in (0, 0.15]")
+    if args.heading_hold and not target_requested:
+        parser.error("--heading-hold requires an explicit truth target")
     target = load_truth_target(args.target_route_config, str(args.target_name)) if target_requested else None
     rclpy.init()
     node = DirectTruthRoute(args.distance_m, args.trace)
@@ -245,6 +265,12 @@ def main() -> int:
         "target_tolerance_m": args.target_tolerance_m,
         "final_target_error_m": None,
         "command": {"source": "node", "forward_m_s": 0.2, "publish_hz": 50.0},
+        "heading_hold": {
+            "enabled": bool(args.heading_hold),
+            "target_yaw_rad": target.get("yaw_rad") if target else None,
+            "deadband_rad": HEADING_HOLD_DEADBAND_RAD if args.heading_hold else None,
+            "command_magnitude_rad_s": HEADING_HOLD_COMMAND_RAD_S if args.heading_hold else None,
+        },
         "registration": None,
         "start_pose_odom": None,
         "final_pose_odom": None,
@@ -293,7 +319,17 @@ def main() -> int:
                 break
             now = time.monotonic()
             if now >= next_publish:
-                node.publish_velocity(0.2)
+                angular = 0.0
+                if target is not None and args.heading_hold:
+                    error, angular = heading_hold_command(
+                        node.last.yaw_rad, float(target["yaw_rad"])
+                    )
+                    node.heading_hold_commands.append({
+                        "monotonic_s": now,
+                        "yaw_error_rad": error,
+                        "angular_velocity_rad_s": angular,
+                    })
+                node.publish_velocity(0.2, angular)
                 while next_publish <= now:
                     next_publish += PUBLISH_PERIOD_S
         zero_deadline = time.monotonic() + ZERO_HOLD_S
@@ -313,6 +349,14 @@ def main() -> int:
                     node.last.x_m - float(target["x_m"]),
                     node.last.y_m - float(target["y_m"]),
                 ) if target is not None and node.last is not None else None
+            ),
+            "final_target_yaw_error_rad": (
+                wrap_angle(float(target["yaw_rad"]) - node.last.yaw_rad)
+                if target is not None and node.last is not None else None
+            ),
+            "heading_hold_command_count": len(node.heading_hold_commands),
+            "heading_hold_nonzero_command_count": sum(
+                1 for item in node.heading_hold_commands if item["angular_velocity_rad_s"] != 0.0
             ),
         })
         reached = (
@@ -343,6 +387,14 @@ def main() -> int:
                 node.last.x_m - float(target["x_m"]),
                 node.last.y_m - float(target["y_m"]),
             ) if target is not None and node.last is not None else None
+        )
+        result["final_target_yaw_error_rad"] = (
+            wrap_angle(float(target["yaw_rad"]) - node.last.yaw_rad)
+            if target is not None and node.last is not None else None
+        )
+        result["heading_hold_command_count"] = len(node.heading_hold_commands)
+        result["heading_hold_nonzero_command_count"] = sum(
+            1 for item in node.heading_hold_commands if item["angular_velocity_rad_s"] != 0.0
         )
         try:
             write_result(args.output, result)

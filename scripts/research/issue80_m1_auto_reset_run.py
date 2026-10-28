@@ -1380,6 +1380,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 " --target-route-config /workspace/evidence/route_config.json"
                 " --target-name TABLE_APPROACH --target-tolerance-m 0.15"
             )
+            if bool(getattr(args, "raicom_vendor_direct_heading_hold", False)):
+                command[-1] += " --heading-hold"
         return command
     ramp_start_speed = getattr(args, "ramp_start_speed", None)
     ramp_duration_s = float(getattr(args, "ramp_duration_s", 0.0))
@@ -5771,6 +5773,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-vendor-direct-heading-hold",
+        action="store_true",
+        help=(
+            "Stage-3 direct truth target: use the measured +/-0.075 rad/s forward-arc response "
+            "with a 0.04 rad yaw deadband while retaining the existing TABLE_APPROACH stop target"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -6244,6 +6254,8 @@ def main() -> int:
             parser.error("--raicom-vendor-direct-table-target requires --raicom-vendor-table-approach")
         if args.raicom_vendor_direct_distance_m is not None:
             parser.error("select either direct distance baseline or direct table target, not both")
+    if args.raicom_vendor_direct_heading_hold and not args.raicom_vendor_direct_table_target:
+        parser.error("--raicom-vendor-direct-heading-hold requires --raicom-vendor-direct-table-target")
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")

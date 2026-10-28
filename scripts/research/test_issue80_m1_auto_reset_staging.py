@@ -1587,6 +1587,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             raicom_native_nominal_straight_gait_diagnostic=False,
             raicom_vendor_example_forward_baseline=False, raicom_vendor_table_approach=True,
             raicom_vendor_direct_distance_m=None, raicom_vendor_direct_table_target=True,
+            raicom_vendor_direct_heading_hold=True,
             raicom_native_mjdata_route_feedback=True, run65_ground_truth_point_goal=False,
             heading_change_rad=0.0, startup_speed=None,
             startup_transition_displacement=None, startup_transition_timeout_s=0.0,
@@ -1597,6 +1598,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(child[child.index("--target-route-config") + 1], "/workspace/evidence/route_config.json")
         self.assertEqual(child[child.index("--target-name") + 1], "TABLE_APPROACH")
         self.assertEqual(child[child.index("--target-tolerance-m") + 1], "0.15")
+        self.assertIn("--heading-hold", child)
 
     def make_runner(self, evidence: Path) -> BoundedRun:
         return BoundedRun(
