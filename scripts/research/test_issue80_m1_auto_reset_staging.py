@@ -1559,6 +1559,12 @@ class ResearchScriptStagingTests(unittest.TestCase):
             classify_run38_diagnostic_outcome("SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED"),
             "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED",
         )
+        self.assertEqual(
+            classify_run38_diagnostic_outcome(
+                "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_PASS"
+            ),
+            "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_PASS",
+        )
 
     def make_runner(self, evidence: Path) -> BoundedRun:
         return BoundedRun(
