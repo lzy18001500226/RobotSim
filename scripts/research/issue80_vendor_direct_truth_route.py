@@ -27,7 +27,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 
 
 PUBLISH_PERIOD_S = 0.02
-ZERO_HOLD_S = 1.0
+ZERO_HOLD_S = 2.0
 ODOM_FRESHNESS_S = 0.5
 MIN_ROOT_Z_M = 0.52
 MAX_TILT_RAD = math.radians(15.0)
@@ -59,6 +59,8 @@ class PoseSample:
     roll_rad: float
     pitch_rad: float
     yaw_rad: float
+    linear_x_m_s: float
+    linear_y_m_s: float
     source_stamp_ns: int
     received_monotonic_s: float
 
@@ -91,6 +93,8 @@ class DirectTruthRoute(Node):
         self.last_localization: PoseSample | None = None
         self.publish_times: list[float] = []
         self.heading_hold_commands: list[dict[str, float]] = []
+        self.post_stop_samples: list[PoseSample] = []
+        self.post_stop_started_monotonic_s: float | None = None
         self.nonzero_publish_calls = 0
         self.zero_publish_calls = 0
         self.create_subscription(Odometry, "/aima/hal/odom/state", self._odom, self.odom_qos)
@@ -107,12 +111,16 @@ class DirectTruthRoute(Node):
             roll_rad=roll,
             pitch_rad=pitch,
             yaw_rad=yaw,
+            linear_x_m_s=float(msg.twist.twist.linear.x),
+            linear_y_m_s=float(msg.twist.twist.linear.y),
             source_stamp_ns=(int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)),
             received_monotonic_s=time.monotonic(),
         )
         if self.start is None:
             self.start = sample
         self.last = sample
+        if self.post_stop_started_monotonic_s is not None and sample.received_monotonic_s >= self.post_stop_started_monotonic_s:
+            self.post_stop_samples.append(sample)
         self._trace({"event": "odom", **sample.__dict__})
 
     def _localization(self, msg: PoseStamped) -> None:
@@ -120,6 +128,7 @@ class DirectTruthRoute(Node):
         self.last_localization = PoseSample(
             x_m=float(msg.pose.position.x), y_m=float(msg.pose.position.y), z_m=float(msg.pose.position.z),
             roll_rad=roll, pitch_rad=pitch, yaw_rad=yaw,
+            linear_x_m_s=0.0, linear_y_m_s=0.0,
             source_stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
             received_monotonic_s=time.monotonic(),
         )
@@ -198,6 +207,22 @@ class DirectTruthRoute(Node):
 
     def close(self) -> None:
         self.trace.close()
+
+    def physical_stop(self) -> dict[str, Any]:
+        samples = self.post_stop_samples
+        if len(samples) < 20:
+            return {"status": "FAIL_INSUFFICIENT_FRESH_ODOM", "sample_count": len(samples)}
+        duration = samples[-1].received_monotonic_s - samples[0].received_monotonic_s
+        origin = samples[0]
+        drift = max(math.hypot(item.x_m - origin.x_m, item.y_m - origin.y_m) for item in samples)
+        speed = max(math.hypot(item.linear_x_m_s, item.linear_y_m_s) for item in samples)
+        safe = all(item.z_m >= MIN_ROOT_Z_M and max(abs(item.roll_rad), abs(item.pitch_rad)) <= MAX_TILT_RAD for item in samples)
+        return {
+            "status": "PASS" if duration >= 1.9 and drift <= 0.05 and speed <= 0.05 and safe else "FAIL_PHYSICAL_STOP",
+            "sample_count": len(samples), "duration_s": duration, "max_planar_drift_m": drift,
+            "max_planar_speed_m_s": speed, "posture_safe": safe,
+            "criteria": {"minimum_duration_s": 1.9, "maximum_planar_drift_m": 0.05, "maximum_planar_speed_m_s": 0.05},
+        }
 
 
 def write_result(path: Path, result: dict[str, Any]) -> None:
@@ -352,7 +377,8 @@ def main() -> int:
                 node.publish_velocity(0.2, angular)
                 while next_publish <= now:
                     next_publish += PUBLISH_PERIOD_S
-        zero_deadline = time.monotonic() + ZERO_HOLD_S
+        node.post_stop_started_monotonic_s = time.monotonic()
+        zero_deadline = node.post_stop_started_monotonic_s + ZERO_HOLD_S
         while rclpy.ok() and time.monotonic() < zero_deadline:
             node.publish_velocity(0.0)
             rclpy.spin_once(node, timeout_sec=PUBLISH_PERIOD_S)
@@ -364,6 +390,7 @@ def main() -> int:
             "zero_publish_calls_returned": node.zero_publish_calls,
             "publish_rate": rate_summary(node.publish_times),
             "terminal_reason": terminal_reason,
+            "physical_stop": node.physical_stop(),
             "final_target_error_m": (
                 math.hypot(
                     (node.last_localization if args.localization_topic else node.last).x_m - float(target["x_m"]),
@@ -388,9 +415,11 @@ def main() -> int:
                 if target is not None else node.distance_m() >= args.distance_m
             )
         )
-        result["status"] = "PASS" if reached else "BLOCKED"
+        result["status"] = "PASS" if reached and result["physical_stop"]["status"] == "PASS" else "BLOCKED"
         if not reached:
             result["fault"] = terminal_reason
+        elif result["physical_stop"]["status"] != "PASS":
+            result["fault"] = "physical_stop_gate_failed"
         return 0 if reached else 2
     except Exception as exc:
         result["fault"] = f"{type(exc).__name__}: {exc}"
