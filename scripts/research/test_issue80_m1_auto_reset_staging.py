@@ -833,6 +833,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             raicom_native_nominal_straight_gait_diagnostic=False,
             raicom_vendor_example_forward_baseline=False,
             raicom_vendor_table_approach=True,
+            raicom_vendor_direct_distance_m=1.1,
             raicom_native_mjdata_route_feedback=True,
             run65_ground_truth_point_goal=False,
             heading_change_rad=0.0,
@@ -844,14 +845,23 @@ class ResearchScriptStagingTests(unittest.TestCase):
             build_m1_child_command(args, "aligned-start-vendor-table-test")[-1]
             .rsplit(" && ", 1)[1]
         )
-        self.assertIn("--raicom-vendor-table-approach", child)
-        self.assertNotIn("--raicom-vendor-example-forward-baseline", child)
-        self.assertEqual(child[child.index("--forward-speed") + 1], "0.2")
-        self.assertEqual(child[child.index("--pulse-duration") + 1], "5.0")
-        self.assertEqual(
-            child[child.index("--max-observed-planar-speed-m-s") + 1],
-            "0.8",
-        )
+        self.assertIn("/workspace/evidence/issue80_vendor_direct_truth_route.py", child)
+        self.assertNotIn("/workspace/evidence/issue80_m1_locomotion_probe.py", child)
+        self.assertEqual(child[child.index("--distance-m") + 1], "1.1")
+        self.assertEqual(child[child.index("--timeout-s") + 1], "20")
+        self.assertIn("/workspace/evidence/m1_first_motion_result.json", child)
+
+    def test_vendor_direct_truth_route_is_staged_with_parent_child_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            runner = self.make_runner(evidence)
+            runner.stage_research_scripts()
+            staged = evidence / "issue80_vendor_direct_truth_route.py"
+            source = Path(__file__).with_name("issue80_vendor_direct_truth_route.py")
+            self.assertEqual(staged.read_bytes(), source.read_bytes())
+            manifest = json.loads((evidence / "staged_research_scripts.json").read_text())
+            record = next(row for row in manifest["scripts"] if row["name"] == source.name)
+            self.assertEqual(record["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
 
     def test_parent_child_fixed_window_table_profile_is_explicit(self) -> None:
         args = argparse.Namespace(

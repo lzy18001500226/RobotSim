@@ -103,6 +103,7 @@ MJDATA_CAPTURE_C = Path(__file__).with_name("issue80_mjdata_capture.c")
 WINDOWS_FOCUS_HELPER = Path(__file__).with_name("issue80_mujoco_windows_focus.ps1")
 ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
+VENDOR_DIRECT_TRUTH_ROUTE = Path(__file__).with_name("issue80_vendor_direct_truth_route.py")
 POSE_GOAL_CONTROLLER = Path(__file__).with_name("issue80_coordinated_pose_goal.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
 M1_FIRST_MOTION_LOGIC = Path(__file__).with_name("issue80_m1_first_motion.py")
@@ -1357,6 +1358,23 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         + " --state-timeout 0.5 --ready-timeout 4 --max-tilt-deg 15 --min-root-z 0.52"
         + " --output-dir /workspace/evidence"
     ]
+    direct_distance_m = getattr(args, "raicom_vendor_direct_distance_m", None)
+    if direct_distance_m is not None:
+        # This is intentionally a separate, official-example-shaped baseline.
+        # It is launched only after the parent has completed the existing
+        # Reset/JD/SD standing gate, and it writes the same child result file
+        # consumed by the parent.  Do not route it through the experimental
+        # activation/route wrapper that previously returned before publishing.
+        command[-1] = (
+            "source /opt/ros/humble/setup.bash && "
+            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+            "python3 /workspace/evidence/issue80_vendor_direct_truth_route.py"
+            " --distance-m " + str(float(direct_distance_m))
+            + " --timeout-s 20"
+            " --output /workspace/evidence/m1_first_motion_result.json"
+            " --trace /workspace/evidence/m1_vendor_direct_truth_trace.jsonl"
+        )
+        return command
     ramp_start_speed = getattr(args, "ramp_start_speed", None)
     ramp_duration_s = float(getattr(args, "ramp_duration_s", 0.0))
     if ramp_start_speed is not None or ramp_duration_s != 0.0:
@@ -2826,6 +2844,7 @@ class BoundedRun:
             (WINDOWS_FOCUS_HELPER, WINDOWS_FOCUS_HELPER.name),
             (ANALYZER, ANALYZER.name),
             (M1_RUNNER, M1_RUNNER.name),
+            (VENDOR_DIRECT_TRUTH_ROUTE, VENDOR_DIRECT_TRUTH_ROUTE.name),
             (POSE_GOAL_CONTROLLER, POSE_GOAL_CONTROLLER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
@@ -5199,6 +5218,17 @@ class BoundedRun:
                 or bool(getattr(self.args, "local01_scene_world_poses", None))
             ):
                 route = m1.get("route_integration")
+                direct_vendor = m1.get("classification") == "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE"
+                if direct_vendor:
+                    direct_pass = m1.get("status") == "PASS"
+                    result["vendor_direct_truth_route"] = m1
+                    self.outcome_classification = (
+                        "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_PASS"
+                        if direct_pass else "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_BLOCKED"
+                    )
+                    result["outcome_classification"] = self.outcome_classification
+                    result["status"] = "PASS" if direct_pass else "BLOCKED"
+                    return result
                 result["route_integration"] = route
                 route_pass = isinstance(route, Mapping) and route.get("status") == "PASS"
                 self.outcome_classification = (
@@ -5707,6 +5737,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-vendor-direct-distance-m",
+        type=float,
+        default=None,
+        help=(
+            "bounded Stage-1 direct vendor-example truth-distance baseline; use only with "
+            "--raicom-vendor-table-approach and require >1.0 m actual odom displacement"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -6170,6 +6209,11 @@ def main() -> int:
             "vendor table approach requires the aligned native-timestep TABLE_APPROACH "
             "startup and exactly 0.20 m/s for the vendor 5 s input unit"
         )
+    if args.raicom_vendor_direct_distance_m is not None:
+        if not args.raicom_vendor_table_approach:
+            parser.error("--raicom-vendor-direct-distance-m requires --raicom-vendor-table-approach")
+        if not 1.0 < float(args.raicom_vendor_direct_distance_m) <= 2.5:
+            parser.error("--raicom-vendor-direct-distance-m must be in (1.0, 2.5]")
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
