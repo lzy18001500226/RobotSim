@@ -1174,7 +1174,8 @@ class ResearchScriptStagingTests(unittest.TestCase):
         route = probe[route_start:route_end]
         self.assertNotIn("begin_zero_only_locomotion_activation(", route)
         self.assertIn("begin_source_grounded_route_activation(", route)
-        self.assertIn("source_grounded_route_activation=True", route)
+        self.assertIn("source_grounded_route_activation=not vendor_table_approach_mode", route)
+        self.assertIn("require_locomotion_confirmation=not vendor_table_approach_mode", route)
         self.assertLess(
             route.index("route_activation_pending"),
             route.index("active_window_gate.observe("),

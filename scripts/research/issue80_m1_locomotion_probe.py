@@ -6052,10 +6052,12 @@ class FocusedM1Diagnostic(Node):
                         max_tilt_deg=self.args.max_tilt_deg,
                         max_observed_planar_speed_m_s=vendor_example_planar_speed_guard_m_s,
                         zero_until_stand_timeout_s=3.5,
-                        require_locomotion_confirmation=True,
-                        activation_lifecycle=self.activation_lifecycle,
-                        source_contract_supported=True,
-                        source_grounded_route_activation=True,
+                        require_locomotion_confirmation=not vendor_table_approach_mode,
+                        activation_lifecycle=(
+                            None if vendor_table_approach_mode else self.activation_lifecycle
+                        ),
+                        source_contract_supported=not vendor_table_approach_mode,
+                        source_grounded_route_activation=not vendor_table_approach_mode,
                         source_grounded_activation_timeout_s=ACTIVATION_PROBE_DURATION_S,
                         allow_raicom_low_cruise_source_activation=bool(
                             getattr(self.args, "raicom_low_cruise_profile", False)
