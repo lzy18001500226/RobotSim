@@ -1565,6 +1565,38 @@ class ResearchScriptStagingTests(unittest.TestCase):
             ),
             "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_PASS",
         )
+        self.assertEqual(
+            classify_run38_diagnostic_outcome(
+                "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_TABLE_TARGET_PASS"
+            ),
+            "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_TABLE_TARGET_PASS",
+        )
+
+    def test_direct_table_target_uses_staged_raw_odom_mission_coordinates(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0, pulse_duration=5.0, forward_speed=0.2,
+            ramp_start_speed=None, ramp_duration_s=0.0, attempt_id="direct-table-target",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/aligned-start-table-approach.json",
+            aligned_start_table_approach=True, native_x2_timestep=True, route_config=None,
+            raicom_low_cruise_profile=False, raicom_zero_forward_heading_acquisition=False,
+            raicom_continuous_ten_second_transit=False, raicom_forward_gait_yaw_inversion=False,
+            raicom_native_nominal_straight_gait_diagnostic=False,
+            raicom_vendor_example_forward_baseline=False, raicom_vendor_table_approach=True,
+            raicom_vendor_direct_distance_m=None, raicom_vendor_direct_table_target=True,
+            raicom_native_mjdata_route_feedback=True, run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0, startup_speed=None,
+            startup_transition_displacement=None, startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(build_m1_child_command(args, "direct-table-target")[-1].rsplit(" && ", 1)[1])
+        self.assertEqual(child[child.index("--distance-m") + 1], "2.5")
+        self.assertEqual(child[child.index("--timeout-s") + 1], "25")
+        self.assertEqual(child[child.index("--target-route-config") + 1], "/workspace/evidence/route_config.json")
+        self.assertEqual(child[child.index("--target-name") + 1], "TABLE_APPROACH")
+        self.assertEqual(child[child.index("--target-tolerance-m") + 1], "0.15")
 
     def make_runner(self, evidence: Path) -> BoundedRun:
         return BoundedRun(

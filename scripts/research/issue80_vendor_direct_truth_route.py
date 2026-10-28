@@ -196,12 +196,28 @@ def rate_summary(times: list[float]) -> dict[str, float | int | None]:
     }
 
 
+def load_truth_target(path: Path, name: str) -> dict[str, float | str]:
+    """Load one explicitly named raw-odom target from the staged mission JSON."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        target = document["poses"][name]
+        x_m, y_m = float(target["x_m"]), float(target["y_m"])
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid truth target {name!r}: {exc}") from exc
+    if not math.isfinite(x_m) or not math.isfinite(y_m):
+        raise ValueError(f"truth target {name!r} has nonfinite XY")
+    return {"name": name, "x_m": x_m, "y_m": y_m}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--distance-m", type=float, required=True)
     parser.add_argument("--timeout-s", type=float, default=20.0)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--trace", type=Path, required=True)
+    parser.add_argument("--target-route-config", type=Path, default=None)
+    parser.add_argument("--target-name", default=None)
+    parser.add_argument("--target-tolerance-m", type=float, default=None)
     args = parser.parse_args()
     if not 1.0 < args.distance_m <= 2.5:
         parser.error("--distance-m must be in (1.0, 2.5] for the bounded direct-gait baseline")
@@ -209,13 +225,25 @@ def main() -> int:
         parser.error("--timeout-s must be in [1, 30]")
     if args.output.exists() or args.trace.exists():
         parser.error("output paths must be new")
+    target_requested = args.target_route_config is not None
+    if target_requested != (args.target_name is not None) or target_requested != (args.target_tolerance_m is not None):
+        parser.error("target route, target name, and target tolerance must be supplied together")
+    if target_requested and not 0.0 < float(args.target_tolerance_m) <= 0.15:
+        parser.error("--target-tolerance-m must be in (0, 0.15]")
+    target = load_truth_target(args.target_route_config, str(args.target_name)) if target_requested else None
     rclpy.init()
     node = DirectTruthRoute(args.distance_m, args.trace)
     result: dict[str, Any] = {
         "schema": "robotsim.issue80.vendor-direct-truth-route.v1",
-        "classification": "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE",
+        "classification": (
+            "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_TABLE_TARGET"
+            if target is not None else "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE"
+        ),
         "status": "BLOCKED",
         "target_distance_m": args.distance_m,
+        "target_pose_odom": target,
+        "target_tolerance_m": args.target_tolerance_m,
+        "final_target_error_m": None,
         "command": {"source": "node", "forward_m_s": 0.2, "publish_hz": 50.0},
         "registration": None,
         "start_pose_odom": None,
@@ -251,6 +279,14 @@ def main() -> int:
                 terminal_reason = fault
                 break
             assert node.start is not None and node.last is not None
+            if target is not None:
+                target_error = math.hypot(
+                    node.last.x_m - float(target["x_m"]),
+                    node.last.y_m - float(target["y_m"]),
+                )
+                if target_error <= float(args.target_tolerance_m):
+                    terminal_reason = "target_reached"
+                    break
             distance = node.distance_m()
             if distance is not None and distance >= args.distance_m:
                 terminal_reason = "distance_reached"
@@ -272,11 +308,21 @@ def main() -> int:
             "zero_publish_calls_returned": node.zero_publish_calls,
             "publish_rate": rate_summary(node.publish_times),
             "terminal_reason": terminal_reason,
+            "final_target_error_m": (
+                math.hypot(
+                    node.last.x_m - float(target["x_m"]),
+                    node.last.y_m - float(target["y_m"]),
+                ) if target is not None and node.last is not None else None
+            ),
         })
         reached = (
-            terminal_reason == "distance_reached"
+            terminal_reason == ("target_reached" if target is not None else "distance_reached")
             and node.distance_m() is not None
-            and node.distance_m() >= args.distance_m
+            and (
+                result["final_target_error_m"] is not None
+                and float(result["final_target_error_m"]) <= float(args.target_tolerance_m)
+                if target is not None else node.distance_m() >= args.distance_m
+            )
         )
         result["status"] = "PASS" if reached else "BLOCKED"
         if not reached:
@@ -292,6 +338,12 @@ def main() -> int:
         result["start_pose_odom"] = node.start.__dict__ if node.start else None
         result["final_pose_odom"] = node.last.__dict__ if node.last else None
         result["measured_distance_m"] = node.distance_m()
+        result["final_target_error_m"] = (
+            math.hypot(
+                node.last.x_m - float(target["x_m"]),
+                node.last.y_m - float(target["y_m"]),
+            ) if target is not None and node.last is not None else None
+        )
         try:
             write_result(args.output, result)
         finally:

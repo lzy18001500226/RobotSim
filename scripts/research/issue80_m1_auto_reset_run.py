@@ -1359,7 +1359,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         + " --output-dir /workspace/evidence"
     ]
     direct_distance_m = getattr(args, "raicom_vendor_direct_distance_m", None)
-    if direct_distance_m is not None:
+    direct_table_target = bool(getattr(args, "raicom_vendor_direct_table_target", False))
+    if direct_distance_m is not None or direct_table_target:
         # This is intentionally a separate, official-example-shaped baseline.
         # It is launched only after the parent has completed the existing
         # Reset/JD/SD standing gate, and it writes the same child result file
@@ -1369,11 +1370,16 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             "source /opt/ros/humble/setup.bash && "
             "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
             "python3 /workspace/evidence/issue80_vendor_direct_truth_route.py"
-            " --distance-m " + str(float(direct_distance_m))
-            + " --timeout-s 20"
-            " --output /workspace/evidence/m1_first_motion_result.json"
-            " --trace /workspace/evidence/m1_vendor_direct_truth_trace.jsonl"
+            " --distance-m " + str(2.5 if direct_table_target else float(direct_distance_m))
+            + " --timeout-s " + ("25" if direct_table_target else "20")
+            + " --output /workspace/evidence/m1_first_motion_result.json"
+            + " --trace /workspace/evidence/m1_vendor_direct_truth_trace.jsonl"
         )
+        if direct_table_target:
+            command[-1] += (
+                " --target-route-config /workspace/evidence/route_config.json"
+                " --target-name TABLE_APPROACH --target-tolerance-m 0.15"
+            )
         return command
     ramp_start_speed = getattr(args, "ramp_start_speed", None)
     ramp_duration_s = float(getattr(args, "ramp_duration_s", 0.0))
@@ -1959,6 +1965,8 @@ def classify_run38_diagnostic_outcome(baseline_classification: str) -> str:
         "SIMULATION_ONLY_CONFIGURED_WAYPOINT_DOCKING_ROUTE_BLOCKED",
         "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_PASS",
         "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_BLOCKED",
+        "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_TABLE_TARGET_PASS",
+        "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_TABLE_TARGET_BLOCKED",
         "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_DIAGNOSTIC_PASS",
         "SIMULATION_ONLY_LOCAL01_SHORT_ROUTE_DIAGNOSTIC_BLOCKED",
     ):
@@ -5220,13 +5228,20 @@ class BoundedRun:
                 or bool(getattr(self.args, "local01_scene_world_poses", None))
             ):
                 route = m1.get("route_integration")
-                direct_vendor = m1.get("classification") == "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE"
+                direct_vendor = m1.get("classification") in {
+                    "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE",
+                    "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_TABLE_TARGET",
+                }
                 if direct_vendor:
                     direct_pass = m1.get("status") == "PASS"
                     result["vendor_direct_truth_route"] = m1
+                    direct_label = (
+                        "TABLE_TARGET" if m1.get("classification")
+                        == "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_TABLE_TARGET" else "DISTANCE_BASELINE"
+                    )
                     self.outcome_classification = (
-                        "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_PASS"
-                        if direct_pass else "SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_DISTANCE_BASELINE_BLOCKED"
+                        f"SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_{direct_label}_PASS"
+                        if direct_pass else f"SIMULATION_ONLY_VENDOR_DIRECT_TRUTH_{direct_label}_BLOCKED"
                     )
                     result["outcome_classification"] = self.outcome_classification
                     result["status"] = "PASS" if direct_pass else "BLOCKED"
@@ -5748,6 +5763,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-vendor-direct-table-target",
+        action="store_true",
+        help=(
+            "Stage-2 direct official-velocity run: stop at the staged raw-odom TABLE_APPROACH "
+            "coordinate within the existing 0.15 m preliminary tolerance"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -6216,6 +6239,11 @@ def main() -> int:
             parser.error("--raicom-vendor-direct-distance-m requires --raicom-vendor-table-approach")
         if not 1.0 < float(args.raicom_vendor_direct_distance_m) <= 2.5:
             parser.error("--raicom-vendor-direct-distance-m must be in (1.0, 2.5]")
+    if args.raicom_vendor_direct_table_target:
+        if not args.raicom_vendor_table_approach:
+            parser.error("--raicom-vendor-direct-table-target requires --raicom-vendor-table-approach")
+        if args.raicom_vendor_direct_distance_m is not None:
+            parser.error("select either direct distance baseline or direct table target, not both")
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
