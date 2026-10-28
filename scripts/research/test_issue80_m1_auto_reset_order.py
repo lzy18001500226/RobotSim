@@ -147,6 +147,51 @@ class ResetBeforeSdOrderingTests(unittest.TestCase):
         self.assertEqual(persisted["reset_delivery_attempt_count"], 1)
         self.assertEqual(persisted["reset_input_path_attempt_count"], 1)
 
+    def test_unclicked_native_button_signature_falls_back_once_to_verified_backspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = BoundedRun(argparse.Namespace(
+                evidence_dir=temp_dir,
+                container="test-container",
+                attempt_id="native-reset-fallback-test",
+                max_runtime_s=30.0,
+            ))
+            unclicked = {
+                "event": {
+                    "status": "RESET_NOT_DELIVERED",
+                    "mouse_button_events_sent": 0,
+                },
+            }
+            delivered = {
+                "event": {
+                    "status": "KEY_DISPATCHED",
+                    "xtest_key_events_sent": 2,
+                    "dispatch_monotonic_ns": 123,
+                },
+            }
+            commands: list[list[str]] = []
+
+            def fake_run(_name: str, command: list[str], **_kwargs):
+                commands.append(command)
+                if "click-native-reset" in command:
+                    return SimpleNamespace(stdout=json.dumps(unclicked))
+                self.assertIn("send-reset", command)
+                return SimpleNamespace(stdout=json.dumps(delivered))
+
+            runner.run = fake_run
+            runner.dispatch_native_reset_button(7, "MuJoCo", 99)
+            persisted = json.loads((Path(temp_dir) / "reset_dispatch_event.json").read_text())
+
+        self.assertEqual(len(commands), 2)
+        self.assertIn("click-native-reset", commands[0])
+        self.assertIn("send-reset", commands[1])
+        self.assertEqual(persisted["event"]["status"], "KEY_DISPATCHED")
+        self.assertEqual(persisted["reset_delivery_attempt_count"], 1)
+        self.assertEqual(persisted["reset_input_path_attempt_count"], 2)
+        self.assertEqual(
+            persisted["native_button_attempt_before_keyboard_fallback"]["event"]["mouse_button_events_sent"],
+            0,
+        )
+
     def test_parent_and_prearmed_observer_share_bounded_late_reset_window(self) -> None:
         self.assertEqual(reset_runner.RESET_STARTUP_OBSERVATION_TIMEOUT_S, 4.0)
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -19,6 +19,7 @@ from issue80_m1_set_action_capture import (
     ros_leg_state_matches_synchronized_keyframe,
     read_complete_native_capture_rows,
     installed_body_stand_value,
+    initial_native_generation_after_verified_reset,
     _raw_fsm_state_value,
     set_action_record,
     standing_observation_window,
@@ -36,6 +37,25 @@ class FakeMessage:
 
 
 class SetActionCaptureTests(unittest.TestCase):
+    def test_initial_native_generation_requires_verified_post_dispatch_physical_sample(self) -> None:
+        reset_ns = 10_000
+        valid = {
+            "event": "post_forward_initial",
+            "generation": 0,
+            "host_monotonic_ns": 10_001,
+        }
+        self.assertTrue(initial_native_generation_after_verified_reset(
+            valid, reset_dispatch_monotonic_ns=reset_ns,
+        ))
+        for invalid in (
+            {**valid, "host_monotonic_ns": reset_ns},
+            {**valid, "event": "model_metadata"},
+            {**valid, "generation": -1},
+        ):
+            self.assertFalse(initial_native_generation_after_verified_reset(
+                invalid, reset_dispatch_monotonic_ns=reset_ns,
+            ))
+
     def test_native_support_requires_positive_contacts_on_both_selected_feet(self) -> None:
         sample = {
             "contact_count": 3,

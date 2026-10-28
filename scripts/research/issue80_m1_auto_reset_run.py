@@ -3649,6 +3649,8 @@ class BoundedRun:
             + ("" if self.static_nominal_start_initialization else " --require-native-reset-generation")
             if self.native_mjdata_capture else ""
         )
+        if self.native_mjdata_capture and self.lidar_overlay_source is not None:
+            native_capture_args += " --allow-initial-native-generation"
         initialization_args = (
             " --synchronized-keyframe-event-file /workspace/evidence/keyframe_load_event.json"
             " --synchronized-keyframe-spec /workspace/evidence/local01_scene/synchronized_nominal_keyframe.json"
@@ -3787,7 +3789,14 @@ class BoundedRun:
             f.write("\n")
         raise RuntimeError("no visible X11 window with exact aima-sim-app PID was found")
 
-    def dispatch_reset(self, pid: int, title: str, window_id: int) -> None:
+    def dispatch_reset(
+        self,
+        pid: int,
+        title: str,
+        window_id: int,
+        *,
+        prior_native_button_attempt: Mapping[str, Any] | None = None,
+    ) -> None:
         """Legacy verified BackSpace path retained for comparison; not used by execute()."""
         event_path = self.evidence / "reset_dispatch_event.json"
         first_attempt_path = self.evidence / "reset_dispatch_event_x11_attempt1.json"
@@ -3895,10 +3904,17 @@ class BoundedRun:
                 else:
                     first["windows_foreground_activation"] = windows_focus
                     final_payload = first
+        if prior_native_button_attempt is not None:
+            final_payload["native_button_attempt_before_keyboard_fallback"] = dict(
+                prior_native_button_attempt
+            )
         final_payload["reset_delivery_attempt_count"] = (
             1 if final_payload.get("event", {}).get("status") == "KEY_DISPATCHED" else 0
         )
-        final_payload["reset_input_path_attempt_count"] = 2 if final_payload is not first else 1
+        final_payload["reset_input_path_attempt_count"] = (
+            (1 if prior_native_button_attempt is not None else 0)
+            + (2 if final_payload is not first else 1)
+        )
         if event_path.exists():
             raise RuntimeError("canonical reset event already exists; refusing to overwrite it")
         with event_path.open("x", encoding="utf-8") as stream:
@@ -3943,6 +3959,20 @@ class BoundedRun:
                 payload["helper_completion"] = "NO_COMPLETE_NATIVE_BUTTON_RESULT_JSON"
         event = payload.get("event", {})
         event["dispatch_transport"] = "XTEST_MOUSE_CLICK_TO_VERIFIED_MUJOCO_NATIVE_RESET_BUTTON"
+        # A rejected pixel signature has sent no click.  Fall back only then
+        # to the reviewed, process-verified BackSpace path.  A real or partial
+        # mouse click is never followed by a second state-changing input.
+        if (
+            event.get("status") == "RESET_NOT_DELIVERED"
+            and int(event.get("mouse_button_events_sent", -1)) == 0
+        ):
+            self.dispatch_reset(
+                pid,
+                title,
+                window_id,
+                prior_native_button_attempt=payload,
+            )
+            return
         payload["reset_delivery_attempt_count"] = int(event.get("status") == "RESET_BUTTON_CLICKED")
         payload["reset_input_path_attempt_count"] = 1
         if event_path.exists():

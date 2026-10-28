@@ -36,6 +36,35 @@ MAX_STATE_AGE_S = 0.5
 REQUIRED_UPRIGHT_ODOM_SAMPLES = 3
 REQUIRED_STAND_COMMON_SAMPLES = 3
 NATIVE_SUPPORT_REQUIRED_SAMPLES = 2
+NATIVE_CAPTURE_SAMPLE_EVENTS = frozenset((
+    "post_forward_initial",
+    "post_forward_reset_generation",
+    "post_step_after_reset_generation",
+    "post_step",
+))
+
+
+def initial_native_generation_after_verified_reset(
+    row: Mapping[str, Any], *, reset_dispatch_monotonic_ns: int,
+) -> bool:
+    """Accept an initial native generation only after a verified Reset.
+
+    An unstepped viewer has no preceding MuJoCo generation to increment.  Its
+    first *physical-state* callback after a verified Reset is distinct from
+    metadata and is retained as explicit initial-generation evidence.
+    """
+    if not isinstance(reset_dispatch_monotonic_ns, int) or reset_dispatch_monotonic_ns <= 0:
+        return False
+    if row.get("event") not in NATIVE_CAPTURE_SAMPLE_EVENTS:
+        return False
+    generation = row.get("generation")
+    host_ns = row.get("host_monotonic_ns")
+    return (
+        isinstance(generation, int)
+        and generation >= 0
+        and isinstance(host_ns, int)
+        and host_ns > reset_dispatch_monotonic_ns
+    )
 
 
 def _native_pelvis_measurements(sample: Mapping[str, Any]) -> dict[str, float | None]:
@@ -702,6 +731,14 @@ def main() -> int:
     parser.add_argument("--set-timeout-s", type=float, default=2.0)
     parser.add_argument("--get-timeout-s", type=float, default=0.75)
     parser.add_argument("--ready-timeout-s", type=float, default=3.0)
+    parser.add_argument(
+        "--allow-initial-native-generation",
+        action="store_true",
+        help=(
+            "permit initial native generation zero only when no pre-Reset "
+            "native physical-state sample exists"
+        ),
+    )
     parser.add_argument("--reset-wait-timeout-s", type=float, default=30.0)
     parser.add_argument("--upright-timeout-s", type=float, default=4.0)
     parser.add_argument("--joint-stand-timeout-s", type=float, default=4.0)
@@ -732,6 +769,8 @@ def main() -> int:
         parser.error("this capture only supports the reviewed PD -> JD -> SD standing handoff")
     if args.require_native_reset_generation and args.native_mjdata_trace is None:
         parser.error("--require-native-reset-generation requires --native-mjdata-trace")
+    if args.allow_initial_native_generation and not args.require_native_reset_generation:
+        parser.error("--allow-initial-native-generation requires --require-native-reset-generation")
     synchronized_paths = (
         args.synchronized_keyframe_event_file,
         args.synchronized_keyframe_spec,
@@ -832,6 +871,7 @@ def main() -> int:
                 if args.native_mjdata_trace is not None else None
             )
             self.require_native_reset_generation = bool(args.require_native_reset_generation)
+            self.allow_initial_native_generation = bool(args.allow_initial_native_generation)
             self.required_post_reset_upright_samples = (
                 1 if self.require_native_reset_generation else REQUIRED_UPRIGHT_ODOM_SAMPLES
             )
@@ -840,6 +880,7 @@ def main() -> int:
             self.native_reset_generation: int | None = None
             self.native_reset_host_monotonic_ns: int | None = None
             self.native_reset_sample: dict[str, Any] | None = None
+            self.native_reset_initial_generation = False
             self.native_support_samples = 0
             self.native_support_ready_ns: int | None = None
             self.native_support_sample: dict[str, Any] | None = None
@@ -972,8 +1013,27 @@ def main() -> int:
                         self.native_baseline_generation = max(self.native_baseline_generation, generation)
                     continue
                 if self.native_baseline_generation is None:
-                    continue
-                if self.native_reset_generation is None and generation > self.native_baseline_generation:
+                    if (
+                        self.allow_initial_native_generation
+                        and self.native_reset_generation is None
+                        and initial_native_generation_after_verified_reset(
+                            row,
+                            reset_dispatch_monotonic_ns=self.reset_ns,
+                        )
+                    ):
+                        self.native_reset_generation = generation
+                        self.native_reset_host_monotonic_ns = host_ns
+                        self.native_reset_sample = row
+                        self.native_reset_initial_generation = True
+                        self.record_event(
+                            "native_initial_generation_after_verified_reset",
+                            generation=generation,
+                            native_host_monotonic_ns=host_ns,
+                            sample=row,
+                        )
+                    else:
+                        continue
+                elif self.native_reset_generation is None and generation > self.native_baseline_generation:
                     self.native_reset_generation = generation
                     self.native_reset_host_monotonic_ns = host_ns
                     self.native_reset_sample = row
@@ -1089,6 +1149,14 @@ def main() -> int:
                 "trace": str(self.native_trace_path) if self.native_trace_path else None,
                 "baseline_generation": self.native_baseline_generation,
                 "reset_generation": self.native_reset_generation,
+                "initial_generation_after_verified_reset": self.native_reset_initial_generation,
+                "reset_evidence": (
+                    "INITIAL_GENERATION_AFTER_VERIFIED_RESET"
+                    if self.native_reset_initial_generation
+                    else "GENERATION_INCREMENT_AFTER_VERIFIED_RESET"
+                    if self.native_reset_generation is not None
+                    else "NOT_YET_OBSERVED"
+                ),
                 "reset_host_monotonic_ns": self.native_reset_host_monotonic_ns,
                 "support_samples": self.native_support_samples,
                 "support_ready_host_monotonic_ns": self.native_support_ready_ns,
@@ -1122,7 +1190,11 @@ def main() -> int:
                 if not self.synchronized_initialization and self.native_support_ready_ns is not None:
                     return True
             if self.native_reset_generation is None:
-                self.error = "native MjData did not observe a post-dispatch initialization generation"
+                self.error = (
+                    "native MjData did not observe a completed post-dispatch initial physical sample"
+                    if self.allow_initial_native_generation and self.native_baseline_generation is None
+                    else "native MjData did not observe a post-dispatch initialization generation"
+                )
             elif self.synchronized_initialization:
                 self.error = "native MjData did not verify the source-MC nominal keyframe while physics was paused"
             else:
@@ -1489,7 +1561,11 @@ def main() -> int:
                 get_ready = bool(self.get_client.service_is_ready())
                 if not set_ready or not get_ready:
                     continue
-                if self.require_native_reset_generation and self.native_baseline_generation is None:
+                if (
+                    self.require_native_reset_generation
+                    and self.native_baseline_generation is None
+                    and not self.allow_initial_native_generation
+                ):
                     continue
                 now_ns = time.monotonic_ns()
                 fresh = [
