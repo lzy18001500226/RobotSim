@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Read-only bounded capture of the SIMULATION_ONLY RAICOM LiDAR topic."""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import struct
+import time
+from pathlib import Path
+from typing import Any
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import PointCloud2
+
+
+TOPIC = "/aima/sim/lidar/points"
+
+
+def summarize(message: PointCloud2) -> dict[str, Any]:
+    fields = [{"name": field.name, "offset": int(field.offset), "datatype": int(field.datatype)} for field in message.fields]
+    offsets = {field["name"]: field["offset"] for field in fields}
+    valid_xyz = 0
+    if all(axis in offsets for axis in ("x", "y", "z")) and message.point_step >= 12:
+        count = min(int(message.width) * int(message.height), 1_000)
+        for index in range(count):
+            start = index * int(message.point_step)
+            if start + max(offsets[axis] for axis in ("x", "y", "z")) + 4 > len(message.data):
+                break
+            xyz = [struct.unpack_from("<f", message.data, start + offsets[axis])[0] for axis in ("x", "y", "z")]
+            valid_xyz += int(all(math.isfinite(value) for value in xyz))
+    return {
+        "frame_id": str(message.header.frame_id),
+        "stamp_sec": int(message.header.stamp.sec),
+        "stamp_nanosec": int(message.header.stamp.nanosec),
+        "height": int(message.height),
+        "width": int(message.width),
+        "point_step": int(message.point_step),
+        "row_step": int(message.row_step),
+        "data_bytes": len(message.data),
+        "fields": fields,
+        "valid_xyz_sample_count": valid_xyz,
+    }
+
+
+class Capture(Node):
+    def __init__(self) -> None:
+        super().__init__("issue80_lidar_capture")
+        self.count = 0
+        self.nonempty_count = 0
+        self.last: dict[str, Any] | None = None
+        qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        self.create_subscription(PointCloud2, TOPIC, self._callback, qos)
+
+    def _callback(self, message: PointCloud2) -> None:
+        self.count += 1
+        self.last = summarize(message)
+        if self.last["width"] > 0 and self.last["data_bytes"] > 0 and self.last["valid_xyz_sample_count"] > 0:
+            self.nonempty_count += 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--duration-s", type=float, default=8.0)
+    args = parser.parse_args()
+    if args.output.exists():
+        parser.error("output must be new")
+    if not 1.0 <= args.duration_s <= 20.0:
+        parser.error("duration must be within [1, 20] seconds")
+    rclpy.init()
+    node = Capture()
+    try:
+        deadline = time.monotonic() + args.duration_s
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.05)
+        status = "PASS_NONEMPTY_POINTCLOUD" if node.nonempty_count > 0 else "BLOCKED_EMPTY_OR_MISSING_POINTCLOUD"
+        result = {
+            "schema": "robotsim.issue80.raicom-lidar-capture.v1",
+            "classification": "SIMULATION_ONLY_RAYCASTER_POINTCLOUD_CAPTURE",
+            "status": status,
+            "topic": TOPIC,
+            "duration_s": args.duration_s,
+            "message_count": node.count,
+            "nonempty_message_count": node.nonempty_count,
+            "last_message": node.last,
+            "read_only": True,
+            "velocity_publisher_created": False,
+            "mc_action_or_source_client_created": False,
+        }
+        args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        return 0 if status.startswith("PASS") else 2
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
