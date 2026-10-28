@@ -79,8 +79,8 @@ int main(int argc, char** argv) {
   for (int xi = 0; xi <= 49; ++xi) {
     const float x = -1.50f + 0.05f * xi;
     for (int yi = -3; yi <= 3; ++yi) {
-      const float y = -1.50f + 0.10f * yi;
-      for (int ai = -6; ai <= 6; ++ai) {
+      const float y = -1.40f + 0.20f * yi;
+      for (int ai = -4; ai <= 4; ++ai) {
         const float yaw = 0.10f * ai;
         mj_resetData(model, data);
         data->qpos[qpos] = x;
@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
   }
   output.close();
   std::ofstream result(result_path);
-  result << "{\"schema\":\"robotsim.issue80.lidar-static-map.v1\",\"status\":\"PASS\",\"candidates\":" << count << ",\"rays\":" << rays << ",\"x_range_m\":[-1.5,0.95],\"y_range_m\":[-1.8,-1.2],\"yaw_range_rad\":[-0.6,0.6],\"source\":\"STATIC_RAICOM_SCENE_MJ_RAY\",\"mj_step_calls\":0}\n";
+  result << "{\"schema\":\"robotsim.issue80.lidar-static-map.v1\",\"status\":\"PASS\",\"candidates\":" << count << ",\"rays\":" << rays << ",\"x_range_m\":[-1.5,0.95],\"y_range_m\":[-2.0,-0.8],\"yaw_range_rad\":[-0.4,0.4],\"source\":\"STATIC_RAICOM_SCENE_MJ_RAY\",\"mj_step_calls\":0}\n";
   mj_deleteData(data); mj_deleteModel(model);
   return 0;
 }
