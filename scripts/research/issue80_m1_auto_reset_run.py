@@ -3268,6 +3268,7 @@ class BoundedRun:
             config_path = "/workspace/evidence/lidar_overlay/simulator_lidar_overlay.yaml"
             launch_command = (
                 "ROBOTSIM_LIDAR_RAW_TRACE=/workspace/evidence/lidar_raw_frames.jsonl "
+                "ROBOTSIM_LIDAR_RAW_ENABLE_FILE=/workspace/evidence/lidar_raw_enable "
                 "ROBOTSIM_SIMULATOR_CFG_OVERRIDE=" + config_path
                 + " bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
             )
@@ -3306,6 +3307,11 @@ class BoundedRun:
                 "> /workspace/evidence/lidar_raw_bridge_runtime.json 2> /workspace/evidence/lidar_raw_bridge_runtime.stderr",
                 timeout_s=4.0,
                 detached=True,
+            )
+            self.docker_exec(
+                "enable_lidar_raw_trace_after_standing",
+                ": > /workspace/evidence/lidar_raw_enable",
+                timeout_s=2.0,
             )
             self.docker_exec(
                 "wait_lidar_overlay_model_loaded",

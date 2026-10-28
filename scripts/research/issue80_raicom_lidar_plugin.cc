@@ -33,6 +33,7 @@ struct LidarState {
   mjtNum min_range = 0;
   mjtNum max_range = 0;
   std::ofstream raw_trace;
+  std::string raw_enable_path;
   unsigned long long raw_sequence = 0;
 };
 
@@ -158,6 +159,9 @@ int Init(const mjModel* model, mjData* data, int instance) {
         delete lidar;
         return -1;
       }
+      if (const char* enable_path = std::getenv("ROBOTSIM_LIDAR_RAW_ENABLE_FILE")) {
+        lidar->raw_enable_path = enable_path;
+      }
     }
   }
   std::fprintf(stderr, "issue80_lidar_init ok sensor=%d camera=%d body=%d root=%d\n",
@@ -224,7 +228,8 @@ void Compute(const mjModel* model, mjData* data, int instance, int) {
   // The delivered publisher converts pos_b to map-frame coordinates.  Retain
   // this plugin's source-local samples separately for the SIMULATION_ONLY ROS
   // bridge; this never feeds MC and never writes MuJoCo state.
-  if (lidar->raw_trace.is_open()) {
+  if (lidar->raw_trace.is_open() &&
+      (lidar->raw_enable_path.empty() || std::ifstream(lidar->raw_enable_path).good())) {
     lidar->raw_trace << "{\"schema\":\"robotsim.issue80.lidar-raw.v1\","
                      << "\"sequence\":" << lidar->raw_sequence++ << ","
                      << "\"horizontal\":" << lidar->horizontal << ","
