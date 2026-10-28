@@ -162,6 +162,11 @@ TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
 # both phases; 28 s was a race with their startup and shutdown bookkeeping.
 LIDAR_RUNTIME_DURATION_S = 35.0
 LIDAR_RUNTIME_PROCESS_TIMEOUT_S = 38.0
+# The first LiDAR/odom table run reached 0.238 m target error at the old
+# 25 s active-command cap.  Its final measured progress rate implies roughly
+# 1.2 s more to enter the unchanged 0.15 m target radius.  Keep a bounded
+# margin for that evidence-backed completion rather than raising speed.
+VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S = 29.0
 PREARMED_STANDING_MIN_PARENT_RUNTIME_S = 90.0
 STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
 # The already-established root-motion guard is 0.20 m/s.  The pre-armed
@@ -1381,7 +1386,10 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
             "python3 /workspace/evidence/issue80_vendor_direct_truth_route.py"
             " --distance-m " + str(2.5 if direct_table_target else float(direct_distance_m))
-            + " --timeout-s " + ("25" if direct_table_target else "20")
+            + " --timeout-s " + (
+                str(VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S)
+                if direct_table_target else "20"
+            )
             + " --output /workspace/evidence/m1_first_motion_result.json"
             + " --trace /workspace/evidence/m1_vendor_direct_truth_trace.jsonl"
         )

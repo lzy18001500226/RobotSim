@@ -32,6 +32,7 @@ from issue80_m1_auto_reset_run import (
     stage_mc_generated_config_writeback,
     validate_static_nominal_start_table_approach_clearance,
     validate_fixed_window_open_segment_yaw_envelope,
+    VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S,
 )
 
 
@@ -1594,7 +1595,10 @@ class ResearchScriptStagingTests(unittest.TestCase):
         )
         child = shlex.split(build_m1_child_command(args, "direct-table-target")[-1].rsplit(" && ", 1)[1])
         self.assertEqual(child[child.index("--distance-m") + 1], "2.5")
-        self.assertEqual(child[child.index("--timeout-s") + 1], "25")
+        self.assertEqual(
+            child[child.index("--timeout-s") + 1],
+            str(VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S),
+        )
         self.assertEqual(child[child.index("--target-route-config") + 1], "/workspace/evidence/route_config.json")
         self.assertEqual(child[child.index("--target-name") + 1], "TABLE_APPROACH")
         self.assertEqual(child[child.index("--target-tolerance-m") + 1], "0.15")
