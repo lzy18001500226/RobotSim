@@ -6,6 +6,7 @@ import threading
 import unittest
 import json
 import hashlib
+import math
 import tempfile
 import time
 from types import SimpleNamespace
@@ -75,6 +76,7 @@ from issue80_m1_first_motion import (
     snapshot_fault,
     stand_mode_readback_confirmed,
     stand_action_and_common_confirmed,
+    target_bearing_heading_error_rad,
     source_readback_gap,
     validate_first_motion_authorization,
     validate_local_sim_publishers,
@@ -296,6 +298,16 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertFalse(stand_action_and_common_confirmed(action, MODE_STAND, 100, 0.51))
         self.assertFalse(stand_action_and_common_confirmed(action, MODE_STAND, 300, 0.05))
         self.assertFalse(stand_action_and_common_confirmed(action, MODE_LOCOMOTION, 100, 0.05))
+
+    def test_target_bearing_steers_back_to_lateral_waypoint_error(self) -> None:
+        self.assertAlmostEqual(
+            target_bearing_heading_error_rad(0.0, -0.20, 0.0, 1.0, 0.0),
+            math.atan2(0.20, 1.0),
+        )
+        self.assertAlmostEqual(
+            target_bearing_heading_error_rad(0.0, 0.20, 0.0, 1.0, 0.0),
+            -math.atan2(0.20, 1.0),
+        )
 
     def snapshot(self, **overrides):
         value = {

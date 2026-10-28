@@ -27,7 +27,10 @@ from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from issue80_m1_first_motion import stand_action_and_common_confirmed
+from issue80_m1_first_motion import (
+    stand_action_and_common_confirmed,
+    target_bearing_heading_error_rad,
+)
 
 
 PUBLISH_PERIOD_S = 0.02
@@ -411,9 +414,9 @@ def load_truth_target(path: Path, name: str) -> dict[str, float | str]:
     return {"name": name, "x_m": x_m, "y_m": y_m, "yaw_rad": yaw_rad}
 
 
-def heading_hold_command(current_yaw_rad: float, target_yaw_rad: float) -> tuple[float, float]:
+def heading_hold_command(heading_error_rad: float) -> tuple[float, float]:
     """Use only the measured, symmetric Run65 angular response and a deadband."""
-    error = wrap_angle(target_yaw_rad - current_yaw_rad)
+    error = wrap_angle(heading_error_rad)
     if error > HEADING_HOLD_DEADBAND_RAD:
         return error, HEADING_HOLD_COMMAND_RAD_S
     if error < -HEADING_HOLD_DEADBAND_RAD:
@@ -464,6 +467,7 @@ def main() -> int:
         "command": {"source": "node", "forward_m_s": 0.2, "publish_hz": 50.0},
         "heading_hold": {
             "enabled": bool(args.heading_hold),
+            "control_law": "target_bearing_from_map_localization" if args.heading_hold else None,
             "target_yaw_rad": target.get("yaw_rad") if target else None,
             "deadband_rad": HEADING_HOLD_DEADBAND_RAD if args.heading_hold else None,
             "command_magnitude_rad_s": HEADING_HOLD_COMMAND_RAD_S if args.heading_hold else None,
@@ -524,11 +528,15 @@ def main() -> int:
                     heading_pose = node.last_localization if args.localization_topic else node.last
                     assert heading_pose is not None
                     error, angular = heading_hold_command(
-                        heading_pose.yaw_rad, float(target["yaw_rad"])
+                        target_bearing_heading_error_rad(
+                            heading_pose.x_m, heading_pose.y_m, heading_pose.yaw_rad,
+                            float(target["x_m"]), float(target["y_m"]),
+                        )
                     )
                     node.heading_hold_commands.append({
                         "monotonic_s": now,
                         "yaw_error_rad": error,
+                        "target_bearing_rad": wrap_angle(heading_pose.yaw_rad + error),
                         "angular_velocity_rad_s": angular,
                     })
                 node.publish_velocity(0.2, angular)

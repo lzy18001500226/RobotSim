@@ -5973,7 +5973,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Stage-3 direct truth target: use the measured +/-0.075 rad/s forward-arc response "
-            "with a 0.04 rad yaw deadband while retaining the existing TABLE_APPROACH stop target"
+            "with a 0.04 rad target-bearing deadband while retaining the existing TABLE_APPROACH stop target"
         ),
     )
     parser.add_argument(

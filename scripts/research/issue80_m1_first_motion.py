@@ -2615,6 +2615,16 @@ def stand_action_and_common_confirmed(
     )
 
 
+def target_bearing_heading_error_rad(
+    x_m: float, y_m: float, yaw_rad: float, target_x_m: float, target_y_m: float,
+) -> float:
+    """Return the signed body-heading error for a planar target position."""
+    return math.atan2(
+        math.sin(math.atan2(target_y_m - y_m, target_x_m - x_m) - yaw_rad),
+        math.cos(math.atan2(target_y_m - y_m, target_x_m - x_m) - yaw_rad),
+    )
+
+
 def classify_turning_rotation(
     *, start_yaw_rad: float | None, end_yaw_rad: float | None,
     commanded_angular_velocity_rad_s: float, baseline_yaw_noise_rad: float | None,
