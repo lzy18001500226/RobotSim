@@ -21,6 +21,7 @@ import rclpy
 from aimdk_msgs.msg import McLocomotionVelocity, MessageHeader
 from aimdk_msgs.srv import SetMcInputSource
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
@@ -65,7 +66,7 @@ class PoseSample:
 class DirectTruthRoute(Node):
     """Reuse the vendor ADD + 50 Hz contract; truth only chooses the stop time."""
 
-    def __init__(self, target_distance_m: float, trace_path: Path) -> None:
+    def __init__(self, target_distance_m: float, trace_path: Path, localization_topic: str | None = None) -> None:
         super().__init__("issue80_vendor_direct_truth_route")
         self.target_distance_m = target_distance_m
         self.trace_path = trace_path
@@ -87,11 +88,14 @@ class DirectTruthRoute(Node):
         )
         self.start: PoseSample | None = None
         self.last: PoseSample | None = None
+        self.last_localization: PoseSample | None = None
         self.publish_times: list[float] = []
         self.heading_hold_commands: list[dict[str, float]] = []
         self.nonzero_publish_calls = 0
         self.zero_publish_calls = 0
         self.create_subscription(Odometry, "/aima/hal/odom/state", self._odom, self.odom_qos)
+        if localization_topic:
+            self.create_subscription(PoseStamped, localization_topic, self._localization, self.odom_qos)
 
     def _odom(self, msg: Odometry) -> None:
         position = msg.pose.pose.position
@@ -110,6 +114,16 @@ class DirectTruthRoute(Node):
             self.start = sample
         self.last = sample
         self._trace({"event": "odom", **sample.__dict__})
+
+    def _localization(self, msg: PoseStamped) -> None:
+        roll, pitch, yaw = roll_pitch_yaw(msg.pose.orientation)
+        self.last_localization = PoseSample(
+            x_m=float(msg.pose.position.x), y_m=float(msg.pose.position.y), z_m=float(msg.pose.position.z),
+            roll_rad=roll, pitch_rad=pitch, yaw_rad=yaw,
+            source_stamp_ns=int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec),
+            received_monotonic_s=time.monotonic(),
+        )
+        self._trace({"event": "localization", **self.last_localization.__dict__})
 
     def _trace(self, row: dict[str, Any]) -> None:
         self.trace.write(json.dumps({"monotonic_s": time.monotonic(), **row}, allow_nan=False) + "\n")
@@ -236,6 +250,7 @@ def main() -> int:
     parser.add_argument("--target-name", default=None)
     parser.add_argument("--target-tolerance-m", type=float, default=None)
     parser.add_argument("--heading-hold", action="store_true")
+    parser.add_argument("--localization-topic", default=None)
     args = parser.parse_args()
     if not 1.0 < args.distance_m <= 2.5:
         parser.error("--distance-m must be in (1.0, 2.5] for the bounded direct-gait baseline")
@@ -252,7 +267,7 @@ def main() -> int:
         parser.error("--heading-hold requires an explicit truth target")
     target = load_truth_target(args.target_route_config, str(args.target_name)) if target_requested else None
     rclpy.init()
-    node = DirectTruthRoute(args.distance_m, args.trace)
+    node = DirectTruthRoute(args.distance_m, args.trace, args.localization_topic)
     result: dict[str, Any] = {
         "schema": "robotsim.issue80.vendor-direct-truth-route.v1",
         "classification": (
@@ -262,6 +277,7 @@ def main() -> int:
         "status": "BLOCKED",
         "target_distance_m": args.distance_m,
         "target_pose_odom": target,
+        "target_pose_source": "map_localization" if args.localization_topic else "odom",
         "target_tolerance_m": args.target_tolerance_m,
         "final_target_error_m": None,
         "command": {"source": "node", "forward_m_s": 0.2, "publish_hz": 50.0},
@@ -291,10 +307,10 @@ def main() -> int:
         # for the direct node's first fresh odom callback.  A subscription that
         # has not yet received a sample is not a reason to publish motion.
         initial_odom_deadline = min(deadline, time.monotonic() + 4.0)
-        while rclpy.ok() and node.last is None and time.monotonic() < initial_odom_deadline:
+        while rclpy.ok() and (node.last is None or (target is not None and args.localization_topic and node.last_localization is None)) and time.monotonic() < initial_odom_deadline:
             rclpy.spin_once(node, timeout_sec=0.01)
-        if node.last is None:
-            result["fault"] = "initial_odometry_unavailable"
+        if node.last is None or (target is not None and args.localization_topic and node.last_localization is None):
+            result["fault"] = "initial_odometry_or_localization_unavailable"
             return 2
         next_publish = time.monotonic()
         terminal_reason = "timeout"
@@ -306,9 +322,11 @@ def main() -> int:
                 break
             assert node.start is not None and node.last is not None
             if target is not None:
+                target_pose = node.last_localization if args.localization_topic else node.last
+                assert target_pose is not None
                 target_error = math.hypot(
-                    node.last.x_m - float(target["x_m"]),
-                    node.last.y_m - float(target["y_m"]),
+                    target_pose.x_m - float(target["x_m"]),
+                    target_pose.y_m - float(target["y_m"]),
                 )
                 if target_error <= float(args.target_tolerance_m):
                     terminal_reason = "target_reached"
@@ -321,8 +339,10 @@ def main() -> int:
             if now >= next_publish:
                 angular = 0.0
                 if target is not None and args.heading_hold:
+                    heading_pose = node.last_localization if args.localization_topic else node.last
+                    assert heading_pose is not None
                     error, angular = heading_hold_command(
-                        node.last.yaw_rad, float(target["yaw_rad"])
+                        heading_pose.yaw_rad, float(target["yaw_rad"])
                     )
                     node.heading_hold_commands.append({
                         "monotonic_s": now,
@@ -346,12 +366,12 @@ def main() -> int:
             "terminal_reason": terminal_reason,
             "final_target_error_m": (
                 math.hypot(
-                    node.last.x_m - float(target["x_m"]),
-                    node.last.y_m - float(target["y_m"]),
+                    (node.last_localization if args.localization_topic else node.last).x_m - float(target["x_m"]),
+                    (node.last_localization if args.localization_topic else node.last).y_m - float(target["y_m"]),
                 ) if target is not None and node.last is not None else None
             ),
             "final_target_yaw_error_rad": (
-                wrap_angle(float(target["yaw_rad"]) - node.last.yaw_rad)
+                wrap_angle(float(target["yaw_rad"]) - (node.last_localization if args.localization_topic else node.last).yaw_rad)
                 if target is not None and node.last is not None else None
             ),
             "heading_hold_command_count": len(node.heading_hold_commands),
@@ -384,12 +404,12 @@ def main() -> int:
         result["measured_distance_m"] = node.distance_m()
         result["final_target_error_m"] = (
             math.hypot(
-                node.last.x_m - float(target["x_m"]),
-                node.last.y_m - float(target["y_m"]),
+                    (node.last_localization if args.localization_topic else node.last).x_m - float(target["x_m"]),
+                    (node.last_localization if args.localization_topic else node.last).y_m - float(target["y_m"]),
             ) if target is not None and node.last is not None else None
         )
         result["final_target_yaw_error_rad"] = (
-            wrap_angle(float(target["yaw_rad"]) - node.last.yaw_rad)
+            wrap_angle(float(target["yaw_rad"]) - (node.last_localization if args.localization_topic else node.last).yaw_rad)
             if target is not None and node.last is not None else None
         )
         result["heading_hold_command_count"] = len(node.heading_hold_commands)
