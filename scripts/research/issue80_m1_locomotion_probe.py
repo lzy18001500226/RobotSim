@@ -4843,7 +4843,14 @@ class FocusedM1Diagnostic(Node):
                 if fault:
                     route_fault = "transit_safety:" + fault
                     return True
-                if vendor_example_forward_baseline_mode:
+                if (
+                    vendor_example_forward_baseline_mode
+                    or (
+                        vendor_table_approach_mode
+                        and self.activation_lifecycle is not None
+                        and self.activation_lifecycle.activation_probe_command_allowed
+                    )
+                ):
                     # This is deliberately a vendor-command compatibility
                     # baseline, not a TABLE_APPROACH attempt.  Keep the
                     # physical-state guard above, but do not let a route
