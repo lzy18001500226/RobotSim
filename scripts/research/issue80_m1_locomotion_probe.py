@@ -1619,6 +1619,7 @@ class FocusedM1Diagnostic(Node):
         baseline_start_s: float | None = None
         next_sample_s: float | None = None
         baseline_end_s: float | None = None
+        fresh_initial_deadline_s = time.monotonic() + 2.0
         while rclpy.ok():
             if self.interrupted.is_set():
                 raise RuntimeError("operator_shutdown during stationary odometry baseline")
@@ -1636,6 +1637,17 @@ class FocusedM1Diagnostic(Node):
                 max_observed_planar_speed_m_s=getattr(self.args, "max_observed_planar_speed_m_s", None),
             )
             if fault:
+                # Reset/SD can publish one queued pre-handoff odometry packet
+                # before the first fresh standing sample.  It is not a motion
+                # command or a safety override: wait briefly for a new packet
+                # before the no-command baseline starts.
+                if (
+                    baseline_start_s is None
+                    and str(fault).startswith("stale_or_missing_state:odom")
+                    and time.monotonic() < fresh_initial_deadline_s
+                ):
+                    self._spin_for(0.02)
+                    continue
                 raise RuntimeError(f"stationary odometry baseline safety fault: {fault}")
             if (
                 snapshot.get("get_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
