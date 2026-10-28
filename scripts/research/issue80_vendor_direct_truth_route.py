@@ -28,6 +28,7 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from issue80_m1_first_motion import (
+    arc_limited_forward_speed,
     stand_action_and_common_confirmed,
     target_bearing_heading_error_rad,
 )
@@ -44,6 +45,8 @@ MIN_ROOT_Z_M = 0.52
 MAX_TILT_RAD = math.radians(15.0)
 HEADING_HOLD_COMMAND_RAD_S = 0.075
 HEADING_HOLD_DEADBAND_RAD = 0.04
+PREALIGN_BEARING_ERROR_RAD = 0.25
+TURN_ARC_FORWARD_M_S = 0.12
 MODE_STAND = "STAND_DEFAULT"
 ACTION_SOURCE = "rc"  # Exact source used by the delivered SetMcAction example.
 
@@ -497,7 +500,12 @@ def main() -> int:
         "target_tolerance_m": args.target_tolerance_m,
         "final_target_error_m": None,
         "final_odom_target_error_m": None,
-        "command": {"source": "node", "forward_m_s": 0.2, "publish_hz": 50.0},
+        "command": {
+            "source": "node", "forward_max_m_s": 0.2,
+            "prealign_arc_forward_m_s": TURN_ARC_FORWARD_M_S,
+            "prealign_bearing_error_rad": PREALIGN_BEARING_ERROR_RAD,
+            "publish_hz": 50.0,
+        },
         "heading_hold": {
             "enabled": bool(args.heading_hold),
             "control_law": "target_bearing_from_map_localization" if args.heading_hold else None,
@@ -557,6 +565,7 @@ def main() -> int:
             now = time.monotonic()
             if now >= next_publish:
                 angular = 0.0
+                forward = 0.2
                 if target is not None and args.heading_hold:
                     heading_pose = node.last_localization if args.localization_topic else node.last
                     assert heading_pose is not None
@@ -572,7 +581,12 @@ def main() -> int:
                         "target_bearing_rad": wrap_angle(heading_pose.yaw_rad + error),
                         "angular_velocity_rad_s": angular,
                     })
-                node.publish_velocity(0.2, angular)
+                    forward = arc_limited_forward_speed(
+                        error, turn_arc_m_s=TURN_ARC_FORWARD_M_S,
+                        prealign_error_rad=PREALIGN_BEARING_ERROR_RAD,
+                    )
+                    node.heading_hold_commands[-1]["forward_velocity_m_s"] = forward
+                node.publish_velocity(forward, angular)
                 while next_publish <= now:
                     next_publish += PUBLISH_PERIOD_S
         stand_transition = node.zero_stop_to_confirmed_stand()

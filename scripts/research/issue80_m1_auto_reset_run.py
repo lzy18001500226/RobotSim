@@ -162,11 +162,10 @@ TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
 # both phases; 28 s was a race with their startup and shutdown bookkeeping.
 LIDAR_RUNTIME_DURATION_S = 42.0
 LIDAR_RUNTIME_PROCESS_TIMEOUT_S = 45.0
-# The first LiDAR/odom table run reached 0.238 m target error at the old
-# 25 s active-command cap.  Its final measured progress rate implies roughly
-# 1.2 s more to enter the unchanged 0.15 m target radius.  Keep a bounded
-# margin for that evidence-backed completion rather than raising speed.
-VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S = 29.0
+# A large initial bearing error now uses the independently qualified 0.12 m/s
+# forward-arc profile before resuming 0.20 m/s cruise.  Keep enough bounded
+# time for that lower-speed alignment while preserving the final 0.15 m gate.
+VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S = 35.0
 PREARMED_STANDING_MIN_PARENT_RUNTIME_S = 90.0
 STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
 # The already-established root-motion guard is 0.20 m/s.  The pre-armed

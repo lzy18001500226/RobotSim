@@ -1599,6 +1599,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             child[child.index("--timeout-s") + 1],
             str(VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S),
         )
+        self.assertEqual(VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S, 35.0)
         self.assertEqual(child[child.index("--target-route-config") + 1], "/workspace/evidence/route_config.json")
         self.assertEqual(child[child.index("--target-name") + 1], "TABLE_APPROACH")
         self.assertEqual(child[child.index("--target-tolerance-m") + 1], "0.15")

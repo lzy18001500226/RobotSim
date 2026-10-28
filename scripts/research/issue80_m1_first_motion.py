@@ -2625,6 +2625,20 @@ def target_bearing_heading_error_rad(
     )
 
 
+def arc_limited_forward_speed(
+    heading_error_rad: float, *, cruise_m_s: float = 0.20,
+    turn_arc_m_s: float = 0.12, prealign_error_rad: float = 0.25,
+) -> float:
+    """Reuse the qualified forward-arc speed while a large bearing error remains."""
+    if not all(math.isfinite(value) for value in (
+        heading_error_rad, cruise_m_s, turn_arc_m_s, prealign_error_rad,
+    )):
+        raise ValueError("arc speed values must be finite")
+    if not 0.0 < turn_arc_m_s <= cruise_m_s or prealign_error_rad < 0.0:
+        raise ValueError("arc speed bounds are invalid")
+    return turn_arc_m_s if abs(heading_error_rad) > prealign_error_rad else cruise_m_s
+
+
 def classify_turning_rotation(
     *, start_yaw_rad: float | None, end_yaw_rad: float | None,
     commanded_angular_velocity_rad_s: float, baseline_yaw_noise_rad: float | None,

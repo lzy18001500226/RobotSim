@@ -77,6 +77,7 @@ from issue80_m1_first_motion import (
     stand_mode_readback_confirmed,
     stand_action_and_common_confirmed,
     target_bearing_heading_error_rad,
+    arc_limited_forward_speed,
     source_readback_gap,
     validate_first_motion_authorization,
     validate_local_sim_publishers,
@@ -308,6 +309,11 @@ class FirstMotionSafetyTests(unittest.TestCase):
             target_bearing_heading_error_rad(0.0, 0.20, 0.0, 1.0, 0.0),
             -math.atan2(0.20, 1.0),
         )
+
+    def test_large_bearing_error_uses_only_qualified_forward_arc_speed(self) -> None:
+        self.assertEqual(arc_limited_forward_speed(0.24), 0.20)
+        self.assertEqual(arc_limited_forward_speed(0.26), 0.12)
+        self.assertEqual(arc_limited_forward_speed(-0.26), 0.12)
 
     def snapshot(self, **overrides):
         value = {
