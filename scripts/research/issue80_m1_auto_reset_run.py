@@ -3281,6 +3281,19 @@ class BoundedRun:
             "timeout 25s bash -lc 'until grep -q \"MujocoSimModule Started Succeeded\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
             timeout_s=26.0,
         )
+        # In the LiDAR overlay, the precompiled GUI reports module startup
+        # before it finishes loading the MJCF on its GUI worker.  Starting MC
+        # in that gap produces zero-filled model-manager telemetry and an
+        # empty viewer, not a valid passive state.  Wait for the unchanged
+        # simulator's own native pelvis lookup before MC exists.  The custom
+        # plugin initialization record additionally proves this is the
+        # evidence-local LiDAR model, not the normal no-sensor fallback.
+        if self.lidar_overlay_source is not None:
+            self.docker_exec(
+                "wait_lidar_overlay_model_loaded",
+                "timeout 20s bash -lc 'until grep -q \"Odom initialized: body_id=1, name=pelvis\" /workspace/evidence/mujoco-console.log && grep -q \"issue80_lidar_init ok\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
+                timeout_s=21.0,
+            )
         if self.local01_scene_bundle is not None and self.lidar_overlay_source is None:
             scene_path = str(self.local01_scene_bundle.get(
                 "runtime_scene_path",

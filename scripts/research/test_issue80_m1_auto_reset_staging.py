@@ -2338,6 +2338,39 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertTrue(any(name == "verify_local01_runtime_scene_wrapper_sha256" for name, _ in calls))
         self.assertTrue(any(name == "verify_local01_simulator_config_sha256" for name, _ in calls))
 
+    def test_lidar_startup_waits_for_native_model_load_before_mc_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            evidence = Path(temp_dir)
+            overlay = evidence / "lidar_overlay"
+            overlay.mkdir()
+            scene = overlay / "scene_lidar_overlay.xml"
+            config = overlay / "simulator_lidar_overlay.yaml"
+            scene.write_text("<mujoco model='test'/>", encoding="utf-8")
+            config.write_text("simulation_model: scene.xml\n", encoding="utf-8")
+            runner = self.make_runner(evidence)
+            runner.lidar_overlay_source = Path("/review/lidar-overlay")
+            runner.lidar_overlay_dir = overlay
+            calls = []
+
+            def fake_exec(name, command, **kwargs):
+                calls.append((name, command))
+                if name.startswith("verify_lidar_overlay_"):
+                    source = scene if name.endswith("scene_lidar_overlay_xml") else config
+                    return subprocess.CompletedProcess(
+                        command, 0, hashlib.sha256(source.read_bytes()).hexdigest() + "  staged\n", ""
+                    )
+                return subprocess.CompletedProcess(command, 0, "ready\n", "")
+
+            runner.docker_exec = fake_exec
+            runner.start_sim_first()
+
+        names = [name for name, _ in calls]
+        self.assertLess(names.index("wait_simulator_module_ready"), names.index("wait_lidar_overlay_model_loaded"))
+        self.assertLess(names.index("wait_lidar_overlay_model_loaded"), names.index("start_mc_after_sim_topics"))
+        model_wait = dict(calls)["wait_lidar_overlay_model_loaded"]
+        self.assertIn("Odom initialized: body_id=1, name=pelvis", model_wait)
+        self.assertIn("issue80_lidar_init ok", model_wait)
+
     def test_cleanup_records_normal_teardown_and_process_crash_limitation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             runner = self.make_runner(Path(temp_dir))
