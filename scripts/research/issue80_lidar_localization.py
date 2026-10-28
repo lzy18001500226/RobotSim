@@ -56,7 +56,9 @@ class LidarLocalizer(Node):
     def __init__(self, start: Pose2, trace_path: Path | None = None) -> None:
         super().__init__("issue80_lidar_localizer")
         self.pose = start
+        self.start = start
         self.previous: np.ndarray | None = None
+        self.map_reference: np.ndarray | None = None
         self.last_result: dict[str, float | int | str] | None = None
         self.trace = trace_path.open("x", encoding="utf-8", buffering=1) if trace_path else None
         qos = QoSProfile(
@@ -83,9 +85,9 @@ class LidarLocalizer(Node):
         current = xy_from_cloud(message)
         if len(current) < 16:
             return
-        if self.previous is not None:
+        if self.map_reference is not None:
             try:
-                forward, lateral, yaw, residual = scan_delta(self.previous, current)
+                forward, lateral, yaw, residual = scan_delta(self.map_reference, current)
             except ValueError:
                 return
             displacement = math.hypot(forward, lateral)
@@ -98,8 +100,11 @@ class LidarLocalizer(Node):
                     "residual_m": residual,
                     "point_count": int(len(current)),
                 }
-            elif residual <= 0.20 and displacement <= 0.25 and abs(yaw) <= 0.20:
-                self.pose = self.pose.apply_delta(forward, lateral, yaw)
+            elif residual <= 0.20 and displacement <= 2.5 and abs(yaw) <= 0.35:
+                # Register every live scan directly to the first source-map
+                # scan.  This avoids integrating 5 Hz ICP noise over a long
+                # MC gait window; no odometry is used to update this pose.
+                self.pose = self.start.apply_delta(forward, lateral, yaw)
                 self.last_result = {
                     "status": "SCAN_DELTA_ACCEPTED",
                     "forward_m": forward,
@@ -118,6 +123,8 @@ class LidarLocalizer(Node):
                     "point_count": int(len(current)),
                 }
         self.previous = current
+        if self.map_reference is None:
+            self.map_reference = current
         self._publish(message.header.stamp)
         if self.trace is not None:
             self.trace.write(json.dumps({
