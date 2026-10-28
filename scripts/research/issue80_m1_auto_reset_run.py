@@ -3310,6 +3310,19 @@ class BoundedRun:
             expected_config = str(self.local01_scene_bundle["runtime_files_sha256"][config_filename])
             if actual_config != expected_config:
                 raise RuntimeError("container simulator config differs from the validated Local01 scene overlay")
+        if self.lidar_overlay_source is not None:
+            assert self.lidar_overlay_dir is not None
+            for filename in ("scene_lidar_overlay.xml", "simulator_lidar_overlay.yaml"):
+                source_path = self.lidar_overlay_dir / filename
+                expected = hashlib.sha256(source_path.read_bytes()).hexdigest()
+                checked = self.docker_exec(
+                    "verify_lidar_overlay_" + filename.replace(".", "_"),
+                    "sha256sum /workspace/evidence/lidar_overlay/" + filename,
+                    timeout_s=4.0,
+                )
+                actual = checked.stdout.split()[0] if checked.stdout.split() else ""
+                if actual != expected:
+                    raise RuntimeError("container LiDAR overlay differs from the evidence-local verified input")
         if self.foundationwalk_config_overlay is not None:
             expected = str(self.foundationwalk_config_overlay_manifest["overlay_sha256"])
             checked = self.docker_exec(
@@ -5045,10 +5058,16 @@ class BoundedRun:
                     result["static_nominal_start_preflight"] = static_start
                 else:
                     assert title is not None
-                    title_matches = "RAICOM X2 room workspace" in title
+                    title_matches = (
+                        "RAICOM X2 room workspace" in title
+                        or (self.lidar_overlay_source is not None and title == "MuJoCo")
+                    )
                     result["scene_window_verification"] = {
                         "status": "PASS" if title_matches else "FAIL",
-                        "expected_scene_model_title_fragment": "RAICOM X2 room workspace",
+                        "expected_scene_model_title_fragment": (
+                            "RAICOM X2 room workspace or generic MuJoCo after verified LiDAR overlay"
+                            if self.lidar_overlay_source is not None else "RAICOM X2 room workspace"
+                        ),
                         "observed_window_title": title,
                         "scene_runtime_bundle_sha256": scene_sha,
                         "aligned_start_table_approach": self.aligned_start_table_approach,
