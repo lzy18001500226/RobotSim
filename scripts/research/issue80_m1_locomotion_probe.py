@@ -4190,20 +4190,6 @@ class FocusedM1Diagnostic(Node):
                         continuous_table_approach_mode or vendor_table_approach_mode
                     ),
                 )
-                if vendor_table_approach_mode:
-                    # The second, table-facing corridor includes the full
-                    # robot footprint.  A 0.15 m rolling arrival can switch
-                    # into it before that footprint has physically crossed
-                    # its start boundary.  Keep its unchanged clearance and
-                    # tighten only the intermediate hand-off distance.
-                    route = replace(
-                        route,
-                        steps=(
-                            replace(route.steps[0], position_tolerance_m=0.05),
-                            route.steps[1],
-                        ),
-                    )
-                    route.validate()
                 if (
                     continuous_ten_second_transit_mode
                     or native_nominal_straight_gait_diagnostic_mode
@@ -5305,6 +5291,12 @@ class FocusedM1Diagnostic(Node):
                         if waypoint_b_short_diagnostic else 0.0
                     ),
                 )
+                if vendor_table_approach_mode and active.waypoint_id == "WAYPOINT":
+                    # Retain the route's generic 0.15 m public waypoint
+                    # tolerance.  Only delay the rolling hand-off into the
+                    # narrower table-facing footprint corridor until the
+                    # measured base center is within 50 mm of the waypoint.
+                    arrival_trigger_radius_m = 0.05
                 feedback = MotionFeedback(
                     status=(
                         MotionStatus.ARRIVED
