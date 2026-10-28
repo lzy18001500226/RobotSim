@@ -3299,21 +3299,6 @@ class BoundedRun:
         # evidence-local LiDAR model, not the normal no-sensor fallback.
         if self.lidar_overlay_source is not None:
             self.docker_exec(
-                "start_lidar_raw_bridge",
-                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                "timeout 31s python3 /workspace/evidence/issue80_lidar_raw_bridge.py "
-                "--trace /workspace/evidence/lidar_raw_frames.jsonl --duration-s 28 "
-                "--result /workspace/evidence/lidar_raw_bridge_result.json "
-                "> /workspace/evidence/lidar_raw_bridge_runtime.json 2> /workspace/evidence/lidar_raw_bridge_runtime.stderr",
-                timeout_s=4.0,
-                detached=True,
-            )
-            self.docker_exec(
-                "enable_lidar_raw_trace_after_standing",
-                ": > /workspace/evidence/lidar_raw_enable",
-                timeout_s=2.0,
-            )
-            self.docker_exec(
                 "wait_lidar_overlay_model_loaded",
                 "timeout 20s bash -lc 'until grep -q \"Odom initialized: body_id=1, name=pelvis\" /workspace/evidence/mujoco-console.log && grep -q \"issue80_lidar_init ok\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
                 timeout_s=21.0,
@@ -4679,6 +4664,21 @@ class BoundedRun:
                 "> /workspace/evidence/lidar_localizer_runtime.json 2> /workspace/evidence/lidar_localizer_runtime.stderr",
                 timeout_s=4.0,
                 detached=True,
+            )
+            self.docker_exec(
+                "start_lidar_raw_bridge",
+                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+                "timeout 31s python3 /workspace/evidence/issue80_lidar_raw_bridge.py "
+                "--trace /workspace/evidence/lidar_raw_frames.jsonl --duration-s 28 "
+                "--result /workspace/evidence/lidar_raw_bridge_result.json "
+                "> /workspace/evidence/lidar_raw_bridge_runtime.json 2> /workspace/evidence/lidar_raw_bridge_runtime.stderr",
+                timeout_s=4.0,
+                detached=True,
+            )
+            self.docker_exec(
+                "enable_lidar_raw_trace_after_standing",
+                ": > /workspace/evidence/lidar_raw_enable",
+                timeout_s=2.0,
             )
         command = build_m1_child_command(self.args, self.container)
         child_timeout_s = TABLE_APPROACH_CHILD_TIMEOUT_S if getattr(self.args, "table_approach_mission", None) else 30.0 if zero_only_activation or activation_probe else (
