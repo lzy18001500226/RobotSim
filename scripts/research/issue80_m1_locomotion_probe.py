@@ -211,6 +211,10 @@ TABLE_APPROACH_SEGMENT_TIMEOUT_S = 300.0
 TABLE_APPROACH_CONTINUOUS_WINDOW_S = 10.0
 TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS = 8
 TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S = 75.0
+# The measured vendor-style gait covers about 0.63 m per 5 s.  Twenty-five
+# seconds is enough for the 2.4 m fixed table-approach task while remaining a
+# single bounded command window and below the existing 75 s research ceiling.
+VENDOR_TABLE_APPROACH_MAX_NONZERO_S = 25.0
 # Run80's 0.15 m taper still missed the yaw stop gate by 0.13 deg. A saved-pose
 # command-only replay showed 0.25 m start reduces angular command integral
 # further; this is one bounded terminal-settling diagnostic, not a new goal
@@ -3157,8 +3161,14 @@ class FocusedM1Diagnostic(Node):
         vendor_example_forward_baseline_mode = bool(
             getattr(self.args, "raicom_vendor_example_forward_baseline", False)
         )
+        vendor_table_approach_mode = bool(
+            getattr(self.args, "raicom_vendor_table_approach", False)
+        )
+        vendor_velocity_profile_mode = (
+            vendor_example_forward_baseline_mode or vendor_table_approach_mode
+        )
         vendor_example_planar_speed_guard_m_s = (
-            0.8 if vendor_example_forward_baseline_mode else 0.2
+            0.8 if vendor_velocity_profile_mode else 0.2
         )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
@@ -3389,6 +3399,24 @@ class FocusedM1Diagnostic(Node):
                 ),
                 "angular_velocity_rad_s": 0.0 if vendor_example_forward_baseline_mode else None,
                 "maximum_window_s": 5.0 if vendor_example_forward_baseline_mode else None,
+            },
+            "vendor_table_approach": {
+                "enabled": vendor_table_approach_mode,
+                "classification": (
+                    "SIMULATION_ONLY_VENDOR_TABLE_APPROACH_GROUND_TRUTH"
+                    if vendor_table_approach_mode else None
+                ),
+                "forward_velocity_m_s": (
+                    VENDOR_EXAMPLE_FORWARD_M_S if vendor_table_approach_mode else None
+                ),
+                "angular_velocity_rad_s": 0.0 if vendor_table_approach_mode else None,
+                "maximum_nonzero_s": (
+                    VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                    if vendor_table_approach_mode else None
+                ),
+                "intermediate_waypoint_stop_behavior": (
+                    "ROLLING" if vendor_table_approach_mode else None
+                ),
             },
             "native_mjdata_route_feedback": {
                 "enabled": native_mjdata_route_feedback_mode,
@@ -4088,10 +4116,10 @@ class FocusedM1Diagnostic(Node):
                     lifecycle, next_set_action, activation_gate = self.begin_source_grounded_route_activation(
                         registration=registration, phase="table-approach-first-transit-rearm",
                         forward_command_m_s=(
-                            VENDOR_EXAMPLE_FORWARD_M_S if vendor_example_forward_baseline_mode
+                            VENDOR_EXAMPLE_FORWARD_M_S if vendor_velocity_profile_mode
                             else float(self.args.forward_speed)
                         ),
-                        allow_vendor_example=vendor_example_forward_baseline_mode,
+                        allow_vendor_example=vendor_velocity_profile_mode,
                     )
                     result["post_alignment_source_grounded_activation"] = {
                         "set_mc_action_ld": next_set_action,
@@ -4158,7 +4186,9 @@ class FocusedM1Diagnostic(Node):
                     runtime_robot_footprint_radius_m=footprint,
                     verified_local_clear_radius_m=clear_radius,
                     segment_timeout_s=TABLE_APPROACH_SEGMENT_TIMEOUT_S,
-                    rolling_intermediate_waypoint=continuous_table_approach_mode,
+                    rolling_intermediate_waypoint=(
+                        continuous_table_approach_mode or vendor_table_approach_mode
+                    ),
                 )
                 if (
                     continuous_ten_second_transit_mode
@@ -4361,7 +4391,7 @@ class FocusedM1Diagnostic(Node):
             )
             if transit_plan.status != "PROPOSAL_ONLY" or transit_plan.forward_m_s <= 0.0:
                 raise ValueError(f"route bridge refused transit proposal: {transit_plan.status}: {transit_plan.reason}")
-            if vendor_example_forward_baseline_mode:
+            if vendor_velocity_profile_mode:
                 # The route model stays at its previously validated 0.12 m/s
                 # limit.  This isolated compatibility check substitutes only
                 # the vendor example's forward command and 5 s duration at
@@ -4369,9 +4399,16 @@ class FocusedM1Diagnostic(Node):
                 # path without treating the route as completed.
                 transit_plan = replace(
                     transit_plan,
-                    classification="SIMULATION_ONLY_VENDOR_EXAMPLE_COMPATIBILITY_CHECK",
+                    classification=(
+                        "SIMULATION_ONLY_VENDOR_TABLE_APPROACH_GROUND_TRUTH"
+                        if vendor_table_approach_mode else
+                        "SIMULATION_ONLY_VENDOR_EXAMPLE_COMPATIBILITY_CHECK"
+                    ),
                     forward_m_s=VENDOR_EXAMPLE_FORWARD_M_S,
-                    maximum_duration_s=5.0,
+                    maximum_duration_s=(
+                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        if vendor_table_approach_mode else 5.0
+                    ),
                 )
             # Record the actual bridge directive, rather than the legacy generic
             # route default. This must match the value reaching publish_window.
@@ -4423,6 +4460,8 @@ class FocusedM1Diagnostic(Node):
                     "route_motion_profile": (
                         "SIMULATION_ONLY_VENDOR_EXAMPLE_COMPATIBILITY_CHECK"
                         if vendor_example_forward_baseline_mode else
+                        "SIMULATION_ONLY_VENDOR_TABLE_APPROACH_GROUND_TRUTH"
+                        if vendor_table_approach_mode else
                         "SIMULATION_ONLY_ALIGNED_START_NATIVE_X2_TIMESTEP_LOW_CRUISE_TABLE_APPROACH_RECOVERY"
                         if native_x2_timestep_mode else
                         "SIMULATION_ONLY_ALIGNED_START_LOW_CRUISE_TABLE_APPROACH_RECOVERY"
@@ -4432,7 +4471,11 @@ class FocusedM1Diagnostic(Node):
                         "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION"
                     ),
                     "maximum_windows_total": (
-                        1 if (native_nominal_straight_gait_diagnostic_mode or vendor_example_forward_baseline_mode)
+                        1 if (
+                            native_nominal_straight_gait_diagnostic_mode
+                            or vendor_example_forward_baseline_mode
+                            or vendor_table_approach_mode
+                        )
                         else 1 if continuous_table_approach_mode
                         else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                         if continuous_ten_second_transit_mode
@@ -4452,7 +4495,7 @@ class FocusedM1Diagnostic(Node):
                     ),
                     "aggregate_nonzero_limit_s": float(limits["max_aggregate_nonzero_s"]),
                     "maximum_forward_m_s": (
-                        VENDOR_EXAMPLE_FORWARD_M_S if vendor_example_forward_baseline_mode
+                        VENDOR_EXAMPLE_FORWARD_M_S if vendor_velocity_profile_mode
                         else float(route.steps[0].max_forward_m_s)
                     ),
                     "maximum_angular_rad_s": float(limits["angular_rad_s"]),
@@ -4963,6 +5006,9 @@ class FocusedM1Diagnostic(Node):
                     else None
                 )
                 sample_disposition = (
+                    "SKIP_DUPLICATE_ROUTE_TICK" if odom_stamp_action == "DUPLICATE"
+                    else "ADVANCE_ROUTE_TICK"
+                    if vendor_table_approach_mode else
                     route_feedback_sample_disposition(
                         odom_action=odom_stamp_action,
                         cross_track_error_m=cross_track_guard_m,
@@ -5336,7 +5382,11 @@ class FocusedM1Diagnostic(Node):
             transit_window_limit = (
                 SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                 (
-                    1 if native_nominal_straight_gait_diagnostic_mode
+                    1 if (
+                        native_nominal_straight_gait_diagnostic_mode
+                        or vendor_example_forward_baseline_mode
+                        or vendor_table_approach_mode
+                    )
                     else 1 if continuous_table_approach_mode
                     else TABLE_APPROACH_CONTINUOUS_MAX_WINDOWS
                     if continuous_ten_second_transit_mode
@@ -5351,6 +5401,8 @@ class FocusedM1Diagnostic(Node):
             )
             transit_aggregate_limit_s = (
                 SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode else
+                VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                if vendor_table_approach_mode else
                 TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                 if continuous_table_approach_mode else
                 float(local01_route_input["limits"]["max_aggregate_nonzero_s"])
@@ -5396,7 +5448,7 @@ class FocusedM1Diagnostic(Node):
                         )
                         or fixed_window_open_segment_acquisition
                     )
-                    if route_config_mode and len(result["segments"]) >= (
+                    if route_config_mode and not vendor_table_approach_mode and len(result["segments"]) >= (
                         SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                         (
                             1 if (
@@ -5439,7 +5491,7 @@ class FocusedM1Diagnostic(Node):
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
                             ),
-                            allow_vendor_example=vendor_example_forward_baseline_mode,
+                            allow_vendor_example=vendor_velocity_profile_mode,
                             zero_forward_heading_acquisition=heading_acquisition_this_window,
                         )
                         result.setdefault("activation_rearms", []).append({
@@ -5475,6 +5527,8 @@ class FocusedM1Diagnostic(Node):
                         self.activation_lifecycle = lifecycle
                     remaining_route_s = (
                         SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode else
+                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        if vendor_table_approach_mode else
                         TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                         if continuous_table_approach_mode else
                         float(local01_route_input["limits"]["max_aggregate_nonzero_s"])
@@ -5483,10 +5537,14 @@ class FocusedM1Diagnostic(Node):
                     ) - route_total_nonzero_s
                     remaining_transit_s = transit_aggregate_limit_s - segment_nonzero_s
                     window_cap_s = min(
+                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        if vendor_table_approach_mode else
                         TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                         if continuous_table_approach_mode else
                         float(current_plan.maximum_duration_s),
                         SHORT_ROUTE_MAX_WINDOW_S if short_scene_route_mode else
+                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        if vendor_table_approach_mode else
                         TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                         if continuous_table_approach_mode else
                         CURVED_PATH_MAX_WINDOW_S if curved_path_diagnostic else
@@ -5520,7 +5578,7 @@ class FocusedM1Diagnostic(Node):
                     active_window_gate = TransitSteeringGate(warmup_s=ROUTE_STEERING_WARMUP_S)
                     steering_samples: list[dict[str, Any]] = []
                     transit_forward_m_s = (
-                        VENDOR_EXAMPLE_FORWARD_M_S if vendor_example_forward_baseline_mode else
+                        VENDOR_EXAMPLE_FORWARD_M_S if vendor_velocity_profile_mode else
                         min(float(current_plan.forward_m_s), ROUTE_TRANSIT_MAX_FORWARD_M_S)
                     )
 
@@ -5689,6 +5747,7 @@ class FocusedM1Diagnostic(Node):
                                 elif (
                                     native_nominal_straight_gait_diagnostic_mode
                                     or vendor_example_forward_baseline_mode
+                                    or vendor_table_approach_mode
                                     or straight_ten_second_table_approach_mode
                                 ):
                                     angular = 0.0
@@ -5698,6 +5757,8 @@ class FocusedM1Diagnostic(Node):
                                             if native_nominal_straight_gait_diagnostic_mode else
                                             "VENDOR_EXAMPLE_FORWARD_BASELINE"
                                             if vendor_example_forward_baseline_mode else
+                                            "VENDOR_TABLE_APPROACH_ZERO_YAW_GAIT"
+                                            if vendor_table_approach_mode else
                                             "STRAIGHT_TEN_SECOND_STATIC_COLLINEAR_GAIT"
                                         ),
                                         "target_x_m": float(active.x_m),
@@ -5712,6 +5773,8 @@ class FocusedM1Diagnostic(Node):
                                             if native_nominal_straight_gait_diagnostic_mode else
                                             "ZERO_YAW_VENDOR_BASELINE"
                                             if vendor_example_forward_baseline_mode else
+                                            "ZERO_YAW_VENDOR_TABLE_APPROACH"
+                                            if vendor_table_approach_mode else
                                             "ZERO_YAW_STATIC_COLLINEAR_ROUTE"
                                         ),
                                         "locomotion_handshake_confirmed": True,
@@ -5933,8 +5996,12 @@ class FocusedM1Diagnostic(Node):
                         forward_command_m_s=transit_forward_m_s,
                         pulse_duration_s=pulse_duration_s,
                         max_pulse_duration_s=window_cap_s,
-                        continuous_route_authorized=continuous_table_approach_mode,
+                        continuous_route_authorized=(
+                            continuous_table_approach_mode or vendor_table_approach_mode
+                        ),
                         continuous_route_nonzero_limit_s=(
+                            VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                            if vendor_table_approach_mode else
                             TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                             if continuous_table_approach_mode else None
                         ),
@@ -5966,7 +6033,7 @@ class FocusedM1Diagnostic(Node):
                         allow_raicom_low_cruise_source_activation=bool(
                             getattr(self.args, "raicom_low_cruise_profile", False)
                         ),
-                        allow_vendor_example_source_activation=vendor_example_forward_baseline_mode,
+                        allow_vendor_example_source_activation=vendor_velocity_profile_mode,
                     )
                     # The complete physical-stop window is fresh when the
                     # bounded motion helper returns.  Preserve that actual
@@ -6553,7 +6620,7 @@ class FocusedM1Diagnostic(Node):
                 })
                 return result
 
-            if continuous_table_approach_mode:
+            if continuous_table_approach_mode or vendor_table_approach_mode:
                 transit_summary = run_transit_windows(
                     current_directive,
                     transit_plan,
@@ -6614,7 +6681,7 @@ class FocusedM1Diagnostic(Node):
                     state_timeout_s=self.args.state_timeout,
                     min_root_z=self.args.min_root_z,
                     max_tilt_deg=self.args.max_tilt_deg,
-                    max_observed_planar_speed_m_s=0.2,
+                    max_observed_planar_speed_m_s=vendor_example_planar_speed_guard_m_s,
                 )
                 stand_ok = fresh_stand_mode_readback_valid(
                     final_snapshot, maximum_age_s=float(self.args.state_timeout),
@@ -6688,6 +6755,10 @@ class FocusedM1Diagnostic(Node):
                 result.update({
                     "status": "PASS" if passed else "BLOCKED",
                     "classification": (
+                        "SIMULATION_ONLY_VENDOR_NATIVE_GROUND_TRUTH_TABLE_APPROACH_PASS"
+                        if vendor_table_approach_mode and passed else
+                        "SIMULATION_ONLY_VENDOR_NATIVE_GROUND_TRUTH_TABLE_APPROACH_BLOCKED"
+                        if vendor_table_approach_mode else
                         "SIMULATION_ONLY_CONTINUOUS_NATIVE_GROUND_TRUTH_TABLE_APPROACH_PASS"
                         if passed else "SIMULATION_ONLY_CONTINUOUS_NATIVE_GROUND_TRUTH_TABLE_APPROACH_BLOCKED"
                     ),
@@ -6700,11 +6771,24 @@ class FocusedM1Diagnostic(Node):
                         "final_yaw_error_rad": final_yaw_error_rad,
                         "physical_stop_gate": last_gate.get("status"),
                     },
+                    "vendor_table_approach": {
+                        **result["vendor_table_approach"],
+                        "status": "PASS" if passed else "FAIL",
+                        "rolling_waypoint_events": rolling_events,
+                        "terminal_waypoint": final_active.waypoint_id,
+                        "final_position_error_m": final_error_m,
+                        "final_yaw_error_rad": final_yaw_error_rad,
+                        "physical_stop_gate": last_gate.get("status"),
+                    },
                     "route_events": route_events + route_motion.events,
                     "route_total_nonzero_command_time_s": route_total_nonzero_s,
                     "route_total_windows": 1,
                     "route_window_limit": 1,
-                    "aggregate_nonzero_limit_s": TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S,
+                    "aggregate_nonzero_limit_s": (
+                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        if vendor_table_approach_mode else
+                        TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
+                    ),
                     "final_composite_physical_stop": last_gate.get("status"),
                     "route_manager_state": {
                         "status": executor.state.value,
@@ -8248,6 +8332,7 @@ class FocusedM1Diagnostic(Node):
                         ),
                         allow_vendor_example=bool(
                             getattr(self.args, "raicom_vendor_example_forward_baseline", False)
+                            or getattr(self.args, "raicom_vendor_table_approach", False)
                         ),
                         zero_forward_heading_acquisition=bool(
                             getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
@@ -8984,8 +9069,11 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     vendor_example_forward_baseline = bool(
         getattr(args, "raicom_vendor_example_forward_baseline", False)
     )
+    vendor_table_approach = bool(
+        getattr(args, "raicom_vendor_table_approach", False)
+    )
     expected_observed_planar_speed_guard_m_s = (
-        0.8 if vendor_example_forward_baseline else 0.2
+        0.8 if (vendor_example_forward_baseline or vendor_table_approach) else 0.2
     )
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
@@ -9011,7 +9099,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             "RAICOM low-cruise profile requires the short-scene route or aligned-start "
             "TABLE_APPROACH mission and exactly 0.105 m/s"
         )
-    if low_cruise_supported_route and not low_cruise_profile and not vendor_example_forward_baseline and (
+    if low_cruise_supported_route and not low_cruise_profile and not (
+        vendor_example_forward_baseline or vendor_table_approach
+    ) and (
         abs(float(args.forward_speed) - LOCAL01_SHORT_ROUTE_FORWARD_M_S) > 1e-9
     ):
         raise ValueError(
@@ -9047,6 +9137,12 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         and abs(float(args.forward_speed) - 0.2) <= 1e-9
         and abs(float(args.pulse_duration) - 5.0) <= 1e-9
     )
+    vendor_table_native_profile = (
+        vendor_table_approach
+        and not low_cruise_profile
+        and abs(float(args.forward_speed) - 0.2) <= 1e-9
+        and abs(float(args.pulse_duration) - 5.0) <= 1e-9
+    )
     continuous_table_native_profile = (
         continuous_table_approach
         and native_mjdata_route_feedback
@@ -9072,6 +9168,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             low_cruise_native_profile
             or nominal_straight_native_profile
             or vendor_example_native_profile
+            or vendor_table_native_profile
             or continuous_table_native_profile
             or fixed_window_table_native_profile
             or straight_ten_second_table_native_profile
@@ -9090,6 +9187,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             low_cruise_native_profile
             or nominal_straight_native_profile
             or vendor_example_native_profile
+            or vendor_table_native_profile
             or continuous_table_native_profile
             or fixed_window_table_native_profile
             or straight_ten_second_table_native_profile
@@ -9211,6 +9309,27 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "vendor-example forward baseline requires the aligned native-timestep TABLE_APPROACH "
             "profile at exactly 0.20 m/s for 5 s without yaw correction"
+        )
+    if vendor_table_approach and not (
+        table_approach_mission
+        and aligned_start_table_approach
+        and native_x2_timestep
+        and native_mjdata_route_feedback
+        and not vendor_example_forward_baseline
+        and not native_nominal_straight_gait_diagnostic
+        and not low_cruise_profile
+        and not zero_forward_heading_acquisition
+        and not continuous_ten_second_transit
+        and not continuous_table_approach
+        and not fixed_window_table_approach
+        and not straight_ten_second_table_approach
+        and not forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.2) <= 1e-9
+        and abs(float(args.pulse_duration) - 5.0) <= 1e-9
+    ):
+        raise ValueError(
+            "vendor table approach requires the aligned native-timestep TABLE_APPROACH "
+            "profile at exactly 0.20 m/s with no closed-loop yaw overlay"
         )
     if configured_route_observation and not configured_route:
         raise ValueError("configured-route post-STAND observation requires --route-config")
@@ -9668,12 +9787,15 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)
         or not 0.0 < args.max_observed_planar_speed_m_s <= (
-            0.8 if vendor_example_forward_baseline else 0.2
+            0.8 if (vendor_example_forward_baseline or vendor_table_approach) else 0.2
         )
     ):
         raise ValueError(
             "observed planar speed gate must be positive and no greater than "
-            + ("0.8 m/s for the vendor-example baseline" if vendor_example_forward_baseline else "0.2 m/s")
+            + (
+                "0.8 m/s for the vendor direct-velocity profile"
+                if (vendor_example_forward_baseline or vendor_table_approach) else "0.2 m/s"
+            )
         )
     if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 3.5:
         raise ValueError("zero-until-stand timeout must remain within 0..3.5 seconds")
@@ -9811,6 +9933,14 @@ def main() -> int:
         help=(
             "one SIMULATION_ONLY compatibility check matching the pinned vendor example's "
             "0.20 m/s forward value, 50 Hz cadence, and 5 s window; no table-route claim"
+        ),
+    )
+    first.add_argument(
+        "--raicom-vendor-table-approach",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY fixed-table task: use the pinned vendor 0.20 m/s, 50 Hz "
+            "zero-yaw gait with native ground-truth terminal stop at TABLE_APPROACH"
         ),
     )
     first.add_argument(

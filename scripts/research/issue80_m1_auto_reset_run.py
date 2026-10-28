@@ -353,7 +353,10 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
     if not (getattr(args, "route_config", None) or getattr(args, "local01_scene_world_poses", None)):
         return
     low_cruise = bool(getattr(args, "raicom_low_cruise_profile", False))
-    vendor_example = bool(getattr(args, "raicom_vendor_example_forward_baseline", False))
+    vendor_example = bool(
+        getattr(args, "raicom_vendor_example_forward_baseline", False)
+        or getattr(args, "raicom_vendor_table_approach", False)
+    )
     if vendor_example and low_cruise:
         raise ValueError("vendor-example baseline cannot combine with the RAICOM low-cruise profile")
     expected_forward = (
@@ -1384,7 +1387,13 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += (
             " --max-observed-planar-speed-m-s "
-            + ("0.8" if getattr(args, "raicom_vendor_example_forward_baseline", False) else "0.2")
+            + (
+                "0.8"
+                if (
+                    getattr(args, "raicom_vendor_example_forward_baseline", False)
+                    or getattr(args, "raicom_vendor_table_approach", False)
+                ) else "0.2"
+            )
         )
     stand_timeout_diagnostics = (
         "run42_stop_confirmation_diagnostic", "run43_zero_only_stop_diagnostic",
@@ -1480,6 +1489,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += " --raicom-native-nominal-straight-gait-diagnostic"
         if getattr(args, "raicom_vendor_example_forward_baseline", False):
             command[-1] += " --raicom-vendor-example-forward-baseline"
+        if getattr(args, "raicom_vendor_table_approach", False):
+            command[-1] += " --raicom-vendor-table-approach"
     if run65_point_goal_enabled(args):
         command[-1] += (
             " --point-goal-diagnostic --heading-change-rad "
@@ -5688,6 +5699,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-vendor-table-approach",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY fixed TABLE_APPROACH route using the pinned vendor 0.20 m/s "
+            "direct-velocity gait and MuJoCo ground-truth terminal stop"
+        ),
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -5881,6 +5900,12 @@ def main() -> int:
             and abs(float(args.forward_speed) - 0.2) <= 1e-9
             and abs(float(args.pulse_duration) - 5.0) <= 1e-9
         )
+        vendor_table_native_profile = (
+            args.raicom_vendor_table_approach
+            and not args.raicom_low_cruise_profile
+            and abs(float(args.forward_speed) - 0.2) <= 1e-9
+            and abs(float(args.pulse_duration) - 5.0) <= 1e-9
+        )
         continuous_table_native_profile = (
             args.raicom_continuous_table_approach
             and args.raicom_native_mjdata_route_feedback
@@ -5910,6 +5935,7 @@ def main() -> int:
                 low_cruise_native_profile
                 or nominal_straight_native_profile
                 or vendor_example_native_profile
+                or vendor_table_native_profile
                 or continuous_table_native_profile
                 or fixed_window_table_native_profile
                 or straight_ten_second_table_native_profile
@@ -6119,6 +6145,30 @@ def main() -> int:
         parser.error(
             "vendor-example forward baseline requires the aligned native-timestep TABLE_APPROACH "
             "startup and exactly 0.20 m/s for 5 s, without route steering"
+        )
+    if args.raicom_vendor_table_approach and not (
+        args.table_approach_mission
+        and args.aligned_start_table_approach
+        and args.native_x2_timestep
+        and args.direct_stand_from_passive
+        and args.maintainer_authorized_first_motion
+        and args.require_stand_warmup_composite
+        and args.native_mjdata_capture
+        and not args.raicom_vendor_example_forward_baseline
+        and not args.raicom_native_nominal_straight_gait_diagnostic
+        and not args.raicom_low_cruise_profile
+        and not args.raicom_zero_forward_heading_acquisition
+        and not args.raicom_continuous_ten_second_transit
+        and not args.raicom_continuous_table_approach
+        and not args.raicom_fixed_window_table_approach
+        and not args.raicom_straight_ten_second_table_approach
+        and not args.raicom_forward_gait_yaw_inversion
+        and abs(float(args.forward_speed) - 0.2) <= 1e-9
+        and abs(float(args.pulse_duration) - 5.0) <= 1e-9
+    ):
+        parser.error(
+            "vendor table approach requires the aligned native-timestep TABLE_APPROACH "
+            "startup and exactly 0.20 m/s for the vendor 5 s input unit"
         )
     if args.route_config:
         if not args.maintainer_authorized_first_motion:

@@ -810,6 +810,49 @@ class ResearchScriptStagingTests(unittest.TestCase):
             "0.8",
         )
 
+    def test_parent_child_vendor_table_approach_keeps_vendor_velocity_contract(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0,
+            pulse_duration=5.0,
+            forward_speed=0.2,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="aligned-start-vendor-table-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/aligned-start-table-approach.json",
+            aligned_start_table_approach=True,
+            native_x2_timestep=True,
+            route_config=None,
+            raicom_low_cruise_profile=False,
+            raicom_zero_forward_heading_acquisition=False,
+            raicom_continuous_ten_second_transit=False,
+            raicom_forward_gait_yaw_inversion=False,
+            raicom_native_nominal_straight_gait_diagnostic=False,
+            raicom_vendor_example_forward_baseline=False,
+            raicom_vendor_table_approach=True,
+            raicom_native_mjdata_route_feedback=True,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "aligned-start-vendor-table-test")[-1]
+            .rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--raicom-vendor-table-approach", child)
+        self.assertNotIn("--raicom-vendor-example-forward-baseline", child)
+        self.assertEqual(child[child.index("--forward-speed") + 1], "0.2")
+        self.assertEqual(child[child.index("--pulse-duration") + 1], "5.0")
+        self.assertEqual(
+            child[child.index("--max-observed-planar-speed-m-s") + 1],
+            "0.8",
+        )
+
     def test_parent_child_fixed_window_table_profile_is_explicit(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=0.0,
@@ -1007,8 +1050,10 @@ class ResearchScriptStagingTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("--raicom-continuous-table-approach", parent)
-        self.assertIn("rolling_intermediate_waypoint=continuous_table_approach_mode", probe)
-        self.assertIn("continuous_route_authorized=continuous_table_approach_mode", probe)
+        self.assertIn("rolling_intermediate_waypoint=(", probe)
+        self.assertIn("continuous_table_approach_mode or vendor_table_approach_mode", probe)
+        self.assertIn("continuous_route_authorized=(", probe)
+        self.assertIn("continuous_table_approach_mode or vendor_table_approach_mode", probe)
         self.assertIn("TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S = 75.0", probe)
         self.assertIn("ROLLING_WAYPOINT_PASSED", probe)
 
