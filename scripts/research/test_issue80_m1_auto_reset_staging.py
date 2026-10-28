@@ -1052,8 +1052,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--raicom-continuous-table-approach", parent)
         self.assertIn("rolling_intermediate_waypoint=(", probe)
         self.assertIn("continuous_table_approach_mode or vendor_table_approach_mode", probe)
-        self.assertIn("continuous_route_authorized=(", probe)
-        self.assertIn("continuous_table_approach_mode or vendor_table_approach_mode", probe)
+        self.assertIn("continuous_route_authorized=continuous_table_approach_mode", probe)
         self.assertIn("TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S = 75.0", probe)
         self.assertIn("ROLLING_WAYPOINT_PASSED", probe)
 

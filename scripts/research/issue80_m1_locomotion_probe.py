@@ -215,6 +215,8 @@ TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S = 75.0
 # seconds is enough for the 2.4 m fixed table-approach task while remaining a
 # single bounded command window and below the existing 75 s research ceiling.
 VENDOR_TABLE_APPROACH_MAX_NONZERO_S = 25.0
+VENDOR_TABLE_APPROACH_WINDOW_S = 5.0
+VENDOR_TABLE_APPROACH_MAX_WINDOWS = 5
 # Run80's 0.15 m taper still missed the yaw stop gate by 0.13 deg. A saved-pose
 # command-only replay showed 0.25 m start reduces angular command integral
 # further; this is one bounded terminal-settling diagnostic, not a new goal
@@ -4418,7 +4420,7 @@ class FocusedM1Diagnostic(Node):
                     ),
                     forward_m_s=VENDOR_EXAMPLE_FORWARD_M_S,
                     maximum_duration_s=(
-                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        VENDOR_TABLE_APPROACH_WINDOW_S
                         if vendor_table_approach_mode else 5.0
                     ),
                 )
@@ -4483,7 +4485,8 @@ class FocusedM1Diagnostic(Node):
                         "SIMULATION_ONLY_TABLE_APPROACH_NOT_TABLE_DOCKING_OR_MANIPULATION"
                     ),
                     "maximum_windows_total": (
-                        1 if (
+                        VENDOR_TABLE_APPROACH_MAX_WINDOWS
+                        if vendor_table_approach_mode else 1 if (
                             native_nominal_straight_gait_diagnostic_mode
                             or vendor_example_forward_baseline_mode
                             or vendor_table_approach_mode
@@ -5394,7 +5397,8 @@ class FocusedM1Diagnostic(Node):
             transit_window_limit = (
                 SHORT_ROUTE_MAX_WINDOWS if short_scene_route_mode else
                 (
-                    1 if (
+                    VENDOR_TABLE_APPROACH_MAX_WINDOWS
+                    if vendor_table_approach_mode else 1 if (
                         native_nominal_straight_gait_diagnostic_mode
                         or vendor_example_forward_baseline_mode
                         or vendor_table_approach_mode
@@ -5539,7 +5543,7 @@ class FocusedM1Diagnostic(Node):
                         self.activation_lifecycle = lifecycle
                     remaining_route_s = (
                         SHORT_ROUTE_MAX_AGGREGATE_S if short_scene_route_mode else
-                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        VENDOR_TABLE_APPROACH_WINDOW_S
                         if vendor_table_approach_mode else
                         TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                         if continuous_table_approach_mode else
@@ -5549,13 +5553,13 @@ class FocusedM1Diagnostic(Node):
                     ) - route_total_nonzero_s
                     remaining_transit_s = transit_aggregate_limit_s - segment_nonzero_s
                     window_cap_s = min(
-                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        VENDOR_TABLE_APPROACH_WINDOW_S
                         if vendor_table_approach_mode else
                         TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                         if continuous_table_approach_mode else
                         float(current_plan.maximum_duration_s),
                         SHORT_ROUTE_MAX_WINDOW_S if short_scene_route_mode else
-                        VENDOR_TABLE_APPROACH_MAX_NONZERO_S
+                        VENDOR_TABLE_APPROACH_WINDOW_S
                         if vendor_table_approach_mode else
                         TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                         if continuous_table_approach_mode else
@@ -6008,12 +6012,8 @@ class FocusedM1Diagnostic(Node):
                         forward_command_m_s=transit_forward_m_s,
                         pulse_duration_s=pulse_duration_s,
                         max_pulse_duration_s=window_cap_s,
-                        continuous_route_authorized=(
-                            continuous_table_approach_mode or vendor_table_approach_mode
-                        ),
+                        continuous_route_authorized=continuous_table_approach_mode,
                         continuous_route_nonzero_limit_s=(
-                            VENDOR_TABLE_APPROACH_MAX_NONZERO_S
-                            if vendor_table_approach_mode else
                             TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S
                             if continuous_table_approach_mode else None
                         ),
@@ -6151,7 +6151,7 @@ class FocusedM1Diagnostic(Node):
                             "last_gate": last_result.get("physical_stop_gate") or {},
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
-                    if continuous_table_approach_mode or vendor_table_approach_mode:
+                    if continuous_table_approach_mode:
                         last_result["route_bridge_accounting"] = {
                             "status": "CONTINUOUS_TERMINAL_WINDOW_NOT_SPLIT_AT_LEGACY_10_S_PLAN_BOUNDARY",
                             "existing_aggregate_nonzero_cap_s": TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S,
