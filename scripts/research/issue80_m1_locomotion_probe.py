@@ -4190,6 +4190,20 @@ class FocusedM1Diagnostic(Node):
                         continuous_table_approach_mode or vendor_table_approach_mode
                     ),
                 )
+                if vendor_table_approach_mode:
+                    # The second, table-facing corridor includes the full
+                    # robot footprint.  A 0.15 m rolling arrival can switch
+                    # into it before that footprint has physically crossed
+                    # its start boundary.  Keep its unchanged clearance and
+                    # tighten only the intermediate hand-off distance.
+                    route = replace(
+                        route,
+                        steps=(
+                            replace(route.steps[0], position_tolerance_m=0.05),
+                            route.steps[1],
+                        ),
+                    )
+                    route.validate()
                 if (
                     continuous_ten_second_transit_mode
                     or native_nominal_straight_gait_diagnostic_mode
@@ -6139,7 +6153,7 @@ class FocusedM1Diagnostic(Node):
                             "last_gate": last_result.get("physical_stop_gate") or {},
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
                         }
-                    if continuous_table_approach_mode:
+                    if continuous_table_approach_mode or vendor_table_approach_mode:
                         last_result["route_bridge_accounting"] = {
                             "status": "CONTINUOUS_TERMINAL_WINDOW_NOT_SPLIT_AT_LEGACY_10_S_PLAN_BOUNDARY",
                             "existing_aggregate_nonzero_cap_s": TABLE_APPROACH_CONTINUOUS_ROUTE_MAX_NONZERO_S,
