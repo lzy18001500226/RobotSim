@@ -108,7 +108,10 @@ def generate_overlay(output_dir: Path, scene_source: Path) -> dict[str, Any]:
         ("size", "90 5"),
         ("dis_range", "0.08 8"),
         ("n_step_update", "200"),
-        ("sensor_data_types", "pos_b data"),
+        # The delivered converter transforms ``pos_b`` into its map output.
+        # Our plugin already supplies raw camera-frame coordinates, so use
+        # ``pos`` to avoid a second body/world transform before localization.
+        ("sensor_data_types", "pos data"),
     ):
         ET.SubElement(instance, "config", key=key, value=value)
     x2_root.insert(0, extension)

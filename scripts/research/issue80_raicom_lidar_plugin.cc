@@ -193,9 +193,9 @@ void Compute(const mjModel* model, mjData* data, int instance, int) {
                                            lidar->robot_root_body, lidar->max_range, &geom_id);
       mjtNum* point = xyz + ray_index * 3;
       if (hit >= lidar->min_range && hit <= lidar->max_range && geom_id >= 0) {
-        // Publish LiDAR-frame coordinates.  The precompiled converter maps
-        // pos_b fields to the attached body frame; no MuJoCo world pose is
-        // leaked to the downstream localization consumer.
+        // Publish LiDAR-frame coordinates.  The generated overlay declares
+        // raw ``pos`` rather than ``pos_b`` so the delivered converter must
+        // not apply a second body/world transform.
         point[0] = hit * local_direction[0];
         point[1] = hit * local_direction[1];
         point[2] = hit * local_direction[2];
