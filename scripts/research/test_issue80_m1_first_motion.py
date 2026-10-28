@@ -74,6 +74,7 @@ from issue80_m1_first_motion import (
     readback_refresh_needed,
     snapshot_fault,
     stand_mode_readback_confirmed,
+    stand_action_and_common_confirmed,
     source_readback_gap,
     validate_first_motion_authorization,
     validate_local_sim_publishers,
@@ -289,6 +290,13 @@ class FakeTimer:
 
 
 class FirstMotionSafetyTests(unittest.TestCase):
+    def test_post_walk_stand_requires_fresh_agreeing_readbacks(self) -> None:
+        action = {"success": True, "action_desc": MODE_STAND, "status_value": 100}
+        self.assertTrue(stand_action_and_common_confirmed(action, MODE_STAND, 100, 0.05))
+        self.assertFalse(stand_action_and_common_confirmed(action, MODE_STAND, 100, 0.51))
+        self.assertFalse(stand_action_and_common_confirmed(action, MODE_STAND, 300, 0.05))
+        self.assertFalse(stand_action_and_common_confirmed(action, MODE_LOCOMOTION, 100, 0.05))
+
     def snapshot(self, **overrides):
         value = {
             "sample_monotonic_s": 0.0,

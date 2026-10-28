@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal official-style X2 velocity publisher with MuJoCo-odom stop.
+"""Minimal official-style X2 velocity publisher with measured table stop.
 
 This deliberately follows the delivered ``mc_locomotion_velocity.py`` contract:
 ``node`` is ADD-registered at priority 40 and publishes one 0.20 m/s command
@@ -18,21 +18,30 @@ from pathlib import Path
 from typing import Any
 
 import rclpy
-from aimdk_msgs.msg import McLocomotionVelocity, MessageHeader
-from aimdk_msgs.srv import SetMcInputSource
+from aimdk_msgs.msg import (
+    CommonRequest, McActionCommand, McCommonState, McLocomotionVelocity,
+    MessageHeader, RequestHeader,
+)
+from aimdk_msgs.srv import GetMcAction, SetMcAction, SetMcInputSource
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from issue80_m1_first_motion import stand_action_and_common_confirmed
 
 
 PUBLISH_PERIOD_S = 0.02
 ZERO_HOLD_S = 2.0
+ZERO_PRIMING_S = 1.0
+STAND_READBACK_TIMEOUT_S = 3.0
+STAND_READBACK_PERIOD_S = 0.20
 ODOM_FRESHNESS_S = 0.5
 MIN_ROOT_Z_M = 0.52
 MAX_TILT_RAD = math.radians(15.0)
 HEADING_HOLD_COMMAND_RAD_S = 0.075
 HEADING_HOLD_DEADBAND_RAD = 0.04
+MODE_STAND = "STAND_DEFAULT"
+ACTION_SOURCE = "rc"  # Exact source used by the delivered SetMcAction example.
 
 
 def wrap_angle(angle_rad: float) -> float:
@@ -79,6 +88,12 @@ class DirectTruthRoute(Node):
         self.client = self.create_client(
             SetMcInputSource, "/aimdk_5Fmsgs/srv/SetMcInputSource"
         )
+        self.set_action_client = self.create_client(
+            SetMcAction, "/aimdk_5Fmsgs/srv/SetMcAction"
+        )
+        self.get_action_client = self.create_client(
+            GetMcAction, "/aimdk_5Fmsgs/srv/GetMcAction"
+        )
         # Match the known-good M1 observation contract.  The simulator offers
         # odom as BEST_EFFORT, so a default RELIABLE subscription receives no
         # samples in Fast DDS and must never be mistaken for a stationary robot.
@@ -91,6 +106,9 @@ class DirectTruthRoute(Node):
         self.start: PoseSample | None = None
         self.last: PoseSample | None = None
         self.last_localization: PoseSample | None = None
+        self.last_common_action_desc: str | None = None
+        self.last_common_status_value: int | None = None
+        self.last_common_received_monotonic_s: float | None = None
         self.publish_times: list[float] = []
         self.heading_hold_commands: list[dict[str, float]] = []
         self.post_stop_samples: list[PoseSample] = []
@@ -98,6 +116,7 @@ class DirectTruthRoute(Node):
         self.nonzero_publish_calls = 0
         self.zero_publish_calls = 0
         self.create_subscription(Odometry, "/aima/hal/odom/state", self._odom, self.odom_qos)
+        self.create_subscription(McCommonState, "/aima/mc/common/state", self._common, self.odom_qos)
         if localization_topic:
             self.create_subscription(PoseStamped, localization_topic, self._localization, self.odom_qos)
 
@@ -122,6 +141,11 @@ class DirectTruthRoute(Node):
         if self.post_stop_started_monotonic_s is not None and sample.received_monotonic_s >= self.post_stop_started_monotonic_s:
             self.post_stop_samples.append(sample)
         self._trace({"event": "odom", **sample.__dict__})
+
+    def _common(self, msg: McCommonState) -> None:
+        self.last_common_action_desc = str(msg.action_info.action_desc)
+        self.last_common_status_value = int(msg.action_info.status.value)
+        self.last_common_received_monotonic_s = time.monotonic()
 
     def _localization(self, msg: PoseStamped) -> None:
         roll, pitch, yaw = roll_pitch_yaw(msg.pose.orientation)
@@ -186,6 +210,138 @@ class DirectTruthRoute(Node):
             "lateral_velocity_m_s": 0.0,
             "angular_velocity_rad_s": angular_rad_s,
         })
+
+    def _wait_for_service_while_zero(self, client: Any, service_name: str, timeout_s: float) -> bool:
+        """Wait for one known MC service without allowing a zero-command gap."""
+        deadline = time.monotonic() + timeout_s
+        next_publish = time.monotonic()
+        while time.monotonic() < deadline:
+            if client.service_is_ready():
+                return True
+            now = time.monotonic()
+            if now >= next_publish:
+                self.publish_velocity(0.0)
+                next_publish += PUBLISH_PERIOD_S
+            rclpy.spin_once(self, timeout_sec=0.005)
+        self._trace({"event": "service_unavailable_during_stop", "service": service_name})
+        return False
+
+    def _wait_for_future_while_zero(self, future: Any, timeout_s: float) -> Any | None:
+        """Await an MC response while continuously publishing the safe command."""
+        deadline = time.monotonic() + timeout_s
+        next_publish = time.monotonic()
+        while time.monotonic() < deadline and not future.done():
+            now = time.monotonic()
+            if now >= next_publish:
+                self.publish_velocity(0.0)
+                next_publish += PUBLISH_PERIOD_S
+            rclpy.spin_once(self, timeout_sec=0.005)
+        return future.result() if future.done() else None
+
+    def request_stand_once(self) -> dict[str, Any]:
+        """Request one supported LD-to-SD transition after a zero-command prime."""
+        if not self._wait_for_service_while_zero(
+            self.set_action_client, "/aimdk_5Fmsgs/srv/SetMcAction", 1.0
+        ):
+            return {"success": False, "fault": "SetMcAction service unavailable"}
+        request = SetMcAction.Request()
+        request.header = RequestHeader()
+        request.header.stamp = self.get_clock().now().to_msg()
+        request.source = ACTION_SOURCE
+        request.command = McActionCommand()
+        request.command.action_desc = MODE_STAND
+        response = self._wait_for_future_while_zero(self.set_action_client.call_async(request), 1.0)
+        if response is None:
+            return {
+                "success": False, "fault": "SetMcAction timeout",
+                "request_source": ACTION_SOURCE, "requested_action_desc": MODE_STAND,
+            }
+        result = {
+            "success": int(response.response.header.code) == 0,
+            "request_source": ACTION_SOURCE,
+            "requested_action_desc": MODE_STAND,
+            "response_header_code": int(response.response.header.code),
+            "response_status_value": int(response.response.status.value),
+            "response_message": str(response.response.message),
+        }
+        self._trace({"event": "set_mc_action_post_target_stand", **result})
+        return result
+
+    def read_action_while_zero(self) -> dict[str, Any]:
+        """Read the MC action state while preserving the zero command stream."""
+        if not self._wait_for_service_while_zero(
+            self.get_action_client, "/aimdk_5Fmsgs/srv/GetMcAction", 1.0
+        ):
+            return {"success": False, "fault": "GetMcAction service unavailable"}
+        request = GetMcAction.Request()
+        request.request = CommonRequest()
+        request.request.header.stamp = self.get_clock().now().to_msg()
+        response = self._wait_for_future_while_zero(self.get_action_client.call_async(request), 1.0)
+        if response is None:
+            return {"success": False, "fault": "GetMcAction timeout"}
+        result = {
+            "success": int(response.header.code) == 0,
+            "response_header_code": int(response.header.code),
+            "action_desc": str(response.info.action_desc),
+            "status_value": int(response.info.status.value),
+            "common_action_desc": self.last_common_action_desc,
+            "common_status_value": self.last_common_status_value,
+            "common_age_s": (
+                None if self.last_common_received_monotonic_s is None
+                else time.monotonic() - self.last_common_received_monotonic_s
+            ),
+        }
+        self._trace({"event": "get_mc_action_post_target_stand", **result})
+        return result
+
+    def zero_stop_to_confirmed_stand(self) -> dict[str, Any]:
+        """Prime zero, request SD once, then collect a final independent hold."""
+        start = time.monotonic()
+        prime_deadline = start + ZERO_PRIMING_S
+        while rclpy.ok() and time.monotonic() < prime_deadline:
+            self.publish_velocity(0.0)
+            rclpy.spin_once(self, timeout_sec=PUBLISH_PERIOD_S)
+        request = self.request_stand_once()
+        readbacks: list[dict[str, Any]] = []
+        confirmed_at: float | None = None
+        next_readback = time.monotonic()
+        deadline = time.monotonic() + STAND_READBACK_TIMEOUT_S
+        while rclpy.ok() and time.monotonic() < deadline:
+            now = time.monotonic()
+            self.publish_velocity(0.0)
+            rclpy.spin_once(self, timeout_sec=PUBLISH_PERIOD_S)
+            if now >= next_readback:
+                readback = self.read_action_while_zero()
+                readbacks.append(readback)
+                next_readback = now + STAND_READBACK_PERIOD_S
+                if stand_action_and_common_confirmed(
+                    readback,
+                    readback.get("common_action_desc"),
+                    readback.get("common_status_value"),
+                    readback.get("common_age_s"),
+                ):
+                    confirmed_at = time.monotonic()
+                    break
+        if confirmed_at is None:
+            return {
+                "status": "FAIL_STAND_UNCONFIRMED", "zero_priming_s": ZERO_PRIMING_S,
+                "stand_request": request, "readbacks": readbacks,
+            }
+        # The stop gate starts only after a positive STAND_DEFAULT readback;
+        # braking motion before this point is deliberately not considered a
+        # physical-stop sample.
+        self.post_stop_samples.clear()
+        self.post_stop_started_monotonic_s = confirmed_at
+        hold_deadline = confirmed_at + ZERO_HOLD_S
+        while rclpy.ok() and time.monotonic() < hold_deadline:
+            self.publish_velocity(0.0)
+            rclpy.spin_once(self, timeout_sec=PUBLISH_PERIOD_S)
+        return {
+            "status": "PASS_STAND_CONFIRMED", "zero_priming_s": ZERO_PRIMING_S,
+            "stand_request": request, "readbacks": readbacks,
+            "stand_confirmed_monotonic_s": confirmed_at,
+            "post_stand_hold_s": ZERO_HOLD_S,
+        }
 
     def distance_m(self) -> float | None:
         if self.start is None or self.last is None:
@@ -320,6 +476,7 @@ def main() -> int:
         "zero_publish_calls_returned": 0,
         "publish_rate": None,
         "fault": None,
+        "stand_transition": None,
     }
     try:
         registration = node.register()
@@ -377,11 +534,8 @@ def main() -> int:
                 node.publish_velocity(0.2, angular)
                 while next_publish <= now:
                     next_publish += PUBLISH_PERIOD_S
-        node.post_stop_started_monotonic_s = time.monotonic()
-        zero_deadline = node.post_stop_started_monotonic_s + ZERO_HOLD_S
-        while rclpy.ok() and time.monotonic() < zero_deadline:
-            node.publish_velocity(0.0)
-            rclpy.spin_once(node, timeout_sec=PUBLISH_PERIOD_S)
+        stand_transition = node.zero_stop_to_confirmed_stand()
+        result["stand_transition"] = stand_transition
         result.update({
             "start_pose_odom": node.start.__dict__ if node.start else None,
             "final_pose_odom": node.last.__dict__ if node.last else None,
@@ -415,9 +569,15 @@ def main() -> int:
                 if target is not None else node.distance_m() >= args.distance_m
             )
         )
-        result["status"] = "PASS" if reached and result["physical_stop"]["status"] == "PASS" else "BLOCKED"
+        result["status"] = "PASS" if (
+            reached
+            and stand_transition.get("status") == "PASS_STAND_CONFIRMED"
+            and result["physical_stop"]["status"] == "PASS"
+        ) else "BLOCKED"
         if not reached:
             result["fault"] = terminal_reason
+        elif stand_transition.get("status") != "PASS_STAND_CONFIRMED":
+            result["fault"] = "stand_transition_unconfirmed"
         elif result["physical_stop"]["status"] != "PASS":
             result["fault"] = "physical_stop_gate_failed"
         return 0 if reached else 2

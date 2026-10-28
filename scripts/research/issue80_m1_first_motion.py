@@ -2594,6 +2594,27 @@ def stand_mode_readback_confirmed(snapshot: Mapping[str, Any]) -> bool:
     )
 
 
+def stand_action_and_common_confirmed(
+    action_readback: Mapping[str, Any], common_action_desc: object,
+    common_status_value: object, common_age_s: object,
+) -> bool:
+    """Confirm post-walk SD from fresh GetMcAction and CommonState evidence."""
+    try:
+        common_age = float(common_age_s)
+        common_status = int(common_status_value)
+    except (TypeError, ValueError):
+        return False
+    return (
+        action_readback.get("success") is True
+        and action_readback.get("action_desc") == MODE_STAND
+        and action_readback.get("status_value") == 100
+        and str(common_action_desc) == MODE_STAND
+        and common_status == 100
+        and math.isfinite(common_age)
+        and common_age <= 0.5
+    )
+
+
 def classify_turning_rotation(
     *, start_yaw_rad: float | None, end_yaw_rad: float | None,
     commanded_angular_velocity_rad_s: float, baseline_yaw_noise_rad: float | None,

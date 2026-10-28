@@ -160,8 +160,8 @@ TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
 # A direct table target can use the complete 25 s active-command interval and
 # then a 2 s physical-stop hold.  The raw LiDAR bridge/localizer must outlive
 # both phases; 28 s was a race with their startup and shutdown bookkeeping.
-LIDAR_RUNTIME_DURATION_S = 35.0
-LIDAR_RUNTIME_PROCESS_TIMEOUT_S = 38.0
+LIDAR_RUNTIME_DURATION_S = 42.0
+LIDAR_RUNTIME_PROCESS_TIMEOUT_S = 45.0
 # The first LiDAR/odom table run reached 0.238 m target error at the old
 # 25 s active-command cap.  Its final measured progress rate implies roughly
 # 1.2 s more to enter the unchanged 0.15 m target radius.  Keep a bounded
