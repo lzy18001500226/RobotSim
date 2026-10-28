@@ -3113,6 +3113,11 @@ class BoundedRun:
                 raise RuntimeError("requested LiDAR overlay source is incomplete or unsafe")
             cmd += [
                 "--mount", "type=bind,source=" + str(plugins) + ",target=/workspace/raicom2026/sim_mujoco/bin/mujoco_plugin,readonly",
+                # The delivered app changes into /workspace/evidence before
+                # it constructs the GUI model manager, whose plugin scan is
+                # relative to that working directory.  Keep the same pinned
+                # directory visible at both lookup locations.
+                "--mount", "type=bind,source=" + str(plugins) + ",target=/workspace/evidence/mujoco_plugin,readonly",
             ]
         if self.foundationwalk_config_overlay is not None:
             if (
