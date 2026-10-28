@@ -20,6 +20,12 @@ class MapLocalizerTests(unittest.TestCase):
         self.assertEqual(matches, 3)
         self.assertLess(score, 1e-6)
 
+    def test_candidate_center_rejects_distant_signature_jump(self) -> None:
+        ranges = np.array([[1.0] * 100, [1.0] * 100], dtype=np.float32)
+        candidates = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32)
+        index, _, _ = best_candidate(candidates, ranges, np.array([1.0] * 100, dtype=np.float32), center=np.array([0.0, 0.0, 0.0]), max_translation_m=0.35, max_yaw_rad=0.25)
+        self.assertEqual(index, 0)
+
     def test_raw_frame_preserves_ray_slots(self) -> None:
         frame = {"schema": RAW_SCHEMA, "xyz": [[3.0, 4.0, 0.0], None, ["nan", 0.0, 0.0]]}
         scan = raw_ranges(frame, 3)

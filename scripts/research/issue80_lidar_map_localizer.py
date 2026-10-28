@@ -52,12 +52,20 @@ def raw_ranges(frame: dict[str, Any], rays: int) -> np.ndarray:
     return result
 
 
-def best_candidate(candidates: np.ndarray, ranges: np.ndarray, scan: np.ndarray, *, minimum_matches: int = 80) -> tuple[int, float, int]:
+def wrap(angle: float) -> float:
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def best_candidate(candidates: np.ndarray, ranges: np.ndarray, scan: np.ndarray, *, minimum_matches: int = 80, center: np.ndarray | None = None, max_translation_m: float = math.inf, max_yaw_rad: float = math.inf) -> tuple[int, float, int]:
     valid = np.isfinite(ranges) & np.isfinite(scan)[None, :]
     count = valid.sum(axis=1)
     difference = np.where(valid, np.abs(ranges - scan[None, :]), np.nan)
     score = np.nanmedian(difference, axis=1)
     score[count < minimum_matches] = np.inf
+    if center is not None:
+        translation = np.linalg.norm(candidates[:, :2] - center[:2], axis=1)
+        yaw = np.abs(np.arctan2(np.sin(candidates[:, 2] - center[2]), np.cos(candidates[:, 2] - center[2])))
+        score[(translation > max_translation_m) | (yaw > max_yaw_rad)] = np.inf
     index = int(np.argmin(score))
     return index, float(score[index]), int(count[index])
 
@@ -101,6 +109,8 @@ def main() -> int:
     offset = 0
     accepted = 0
     last_pose: tuple[float, float, float] | None = None
+    source_start = np.array([-1.5, -1.5, 0.0], dtype=np.float32)
+    calibration: np.ndarray | None = None
     trace = args.trace_output.open("x", encoding="utf-8", buffering=1)
     try:
         deadline = time.monotonic() + args.duration_s
@@ -108,8 +118,17 @@ def main() -> int:
             offset, frames = read_new_frames(args.trace, offset)
             for raw in frames:
                 scan = raw_ranges(raw, ranges.shape[1])
-                index, score, matches = best_candidate(candidates, ranges, scan)
-                pose = tuple(float(value) for value in candidates[index])
+                raw_center = None if calibration is None or last_pose is None else np.array(last_pose, dtype=np.float32) - calibration
+                index, score, matches = best_candidate(
+                    candidates, ranges, scan, center=raw_center,
+                    max_translation_m=0.35, max_yaw_rad=0.25,
+                )
+                raw_pose = np.array(candidates[index], dtype=np.float32)
+                if calibration is None:
+                    calibration = source_start - raw_pose
+                corrected = raw_pose + calibration
+                corrected[2] = wrap(float(corrected[2]))
+                pose = tuple(float(value) for value in corrected)
                 accepted_now = math.isfinite(score) and score <= 0.16 and matches >= 80
                 if accepted_now:
                     last_pose = pose
@@ -124,8 +143,10 @@ def main() -> int:
                     if latest_odom is not None:
                         op = latest_odom.pose.pose.position
                         oyaw = yaw_from_quaternion(latest_odom.pose.pose.orientation)
-                        dx, dy = pose[0] - float(op.x), pose[1] - float(op.y)
-                        dyaw = pose[2] - oyaw
+                        dyaw = wrap(pose[2] - oyaw)
+                        c, s = math.cos(dyaw), math.sin(dyaw)
+                        dx = pose[0] - (c * float(op.x) - s * float(op.y))
+                        dy = pose[1] - (s * float(op.x) + c * float(op.y))
                         transform = TransformStamped()
                         transform.header.stamp = message.header.stamp
                         transform.header.frame_id = "map"
@@ -135,7 +156,7 @@ def main() -> int:
                         transform.transform.rotation.z = math.sin(dyaw / 2.0)
                         transform.transform.rotation.w = math.cos(dyaw / 2.0)
                         tf_pub.sendTransform(transform)
-                trace.write(json.dumps({"host_monotonic_s": time.monotonic(), "sequence": raw.get("sequence"), "candidate": {"x": pose[0], "y": pose[1], "yaw": pose[2]}, "score": score, "matching_rays": matches, "accepted": accepted_now}, allow_nan=False) + "\n")
+                trace.write(json.dumps({"host_monotonic_s": time.monotonic(), "sequence": raw.get("sequence"), "candidate": {"x": pose[0], "y": pose[1], "yaw": pose[2]}, "raw_candidate": {"x": float(raw_pose[0]), "y": float(raw_pose[1]), "yaw": float(raw_pose[2])}, "calibration": calibration.tolist() if calibration is not None else None, "score": score, "matching_rays": matches, "accepted": accepted_now}, allow_nan=False) + "\n")
             rclpy.spin_once(node, timeout_sec=0.02)
             time.sleep(0.01)
         result = {"schema": "robotsim.issue80.lidar-map-localizer.v1", "status": "PASS" if accepted else "BLOCKED_NO_ACCEPTED_MAP_MATCH", "accepted_frames": accepted, "last_pose_map": last_pose, "localization_uses_odom": False, "odom_usage": "map_to_odom_tf_only", "velocity_publisher_created": False, "mc_client_created": False}
