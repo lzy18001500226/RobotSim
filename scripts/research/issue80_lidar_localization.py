@@ -45,8 +45,9 @@ def xy_from_cloud(message: PointCloud2) -> np.ndarray:
             break
         x, y, z = (struct.unpack_from("<f", message.data, base + offsets[axis])[0]
                    for axis in ("x", "y", "z"))
-        # Plugin convention: camera -Z points forward; X is lateral; Y is up.
-        forward, lateral = -z, x
+        # Source camera xyaxes maps camera -Z to robot forward and camera +X
+        # to robot right.  REP-103 lateral-left is therefore -camera-X.
+        forward, lateral = -z, -x
         if math.isfinite(forward) and math.isfinite(lateral) and 0.25 <= math.hypot(forward, lateral) <= 7.8:
             result.append((forward, lateral))
     return np.asarray(result, dtype=np.float64)
@@ -99,7 +100,9 @@ class LidarLocalizer(Node):
                     "point_count": int(len(current)),
                 }
             elif residual <= 0.20 and displacement <= 0.25 and abs(yaw) <= 0.20:
-                self.pose = self.pose.apply_delta(forward, lateral, yaw)
+                # scan_delta estimates the current-scan -> previous-scan
+                # transform.  The robot motion is its inverse.
+                self.pose = self.pose.apply_delta(-forward, -lateral, -yaw)
                 self.last_result = {
                     "status": "SCAN_DELTA_ACCEPTED",
                     "forward_m": forward,
