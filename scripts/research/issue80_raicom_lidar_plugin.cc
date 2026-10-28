@@ -33,6 +33,7 @@ struct LidarState {
   mjtNum min_range = 0;
   mjtNum max_range = 0;
   std::ofstream raw_trace;
+  std::string raw_trace_path;
   std::string raw_enable_path;
   unsigned long long raw_sequence = 0;
 };
@@ -153,12 +154,7 @@ int Init(const mjModel* model, mjData* data, int instance) {
   lidar->robot_root_body = RootBody(model, model->cam_bodyid[lidar->camera_id]);
   if (const char* trace_path = std::getenv("ROBOTSIM_LIDAR_RAW_TRACE")) {
     if (trace_path[0]) {
-      lidar->raw_trace.open(trace_path, std::ios::out | std::ios::app);
-      if (!lidar->raw_trace) {
-        std::fprintf(stderr, "issue80_lidar_init raw trace open failed: %s\n", trace_path);
-        delete lidar;
-        return -1;
-      }
+      lidar->raw_trace_path = trace_path;
       if (const char* enable_path = std::getenv("ROBOTSIM_LIDAR_RAW_ENABLE_FILE")) {
         lidar->raw_enable_path = enable_path;
       }
@@ -228,8 +224,15 @@ void Compute(const mjModel* model, mjData* data, int instance, int) {
   // The delivered publisher converts pos_b to map-frame coordinates.  Retain
   // this plugin's source-local samples separately for the SIMULATION_ONLY ROS
   // bridge; this never feeds MC and never writes MuJoCo state.
-  if (lidar->raw_trace.is_open() &&
-      (lidar->raw_enable_path.empty() || std::ifstream(lidar->raw_enable_path).good())) {
+  const bool raw_enabled = lidar->raw_enable_path.empty() ||
+      std::ifstream(lidar->raw_enable_path).good();
+  if (raw_enabled && !lidar->raw_trace_path.empty() && !lidar->raw_trace.is_open()) {
+    lidar->raw_trace.open(lidar->raw_trace_path, std::ios::out | std::ios::app);
+    if (!lidar->raw_trace) {
+      std::fprintf(stderr, "issue80_lidar_raw trace open failed: %s\n", lidar->raw_trace_path.c_str());
+    }
+  }
+  if (lidar->raw_trace.is_open() && raw_enabled) {
     lidar->raw_trace << "{\"schema\":\"robotsim.issue80.lidar-raw.v1\","
                      << "\"sequence\":" << lidar->raw_sequence++ << ","
                      << "\"horizontal\":" << lidar->horizontal << ","
