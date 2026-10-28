@@ -106,6 +106,23 @@
         "scope_note": "Engine source license verified at the pinned commit."
       },
       "lock_reference": "third_party/LOCK.md"
+    },
+    {
+      "id": "mujoco_ray_caster",
+      "status": "verified_reference_only",
+      "repository_url": "https://github.com/Albusgive/mujoco_ray_caster.git",
+      "canonical_reference_path": "reference/Albusgive/mujoco_ray_caster",
+      "commit_sha": "c190b951b559b9f46157d559e5347c06aad20256",
+      "commit_url": "https://github.com/Albusgive/mujoco_ray_caster/commit/c190b951b559b9f46157d559e5347c06aad20256",
+      "version": null,
+      "license": {
+        "status": "verified",
+        "spdx": "Apache-2.0",
+        "path": "LICENSE",
+        "url": "https://github.com/Albusgive/mujoco_ray_caster/blob/c190b951b559b9f46157d559e5347c06aad20256/LICENSE",
+        "scope_note": "Pinned reference for ray-caster coordinate semantics only; it is not a runtime dependency or approval to replace the delivered RAICOM sensor publisher."
+      },
+      "lock_reference": null
     }
   ],
   "assets": [
