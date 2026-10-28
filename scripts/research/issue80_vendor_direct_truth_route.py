@@ -473,8 +473,8 @@ def main() -> int:
     args = parser.parse_args()
     if not 1.0 < args.distance_m <= 2.5:
         parser.error("--distance-m must be in (1.0, 2.5] for the bounded direct-gait baseline")
-    if not 1.0 <= args.timeout_s <= 30.0:
-        parser.error("--timeout-s must be in [1, 30]")
+    if not 1.0 <= args.timeout_s <= 40.0:
+        parser.error("--timeout-s must be in [1, 40]")
     if args.output.exists() or args.trace.exists():
         parser.error("output paths must be new")
     target_requested = args.target_route_config is not None
