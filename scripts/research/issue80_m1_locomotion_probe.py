@@ -5303,12 +5303,6 @@ class FocusedM1Diagnostic(Node):
                         if waypoint_b_short_diagnostic else 0.0
                     ),
                 )
-                if vendor_table_approach_mode and active.waypoint_id == "WAYPOINT":
-                    # Retain the route's generic 0.15 m public waypoint
-                    # tolerance.  Only delay the rolling hand-off into the
-                    # narrower table-facing footprint corridor until the
-                    # measured base center is within 50 mm of the waypoint.
-                    arrival_trigger_radius_m = 0.05
                 feedback = MotionFeedback(
                     status=(
                         MotionStatus.ARRIVED
