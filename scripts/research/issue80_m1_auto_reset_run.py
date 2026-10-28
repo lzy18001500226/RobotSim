@@ -103,6 +103,8 @@ MJDATA_CAPTURE_C = Path(__file__).with_name("issue80_mjdata_capture.c")
 WINDOWS_FOCUS_HELPER = Path(__file__).with_name("issue80_mujoco_windows_focus.ps1")
 ANALYZER = Path(__file__).with_name("issue80_m1_reset_analyze.py")
 M1_RUNNER = Path(__file__).with_name("issue80_m1_locomotion_probe.py")
+LIDAR_LOCALIZER = Path(__file__).with_name("issue80_lidar_localization.py")
+LIDAR_SCAN_MATH = Path(__file__).with_name("issue80_lidar_scan_math.py")
 VENDOR_DIRECT_TRUTH_ROUTE = Path(__file__).with_name("issue80_vendor_direct_truth_route.py")
 POSE_GOAL_CONTROLLER = Path(__file__).with_name("issue80_coordinated_pose_goal.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
@@ -2093,6 +2095,8 @@ class BoundedRun:
         self.direct_stand_from_passive = bool(
             getattr(args, "direct_stand_from_passive", False)
         )
+        lidar_source = getattr(args, "raicom_lidar_overlay_source", None)
+        self.lidar_overlay_source = Path(lidar_source).resolve(strict=True) if lidar_source else None
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
@@ -2857,6 +2861,8 @@ class BoundedRun:
             (ANALYZER, ANALYZER.name),
             (M1_RUNNER, M1_RUNNER.name),
             (VENDOR_DIRECT_TRUTH_ROUTE, VENDOR_DIRECT_TRUTH_ROUTE.name),
+            (LIDAR_LOCALIZER, LIDAR_LOCALIZER.name),
+            (LIDAR_SCAN_MATH, LIDAR_SCAN_MATH.name),
             (POSE_GOAL_CONTROLLER, POSE_GOAL_CONTROLLER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
@@ -3082,6 +3088,23 @@ class BoundedRun:
                     "type=bind,source=" + str(source_path)
                     + ",target=" + container_path + ",readonly",
                 ]
+        if self.lidar_overlay_source is not None:
+            overlay = self.lidar_overlay_source / "lidar_overlay"
+            plugins = self.lidar_overlay_source / "mujoco_plugin"
+            required = (
+                overlay / "simulator_lidar_overlay.yaml",
+                overlay / "scene_lidar_overlay.xml",
+                overlay / "robot_lidar_overlay.yaml",
+                overlay / "LIDAR_OVERLAY_PROVENANCE.json",
+                plugins / "libsensor_ray.so",
+                plugins / "libissue80_ray.so",
+            )
+            if any(path.is_symlink() or not path.is_file() for path in required):
+                raise RuntimeError("requested LiDAR overlay source is incomplete or unsafe")
+            cmd += [
+                "--mount", "type=bind,source=" + str(overlay) + ",target=/workspace/evidence/lidar_overlay,readonly",
+                "--mount", "type=bind,source=" + str(plugins) + ",target=/workspace/raicom2026/sim_mujoco/bin/mujoco_plugin,readonly",
+            ]
         if self.foundationwalk_config_overlay is not None:
             if (
                 self.foundationwalk_config_overlay.is_symlink()
@@ -3225,6 +3248,9 @@ class BoundedRun:
                 + shlex.quote(config_path) + " "
                 + launch_command
             )
+        if self.lidar_overlay_source is not None:
+            config_path = "/workspace/evidence/lidar_overlay/simulator_lidar_overlay.yaml"
+            launch_command = "ROBOTSIM_SIMULATOR_CFG_OVERRIDE=" + config_path + " " + launch_command
         self.docker_exec(
             "launch_simulator",
             launch_command,
@@ -3243,7 +3269,7 @@ class BoundedRun:
             "timeout 25s bash -lc 'until grep -q \"MujocoSimModule Started Succeeded\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
             timeout_s=26.0,
         )
-        if self.local01_scene_bundle is not None:
+        if self.local01_scene_bundle is not None and self.lidar_overlay_source is None:
             scene_path = str(self.local01_scene_bundle.get(
                 "runtime_scene_path",
                 "/workspace/evidence/local01_scene/scene_workspace_runtime.xml",
@@ -4550,6 +4576,15 @@ class BoundedRun:
             raise RuntimeError("verified bridge isolation is required before M1")
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
+        if self.lidar_overlay_source is not None:
+            self.docker_exec(
+                "start_lidar_localizer",
+                "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+                "timeout 45s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s 40 "
+                "> /workspace/evidence/lidar_localizer_runtime.json 2> /workspace/evidence/lidar_localizer_runtime.stderr",
+                timeout_s=4.0,
+                detached=True,
+            )
         command = build_m1_child_command(self.args, self.container)
         child_timeout_s = TABLE_APPROACH_CHILD_TIMEOUT_S if getattr(self.args, "table_approach_mission", None) else 30.0 if zero_only_activation or activation_probe else (
             75.0
@@ -5781,6 +5816,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--raicom-lidar-overlay-source",
+        default=None,
+        help="governed evidence directory containing a verified SIMULATION_ONLY LiDAR overlay and plugin directory",
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -6256,6 +6296,21 @@ def main() -> int:
             parser.error("select either direct distance baseline or direct table target, not both")
     if args.raicom_vendor_direct_heading_hold and not args.raicom_vendor_direct_table_target:
         parser.error("--raicom-vendor-direct-heading-hold requires --raicom-vendor-direct-table-target")
+    if args.raicom_lidar_overlay_source:
+        try:
+            lidar_source = Path(args.raicom_lidar_overlay_source).resolve(strict=True)
+            lidar_source.relative_to(REPO / "reviews/issue-80")
+        except (OSError, ValueError) as exc:
+            parser.error(f"LiDAR overlay source must be a governed Issue 80 evidence directory: {exc}")
+        if not (
+            args.table_approach_mission
+            and args.aligned_start_table_approach
+            and args.native_x2_timestep
+            and args.direct_stand_from_passive
+            and args.maintainer_authorized_first_motion
+            and args.require_stand_warmup_composite
+        ):
+            parser.error("LiDAR overlay runtime requires the existing aligned direct-stand table route gates")
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
