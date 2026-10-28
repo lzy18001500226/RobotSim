@@ -4653,7 +4653,9 @@ class BoundedRun:
             self.docker_exec(
                 "start_lidar_localizer",
                 "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                "timeout 12s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s 9.5 "
+                "timeout 31s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s 28 "
+                "--trace /workspace/evidence/lidar_localization_trace.jsonl "
+                "--result /workspace/evidence/lidar_localizer_result.json "
                 "> /workspace/evidence/lidar_localizer_runtime.json 2> /workspace/evidence/lidar_localizer_runtime.stderr",
                 timeout_s=4.0,
                 detached=True,

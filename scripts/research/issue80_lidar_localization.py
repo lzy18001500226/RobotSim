@@ -13,6 +13,7 @@ import math
 import struct
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import rclpy
@@ -52,11 +53,12 @@ def xy_from_cloud(message: PointCloud2) -> np.ndarray:
 
 
 class LidarLocalizer(Node):
-    def __init__(self, start: Pose2) -> None:
+    def __init__(self, start: Pose2, trace_path: Path | None = None) -> None:
         super().__init__("issue80_lidar_localizer")
         self.pose = start
         self.previous: np.ndarray | None = None
         self.last_result: dict[str, float | int | str] | None = None
+        self.trace = trace_path.open("x", encoding="utf-8", buffering=1) if trace_path else None
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -117,6 +119,18 @@ class LidarLocalizer(Node):
                 }
         self.previous = current
         self._publish(message.header.stamp)
+        if self.trace is not None:
+            self.trace.write(json.dumps({
+                "host_monotonic_s": time.monotonic(),
+                "stamp_sec": int(message.header.stamp.sec),
+                "stamp_nanosec": int(message.header.stamp.nanosec),
+                "pose": self.pose.__dict__,
+                "scan": self.last_result,
+            }, allow_nan=False) + "\n")
+
+    def close(self) -> None:
+        if self.trace is not None:
+            self.trace.close()
 
 
 def main() -> int:
@@ -125,17 +139,27 @@ def main() -> int:
     parser.add_argument("--start-y", type=float, default=SOURCE_START_XY_YAW[1])
     parser.add_argument("--start-yaw", type=float, default=SOURCE_START_XY_YAW[2])
     parser.add_argument("--duration-s", type=float, default=30.0)
+    parser.add_argument("--trace", type=Path, default=None)
+    parser.add_argument("--result", type=Path, default=None)
     args = parser.parse_args()
     if not 1.0 <= args.duration_s <= 120.0:
         parser.error("duration must be in [1, 120]")
+    if args.trace is not None and args.trace.exists():
+        parser.error("--trace must be new")
+    if args.result is not None and args.result.exists():
+        parser.error("--result must be new")
     rclpy.init()
-    node = LidarLocalizer(Pose2(args.start_x, args.start_y, args.start_yaw))
+    node = LidarLocalizer(Pose2(args.start_x, args.start_y, args.start_yaw), args.trace)
     try:
         deadline = time.monotonic() + args.duration_s
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.05)
-        print(json.dumps({"pose": node.pose.__dict__, "last_scan": node.last_result}, indent=2))
+        result: dict[str, Any] = {"pose": node.pose.__dict__, "last_scan": node.last_result}
+        if args.result is not None:
+            args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(result, indent=2))
     finally:
+        node.close()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
