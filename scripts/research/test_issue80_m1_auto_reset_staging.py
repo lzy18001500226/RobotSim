@@ -863,6 +863,14 @@ class ResearchScriptStagingTests(unittest.TestCase):
             record = next(row for row in manifest["scripts"] if row["name"] == source.name)
             self.assertEqual(record["sha256"], hashlib.sha256(source.read_bytes()).hexdigest())
 
+    def test_vendor_direct_truth_route_uses_the_verified_best_effort_odom_contract(self) -> None:
+        source = Path(__file__).with_name("issue80_vendor_direct_truth_route.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("reliability=ReliabilityPolicy.BEST_EFFORT", source)
+        self.assertIn("depth=1", source)
+        self.assertIn("self._odom, self.odom_qos", source)
+
     def test_parent_child_fixed_window_table_profile_is_explicit(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=0.0,

@@ -22,6 +22,7 @@ from aimdk_msgs.msg import McLocomotionVelocity, MessageHeader
 from aimdk_msgs.srv import SetMcInputSource
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 
 PUBLISH_PERIOD_S = 0.02
@@ -69,12 +70,21 @@ class DirectTruthRoute(Node):
         self.client = self.create_client(
             SetMcInputSource, "/aimdk_5Fmsgs/srv/SetMcInputSource"
         )
+        # Match the known-good M1 observation contract.  The simulator offers
+        # odom as BEST_EFFORT, so a default RELIABLE subscription receives no
+        # samples in Fast DDS and must never be mistaken for a stationary robot.
+        self.odom_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self.start: PoseSample | None = None
         self.last: PoseSample | None = None
         self.publish_times: list[float] = []
         self.nonzero_publish_calls = 0
         self.zero_publish_calls = 0
-        self.create_subscription(Odometry, "/aima/hal/odom/state", self._odom, 10)
+        self.create_subscription(Odometry, "/aima/hal/odom/state", self._odom, self.odom_qos)
 
     def _odom(self, msg: Odometry) -> None:
         position = msg.pose.pose.position
