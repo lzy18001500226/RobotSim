@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -31,6 +32,8 @@ struct LidarState {
   mjtNum fov_vertical = 0;
   mjtNum min_range = 0;
   mjtNum max_range = 0;
+  std::ofstream raw_trace;
+  unsigned long long raw_sequence = 0;
 };
 
 std::vector<mjtNum> Parse(const char* text) {
@@ -147,6 +150,16 @@ int Init(const mjModel* model, mjData* data, int instance) {
     return -1;
   }
   lidar->robot_root_body = RootBody(model, model->cam_bodyid[lidar->camera_id]);
+  if (const char* trace_path = std::getenv("ROBOTSIM_LIDAR_RAW_TRACE")) {
+    if (trace_path[0]) {
+      lidar->raw_trace.open(trace_path, std::ios::out | std::ios::app);
+      if (!lidar->raw_trace) {
+        std::fprintf(stderr, "issue80_lidar_init raw trace open failed: %s\n", trace_path);
+        delete lidar;
+        return -1;
+      }
+    }
+  }
   std::fprintf(stderr, "issue80_lidar_init ok sensor=%d camera=%d body=%d root=%d\n",
                lidar->sensor_id, lidar->camera_id, model->cam_bodyid[lidar->camera_id], lidar->robot_root_body);
   data->plugin_data[instance] = reinterpret_cast<uintptr_t>(lidar);
@@ -207,6 +220,26 @@ void Compute(const mjModel* model, mjData* data, int instance, int) {
         distance[ray_index] = lidar->max_range;
       }
     }
+  }
+  // The delivered publisher converts pos_b to map-frame coordinates.  Retain
+  // this plugin's source-local samples separately for the SIMULATION_ONLY ROS
+  // bridge; this never feeds MC and never writes MuJoCo state.
+  if (lidar->raw_trace.is_open()) {
+    lidar->raw_trace << "{\"schema\":\"robotsim.issue80.lidar-raw.v1\","
+                     << "\"sequence\":" << lidar->raw_sequence++ << ","
+                     << "\"horizontal\":" << lidar->horizontal << ","
+                     << "\"vertical\":" << lidar->vertical << ",\"xyz\":[";
+    for (int index = 0; index < rays; ++index) {
+      if (index) lidar->raw_trace << ',';
+      const mjtNum* point = xyz + index * 3;
+      if (std::isfinite(point[0]) && std::isfinite(point[1]) && std::isfinite(point[2])) {
+        lidar->raw_trace << '[' << point[0] << ',' << point[1] << ',' << point[2] << ']';
+      } else {
+        lidar->raw_trace << "null";
+      }
+    }
+    lidar->raw_trace << "]}\n";
+    lidar->raw_trace.flush();
   }
 }
 
