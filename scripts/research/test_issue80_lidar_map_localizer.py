@@ -7,7 +7,17 @@ from pathlib import Path
 
 import numpy as np
 
-from issue80_lidar_map_localizer import MAGIC, best_candidate, load_database, raw_ranges
+from issue80_lidar_map_localizer import (
+    MAGIC,
+    Pose2D,
+    apply_map_to_odom,
+    best_candidate,
+    blend_map_to_odom,
+    load_database,
+    map_to_odom_from_correspondence,
+    pose_residual,
+    raw_ranges,
+)
 from issue80_lidar_raw_bridge import RAW_SCHEMA
 
 
@@ -44,6 +54,28 @@ class MapLocalizerTests(unittest.TestCase):
             poses, ranges = load_database(path)
             self.assertEqual(poses.tolist(), [[1.0, 2.0, 0.0]])
             self.assertEqual(ranges.tolist(), [[3.0, 4.0]])
+
+    def test_map_to_odom_round_trip_preserves_correspondence(self) -> None:
+        odom = Pose2D(2.0, -1.0, 0.2)
+        map_pose = Pose2D(-1.5, -1.5, -0.1)
+        transform = map_to_odom_from_correspondence(map_pose, odom)
+        reconstructed = apply_map_to_odom(transform, odom)
+        translation, yaw = pose_residual(map_pose, reconstructed)
+        self.assertLess(translation, 1e-6)
+        self.assertLess(abs(yaw), 1e-6)
+
+    def test_bounded_lidar_blend_cannot_jump_one_grid_cell(self) -> None:
+        current = Pose2D(0.0, 0.0, 0.0)
+        observed = Pose2D(0.10, -0.10, 0.10)
+        blended = blend_map_to_odom(current, observed, 0.15)
+        self.assertAlmostEqual(blended.x_m, 0.015)
+        self.assertAlmostEqual(blended.y_m, -0.015)
+        self.assertAlmostEqual(blended.yaw_rad, 0.015)
+
+    def test_lidar_residual_reports_translation_and_wrapped_yaw(self) -> None:
+        distance, yaw = pose_residual(Pose2D(0.0, 0.0, 3.10), Pose2D(0.3, 0.4, -3.10))
+        self.assertAlmostEqual(distance, 0.5)
+        self.assertLess(abs(yaw), 0.1)
 
 
 if __name__ == "__main__":

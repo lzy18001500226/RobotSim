@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Known-map LiDAR localization from raw local chest scans.
+"""Known-map LiDAR/odom localization from raw local chest scans.
 
-The static signature database is built from the pinned RAICOM scene.  Online
-pose selection reads only raw local sensor frames, never live odometry.  Odom
-is separately consumed only to publish the derived map->odom transform.
+The static signature database is built from the pinned RAICOM scene.  A raw
+LiDAR scan supplies bounded, low-rate global corrections while MC odometry
+propagates the map pose between scans.  This is deliberately explicit: the
+published pose is a SIMULATION_ONLY LiDAR/odom *estimate*, not MuJoCo ground
+truth.  In particular, a coarse static-map candidate must never make the
+route controller jump by one grid cell at every scan.
 """
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ import math
 import struct
 import time
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -20,6 +24,18 @@ import numpy as np
 from issue80_lidar_raw_bridge import RAW_SCHEMA, read_new_frames
 
 MAGIC = b"RSLMAP1\0"
+LIDAR_CORRECTION_TRANSLATION_M = 0.30
+LIDAR_CORRECTION_YAW_RAD = 0.25
+LIDAR_CORRECTION_BLEND = 0.15
+
+
+@dataclass(frozen=True)
+class Pose2D:
+    """A planar pose in the REP-105 map or odom frame."""
+
+    x_m: float
+    y_m: float
+    yaw_rad: float
 
 
 def load_database(path: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -54,6 +70,46 @@ def raw_ranges(frame: dict[str, Any], rays: int) -> np.ndarray:
 
 def wrap(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def map_to_odom_from_correspondence(map_pose: Pose2D, odom_pose: Pose2D) -> Pose2D:
+    """Return ``map <- odom`` that maps ``odom_pose`` onto ``map_pose``."""
+    yaw = wrap(map_pose.yaw_rad - odom_pose.yaw_rad)
+    cosine, sine = math.cos(yaw), math.sin(yaw)
+    return Pose2D(
+        map_pose.x_m - (cosine * odom_pose.x_m - sine * odom_pose.y_m),
+        map_pose.y_m - (sine * odom_pose.x_m + cosine * odom_pose.y_m),
+        yaw,
+    )
+
+
+def apply_map_to_odom(map_to_odom: Pose2D, odom_pose: Pose2D) -> Pose2D:
+    """Apply a ``map <- odom`` transform to one odometry pose."""
+    cosine, sine = math.cos(map_to_odom.yaw_rad), math.sin(map_to_odom.yaw_rad)
+    return Pose2D(
+        map_to_odom.x_m + cosine * odom_pose.x_m - sine * odom_pose.y_m,
+        map_to_odom.y_m + sine * odom_pose.x_m + cosine * odom_pose.y_m,
+        wrap(map_to_odom.yaw_rad + odom_pose.yaw_rad),
+    )
+
+
+def blend_map_to_odom(current: Pose2D, observed: Pose2D, weight: float) -> Pose2D:
+    """Blend a bounded scan correction into an existing map/odom transform."""
+    if not 0.0 < weight <= 1.0:
+        raise ValueError("correction blend weight must be in (0, 1]")
+    return Pose2D(
+        current.x_m + weight * (observed.x_m - current.x_m),
+        current.y_m + weight * (observed.y_m - current.y_m),
+        wrap(current.yaw_rad + weight * wrap(observed.yaw_rad - current.yaw_rad)),
+    )
+
+
+def pose_residual(reference: Pose2D, observed: Pose2D) -> tuple[float, float]:
+    """Return translation and signed yaw from a propagated to a scan pose."""
+    return (
+        math.hypot(observed.x_m - reference.x_m, observed.y_m - reference.y_m),
+        wrap(observed.yaw_rad - reference.yaw_rad),
+    )
 
 
 def best_candidate(candidates: np.ndarray, ranges: np.ndarray, scan: np.ndarray, *, minimum_matches: int = 80, center: np.ndarray | None = None, max_translation_m: float = math.inf, max_yaw_rad: float = math.inf) -> tuple[int, float, int]:
@@ -102,13 +158,49 @@ def main() -> int:
     pose_pub = node.create_publisher(PoseStamped, args.pose_topic, 10)
     tf_pub = TransformBroadcaster(node)
     latest_odom: Odometry | None = None
+    map_to_odom: Pose2D | None = None
+    last_published_pose: Pose2D | None = None
+
+    def odom_pose() -> Pose2D | None:
+        if latest_odom is None:
+            return None
+        position = latest_odom.pose.pose.position
+        return Pose2D(float(position.x), float(position.y), yaw_from_quaternion(latest_odom.pose.pose.orientation))
+
+    def publish_estimate(pose: Pose2D) -> None:
+        nonlocal last_published_pose
+        message = PoseStamped()
+        message.header.stamp = node.get_clock().now().to_msg()
+        message.header.frame_id = "map"
+        message.pose.position.x, message.pose.position.y = pose.x_m, pose.y_m
+        message.pose.orientation.z = math.sin(pose.yaw_rad / 2.0)
+        message.pose.orientation.w = math.cos(pose.yaw_rad / 2.0)
+        pose_pub.publish(message)
+        last_published_pose = pose
+        if latest_odom is not None and map_to_odom is not None:
+            transform = TransformStamped()
+            transform.header.stamp = message.header.stamp
+            transform.header.frame_id = "map"
+            transform.child_frame_id = "odom"
+            transform.transform.translation.x = map_to_odom.x_m
+            transform.transform.translation.y = map_to_odom.y_m
+            transform.transform.rotation.z = math.sin(map_to_odom.yaw_rad / 2.0)
+            transform.transform.rotation.w = math.cos(map_to_odom.yaw_rad / 2.0)
+            tf_pub.sendTransform(transform)
+
     def odom_callback(message: Odometry) -> None:
         nonlocal latest_odom
         latest_odom = message
+        # Preserve a continuous control pose between the lower-rate raw scans.
+        # No pose is published until a LiDAR map correspondence initialized the
+        # map->odom transform.
+        if map_to_odom is not None:
+            propagated = apply_map_to_odom(map_to_odom, odom_pose())
+            publish_estimate(propagated)
     node.create_subscription(Odometry, "/aima/hal/odom/state", odom_callback, qos)
     offset = 0
     accepted = 0
-    last_pose: tuple[float, float, float] | None = None
+    last_scan_pose: Pose2D | None = None
     source_start = np.array([-1.5, -1.5, 0.0], dtype=np.float32)
     calibration: np.ndarray | None = None
     trace = args.trace_output.open("x", encoding="utf-8", buffering=1)
@@ -118,7 +210,10 @@ def main() -> int:
             offset, frames = read_new_frames(args.trace, offset)
             for raw in frames:
                 scan = raw_ranges(raw, ranges.shape[1])
-                raw_center = None if calibration is None or last_pose is None else np.array(last_pose, dtype=np.float32) - calibration
+                propagated = apply_map_to_odom(map_to_odom, odom_pose()) if map_to_odom is not None and odom_pose() is not None else None
+                raw_center = None if calibration is None or propagated is None else np.array(
+                    [propagated.x_m, propagated.y_m, propagated.yaw_rad], dtype=np.float32
+                ) - calibration
                 index, score, matches = best_candidate(
                     candidates, ranges, scan, center=raw_center,
                     max_translation_m=0.35, max_yaw_rad=0.25,
@@ -128,38 +223,53 @@ def main() -> int:
                     calibration = source_start - raw_pose
                 corrected = raw_pose + calibration
                 corrected[2] = wrap(float(corrected[2]))
-                pose = tuple(float(value) for value in corrected)
-                accepted_now = math.isfinite(score) and score <= 0.16 and matches >= 80
-                if accepted_now:
-                    last_pose = pose
+                scan_pose = Pose2D(*[float(value) for value in corrected])
+                scan_qualified = math.isfinite(score) and score <= 0.16 and matches >= 80
+                residual_translation_m: float | None = None
+                residual_yaw_rad: float | None = None
+                correction_accepted = False
+                current_odom = odom_pose()
+                if scan_qualified and current_odom is not None:
+                    if map_to_odom is None:
+                        map_to_odom = map_to_odom_from_correspondence(scan_pose, current_odom)
+                        correction_accepted = True
+                    else:
+                        assert propagated is not None
+                        residual_translation_m, residual_yaw_rad = pose_residual(propagated, scan_pose)
+                        if residual_translation_m <= LIDAR_CORRECTION_TRANSLATION_M and abs(residual_yaw_rad) <= LIDAR_CORRECTION_YAW_RAD:
+                            observed = map_to_odom_from_correspondence(scan_pose, current_odom)
+                            map_to_odom = blend_map_to_odom(map_to_odom, observed, LIDAR_CORRECTION_BLEND)
+                            correction_accepted = True
+                if correction_accepted:
+                    assert map_to_odom is not None and current_odom is not None
+                    pose = apply_map_to_odom(map_to_odom, current_odom)
+                    last_scan_pose = scan_pose
                     accepted += 1
-                    message = PoseStamped()
-                    message.header.stamp = node.get_clock().now().to_msg()
-                    message.header.frame_id = "map"
-                    message.pose.position.x, message.pose.position.y = pose[0], pose[1]
-                    message.pose.orientation.z = math.sin(pose[2] / 2.0)
-                    message.pose.orientation.w = math.cos(pose[2] / 2.0)
-                    pose_pub.publish(message)
-                    if latest_odom is not None:
-                        op = latest_odom.pose.pose.position
-                        oyaw = yaw_from_quaternion(latest_odom.pose.pose.orientation)
-                        dyaw = wrap(pose[2] - oyaw)
-                        c, s = math.cos(dyaw), math.sin(dyaw)
-                        dx = pose[0] - (c * float(op.x) - s * float(op.y))
-                        dy = pose[1] - (s * float(op.x) + c * float(op.y))
-                        transform = TransformStamped()
-                        transform.header.stamp = message.header.stamp
-                        transform.header.frame_id = "map"
-                        transform.child_frame_id = "odom"
-                        transform.transform.translation.x = dx
-                        transform.transform.translation.y = dy
-                        transform.transform.rotation.z = math.sin(dyaw / 2.0)
-                        transform.transform.rotation.w = math.cos(dyaw / 2.0)
-                        tf_pub.sendTransform(transform)
-                trace.write(json.dumps({"host_monotonic_s": time.monotonic(), "sequence": raw.get("sequence"), "candidate": {"x": pose[0], "y": pose[1], "yaw": pose[2]}, "raw_candidate": {"x": float(raw_pose[0]), "y": float(raw_pose[1]), "yaw": float(raw_pose[2])}, "calibration": calibration.tolist() if calibration is not None else None, "score": score, "matching_rays": matches, "accepted": accepted_now}, allow_nan=False) + "\n")
+                    publish_estimate(pose)
+                trace.write(json.dumps({
+                    "host_monotonic_s": time.monotonic(), "sequence": raw.get("sequence"),
+                    "scan_candidate": {"x": scan_pose.x_m, "y": scan_pose.y_m, "yaw": scan_pose.yaw_rad},
+                    "propagated_pose": None if propagated is None else {"x": propagated.x_m, "y": propagated.y_m, "yaw": propagated.yaw_rad},
+                    "map_to_odom": None if map_to_odom is None else {"x": map_to_odom.x_m, "y": map_to_odom.y_m, "yaw": map_to_odom.yaw_rad},
+                    "calibration": calibration.tolist() if calibration is not None else None,
+                    "score": score, "matching_rays": matches, "scan_qualified": scan_qualified,
+                    "residual_translation_m": residual_translation_m, "residual_yaw_rad": residual_yaw_rad,
+                    "lidar_correction_accepted": correction_accepted,
+                }, allow_nan=False) + "\n")
             rclpy.spin_once(node, timeout_sec=0.02)
             time.sleep(0.01)
-        result = {"schema": "robotsim.issue80.lidar-map-localizer.v1", "status": "PASS" if accepted else "BLOCKED_NO_ACCEPTED_MAP_MATCH", "accepted_frames": accepted, "last_pose_map": last_pose, "localization_uses_odom": False, "odom_usage": "map_to_odom_tf_only", "velocity_publisher_created": False, "mc_client_created": False}
+        result = {
+            "schema": "robotsim.issue80.lidar-map-localizer.v2",
+            "status": "PASS" if accepted else "BLOCKED_NO_ACCEPTED_MAP_MATCH",
+            "accepted_lidar_corrections": accepted,
+            "last_scan_pose_map": None if last_scan_pose is None else last_scan_pose.__dict__,
+            "last_published_pose_map": None if last_published_pose is None else last_published_pose.__dict__,
+            "localization_uses_odom": True,
+            "odom_usage": "continuous_map_pose_propagation_and_map_to_odom_transform",
+            "lidar_usage": "bounded_static_map_correction_only",
+            "velocity_publisher_created": False,
+            "mc_client_created": False,
+        }
         args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         return 0 if accepted else 2
     finally:

@@ -157,6 +157,11 @@ POINT_GOAL_ENDPOINT_RESPONSE_TIME_S = 0.09162162
 POINT_GOAL_MAX_ANGULAR_COMMAND_RAD_S = 0.075
 TABLE_APPROACH_CHILD_TIMEOUT_S = 410.0
 TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
+# A direct table target can use the complete 25 s active-command interval and
+# then a 2 s physical-stop hold.  The raw LiDAR bridge/localizer must outlive
+# both phases; 28 s was a race with their startup and shutdown bookkeeping.
+LIDAR_RUNTIME_DURATION_S = 35.0
+LIDAR_RUNTIME_PROCESS_TIMEOUT_S = 38.0
 PREARMED_STANDING_MIN_PARENT_RUNTIME_S = 90.0
 STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
 # The already-established root-motion guard is 0.20 m/s.  The pre-armed
@@ -4692,9 +4697,9 @@ class BoundedRun:
                 self.docker_exec(
                     "start_lidar_map_localizer",
                     "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                    "timeout 31s python3 /workspace/evidence/issue80_lidar_map_localizer.py "
+                    f"timeout {LIDAR_RUNTIME_PROCESS_TIMEOUT_S:g}s python3 /workspace/evidence/issue80_lidar_map_localizer.py "
                     "--trace /workspace/evidence/lidar_raw_frames.jsonl --database /workspace/evidence/lidar_static_map.bin "
-                    "--duration-s 28 --result /workspace/evidence/lidar_map_localizer_result.json "
+                    f"--duration-s {LIDAR_RUNTIME_DURATION_S:g} --result /workspace/evidence/lidar_map_localizer_result.json "
                     "--trace-output /workspace/evidence/lidar_map_localization_trace.jsonl "
                     "> /workspace/evidence/lidar_map_localizer_runtime.json 2> /workspace/evidence/lidar_map_localizer_runtime.stderr",
                     timeout_s=4.0,
@@ -4704,7 +4709,7 @@ class BoundedRun:
                 self.docker_exec(
                     "start_lidar_localizer",
                     "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                    "timeout 31s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s 28 "
+                    f"timeout {LIDAR_RUNTIME_PROCESS_TIMEOUT_S:g}s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s {LIDAR_RUNTIME_DURATION_S:g} "
                     "--trace /workspace/evidence/lidar_localization_trace.jsonl "
                     "--result /workspace/evidence/lidar_localizer_result.json "
                     "--topic /robotsim/lidar_chest_front/points "
@@ -4715,8 +4720,8 @@ class BoundedRun:
             self.docker_exec(
                 "start_lidar_raw_bridge",
                 "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                "timeout 31s python3 /workspace/evidence/issue80_lidar_raw_bridge.py "
-                "--trace /workspace/evidence/lidar_raw_frames.jsonl --duration-s 28 "
+                f"timeout {LIDAR_RUNTIME_PROCESS_TIMEOUT_S:g}s python3 /workspace/evidence/issue80_lidar_raw_bridge.py "
+                f"--trace /workspace/evidence/lidar_raw_frames.jsonl --duration-s {LIDAR_RUNTIME_DURATION_S:g} "
                 "--result /workspace/evidence/lidar_raw_bridge_result.json "
                 "> /workspace/evidence/lidar_raw_bridge_runtime.json 2> /workspace/evidence/lidar_raw_bridge_runtime.stderr",
                 timeout_s=4.0,
