@@ -8328,7 +8328,19 @@ class FocusedM1Diagnostic(Node):
             if registration["success"]:
                 # The stationary baseline belongs to verified STAND, before the
                 # locomotion action is requested. It is also command-free.
-                stationary_baseline = self.collect_stationary_odom_baseline()
+                if bool(getattr(self.args, "raicom_vendor_table_approach", False)):
+                    stationary_baseline = {
+                        "status": "NOT_REQUIRED_VENDOR_DIRECT_VELOCITY_ROUTE",
+                        "windows": [],
+                        "physical_state_summary": None,
+                        "commands_sent": 0,
+                        "reason": (
+                            "vendor table route uses live MuJoCo ground truth and the final "
+                            "physical-stop gate; no startup stationary-noise fit is required"
+                        ),
+                    }
+                else:
+                    stationary_baseline = self.collect_stationary_odom_baseline()
                 if getattr(self.args, "activation_probe_qualification", False):
                     lifecycle, set_action, activation_gate = self.begin_locomotion_activation_probe_request(
                         registration=registration,
