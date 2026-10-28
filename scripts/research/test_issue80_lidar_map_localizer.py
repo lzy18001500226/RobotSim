@@ -55,14 +55,16 @@ class MapLocalizerTests(unittest.TestCase):
             self.assertEqual(poses.tolist(), [[1.0, 2.0, 0.0]])
             self.assertEqual(ranges.tolist(), [[3.0, 4.0]])
 
-    def test_map_to_odom_round_trip_preserves_correspondence(self) -> None:
+    def test_map_to_odom_round_trip_preserves_position_without_using_robot_yaw_as_frame_yaw(self) -> None:
         odom = Pose2D(2.0, -1.0, 0.2)
         map_pose = Pose2D(-1.5, -1.5, -0.1)
         transform = map_to_odom_from_correspondence(map_pose, odom)
         reconstructed = apply_map_to_odom(transform, odom)
         translation, yaw = pose_residual(map_pose, reconstructed)
         self.assertLess(translation, 1e-6)
-        self.assertLess(abs(yaw), 1e-6)
+        self.assertAlmostEqual(transform.yaw_rad, 0.0)
+        self.assertAlmostEqual(reconstructed.yaw_rad, odom.yaw_rad)
+        self.assertAlmostEqual(yaw, 0.3)
 
     def test_bounded_lidar_blend_cannot_jump_one_grid_cell(self) -> None:
         current = Pose2D(0.0, 0.0, 0.0)

@@ -24,9 +24,12 @@ import numpy as np
 from issue80_lidar_raw_bridge import RAW_SCHEMA, read_new_frames
 
 MAGIC = b"RSLMAP1\0"
-LIDAR_CORRECTION_TRANSLATION_M = 0.30
+# The static signature grid is 0.10 m, so it may confirm a location but must
+# not override continuous odometry by an entire grid cell.  Corrections are
+# deliberately small residual updates after the initial scan correspondence.
+LIDAR_CORRECTION_TRANSLATION_M = 0.075
 LIDAR_CORRECTION_YAW_RAD = 0.25
-LIDAR_CORRECTION_BLEND = 0.15
+LIDAR_CORRECTION_BLEND = 0.05
 
 
 @dataclass(frozen=True)
@@ -73,13 +76,19 @@ def wrap(angle: float) -> float:
 
 
 def map_to_odom_from_correspondence(map_pose: Pose2D, odom_pose: Pose2D) -> Pose2D:
-    """Return ``map <- odom`` that maps ``odom_pose`` onto ``map_pose``."""
-    yaw = wrap(map_pose.yaw_rad - odom_pose.yaw_rad)
-    cosine, sine = math.cos(yaw), math.sin(yaw)
+    """Return the observed planar ``map <- odom`` position correction.
+
+    In the aligned RAICOM runtime, native MjData and MC odometry show aligned
+    position axes at Reset.  ``odom_pose.yaw_rad`` is the *robot's heading*,
+    not evidence that the odom coordinate axes are rotated.  Treating that
+    heading as a frame transform created a position error proportional to
+    travelled distance.  Keep the position-origin correction explicit and
+    retain the robot yaw as a pose attribute.
+    """
     return Pose2D(
-        map_pose.x_m - (cosine * odom_pose.x_m - sine * odom_pose.y_m),
-        map_pose.y_m - (sine * odom_pose.x_m + cosine * odom_pose.y_m),
-        yaw,
+        map_pose.x_m - odom_pose.x_m,
+        map_pose.y_m - odom_pose.y_m,
+        0.0,
     )
 
 
