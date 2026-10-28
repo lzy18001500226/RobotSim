@@ -7,6 +7,7 @@
 // contacts, robot geometry, or model parameters.
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <sstream>
@@ -42,7 +43,10 @@ std::vector<mjtNum> Parse(const char* text) {
 
 int FindSensor(const mjModel* model, int instance) {
   for (int id = 0; id < model->nsensor; ++id) {
-    if (model->sensor_type[id] == mjSENS_PLUGIN && model->sensor_plugin[id] == instance) {
+    // During plugin init, the delivery's MuJoCo 3.3.7 loader has already
+    // assigned sensor_plugin but has not yet finalized sensor_type.  The
+    // instance mapping is the stable lookup key at this callback stage.
+    if (model->sensor_plugin[id] == instance) {
       return id;
     }
   }
@@ -66,8 +70,14 @@ void WriteMetadata(mjtNum* state, const LidarState* lidar) {
 
 int RaySensorSize(const mjModel* model, int instance, int) {
   const auto size = Parse(mj_getPluginConfig(model, instance, "size"));
-  if (size.size() != 2 || size[0] <= 0 || size[1] <= 0) mju_error("Issue80 lidar requires positive size H V");
-  return static_cast<int>(size[0] * size[1] * 4);
+  if (size.size() != 2 || size[0] <= 0 || size[1] <= 0) {
+    std::fprintf(stderr, "issue80_lidar_size invalid instance=%d size_count=%zu\n", instance, size.size());
+    mju_error("Issue80 lidar requires positive size H V");
+  }
+  const int dimension = static_cast<int>(size[0] * size[1] * 4);
+  std::fprintf(stderr, "issue80_lidar_size instance=%d H=%.0f V=%.0f dim=%d\n",
+               instance, size[0], size[1], dimension);
+  return dimension;
 }
 
 int Init(const mjModel* model, mjData* data, int instance) {
@@ -76,7 +86,11 @@ int Init(const mjModel* model, mjData* data, int instance) {
   const auto fov_v = Parse(mj_getPluginConfig(model, instance, "fov_v"));
   const auto range = Parse(mj_getPluginConfig(model, instance, "dis_range"));
   const auto cadence = Parse(mj_getPluginConfig(model, instance, "n_step_update"));
-  if (size.size() != 2 || fov_h.size() != 1 || fov_v.size() != 1 || range.size() != 2) return -1;
+  if (size.size() != 2 || fov_h.size() != 1 || fov_v.size() != 1 || range.size() != 2) {
+    std::fprintf(stderr, "issue80_lidar_init invalid config sizes: size=%zu fov_h=%zu fov_v=%zu range=%zu\n",
+                 size.size(), fov_h.size(), fov_v.size(), range.size());
+    return -1;
+  }
   auto* lidar = new LidarState;
   lidar->horizontal = static_cast<int>(size[0]);
   lidar->vertical = static_cast<int>(size[1]);
@@ -85,21 +99,32 @@ int Init(const mjModel* model, mjData* data, int instance) {
   lidar->min_range = range[0];
   lidar->max_range = range[1];
   if (!(lidar->min_range > 0 && lidar->max_range > lidar->min_range)) {
+    std::fprintf(stderr, "issue80_lidar_init invalid range: %.6f %.6f\n", lidar->min_range, lidar->max_range);
     delete lidar;
     return -1;
   }
   if (!cadence.empty()) lidar->update_every = std::max(1, static_cast<int>(cadence[0]));
   lidar->sensor_id = FindSensor(model, instance);
   if (lidar->sensor_id < 0) {
+    std::fprintf(stderr, "issue80_lidar_init sensor not found: instance=%d nplugin=%d nsensor=%d",
+                 instance, model->nplugin, model->nsensor);
+    for (int id = 0; id < model->nsensor; ++id) {
+      std::fprintf(stderr, " [sensor=%d type=%d plugin=%d]", id, model->sensor_type[id], model->sensor_plugin[id]);
+    }
+    std::fprintf(stderr, "\n");
     delete lidar;
     return -1;
   }
   lidar->camera_id = model->sensor_objid[lidar->sensor_id];
   if (lidar->camera_id < 0 || lidar->camera_id >= model->ncam) {
+    std::fprintf(stderr, "issue80_lidar_init invalid camera: sensor=%d camera=%d ncam=%d\n",
+                 lidar->sensor_id, lidar->camera_id, model->ncam);
     delete lidar;
     return -1;
   }
   lidar->robot_root_body = RootBody(model, model->cam_bodyid[lidar->camera_id]);
+  std::fprintf(stderr, "issue80_lidar_init ok sensor=%d camera=%d body=%d root=%d\n",
+               lidar->sensor_id, lidar->camera_id, model->cam_bodyid[lidar->camera_id], lidar->robot_root_body);
   data->plugin_data[instance] = reinterpret_cast<uintptr_t>(lidar);
   WriteMetadata(data->plugin_state + model->plugin_stateadr[instance], lidar);
   return 0;
@@ -166,7 +191,7 @@ constexpr const char* kAttributes[] = {
 mjPLUGIN_LIB_INIT {
   mjpPlugin plugin;
   mjp_defaultPlugin(&plugin);
-  plugin.name = "mujoco.sensor.ray_caster_lidar";
+  plugin.name = "robotsim.issue80.ray_caster_lidar";
   plugin.nattribute = sizeof(kAttributes) / sizeof(kAttributes[0]);
   plugin.attributes = kAttributes;
   plugin.capabilityflags = mjPLUGIN_SENSOR;

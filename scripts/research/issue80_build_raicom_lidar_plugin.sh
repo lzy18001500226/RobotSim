@@ -7,7 +7,13 @@ output_path="${2:?output .so path required}"
 runtime_root="${3:?RAICOM sim_mujoco root required}"
 python_bin="${MUJOCO_PYTHON_BIN:-python3}"
 
-include_root="$("${python_bin}" -c 'import mujoco, pathlib; print(pathlib.Path(mujoco.__file__).parent / "include")')"
+if [[ -n "${MUJOCO_INCLUDE_ROOT:-}" ]]; then
+  include_root="${MUJOCO_INCLUDE_ROOT}"
+else
+  include_root="$("${python_bin}" -c 'import mujoco, pathlib; print(pathlib.Path(mujoco.__file__).parent / "include")')"
+fi
+test -f "${include_root}/mujoco/mujoco.h"
+grep -q '^#define mjVERSION_HEADER 337$' "${include_root}/mujoco/mujoco.h"
 mkdir -p "$(dirname "${output_path}")"
 g++ -std=c++17 -O2 -fPIC -shared \
   -I"${include_root}" \

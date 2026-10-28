@@ -34,8 +34,9 @@ ROBOT_YAML_SHA256 = "3abe18ecb23cddccf705cb0efe1fb7f589e54563729d2cf67abf847a2fd
 SIM_YAML_SHA256 = "c9af1d04a85baab88c54ca7fc31056734f6481a9f1d823d7bfe363c9421a1f02"
 OFFICIAL_URDF_SHA256 = "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d"
 
-PLUGIN_NAME = "mujoco.sensor.ray_caster_lidar"
+PLUGIN_NAME = "robotsim.issue80.ray_caster_lidar"
 SENSOR_NAME = "raycaster_lidar"
+SENSOR_INSTANCE = "issue80_raycaster_lidar_instance"
 CAMERA_NAME = "RayCasterLidar"
 SIM_POINTS_TOPIC = "/aima/sim/lidar/points"
 MESH_DIR_CONTAINER = "/workspace/raicom2026/sim_mujoco/configuration/robot/lx2501_3_t2d5/meshes"
@@ -97,7 +98,19 @@ def generate_overlay(output_dir: Path, scene_source: Path) -> dict[str, Any]:
 
     compiler.set("meshdir", MESH_DIR_CONTAINER)
     extension = ET.Element("extension")
-    ET.SubElement(extension, "plugin", plugin=PLUGIN_NAME)
+    extension_plugin = ET.SubElement(extension, "plugin", plugin=PLUGIN_NAME)
+    instance = ET.SubElement(extension_plugin, "instance", name=SENSOR_INSTANCE)
+    # The delivered 3.3.7 runtime requires an explicit instance for this
+    # plugin to allocate sensor output dimensions.
+    for key, value in (
+        ("fov_h", "270"),
+        ("fov_v", "60"),
+        ("size", "90 5"),
+        ("dis_range", "0.08 8"),
+        ("n_step_update", "200"),
+        ("sensor_data_types", "pos_w data"),
+    ):
+        ET.SubElement(instance, "config", key=key, value=value)
     x2_root.insert(0, extension)
     torso = one_named(x2_root, "body", "torso_link")
     ET.SubElement(
@@ -112,21 +125,10 @@ def generate_overlay(output_dir: Path, scene_source: Path) -> dict[str, Any]:
         sensor,
         "plugin",
         name=SENSOR_NAME,
-        plugin=PLUGIN_NAME,
+        instance=SENSOR_INSTANCE,
         objtype="camera",
         objname=CAMERA_NAME,
     )
-    # The delivered binary exposes these six exact plugin keys.  Ray density
-    # remains a small, explicitly experimental diagnostic grid.
-    for key, value in (
-        ("fov_h", "270"),
-        ("fov_v", "60"),
-        ("size", "90 5"),
-        ("dis_range", "0.08 8"),
-        ("n_step_update", "200"),
-        ("sensor_data_types", "pos_w data"),
-    ):
-        ET.SubElement(plugin, "config", key=key, value=value)
     after_counts = count_model_elements(x2_root)
     if any(after_counts[key] != before_counts[key] for key in ("body", "joint", "geom", "actuator")):
         raise AssertionError("LiDAR overlay must not alter mechanical model element counts")
@@ -204,6 +206,7 @@ def generate_overlay(output_dir: Path, scene_source: Path) -> dict[str, Any]:
         "vendor_plugin": {
             "name": PLUGIN_NAME,
             "sensor_name": SENSOR_NAME,
+            "sensor_instance": SENSOR_INSTANCE,
             "camera_name": CAMERA_NAME,
             "runtime_log_prior_state": "raycaster_lidar not found, disable raycaster publishing",
             "topic": SIM_POINTS_TOPIC,

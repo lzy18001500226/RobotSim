@@ -12,6 +12,7 @@ from issue80_raicom_lidar_overlay import (
     CAMERA_NAME,
     PLUGIN_NAME,
     SENSOR_NAME,
+    SENSOR_INSTANCE,
     generate_overlay,
 )
 
@@ -31,7 +32,9 @@ class RaicomLidarOverlayTests(unittest.TestCase):
             self.assertIsNotNone(next((item for item in x2.iter("camera") if item.get("name") == CAMERA_NAME), None))
             plugin = next((item for item in x2.iter("plugin") if item.get("name") == SENSOR_NAME), None)
             self.assertIsNotNone(plugin)
-            self.assertEqual(plugin.get("plugin"), PLUGIN_NAME)
+            self.assertEqual(plugin.get("instance"), SENSOR_INSTANCE)
+            instance = next((item for item in x2.iter("instance") if item.get("name") == SENSOR_INSTANCE), None)
+            self.assertIsNotNone(instance)
             self.assertEqual(
                 manifest["mechanical_equivalence"]["before_counts"]["joint"],
                 manifest["mechanical_equivalence"]["after_counts"]["joint"],
