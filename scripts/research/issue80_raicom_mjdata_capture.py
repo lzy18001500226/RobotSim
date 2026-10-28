@@ -44,6 +44,9 @@ CAPTURE_TRACE_NAME = "native_mjdata_trace.jsonl"
 CAPTURE_SUMMARY_NAME = "native_mjdata_capture_summary.json"
 LAUNCH_MARKER = "# ROBOTSIM_ISSUE80_NATIVE_MJDATA_CAPTURE"
 DEFAULT_INTERVAL_STEPS = 10
+LOCAL_ISSUE80_EVIDENCE_ROOT = Path(
+    "/home/lzy18001500226/projects/RobotSim/reviews/issue-80"
+)
 
 
 class MjDataCaptureError(RuntimeError):
@@ -288,6 +291,49 @@ def _download_exact_headers(evidence: Path) -> dict[str, Any]:
     return manifest
 
 
+def _copy_verified_local_headers(evidence: Path) -> dict[str, Any] | None:
+    """Reuse exact 3.3.7 headers from prior governed Issue #80 evidence.
+
+    The capture source is hash-pinned, so prior evidence is an immutable local
+    build input only when every required file still matches ``HEADER_SHA256``.
+    This avoids making an otherwise local simulation startup depend on a live
+    GitHub raw-content request.
+    """
+    candidates = sorted(
+        LOCAL_ISSUE80_EVIDENCE_ROOT.glob(
+            f"*/mujoco-{MUJOCO_TAG}-headers/include/mujoco"
+        )
+    )
+    for source_root in candidates:
+        if source_root.is_symlink() or not source_root.is_dir():
+            continue
+        files: dict[str, dict[str, Any]] = {}
+        valid = True
+        for filename, expected in sorted(HEADER_SHA256.items()):
+            source = source_root / filename
+            if source.is_symlink() or not source.is_file() or sha256_file(source) != expected:
+                valid = False
+                break
+            files[filename] = {
+                "source": str(source),
+                "sha256": expected,
+                "bytes": source.stat().st_size,
+            }
+        if not valid:
+            continue
+        header_root = evidence / f"mujoco-{MUJOCO_TAG}-headers" / "include" / "mujoco"
+        header_root.mkdir(parents=True, exist_ok=False)
+        for filename in files:
+            shutil.copyfile(source_root / filename, header_root / filename)
+        return {
+            "source": "LOCAL_VERIFIED_PRIOR_ISSUE80_EVIDENCE",
+            "tag": MUJOCO_TAG,
+            "files": files,
+            "include_root": str(header_root.parent),
+        }
+    return None
+
+
 def instrument_staged_launch(
     launch_script: Path,
     *,
@@ -343,7 +389,9 @@ def prepare_mjdata_capture_overlay(
     if not compiler:
         raise MjDataCaptureError("gcc is required to build the evidence-local capture overlay")
 
-    header_manifest = _download_exact_headers(evidence)
+    header_manifest = _copy_verified_local_headers(evidence)
+    if header_manifest is None:
+        header_manifest = _download_exact_headers(evidence)
     include_root = Path(header_manifest["include_root"])
     library = evidence / CAPTURE_LIBRARY_NAME
     command = [
