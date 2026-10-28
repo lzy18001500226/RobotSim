@@ -2097,6 +2097,17 @@ class BoundedRun:
         )
         lidar_source = getattr(args, "raicom_lidar_overlay_source", None)
         self.lidar_overlay_source = Path(lidar_source).resolve(strict=True) if lidar_source else None
+        self.lidar_overlay_dir: Path | None = None
+        if self.lidar_overlay_source is not None:
+            source_overlay = self.lidar_overlay_source / "lidar_overlay"
+            target_overlay = self.evidence / "lidar_overlay"
+            if source_overlay.is_symlink() or not source_overlay.is_dir() or target_overlay.exists():
+                raise ValueError("LiDAR overlay source/target directory is unsafe or already exists")
+            for path in source_overlay.rglob("*"):
+                if path.is_symlink() or (path.is_file() and not path.is_relative_to(source_overlay)):
+                    raise ValueError("LiDAR overlay source contains an unsafe path")
+            shutil.copytree(source_overlay, target_overlay)
+            self.lidar_overlay_dir = target_overlay
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
@@ -3089,20 +3100,18 @@ class BoundedRun:
                     + ",target=" + container_path + ",readonly",
                 ]
         if self.lidar_overlay_source is not None:
-            overlay = self.lidar_overlay_source / "lidar_overlay"
             plugins = self.lidar_overlay_source / "mujoco_plugin"
             required = (
-                overlay / "simulator_lidar_overlay.yaml",
-                overlay / "scene_lidar_overlay.xml",
-                overlay / "robot_lidar_overlay.yaml",
-                overlay / "LIDAR_OVERLAY_PROVENANCE.json",
+                self.lidar_overlay_dir / "simulator_lidar_overlay.yaml",
+                self.lidar_overlay_dir / "scene_lidar_overlay.xml",
+                self.lidar_overlay_dir / "robot_lidar_overlay.yaml",
+                self.lidar_overlay_dir / "LIDAR_OVERLAY_PROVENANCE.json",
                 plugins / "libsensor_ray.so",
                 plugins / "libissue80_ray.so",
             )
             if any(path.is_symlink() or not path.is_file() for path in required):
                 raise RuntimeError("requested LiDAR overlay source is incomplete or unsafe")
             cmd += [
-                "--mount", "type=bind,source=" + str(overlay) + ",target=/workspace/evidence/lidar_overlay,readonly",
                 "--mount", "type=bind,source=" + str(plugins) + ",target=/workspace/raicom2026/sim_mujoco/bin/mujoco_plugin,readonly",
             ]
         if self.foundationwalk_config_overlay is not None:
