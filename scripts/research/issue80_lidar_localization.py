@@ -27,6 +27,8 @@ LIDAR_TOPIC = "/aima/sim/lidar/points"
 LOCALIZATION_TOPIC = "/robotsim/lidar_localization_pose"
 SOURCE_START_XY_YAW = (-1.5, -1.5, 0.0)
 CHEST_LIDAR_X_OFFSET_M = 0.102632788961867
+MIN_TRANSLATION_UPDATE_M = 0.01
+MIN_YAW_UPDATE_RAD = 0.01
 
 
 def xy_from_cloud(message: PointCloud2) -> np.ndarray:
@@ -84,7 +86,17 @@ class LidarLocalizer(Node):
                 forward, lateral, yaw, residual = scan_delta(self.previous, current)
             except ValueError:
                 return
-            if residual <= 0.20 and math.hypot(forward, lateral) <= 0.25 and abs(yaw) <= 0.20:
+            displacement = math.hypot(forward, lateral)
+            if displacement < MIN_TRANSLATION_UPDATE_M and abs(yaw) < MIN_YAW_UPDATE_RAD:
+                self.last_result = {
+                    "status": "SCAN_STATIC_HOLD",
+                    "forward_m": forward,
+                    "lateral_m": lateral,
+                    "yaw_rad": yaw,
+                    "residual_m": residual,
+                    "point_count": int(len(current)),
+                }
+            elif residual <= 0.20 and displacement <= 0.25 and abs(yaw) <= 0.20:
                 self.pose = self.pose.apply_delta(forward, lateral, yaw)
                 self.last_result = {
                     "status": "SCAN_DELTA_ACCEPTED",

@@ -33,6 +33,10 @@ class LidarLocalizationTests(unittest.TestCase):
         self.assertAlmostEqual(pose.y, -1.5, places=6)
         self.assertAlmostEqual(pose.yaw, 0.05, places=6)
 
+    def test_static_scan_threshold_is_below_expected_locomotion_increment(self) -> None:
+        # At 0.12 m/s and a 5 Hz ray update, a real step is ~24 mm.
+        self.assertGreater(0.12 / 5.0, 0.01)
+
 
 if __name__ == "__main__":
     unittest.main()
