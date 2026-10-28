@@ -6118,7 +6118,7 @@ def main() -> int:
             and args.direct_stand_from_passive
             and args.maintainer_authorized_first_motion
             and args.require_stand_warmup_composite
-            and args.native_mjdata_capture
+            and (args.native_mjdata_capture or args.raicom_lidar_overlay_source)
             and (
                 low_cruise_native_profile
                 or nominal_straight_native_profile
@@ -6131,7 +6131,8 @@ def main() -> int:
         ):
             parser.error(
                 "native X2 timestep synchronization requires direct-stand, the aligned-start "
-                "TABLE_APPROACH mission, native capture, and either the explicit 0.105 m/s "
+                "TABLE_APPROACH mission, native capture (or the LiDAR overlay's documented "
+                "no-LD_PRELOAD compatibility path), and either the explicit 0.105 m/s "
                 "low-cruise profile, the isolated 0.12 m/s straight-gait diagnostic, the isolated "
                 "0.20 m/s vendor-example compatibility baseline, or the explicit "
                 "continuous 0.12 m/s native-ground-truth route, the fixed-window 0.12 m/s route, "
@@ -6234,8 +6235,10 @@ def main() -> int:
     if args.direct_stand_from_passive:
         if args.static_nominal_start_initialization or args.synchronized_paused_initialization:
             parser.error("direct stand from passive is only valid for the native Reset startup path")
-        if not args.native_mjdata_capture:
-            parser.error("direct stand from passive requires native MjData capture")
+        if not (args.native_mjdata_capture or args.raicom_lidar_overlay_source):
+            parser.error(
+                "direct stand from passive requires native MjData capture or the documented LiDAR no-LD_PRELOAD compatibility path"
+            )
     if args.raicom_low_cruise_profile:
         if not (
             args.direct_stand_from_passive
@@ -6321,7 +6324,7 @@ def main() -> int:
         and args.direct_stand_from_passive
         and args.maintainer_authorized_first_motion
         and args.require_stand_warmup_composite
-        and args.native_mjdata_capture
+        and (args.native_mjdata_capture or args.raicom_lidar_overlay_source)
         and not args.raicom_native_nominal_straight_gait_diagnostic
         and not args.raicom_low_cruise_profile
         and not args.raicom_zero_forward_heading_acquisition
@@ -6341,7 +6344,7 @@ def main() -> int:
         and args.direct_stand_from_passive
         and args.maintainer_authorized_first_motion
         and args.require_stand_warmup_composite
-        and args.native_mjdata_capture
+        and (args.native_mjdata_capture or args.raicom_lidar_overlay_source)
         and not args.raicom_vendor_example_forward_baseline
         and not args.raicom_native_nominal_straight_gait_diagnostic
         and not args.raicom_low_cruise_profile
