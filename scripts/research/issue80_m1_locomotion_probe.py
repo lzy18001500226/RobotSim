@@ -4844,6 +4844,14 @@ class FocusedM1Diagnostic(Node):
                     route_fault = "transit_safety:" + fault
                     return True
                 if (
+                    vendor_table_approach_mode
+                    and self.nonzero_publish_calls_returned == 0
+                ):
+                    # The vendor contract acquires locomotion arbitration from
+                    # the first nonzero packet.  Do not let the route executor
+                    # demand that readback before this packet exists.
+                    return False
+                if (
                     vendor_example_forward_baseline_mode
                     or (
                         vendor_table_approach_mode
