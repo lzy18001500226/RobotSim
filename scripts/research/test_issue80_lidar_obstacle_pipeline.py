@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import struct
 import unittest
+from pathlib import Path
+import ast
 
 from issue80_lidar_obstacle_layer import GridCell, GridSpec
 from issue80_lidar_obstacle_pipeline import (
@@ -69,6 +71,15 @@ class ObstaclePipelineTests(unittest.TestCase):
         pipeline.observe(sequence=1, **kwargs)
         result = pipeline.observe(sequence=1, **kwargs)
         self.assertEqual(result.status, PipelineStatus.BLOCKED_INVALID_OBSERVATION)
+
+    def test_pipeline_has_no_runtime_control_surface(self) -> None:
+        source = Path(__file__).with_name("issue80_lidar_obstacle_pipeline.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = [alias.name for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom)) for alias in node.names]
+        calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
+        self.assertFalse(any(name.startswith(("rclpy", "mujoco")) for name in imports))
+        self.assertNotIn("create_publisher", calls)
+        self.assertNotIn("create_client", calls)
 
 
 if __name__ == "__main__":

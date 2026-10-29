@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import tempfile
 import unittest
+import ast
 from pathlib import Path
 
 import numpy as np
@@ -40,6 +41,13 @@ class ChairDetourStaticTests(unittest.TestCase):
         self.assertAlmostEqual(poses[0][2], math.pi / 4.0)
         self.assertAlmostEqual(poses[1][2], 0.0)
         self.assertAlmostEqual(poses[2][2], 0.0)
+
+    def test_static_audit_has_no_mj_step_call(self) -> None:
+        source = Path(__file__).with_name("issue80_raicom_chair_detour_static.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
+        self.assertIn("mj_forward", calls)
+        self.assertNotIn("mj_step", calls)
 
 
 if __name__ == "__main__":
