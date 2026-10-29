@@ -82,14 +82,23 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
             observed[1] - float(audited.get("y_m", math.inf)),
         ) > 1e-9:
             raise LidarRouteConfigError("static audit route differs from the observed LiDAR route")
-    footprint = float(occupancy.get("measured_fullbody_radial_envelope_m"))
+    measured_envelope = float(occupancy.get("measured_fullbody_radial_envelope_m"))
+    # The occupancy artifact's radial value already includes the static
+    # audit's 50 mm tracking envelope.  RouteSpec instead stores the bare
+    # collision footprint plus its own boundary margin.  Keep exactly the
+    # same total lateral envelope (bare radius + 50 mm route margin + 50 mm
+    # permitted tracking) rather than double-counting it and rejecting the
+    # centreline before a command can be proposed.
+    footprint = measured_envelope - 0.05
     clearance = float(audit["static_fullbody_clearance"]["minimum_tracking_inflated_aabb_clearance_m"])
     if not all(math.isfinite(value) and value > 0.0 for value in (footprint, clearance)):
         raise LidarRouteConfigError("static audit has no positive footprint/clearance")
     # The static audit samples +/- 0.075 rad and carries a 50 mm tracking
     # envelope.  Preserve that envelope in the route corridor; never expand
     # a LiDAR route into unexplored free space at configuration time.
-    half_width = 0.05
+    boundary_margin = 0.05
+    permitted_tracking = 0.05
+    half_width = footprint + boundary_margin + permitted_tracking
     steps = []
     for index, (start, target) in enumerate(zip(points, points[1:]), start=1):
         final = index == len(points) - 1
@@ -139,7 +148,7 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
         },
         "safety": {
             "robot_footprint_radius_m": footprint,
-            "boundary_margin_m": half_width,
+            "boundary_margin_m": boundary_margin,
             "max_observation_age_s": 0.50,
         },
         "steps": steps,
@@ -150,6 +159,9 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
             "static_occupancy_sha256": sha256(occupancy_path),
             "unknown_obstacles_are_not_encoded_as_generator_truth": True,
             "execution_requires_fresh_live_lidar_confirmation_and_existing_MC_source_mode_stop_gates": True,
+            "measured_static_fullbody_envelope_m": measured_envelope,
+            "route_corridor_half_width_m": half_width,
+            "permitted_tracking_m": permitted_tracking,
         },
     }
     RouteSpec.from_mapping(raw)
