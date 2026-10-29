@@ -30,7 +30,7 @@ from issue80_m1_auto_reset_run import (
     MC_SIM_GENERATED_DIRECTORY,
     REPO,
     RUNTIME,
-    validate_local01_table_approach_mission_input,
+    validate_local01_aligned_start_table_approach_mission_input,
 )
 from issue80_raicom_reset_only import _stage_mc_config_dump_writeback
 
@@ -235,7 +235,7 @@ def run_once(
     known_good_startup_profile: bool,
 ) -> dict[str, Any]:
     table_preflight = (
-        validate_local01_table_approach_mission_input(POSES, KNOWN_GOOD_MISSION, KNOWN_GOOD_STATIC_PLAN)
+        validate_local01_aligned_start_table_approach_mission_input(POSES, KNOWN_GOOD_MISSION, KNOWN_GOOD_STATIC_PLAN)
         if known_good_startup_profile else None
     )
     runtime = BoundedRun(_bounded_args(

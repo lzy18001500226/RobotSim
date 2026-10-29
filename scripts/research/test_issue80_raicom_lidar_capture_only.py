@@ -44,7 +44,7 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
     def test_known_good_startup_profile_stages_only_inputs_before_capture(self) -> None:
         source = Path(__file__).with_name("issue80_raicom_lidar_capture_only.py").read_text(encoding="utf-8")
         self.assertIn("--known-good-startup-profile", source)
-        self.assertIn("validate_local01_table_approach_mission_input", source)
+        self.assertIn("validate_local01_aligned_start_table_approach_mission_input", source)
         self.assertIn("runtime.prepare_foundationwalk_diagnostic_overlay()", source)
         self.assertIn("runtime.start_sim_first(start_mc=False)", source)
 
