@@ -5624,7 +5624,13 @@ class FocusedM1Diagnostic(Node):
                     heading_acquisition_this_window = bool(
                         (
                             zero_forward_heading_acquisition_mode
-                            and segment_id == "WAYPOINT"
+                            and (
+                                segment_id == "WAYPOINT"
+                                or (
+                                    lidar_map_route_mode
+                                    and segment_id == route.steps[0].waypoint_id
+                                )
+                            )
                             and window_index == 0
                         )
                         or fixed_window_open_segment_acquisition
@@ -9409,14 +9415,22 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             "native MjData route feedback requires the aligned native-timestep TABLE_APPROACH profile"
         )
     if zero_forward_heading_acquisition and not (
-        table_approach_mission
-        and aligned_start_table_approach
-        and native_x2_timestep
-        and low_cruise_profile
-        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        (
+            table_approach_mission
+            and aligned_start_table_approach
+            and native_x2_timestep
+            and low_cruise_profile
+            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        )
+        or (
+            lidar_map_route
+            and configured_route
+            and abs(float(args.forward_speed) - VENDOR_EXAMPLE_FORWARD_M_S) <= 1e-9
+        )
     ):
         raise ValueError(
-            "zero-forward heading acquisition requires the native-timestep aligned TABLE_APPROACH low-cruise profile"
+            "zero-forward heading acquisition requires the native-timestep table low-cruise profile "
+            "or a static-audited vendor-gait LiDAR route"
         )
     if continuous_ten_second_transit and not (
         zero_forward_heading_acquisition

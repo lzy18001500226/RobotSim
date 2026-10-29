@@ -96,7 +96,6 @@ from issue80_raicom_mjdata_capture import (
 from issue80_raicom_observed_detour_static import audit as audit_observed_lidar_detour
 from issue80_lidar_observed_route_config import (
     build as build_observed_lidar_route_config,
-    smooth_initial_heading as smooth_lidar_route_initial_heading,
 )
 
 
@@ -1530,6 +1529,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += (
                 " --lidar-map-route"
                 " --lidar-localization-topic /map_tf_distribution/localization_pose"
+                " --raicom-zero-forward-heading-acquisition"
             )
         if local01_short_route:
             command[-1] += " --short-scene-route"
@@ -5005,14 +5005,13 @@ class BoundedRun:
             scenario_root = Path(str(provenance["scenario_source"])).resolve(strict=True)
             runtime_scene = scenario_root / "scene_runtime_unknown_obstacles.xml"
             replay_path = self.evidence / "lidar_live_observed_replay.json"
-            smoothed = smooth_lidar_route_initial_heading(tuple(actual))
             replay = {
                 "schema": "robotsim.issue80.lidar-map-background-replay.v1",
                 "classification": "SIMULATION_ONLY_LIVE_MAP_BACKGROUND_REPLAY",
                 "status": "PASS_CAPTURE_REPLAYED",
                 "second_decision": "DETOUR_READY_STATIC_ONLY",
                 "raw_lidar_a_star_waypoints": [{"x_m": x, "y_m": y} for x, y in actual],
-                "detour_waypoints": [{"x_m": x, "y_m": y} for x, y in smoothed],
+                "detour_waypoints": [{"x_m": x, "y_m": y} for x, y in actual],
                 "source_live_diagnostic_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
             }
             with replay_path.open("x", encoding="utf-8") as stream:
@@ -5073,7 +5072,7 @@ class BoundedRun:
             ) else "BLOCKED",
             "diagnostic": observed,
             "fresh_raw_lidar_a_star_points": [{"x_m": x, "y_m": y} for x, y in actual],
-            "fresh_route_points": [{"x_m": x, "y_m": y} for x, y in smoothed],
+            "fresh_route_points": [{"x_m": x, "y_m": y} for x, y in actual],
             "route_generated_from_fresh_lidar_observation": matches,
             "velocity_publisher_created_by_confirmation": False,
             "mc_action_or_source_client_created_by_confirmation": False,
@@ -6719,18 +6718,27 @@ def main() -> int:
                 "TABLE_APPROACH mission"
             )
     if args.raicom_zero_forward_heading_acquisition and not (
-        args.table_approach_mission
-        and args.aligned_start_table_approach
-        and args.native_x2_timestep
-        and args.raicom_low_cruise_profile
-        and args.direct_stand_from_passive
-        and args.maintainer_authorized_first_motion
-        and args.require_stand_warmup_composite
-        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        (
+            args.table_approach_mission
+            and args.aligned_start_table_approach
+            and args.native_x2_timestep
+            and args.raicom_low_cruise_profile
+            and args.direct_stand_from_passive
+            and args.maintainer_authorized_first_motion
+            and args.require_stand_warmup_composite
+            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        )
+        or (
+            args.raicom_lidar_obstacle_route
+            and args.direct_stand_from_passive
+            and args.maintainer_authorized_first_motion
+            and args.require_stand_warmup_composite
+            and abs(float(args.forward_speed) - VENDOR_EXAMPLE_FORWARD_M_S) <= 1e-9
+        )
     ):
         parser.error(
-            "zero-forward heading acquisition is limited to the native-timestep aligned "
-            "TABLE_APPROACH low-cruise first-motion profile"
+            "zero-forward heading acquisition is limited to the native-timestep aligned table "
+            "low-cruise profile or the static-audited vendor-gait LiDAR route"
         )
     if args.raicom_continuous_ten_second_transit and not (
         args.raicom_zero_forward_heading_acquisition
