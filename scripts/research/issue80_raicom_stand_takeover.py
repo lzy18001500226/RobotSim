@@ -184,15 +184,15 @@ class StandingRun(ResetOnlyRun):
         plugins=source/'mujoco_plugin'
         if source.is_symlink() or overlay.is_symlink() or plugins.is_symlink() or not overlay.is_dir() or not plugins.is_dir():
             raise RuntimeError('LiDAR overlay source is missing or unsafe')
-        target=self.evidence/'lidar_overlay'
-        if target.exists():
+        overlay_target=self.evidence/'lidar_overlay'
+        if overlay_target.exists():
             raise RuntimeError('LiDAR overlay target already exists')
-        shutil.copytree(overlay,target)
+        shutil.copytree(overlay,overlay_target)
         for item in plugins.iterdir():
             if item.is_symlink() or not item.is_file():
                 raise RuntimeError('LiDAR plugin source contains unsafe entry')
         runtime.lidar_overlay_source=source
-        runtime.lidar_overlay_dir=target
+        runtime.lidar_overlay_dir=overlay_target
         background_arg=getattr(self.args,'lidar_background_capture',None)
         static_map_arg=getattr(self.args,'lidar_static_map_source',None)
         if (background_arg is None)!=(static_map_arg is None):
@@ -218,15 +218,15 @@ class StandingRun(ResetOnlyRun):
                 input_path=static_source/name
                 if input_path.is_symlink() or not input_path.is_file():
                     raise RuntimeError('LiDAR static map source is incomplete')
-                target=self.evidence/name
-                shutil.copyfile(input_path,target)
-                static_inputs[name]=target
+                staged_input=self.evidence/name
+                shutil.copyfile(input_path,staged_input)
+                static_inputs[name]=staged_input
             self.lidar_background_capture=target_background
             self.lidar_static_map_inputs=static_inputs
         self.result['lidar_overlay']={
             'source':str(source),
-            'x2_overlay_sha256':_sha256(target/'x2_lidar_overlay.xml'),
-            'robot_overlay_sha256':_sha256(target/'robot_lidar_overlay.yaml'),
+            'x2_overlay_sha256':_sha256(overlay_target/'x2_lidar_overlay.xml'),
+            'robot_overlay_sha256':_sha256(overlay_target/'robot_lidar_overlay.yaml'),
             'capture_source_sha256':{path.name:_sha256(self.evidence/path.name) for path in staged_sources},
             'map_background_capture':None if self.lidar_background_capture is None else {
                 'source':str(background),'source_sha256':_sha256(background),

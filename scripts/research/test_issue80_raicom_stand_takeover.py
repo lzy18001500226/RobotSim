@@ -55,6 +55,8 @@ class StandingTests(unittest.TestCase):
         self.assertNotIn('create_publisher(',method)
         self.assertNotIn('SetMcInputSource',method)
         self.assertIn('LIDAR_RAW_BRIDGE',source)
+        self.assertIn("overlay_target=self.evidence/'lidar_overlay'",source)
+        self.assertIn('staged_input=self.evidence/name',source)
         self.assertIn("parser.add_argument('--lidar-background-capture'",source)
         self.assertIn("parser.add_argument('--lidar-static-map-source'",source)
 
