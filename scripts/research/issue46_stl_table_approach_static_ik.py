@@ -167,6 +167,7 @@ def main() -> None:
     parser.add_argument("--freeze-record", required=True, type=Path)
     parser.add_argument("--handoff", required=True, type=Path)
     parser.add_argument("--route-config", required=True, type=Path)
+    parser.add_argument("--navigation-result", type=Path, help="machine-readable result from the exact TABLE_APPROACH run to consume")
     parser.add_argument("--perception-refinement", type=Path, help="optional known-upright-cylinder refinement result in the same world frame")
     parser.add_argument("--height-offset-mm", nargs="+", type=float, default=(80.0, 100.0, 120.0))
     parser.add_argument("--commands", nargs="+", type=int, default=(30, 32, 34, 36, 38, 40))
@@ -191,6 +192,17 @@ def main() -> None:
         else:
             raise SystemExit("navigation dynamic result lacks final odom pose")
     route = json.loads(args.route_config.read_text(encoding="utf-8"))
+    navigation_result = None
+    if args.navigation_result is not None:
+        if not args.navigation_result.is_file():
+            raise SystemExit("navigation result is missing")
+        navigation_result = json.loads(args.navigation_result.read_text(encoding="utf-8"))
+        if navigation_result.get("status") != "PASS" or navigation_result.get("physical_stop", {}).get("status") != "PASS":
+            raise SystemExit("navigation result has not passed TABLE_APPROACH and physical-stop gates")
+        final = navigation_result.get("final_pose_odom")
+        if not isinstance(final, dict):
+            raise SystemExit("navigation result lacks final odom pose")
+        handoff["final odom"] = [final[key] for key in ("x_m", "y_m", "z_m", "yaw_rad")]
     base_pose = handoff_pose(handoff, route)
     review_path = Path(frozen["accepted_review"]["path"])
     review = json.loads(review_path.read_text(encoding="utf-8"))
@@ -255,7 +267,7 @@ def main() -> None:
         "classification": "SIMULATION_ONLY_TABLE_APPROACH_STATIC_IK",
         "mj_step_calls": 0,
         "model": {"id": loaded.model_id, "sha256": loaded.model_sha256},
-        "navigation": {"handoff_path": str(args.handoff), "handoff_sha256": sha256(args.handoff), "route_path": str(args.route_config), "route_sha256": sha256(args.route_config), "base_pose_scene_world": base_pose.tolist(), "contract": route["runtime_coordinate_contract"]},
+        "navigation": {"handoff_path": str(args.handoff), "handoff_sha256": sha256(args.handoff), "route_path": str(args.route_config), "route_sha256": sha256(args.route_config), "result_path": None if args.navigation_result is None else str(args.navigation_result), "result_sha256": None if args.navigation_result is None else sha256(args.navigation_result), "base_pose_scene_world": base_pose.tolist(), "contract": route["runtime_coordinate_contract"]},
         "source_scene": {"path": str(source_scene), "sha256": sha256(source_scene), "asset_rebindings": rebindings},
         "object_centre": {
             "scene_truth_world_m": cylinder_center.tolist(),
