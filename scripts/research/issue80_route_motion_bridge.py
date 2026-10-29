@@ -2014,11 +2014,11 @@ class RouteMotionBridge:
         if (
             not _finite_number(directive.max_angular_rad_s)
             or directive.max_angular_rad_s <= 0.0
-            or directive.max_angular_rad_s > MAX_ANGULAR_RAD_S
+            or directive.max_angular_rad_s > self.maximum_angular_rad_s
         ):
             return self.zero_window(
                 directive, now_steady_s=now_steady_s,
-                reason="directive angular cap is outside the reviewed M1 limit",
+                reason="directive angular cap is outside the reviewed route profile",
                 physical_stop_gate_required=True, status="BLOCKED_ZERO_ONLY",
             )
 
