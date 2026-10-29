@@ -207,7 +207,7 @@ def main() -> None:
         raise RuntimeError("static bilateral STL pose produced a non-finite model state")
     result = {
         "schema": "robotsim.issue46.raicom-stl-mount-audit.v1",
-        "classification": "VERIFIED_SOURCE_PRESERVING_STATIC_MOUNT_OVERLAY",
+        "classification": "SIMULATION_ONLY_OFFICIAL_WRIST_MOUNT_WITH_REVIEWED_STL_TRAJECTORY_OVERLAY",
         "mj_step_calls": 0,
         "raicom_model": {"path": str(args.raicom_model.resolve()), "sha256": sha256(args.raicom_model)},
         "official_urdf": {"path": str(args.official_urdf.resolve()), "sha256": sha256(args.official_urdf)},
@@ -217,7 +217,7 @@ def main() -> None:
         "generated_overlay": {"path": str(overlay), "sha256": sha256(overlay)},
         "static_checks": checks,
         "gates": {"OFFICIAL_WRIST_PARENT": "PASS", "OFFICIAL_FIXED_MOUNT_ORIGINS": "PASS", "BILATERAL_STL_STATIC_MJ_FORWARD": "PASS", "DYNAMICS": "NOT_RUN", "BALANCE": "NOT_RUN", "EXTERNAL_CONTACT": "NOT_RUN"},
-        "limitations": ["The RAICOM model's wrist inertial/mesh representation differs from the v1.4 source wrist extension visual used in prior fixed-base reviews.", "This overlay is source-grounded for the fixed hand mount and reviewed STL trajectory but has not received a new RAICOM full-body visual review.", "No dynamics, collision qualification, navigation, or grasping ran."],
+        "limitations": ["The RAICOM model's wrist inertial/mesh representation differs from the v1.4 source wrist extension visual used in prior fixed-base reviews.", "Only the fixed wrist-to-base mount origins are vendor-sourced; the STL trajectory remains the human-reviewed SIMULATION_ONLY kinematic mapping.", "This overlay has not received a new RAICOM full-body visual review.", "No dynamics, collision qualification, navigation, or grasping ran."],
     }
     pg.write_new_text(output / "result.json", json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     pg.write_new_bytes(output / Path(__file__).name, Path(__file__).read_bytes())
