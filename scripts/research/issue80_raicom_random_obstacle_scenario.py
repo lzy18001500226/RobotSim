@@ -31,8 +31,17 @@ CHAIR_RELATIVE = Path("robot/lx2501_3_t2d5/model_info/object/mesh/chair.stl")
 ROOM_RELATIVE = Path("robot/lx2501_3_t2d5/model_info/scene/room/room_with_chair_review.xml")
 START_XY = (-1.5, -1.5)
 TABLE_APPROACH_XY = (0.9, -1.5)
-OBSTACLE_CLEARANCE_M = 0.75
-CHAIR_SPACING_M = 0.85
+# The generated scene is later fed to a 0.10 m occupancy grid which inflates
+# novel returns by 0.465657 m.  The largest source object in this fixture is
+# the 0.05 x 0.45 m barricade: its planar half diagonal is 0.45277 m.  The
+# 1.05 m endpoint exclusion therefore leaves a small grid-quantisation
+# margin after object extent and route-envelope inflation.  Earlier 0.75 m
+# centre-only checks allowed an inflated barricade to cover the start cell;
+# that made a correctly fail-closed planner look like a sensing failure.
+ENDPOINT_EXCLUSION_M = 1.05
+OBJECT_SEPARATION_M = 1.10
+SAMPLE_X_RANGE_M = (-1.40, 0.30)
+SAMPLE_Y_RANGE_M = (-2.50, -0.50)
 ALIGNED_START_QUAT_WXYZ = "1 0 0 0"
 
 
@@ -60,7 +69,12 @@ def chair_model_xml(chair_mesh: Path) -> ET.Element:
 
 def _safe(candidate: tuple[float, float], accepted: list[tuple[float, float]]) -> bool:
     protected = [START_XY, TABLE_APPROACH_XY, *accepted]
-    return all(math.dist(candidate, item) >= (CHAIR_SPACING_M if item in accepted else OBSTACLE_CLEARANCE_M) for item in protected)
+    return all(
+        math.dist(candidate, item) >= (
+            OBJECT_SEPARATION_M if item in accepted else ENDPOINT_EXCLUSION_M
+        )
+        for item in protected
+    )
 
 
 def sample_obstacles(*, seed: int, chair_count: int, barrier_count: int) -> tuple[list[dict], list[dict]]:
@@ -75,7 +89,10 @@ def sample_obstacles(*, seed: int, chair_count: int, barrier_count: int) -> tupl
     for index in range(chair_count + barrier_count):
         chosen = None
         for _ in range(500):
-            candidate = (round(rng.uniform(-1.1, 0.55), 2), round(rng.uniform(-2.15, -0.65), 2))
+            candidate = (
+                round(rng.uniform(*SAMPLE_X_RANGE_M), 2),
+                round(rng.uniform(*SAMPLE_Y_RANGE_M), 2),
+            )
             if _safe(candidate, accepted):
                 chosen = candidate
                 break
@@ -172,6 +189,13 @@ def generate(output: Path, *, seed: int, chair_count: int, barrier_count: int) -
             "x2_start_frame_quat_wxyz": [1.0, 0.0, 0.0, 0.0],
             "source_start_yaw_rad": math.pi / 2.0,
             "active_qpos_write": False,
+        },
+        "sampling_contract": {
+            "endpoint_exclusion_m": ENDPOINT_EXCLUSION_M,
+            "object_separation_m": OBJECT_SEPARATION_M,
+            "sample_x_range_m": list(SAMPLE_X_RANGE_M),
+            "sample_y_range_m": list(SAMPLE_Y_RANGE_M),
+            "meaning": "centre-distance screening for source object footprint plus route-envelope inflation; it does not replace full-body clearance validation",
         },
         "runtime_unknown_obstacles": {
             "scene": str(runtime_scene),
