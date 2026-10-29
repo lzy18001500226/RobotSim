@@ -33,6 +33,14 @@ class LidarCaptureTests(unittest.TestCase):
             "BLOCKED_POINTCLOUD_FRAME_MISMATCH",
         )
 
+    def test_rviz_review_configuration_has_no_command_topic(self) -> None:
+        source = Path(__file__).with_name("issue80_lidar_map_review.rviz").read_text(encoding="utf-8")
+        self.assertIn("Fixed Frame: map", source)
+        self.assertIn("/aima/sim/lidar/points", source)
+        self.assertIn("/map_tf_distribution/localization_pose", source)
+        self.assertNotIn("locomotion/velocity", source)
+        self.assertNotIn("cmd_vel", source)
+
 
 if __name__ == "__main__":
     unittest.main()
