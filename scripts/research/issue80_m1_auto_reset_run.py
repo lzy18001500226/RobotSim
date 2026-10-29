@@ -2621,12 +2621,16 @@ class BoundedRun:
         run65_local01_short_route = bool(
             getattr(self.args, "local01_scene_world_poses", None)
             and not getattr(self.args, "table_approach_mission", None)
+            and not self.lidar_obstacle_route
         )
         run65_waypoint_b_mode = (
             run65_waypoint_b_only or run65_waypoint_b_short or run65_waypoint_b_extended
         )
         run65_overlay = run65_point_goal or run65_right_turn or run65_route or run65_waypoint_b_mode or run65_curved_path or run65_waypoint_docking
-        selected_variants = sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_mode, run65_curved_path, run65_waypoint_docking))
+        selected_variants = (
+            1 if self.lidar_obstacle_route else
+            sum((run38, run41, run42, run43, run44, run45, run46, run48, run49, run50, run53, run65_point_goal, run65_right_turn, run65_route, run65_waypoint_b_mode, run65_curved_path, run65_waypoint_docking))
+        )
         if selected_variants == 0:
             return
         if selected_variants != 1:
