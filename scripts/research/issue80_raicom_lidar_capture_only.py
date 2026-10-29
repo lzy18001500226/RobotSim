@@ -163,7 +163,7 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
             "cd /workspace/evidence && timeout " + f"{duration_s + 3.0:g}s "
             "python3 issue80_capture_lidar_pointcloud.py "
             "--output /workspace/evidence/lidar_map_frame_capture.json "
-            f"--duration-s {duration_s:g} --expected-frame-id map"
+            f"--duration-s {duration_s:g} --expected-frame-id map --save-all-finite-points"
         )
         captured = runtime.docker_exec("capture_map_frame_lidar", command, timeout_s=duration_s + 6.0, check=False)
         result["capture_returncode"] = captured.returncode

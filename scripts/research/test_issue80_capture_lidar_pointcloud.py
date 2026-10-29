@@ -22,6 +22,8 @@ class LidarCaptureTests(unittest.TestCase):
         self.assertNotIn("create_client", calls)
         self.assertIn("classify_map_frame_capture", source)
         self.assertIn("--expected-frame-id", source)
+        self.assertIn("--save-all-finite-points", source)
+        self.assertIn("MAX_RETAINED_FINITE_POINTS", source)
 
     def test_capture_requires_requested_map_frame(self) -> None:
         self.assertEqual(

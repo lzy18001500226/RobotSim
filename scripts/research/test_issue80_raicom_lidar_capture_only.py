@@ -30,6 +30,10 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
         self.assertIn("start_sim_first", calls)
         self.assertIn("docker_exec", calls)
 
+    def test_runner_requests_bounded_full_point_capture(self) -> None:
+        source = Path(__file__).with_name("issue80_raicom_lidar_capture_only.py").read_text(encoding="utf-8")
+        self.assertIn("--expected-frame-id map --save-all-finite-points", source)
+
     def test_capture_duration_is_bounded(self) -> None:
         self.assertLessEqual(MAX_CAPTURE_S, 12.0)
 
