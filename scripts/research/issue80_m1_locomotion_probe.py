@@ -5793,6 +5793,49 @@ class FocusedM1Diagnostic(Node):
                         if forward <= 0.0:
                             self._publish(0.0, 0.0, 0.0)
                             return
+                        if community_navigation_profile_mode and isinstance(snapshot, Mapping):
+                            pose = snapshot.get("pose")
+                            active = executor.active_step
+                            if not isinstance(pose, Mapping) or active is None:
+                                window_control["feedback_fault"] = "community_navigation_pose_or_goal_missing"
+                                self._publish(0.0, 0.0, 0.0)
+                                return
+                            try:
+                                target_heading = math.atan2(
+                                    float(active.y_m) - float(pose["y"]),
+                                    float(active.x_m) - float(pose["x"]),
+                                )
+                                heading_error = math.atan2(
+                                    math.sin(target_heading - float(pose["yaw"])),
+                                    math.cos(target_heading - float(pose["yaw"])),
+                                )
+                            except (KeyError, TypeError, ValueError):
+                                window_control["feedback_fault"] = "community_navigation_invalid_pose"
+                                self._publish(0.0, 0.0, 0.0)
+                                return
+                            if abs(heading_error) > 0.25:
+                                forward = 0.0
+                                angular = math.copysign(0.10, heading_error)
+                                phase = "COMMUNITY_ALIGN_TO_GOAL"
+                            else:
+                                raw_angular = 0.90 * heading_error
+                                angular = max(-0.35, min(0.35, raw_angular))
+                                if abs(angular) < 0.10:
+                                    angular = 0.0
+                                phase = "COMMUNITY_DRIVE_TO_GOAL"
+                            control_row.update({
+                                "forward_velocity_m_s": forward,
+                                "angular_velocity_rad_s": angular,
+                                "control_phase": phase,
+                                "heading_error_rad": heading_error,
+                                "target_x_m": float(active.x_m),
+                                "target_y_m": float(active.y_m),
+                                "community_reference": "AgiBot-Community/raicom2026-agibot-X2 src/race_task/race_task/service_pose_nav.py + cmd_vel_bridge.py",
+                            })
+                            steering_samples.append(control_row)
+                            window_control["last_route_angular_command_rad_s"] = angular
+                            self._publish(forward, 0.0, angular)
+                            return
                         if (
                             heading_acquisition_this_window
                             and isinstance(snapshot, Mapping)
