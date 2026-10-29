@@ -243,6 +243,7 @@ def main() -> None:
         "model": {"id": loaded.model_id, "sha256": loaded.model_sha256},
         "navigation": {"handoff_path": str(args.handoff), "handoff_sha256": sha256(args.handoff), "route_path": str(args.route_config), "route_sha256": sha256(args.route_config), "base_pose_scene_world": base_pose.tolist(), "contract": route["runtime_coordinate_contract"]},
         "source_scene": {"path": str(source_scene), "sha256": sha256(source_scene), "asset_rebindings": rebindings},
+        "review_state": {"path": str(review_path), "sha256": sha256(review_path), "initial_command_percent": initial_command},
         "overlay": {"path": str(overlay), "sha256": sha256(overlay), "pelvis_pose_change": base_overlay},
         "rows": rows,
         "valid_dual_pad_candidates": valid,
