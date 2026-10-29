@@ -4815,6 +4815,8 @@ class BoundedRun:
             TABLE_APPROACH_CHILD_TIMEOUT_S
             if getattr(self.args, "table_approach_mission", None) else 35.0
         )
+        if self.lidar_obstacle_route:
+            required_remaining_s = 180.0
         if self.remaining() < required_remaining_s:
             raise RunDeadline(
                 f"fewer than {required_remaining_s:g} seconds remain after AUTO_RESET_PASS; M1 was not started"
@@ -4824,13 +4826,15 @@ class BoundedRun:
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
         if self.lidar_overlay_source is not None:
+            lidar_duration_s = 190.0 if self.lidar_obstacle_route else LIDAR_RUNTIME_DURATION_S
+            lidar_process_timeout_s = lidar_duration_s + 3.0
             if self.lidar_static_map is not None:
                 self.docker_exec(
                     "start_lidar_map_localizer",
                     "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                    f"timeout {LIDAR_RUNTIME_PROCESS_TIMEOUT_S:g}s python3 /workspace/evidence/issue80_lidar_map_localizer.py "
+                    f"timeout {lidar_process_timeout_s:g}s python3 /workspace/evidence/issue80_lidar_map_localizer.py "
                     "--trace /workspace/evidence/lidar_raw_frames.jsonl --database /workspace/evidence/lidar_static_map.bin "
-                    f"--duration-s {LIDAR_RUNTIME_DURATION_S:g} --result /workspace/evidence/lidar_map_localizer_result.json "
+                    f"--duration-s {lidar_duration_s:g} --result /workspace/evidence/lidar_map_localizer_result.json "
                     "--trace-output /workspace/evidence/lidar_map_localization_trace.jsonl "
                     "> /workspace/evidence/lidar_map_localizer_runtime.json 2> /workspace/evidence/lidar_map_localizer_runtime.stderr",
                     timeout_s=4.0,
@@ -4840,7 +4844,7 @@ class BoundedRun:
                 self.docker_exec(
                     "start_lidar_localizer",
                     "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                    f"timeout {LIDAR_RUNTIME_PROCESS_TIMEOUT_S:g}s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s {LIDAR_RUNTIME_DURATION_S:g} "
+                    f"timeout {lidar_process_timeout_s:g}s python3 /workspace/evidence/issue80_lidar_localization.py --duration-s {lidar_duration_s:g} "
                     "--trace /workspace/evidence/lidar_localization_trace.jsonl "
                     "--result /workspace/evidence/lidar_localizer_result.json "
                     "--topic /robotsim/lidar_chest_front/points "
@@ -4851,8 +4855,8 @@ class BoundedRun:
             self.docker_exec(
                 "start_lidar_raw_bridge",
                 "source /opt/ros/humble/setup.bash && source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
-                f"timeout {LIDAR_RUNTIME_PROCESS_TIMEOUT_S:g}s python3 /workspace/evidence/issue80_lidar_raw_bridge.py "
-                f"--trace /workspace/evidence/lidar_raw_frames.jsonl --duration-s {LIDAR_RUNTIME_DURATION_S:g} "
+                f"timeout {lidar_process_timeout_s:g}s python3 /workspace/evidence/issue80_lidar_raw_bridge.py "
+                f"--trace /workspace/evidence/lidar_raw_frames.jsonl --duration-s {lidar_duration_s:g} "
                 "--result /workspace/evidence/lidar_raw_bridge_result.json "
                 "> /workspace/evidence/lidar_raw_bridge_runtime.json 2> /workspace/evidence/lidar_raw_bridge_runtime.stderr",
                 timeout_s=4.0,
@@ -4874,6 +4878,8 @@ class BoundedRun:
             if getattr(self.args, "post_locomotion_convergence_observation_s", None) is not None
             else 45.0
         )
+        if self.lidar_obstacle_route:
+            child_timeout_s = 180.0
         result = self.run(
             "m1_first_motion_diagnostic", command,
             timeout_s=min(child_timeout_s, self.remaining()), check=False,

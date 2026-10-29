@@ -9330,16 +9330,23 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         and abs(float(args.forward_speed) - 0.12) <= 1e-9
     )
     if native_x2_timestep and not (
-        table_approach_mission
-        and aligned_start_table_approach
-        and (
-            low_cruise_native_profile
-            or nominal_straight_native_profile
-            or vendor_example_native_profile
-            or vendor_table_native_profile
-            or continuous_table_native_profile
-            or fixed_window_table_native_profile
-            or straight_ten_second_table_native_profile
+        (
+            lidar_map_route
+            and configured_route
+            and abs(float(args.forward_speed) - 0.12) <= 1e-9
+        )
+        or (
+            table_approach_mission
+            and aligned_start_table_approach
+            and (
+                low_cruise_native_profile
+                or nominal_straight_native_profile
+                or vendor_example_native_profile
+                or vendor_table_native_profile
+                or continuous_table_native_profile
+                or fixed_window_table_native_profile
+                or straight_ten_second_table_native_profile
+            )
         )
     ):
         raise ValueError(
@@ -9435,17 +9442,25 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             "TABLE_APPROACH mission, and exactly 0.12 m/s without steering profiles"
         )
     if forward_gait_yaw_inversion and not (
-        continuous_ten_second_transit
-        and zero_forward_heading_acquisition
-        and table_approach_mission
-        and aligned_start_table_approach
-        and native_x2_timestep
-        and low_cruise_profile
-        and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        (
+            continuous_ten_second_transit
+            and zero_forward_heading_acquisition
+            and table_approach_mission
+            and aligned_start_table_approach
+            and native_x2_timestep
+            and low_cruise_profile
+            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+        )
+        or (
+            lidar_map_route
+            and configured_route
+            and native_x2_timestep
+            and abs(float(args.forward_speed) - 0.12) <= 1e-9
+        )
     ):
         raise ValueError(
-            "forward-gait yaw inversion requires the explicit continuous native-timestep "
-            "TABLE_APPROACH heading-acquisition profile"
+            "forward-gait yaw inversion requires the qualified native-timestep table profile "
+            "or a static-audited LiDAR map route"
         )
     if native_nominal_straight_gait_diagnostic and not (
         table_approach_mission
