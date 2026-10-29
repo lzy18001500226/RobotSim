@@ -11,6 +11,7 @@ import time
 
 import mujoco
 import mujoco.viewer
+import numpy as np
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -34,9 +35,16 @@ def main() -> None:
     parser.add_argument("--state-audit", required=True, type=Path)
     parser.add_argument("--left-command-percent", type=float, default=0.0)
     parser.add_argument("--right-command-percent", type=float, default=0.0)
+    parser.add_argument("--camera-distance-m", type=float, default=1.8)
+    parser.add_argument("--camera-azimuth-deg", type=float, default=135.0)
+    parser.add_argument("--camera-elevation-deg", type=float, default=-12.0)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if not args.state_audit.is_file() or not all(0.0 <= value <= 100.0 for value in (args.left_command_percent, args.right_command_percent)):
+    if (
+        not args.state_audit.is_file()
+        or not all(0.0 <= value <= 100.0 for value in (args.left_command_percent, args.right_command_percent))
+        or not 0.5 <= args.camera_distance_m <= 10.0
+    ):
         raise SystemExit("state audit or hand command is invalid")
     audit = json.loads(args.state_audit.read_text(encoding="utf-8"))
     required = ("SOURCE_POSTSTOP_STATE", "NAMED_ROBOT_STATE_MAPPING", "BILATERAL_STL_POSE", "STATIC_MJ_FORWARD")
@@ -53,10 +61,19 @@ def main() -> None:
     apply_stl_kinematic_pose(mujoco, model, data, trajectory, args.left_command_percent, side="left", forward=True)
     apply_stl_kinematic_pose(mujoco, model, data, trajectory, args.right_command_percent, side="right", forward=True)
     mujoco.mj_forward(model, data)
-    print(json.dumps({"viewer": "MuJoCo native post-stop static review; 0 mj_step", "final_pose_odom": handoff["final_pose_odom"], "left_command_percent": args.left_command_percent, "right_command_percent": args.right_command_percent}, ensure_ascii=False, indent=2))
+    pelvis = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    if pelvis < 0:
+        raise RuntimeError("post-stop overlay lacks pelvis")
+    camera_lookat = data.xpos[pelvis] + np.array([0.0, 0.0, 0.5])
+    print(json.dumps({"viewer": "MuJoCo native post-stop static review; 0 mj_step", "final_pose_odom": handoff["final_pose_odom"], "left_command_percent": args.left_command_percent, "right_command_percent": args.right_command_percent, "camera": {"lookat_world_m": camera_lookat.tolist(), "distance_m": args.camera_distance_m, "azimuth_deg": args.camera_azimuth_deg, "elevation_deg": args.camera_elevation_deg}}, ensure_ascii=False, indent=2))
     if args.dry_run:
         return
     with mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as viewer:
+        viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+        viewer.cam.lookat[:] = camera_lookat
+        viewer.cam.distance = args.camera_distance_m
+        viewer.cam.azimuth = args.camera_azimuth_deg
+        viewer.cam.elevation = args.camera_elevation_deg
         while viewer.is_running():
             viewer.sync()
             time.sleep(0.02)
