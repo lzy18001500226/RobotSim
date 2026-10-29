@@ -384,7 +384,9 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
     expected_forward = (
         0.2 if vendor_example else RAICOM_LOW_CRUISE_FORWARD_M_S if low_cruise else 0.12
     )
-    expected_pulse = 5.0 if vendor_example else 1.0
+    expected_pulse = 5.0 if (
+        vendor_example or bool(getattr(args, "raicom_lidar_obstacle_route", False))
+    ) else 1.0
     if (
         abs(float(args.forward_speed) - expected_forward) > 1e-9
         or abs(float(args.pulse_duration) - expected_pulse) > 1e-9
@@ -6341,8 +6343,7 @@ def main() -> int:
         args.run65_waypoint_b_extended_diagnostic,
         args.run65_curved_path_diagnostic,
         args.run65_ground_truth_point_goal,
-        bool(args.route_config),
-        bool(args.local01_scene_world_poses and not args.table_approach_mission),
+        bool((args.route_config or args.local01_scene_world_poses) and not args.table_approach_mission),
         bool(args.table_approach_mission),
     )
     if sum(diagnostic_variants) > 1:
@@ -6453,20 +6454,31 @@ def main() -> int:
             and abs(float(args.forward_speed) - 0.12) <= 1e-9
         )
         if not (
-            args.table_approach_mission
-            and args.aligned_start_table_approach
-            and args.direct_stand_from_passive
-            and args.maintainer_authorized_first_motion
-            and args.require_stand_warmup_composite
-            and (args.native_mjdata_capture or args.raicom_lidar_overlay_source)
-            and (
-                low_cruise_native_profile
-                or nominal_straight_native_profile
-                or vendor_example_native_profile
-                or vendor_table_native_profile
-                or continuous_table_native_profile
-                or fixed_window_table_native_profile
-                or straight_ten_second_table_native_profile
+            (
+                args.raicom_lidar_obstacle_route
+                and args.direct_stand_from_passive
+                and args.maintainer_authorized_first_motion
+                and args.require_stand_warmup_composite
+                and args.raicom_lidar_overlay_source
+                and abs(float(args.forward_speed) - 0.12) <= 1e-9
+                and abs(float(args.pulse_duration) - 5.0) <= 1e-9
+            )
+            or (
+                args.table_approach_mission
+                and args.aligned_start_table_approach
+                and args.direct_stand_from_passive
+                and args.maintainer_authorized_first_motion
+                and args.require_stand_warmup_composite
+                and (args.native_mjdata_capture or args.raicom_lidar_overlay_source)
+                and (
+                    low_cruise_native_profile
+                    or nominal_straight_native_profile
+                    or vendor_example_native_profile
+                    or vendor_table_native_profile
+                    or continuous_table_native_profile
+                    or fixed_window_table_native_profile
+                    or straight_ten_second_table_native_profile
+                )
             )
         ):
             parser.error(
