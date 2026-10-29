@@ -39,6 +39,7 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
         self.assertIn("OBSTACLE_LAYER", source)
         self.assertIn("--capture-obstacle-diagnostic", source)
         self.assertIn("start_readonly_obstacle_diagnostic", source)
+        self.assertIn("capture input target exists but differs", source)
 
     def test_runner_reuses_the_verified_readonly_mjdata_overlay(self) -> None:
         source = Path(__file__).with_name("issue80_raicom_lidar_capture_only.py").read_text(encoding="utf-8")

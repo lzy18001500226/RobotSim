@@ -202,8 +202,10 @@ def stage_capture_tools(evidence: Path) -> dict[str, str]:
             raise CaptureOnlyError(f"capture input is missing or unsafe: {source.name}")
         target = evidence / source.name
         if target.exists():
-            raise CaptureOnlyError("capture input target already exists")
-        shutil.copyfile(source, target)
+            if target.is_symlink() or not target.is_file() or _sha256(target) != _sha256(source):
+                raise CaptureOnlyError("capture input target exists but differs from current source")
+        else:
+            shutil.copyfile(source, target)
         records[source.name] = _sha256(target)
     return records
 
