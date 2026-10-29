@@ -9,6 +9,7 @@ import mujoco
 
 from simulation.mujoco.models.agibot_x2 import load_x2_omnipicker
 from simulation.mujoco.models.agibot_x2.omnipicker_stl_kinematic import (
+    LEFT_JOINT_MAPPING,
     apply_stl_kinematic_pose,
     load_registered_trajectory,
 )
@@ -88,6 +89,29 @@ class STLTableKinematicTests(unittest.TestCase):
             self.assertAlmostEqual(pose.positions_rad[joint], expected, delta=1e-12)
             expected_velocity = 2.0 * (self.trajectory.rows[48][column] - self.trajectory.rows[47][column])
             self.assertAlmostEqual(pose.velocities_rad_s[joint], expected_velocity, delta=1e-12)
+
+    def test_official_frame_approved_left_mapping_applies_the_same_table_values(self) -> None:
+        joints = "\n".join(
+            f'<joint name="{name}" type="hinge" axis="0 0 1" range="-3.14 3.14" />'
+            for name in LEFT_JOINT_MAPPING.values()
+        )
+        model = mujoco.MjModel.from_xml_string(
+            f'<mujoco><worldbody><body><inertial pos="0 0 0" mass="1" diaginertia="1 1 1" />{joints}</body></worldbody></mujoco>'
+        )
+        data = mujoco.MjData(model)
+        pose = apply_stl_kinematic_pose(
+            mujoco, model, data, self.trajectory, 73.0, side="left",
+        )
+        row = self.trajectory.rows[73]
+        for right, left in LEFT_JOINT_MAPPING.items():
+            joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, left)
+            self.assertGreaterEqual(joint_id, 0)
+            self.assertAlmostEqual(
+                float(data.qpos[model.jnt_qposadr[joint_id]]),
+                row[JOINT_COLUMNS[right]],
+                delta=1e-12,
+            )
+            self.assertIn(left, pose.positions_rad)
 
     def test_internal_collision_policy_is_exactly_the_reviewed_seven_pair_list(self) -> None:
         root = __import__("xml.etree.ElementTree", fromlist=["ElementTree"]).parse(PACKAGE / "model.xml").getroot()

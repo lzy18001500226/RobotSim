@@ -2,6 +2,7 @@
 from .kinematic import (
     KinematicPose,
     KinematicTrajectory,
+    LEFT_JOINT_MAPPING,
     STLKinematicTrajectoryError,
     apply_stl_kinematic_pose,
     load_registered_trajectory,
@@ -10,6 +11,7 @@ from .kinematic import (
 __all__ = [
     "KinematicPose",
     "KinematicTrajectory",
+    "LEFT_JOINT_MAPPING",
     "STLKinematicTrajectoryError",
     "apply_stl_kinematic_pose",
     "load_registered_trajectory",
