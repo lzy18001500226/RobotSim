@@ -13,6 +13,7 @@ from issue80_lidar_map_localizer import (
     apply_map_to_odom,
     best_candidate,
     blend_map_to_odom,
+    initial_map_center,
     load_database,
     map_to_odom_from_correspondence,
     pose_residual,
@@ -35,6 +36,11 @@ class MapLocalizerTests(unittest.TestCase):
         candidates = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32)
         index, _, _ = best_candidate(candidates, ranges, np.array([1.0] * 100, dtype=np.float32), center=np.array([0.0, 0.0, 0.0]), max_translation_m=0.35, max_yaw_rad=0.25)
         self.assertEqual(index, 0)
+
+    def test_fixed_initial_map_center_requires_finite_pose(self) -> None:
+        self.assertEqual(initial_map_center(x_m=-1.5, y_m=-1.5, yaw_rad=0.0).tolist(), [-1.5, -1.5, 0.0])
+        with self.assertRaises(ValueError):
+            initial_map_center(x_m=float("nan"), y_m=0.0, yaw_rad=0.0)
 
     def test_raw_frame_preserves_ray_slots(self) -> None:
         frame = {"schema": RAW_SCHEMA, "xyz": [[3.0, 4.0, 0.0], None, ["nan", 0.0, 0.0]]}

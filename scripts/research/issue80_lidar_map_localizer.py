@@ -30,6 +30,7 @@ MAGIC = b"RSLMAP1\0"
 LIDAR_CORRECTION_TRANSLATION_M = 0.075
 LIDAR_CORRECTION_YAW_RAD = 0.25
 LIDAR_CORRECTION_BLEND = 0.05
+POSTURE_MATCHED_STATIC_SCORE_M = 0.20
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,13 @@ def best_candidate(candidates: np.ndarray, ranges: np.ndarray, scan: np.ndarray,
     return index, float(score[index]), int(count[index])
 
 
+def initial_map_center(*, x_m: float, y_m: float, yaw_rad: float) -> np.ndarray:
+    values = np.asarray([x_m, y_m, yaw_rad], dtype=np.float32)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("initial map pose must be finite")
+    return values
+
+
 def yaw_from_quaternion(q: Any) -> float:
     return math.atan2(2.0 * (float(q.w) * float(q.z) + float(q.x) * float(q.y)), 1.0 - 2.0 * (float(q.y) ** 2 + float(q.z) ** 2))
 
@@ -147,6 +155,9 @@ def main() -> int:
     parser.add_argument("--result", required=True, type=Path)
     parser.add_argument("--pose-topic", default="/map_tf_distribution/localization_pose")
     parser.add_argument("--trace-output", type=Path, required=True)
+    parser.add_argument("--initial-map-x-m", type=float, default=-1.5)
+    parser.add_argument("--initial-map-y-m", type=float, default=-1.5)
+    parser.add_argument("--initial-map-yaw-rad", type=float, default=0.0)
     args = parser.parse_args()
     if args.result.exists() or args.trace_output.exists():
         parser.error("outputs must be new")
@@ -210,8 +221,11 @@ def main() -> int:
     offset = 0
     accepted = 0
     last_scan_pose: Pose2D | None = None
-    source_start = np.array([-1.5, -1.5, 0.0], dtype=np.float32)
-    calibration: np.ndarray | None = None
+    configured_start = initial_map_center(
+        x_m=args.initial_map_x_m,
+        y_m=args.initial_map_y_m,
+        yaw_rad=args.initial_map_yaw_rad,
+    )
     trace = args.trace_output.open("x", encoding="utf-8", buffering=1)
     try:
         deadline = time.monotonic() + args.duration_s
@@ -220,20 +234,17 @@ def main() -> int:
             for raw in frames:
                 scan = raw_ranges(raw, ranges.shape[1])
                 propagated = apply_map_to_odom(map_to_odom, odom_pose()) if map_to_odom is not None and odom_pose() is not None else None
-                raw_center = None if calibration is None or propagated is None else np.array(
-                    [propagated.x_m, propagated.y_m, propagated.yaw_rad], dtype=np.float32
-                ) - calibration
+                raw_center = configured_start if map_to_odom is None else (
+                    None if propagated is None else np.array(
+                        [propagated.x_m, propagated.y_m, propagated.yaw_rad], dtype=np.float32
+                    )
+                )
                 index, score, matches = best_candidate(
                     candidates, ranges, scan, center=raw_center,
                     max_translation_m=0.35, max_yaw_rad=0.25,
                 )
-                raw_pose = np.array(candidates[index], dtype=np.float32)
-                if calibration is None:
-                    calibration = source_start - raw_pose
-                corrected = raw_pose + calibration
-                corrected[2] = wrap(float(corrected[2]))
-                scan_pose = Pose2D(*[float(value) for value in corrected])
-                scan_qualified = math.isfinite(score) and score <= 0.16 and matches >= 80
+                scan_pose = Pose2D(*[float(value) for value in candidates[index]])
+                scan_qualified = math.isfinite(score) and score <= POSTURE_MATCHED_STATIC_SCORE_M and matches >= 80
                 residual_translation_m: float | None = None
                 residual_yaw_rad: float | None = None
                 correction_accepted = False
@@ -260,7 +271,7 @@ def main() -> int:
                     "scan_candidate": {"x": scan_pose.x_m, "y": scan_pose.y_m, "yaw": scan_pose.yaw_rad},
                     "propagated_pose": None if propagated is None else {"x": propagated.x_m, "y": propagated.y_m, "yaw": propagated.yaw_rad},
                     "map_to_odom": None if map_to_odom is None else {"x": map_to_odom.x_m, "y": map_to_odom.y_m, "yaw": map_to_odom.yaw_rad},
-                    "calibration": calibration.tolist() if calibration is not None else None,
+                    "configured_initial_map_pose": configured_start.tolist(),
                     "score": score, "matching_rays": matches, "scan_qualified": scan_qualified,
                     "residual_translation_m": residual_translation_m, "residual_yaw_rad": residual_yaw_rad,
                     "lidar_correction_accepted": correction_accepted,
@@ -275,7 +286,8 @@ def main() -> int:
             "last_published_pose_map": None if last_published_pose is None else last_published_pose.__dict__,
             "localization_uses_odom": True,
             "odom_usage": "continuous_map_pose_propagation_and_map_to_odom_transform",
-            "lidar_usage": "bounded_static_map_correction_only",
+            "lidar_usage": "posture-matched static-map correction from a fixed known-start prior",
+            "initialization": "fixed known map start; not kidnapped-robot global relocalization",
             "velocity_publisher_created": False,
             "mc_client_created": False,
         }
