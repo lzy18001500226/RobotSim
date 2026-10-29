@@ -40,6 +40,12 @@ POSES = WORKTREE / "simulation/mujoco/scenes/raicom2026/config/scene_world_poses
 CAPTURE = Path(__file__).with_name("issue80_capture_lidar_pointcloud.py")
 MAP_FIELD = Path(__file__).with_name("issue80_lidar_map_obstacle_field.py")
 OBSTACLE_LAYER = Path(__file__).with_name("issue80_lidar_obstacle_layer.py")
+OBSTACLE_PIPELINE = Path(__file__).with_name("issue80_lidar_obstacle_pipeline.py")
+OBSTACLE_DIAGNOSTIC = Path(__file__).with_name("issue80_lidar_obstacle_diagnostic.py")
+STATIC_SURFACE_AUDIT = Path(__file__).with_name("issue80_lidar_static_surface_audit.py")
+MAP_LOCALIZER = Path(__file__).with_name("issue80_lidar_map_localizer.py")
+MAP_REPLAY = Path(__file__).with_name("issue80_lidar_obstacle_replay.py")
+STATIC_MAP_SOURCE = REPO / "reviews/issue-80/raicom-lidar-map-table-repeat-tight-20261029T072316Z"
 MAX_RUNTIME_S = 30.0
 MAX_CAPTURE_S = 12.0
 KNOWN_GOOD_MISSION = REPO / "reviews/issue-80/raicom-vendor-table-target-20261028T042026Z/route_config.json"
@@ -191,7 +197,7 @@ def snapshot_runtime_immutable_inputs() -> dict[str, Any]:
 
 def stage_capture_tools(evidence: Path) -> dict[str, str]:
     records: dict[str, str] = {}
-    for source in (CAPTURE, MAP_FIELD, OBSTACLE_LAYER):
+    for source in (CAPTURE, MAP_FIELD, OBSTACLE_LAYER, OBSTACLE_PIPELINE, OBSTACLE_DIAGNOSTIC, STATIC_SURFACE_AUDIT, MAP_LOCALIZER, MAP_REPLAY):
         if source.is_symlink() or not source.is_file():
             raise CaptureOnlyError(f"capture input is missing or unsafe: {source.name}")
         target = evidence / source.name
@@ -199,6 +205,19 @@ def stage_capture_tools(evidence: Path) -> dict[str, str]:
             raise CaptureOnlyError("capture input target already exists")
         shutil.copyfile(source, target)
         records[source.name] = _sha256(target)
+    return records
+
+
+def stage_static_map_inputs(evidence: Path) -> dict[str, str]:
+    inputs = ("lidar_static_map.bin", "lidar_map_localization_trace.jsonl")
+    records: dict[str, str] = {}
+    for name in inputs:
+        source = STATIC_MAP_SOURCE / name
+        target = evidence / name
+        if source.is_symlink() or not source.is_file():
+            raise CaptureOnlyError(f"static map input is missing or unsafe: {name}")
+        shutil.copyfile(source, target)
+        records[name] = _sha256(target)
     return records
 
 
@@ -234,7 +253,7 @@ def start_simulator_then_native_mc(runtime: BoundedRun) -> None:
 
 def run_once(
     evidence: Path, container: str, lidar_overlay_source: Path, duration_s: float, *, runtime_write_comparison: bool,
-    known_good_startup_profile: bool,
+    known_good_startup_profile: bool, capture_obstacle_diagnostic: bool,
 ) -> dict[str, Any]:
     table_preflight = (
         validate_local01_aligned_start_table_approach_mission_input(POSES, KNOWN_GOOD_MISSION, KNOWN_GOOD_STATIC_PLAN)
@@ -272,6 +291,7 @@ def run_once(
         "mc_runtime_writeback": mc_writeback_manifest,
         "runtime_write_comparison": runtime_write_comparison,
         "known_good_startup_profile": known_good_startup_profile,
+        "capture_obstacle_diagnostic": capture_obstacle_diagnostic,
     }
     before_runtime = snapshot_runtime_immutable_inputs() if runtime_write_comparison else None
     if before_runtime is not None:
@@ -284,6 +304,8 @@ def run_once(
         result["native_mjdata_capture_overlay"] = runtime.native_mjdata_overlay
         result["native_mjdata_capture_smoke"] = runtime.native_mjdata_smoke
         result["capture_tool_sha256"] = stage_capture_tools(evidence)
+        if capture_obstacle_diagnostic:
+            result["static_map_input_sha256"] = stage_static_map_inputs(evidence)
         runtime.start_container()
         runtime.docker_exec(
             "seed_isolated_generated_sim_config_capture_only",
@@ -295,6 +317,20 @@ def run_once(
             runtime.start_sim_first(start_mc=False)
         else:
             start_simulator_then_native_mc(runtime)
+        if capture_obstacle_diagnostic:
+            runtime.docker_exec(
+                "start_readonly_obstacle_diagnostic",
+                "source /opt/ros/humble/setup.bash && "
+                "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+                "cd /workspace/evidence && timeout " + f"{duration_s + 3.0:g}s "
+                "python3 issue80_lidar_obstacle_diagnostic.py "
+                "--static-database /workspace/evidence/lidar_static_map.bin "
+                "--localization-trace /workspace/evidence/lidar_map_localization_trace.jsonl "
+                "--trace /workspace/evidence/lidar_obstacle_diagnostic_trace.jsonl "
+                "--result /workspace/evidence/lidar_obstacle_diagnostic_result.json "
+                f"--duration-s {duration_s:g} > /workspace/evidence/lidar_obstacle_diagnostic.stdout 2> /workspace/evidence/lidar_obstacle_diagnostic.stderr",
+                timeout_s=3.0, detached=True,
+            )
         command = (
             "source /opt/ros/humble/setup.bash && "
             "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
@@ -314,6 +350,12 @@ def run_once(
     except Exception as exc:
         result["failure"] = f"{type(exc).__name__}: {exc}"
     finally:
+        diagnostic_result = evidence / "lidar_obstacle_diagnostic_result.json"
+        if capture_obstacle_diagnostic:
+            if diagnostic_result.is_file() and not diagnostic_result.is_symlink():
+                result["obstacle_diagnostic"] = json.loads(diagnostic_result.read_text(encoding="utf-8"))
+            else:
+                result["obstacle_diagnostic"] = {"status": "BLOCKED_NO_DIAGNOSTIC_RESULT"}
         result["native_mjdata_capture"] = runtime.finalize_native_mjdata_capture()
         runtime.cleanup()
         runtime.apply_container_teardown_gate(result)
@@ -347,6 +389,7 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-runtime-write-comparison", action="store_true",
         help="one logged full-runtime RW comparison; source/model/policy hashes must remain unchanged",
     )
+    parser.add_argument("--capture-obstacle-diagnostic", action="store_true", help="run the subscription-only obstacle diagnostic alongside point capture")
     parser.add_argument(
         "--known-good-startup-profile", action="store_true",
         help="stage the same source-derived scene/FoundationWalk startup inputs as the passing LiDAR baseline; still no action or velocity",
@@ -374,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
             evidence, container, overlay_source, args.duration_s,
             runtime_write_comparison=args.allow_runtime_write_comparison,
             known_good_startup_profile=args.known_good_startup_profile,
+            capture_obstacle_diagnostic=args.capture_obstacle_diagnostic,
         )
         (evidence / "lidar_capture_only_result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         write_artifact_manifest(evidence)
