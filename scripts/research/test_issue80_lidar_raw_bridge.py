@@ -9,6 +9,16 @@ from issue80_lidar_raw_bridge import RAW_SCHEMA, decode_frame, point_bytes, read
 
 
 class RawBridgeTests(unittest.TestCase):
+    def test_world_coordinate_field_is_explicit_and_does_not_relabel_local_points(self) -> None:
+        payload = {
+            "schema": RAW_SCHEMA,
+            "xyz": [[1.0, 2.0, 3.0]],
+            "world_xyz": [[4.0, 5.0, 6.0]],
+        }
+        self.assertEqual(decode_frame(payload), [(1.0, 2.0, 3.0)])
+        self.assertEqual(decode_frame(payload, coordinate_field="world_xyz"), [(4.0, 5.0, 6.0)])
+        with self.assertRaisesRegex(ValueError, "world_xyz"):
+            decode_frame({"schema": RAW_SCHEMA, "xyz": [[1.0, 2.0, 3.0]]}, coordinate_field="world_xyz")
     def test_decodes_only_finite_xyz(self) -> None:
         frame = {"schema": RAW_SCHEMA, "xyz": [[1, 2, 3], None, ["nan", 0, 1], [4.0, 5.0, 6.0]]}
         self.assertEqual(decode_frame(frame), [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)])

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish source-local LiDAR frames traced by the SIMULATION_ONLY plugin.
+"""Publish source-local or simulation-world LiDAR frames from the plugin trace.
 
 This bridge has one input: the evidence-local append-only JSONL trace written
 by ``robotsim.issue80.ray_caster_lidar``.  It has no MC service client, odom
@@ -21,12 +21,14 @@ DEFAULT_TOPIC = "/robotsim/lidar_chest_front/points"
 DEFAULT_FRAME = "lidar_chest_front"
 
 
-def decode_frame(payload: Any) -> list[tuple[float, float, float]]:
+def decode_frame(payload: Any, *, coordinate_field: str = "xyz") -> list[tuple[float, float, float]]:
     if not isinstance(payload, dict) or payload.get("schema") != RAW_SCHEMA:
         raise ValueError("unexpected raw LiDAR frame schema")
-    xyz = payload.get("xyz")
+    if coordinate_field not in {"xyz", "world_xyz"}:
+        raise ValueError("unsupported raw LiDAR coordinate field")
+    xyz = payload.get(coordinate_field)
     if not isinstance(xyz, list):
-        raise ValueError("raw LiDAR frame lacks xyz list")
+        raise ValueError(f"raw LiDAR frame lacks {coordinate_field} list")
     points: list[tuple[float, float, float]] = []
     for point in xyz:
         if not isinstance(point, list) or len(point) != 3:
@@ -72,6 +74,7 @@ def main() -> int:
     parser.add_argument("--duration-s", type=float, default=30.0)
     parser.add_argument("--topic", default=DEFAULT_TOPIC)
     parser.add_argument("--frame", default=DEFAULT_FRAME)
+    parser.add_argument("--coordinate-field", choices=("xyz", "world_xyz"), default="xyz")
     parser.add_argument("--result", type=Path, required=True)
     args = parser.parse_args()
     if args.result.exists() or args.result.is_symlink():
@@ -98,7 +101,7 @@ def main() -> int:
         while rclpy.ok() and time.monotonic() < deadline:
             offset, frames = read_new_frames(args.trace, offset)
             for raw in frames:
-                points = decode_frame(raw)
+                points = decode_frame(raw, coordinate_field=args.coordinate_field)
                 if not points:
                     continue
                 message = PointCloud2()
@@ -121,7 +124,7 @@ def main() -> int:
                 points_last = len(points)
             rclpy.spin_once(node, timeout_sec=0.02)
             time.sleep(0.01)
-        result = {"schema": "robotsim.issue80.lidar-raw-bridge.v1", "status": "PASS" if published else "BLOCKED_NO_RAW_FRAMES", "topic": args.topic, "frame": args.frame, "published_frames": published, "last_point_count": points_last, "velocity_publisher_created": False, "mc_client_created": False}
+        result = {"schema": "robotsim.issue80.lidar-raw-bridge.v1", "status": "PASS" if published else "BLOCKED_NO_RAW_FRAMES", "topic": args.topic, "frame": args.frame, "coordinate_field": args.coordinate_field, "published_frames": published, "last_point_count": points_last, "velocity_publisher_created": False, "mc_client_created": False}
         args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         return 0 if published else 2
     finally:

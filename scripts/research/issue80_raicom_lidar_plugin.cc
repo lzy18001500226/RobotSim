@@ -246,6 +246,20 @@ void Compute(const mjModel* model, mjData* data, int instance, int) {
         lidar->raw_trace << "null";
       }
     }
+    lidar->raw_trace << "],\"world_xyz\":[";
+    for (int index = 0; index < rays; ++index) {
+      if (index) lidar->raw_trace << ',';
+      const mjtNum* point = xyz + index * 3;
+      if (std::isfinite(point[0]) && std::isfinite(point[1]) && std::isfinite(point[2])) {
+        mjtNum world_point[3];
+        mju_mulMatVec3(world_point, rotation, point);
+        lidar->raw_trace << '[' << origin[0] + world_point[0] << ','
+                         << origin[1] + world_point[1] << ','
+                         << origin[2] + world_point[2] << ']';
+      } else {
+        lidar->raw_trace << "null";
+      }
+    }
     lidar->raw_trace << "]}\n";
     lidar->raw_trace.flush();
   }
