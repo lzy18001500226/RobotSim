@@ -256,14 +256,18 @@ class NovelObstacleTracker:
         self._hits: dict[GridCell, int] = {}
 
     def update(self, sequence: int, returns: Iterable[NovelReturn]) -> frozenset[GridCell]:
+        return self.update_positions(sequence, ((item.x_m, item.y_m) for item in returns))
+
+    def update_positions(self, sequence: int, positions: Iterable[tuple[float, float]]) -> frozenset[GridCell]:
+        """Update confirmation state from finite map-frame planar positions."""
         if not isinstance(sequence, int) or sequence < 0:
             raise ObstacleLayerError("LiDAR sequence must be a non-negative integer")
         if self._last_sequence is not None and sequence <= self._last_sequence:
             raise ObstacleLayerError("LiDAR sequence must strictly advance; duplicate/reordered scans fail closed")
         self._last_sequence = sequence
         seen: set[GridCell] = set()
-        for item in returns:
-            cell = self.grid.world_to_cell(item.x_m, item.y_m)
+        for x_m, y_m in positions:
+            cell = self.grid.world_to_cell(x_m, y_m)
             if self.grid.contains(cell):
                 seen.add(cell)
         # A cell missing from a fresh frame loses its temporal evidence.  This

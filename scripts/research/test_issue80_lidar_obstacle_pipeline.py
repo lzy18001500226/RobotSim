@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import struct
+import unittest
+
+from issue80_lidar_obstacle_layer import GridCell, GridSpec
+from issue80_lidar_obstacle_pipeline import (
+    MapFrameObstaclePipeline,
+    ObstaclePipelineConfig,
+    PipelineStatus,
+)
+
+
+def cloud(points: list[tuple[float, float, float]]) -> bytes:
+    return b"".join(struct.pack("<fff", *point) for point in points)
+
+
+class ObstaclePipelineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.grid = GridSpec(-1.0, -1.0, 0.10, 21, 21)
+        self.config = ObstaclePipelineConfig(
+            grid=self.grid,
+            static_surface=frozenset({GridCell(2, 2)}),
+            static_route_blocked=frozenset(),
+            start=GridCell(1, 10),
+            goal=GridCell(19, 10),
+            static_match_distance_m=0.15,
+            obstacle_inflation_m=0.21,
+            confirmation_frames=2,
+        )
+
+    def test_known_static_point_does_not_replan(self) -> None:
+        pipeline = MapFrameObstaclePipeline(self.config)
+        result = pipeline.observe(
+            sequence=1, frame_id="map", data=cloud([(-0.75, -0.75, 0.5)]),
+            width=1, height=1, point_step=12, field_offsets={"x": 0, "y": 4, "z": 8},
+        )
+        self.assertEqual(result.status, PipelineStatus.CLEAR_DIRECT_PATH)
+
+    def test_new_chair_requires_confirmation_then_generates_detour(self) -> None:
+        pipeline = MapFrameObstaclePipeline(self.config)
+        kwargs = {
+            "frame_id": "map", "data": cloud([(0.02, 0.02, 0.5)]),
+            "width": 1, "height": 1, "point_step": 12, "field_offsets": {"x": 0, "y": 4, "z": 8},
+        }
+        first = pipeline.observe(sequence=1, **kwargs)
+        self.assertEqual(first.status, PipelineStatus.WAITING_FOR_CONFIRMATION)
+        second = pipeline.observe(sequence=2, **kwargs)
+        self.assertEqual(second.status, PipelineStatus.DETOUR_READY)
+        self.assertEqual(second.detour_cells[0], self.config.start)
+        self.assertEqual(second.detour_cells[-1], self.config.goal)
+        self.assertTrue(any(cell.y != self.config.start.y for cell in second.detour_cells))
+
+    def test_wrong_frame_fails_closed_without_route(self) -> None:
+        pipeline = MapFrameObstaclePipeline(self.config)
+        result = pipeline.observe(
+            sequence=1, frame_id="lidar_chest_front", data=cloud([(0.02, 0.02, 0.5)]),
+            width=1, height=1, point_step=12, field_offsets={"x": 0, "y": 4, "z": 8},
+        )
+        self.assertEqual(result.status, PipelineStatus.BLOCKED_INVALID_OBSERVATION)
+        self.assertEqual(result.detour_cells, ())
+
+    def test_duplicate_scan_fails_closed(self) -> None:
+        pipeline = MapFrameObstaclePipeline(self.config)
+        kwargs = {
+            "frame_id": "map", "data": cloud([(0.02, 0.02, 0.5)]),
+            "width": 1, "height": 1, "point_step": 12, "field_offsets": {"x": 0, "y": 4, "z": 8},
+        }
+        pipeline.observe(sequence=1, **kwargs)
+        result = pipeline.observe(sequence=1, **kwargs)
+        self.assertEqual(result.status, PipelineStatus.BLOCKED_INVALID_OBSERVATION)
+
+
+if __name__ == "__main__":
+    unittest.main()
