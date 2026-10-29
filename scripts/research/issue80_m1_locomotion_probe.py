@@ -3165,6 +3165,7 @@ class FocusedM1Diagnostic(Node):
         )
         route_config_mode = bool(getattr(self.args, "route_config", None))
         lidar_map_route_mode = bool(getattr(self.args, "lidar_map_route", False))
+        route_pose_age_limit_s = 0.40 if lidar_map_route_mode else MAX_POSE_AGE_S
         short_scene_route_mode = bool(getattr(self.args, "short_scene_route", False))
         table_approach_mission_mode = bool(getattr(self.args, "table_approach_mission", False))
         configured_docking_route_mode = route_config_mode and not table_approach_mission_mode
@@ -3923,7 +3924,7 @@ class FocusedM1Diagnostic(Node):
                 if not isinstance(map_message, PoseStamped) or received_s is None:
                     raise ValueError("LiDAR map localization pose is unavailable")
                 age_s = max(0.0, float(result_snapshot["sample_monotonic_s"]) - float(received_s))
-                if age_s > MAX_POSE_AGE_S:
+                if age_s > route_pose_age_limit_s:
                     raise ValueError("LiDAR map localization pose is stale")
                 base_pose = result_snapshot.get("pose")
                 if not isinstance(base_pose, Mapping):
@@ -4542,6 +4543,7 @@ class FocusedM1Diagnostic(Node):
                         or straight_ten_second_table_approach_mode
                     ) else 5.0
                 ),
+                maximum_pose_age_s=route.max_pose_age_s,
             )
             initial_readiness = readiness_from_snapshot(initial)
             transit_plan = bridge.plan_next(
@@ -4956,7 +4958,7 @@ class FocusedM1Diagnostic(Node):
             odom_freshness_tracker = RouteOdomFreshnessTracker(
                 last_unique_stamp_ns=start_pose.stamp_ns,
                 last_unique_received_steady_s=start_pose.received_steady_s,
-                maximum_age_s=MAX_POSE_AGE_S,
+                maximum_age_s=route_pose_age_limit_s,
             )
             window_control: dict[str, Any] = {}
             active_window_gate = TransitSteeringGate(warmup_s=ROUTE_STEERING_WARMUP_S)
@@ -5084,7 +5086,7 @@ class FocusedM1Diagnostic(Node):
                         "kind": "ROUTE_ODOMETRY_FRESHNESS_ABORT",
                         "reason": route_fault,
                         **freshness_record,
-                        "maximum_unique_sample_age_s": MAX_POSE_AGE_S,
+                        "maximum_unique_sample_age_s": route_pose_age_limit_s,
                     })
                     return True
                 window_control["odom_stamp_action"] = odom_stamp_action
@@ -6231,7 +6233,7 @@ class FocusedM1Diagnostic(Node):
                             last_result.get("samples", []),
                             window_start_steady_s=float(final_stop_window["window_start_monotonic_s"]),
                             window_end_steady_s=float(final_stop_window["window_end_monotonic_s"]),
-                            maximum_age_s=MAX_POSE_AGE_S,
+                            maximum_age_s=route_pose_age_limit_s,
                             minimum_window_s=1.90,
                         )
                     else:

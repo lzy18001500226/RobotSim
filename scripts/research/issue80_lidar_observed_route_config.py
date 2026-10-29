@@ -182,7 +182,7 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
             "position_tolerance_m": 0.15, "yaw_tolerance_rad": 0.25,
         },
         "localization": {
-            "max_pose_age_s": 0.20, "max_transform_age_s": 0.50,
+            "max_pose_age_s": 0.40, "max_transform_age_s": 0.50,
             "max_position_std_m": 0.075, "max_yaw_std_rad": 0.25,
         },
         "safety": {

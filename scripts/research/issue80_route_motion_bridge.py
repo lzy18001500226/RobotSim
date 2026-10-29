@@ -1819,13 +1819,17 @@ class RouteMotionBridge:
         *,
         route_frame_id: str,
         incremental_window_s: float = MAX_INCREMENTAL_WINDOW_S,
+        maximum_pose_age_s: float = MAX_POSE_AGE_S,
     ) -> None:
         if route_frame_id not in ("odom", "map"):
             raise ValueError("route frame must be odom or map")
         if not math.isfinite(incremental_window_s) or not 0.0 < incremental_window_s <= MAX_ROUTE_ACTION_WINDOW_S:
             raise ValueError("incremental window must be in (0, 10.0] seconds")
+        if not math.isfinite(maximum_pose_age_s) or not 0.0 < maximum_pose_age_s <= 0.5:
+            raise ValueError("maximum pose age must be in (0, 0.5] seconds")
         self.route_frame_id = route_frame_id
         self.incremental_window_s = incremental_window_s
+        self.maximum_pose_age_s = maximum_pose_age_s
         self._next_window_id = 1
         self._active_plan: RouteActionWindow | None = None
         self._active_key: tuple[str, str, str] | None = None
@@ -2214,7 +2218,7 @@ class RouteMotionBridge:
         if not _finite_number(now) or not _finite_number(readiness.observed_steady_s):
             return "runtime readiness timestamp is invalid"
         age = now - readiness.observed_steady_s
-        if age < 0.0 or age > MAX_POSE_AGE_S:
+        if age < 0.0 or age > self.maximum_pose_age_s:
             return "runtime readiness snapshot is stale or from the future"
         required = (
             (readiness.reset_gate_pass, "Reset gate did not pass"),
