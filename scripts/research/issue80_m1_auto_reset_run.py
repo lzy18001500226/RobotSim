@@ -5366,19 +5366,28 @@ class BoundedRun:
                         stream.write("\n")
                     result["workcell_geometry_preflight"] = workcell
                 if getattr(self.args, "route_config", None):
-                    result["route_config_input"] = {
-                        "sha256": self.route_config_sha256,
-                        "staged_path": str(self.evidence / "route_config.json"),
-                        "route_id": self.args.configured_waypoint_docking_route.route_id,
-                        "scene_clearance": validate_waypoint_docking_scene_clearance(
-                            self.args.configured_waypoint_docking_route,
-                            runtime_robot_footprint_radius_m=float(
-                                workcell["robot_collision_footprint_radial_upper_bound_m"]
+                    if self.lidar_obstacle_route:
+                        result["route_config_input"] = {
+                            "sha256": self.route_config_sha256,
+                            "staged_path": str(self.evidence / "route_config.json"),
+                            "route_id": self.args.configured_lidar_obstacle_route.route_id,
+                            "scene_clearance": "AUTHORITY_IS_STAGED_LIDAR_OBSERVED_FULLBODY_STATIC_AUDIT",
+                            "execution_status": "INPUT_PREFLIGHT_ONLY",
+                        }
+                    else:
+                        result["route_config_input"] = {
+                            "sha256": self.route_config_sha256,
+                            "staged_path": str(self.evidence / "route_config.json"),
+                            "route_id": self.args.configured_waypoint_docking_route.route_id,
+                            "scene_clearance": validate_waypoint_docking_scene_clearance(
+                                self.args.configured_waypoint_docking_route,
+                                runtime_robot_footprint_radius_m=float(
+                                    workcell["robot_collision_footprint_radial_upper_bound_m"]
+                                ),
+                                verified_local_clear_radius_m=float(workcell["verified_local_clear_radius_m"]),
                             ),
-                            verified_local_clear_radius_m=float(workcell["verified_local_clear_radius_m"]),
-                        ),
-                        "execution_status": "INPUT_PREFLIGHT_ONLY",
-                    }
+                            "execution_status": "INPUT_PREFLIGHT_ONLY",
+                        }
             if getattr(self.args, "run65_route_integration", False):
                 result["route_turn_qualification_evidence"] = self.stage_route_turn_qualification_evidence()
             self.prepare_foundationwalk_diagnostic_overlay()
