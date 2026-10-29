@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 import uuid
 
 from issue80_raicom_reset_only import (
@@ -31,6 +32,11 @@ OBSERVER=Path(__file__).with_name('issue80_raicom_stand_observer.py')
 LIDAR_CAPTURE=Path(__file__).with_name('issue80_capture_lidar_pointcloud.py')
 LIDAR_MAP_FIELD=Path(__file__).with_name('issue80_lidar_map_obstacle_field.py')
 LIDAR_OBSTACLE_LAYER=Path(__file__).with_name('issue80_lidar_obstacle_layer.py')
+LIDAR_OBSTACLE_PIPELINE=Path(__file__).with_name('issue80_lidar_obstacle_pipeline.py')
+LIDAR_OBSTACLE_DIAGNOSTIC=Path(__file__).with_name('issue80_lidar_obstacle_diagnostic.py')
+LIDAR_MAP_LOCALIZER=Path(__file__).with_name('issue80_lidar_map_localizer.py')
+LIDAR_STATIC_SURFACE_AUDIT=Path(__file__).with_name('issue80_lidar_static_surface_audit.py')
+LIDAR_OBSTACLE_REPLAY=Path(__file__).with_name('issue80_lidar_obstacle_replay.py')
 RAW_LIDAR_SCHEMA='robotsim.issue80.lidar-raw.v1'
 
 
@@ -91,6 +97,8 @@ class StandingRun(ResetOnlyRun):
         )
         self.mjdata_capture_overlay=None
         self.mjdata_capture_smoke=None
+        self.lidar_background_capture: Path | None = None
+        self.lidar_static_map_inputs: dict[str, Path] | None = None
 
     def _capture_optional_screenshot(self,pid,title,window_id):
         if self.protocol=='jd-sd':
@@ -184,15 +192,48 @@ class StandingRun(ResetOnlyRun):
                 raise RuntimeError('LiDAR plugin source contains unsafe entry')
         runtime.lidar_overlay_source=source
         runtime.lidar_overlay_dir=target
-        for source_file in (LIDAR_CAPTURE,LIDAR_MAP_FIELD,LIDAR_OBSTACLE_LAYER):
+        background_arg=getattr(self.args,'lidar_background_capture',None)
+        static_map_arg=getattr(self.args,'lidar_static_map_source',None)
+        if (background_arg is None)!=(static_map_arg is None):
+            raise RuntimeError('LiDAR background diagnostic requires both a background capture and static-map source')
+        staged_sources=(
+            LIDAR_CAPTURE,LIDAR_MAP_FIELD,LIDAR_OBSTACLE_LAYER,
+            LIDAR_OBSTACLE_PIPELINE,LIDAR_OBSTACLE_DIAGNOSTIC,
+            LIDAR_MAP_LOCALIZER,LIDAR_STATIC_SURFACE_AUDIT,LIDAR_OBSTACLE_REPLAY,
+        )
+        for source_file in staged_sources:
             if source_file.is_symlink() or not source_file.is_file():
                 raise RuntimeError('LiDAR capture source is missing or unsafe')
             (self.evidence/source_file.name).write_bytes(source_file.read_bytes())
+        if background_arg is not None:
+            background=Path(background_arg).resolve(strict=True)
+            static_source=Path(static_map_arg).resolve(strict=True)
+            if background.is_symlink() or not background.is_file() or static_source.is_symlink() or not static_source.is_dir():
+                raise RuntimeError('LiDAR background/static source is missing or unsafe')
+            target_background=self.evidence/'lidar_map_background_capture.json'
+            shutil.copyfile(background,target_background)
+            static_inputs={}
+            for name in ('lidar_static_map.bin','lidar_map_localization_trace.jsonl'):
+                input_path=static_source/name
+                if input_path.is_symlink() or not input_path.is_file():
+                    raise RuntimeError('LiDAR static map source is incomplete')
+                target=self.evidence/name
+                shutil.copyfile(input_path,target)
+                static_inputs[name]=target
+            self.lidar_background_capture=target_background
+            self.lidar_static_map_inputs=static_inputs
         self.result['lidar_overlay']={
             'source':str(source),
             'x2_overlay_sha256':_sha256(target/'x2_lidar_overlay.xml'),
             'robot_overlay_sha256':_sha256(target/'robot_lidar_overlay.yaml'),
-            'capture_source_sha256':{path.name:_sha256(self.evidence/path.name) for path in (LIDAR_CAPTURE,LIDAR_MAP_FIELD,LIDAR_OBSTACLE_LAYER)},
+            'capture_source_sha256':{path.name:_sha256(self.evidence/path.name) for path in staged_sources},
+            'map_background_capture':None if self.lidar_background_capture is None else {
+                'source':str(background),'source_sha256':_sha256(background),
+                'staged_sha256':_sha256(self.lidar_background_capture),
+            },
+            'static_map_inputs':None if self.lidar_static_map_inputs is None else {
+                name:{'staged_sha256':_sha256(path)} for name,path in self.lidar_static_map_inputs.items()
+            },
             'no_robot_model_source_modified':True,
         }
 
@@ -222,6 +263,24 @@ class StandingRun(ResetOnlyRun):
         raw_trace=self.evidence/'lidar_raw_frames.jsonl'
         if self.runtime is None:
             raise RuntimeError('runtime missing after standing observer completion')
+        diagnostic_result=None
+        if self.lidar_background_capture is not None:
+            self.runtime.docker_exec(
+                'start_readonly_lidar_background_obstacle_diagnostic',
+                'source /opt/ros/humble/setup.bash && '
+                'source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && '
+                'cd /workspace/evidence && timeout 7s python3 issue80_lidar_obstacle_diagnostic.py '
+                '--static-database /workspace/evidence/lidar_static_map.bin '
+                '--localization-trace /workspace/evidence/lidar_map_localization_trace.jsonl '
+                '--background-capture /workspace/evidence/lidar_map_background_capture.json '
+                '--trace /workspace/evidence/lidar_background_diagnostic_trace.jsonl '
+                '--result /workspace/evidence/lidar_background_diagnostic_result.json '
+                '--duration-s 4 --static-match-distance-m 0.02 --minimum-cluster-cells 3 '
+                '> /workspace/evidence/lidar_background_diagnostic.stdout '
+                '2> /workspace/evidence/lidar_background_diagnostic.stderr',
+                timeout_s=3.0,
+                detached=True,
+            )
         # The sensor plugin has always been loaded, but source-local ray rows
         # are deliberately disabled while Reset/JD/SD settle.  Enable them
         # only after the independently qualified active-standing hold so this
@@ -242,7 +301,17 @@ class StandingRun(ResetOnlyRun):
         )
         payload=json.loads(capture.read_text()) if capture.is_file() and not capture.is_symlink() else None
         raw_trace_summary=summarize_raw_lidar_trace(raw_trace)
-        return {'status':'PASS' if payload and payload.get('status')=='PASS_NONEMPTY_POINTCLOUD' and raw_trace_summary.get('status')=='PASS_SOURCE_LOCAL_RAY_TRACE' else 'BLOCKED','capture':payload,'raw_trace':raw_trace_summary,'returncode':result.returncode,
+        if self.lidar_background_capture is not None:
+            diagnostic_path=self.evidence/'lidar_background_diagnostic_result.json'
+            deadline=time.monotonic()+3.0
+            while time.monotonic()<deadline and not diagnostic_path.is_file():
+                time.sleep(.05)
+            if diagnostic_path.is_file() and not diagnostic_path.is_symlink():
+                diagnostic_result=json.loads(diagnostic_path.read_text())
+            else:
+                diagnostic_result={'status':'BLOCKED_NO_BACKGROUND_DIAGNOSTIC_RESULT'}
+        diagnostic_pass=(diagnostic_result is None or diagnostic_result.get('status')=='PASS_DIAGNOSTIC_CAPTURED')
+        return {'status':'PASS' if payload and payload.get('status')=='PASS_NONEMPTY_POINTCLOUD' and raw_trace_summary.get('status')=='PASS_SOURCE_LOCAL_RAY_TRACE' and diagnostic_pass else 'BLOCKED','capture':payload,'raw_trace':raw_trace_summary,'background_diagnostic':diagnostic_result,'returncode':result.returncode,
                 'velocity_publisher_created':False,'service_clients_created':0}
 
     def run_once(self,preflight):
@@ -310,6 +379,8 @@ def main():
     parser.add_argument('--protocol',choices=('sd','jd-sd'),default='sd')
     parser.add_argument('--native-mjdata-capture',action='store_true')
     parser.add_argument('--lidar-overlay-source',type=Path,default=None)
+    parser.add_argument('--lidar-background-capture',type=Path,default=None)
+    parser.add_argument('--lidar-static-map-source',type=Path,default=None)
     parser.add_argument(
         '--capture-interval-steps',
         type=int,

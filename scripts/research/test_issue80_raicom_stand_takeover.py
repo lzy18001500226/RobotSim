@@ -46,6 +46,17 @@ class StandingTests(unittest.TestCase):
         self.assertNotIn('create_publisher(',method)
         self.assertNotIn('SetMcInputSource',method)
 
+    def test_background_diagnostic_is_read_only_and_optional(self):
+        source=Path(__file__).with_name('issue80_raicom_stand_takeover.py').read_text(encoding='utf-8')
+        method=source[source.index('    def after_observer_completion'):source.index('    def run_once')]
+        self.assertIn('start_readonly_lidar_background_obstacle_diagnostic',method)
+        self.assertIn('--background-capture /workspace/evidence/lidar_map_background_capture.json',method)
+        self.assertIn('--static-match-distance-m 0.02',method)
+        self.assertNotIn('create_publisher(',method)
+        self.assertNotIn('SetMcInputSource',method)
+        self.assertIn("parser.add_argument('--lidar-background-capture'",source)
+        self.assertIn("parser.add_argument('--lidar-static-map-source'",source)
+
     def test_safe_request_requires_reset_effect_fresh_advancing_one_shot(self):
         args=dict(reset_verified=True,reset_effect=True,fresh=True,
                   pose={'x_m':-1.5,'y_m':-1.5,'yaw_rad':math.pi/2,

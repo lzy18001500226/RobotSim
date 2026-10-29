@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 import ast
 
+from issue80_lidar_map_obstacle_field import MapPoint
 from issue80_lidar_obstacle_layer import GridCell, GridSpec
 from issue80_lidar_obstacle_pipeline import (
     MapFrameObstaclePipeline,
@@ -63,6 +64,32 @@ class ObstaclePipelineTests(unittest.TestCase):
         pipeline.observe(sequence=1, **kwargs)
         result = pipeline.observe(sequence=2, **kwargs)
         self.assertEqual(result.status, PipelineStatus.WAITING_FOR_CONFIRMATION)
+
+    def test_measured_map_background_rejects_static_repeat_and_confirms_cluster(self) -> None:
+        config = ObstaclePipelineConfig(
+            grid=self.grid,
+            static_surface=frozenset(),
+            static_route_blocked=frozenset(),
+            start=GridCell(1, 10),
+            goal=GridCell(19, 10),
+            static_match_distance_m=0.02,
+            obstacle_inflation_m=0.21,
+            confirmation_frames=2,
+            minimum_confirmed_cluster_cells=3,
+            map_background_points=(MapPoint(-0.75, -0.75, 0.5),),
+        )
+        pipeline = MapFrameObstaclePipeline(config)
+        static = dict(
+            frame_id="map", data=cloud([(-0.75, -0.75, 0.5)]),
+            width=1, height=1, point_step=12, field_offsets={"x": 0, "y": 4, "z": 8},
+        )
+        self.assertEqual(pipeline.observe(sequence=1, **static).status, PipelineStatus.CLEAR_DIRECT_PATH)
+        chair = dict(
+            frame_id="map", data=cloud([(0.02, 0.02, 0.5), (0.02, 0.12, 0.5), (0.12, 0.12, 0.5)]),
+            width=3, height=1, point_step=12, field_offsets={"x": 0, "y": 4, "z": 8},
+        )
+        self.assertEqual(pipeline.observe(sequence=2, **chair).status, PipelineStatus.WAITING_FOR_CONFIRMATION)
+        self.assertEqual(pipeline.observe(sequence=3, **chair).status, PipelineStatus.DETOUR_READY)
 
     def test_wrong_frame_fails_closed_without_route(self) -> None:
         pipeline = MapFrameObstaclePipeline(self.config)

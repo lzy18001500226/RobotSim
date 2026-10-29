@@ -14,6 +14,7 @@ class DiagnosticSourceTests(unittest.TestCase):
         self.assertNotIn("create_publisher", calls)
         self.assertNotIn("create_client", calls)
         self.assertNotIn("publish", calls)
+        self.assertIn("--background-capture", source)
 
 
 if __name__ == "__main__":

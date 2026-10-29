@@ -16,8 +16,10 @@ current localization session.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 import struct
+from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -44,6 +46,72 @@ class MapPoint:
     def __post_init__(self) -> None:
         if not all(math.isfinite(value) for value in (self.x_m, self.y_m, self.z_m)):
             raise ObstacleLayerError("map-frame point must be finite")
+
+
+def load_map_background_capture(path: Path, *, expected_frame_id: str = "map") -> tuple[MapPoint, ...]:
+    """Load one retained, verified map-frame point-cloud background capture.
+
+    This is intentionally a capture-to-capture reference, not a replacement
+    for the source static signature database.  It is appropriate when the
+    delivered PointCloud2 map transform is stable but the database's nominal
+    joint posture does not match the active standing pose.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise ObstacleLayerError("map background capture is missing or unsafe")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ObstacleLayerError("map background capture is unreadable") from exc
+    if not isinstance(payload, dict) or payload.get("status") != "PASS_NONEMPTY_POINTCLOUD":
+        raise ObstacleLayerError("map background capture did not pass point-cloud validation")
+    message = payload.get("last_message")
+    if not isinstance(message, dict) or message.get("frame_id") != expected_frame_id:
+        raise ObstacleLayerError("map background capture has an unexpected frame")
+    if message.get("all_finite_xyz_retention_blocked") is not False:
+        raise ObstacleLayerError("map background capture lacks a complete retained finite array")
+    raw_points = message.get("all_finite_xyz")
+    if not isinstance(raw_points, list):
+        raise ObstacleLayerError("map background capture has no finite points")
+    points: list[MapPoint] = []
+    for item in raw_points:
+        if not isinstance(item, list) or len(item) != 3:
+            raise ObstacleLayerError("map background capture has an invalid point")
+        try:
+            points.append(MapPoint(*(float(value) for value in item)))
+        except (TypeError, ValueError) as exc:
+            raise ObstacleLayerError("map background capture has a nonnumeric point") from exc
+    if not points:
+        raise ObstacleLayerError("map background capture has no finite points")
+    return tuple(points)
+
+
+def map_background_distances_m(
+    observed_points: Sequence[MapPoint], *, background_points: Sequence[MapPoint],
+) -> tuple[float, ...]:
+    """Return exact 3D nearest-background distances for a map-frame scan."""
+    if not background_points:
+        raise ObstacleLayerError("map background reference is empty")
+    return tuple(
+        min(
+            math.sqrt(
+                (point.x_m - candidate.x_m) ** 2
+                + (point.y_m - candidate.y_m) ** 2
+                + (point.z_m - candidate.z_m) ** 2
+            )
+            for candidate in background_points
+        )
+        for point in observed_points
+    )
+
+
+def novel_map_points_against_background(
+    observed_points: Sequence[MapPoint], *, background_points: Sequence[MapPoint], maximum_match_distance_m: float,
+) -> tuple[MapPoint, ...]:
+    """Return map-frame points not explained by a measured background scan."""
+    if not math.isfinite(maximum_match_distance_m) or maximum_match_distance_m <= 0.0:
+        raise ObstacleLayerError("map background match distance must be finite and positive")
+    distances = map_background_distances_m(observed_points, background_points=background_points)
+    return tuple(point for point, distance in zip(observed_points, distances) if distance > maximum_match_distance_m)
 
 
 def classify_map_frame_capture(

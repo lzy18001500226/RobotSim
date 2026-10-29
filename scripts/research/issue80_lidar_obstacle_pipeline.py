@@ -17,7 +17,9 @@ from typing import Iterable
 from issue80_lidar_map_obstacle_field import (
     GridSpec,
     decode_map_xyz,
+    novel_map_points_against_background,
     novel_map_points,
+    MapPoint,
 )
 from issue80_lidar_obstacle_layer import (
     GridCell,
@@ -50,6 +52,7 @@ class ObstaclePipelineConfig:
     obstacle_inflation_m: float
     confirmation_frames: int
     minimum_confirmed_cluster_cells: int
+    map_background_points: tuple[MapPoint, ...] = ()
     expected_frame_id: str = "map"
 
 
@@ -96,11 +99,18 @@ class MapFrameObstaclePipeline:
                 field_offsets=field_offsets,
                 expected_frame_id=self.config.expected_frame_id,
             )
-            novel = novel_map_points(
-                points,
-                static_surface=self.config.static_surface,
-                grid=self.config.grid,
-                static_match_distance_m=self.config.static_match_distance_m,
+            novel = (
+                novel_map_points_against_background(
+                    points,
+                    background_points=self.config.map_background_points,
+                    maximum_match_distance_m=self.config.static_match_distance_m,
+                )
+                if self.config.map_background_points else novel_map_points(
+                    points,
+                    static_surface=self.config.static_surface,
+                    grid=self.config.grid,
+                    static_match_distance_m=self.config.static_match_distance_m,
+                )
             )
             raw_confirmed = self.tracker.update_positions(sequence, ((item.x_m, item.y_m) for item in novel))
         except ObstacleLayerError as exc:

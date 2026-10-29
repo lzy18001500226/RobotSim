@@ -14,6 +14,9 @@ from issue80_lidar_map_obstacle_field import (
     apply_planar_transform,
     classify_map_frame_capture,
     decode_map_xyz,
+    load_map_background_capture,
+    map_background_distances_m,
+    novel_map_points_against_background,
     novel_map_points,
     static_surface_cells_from_database,
     static_surface_distances_m,
@@ -57,6 +60,31 @@ class MapObstacleFieldTests(unittest.TestCase):
         observed = [MapPoint(0.52, 0.02, 0.7), MapPoint(1.3, 0.0, 0.7)]
         novel = novel_map_points(observed, static_surface=surface, grid=grid, static_match_distance_m=0.15)
         self.assertEqual(novel, (observed[1],))
+
+    def test_measured_map_background_is_exact_and_requires_retained_map_points(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capture = root / "capture.json"
+            capture.write_text(json.dumps({
+                "status": "PASS_NONEMPTY_POINTCLOUD",
+                "last_message": {
+                    "frame_id": "map",
+                    "all_finite_xyz_retention_blocked": False,
+                    "all_finite_xyz": [[1.0, 2.0, 0.5], [2.0, 2.0, 0.5]],
+                },
+            }), encoding="utf-8")
+            background = load_map_background_capture(capture)
+            observed = (MapPoint(1.004, 2.0, 0.5), MapPoint(1.3, 2.0, 0.5))
+            distances = map_background_distances_m(observed, background_points=background)
+            self.assertLess(distances[0], 0.01)
+            self.assertGreater(distances[1], 0.20)
+            self.assertEqual(
+                novel_map_points_against_background(observed, background_points=background, maximum_match_distance_m=0.02),
+                (observed[1],),
+            )
+            capture.write_text(json.dumps({"status": "PASS_NONEMPTY_POINTCLOUD", "last_message": {"frame_id": "map", "all_finite_xyz_retention_blocked": True}}), encoding="utf-8")
+            with self.assertRaisesRegex(Exception, "complete retained"):
+                load_map_background_capture(capture)
 
     def test_surface_neighborhood_does_not_escape_grid(self) -> None:
         grid = GridSpec(0.0, 0.0, 0.10, 3, 3)

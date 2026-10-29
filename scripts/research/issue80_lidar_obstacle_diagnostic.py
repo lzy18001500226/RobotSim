@@ -12,7 +12,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
 
-from issue80_lidar_map_obstacle_field import static_surface_cells_from_database
+from issue80_lidar_map_obstacle_field import load_map_background_capture, static_surface_cells_from_database
 from issue80_lidar_map_localizer import load_database
 from issue80_lidar_static_surface_audit import calibration_from_localization_trace
 from issue80_lidar_obstacle_layer import GridSpec
@@ -66,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--localization-trace", type=Path, required=True)
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True)
+    parser.add_argument("--background-capture", type=Path, default=None)
     parser.add_argument("--duration-s", type=float, default=20.0)
     parser.add_argument("--static-match-distance-m", type=float, default=0.40)
     parser.add_argument("--minimum-cluster-cells", type=int, default=3)
@@ -79,12 +80,14 @@ def main(argv: list[str] | None = None) -> int:
     static_surface = static_surface_cells_from_database(
         candidates, ranges, static_to_map=calibration_from_localization_trace(args.localization_trace), grid=grid,
     )
+    background = () if args.background_capture is None else load_map_background_capture(args.background_capture)
     config = ObstaclePipelineConfig(
         grid=grid, static_surface=static_surface, static_route_blocked=frozenset(),
         start=grid.world_to_cell(-1.5, -1.5), goal=grid.world_to_cell(0.9, -1.5),
         static_match_distance_m=args.static_match_distance_m,
         obstacle_inflation_m=0.46565748847422734,
         confirmation_frames=2, minimum_confirmed_cluster_cells=args.minimum_cluster_cells,
+        map_background_points=background,
     )
     rclpy.init()
     node = Diagnostic(MapFrameObstaclePipeline(config), args.trace)
@@ -98,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
             "status": "PASS_DIAGNOSTIC_CAPTURED" if node.decisions else "BLOCKED_NO_POINTCLOUD",
             "decision_count": len(node.decisions),
             "final_decision": node.decisions[-1] if node.decisions else None,
+            "novelty_reference": "MAP_BACKGROUND_CAPTURE" if background else "STATIC_SURFACE_FIELD",
+            "background_point_count": len(background),
             "velocity_publisher_created": False, "service_clients_created": 0,
         }
         args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
