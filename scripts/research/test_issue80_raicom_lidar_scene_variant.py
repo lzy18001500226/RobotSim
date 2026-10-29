@@ -11,6 +11,8 @@ class SceneVariantTests(unittest.TestCase):
         self.assertIn("scene_static_known_map.xml", source)
         self.assertIn("scene_lidar_overlay.xml", source)
         self.assertIn("unchanged_robot_files", source)
+        self.assertIn("native_x2_timestep", source)
+        self.assertIn('option.set("timestep", "0.001")', source)
         tree = ast.parse(source)
         calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
         self.assertNotIn("mj_step", calls)
