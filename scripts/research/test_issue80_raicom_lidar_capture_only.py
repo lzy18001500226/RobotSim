@@ -34,6 +34,13 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
         source = Path(__file__).with_name("issue80_raicom_lidar_capture_only.py").read_text(encoding="utf-8")
         self.assertIn("--expected-frame-id map --save-all-finite-points", source)
 
+    def test_runner_uses_the_existing_narrow_mc_writeback_contract(self) -> None:
+        source = Path(__file__).with_name("issue80_raicom_lidar_capture_only.py").read_text(encoding="utf-8")
+        self.assertIn("_stage_mc_config_dump_writeback", source)
+        self.assertIn("MC_SIM_CONFIG_DUMP_CONTAINER_PATH", source)
+        self.assertIn("MC_SIM_GENERATED_DIRECTORY", source)
+        self.assertIn("mc_sim_generated_tmpfs=True", source)
+
     def test_capture_duration_is_bounded(self) -> None:
         self.assertLessEqual(MAX_CAPTURE_S, 12.0)
 

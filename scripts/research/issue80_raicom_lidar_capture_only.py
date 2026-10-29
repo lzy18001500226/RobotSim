@@ -24,7 +24,13 @@ from pathlib import Path
 from typing import Any
 
 from issue80_local01_scene_route import load_local01_scene_inputs
-from issue80_m1_auto_reset_run import BoundedRun, REPO
+from issue80_m1_auto_reset_run import (
+    BoundedRun,
+    MC_SIM_CONFIG_DUMP_CONTAINER_PATH,
+    MC_SIM_GENERATED_DIRECTORY,
+    REPO,
+)
+from issue80_raicom_reset_only import _stage_mc_config_dump_writeback
 
 
 WORKTREE = Path(__file__).resolve().parents[2]
@@ -115,7 +121,7 @@ def _bounded_args(evidence: Path, container: str, lidar_overlay_source: Path) ->
         synchronized_paused_initialization=False, static_nominal_start_initialization=False,
         mc_prearm_before_simulator=False, direct_stand_from_passive=False,
         raicom_lidar_overlay_source=str(lidar_overlay_source), raicom_lidar_static_map_source=None,
-        runtime_readonly=True, mc_sim_generated_tmpfs=False,
+        runtime_readonly=True, mc_sim_generated_tmpfs=True,
         native_mjdata_capture=False, native_mjdata_capture_interval_steps=0,
         forward_speed=0.0, pulse_duration=0.0,
     )
@@ -173,6 +179,8 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
     runtime.local01_scene_bundle = {"classification": "CAPTURE_ONLY_REFERENCE_MOUNT"}
     runtime.local01_scene_source = source
     runtime.local01_scene_readonly_mounts = []
+    staged_mc_dump, mc_writeback_manifest = _stage_mc_config_dump_writeback(evidence)
+    runtime.runtime_writeback_mounts = [(staged_mc_dump, MC_SIM_CONFIG_DUMP_CONTAINER_PATH)]
     result: dict[str, Any] = {
         "schema": "robotsim.issue80.raicom-lidar-capture-only.v1",
         "classification": "SIMULATION_ONLY_READ_ONLY_MAP_FRAME_CAPTURE",
@@ -186,11 +194,18 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
         "native_reset_dispatches": 0,
         "waypoint_execution_calls": 0,
         "vendor_mc_process_started_for_simulator_model_handshake": True,
+        "mc_runtime_writeback": mc_writeback_manifest,
     }
     try:
         runtime.stage_research_scripts()
         result["capture_tool_sha256"] = stage_capture_tools(evidence)
         runtime.start_container()
+        runtime.docker_exec(
+            "seed_isolated_generated_sim_config_capture_only",
+            "cp /workspace/evidence/mc_runtime_writeback/sim_seed/*.yaml "
+            + MC_SIM_GENERATED_DIRECTORY + "/",
+            timeout_s=2.0,
+        )
         start_simulator_then_native_mc(runtime)
         command = (
             "cd /workspace/evidence && timeout " + f"{duration_s + 3.0:g}s "
