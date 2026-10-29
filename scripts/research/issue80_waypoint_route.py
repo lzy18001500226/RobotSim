@@ -348,6 +348,7 @@ class RouteSpec:
     max_position_std_m: float
     max_yaw_std_rad: float
     steps: tuple[RouteStep, ...]
+    vendor_gait_profile: bool = False
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "RouteSpec":
@@ -392,6 +393,7 @@ class RouteSpec:
             max_position_std_m=_positive(localization, "max_position_std_m"),
             max_yaw_std_rad=_positive(localization, "max_yaw_std_rad"),
             steps=steps,
+            vendor_gait_profile=raw.get("vendor_gait_profile") is True,
         )
         spec.validate()
         return spec
@@ -425,8 +427,9 @@ class RouteSpec:
             raise RouteError("waypoint ids must be unique")
         if self.steps[-1].stop_behavior is not StopBehavior.VERIFY_PHYSICAL_STOP:
             raise RouteError("the final route step must require a measured physical stop")
+        maximum_forward_m_s = 0.20 if self.vendor_gait_profile else MAX_FORWARD_M_S
         for index, step in enumerate(self.steps):
-            _validate_step(step)
+            _validate_step(step, maximum_forward_m_s=maximum_forward_m_s)
             start_x, start_y = (
                 (self.start_x_m, self.start_y_m)
                 if index == 0 else (self.steps[index - 1].x_m, self.steps[index - 1].y_m)
@@ -1213,7 +1216,7 @@ def _parse_step(raw: Any) -> RouteStep:
     )
 
 
-def _validate_step(step: RouteStep) -> None:
+def _validate_step(step: RouteStep, *, maximum_forward_m_s: float = MAX_FORWARD_M_S) -> None:
     values = (
         step.x_m, step.y_m, step.position_tolerance_m, step.segment_timeout_s,
         step.minimum_obstacle_clearance_m, step.max_forward_m_s,
@@ -1232,8 +1235,14 @@ def _validate_step(step: RouteStep) -> None:
         raise RouteError(f"{step.waypoint_id}: recovery_limit must be nonnegative")
     if step.recovery_limit > 3:
         raise RouteError(f"{step.waypoint_id}: recovery_limit exceeds the route prototype bound of 3")
-    if step.max_forward_m_s > MAX_FORWARD_M_S + 1e-9:
-        raise RouteError(f"{step.waypoint_id}: forward command exceeds the existing 0.14 m/s envelope")
+    if step.max_forward_m_s > maximum_forward_m_s + 1e-9:
+        if abs(maximum_forward_m_s - MAX_FORWARD_M_S) <= 1e-9:
+            raise RouteError(
+                f"{step.waypoint_id}: forward command exceeds the existing 0.14 m/s envelope"
+            )
+        raise RouteError(
+            f"{step.waypoint_id}: forward command exceeds the declared route envelope"
+        )
     minimum_forward = (
         MIN_VALIDATED_TRANSIT_FORWARD_M_S
         if step.profile is Profile.TRANSIT

@@ -387,8 +387,8 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
     if vendor_example and low_cruise:
         raise ValueError("vendor-example baseline cannot combine with the RAICOM low-cruise profile")
     expected_forward = (
-        0.2 if vendor_example else RAICOM_LOW_CRUISE_FORWARD_M_S
-        if (low_cruise or bool(getattr(args, "raicom_lidar_obstacle_route", False))) else 0.12
+        0.2 if (vendor_example or bool(getattr(args, "raicom_lidar_obstacle_route", False)))
+        else RAICOM_LOW_CRUISE_FORWARD_M_S if low_cruise else 0.12
     )
     expected_pulse = 5.0 if (
         vendor_example or bool(getattr(args, "raicom_lidar_obstacle_route", False))
@@ -2643,6 +2643,27 @@ class BoundedRun:
             return
         if selected_variants != 1:
             raise ValueError("select exactly one FoundationWalk diagnostic config variant")
+        if self.lidar_obstacle_route:
+            source = RUNTIME / FOUNDATIONWALK_CONFIG_RELATIVE
+            self.foundationwalk_config_overlay = None
+            self.foundationwalk_config_overlay_manifest = {
+                "classification": "SIMULATION_ONLY_LIDAR_ROUTE_UNMODIFIED_VENDOR_FOUNDATIONWALK_CONFIG",
+                "source_path": str(source),
+                "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "runtime_mc_binary_modified": False,
+                "runtime_onnx_modified": False,
+                "source_limits_modified": False,
+                "safety_gates_modified": False,
+                "reason": (
+                    "The prior 0.105 m/s derived knee/min-run overlay violated a source joint limit "
+                    "during the first LiDAR route window; use the independently successful pinned vendor "
+                    "0.20 m/s direct-gait configuration instead."
+                ),
+            }
+            with (self.evidence / "foundationwalk_config_overlay_manifest.json").open("x", encoding="utf-8") as stream:
+                json.dump(self.foundationwalk_config_overlay_manifest, stream, indent=2)
+                stream.write("\n")
+            return
         runtime_inputs = {
             "foundationwalk_config": (
                 FOUNDATIONWALK_CONFIG_RELATIVE,

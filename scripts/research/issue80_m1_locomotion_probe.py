@@ -4544,6 +4544,9 @@ class FocusedM1Diagnostic(Node):
                     ) else 5.0
                 ),
                 maximum_pose_age_s=route.max_pose_age_s,
+                maximum_forward_m_s=(
+                    VENDOR_EXAMPLE_FORWARD_M_S if route.vendor_gait_profile else 0.14
+                ),
             )
             initial_readiness = readiness_from_snapshot(initial)
             transit_plan = bridge.plan_next(
@@ -5669,7 +5672,7 @@ class FocusedM1Diagnostic(Node):
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
                             ) or lidar_map_route_mode,
-                            allow_vendor_example=vendor_velocity_profile_mode,
+                            allow_vendor_example=(vendor_velocity_profile_mode or lidar_map_route_mode),
                             zero_forward_heading_acquisition=heading_acquisition_this_window,
                         )
                         result.setdefault("activation_rearms", []).append({
@@ -7002,6 +7005,7 @@ class FocusedM1Diagnostic(Node):
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
                             ) or lidar_map_route_mode,
+                            allow_vendor_example=lidar_map_route_mode,
                             zero_forward_heading_acquisition=(
                                 fixed_window_heading_acquisition_required(
                                     fixed_window_table_approach=fixed_window_table_approach_mode,
@@ -8525,6 +8529,7 @@ class FocusedM1Diagnostic(Node):
                         allow_vendor_example=bool(
                             getattr(self.args, "raicom_vendor_example_forward_baseline", False)
                             or getattr(self.args, "raicom_vendor_table_approach", False)
+                            or getattr(self.args, "lidar_map_route", False)
                         ),
                         zero_forward_heading_acquisition=bool(
                             getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
@@ -9286,8 +9291,8 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("LiDAR map route requires its own --route-config and cannot combine with Local01/table route modes")
         if not str(getattr(args, "lidar_localization_topic", "")).startswith("/"):
             raise ValueError("LiDAR localization topic must be an absolute ROS topic")
-        if abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) > 1e-9 or abs(float(args.pulse_duration) - 5.0) > 1e-9:
-            raise ValueError("LiDAR map route retains the validated 0.105 m/s, 5 s low-cruise window profile")
+        if abs(float(args.forward_speed) - VENDOR_EXAMPLE_FORWARD_M_S) > 1e-9 or abs(float(args.pulse_duration) - 5.0) > 1e-9:
+            raise ValueError("LiDAR map route retains the pinned vendor 0.20 m/s, 5 s gait window profile")
     low_cruise_supported_route = short_scene_route or (
         table_approach_mission and aligned_start_table_approach
     )
@@ -9365,7 +9370,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         (
             lidar_map_route
             and configured_route
-            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
+            and abs(float(args.forward_speed) - VENDOR_EXAMPLE_FORWARD_M_S) <= 1e-9
         )
         or (
             table_approach_mission

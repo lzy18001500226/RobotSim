@@ -1820,6 +1820,7 @@ class RouteMotionBridge:
         route_frame_id: str,
         incremental_window_s: float = MAX_INCREMENTAL_WINDOW_S,
         maximum_pose_age_s: float = MAX_POSE_AGE_S,
+        maximum_forward_m_s: float = MAX_FORWARD_M_S,
     ) -> None:
         if route_frame_id not in ("odom", "map"):
             raise ValueError("route frame must be odom or map")
@@ -1827,9 +1828,12 @@ class RouteMotionBridge:
             raise ValueError("incremental window must be in (0, 10.0] seconds")
         if not math.isfinite(maximum_pose_age_s) or not 0.0 < maximum_pose_age_s <= 0.5:
             raise ValueError("maximum pose age must be in (0, 0.5] seconds")
+        if not math.isfinite(maximum_forward_m_s) or not 0.0 < maximum_forward_m_s <= 0.20:
+            raise ValueError("maximum forward speed must be in (0, 0.20] m/s")
         self.route_frame_id = route_frame_id
         self.incremental_window_s = incremental_window_s
         self.maximum_pose_age_s = maximum_pose_age_s
+        self.maximum_forward_m_s = maximum_forward_m_s
         self._next_window_id = 1
         self._active_plan: RouteActionWindow | None = None
         self._active_key: tuple[str, str, str] | None = None
@@ -2295,8 +2299,7 @@ class RouteMotionBridge:
             return "measured pose uncertainty is invalid"
         return None
 
-    @staticmethod
-    def _speed_error(directive: RouteDirective) -> str | None:
+    def _speed_error(self, directive: RouteDirective) -> str | None:
         values = (directive.target_forward_m_s, directive.max_forward_m_s, directive.max_angular_rad_s)
         if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in values):
             return "directive velocity bounds are nonfinite"
@@ -2308,8 +2311,8 @@ class RouteMotionBridge:
         )
         if not minimum <= target <= maximum:
             return "forward target is below the validated command floor or above its cap"
-        if maximum > MAX_FORWARD_M_S:
-            return "forward cap exceeds the reviewed 0.14 m/s route profile"
+        if maximum > self.maximum_forward_m_s:
+            return "forward cap exceeds the reviewed route profile"
         if angular <= 0.0 or angular > MAX_ANGULAR_RAD_S:
             return "angular cap exceeds the reviewed 0.075 rad/s M1 limit"
         return None

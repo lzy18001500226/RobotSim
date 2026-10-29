@@ -19,7 +19,7 @@ from issue80_waypoint_route import (
     RouteSpec,
     _corridor_polygon,
 )
-from issue80_m1_mode_logic import RAICOM_LOW_CRUISE_FORWARD_M_S
+from issue80_m1_mode_logic import VENDOR_EXAMPLE_FORWARD_M_S
 
 
 class LidarRouteConfigError(ValueError):
@@ -160,8 +160,8 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
                 "minimum_obstacle_clearance_m": clearance,
             },
             "command_bounds": {
-                "target_forward_m_s": RAICOM_LOW_CRUISE_FORWARD_M_S,
-                "max_forward_m_s": RAICOM_LOW_CRUISE_FORWARD_M_S,
+                "target_forward_m_s": VENDOR_EXAMPLE_FORWARD_M_S,
+                "max_forward_m_s": VENDOR_EXAMPLE_FORWARD_M_S,
                 "max_angular_rad_s": 0.075,
                 "max_command_window_s": 5.0,
             },
@@ -171,6 +171,7 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
         "route_id": "raicom-lidar-observed-static-detour",
         "frame_id": "map",
         "workspace_clearance_verified": True,
+        "vendor_gait_profile": True,
         "turn_capabilities": {
             "zero_forward_turn_qualified": False,
             "bounded_moving_turn_qualified": False,
@@ -201,7 +202,8 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
             "measured_static_fullbody_envelope_m": measured_envelope,
             "route_corridor_half_width_m": half_width,
             "permitted_tracking_m": permitted_tracking,
-            "route_forward_m_s": RAICOM_LOW_CRUISE_FORWARD_M_S,
+            "route_forward_m_s": VENDOR_EXAMPLE_FORWARD_M_S,
+            "foundationwalk_config": "UNMODIFIED_PINNED_VENDOR_CONFIG",
             "raw_lidar_a_star_waypoint_count": len(replay.get("raw_lidar_a_star_waypoints", points)),
             "smoothed_route_waypoint_count": len(points),
             "initial_heading_smoothing": "deterministic_bezier_from_observed_ASTAR_first_corner_and_known_+mapX_Reset_heading",
