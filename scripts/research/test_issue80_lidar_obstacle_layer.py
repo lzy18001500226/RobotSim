@@ -21,6 +21,7 @@ from issue80_lidar_obstacle_layer import (
     path_world_points,
     plan_a_star,
     raw_xyz_ranges,
+    simplify_grid_path,
 )
 from issue80_lidar_map_localizer import MAGIC
 from issue80_lidar_obstacle_replay import grid_from_candidates, replay
@@ -100,6 +101,14 @@ class LidarObstacleLayerTests(unittest.TestCase):
         self.assertTrue(all(cell not in inflated for cell in path))
         self.assertTrue(any(cell.y != 10 for cell in path))
         self.assertEqual(len(path_world_points(path, grid)), len(path))
+        simplified = simplify_grid_path(path, blocked=inflated)
+        self.assertEqual(simplified[0], start)
+        self.assertEqual(simplified[-1], goal)
+        self.assertLess(len(simplified), len(path))
+        self.assertTrue(all(
+            not direct_path_intersects_blocked(a, b, blocked=inflated)
+            for a, b in zip(simplified, simplified[1:])
+        ))
 
     def test_diagonal_cannot_cut_touched_obstacle_corner(self) -> None:
         grid = GridSpec(0.0, 0.0, 0.10, 3, 3)

@@ -371,3 +371,25 @@ def direct_path_intersects_blocked(
         if cell in frozen_blocked:
             return True
     return False
+
+
+def simplify_grid_path(
+    path: Sequence[GridCell],
+    *,
+    blocked: Iterable[GridCell],
+) -> tuple[GridCell, ...]:
+    """Remove only waypoints joined by a collision-free sampled line of sight."""
+    if not path:
+        raise ObstacleLayerError("path must contain at least one cell")
+    frozen_blocked = frozenset(blocked)
+    simplified: list[GridCell] = [path[0]]
+    anchor = 0
+    while anchor < len(path) - 1:
+        chosen = anchor + 1
+        for candidate in range(len(path) - 1, anchor, -1):
+            if not direct_path_intersects_blocked(path[anchor], path[candidate], blocked=frozen_blocked):
+                chosen = candidate
+                break
+        simplified.append(path[chosen])
+        anchor = chosen
+    return tuple(simplified)
