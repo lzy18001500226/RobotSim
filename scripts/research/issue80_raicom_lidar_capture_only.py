@@ -39,6 +39,7 @@ WORKTREE = Path(__file__).resolve().parents[2]
 POSES = WORKTREE / "simulation/mujoco/scenes/raicom2026/config/scene_world_poses.json"
 CAPTURE = Path(__file__).with_name("issue80_capture_lidar_pointcloud.py")
 MAP_FIELD = Path(__file__).with_name("issue80_lidar_map_obstacle_field.py")
+OBSTACLE_LAYER = Path(__file__).with_name("issue80_lidar_obstacle_layer.py")
 MAX_RUNTIME_S = 30.0
 MAX_CAPTURE_S = 12.0
 KNOWN_GOOD_MISSION = REPO / "reviews/issue-80/raicom-vendor-table-target-20261028T042026Z/route_config.json"
@@ -190,7 +191,7 @@ def snapshot_runtime_immutable_inputs() -> dict[str, Any]:
 
 def stage_capture_tools(evidence: Path) -> dict[str, str]:
     records: dict[str, str] = {}
-    for source in (CAPTURE, MAP_FIELD):
+    for source in (CAPTURE, MAP_FIELD, OBSTACLE_LAYER):
         if source.is_symlink() or not source.is_file():
             raise CaptureOnlyError(f"capture input is missing or unsafe: {source.name}")
         target = evidence / source.name

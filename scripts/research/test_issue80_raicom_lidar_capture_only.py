@@ -36,6 +36,7 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
         self.assertIn("--expected-frame-id map --save-all-finite-points", source)
         self.assertIn("source /opt/ros/humble/setup.bash", source)
         self.assertIn("source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash", source)
+        self.assertIn("OBSTACLE_LAYER", source)
 
     def test_runner_reuses_the_verified_readonly_mjdata_overlay(self) -> None:
         source = Path(__file__).with_name("issue80_raicom_lidar_capture_only.py").read_text(encoding="utf-8")
