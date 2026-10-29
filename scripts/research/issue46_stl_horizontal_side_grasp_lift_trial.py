@@ -167,6 +167,7 @@ def main() -> None:
     parser.add_argument("--arm-gain-scale", type=float, default=1.0)
     parser.add_argument("--execute-dynamics", action="store_true")
     parser.add_argument("--live-viewer", action="store_true", help="show the actual mj_step episode in the native MuJoCo GLFW viewer")
+    parser.add_argument("--show-collision-proxies", action="store_true", help="draw collision-proxy groups in the native viewer; physics always keeps them enabled")
     parser.add_argument("--viewer-final-hold-s", type=float, default=0.0, help="keep the actual final physics state visible after the episode")
     parser.add_argument("--record-video", action="store_true", help="also record an MP4; omitted for native interactive review")
     args = parser.parse_args()
@@ -394,6 +395,12 @@ def main() -> None:
         import mujoco.viewer as mujoco_viewer
 
         viewer = mujoco_viewer.launch_passive(model, data)
+        # Groups 1 and 3 are CoACD/contact proxies.  Hide them only from the
+        # renderer so a human sees the actual visual STL; collision detection
+        # and constraint solving remain completely unchanged.
+        if not args.show_collision_proxies:
+            viewer.opt.geomgroup[1] = 0
+            viewer.opt.geomgroup[3] = 0
     preload_duration = args.force_close_duration_s if args.force_close_torque_nm > 0.0 else BASE_STAGE_DURATIONS[1][1]
     lift_duration = 3.0 * planned_lift_m / 0.050
     stage_plan = (("INITIAL_SETTLE", 0.50), ("CLOSE", args.close_duration_s), ("PRELOAD", preload_duration), ("LIFT_50MM", lift_duration), BASE_STAGE_DURATIONS[3])
@@ -541,6 +548,7 @@ def main() -> None:
         "contact_maintaining_path": None if contact_path is None else {"path": str(args.contact_maintaining_path), "sha256": sha256(args.contact_maintaining_path), "approach_bias_mm": args.contact_path_approach_bias_mm, "waypoint_count": len(path_waypoints or [])},
         "planned_gripper_lift_m": planned_lift_m,
         "viewer": {"live_viewer": args.live_viewer, "final_hold_s": args.viewer_final_hold_s},
+        "viewer_collision_proxies_visible": args.show_collision_proxies,
         "record_video": args.record_video,
         "preflight": preflight,
         "stages": stages,
