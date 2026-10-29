@@ -68,6 +68,7 @@ from issue80_waypoint_route import (
     build_local01_short_scene_route,
     build_waypoint_docking_route_from_poses,
     load_waypoint_docking_pose_input,
+    RouteSpec,
     validate_waypoint_docking_scene_clearance,
 )
 from issue80_local01_scene_route import (
@@ -108,6 +109,12 @@ LIDAR_SCAN_MATH = Path(__file__).with_name("issue80_lidar_scan_math.py")
 LIDAR_RAW_BRIDGE = Path(__file__).with_name("issue80_lidar_raw_bridge.py")
 LIDAR_MAP_DATABASE = Path(__file__).with_name("issue80_lidar_map_database.cc")
 LIDAR_MAP_LOCALIZER = Path(__file__).with_name("issue80_lidar_map_localizer.py")
+LIDAR_OBSTACLE_DIAGNOSTIC = Path(__file__).with_name("issue80_lidar_obstacle_diagnostic.py")
+LIDAR_OBSTACLE_FIELD = Path(__file__).with_name("issue80_lidar_map_obstacle_field.py")
+LIDAR_OBSTACLE_LAYER = Path(__file__).with_name("issue80_lidar_obstacle_layer.py")
+LIDAR_OBSTACLE_PIPELINE = Path(__file__).with_name("issue80_lidar_obstacle_pipeline.py")
+LIDAR_OBSTACLE_REPLAY = Path(__file__).with_name("issue80_lidar_obstacle_replay.py")
+LIDAR_STATIC_SURFACE_AUDIT = Path(__file__).with_name("issue80_lidar_static_surface_audit.py")
 VENDOR_DIRECT_TRUTH_ROUTE = Path(__file__).with_name("issue80_vendor_direct_truth_route.py")
 POSE_GOAL_CONTROLLER = Path(__file__).with_name("issue80_coordinated_pose_goal.py")
 M1_MODE_LOGIC = Path(__file__).with_name("issue80_m1_mode_logic.py")
@@ -1348,6 +1355,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
     local01_short_route = bool(
         getattr(args, "local01_scene_world_poses", None)
         and not getattr(args, "table_approach_mission", None)
+        and not getattr(args, "raicom_lidar_obstacle_route", False)
     )
     child_extra_stop = (
         5.0 if activation_probe else 7.0 if configured_waypoint_route
@@ -1509,6 +1517,12 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             " --route-integration --route-config /workspace/evidence/route_config.json"
             " --route-config-post-stand-observation"
         )
+        if bool(getattr(args, "raicom_lidar_obstacle_route", False)):
+            command[-1] += (
+                " --lidar-map-route"
+                " --lidar-localization-topic /map_tf_distribution/localization_pose"
+                " --raicom-forward-gait-yaw-inversion"
+            )
         if local01_short_route:
             command[-1] += " --short-scene-route"
         if getattr(args, "table_approach_mission", None):
@@ -2115,12 +2129,25 @@ class BoundedRun:
         self.direct_stand_from_passive = bool(
             getattr(args, "direct_stand_from_passive", False)
         )
+        self.lidar_obstacle_route = bool(getattr(args, "raicom_lidar_obstacle_route", False))
         lidar_source = getattr(args, "raicom_lidar_overlay_source", None)
         self.lidar_overlay_source = Path(lidar_source).resolve(strict=True) if lidar_source else None
         self.lidar_overlay_dir: Path | None = None
         map_source = getattr(args, "raicom_lidar_static_map_source", None)
         self.lidar_static_map_source = Path(map_source).resolve(strict=True) if map_source else None
         self.lidar_static_map: Path | None = None
+        self.lidar_static_audit_source = (
+            Path(args.raicom_lidar_static_audit).resolve(strict=True)
+            if getattr(args, "raicom_lidar_static_audit", None) else None
+        )
+        self.lidar_static_occupancy_source = (
+            Path(args.raicom_lidar_static_occupancy).resolve(strict=True)
+            if getattr(args, "raicom_lidar_static_occupancy", None) else None
+        )
+        self.lidar_background_capture_source = (
+            Path(args.raicom_lidar_background_capture).resolve(strict=True)
+            if getattr(args, "raicom_lidar_background_capture", None) else None
+        )
         if self.lidar_overlay_source is not None:
             source_overlay = self.lidar_overlay_source / "lidar_overlay"
             target_overlay = self.evidence / "lidar_overlay"
@@ -2156,13 +2183,101 @@ class BoundedRun:
                 }, stream, indent=2)
                 stream.write("\n")
             self.lidar_static_map = target_map
+        if self.lidar_background_capture_source is not None:
+            if (
+                self.lidar_background_capture_source.is_symlink()
+                or not self.lidar_background_capture_source.is_file()
+            ):
+                raise ValueError("LiDAR static background capture must be a regular file")
+            target_background = self.evidence / "lidar_map_background_capture.json"
+            shutil.copyfile(self.lidar_background_capture_source, target_background)
         # Exception-only nested mounts for a known MC-generated runtime dump.
         # The base vendor runtime stays read-only, and every source must live
         # in the evidence directory.
         self.runtime_writeback_mounts: list[tuple[Path, str]] = []
         self.mc_prearm_writeback_manifest: dict[str, Any] | None = None
         self.mc_prearm_status: dict[str, Any] | None = None
-        if getattr(args, "table_approach_mission", None):
+        if self.lidar_obstacle_route:
+            if not self.local01_scene_mode:
+                raise ValueError("LiDAR obstacle route requires pinned Local01 scene-world poses")
+            if self.lidar_static_audit_source is None or self.lidar_static_occupancy_source is None:
+                raise ValueError("LiDAR obstacle route requires its static full-body audit and static occupancy inputs")
+            source_route = Path(str(args.route_config))
+            if source_route.is_symlink() or not source_route.is_file():
+                raise ValueError("LiDAR obstacle route config must be a regular file")
+            route_bytes = source_route.read_bytes()
+            route = RouteSpec.load(source_route)
+            raw_route = json.loads(route_bytes)
+            provenance = raw_route.get("provenance") if isinstance(raw_route, Mapping) else None
+            audit = json.loads(self.lidar_static_audit_source.read_text(encoding="utf-8"))
+            occupancy = json.loads(self.lidar_static_occupancy_source.read_text(encoding="utf-8"))
+            if (
+                route.frame_id != "map"
+                or route.workspace_verified is not True
+                or not isinstance(provenance, Mapping)
+                or provenance.get("classification") != "SIMULATION_ONLY_LIDAR_LOCALIZED_KNOWN_STATIC_MAP_UNKNOWN_RUNTIME_OBSTACLE_ROUTE"
+                or audit.get("status") != "PASS_STATIC_FULLBODY_DETOUR_CLEARANCE"
+                or occupancy.get("status") != "PASS_STATIC_OCCUPANCY_BUILT"
+                or provenance.get("static_audit_sha256") != hashlib.sha256(self.lidar_static_audit_source.read_bytes()).hexdigest()
+                or provenance.get("static_occupancy_sha256") != hashlib.sha256(self.lidar_static_occupancy_source.read_bytes()).hexdigest()
+            ):
+                raise ValueError("LiDAR obstacle route provenance or static clearance inputs do not match")
+            source = load_local01_scene_inputs(Path(args.local01_scene_world_poses), require_clean_commit=True)
+            self.local01_scene_source = source
+            self.local01_scene_bundle = prepare_local01_scene_runtime_bundle(
+                source, self.evidence, runtime_root=RUNTIME,
+                aligned_start=True, native_x2_timestep=True,
+            )
+            staged = self.evidence / "route_config.json"
+            with staged.open("xb") as stream:
+                stream.write(route_bytes)
+            self.route_config_sha256 = hashlib.sha256(route_bytes).hexdigest()
+            staged_audit = self.evidence / "lidar_observed_detour_static_result.json"
+            staged_occupancy = self.evidence / "lidar_static_occupancy.json"
+            shutil.copyfile(self.lidar_static_audit_source, staged_audit)
+            shutil.copyfile(self.lidar_static_occupancy_source, staged_occupancy)
+            minimum_clearance = float(audit["static_fullbody_clearance"]["minimum_tracking_inflated_aabb_clearance_m"])
+            workcell = {
+                "status": "PASS",
+                "classification": "SIMULATION_ONLY_LIDAR_OBSERVED_DETOUR_STATIC_FULLBODY_CLEARANCE",
+                "robot_collision_footprint_radial_upper_bound_m": float(route.robot_footprint_radius_m),
+                "verified_local_clear_radius_m": float(route.robot_footprint_radius_m) + minimum_clearance,
+                "minimum_swept_aabb_clearance_lower_bound_m": minimum_clearance,
+                "static_audit_sha256": hashlib.sha256(staged_audit.read_bytes()).hexdigest(),
+                "static_occupancy_sha256": hashlib.sha256(staged_occupancy.read_bytes()).hexdigest(),
+                "unknown_obstacle_generator_truth_used_for_route": False,
+                "runtime_recheck_required": "fresh map-frame LiDAR pose and exact staged route provenance before every motion window",
+            }
+            with (self.evidence / "workcell_geometry_preflight.json").open("x", encoding="utf-8") as stream:
+                json.dump(workcell, stream, indent=2)
+                stream.write("\n")
+            route_manifest = {
+                "schema": "robotsim.issue80.lidar-observed-route-input.v1",
+                "classification": provenance["classification"],
+                "source_sha256": self.route_config_sha256,
+                "staged_path": str(staged),
+                "source_local01_commit": source["source_commit"],
+                "static_audit_sha256": workcell["static_audit_sha256"],
+                "static_occupancy_sha256": workcell["static_occupancy_sha256"],
+                "runtime_lidar_reconfirmation_required": True,
+            }
+            with (self.evidence / "route_config_input.json").open("x", encoding="utf-8") as stream:
+                json.dump(route_manifest, stream, indent=2)
+                stream.write("\n")
+            runtime_scene_filename = str(self.local01_scene_bundle["runtime_scene_filename"])
+            runtime_config_filename = str(self.local01_scene_bundle["runtime_simulator_config_filename"])
+            self.local01_scene_readonly_mounts = [
+                (self.evidence / "local01_scene/scene_world_poses.json", "/workspace/evidence/local01_scene/scene_world_poses.json"),
+                (self.evidence / "local01_scene/route_waypoints.json", "/workspace/evidence/local01_scene/route_waypoints.json"),
+                (self.evidence / "local01_scene/scene_workspace.xml", "/workspace/evidence/local01_scene/scene_workspace.xml"),
+                (self.evidence / "local01_scene/mug_portable.xml", "/workspace/evidence/local01_scene/mug_portable.xml"),
+                (self.evidence / "local01_scene" / runtime_scene_filename, "/workspace/evidence/local01_scene/" + runtime_scene_filename),
+                (self.evidence / "local01_scene/mug_portable_runtime.xml", "/workspace/evidence/local01_scene/mug_portable_runtime.xml"),
+                (self.evidence / "local01_scene" / runtime_config_filename, "/workspace/evidence/local01_scene/" + runtime_config_filename),
+                (self.evidence / "local01_scene/runtime_bundle_manifest.json", "/workspace/evidence/local01_scene/runtime_bundle_manifest.json"),
+                (self.evidence / "workcell_geometry_preflight.json", "/workspace/evidence/workcell_geometry_preflight.json"),
+            ]
+        elif getattr(args, "table_approach_mission", None):
             preflight = getattr(args, "configured_table_approach_preflight", None)
             if not isinstance(preflight, Mapping) or not self.local01_scene_mode:
                 raise ValueError("table-approach mission requires its pinned Local01 scene preflight")
@@ -2925,6 +3040,12 @@ class BoundedRun:
             (LIDAR_RAW_BRIDGE, LIDAR_RAW_BRIDGE.name),
             (LIDAR_MAP_DATABASE, LIDAR_MAP_DATABASE.name),
             (LIDAR_MAP_LOCALIZER, LIDAR_MAP_LOCALIZER.name),
+            (LIDAR_OBSTACLE_DIAGNOSTIC, LIDAR_OBSTACLE_DIAGNOSTIC.name),
+            (LIDAR_OBSTACLE_FIELD, LIDAR_OBSTACLE_FIELD.name),
+            (LIDAR_OBSTACLE_LAYER, LIDAR_OBSTACLE_LAYER.name),
+            (LIDAR_OBSTACLE_PIPELINE, LIDAR_OBSTACLE_PIPELINE.name),
+            (LIDAR_OBSTACLE_REPLAY, LIDAR_OBSTACLE_REPLAY.name),
+            (LIDAR_STATIC_SURFACE_AUDIT, LIDAR_STATIC_SURFACE_AUDIT.name),
             (POSE_GOAL_CONTROLLER, POSE_GOAL_CONTROLLER.name),
             (M1_MODE_LOGIC, M1_MODE_LOGIC.name),
             (M1_FIRST_MOTION_LOGIC, M1_FIRST_MOTION_LOGIC.name),
@@ -4742,6 +4863,11 @@ class BoundedRun:
                 ": > /workspace/evidence/lidar_raw_enable",
                 timeout_s=2.0,
             )
+            if self.lidar_obstacle_route:
+                confirmation = self.confirm_lidar_obstacle_route()
+                self.m1_result = confirmation
+                if confirmation.get("status") != "PASS":
+                    return
         command = build_m1_child_command(self.args, self.container)
         child_timeout_s = TABLE_APPROACH_CHILD_TIMEOUT_S if getattr(self.args, "table_approach_mission", None) else 30.0 if zero_only_activation or activation_probe else (
             75.0
@@ -4766,6 +4892,93 @@ class BoundedRun:
                 }
         else:
             self.m1_result = {"status":"NO_RESULT_FILE","returncode":result.returncode,"stdout":result.stdout,"stderr":result.stderr}
+
+    def confirm_lidar_obstacle_route(self) -> dict[str, Any]:
+        """Require a fresh runtime LiDAR detour matching the staged static audit.
+
+        The prepared route remains evidence-local, but no nonzero command is
+        allowed unless the current simulator run independently observes the
+        same map-frame obstacle route after standing.
+        """
+        required = (
+            self.lidar_static_map,
+            self.evidence / "lidar_map_background_capture.json",
+            self.evidence / "lidar_static_occupancy.json",
+            self.evidence / "route_config.json",
+        )
+        if any(path is None or not Path(path).is_file() for path in required):
+            return {"status": "BLOCKED", "fault": "LIDAR_ROUTE_CONFIRMATION_INPUT_MISSING"}
+        self.docker_exec(
+            "start_lidar_map_projection_for_obstacle_confirmation",
+            "source /opt/ros/humble/setup.bash && "
+            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+            "cd /workspace/evidence && timeout 10s python3 issue80_lidar_raw_bridge.py "
+            "--trace /workspace/evidence/lidar_raw_frames.jsonl --coordinate-field world_xyz "
+            "--topic /robotsim/lidar/map_points --frame map --duration-s 7 "
+            "--result /workspace/evidence/lidar_world_route_bridge_result.json "
+            "> /workspace/evidence/lidar_world_route_bridge.stdout "
+            "2> /workspace/evidence/lidar_world_route_bridge.stderr",
+            timeout_s=3.0, detached=True,
+        )
+        self.docker_exec(
+            "start_lidar_unknown_obstacle_route_confirmation",
+            "source /opt/ros/humble/setup.bash && "
+            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
+            "cd /workspace/evidence && timeout 10s python3 issue80_lidar_obstacle_diagnostic.py "
+            "--static-database /workspace/evidence/lidar_static_map.bin "
+            "--background-capture /workspace/evidence/lidar_map_background_capture.json "
+            "--static-route-blocked /workspace/evidence/lidar_static_occupancy.json "
+            "--trace /workspace/evidence/lidar_obstacle_route_trace.jsonl "
+            "--result /workspace/evidence/lidar_obstacle_route_result.json "
+            "--topic /robotsim/lidar/map_points --duration-s 5 --static-match-distance-m 0.02 "
+            "--minimum-cluster-cells 3 --minimum-obstacle-span-x-m 0.30 "
+            "--minimum-obstacle-span-y-m 0.30 "
+            "> /workspace/evidence/lidar_obstacle_route.stdout "
+            "2> /workspace/evidence/lidar_obstacle_route.stderr",
+            timeout_s=3.0, detached=True,
+        )
+        result_path = self.evidence / "lidar_obstacle_route_result.json"
+        deadline = min(self.deadline, time.monotonic() + 10.0)
+        while time.monotonic() < deadline and not result_path.is_file():
+            time.sleep(0.05)
+        if not result_path.is_file() or result_path.is_symlink():
+            return {"status": "BLOCKED", "fault": "LIDAR_ROUTE_CONFIRMATION_RESULT_MISSING"}
+        try:
+            observed = json.loads(result_path.read_text(encoding="utf-8"))
+            route = RouteSpec.load(self.evidence / "route_config.json")
+            decision = observed.get("final_decision") if isinstance(observed, Mapping) else None
+            points = decision.get("detour_map_waypoints") if isinstance(decision, Mapping) else None
+            expected = [(route.start_x_m, route.start_y_m)] + [
+                (step.x_m, step.y_m) for step in route.steps
+            ]
+            actual = [
+                (float(item["x_m"]), float(item["y_m"]))
+                for item in points
+            ] if isinstance(points, list) else []
+            matches = (
+                len(actual) == len(expected)
+                and all(math.hypot(a[0] - b[0], a[1] - b[1]) <= 1e-9 for a, b in zip(actual, expected))
+            )
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            return {"status": "BLOCKED", "fault": f"LIDAR_ROUTE_CONFIRMATION_INVALID:{type(exc).__name__}:{exc}"}
+        payload = {
+            "schema": "robotsim.issue80.lidar-route-live-confirmation.v1",
+            "status": "PASS" if (
+                observed.get("status") == "PASS_DIAGNOSTIC_CAPTURED"
+                and isinstance(decision, Mapping)
+                and decision.get("status") == "DETOUR_READY_STATIC_ONLY"
+                and matches
+            ) else "BLOCKED",
+            "diagnostic": observed,
+            "staged_route_points": [{"x_m": x, "y_m": y} for x, y in expected],
+            "route_matches_fresh_lidar_observation": matches,
+            "velocity_publisher_created_by_confirmation": False,
+            "mc_action_or_source_client_created_by_confirmation": False,
+        }
+        with (self.evidence / "lidar_obstacle_route_live_confirmation.json").open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2)
+            stream.write("\n")
+        return payload
 
     def start_mc_rl_debug_capture(self) -> None:
         """Start one passive, schema-verified MC debug subscriber before M1."""
@@ -5989,6 +6202,29 @@ def main() -> int:
         help="governed evidence directory containing a PASS static RAICOM LiDAR signature map",
     )
     parser.add_argument(
+        "--raicom-lidar-obstacle-route",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY: execute only a staged static-audited map-frame LiDAR detour "
+            "through the existing RouteMotionBridge"
+        ),
+    )
+    parser.add_argument(
+        "--raicom-lidar-static-audit",
+        default=None,
+        help="governed passing full-body static audit matching the observed LiDAR detour route",
+    )
+    parser.add_argument(
+        "--raicom-lidar-static-occupancy",
+        default=None,
+        help="governed known-static occupancy JSON matching the LiDAR static-map grid",
+    )
+    parser.add_argument(
+        "--raicom-lidar-background-capture",
+        default=None,
+        help="governed map-frame pointcloud capture of the matching known-static scenario",
+    )
+    parser.add_argument(
         "--local01-scene-world-poses",
         default=None,
         help=(
@@ -6474,14 +6710,14 @@ def main() -> int:
         except (OSError, ValueError) as exc:
             parser.error(f"LiDAR overlay source must be a governed Issue 80 evidence directory: {exc}")
         if not (
-            args.table_approach_mission
-            and args.aligned_start_table_approach
+            (args.table_approach_mission or args.raicom_lidar_obstacle_route)
+            and (args.aligned_start_table_approach or args.raicom_lidar_obstacle_route)
             and args.native_x2_timestep
             and args.direct_stand_from_passive
             and args.maintainer_authorized_first_motion
             and args.require_stand_warmup_composite
         ):
-            parser.error("LiDAR overlay runtime requires the existing aligned direct-stand table route gates")
+            parser.error("LiDAR overlay runtime requires aligned direct-stand route gates")
     if args.raicom_lidar_static_map_source:
         try:
             static_map_source = Path(args.raicom_lidar_static_map_source).resolve(strict=True)
@@ -6495,6 +6731,44 @@ def main() -> int:
             parser.error(f"LiDAR static map source is invalid: {exc}")
         if not args.raicom_lidar_overlay_source:
             parser.error("LiDAR static map localization requires --raicom-lidar-overlay-source")
+    if args.raicom_lidar_obstacle_route:
+        required = (
+            args.route_config,
+            args.local01_scene_world_poses,
+            args.raicom_lidar_overlay_source,
+            args.raicom_lidar_static_map_source,
+            args.raicom_lidar_static_audit,
+            args.raicom_lidar_static_occupancy,
+            args.raicom_lidar_background_capture,
+        )
+        if not all(required):
+            parser.error("LiDAR obstacle route requires route, Local01 scene, overlay, static map, static audit, and static occupancy inputs")
+        if not (
+            args.direct_stand_from_passive and args.native_x2_timestep
+            and args.maintainer_authorized_first_motion and args.require_stand_warmup_composite
+        ):
+            parser.error("LiDAR obstacle route requires the existing direct-stand/native-timestep/warmup gates")
+        try:
+            background = Path(args.raicom_lidar_background_capture).resolve(strict=True)
+            background.relative_to(REPO / "reviews/issue-80")
+            if background.is_symlink() or not background.is_file():
+                raise ValueError("background capture is not a regular file")
+            background_payload = json.loads(background.read_text(encoding="utf-8"))
+            if background_payload.get("status") != "PASS_NONEMPTY_POINTCLOUD":
+                raise ValueError("background capture did not pass")
+            for value, schema, status in (
+                (args.raicom_lidar_static_audit, "robotsim.issue80.raicom-observed-detour-static.v1", "PASS_STATIC_FULLBODY_DETOUR_CLEARANCE"),
+                (args.raicom_lidar_static_occupancy, "robotsim.issue80.raicom-static-occupancy.v1", "PASS_STATIC_OCCUPANCY_BUILT"),
+            ):
+                path = Path(value).resolve(strict=True)
+                path.relative_to(REPO / "reviews/issue-80")
+                if path.is_symlink() or not path.is_file():
+                    raise ValueError("artifact is not a regular file")
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if payload.get("schema") != schema or payload.get("status") != status:
+                    raise ValueError("artifact schema/status did not pass")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(f"LiDAR obstacle route static inputs are invalid: {exc}")
     if args.route_config:
         if not args.maintainer_authorized_first_motion:
             parser.error("configured waypoint-docking route requires explicit first-motion authorization")
@@ -6503,19 +6777,32 @@ def main() -> int:
         if args.route_turn_evidence is not None or args.capture_mc_rl_debug:
             parser.error("configured waypoint-docking route does not accept turn evidence or extra runtime observers")
         try:
-            route_input_preflight = validate_waypoint_docking_route_input(args.route_config)
-            args.configured_waypoint_docking_route = route_input_preflight["route"]
-            args.configured_waypoint_docking_workcell = route_input_preflight["workcell"]
-            args.configured_waypoint_docking_clearance = route_input_preflight["clearance"]
-            args.configured_waypoint_docking_config_sha256 = route_input_preflight["source_sha256"]
+            if args.raicom_lidar_obstacle_route:
+                route = RouteSpec.load(args.route_config)
+                raw_route = json.loads(Path(args.route_config).read_text(encoding="utf-8"))
+                provenance = raw_route.get("provenance") if isinstance(raw_route, Mapping) else None
+                if (
+                    route.frame_id != "map" or route.workspace_verified is not True
+                    or not isinstance(provenance, Mapping)
+                    or provenance.get("classification") != "SIMULATION_ONLY_LIDAR_LOCALIZED_KNOWN_STATIC_MAP_UNKNOWN_RUNTIME_OBSTACLE_ROUTE"
+                ):
+                    raise ValueError("LiDAR observed route is not a verified map-frame RouteSpec")
+                args.configured_lidar_obstacle_route = route
+                args.configured_lidar_obstacle_route_sha256 = hashlib.sha256(Path(args.route_config).read_bytes()).hexdigest()
+            else:
+                route_input_preflight = validate_waypoint_docking_route_input(args.route_config)
+                args.configured_waypoint_docking_route = route_input_preflight["route"]
+                args.configured_waypoint_docking_workcell = route_input_preflight["workcell"]
+                args.configured_waypoint_docking_clearance = route_input_preflight["clearance"]
+                args.configured_waypoint_docking_config_sha256 = route_input_preflight["source_sha256"]
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             parser.error(f"configured waypoint-docking route rejected before runtime: {exc}")
         # This route uses the already bounded post-STAND observation allowance;
         # it does not relax the composite physical/controller-target gate.
         args.extra_stop_observation = 7.0
-    if args.route_config and args.local01_scene_world_poses:
+    if args.route_config and args.local01_scene_world_poses and not args.raicom_lidar_obstacle_route:
         parser.error("select either the generic odom route JSON or the pinned Local01 scene-world route")
-    if args.local01_scene_world_poses and not args.table_approach_mission:
+    if args.local01_scene_world_poses and not args.table_approach_mission and not args.raicom_lidar_obstacle_route:
         direct_standing_only = bool(
             args.direct_stand_from_passive
             and args.maintainer_authorized_standing_takeover

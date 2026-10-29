@@ -52,7 +52,9 @@ class Diagnostic(Node):
             "novel_point_count": decision.novel_point_count,
             "confirmed_cells": [{"x": cell.x, "y": cell.y} for cell in decision.confirmed_cells],
             "obstacle_envelope_cells": [{"x": cell.x, "y": cell.y} for cell in decision.obstacle_envelope_cells],
-            "detour_waypoint_count": len(decision.detour_map_waypoints), "reason": decision.reason,
+            "detour_waypoint_count": len(decision.detour_map_waypoints),
+            "detour_map_waypoints": [{"x_m": x, "y_m": y} for x, y in decision.detour_map_waypoints],
+            "reason": decision.reason,
         }
         self.trace.write(json.dumps(payload) + "\n")
         self.decisions.append(payload)

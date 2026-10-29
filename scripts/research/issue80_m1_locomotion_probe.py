@@ -23,6 +23,7 @@ from aimdk_msgs.msg import (
     McCommonState, McInputAction, McLocomotionVelocity, MessageHeader, RequestHeader,
 )
 from aimdk_msgs.srv import GetCurrentInputSource, GetMcAction, SetMcAction, SetMcInputSource
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -115,6 +116,7 @@ from issue80_waypoint_route import (
     SafetyObservation, WaypointRouteExecutor, YawPolicy,
     build_table_approach_route_from_mission,
     build_waypoint_docking_route_from_poses, load_waypoint_docking_pose_input,
+    RouteSpec,
     distance_to_polygon_boundary,
     validate_waypoint_docking_scene_clearance,
     build_local01_short_scene_route, build_runtime_raw_odom_short_scene_route,
@@ -340,6 +342,10 @@ class FocusedM1Diagnostic(Node):
         )
         super().__init__("issue80_m1_first_motion")
         self.args = args
+        self.lidar_map_route_mode = bool(getattr(args, "lidar_map_route", False))
+        self.lidar_localization_topic = str(
+            getattr(args, "lidar_localization_topic", "/map_tf_distribution/localization_pose")
+        )
         self.verified_network_mode = verified_network_mode
         self.source = VELOCITY_SOURCE_NAME
         self.output_dir = Path(args.output_dir).resolve(strict=True)
@@ -354,6 +360,8 @@ class FocusedM1Diagnostic(Node):
         )
         self.latest: dict[str, Any] = {}
         self.received_at: dict[str, float] = {}
+        self.lidar_map_stamp_ns: int | None = None
+        self.lidar_map_duplicate_or_regressing_samples = 0
         self.odom_source_stamp_fence = OdomSourceStampFence(
             allow_bounded_clock_rebase=bool(
                 getattr(args, "raicom_native_mjdata_route_feedback", False)
@@ -451,6 +459,11 @@ class FocusedM1Diagnostic(Node):
         self.create_subscription(
             JointCommandArray, "/aima/hal/joint/leg/command", lambda msg: self._store("leg_command", msg), self.state_qos
         )
+        if self.lidar_map_route_mode:
+            self.create_subscription(
+                PoseStamped, self.lidar_localization_topic,
+                self._store_lidar_map_pose, self.odom_state_qos,
+            )
         # Optional raw diagnostic only: its values are not safety gates and are
         # never assigned semantics from the generic Float64MultiArray type.
         if self.mc_debug_f64_subscription_enabled:
@@ -489,6 +502,24 @@ class FocusedM1Diagnostic(Node):
                 return
         self.latest[key] = msg
         self.received_at[key] = received
+
+    def _store_lidar_map_pose(self, msg: PoseStamped) -> None:
+        """Accept only strictly advancing map-frame estimates for route control."""
+        received = time.monotonic()
+        try:
+            stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+            frame_id = str(msg.header.frame_id)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            self.lidar_map_duplicate_or_regressing_samples += 1
+            return
+        if frame_id != "map" or stamp_ns <= 0 or (
+            self.lidar_map_stamp_ns is not None and stamp_ns <= self.lidar_map_stamp_ns
+        ):
+            self.lidar_map_duplicate_or_regressing_samples += 1
+            return
+        self.lidar_map_stamp_ns = stamp_ns
+        self.latest["lidar_map_pose"] = msg
+        self.received_at["lidar_map_pose"] = received
 
     def _store_mc_debug_f64(self, msg: Float64MultiArray) -> None:
         received = time.monotonic()
@@ -3133,6 +3164,7 @@ class FocusedM1Diagnostic(Node):
             getattr(self.args, "route_waypoint_b_extended_diagnostic", False)
         )
         route_config_mode = bool(getattr(self.args, "route_config", None))
+        lidar_map_route_mode = bool(getattr(self.args, "lidar_map_route", False))
         short_scene_route_mode = bool(getattr(self.args, "short_scene_route", False))
         table_approach_mission_mode = bool(getattr(self.args, "table_approach_mission", False))
         configured_docking_route_mode = route_config_mode and not table_approach_mission_mode
@@ -3192,6 +3224,8 @@ class FocusedM1Diagnostic(Node):
         )
         result: dict[str, Any] = {
             "classification": (
+                "SIMULATION_ONLY_LIDAR_LOCALIZED_KNOWN_STATIC_MAP_UNKNOWN_RUNTIME_OBSTACLE_ROUTE"
+                if lidar_map_route_mode else
                 "SIMULATION_ONLY_SHORT_ROUTE_DIAGNOSTIC_NOT_TABLE_DOCKING"
                 if short_scene_route_mode else
                 "SIMULATION_ONLY_ALIGNED_START_TABLE_APPROACH_NOT_ORIGINAL_START_OR_TABLE_DOCKING_OR_MANIPULATION"
@@ -3746,7 +3780,36 @@ class FocusedM1Diagnostic(Node):
                 result["workcell_geometry_preflight"] = workcell
             if turn_provenance is not None:
                 result["qualified_right_turn_evidence"] = turn_provenance
-            if route_config_mode and not short_scene_route_mode and not table_approach_mission_mode:
+            if route_config_mode and lidar_map_route_mode:
+                route_config_path = Path(self.args.route_config)
+                manifest_path = evidence_root / "route_config_input.json"
+                workcell_path = evidence_root / "workcell_geometry_preflight.json"
+                if any(path.is_symlink() or not path.is_file() for path in (
+                    route_config_path, manifest_path, workcell_path,
+                )):
+                    raise ValueError("LiDAR route inputs/preflight manifests are missing or unsafe")
+                route_config_sha256 = hashlib.sha256(route_config_path.read_bytes()).hexdigest()
+                input_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                workcell = json.loads(workcell_path.read_text(encoding="utf-8"))
+                route = RouteSpec.load(route_config_path)
+                provenance = json.loads(route_config_path.read_text(encoding="utf-8")).get("provenance")
+                if (
+                    input_manifest.get("source_sha256") != route_config_sha256
+                    or workcell.get("status") != "PASS"
+                    or route.frame_id != "map"
+                    or not isinstance(provenance, Mapping)
+                    or provenance.get("classification") != "SIMULATION_ONLY_LIDAR_LOCALIZED_KNOWN_STATIC_MAP_UNKNOWN_RUNTIME_OBSTACLE_ROUTE"
+                ):
+                    raise ValueError("LiDAR observed-detour route provenance/preflight does not match")
+                result["lidar_map_route"] = {
+                    "status": "PASS_STATIC_AUDITED_ROUTE_STAGED",
+                    "route_sha256": route_config_sha256,
+                    "localization_topic": str(self.args.lidar_localization_topic),
+                    "step_ids": [step.waypoint_id for step in route.steps],
+                    "static_clearance_lower_bound_m": workcell["minimum_swept_aabb_clearance_lower_bound_m"],
+                    "not_a_runtime_pose_confirmation": True,
+                }
+            elif route_config_mode and not short_scene_route_mode and not table_approach_mission_mode:
                 route_config_path = Path(self.args.route_config)
                 manifest_path = evidence_root / "route_config_input.json"
                 if (
@@ -3792,43 +3855,81 @@ class FocusedM1Diagnostic(Node):
             return native
 
         def route_feedback_snapshot(snapshot: Mapping[str, Any]) -> dict[str, Any]:
-            if native_route_reader is None:
-                return dict(snapshot)
-            native = native_pose_from_snapshot(snapshot)
             result_snapshot = dict(snapshot)
-            native_stamp_ns = int(round(native.sim_time_s * 1_000_000_000.0))
-            ros_pose = result_snapshot.get("pose")
-            result_snapshot["ros_odom_pose"] = dict(ros_pose) if isinstance(ros_pose, Mapping) else None
-            pose = dict(ros_pose) if isinstance(ros_pose, Mapping) else {}
-            pose.update({
-                "x": native.x_m,
-                "y": native.y_m,
-                "z": native.z_m,
-                "roll": native.roll_rad,
-                "pitch": native.pitch_rad,
-                "yaw": native.yaw_rad,
-                "vx": native.vx_m_s,
-                "vy": native.vy_m_s,
-                "vz": native.vz_m_s,
-                "wx": native.wx_rad_s,
-                "wy": native.wy_rad_s,
-                "wz": native.wz_rad_s,
-                "frame_id": "odom",
-                "child_frame_id": "base_link",
-                "twist_frame_id": "base_link",
-                "stamp_sec": native_stamp_ns // 1_000_000_000,
-                "stamp_nanosec": native_stamp_ns % 1_000_000_000,
-            })
-            ages = dict(result_snapshot.get("state_age_s") or {})
-            ages["odom"] = max(0.0, float(result_snapshot["sample_monotonic_s"]) - native.host_monotonic_s)
-            result_snapshot["pose"] = pose
-            result_snapshot["state_age_s"] = ages
-            result_snapshot["native_mjdata_route_pose"] = {
-                "generation": native.generation,
-                "sim_time_s": native.sim_time_s,
-                "host_monotonic_s": native.host_monotonic_s,
-                "source": "READ_ONLY_NATIVE_MJDATA",
-            }
+            if native_route_reader is not None:
+                native = native_pose_from_snapshot(snapshot)
+                native_stamp_ns = int(round(native.sim_time_s * 1_000_000_000.0))
+                ros_pose = result_snapshot.get("pose")
+                result_snapshot["ros_odom_pose"] = dict(ros_pose) if isinstance(ros_pose, Mapping) else None
+                pose = dict(ros_pose) if isinstance(ros_pose, Mapping) else {}
+                pose.update({
+                    "x": native.x_m,
+                    "y": native.y_m,
+                    "z": native.z_m,
+                    "roll": native.roll_rad,
+                    "pitch": native.pitch_rad,
+                    "yaw": native.yaw_rad,
+                    "vx": native.vx_m_s,
+                    "vy": native.vy_m_s,
+                    "vz": native.vz_m_s,
+                    "wx": native.wx_rad_s,
+                    "wy": native.wy_rad_s,
+                    "wz": native.wz_rad_s,
+                    "frame_id": "odom",
+                    "child_frame_id": "base_link",
+                    "twist_frame_id": "base_link",
+                    "stamp_sec": native_stamp_ns // 1_000_000_000,
+                    "stamp_nanosec": native_stamp_ns % 1_000_000_000,
+                })
+                ages = dict(result_snapshot.get("state_age_s") or {})
+                ages["odom"] = max(0.0, float(result_snapshot["sample_monotonic_s"]) - native.host_monotonic_s)
+                result_snapshot["pose"] = pose
+                result_snapshot["state_age_s"] = ages
+                result_snapshot["native_mjdata_route_pose"] = {
+                    "generation": native.generation,
+                    "sim_time_s": native.sim_time_s,
+                    "host_monotonic_s": native.host_monotonic_s,
+                    "source": "READ_ONLY_NATIVE_MJDATA",
+                }
+            if lidar_map_route_mode:
+                map_message = self.latest.get("lidar_map_pose")
+                received_s = self.received_at.get("lidar_map_pose")
+                if not isinstance(map_message, PoseStamped) or received_s is None:
+                    raise ValueError("LiDAR map localization pose is unavailable")
+                age_s = max(0.0, float(result_snapshot["sample_monotonic_s"]) - float(received_s))
+                if age_s > MAX_POSE_AGE_S:
+                    raise ValueError("LiDAR map localization pose is stale")
+                base_pose = result_snapshot.get("pose")
+                if not isinstance(base_pose, Mapping):
+                    raise ValueError("ROS odometry base state is unavailable for LiDAR route safety context")
+                map_q = map_message.pose.orientation
+                map_yaw = math.atan2(
+                    2.0 * (float(map_q.w) * float(map_q.z) + float(map_q.x) * float(map_q.y)),
+                    1.0 - 2.0 * (float(map_q.y) ** 2 + float(map_q.z) ** 2),
+                )
+                result_snapshot["ros_odom_pose"] = dict(base_pose)
+                pose = dict(base_pose)
+                pose.update({
+                    "x": float(map_message.pose.position.x),
+                    "y": float(map_message.pose.position.y),
+                    "yaw": map_yaw,
+                    "frame_id": "map",
+                    "child_frame_id": "base_link",
+                    "stamp_sec": int(map_message.header.stamp.sec),
+                    "stamp_nanosec": int(map_message.header.stamp.nanosec),
+                })
+                ages = dict(result_snapshot.get("state_age_s") or {})
+                ages["odom"] = age_s
+                result_snapshot["pose"] = pose
+                result_snapshot["state_age_s"] = ages
+                result_snapshot["lidar_map_route_pose"] = {
+                    "source": "READ_ONLY_LIDAR_ODOM_ESTIMATE",
+                    "topic": self.lidar_localization_topic,
+                    "age_s": age_s,
+                    "duplicate_or_regressing_dropped": self.lidar_map_duplicate_or_regressing_samples,
+                    "position_std_m": 0.075,
+                    "yaw_std_rad": 0.25,
+                }
             return result_snapshot
 
         def pose_from_snapshot(snapshot: Mapping[str, Any]) -> PoseEstimate:
@@ -3838,8 +3939,9 @@ class FocusedM1Diagnostic(Node):
                 raise ValueError("route pose or state-age telemetry is unavailable")
             frame_id = str(pose.get("frame_id", ""))
             child_frame_id = str(pose.get("child_frame_id", ""))
-            if frame_id != "odom" or child_frame_id != "base_link":
-                raise ValueError(f"route requires odom->base_link, received {frame_id}->{child_frame_id}")
+            expected_frame = "map" if lidar_map_route_mode else "odom"
+            if frame_id != expected_frame or child_frame_id != "base_link":
+                raise ValueError(f"route requires {expected_frame}->base_link, received {frame_id}->{child_frame_id}")
             stamp_ns = int(pose["stamp_sec"]) * 1_000_000_000 + int(pose["stamp_nanosec"])
             age = ages.get("odom")
             if age is None or not math.isfinite(float(age)):
@@ -3856,7 +3958,7 @@ class FocusedM1Diagnostic(Node):
                 except (OverflowError, OSError, ValueError):
                     wall_time_ns = None
             return PoseEstimate(
-                frame_id="odom",
+                frame_id=expected_frame,
                 child_frame_id="base_link",
                 x_m=float(pose["x"]),
                 y_m=float(pose["y"]),
@@ -3864,10 +3966,10 @@ class FocusedM1Diagnostic(Node):
                 stamp_ns=stamp_ns,
                 received_steady_s=receive_steady_s,
                 generation=str(self.args.attempt_id),
-                source="MUJOCO_GROUND_TRUTH",
-                position_std_m=0.0,
-                yaw_std_rad=0.0,
-                transform_chain=("odom->base_link",),
+                source=("SIMULATION_ONLY_LIDAR_ODOM_ESTIMATE" if lidar_map_route_mode else "MUJOCO_GROUND_TRUTH"),
+                position_std_m=0.075 if lidar_map_route_mode else 0.0,
+                yaw_std_rad=0.25 if lidar_map_route_mode else 0.0,
+                transform_chain=(("map->odom", "odom->base_link") if lidar_map_route_mode else ("odom->base_link",)),
                 transform_age_s=float(age),
                 wall_time_ns=wall_time_ns,
             )
@@ -3881,7 +3983,7 @@ class FocusedM1Diagnostic(Node):
                 return self.pose
 
             def latest_pose(self, target_frame: str, now_steady_s: float) -> PoseEstimate | None:
-                return self.pose if target_frame == "odom" else None
+                return self.pose if self.pose is not None and target_frame == self.pose.frame_id else None
 
         class LiveSafetyProvider:
             def __init__(self) -> None:
@@ -3909,7 +4011,7 @@ class FocusedM1Diagnostic(Node):
                 )
 
             def latest_observation(self, segment_id: str, frame_id: str, now_steady_s: float) -> SafetyObservation | None:
-                if frame_id != "odom" or segment_id != self.segment_id:
+                if frame_id != route.frame_id or segment_id != self.segment_id:
                     return None
                 return SafetyObservation(
                     segment_id=segment_id,
@@ -3951,7 +4053,22 @@ class FocusedM1Diagnostic(Node):
                 return actual_request
 
         try:
-            initial = route_feedback_snapshot(self.sample_for_first_motion())
+            if lidar_map_route_mode:
+                lidar_ready_deadline = time.monotonic() + float(self.args.ready_timeout)
+                initial = None
+                lidar_failure = "LiDAR map localization pose is unavailable"
+                while time.monotonic() < lidar_ready_deadline:
+                    candidate = self.sample_for_first_motion()
+                    try:
+                        initial = route_feedback_snapshot(candidate)
+                        break
+                    except ValueError as exc:
+                        lidar_failure = str(exc)
+                        self._spin_for(0.02)
+                if initial is None:
+                    raise ValueError("LiDAR map localization readiness timeout: " + lidar_failure)
+            else:
+                initial = route_feedback_snapshot(self.sample_for_first_motion())
             initial_fault = snapshot_fault(
                 initial,
                 self.joint_limits,
@@ -4244,6 +4361,8 @@ class FocusedM1Diagnostic(Node):
                     "initial_alignment": result.get("initial_yaw_alignment"),
                     "table_docking_reference": local01_route_input["table_docking_reference"],
                 }
+            elif lidar_map_route_mode:
+                route = RouteSpec.load(Path(self.args.route_config))
             elif route_config_mode:
                 route = build_waypoint_docking_route_from_poses(
                     load_waypoint_docking_pose_input(self.args.route_config),
@@ -9084,6 +9203,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise ValueError("post-locomotion convergence observation requires extended waypoint-B route integration")
     configured_route = bool(getattr(args, "route_config", None))
+    lidar_map_route = bool(getattr(args, "lidar_map_route", False))
     short_scene_route = bool(getattr(args, "short_scene_route", False))
     low_cruise_profile = bool(getattr(args, "raicom_low_cruise_profile", False))
     zero_forward_heading_acquisition = bool(
@@ -9129,6 +9249,13 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     )
     if short_scene_route and not configured_route:
         raise ValueError("--short-scene-route requires --route-config")
+    if lidar_map_route:
+        if not configured_route or short_scene_route or table_approach_mission:
+            raise ValueError("LiDAR map route requires its own --route-config and cannot combine with Local01/table route modes")
+        if not str(getattr(args, "lidar_localization_topic", "")).startswith("/"):
+            raise ValueError("LiDAR localization topic must be an absolute ROS topic")
+        if abs(float(args.forward_speed) - 0.12) > 1e-9 or abs(float(args.pulse_duration) - 5.0) > 1e-9:
+            raise ValueError("LiDAR map route retains the validated 0.12 m/s, 5 s window profile")
     low_cruise_supported_route = short_scene_route or (
         table_approach_mission and aligned_start_table_approach
     )
@@ -9502,6 +9629,30 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
                     }
                     if native_nominal_straight_gait_diagnostic else None
                 ),
+                "runtime_reset_odom_observed": False,
+            }
+        elif lidar_map_route:
+            route = RouteSpec.load(Path(args.route_config))
+            provenance = json.loads(Path(args.route_config).read_text(encoding="utf-8")).get("provenance")
+            if (
+                route.frame_id != "map"
+                or route.workspace_verified is not True
+                or not isinstance(provenance, Mapping)
+                or provenance.get("classification")
+                    != "SIMULATION_ONLY_LIDAR_LOCALIZED_KNOWN_STATIC_MAP_UNKNOWN_RUNTIME_OBSTACLE_ROUTE"
+            ):
+                raise ValueError("LiDAR route config is not a static-audited map-frame observed-detour route")
+            profile_route = {
+                "status": "VALIDATED_NO_RUNTIME",
+                "route_kind": str(provenance["classification"]),
+                "route_id": route.route_id,
+                "frame_id": route.frame_id,
+                "step_ids": [step.waypoint_id for step in route.steps],
+                "maximum_windows_total": 15,
+                "aggregate_nonzero_limit_s": 75.0,
+                "post_stand_observation_s": 7.0,
+                "localization_topic": str(args.lidar_localization_topic),
+                "forward_gait_yaw_inversion": forward_gait_yaw_inversion,
                 "runtime_reset_odom_observed": False,
             }
         elif short_scene_route:
@@ -9897,6 +10048,19 @@ def main() -> int:
         "--route-config",
         default=None,
         help="Local01 odom-frame START/WAYPOINT/TABLE_DOCKING x/y/yaw pose JSON",
+    )
+    first.add_argument(
+        "--lidar-map-route",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY: interpret --route-config as the already static-audited map-frame "
+            "LiDAR detour RouteSpec and consume only the localizer PoseStamped estimate for route feedback"
+        ),
+    )
+    first.add_argument(
+        "--lidar-localization-topic",
+        default="/map_tf_distribution/localization_pose",
+        help="map-frame PoseStamped output from the staged read-only LiDAR/odom localizer",
     )
     first.add_argument(
         "--short-scene-route",
