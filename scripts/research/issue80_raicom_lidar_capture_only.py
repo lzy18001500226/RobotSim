@@ -2,9 +2,11 @@
 """One bounded, simulator-only capture of the RAICOM map-frame LiDAR topic.
 
 This dedicated runner is the first live gate for the obstacle-navigation work.
-It starts only the LiDAR-enabled simulator, captures one ``PointCloud2`` topic,
-and tears the isolated container down.  It does not start MC and cannot send
-Reset, JD/SD/LD, an input-source request, a velocity command, or a route.
+It starts the LiDAR-enabled simulator and the unchanged vendor MC process only
+because this delivery instantiates its MuJoCo model after that native startup
+handshake. It captures one ``PointCloud2`` topic and tears the isolated
+container down. It never sends Reset, JD/SD/LD, an input-source request, a
+velocity command, or a route.
 """
 from __future__ import annotations
 
@@ -34,11 +36,11 @@ MAX_CAPTURE_S = 12.0
 
 FORBIDDEN_NAMES = frozenset({
     "SetMcAction", "SetMcInputSource", "McLocomotionVelocity", "RouteMotionBridge",
-    "dispatch_native_reset_button", "run_m1", "start_mc_after_sim_topics",
+    "dispatch_native_reset_button", "run_m1",
     "create_publisher", "create_client", "publish",
 })
 ALLOWED_RUNTIME_METHODS = frozenset({
-    "run", "docker_exec", "start_container", "start_sim_first", "cleanup",
+    "run", "docker_exec", "start_container", "start_mc_after_sim_topics", "cleanup",
     "apply_container_teardown_gate", "remaining", "stage_research_scripts",
 })
 
@@ -75,7 +77,7 @@ def audit_capture_only_source(path: Path) -> dict[str, Any]:
                     forbidden.append("runtime." + node.func.attr)
     if forbidden:
         raise CaptureOnlyError("capture-only runner contains forbidden control symbols: " + ", ".join(sorted(set(forbidden))))
-    if not {"start_container", "start_sim_first", "docker_exec", "cleanup"}.issubset(runtime_calls):
+    if not {"start_container", "start_mc_after_sim_topics", "docker_exec", "cleanup"}.issubset(runtime_calls):
         raise CaptureOnlyError("capture-only runner lacks the required isolated lifecycle calls")
     return {
         "status": "PASS_CAPTURE_ONLY_STATIC_CAPABILITY_AUDIT",
@@ -85,7 +87,7 @@ def audit_capture_only_source(path: Path) -> dict[str, Any]:
         "set_mc_input_source_requests": 0,
         "velocity_publishers_created": 0,
         "native_reset_dispatches": 0,
-        "mc_process_started": False,
+        "mc_process_started": True,
         "mujoco_step_calls_by_runner": 0,
     }
 
@@ -132,6 +134,36 @@ def stage_capture_tools(evidence: Path) -> dict[str, str]:
     return records
 
 
+def start_simulator_then_native_mc(runtime: BoundedRun) -> None:
+    """Launch the installed simulator/MC model-init handshake without actions.
+
+    The walking runner waits for a loaded model before it launches MC. The
+    failed first capture established that this precompiled delivery's model
+    creation itself needs the native MC/simulation startup handshake. Keep
+    that dependency explicit, then wait for the same evidence after MC starts.
+    """
+    runtime.docker_exec(
+        "launch_simulator_capture_only",
+        "ROBOTSIM_LIDAR_RAW_TRACE=/workspace/evidence/lidar_raw_frames.jsonl "
+        "ROBOTSIM_LIDAR_RAW_ENABLE_FILE=/workspace/evidence/lidar_raw_enable "
+        "ROBOTSIM_SIMULATOR_CFG_OVERRIDE=/workspace/evidence/lidar_overlay/simulator_lidar_overlay.yaml "
+        "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1",
+        timeout_s=4.0,
+        detached=True,
+    )
+    runtime.docker_exec(
+        "wait_simulator_module_ready_capture_only",
+        "timeout 12s bash -lc 'until grep -q \"MujocoSimModule Started Succeeded\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
+        timeout_s=13.0,
+    )
+    runtime.start_mc_after_sim_topics()
+    runtime.docker_exec(
+        "wait_lidar_model_loaded_after_native_mc_startup",
+        "timeout 12s bash -lc 'until grep -q \"Odom initialized: body_id=1, name=pelvis\" /workspace/evidence/mujoco-console.log && grep -q \"issue80_lidar_init ok\" /workspace/evidence/mujoco-console.log; do sleep 0.2; done'",
+        timeout_s=13.0,
+    )
+
+
 def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duration_s: float) -> dict[str, Any]:
     runtime = BoundedRun(_bounded_args(evidence, container, lidar_overlay_source))
     source = load_local01_scene_inputs(POSES, require_clean_commit=True)
@@ -153,12 +185,13 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
         "locomotion_velocity_publish_calls": 0,
         "native_reset_dispatches": 0,
         "waypoint_execution_calls": 0,
+        "vendor_mc_process_started_for_simulator_model_handshake": True,
     }
     try:
         runtime.stage_research_scripts()
         result["capture_tool_sha256"] = stage_capture_tools(evidence)
         runtime.start_container()
-        runtime.start_sim_first(start_mc=False)
+        start_simulator_then_native_mc(runtime)
         command = (
             "cd /workspace/evidence && timeout " + f"{duration_s + 3.0:g}s "
             "python3 issue80_capture_lidar_pointcloud.py "

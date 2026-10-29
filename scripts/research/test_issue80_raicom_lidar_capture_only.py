@@ -18,7 +18,7 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
         self.assertEqual(result["status"], "PASS_CAPTURE_ONLY_STATIC_CAPABILITY_AUDIT")
         self.assertEqual(result["set_mc_action_requests"], 0)
         self.assertEqual(result["native_reset_dispatches"], 0)
-        self.assertFalse(result["mc_process_started"])
+        self.assertTrue(result["mc_process_started"])
         self.assertTrue(set(result["runtime_methods"]).issubset(ALLOWED_RUNTIME_METHODS))
 
     def test_runner_source_does_not_invoke_mj_step_or_action_symbols(self) -> None:
@@ -27,7 +27,7 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
         calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
         self.assertNotIn("mj_step", calls)
         self.assertNotIn("dispatch_native_reset_button", calls)
-        self.assertIn("start_sim_first", calls)
+        self.assertIn("start_mc_after_sim_topics", calls)
         self.assertIn("docker_exec", calls)
 
     def test_runner_requests_bounded_full_point_capture(self) -> None:
