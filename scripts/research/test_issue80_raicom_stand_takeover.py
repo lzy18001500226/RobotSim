@@ -90,7 +90,6 @@ class StandingTests(unittest.TestCase):
             static=root/'static-map'
             static.mkdir()
             (static/'lidar_static_map.bin').write_bytes(b'map')
-            (static/'lidar_map_localization_trace.jsonl').write_text('{}\n',encoding='utf-8')
             evidence=root/'evidence'
             evidence.mkdir()
             args=argparse.Namespace(
@@ -101,7 +100,7 @@ class StandingTests(unittest.TestCase):
             runtime=Runtime()
             run.configure_runtime_overlay(runtime,{})
             self.assertEqual(runtime.lidar_overlay_dir,evidence/'lidar_overlay')
-            self.assertEqual(run.lidar_static_map_inputs['lidar_map_localization_trace.jsonl'],evidence/'lidar_map_localization_trace.jsonl')
+            self.assertEqual(set(run.lidar_static_map_inputs), {'lidar_static_map.bin'})
             self.assertTrue((runtime.lidar_overlay_dir/'x2_lidar_overlay.xml').is_file())
 
     def test_safe_request_requires_reset_effect_fresh_advancing_one_shot(self):

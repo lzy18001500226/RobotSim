@@ -223,7 +223,10 @@ class StandingRun(ResetOnlyRun):
             target_background=self.evidence/'lidar_map_background_capture.json'
             shutil.copyfile(background,target_background)
             static_inputs={}
-            for name in ('lidar_static_map.bin','lidar_map_localization_trace.jsonl'):
+            required_inputs = ('lidar_static_map.bin',) if background_arg is not None else (
+                'lidar_static_map.bin','lidar_map_localization_trace.jsonl',
+            )
+            for name in required_inputs:
                 input_path=static_source/name
                 if input_path.is_symlink() or not input_path.is_file():
                     raise RuntimeError('LiDAR static map source is incomplete')
@@ -307,7 +310,6 @@ class StandingRun(ResetOnlyRun):
                 'source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && '
                 'cd /workspace/evidence && timeout 7s python3 issue80_lidar_obstacle_diagnostic.py '
                 '--static-database /workspace/evidence/lidar_static_map.bin '
-                '--localization-trace /workspace/evidence/lidar_map_localization_trace.jsonl '
                 '--background-capture /workspace/evidence/lidar_map_background_capture.json '
                 '--trace /workspace/evidence/lidar_background_diagnostic_trace.jsonl '
                 '--result /workspace/evidence/lidar_background_diagnostic_result.json '

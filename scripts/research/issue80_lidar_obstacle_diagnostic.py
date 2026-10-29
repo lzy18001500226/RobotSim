@@ -64,7 +64,7 @@ class Diagnostic(Node):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--static-database", type=Path, required=True)
-    parser.add_argument("--localization-trace", type=Path, required=True)
+    parser.add_argument("--localization-trace", type=Path, default=None)
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--background-capture", type=Path, default=None)
@@ -85,13 +85,16 @@ def main(argv: list[str] | None = None) -> int:
     # A measured map-frame background deliberately supersedes the coarse
     # static-signature surface for novelty matching.  Avoid spending the
     # diagnostic's bounded capture window rasterizing a field it will not use.
-    static_surface = (
-        frozenset() if background else static_surface_cells_from_database(
+    if background:
+        static_surface = frozenset()
+    else:
+        if args.localization_trace is None:
+            parser.error("--localization-trace is required without --background-capture")
+        static_surface = static_surface_cells_from_database(
             candidates, ranges,
             static_to_map=calibration_from_localization_trace(args.localization_trace),
             grid=grid,
         )
-    )
     config = ObstaclePipelineConfig(
         grid=grid, static_surface=static_surface, static_route_blocked=frozenset(),
         start=grid.world_to_cell(-1.5, -1.5), goal=grid.world_to_cell(0.9, -1.5),

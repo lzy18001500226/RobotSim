@@ -16,7 +16,9 @@ class DiagnosticSourceTests(unittest.TestCase):
         self.assertNotIn("publish", calls)
         self.assertIn("--background-capture", source)
         self.assertIn("--topic", source)
-        self.assertIn("frozenset() if background", source)
+        self.assertIn("if background:", source)
+        self.assertIn("static_surface = frozenset()", source)
+        self.assertIn("is required without --background-capture", source)
 
 
 if __name__ == "__main__":
