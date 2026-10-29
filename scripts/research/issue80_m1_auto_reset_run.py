@@ -194,8 +194,6 @@ MC_SIM_CONFIG_DUMP_CONTAINER_PATH = (
 MC_SIM_GENERATED_DIRECTORY = (
     "/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim"
 )
-SIMULATOR_GENERATED_CONFIG_DIRECTORY = "/workspace/raicom2026/sim_mujoco/bin/cfg/tmp"
-SIMULATOR_LOG_DIRECTORY = "/workspace/raicom2026/sim_mujoco/bin/log"
 MC_SIM_CONFIG_RELATIVE = Path(
     "mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml"
 )
@@ -3133,15 +3131,6 @@ class BoundedRun:
         if bool(getattr(self.args, "mc_sim_generated_tmpfs", False)):
             cmd += ["--tmpfs", MC_SIM_GENERATED_DIRECTORY
                     + ":rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755,size=8m"]
-        if bool(getattr(self.args, "simulator_generated_tmpfs", False)):
-            # Keep only the simulator's generated configuration and log
-            # directories writable. The vendor runtime tree stays read-only.
-            cmd += [
-                "--tmpfs", SIMULATOR_GENERATED_CONFIG_DIRECTORY
-                + ":rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755,size=8m",
-                "--tmpfs", SIMULATOR_LOG_DIRECTORY
-                + ":rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0755,size=8m",
-            ]
         if self.local01_scene_bundle is not None:
             if not isinstance(self.local01_scene_source, Mapping):
                 raise RuntimeError("Local01 scene bundle lacks pinned source provenance")

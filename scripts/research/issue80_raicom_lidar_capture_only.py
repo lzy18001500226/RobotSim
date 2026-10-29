@@ -30,8 +30,6 @@ from issue80_m1_auto_reset_run import (
     MC_SIM_GENERATED_DIRECTORY,
     REPO,
     RUNTIME,
-    SIMULATOR_GENERATED_CONFIG_DIRECTORY,
-    SIMULATOR_LOG_DIRECTORY,
 )
 from issue80_raicom_reset_only import _stage_mc_config_dump_writeback
 
@@ -124,7 +122,7 @@ def _bounded_args(evidence: Path, container: str, lidar_overlay_source: Path) ->
         synchronized_paused_initialization=False, static_nominal_start_initialization=False,
         mc_prearm_before_simulator=False, direct_stand_from_passive=False,
         raicom_lidar_overlay_source=str(lidar_overlay_source), raicom_lidar_static_map_source=None,
-        runtime_readonly=True, mc_sim_generated_tmpfs=True, simulator_generated_tmpfs=True,
+        runtime_readonly=True, mc_sim_generated_tmpfs=True,
         native_mjdata_capture=False, native_mjdata_capture_interval_steps=0,
         forward_speed=0.0, pulse_duration=0.0,
     )
@@ -141,40 +139,6 @@ def stage_capture_tools(evidence: Path) -> dict[str, str]:
         shutil.copyfile(source, target)
         records[source.name] = _sha256(target)
     return records
-
-
-def stage_simulator_generated_config(evidence: Path) -> dict[str, Any]:
-    """Seed the simulator's existing generated-config directory in a tmpfs.
-
-    These files are delivery-generated configuration intermediates, not robot
-    models or controller policy. Their source hashes are recorded before a
-    narrow container tmpfs hides the otherwise read-only runtime directory.
-    """
-    source = RUNTIME / "sim_mujoco/bin/cfg/tmp"
-    if source.is_symlink() or not source.is_dir():
-        raise CaptureOnlyError("simulator generated-config source directory is missing or unsafe")
-    target = evidence / "sim_runtime_writeback/cfg_seed"
-    target.mkdir(parents=True, exist_ok=False)
-    copied: dict[str, str] = {}
-    for item in sorted(source.glob("*.yaml")):
-        if item.is_symlink() or not item.is_file():
-            raise CaptureOnlyError("simulator generated-config source contains unsafe entry")
-        output = target / item.name
-        shutil.copyfile(item, output)
-        copied[item.name] = _sha256(output)
-    if not copied:
-        raise CaptureOnlyError("simulator generated-config source has no YAML seed")
-    manifest = {
-        "schema": "robotsim.issue80.simulator-generated-config-stage.v1",
-        "source": str(source),
-        "source_file_sha256": {item.name: _sha256(item) for item in sorted(source.glob("*.yaml"))},
-        "staged_file_sha256": copied,
-        "container_target": SIMULATOR_GENERATED_CONFIG_DIRECTORY,
-        "runtime_tree_readonly": True,
-        "permitted_write_scope": [SIMULATOR_GENERATED_CONFIG_DIRECTORY, SIMULATOR_LOG_DIRECTORY],
-    }
-    (evidence / "sim_runtime_writeback_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    return manifest
 
 
 def start_simulator_then_native_mc(runtime: BoundedRun) -> None:
@@ -217,7 +181,6 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
     runtime.local01_scene_source = source
     runtime.local01_scene_readonly_mounts = []
     staged_mc_dump, mc_writeback_manifest = _stage_mc_config_dump_writeback(evidence)
-    sim_writeback_manifest = stage_simulator_generated_config(evidence)
     runtime.runtime_writeback_mounts = [(staged_mc_dump, MC_SIM_CONFIG_DUMP_CONTAINER_PATH)]
     result: dict[str, Any] = {
         "schema": "robotsim.issue80.raicom-lidar-capture-only.v1",
@@ -233,7 +196,6 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
         "waypoint_execution_calls": 0,
         "vendor_mc_process_started_for_simulator_model_handshake": True,
         "mc_runtime_writeback": mc_writeback_manifest,
-        "simulator_runtime_writeback": sim_writeback_manifest,
     }
     try:
         runtime.stage_research_scripts()
@@ -243,12 +205,6 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
             "seed_isolated_generated_sim_config_capture_only",
             "cp /workspace/evidence/mc_runtime_writeback/sim_seed/*.yaml "
             + MC_SIM_GENERATED_DIRECTORY + "/",
-            timeout_s=2.0,
-        )
-        runtime.docker_exec(
-            "seed_isolated_simulator_generated_config_capture_only",
-            "cp /workspace/evidence/sim_runtime_writeback/cfg_seed/*.yaml "
-            + SIMULATOR_GENERATED_CONFIG_DIRECTORY + "/",
             timeout_s=2.0,
         )
         start_simulator_then_native_mc(runtime)
