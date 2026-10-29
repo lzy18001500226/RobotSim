@@ -1537,6 +1537,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 command[-1] += " --native-x2-timestep"
             if getattr(args, "raicom_native_mjdata_route_feedback", False):
                 command[-1] += " --raicom-native-mjdata-route-feedback"
+        elif bool(getattr(args, "raicom_lidar_obstacle_route", False)):
+            command[-1] += " --native-x2-timestep"
         if getattr(args, "raicom_low_cruise_profile", False):
             command[-1] += " --raicom-low-cruise-profile"
         if getattr(args, "raicom_zero_forward_heading_acquisition", False):
