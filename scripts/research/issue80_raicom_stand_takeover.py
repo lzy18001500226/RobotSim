@@ -37,6 +37,7 @@ LIDAR_OBSTACLE_DIAGNOSTIC=Path(__file__).with_name('issue80_lidar_obstacle_diagn
 LIDAR_MAP_LOCALIZER=Path(__file__).with_name('issue80_lidar_map_localizer.py')
 LIDAR_STATIC_SURFACE_AUDIT=Path(__file__).with_name('issue80_lidar_static_surface_audit.py')
 LIDAR_OBSTACLE_REPLAY=Path(__file__).with_name('issue80_lidar_obstacle_replay.py')
+LIDAR_RAW_BRIDGE=Path(__file__).with_name('issue80_lidar_raw_bridge.py')
 RAW_LIDAR_SCHEMA='robotsim.issue80.lidar-raw.v1'
 
 
@@ -199,7 +200,7 @@ class StandingRun(ResetOnlyRun):
         staged_sources=(
             LIDAR_CAPTURE,LIDAR_MAP_FIELD,LIDAR_OBSTACLE_LAYER,
             LIDAR_OBSTACLE_PIPELINE,LIDAR_OBSTACLE_DIAGNOSTIC,
-            LIDAR_MAP_LOCALIZER,LIDAR_STATIC_SURFACE_AUDIT,LIDAR_OBSTACLE_REPLAY,
+            LIDAR_MAP_LOCALIZER,LIDAR_STATIC_SURFACE_AUDIT,LIDAR_OBSTACLE_REPLAY,LIDAR_RAW_BRIDGE,
         )
         for source_file in staged_sources:
             if source_file.is_symlink() or not source_file.is_file():
