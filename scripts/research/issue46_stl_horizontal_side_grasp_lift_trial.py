@@ -14,6 +14,7 @@ import json
 import math
 from pathlib import Path
 import sys
+import time
 
 import imageio_ffmpeg
 import mujoco
@@ -165,6 +166,9 @@ def main() -> None:
     parser.add_argument("--contact-path-approach-bias-mm", type=float)
     parser.add_argument("--arm-gain-scale", type=float, default=1.0)
     parser.add_argument("--execute-dynamics", action="store_true")
+    parser.add_argument("--live-viewer", action="store_true", help="show the actual mj_step episode in the native MuJoCo GLFW viewer")
+    parser.add_argument("--viewer-final-hold-s", type=float, default=0.0, help="keep the actual final physics state visible after the episode")
+    parser.add_argument("--record-video", action="store_true", help="also record an MP4; omitted for native interactive review")
     args = parser.parse_args()
     if not args.freeze_record.is_file() or not args.contact_scan.is_file() or not OFFICIAL_URDF.is_file():
         raise SystemExit("freeze record, contact scan, or pinned official URDF is missing")
@@ -184,6 +188,8 @@ def main() -> None:
         raise SystemExit("contact-maintaining path and its selected approach bias must be supplied together")
     if not 1.0 <= args.arm_gain_scale <= 4.0:
         raise SystemExit("arm gain scale must lie in [1, 4]")
+    if args.viewer_final_hold_s < 0.0 or args.viewer_final_hold_s > 600.0:
+        raise SystemExit("viewer final hold must lie in [0, 600] seconds")
     frozen = json.loads(args.freeze_record.read_text(encoding="utf-8"))
     scan = json.loads(args.contact_scan.read_text(encoding="utf-8"))
     if frozen.get("baseline_id") != "X2-OmniPicker-STL-Horizontal-Side-Grasp-Visual-v1" or scan.get("classification") not in {"STATIC_IK_CONTACT_SCREENING", "STATIC_IK_AZIMUTH_CONTACT_SCREENING"}:
@@ -371,16 +377,23 @@ def main() -> None:
     reference_model = mujoco.MjModel.from_xml_path(str(overlay_scene))
     reference_model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_CONTACT)
     trace = (output / "trace.jsonl").open("x", encoding="utf-8")
-    renderer = mujoco.Renderer(model, height=480, width=640)
-    camera = mujoco.MjvCamera()
-    camera.lookat[:] = [1.43, -0.98, 0.80]
-    camera.distance = 1.25
-    camera.azimuth = 160.0
-    camera.elevation = -8.0
-    writer = imageio_ffmpeg.write_frames(
-        str(output / "actual_mujoco_physics.mp4"), (640, 480), fps=25, quality=7, codec="libx264", pix_fmt_in="rgb24", pix_fmt_out="yuv420p", output_params=["-preset", "ultrafast", "-movflags", "+faststart"]
-    )
-    writer.send(None)
+    renderer = camera = writer = None
+    if args.record_video:
+        renderer = mujoco.Renderer(model, height=480, width=640)
+        camera = mujoco.MjvCamera()
+        camera.lookat[:] = [1.43, -0.98, 0.80]
+        camera.distance = 1.25
+        camera.azimuth = 160.0
+        camera.elevation = -8.0
+        writer = imageio_ffmpeg.write_frames(
+            str(output / "actual_mujoco_physics.mp4"), (640, 480), fps=25, quality=7, codec="libx264", pix_fmt_in="rgb24", pix_fmt_out="yuv420p", output_params=["-preset", "ultrafast", "-movflags", "+faststart"]
+        )
+        writer.send(None)
+    viewer = None
+    if args.live_viewer:
+        import mujoco.viewer as mujoco_viewer
+
+        viewer = mujoco_viewer.launch_passive(model, data)
     preload_duration = args.force_close_duration_s if args.force_close_torque_nm > 0.0 else BASE_STAGE_DURATIONS[1][1]
     lift_duration = 3.0 * planned_lift_m / 0.050
     stage_plan = (("INITIAL_SETTLE", 0.50), ("CLOSE", args.close_duration_s), ("PRELOAD", preload_duration), ("LIFT_50MM", lift_duration), BASE_STAGE_DURATIONS[3])
@@ -453,7 +466,7 @@ def main() -> None:
             if not contacts["table_contacts"] and metrics["first_table_clear_step"] is None:
                 metrics["first_table_clear_step"] = step + 1
             trace.write(json.dumps({"step": step + 1, "time_s": float(data.time), "stage": stage, "command_percent": command, "root_q_rad": root_q, "root_error_rad": root_error, "force_close_active": force_close_active, "equality_error_rad": equality, "arm_error_rad": arm_error, "pad_force_norm_N": contacts["pad_force_norm_N"], "table_force_on_cylinder_world_N": contacts["table_force_on_cylinder_world_N"], "nonpad_cylinder_contacts": contacts["nonpad_cylinder_contacts"], "cylinder_com_world_m": data.xipos[cylinder].tolist(), "cylinder_com_rise_m": com_rise, "gripper_base_rise_m": base_rise, "right_root_control": details["motor_right_claw_stl_force"], "actuator_force": data.actuator_force.tolist()}, ensure_ascii=False) + "\n")
-            if step % 40 == 0:
+            if renderer is not None and camera is not None and writer is not None and step % 40 == 0:
                 renderer.update_scene(data, camera=camera)
                 writer.send(np.ascontiguousarray(renderer.render(), dtype=np.uint8))
             if saturation:
@@ -491,12 +504,26 @@ def main() -> None:
                 break
             mujoco.mj_step(model, data)
             steps += 1
+            if viewer is not None:
+                if not viewer.is_running():
+                    failure = {"gate": "VIEWER_CLOSED", "step": step, "stage": stage}
+                    break
+                viewer.sync()
+                time.sleep(float(model.opt.timestep))
         if failure is None and completed and stages[current_stage] == "NOT RUN":
             stages[current_stage] = "PASS"
     finally:
         trace.close()
-        writer.close()
-        renderer.close()
+        if viewer is not None:
+            end_time = time.monotonic() + args.viewer_final_hold_s
+            while viewer.is_running() and time.monotonic() < end_time:
+                viewer.sync()
+                time.sleep(0.02)
+            viewer.close()
+        if writer is not None:
+            writer.close()
+        if renderer is not None:
+            renderer.close()
     successful_lift = completed and failure is None and metrics["max_com_rise_m"] >= 0.050 and metrics["first_table_clear_step"] is not None
     result = {
         "schema": "robotsim.issue46.stl.horizontal-side-grasp-physical-trial.v1",
@@ -513,6 +540,8 @@ def main() -> None:
         "arm_control_overlay": {"id": "STL-ArmPD-SIM-v1" if args.arm_gain_scale != 1.0 else "NONE", "gain_scale": args.arm_gain_scale},
         "contact_maintaining_path": None if contact_path is None else {"path": str(args.contact_maintaining_path), "sha256": sha256(args.contact_maintaining_path), "approach_bias_mm": args.contact_path_approach_bias_mm, "waypoint_count": len(path_waypoints or [])},
         "planned_gripper_lift_m": planned_lift_m,
+        "viewer": {"live_viewer": args.live_viewer, "final_hold_s": args.viewer_final_hold_s},
+        "record_video": args.record_video,
         "preflight": preflight,
         "stages": stages,
         "metrics": metrics,
