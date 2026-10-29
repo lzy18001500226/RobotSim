@@ -63,6 +63,9 @@ def main() -> None:
     truth = np.asarray(input_record["T_camera_object_truth"], dtype=float)
     prediction = np.loadtxt(args.foundationpose_pose).reshape(4, 4)
     metrics = pose_metrics(truth, prediction)
+    prompt_source = str(sam2.get("prompt_source", ""))
+    yolo_proposal = prompt_source.startswith("YOLO_")
+    yolo_label = str(sam2.get("yolo_label", "")) if yolo_proposal else None
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="x2-foundationpose-static-compare").native_path
     record = {
         "schema": "robotsim.issue46.foundationpose-static-compare.v1",
@@ -83,7 +86,8 @@ def main() -> None:
             "FOUNDATIONPOSE_GPU_OUTPUT": "PASS",
             "SAM2_MASK_OUTPUT": "PASS",
             "OPTICAL_FRAME_CONVENTION": "PASS",
-            "YOLO_DETECTION": "NOT_RUN",
+            "YOLO_BOX_PROPOSAL": "PASS_GEOMETRIC_ONLY" if yolo_proposal else "NOT_RUN",
+            "YOLO_BOTTLE_SEMANTICS": "PASS" if yolo_label == "bottle" else ("FAIL_LABEL_" + yolo_label.upper() if yolo_label else "NOT_RUN"),
             "POSE_QUALIFIED_FOR_WHOLE_BODY_IK": "NOT_QUALIFIED",
         },
         "limitations": [

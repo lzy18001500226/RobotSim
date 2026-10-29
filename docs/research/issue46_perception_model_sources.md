@@ -72,6 +72,18 @@ known upright cylinder, visible top plane, calibrated optical transform; it is
 not a general-object pose estimator and it does not make the truth-box prompt
 into a detector result.
 
+The same chain was then run against the **TABLE_APPROACH** static overlay rather
+than the earlier fixed-base fixture.  YOLOv8x produced one geometrically
+accurate target proposal but called the blue primitive cylinder `vase` (0.569),
+not `bottle`; SAM2 using that unmodified YOLO box achieved 0.99545 mask IoU.
+FoundationPose centre error was 1.992 mm and the upright-cylinder refinement
+was 0.638 mm.  That estimated centre, not the scene truth, was then supplied
+to the TABLE_APPROACH static IK screen, which found 15 dual-distal-pad,
+robot-table-clear candidates.  This establishes a `YOLO box -> SAM2 ->
+FoundationPose -> known-cylinder refinement -> static IK` **geometric** chain,
+not a semantic bottle-detection PASS, dynamic balance result, or physical
+grasp result.
+
 The first official GraspNet `checkpoint-kn.tar` URL returned an upstream
 Google Drive quota refusal during retrieval.  AnyGrasp also remains unavailable
 until its upstream license registration issues a machine license.  Neither
