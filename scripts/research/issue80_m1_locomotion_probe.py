@@ -3620,6 +3620,25 @@ class FocusedM1Diagnostic(Node):
                     "staged_path": str(route_config_path),
                     "parent_manifest_verified": True,
                 }
+            elif route_config_mode and lidar_map_route_mode:
+                route_config_path = Path(self.args.route_config)
+                manifest_path = evidence_root / "lidar_route_live_input.json"
+                workcell_path = evidence_root / "lidar_route_live_workcell_geometry.json"
+                if any(path.is_symlink() or not path.is_file() for path in (
+                    route_config_path, manifest_path, workcell_path,
+                )):
+                    raise ValueError("LiDAR route live inputs/preflight manifests are missing or unsafe")
+                route_config_sha256 = hashlib.sha256(route_config_path.read_bytes()).hexdigest()
+                input_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                workcell = json.loads(workcell_path.read_text(encoding="utf-8"))
+                route = RouteSpec.load(route_config_path)
+                if (
+                    input_manifest.get("source_sha256") != route_config_sha256
+                    or input_manifest.get("runtime_lidar_reconfirmation_passed") is not True
+                    or workcell.get("status") != "PASS"
+                    or route.frame_id != "map"
+                ):
+                    raise ValueError("LiDAR route live provenance/preflight does not match")
             elif table_approach_mission_mode:
                 static_path = evidence_root / "local01_scene" / "static_scene_preflight.json"
                 bundle_path = evidence_root / "local01_scene" / "runtime_bundle_manifest.json"
