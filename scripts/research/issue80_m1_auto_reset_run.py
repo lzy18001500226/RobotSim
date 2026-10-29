@@ -1453,6 +1453,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 if (
                     getattr(args, "raicom_vendor_example_forward_baseline", False)
                     or getattr(args, "raicom_vendor_table_approach", False)
+                    or getattr(args, "raicom_lidar_obstacle_route", False)
                 ) else "0.2"
             )
         )

@@ -3214,7 +3214,14 @@ class FocusedM1Diagnostic(Node):
             vendor_example_forward_baseline_mode or vendor_table_approach_mode
         )
         vendor_example_planar_speed_guard_m_s = (
-            0.8 if vendor_velocity_profile_mode else 0.2
+            # The source-grounded vendor 0.20 m/s direct truth run reached
+            # TABLE_APPROACH with a real gait.  The original 0.20 m/s root
+            # speed ceiling is below its normal transient gait envelope and
+            # repeatedly aborted a 0.105 m/s LiDAR route before progress.
+            # This scoped diagnostic keeps every posture/joint/collision and
+            # map/corridor gate; only its root-speed envelope uses the
+            # already-reviewed vendor-gait 0.8 m/s bound.
+            0.8 if (vendor_velocity_profile_mode or lidar_map_route_mode) else 0.2
         )
         waypoint_b_only = bool(
             getattr(self.args, "route_waypoint_b_only", False)
@@ -9253,7 +9260,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         getattr(args, "raicom_vendor_table_approach", False)
     )
     expected_observed_planar_speed_guard_m_s = (
-        0.8 if (vendor_example_forward_baseline or vendor_table_approach) else 0.2
+        0.8 if (vendor_example_forward_baseline or vendor_table_approach or lidar_map_route) else 0.2
     )
     table_approach_mission = bool(getattr(args, "table_approach_mission", False))
     aligned_start_table_approach = bool(
