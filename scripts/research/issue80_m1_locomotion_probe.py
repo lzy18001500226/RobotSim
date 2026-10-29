@@ -6207,7 +6207,9 @@ class FocusedM1Diagnostic(Node):
                         allow_raicom_low_cruise_source_activation=bool(
                             getattr(self.args, "raicom_low_cruise_profile", False)
                         ) or lidar_map_route_mode,
-                        allow_vendor_example_source_activation=vendor_velocity_profile_mode,
+                        allow_vendor_example_source_activation=(
+                            vendor_velocity_profile_mode or lidar_map_route_mode
+                        ),
                     )
                     # The complete physical-stop window is fresh when the
                     # bounded motion helper returns.  Preserve that actual
