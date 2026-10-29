@@ -5,6 +5,8 @@ import ast
 import unittest
 from pathlib import Path
 
+from issue80_lidar_map_obstacle_field import classify_map_frame_capture
+
 
 class LidarCaptureTests(unittest.TestCase):
     def test_capture_has_no_command_or_service_client_creation(self) -> None:
@@ -18,8 +20,18 @@ class LidarCaptureTests(unittest.TestCase):
         self.assertIn("create_subscription", calls)
         self.assertNotIn("create_publisher", calls)
         self.assertNotIn("create_client", calls)
-        self.assertIn("BLOCKED_EMPTY_OR_MISSING_POINTCLOUD", source)
-        self.assertIn("PASS_NONEMPTY_POINTCLOUD", source)
+        self.assertIn("classify_map_frame_capture", source)
+        self.assertIn("--expected-frame-id", source)
+
+    def test_capture_requires_requested_map_frame(self) -> None:
+        self.assertEqual(
+            classify_map_frame_capture(message_count=1, nonempty_message_count=1, last_frame_id="map", expected_frame_id="map"),
+            "PASS_NONEMPTY_POINTCLOUD",
+        )
+        self.assertEqual(
+            classify_map_frame_capture(message_count=1, nonempty_message_count=1, last_frame_id="lidar", expected_frame_id="map"),
+            "BLOCKED_POINTCLOUD_FRAME_MISMATCH",
+        )
 
 
 if __name__ == "__main__":

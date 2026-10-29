@@ -14,6 +14,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2
+from issue80_lidar_map_obstacle_field import classify_map_frame_capture
 
 
 TOPIC = "/aima/sim/lidar/points"
@@ -83,6 +84,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--duration-s", type=float, default=8.0)
+    parser.add_argument(
+        "--expected-frame-id", default=None,
+        help="optional exact PointCloud2 header.frame_id contract, e.g. map",
+    )
     args = parser.parse_args()
     if args.output.exists():
         parser.error("output must be new")
@@ -94,12 +99,18 @@ def main() -> int:
         deadline = time.monotonic() + args.duration_s
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.05)
-        status = "PASS_NONEMPTY_POINTCLOUD" if node.nonempty_count > 0 else "BLOCKED_EMPTY_OR_MISSING_POINTCLOUD"
+        status = classify_map_frame_capture(
+            message_count=node.count,
+            nonempty_message_count=node.nonempty_count,
+            last_frame_id=None if node.last is None else str(node.last.get("frame_id", "")),
+            expected_frame_id=args.expected_frame_id,
+        )
         result = {
             "schema": "robotsim.issue80.raicom-lidar-capture.v1",
             "classification": "SIMULATION_ONLY_RAYCASTER_POINTCLOUD_CAPTURE",
             "status": status,
             "topic": TOPIC,
+            "expected_frame_id": args.expected_frame_id,
             "duration_s": args.duration_s,
             "message_count": node.count,
             "nonempty_message_count": node.nonempty_count,

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import struct
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -43,6 +44,57 @@ class MapPoint:
     def __post_init__(self) -> None:
         if not all(math.isfinite(value) for value in (self.x_m, self.y_m, self.z_m)):
             raise ObstacleLayerError("map-frame point must be finite")
+
+
+def classify_map_frame_capture(
+    *,
+    message_count: int,
+    nonempty_message_count: int,
+    last_frame_id: str | None,
+    expected_frame_id: str | None,
+) -> str:
+    """Classify capture completeness without accepting a wrong coordinate frame."""
+    if message_count <= 0 or nonempty_message_count <= 0 or last_frame_id is None:
+        return "BLOCKED_EMPTY_OR_MISSING_POINTCLOUD"
+    if expected_frame_id is not None and last_frame_id != expected_frame_id:
+        return "BLOCKED_POINTCLOUD_FRAME_MISMATCH"
+    return "PASS_NONEMPTY_POINTCLOUD"
+
+
+def decode_map_xyz(
+    *,
+    frame_id: str,
+    data: bytes,
+    width: int,
+    height: int,
+    point_step: int,
+    field_offsets: dict[str, int],
+    expected_frame_id: str = "map",
+) -> tuple[MapPoint, ...]:
+    """Decode finite XYZ points only after checking the declared map frame.
+
+    This accepts primitive PointCloud2 layout data rather than ROS message
+    types, keeping perception math unit-testable.  An unexpected frame label
+    is a fail-closed condition, not a harmless visualization difference.
+    """
+    if frame_id != expected_frame_id:
+        raise ObstacleLayerError(f"PointCloud2 frame_id must be {expected_frame_id!r}, got {frame_id!r}")
+    if width < 0 or height < 0 or point_step < 12:
+        raise ObstacleLayerError("PointCloud2 dimensions or point_step are invalid")
+    if not all(axis in field_offsets for axis in ("x", "y", "z")):
+        raise ObstacleLayerError("PointCloud2 lacks x/y/z fields")
+    offsets = tuple(field_offsets[axis] for axis in ("x", "y", "z"))
+    if any(not isinstance(offset, int) or offset < 0 or offset + 4 > point_step for offset in offsets):
+        raise ObstacleLayerError("PointCloud2 x/y/z field offsets are invalid")
+    result: list[MapPoint] = []
+    for index in range(width * height):
+        base = index * point_step
+        if base + point_step > len(data):
+            raise ObstacleLayerError("PointCloud2 data is shorter than its declared dimensions")
+        values = tuple(struct.unpack_from("<f", data, base + offset)[0] for offset in offsets)
+        if all(math.isfinite(value) for value in values):
+            result.append(MapPoint(*values))
+    return tuple(result)
 
 
 def apply_planar_transform(transform: Pose2D, point_x_m: float, point_y_m: float) -> tuple[float, float]:

@@ -12,6 +12,8 @@ import numpy as np
 from issue80_lidar_map_obstacle_field import (
     MapPoint,
     apply_planar_transform,
+    classify_map_frame_capture,
+    decode_map_xyz,
     novel_map_points,
     static_surface_cells_from_database,
     surface_neighborhood,
@@ -84,6 +86,29 @@ class MapObstacleFieldTests(unittest.TestCase):
             trace.write_text(json.dumps({"not_calibration": True}) + "\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "no static-signature-to-map calibration"):
                 calibration_from_localization_trace(trace)
+
+    def test_map_pointcloud_decoder_requires_map_frame_and_complete_layout(self) -> None:
+        payload = struct.pack("<fff", 1.0, -2.0, 0.5) + struct.pack("<fff", float("nan"), 0.0, 0.0)
+        points = decode_map_xyz(
+            frame_id="map", data=payload, width=2, height=1, point_step=12,
+            field_offsets={"x": 0, "y": 4, "z": 8},
+        )
+        self.assertEqual(points, (MapPoint(1.0, -2.0, 0.5),))
+        with self.assertRaisesRegex(Exception, "frame_id"):
+            decode_map_xyz(
+                frame_id="lidar_chest_front", data=payload, width=2, height=1, point_step=12,
+                field_offsets={"x": 0, "y": 4, "z": 8},
+            )
+
+    def test_capture_classification_requires_expected_frame(self) -> None:
+        self.assertEqual(
+            classify_map_frame_capture(message_count=1, nonempty_message_count=1, last_frame_id="map", expected_frame_id="map"),
+            "PASS_NONEMPTY_POINTCLOUD",
+        )
+        self.assertEqual(
+            classify_map_frame_capture(message_count=1, nonempty_message_count=1, last_frame_id="lidar", expected_frame_id="map"),
+            "BLOCKED_POINTCLOUD_FRAME_MISMATCH",
+        )
 
 
 if __name__ == "__main__":
