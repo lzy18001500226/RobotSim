@@ -40,6 +40,17 @@ CAPTURE = Path(__file__).with_name("issue80_capture_lidar_pointcloud.py")
 MAP_FIELD = Path(__file__).with_name("issue80_lidar_map_obstacle_field.py")
 MAX_RUNTIME_S = 30.0
 MAX_CAPTURE_S = 12.0
+RUNTIME_IMMUTABLE_RELATIVE_ROOTS = (
+    Path("sim_mujoco/configuration/robot/lx2501_3_t2d5"),
+    Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5"),
+)
+RUNTIME_IMMUTABLE_FILES = (
+    Path("sim_mujoco/bin/aima-sim-app"),
+    Path("mc/bin/aima-mc-app-main"),
+)
+RUNTIME_GENERATED_PREFIXES = (
+    Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim"),
+)
 
 FORBIDDEN_NAMES = frozenset({
     "SetMcAction", "SetMcInputSource", "McLocomotionVelocity", "RouteMotionBridge",
@@ -113,7 +124,9 @@ def _host_preflight(container: str) -> dict[str, Any]:
     return {"status": "PASS_HOST_PREFLIGHT", "display": ":0", "active_container_count": 0, "container": container}
 
 
-def _bounded_args(evidence: Path, container: str, lidar_overlay_source: Path) -> argparse.Namespace:
+def _bounded_args(
+    evidence: Path, container: str, lidar_overlay_source: Path, *, runtime_write_comparison: bool,
+) -> argparse.Namespace:
     """Construct only the BoundedRun fields needed for a simulator-only launch."""
     return argparse.Namespace(
         evidence_dir=str(evidence), container=container, max_runtime_s=MAX_RUNTIME_S,
@@ -123,12 +136,46 @@ def _bounded_args(evidence: Path, container: str, lidar_overlay_source: Path) ->
         synchronized_paused_initialization=False, static_nominal_start_initialization=False,
         mc_prearm_before_simulator=False, direct_stand_from_passive=False,
         raicom_lidar_overlay_source=str(lidar_overlay_source), raicom_lidar_static_map_source=None,
-        runtime_readonly=True, mc_sim_generated_tmpfs=True,
+        runtime_readonly=not runtime_write_comparison, mc_sim_generated_tmpfs=True,
         # This is the already-validated read-only LD_PRELOAD capture used by
         # the successful LiDAR baseline. It does not produce control signals.
         native_mjdata_capture=True, native_mjdata_capture_interval_steps=10,
         forward_speed=0.0, pulse_duration=0.0,
     )
+
+
+def snapshot_runtime_immutable_inputs() -> dict[str, Any]:
+    """Hash all source/model/policy inputs before/after an opt-in RW comparison."""
+    records: dict[str, str] = {}
+    for relative_root in RUNTIME_IMMUTABLE_RELATIVE_ROOTS:
+        root = RUNTIME / relative_root
+        if root.is_symlink() or not root.is_dir():
+            raise CaptureOnlyError(f"runtime immutable root missing or unsafe: {relative_root}")
+        for path in sorted(root.rglob("*")):
+            relative_path = path.relative_to(RUNTIME)
+            if any(relative_path == generated or generated in relative_path.parents for generated in RUNTIME_GENERATED_PREFIXES):
+                continue
+            if path.is_symlink():
+                raise CaptureOnlyError(f"runtime immutable root contains symlink: {path}")
+            if path.is_file():
+                records[str(relative_path)] = _sha256(path)
+    for relative_path in RUNTIME_IMMUTABLE_FILES:
+        path = RUNTIME / relative_path
+        if path.is_symlink() or not path.is_file():
+            raise CaptureOnlyError(f"runtime immutable file missing or unsafe: {relative_path}")
+        records[str(relative_path)] = _sha256(path)
+    return {
+        "schema": "robotsim.issue80.runtime-write-comparison-inputs.v1",
+        "runtime": str(RUNTIME),
+        "immutable_file_sha256": records,
+        "immutable_file_count": len(records),
+        "permitted_generated_write_locations": [
+            "sim_mujoco/bin/log",
+            "sim_mujoco/bin/cfg/tmp",
+            "mc/bin/log",
+            "mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim",
+        ],
+    }
 
 
 def stage_capture_tools(evidence: Path) -> dict[str, str]:
@@ -174,8 +221,12 @@ def start_simulator_then_native_mc(runtime: BoundedRun) -> None:
     )
 
 
-def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duration_s: float) -> dict[str, Any]:
-    runtime = BoundedRun(_bounded_args(evidence, container, lidar_overlay_source))
+def run_once(
+    evidence: Path, container: str, lidar_overlay_source: Path, duration_s: float, *, runtime_write_comparison: bool,
+) -> dict[str, Any]:
+    runtime = BoundedRun(_bounded_args(
+        evidence, container, lidar_overlay_source, runtime_write_comparison=runtime_write_comparison,
+    ))
     source = load_local01_scene_inputs(POSES, require_clean_commit=True)
     # BoundedRun needs this mount solely because the existing LiDAR overlay
     # references the pinned room by /workspace/raicom_scene_source.  No route
@@ -199,7 +250,11 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
         "waypoint_execution_calls": 0,
         "vendor_mc_process_started_for_simulator_model_handshake": True,
         "mc_runtime_writeback": mc_writeback_manifest,
+        "runtime_write_comparison": runtime_write_comparison,
     }
+    before_runtime = snapshot_runtime_immutable_inputs() if runtime_write_comparison else None
+    if before_runtime is not None:
+        (evidence / "runtime_immutable_before.json").write_text(json.dumps(before_runtime, indent=2) + "\n", encoding="utf-8")
     try:
         runtime.stage_research_scripts()
         runtime.prepare_native_mjdata_capture()
@@ -235,6 +290,22 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
         runtime.cleanup()
         runtime.apply_container_teardown_gate(result)
         result["cleanup"] = runtime.cleanup_evidence
+        if before_runtime is not None:
+            after_runtime = snapshot_runtime_immutable_inputs()
+            changed = {
+                path: {"before": before_runtime["immutable_file_sha256"].get(path), "after": after_runtime["immutable_file_sha256"].get(path)}
+                for path in sorted(set(before_runtime["immutable_file_sha256"]) | set(after_runtime["immutable_file_sha256"]))
+                if before_runtime["immutable_file_sha256"].get(path) != after_runtime["immutable_file_sha256"].get(path)
+            }
+            comparison = {"before": before_runtime, "after": after_runtime, "changed_immutable_files": changed}
+            (evidence / "runtime_immutable_comparison.json").write_text(json.dumps(comparison, indent=2) + "\n", encoding="utf-8")
+            result["runtime_immutable_comparison"] = {
+                "status": "PASS_NO_IMMUTABLE_RUNTIME_CHANGE" if not changed else "FAIL_IMMUTABLE_RUNTIME_CHANGED",
+                "changed_immutable_files": changed,
+            }
+            if changed:
+                result["status"] = "BLOCKED"
+                result["failure"] = "runtime write comparison changed immutable source/model/policy input"
     return result
 
 
@@ -244,6 +315,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lidar-overlay-source", type=Path, required=True)
     parser.add_argument("--evidence-parent", type=Path, default=REPO / "reviews/issue-80")
     parser.add_argument("--duration-s", type=float, default=8.0)
+    parser.add_argument(
+        "--allow-runtime-write-comparison", action="store_true",
+        help="one logged full-runtime RW comparison; source/model/policy hashes must remain unchanged",
+    )
     args = parser.parse_args(argv)
     try:
         args.attempt_id = _parse_uuid(args.attempt_id)
@@ -263,7 +338,10 @@ def main(argv: list[str] | None = None) -> int:
             "schema": "robotsim.issue80.raicom-lidar-capture-only-preflight.v1",
             "attempt_id": args.attempt_id, "source_audit": source_audit, "host": host,
         }, indent=2) + "\n", encoding="utf-8")
-        result = run_once(evidence, container, overlay_source, args.duration_s)
+        result = run_once(
+            evidence, container, overlay_source, args.duration_s,
+            runtime_write_comparison=args.allow_runtime_write_comparison,
+        )
         (evidence / "lidar_capture_only_result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         write_artifact_manifest(evidence)
     except Exception as exc:

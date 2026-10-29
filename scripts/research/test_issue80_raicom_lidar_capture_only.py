@@ -8,6 +8,7 @@ from issue80_raicom_lidar_capture_only import (
     ALLOWED_RUNTIME_METHODS,
     MAX_CAPTURE_S,
     audit_capture_only_source,
+    snapshot_runtime_immutable_inputs,
 )
 
 
@@ -49,6 +50,13 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
 
     def test_capture_duration_is_bounded(self) -> None:
         self.assertLessEqual(MAX_CAPTURE_S, 12.0)
+
+    def test_runtime_write_comparison_hashes_inputs_before_any_launch(self) -> None:
+        snapshot = snapshot_runtime_immutable_inputs()
+        self.assertGreater(snapshot["immutable_file_count"], 0)
+        self.assertIn("sim_mujoco/bin/aima-sim-app", snapshot["immutable_file_sha256"])
+        self.assertIn("mc/bin/aima-mc-app-main", snapshot["immutable_file_sha256"])
+        self.assertFalse(any(path.endswith("/sim/classic") for path in snapshot["immutable_file_sha256"]))
 
 
 if __name__ == "__main__":
