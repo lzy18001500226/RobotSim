@@ -9251,6 +9251,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("post-locomotion convergence observation requires extended waypoint-B route integration")
     configured_route = bool(getattr(args, "route_config", None))
     lidar_map_route = bool(getattr(args, "lidar_map_route", False))
+    community_navigation_profile = bool(getattr(args, "community_navigation_profile", False))
     short_scene_route = bool(getattr(args, "short_scene_route", False))
     low_cruise_profile = bool(getattr(args, "raicom_low_cruise_profile", False))
     zero_forward_heading_acquisition = bool(
@@ -9303,6 +9304,11 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("LiDAR localization topic must be an absolute ROS topic")
         if abs(float(args.forward_speed) - VENDOR_EXAMPLE_FORWARD_M_S) > 1e-9 or abs(float(args.pulse_duration) - 5.0) > 1e-9:
             raise ValueError("LiDAR map route retains the pinned vendor 0.20 m/s, 5 s gait window profile")
+    if community_navigation_profile and not (
+        lidar_map_route and configured_route
+        and abs(float(args.forward_speed) - VENDOR_EXAMPLE_FORWARD_M_S) <= 1e-9
+    ):
+        raise ValueError("community navigation profile requires the static-audited 0.20 m/s LiDAR route")
     low_cruise_supported_route = short_scene_route or (
         table_approach_mission and aligned_start_table_approach
     )
@@ -10130,6 +10136,14 @@ def main() -> int:
         "--lidar-localization-topic",
         default="/map_tf_distribution/localization_pose",
         help="map-frame PoseStamped output from the staged read-only LiDAR/odom localizer",
+    )
+    first.add_argument(
+        "--community-navigation-profile",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY source-proven profile from the pinned raicom2026-agibot-X2 "
+            "service_pose_nav/cmd_vel_bridge: align at 0.10 rad/s, then drive at 0.20 m/s"
+        ),
     )
     first.add_argument(
         "--short-scene-route",
