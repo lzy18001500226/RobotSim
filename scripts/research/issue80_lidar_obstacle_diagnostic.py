@@ -50,6 +50,7 @@ class Diagnostic(Node):
             "status": decision.status.value, "observed_point_count": decision.observed_point_count,
             "novel_point_count": decision.novel_point_count,
             "confirmed_cells": [{"x": cell.x, "y": cell.y} for cell in decision.confirmed_cells],
+            "obstacle_envelope_cells": [{"x": cell.x, "y": cell.y} for cell in decision.obstacle_envelope_cells],
             "detour_waypoint_count": len(decision.detour_map_waypoints), "reason": decision.reason,
         }
         self.trace.write(json.dumps(payload) + "\n")
@@ -71,10 +72,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration-s", type=float, default=20.0)
     parser.add_argument("--static-match-distance-m", type=float, default=0.40)
     parser.add_argument("--minimum-cluster-cells", type=int, default=3)
+    parser.add_argument("--minimum-obstacle-span-x-m", type=float, default=0.0)
+    parser.add_argument("--minimum-obstacle-span-y-m", type=float, default=0.0)
     args = parser.parse_args(argv)
     if args.trace.exists() or args.result.exists():
         parser.error("trace/result must be new")
-    if not 1.0 <= args.duration_s <= 60.0 or args.static_match_distance_m <= 0.0 or args.minimum_cluster_cells < 1:
+    if not 1.0 <= args.duration_s <= 60.0 or args.static_match_distance_m <= 0.0 or args.minimum_cluster_cells < 1 or args.minimum_obstacle_span_x_m < 0.0 or args.minimum_obstacle_span_y_m < 0.0:
         parser.error("invalid bounded diagnostic arguments")
     candidates, ranges = load_database(args.static_database)
     grid = grid_from_candidates(candidates, resolution_m=0.10)
@@ -96,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
         obstacle_inflation_m=0.46565748847422734,
         confirmation_frames=2, minimum_confirmed_cluster_cells=args.minimum_cluster_cells,
         map_background_points=background,
+        minimum_obstacle_span_x_m=args.minimum_obstacle_span_x_m,
+        minimum_obstacle_span_y_m=args.minimum_obstacle_span_y_m,
     )
     rclpy.init()
     node = Diagnostic(MapFrameObstaclePipeline(config), args.trace, topic=args.topic)
@@ -113,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             "background_point_count": len(background),
             "static_surface_cell_count": len(static_surface),
             "topic": args.topic,
+            "minimum_obstacle_span_m": {"x": args.minimum_obstacle_span_x_m, "y": args.minimum_obstacle_span_y_m},
             "velocity_publisher_created": False, "service_clients_created": 0,
         }
         args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

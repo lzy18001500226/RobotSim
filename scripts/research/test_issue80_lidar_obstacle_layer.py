@@ -22,6 +22,7 @@ from issue80_lidar_obstacle_layer import (
     plan_a_star,
     raw_xyz_ranges,
     connected_cell_components,
+    minimum_span_envelope,
     simplify_grid_path,
 )
 from issue80_lidar_map_localizer import MAGIC
@@ -124,6 +125,15 @@ class LidarObstacleLayerTests(unittest.TestCase):
     def test_components_separate_scattered_noise_from_chair_cluster(self) -> None:
         components = connected_cell_components({GridCell(1, 1), GridCell(1, 2), GridCell(2, 2), GridCell(9, 9)})
         self.assertEqual(sorted(len(component) for component in components), [1, 3])
+
+    def test_minimum_span_envelope_expands_only_to_declared_bounds(self) -> None:
+        grid = GridSpec(0.0, 0.0, 0.10, 20, 20)
+        envelope = minimum_span_envelope(
+            {GridCell(5, 5), GridCell(5, 6)}, grid=grid,
+            minimum_span_x_m=0.40, minimum_span_y_m=0.40,
+        )
+        self.assertEqual({cell.x for cell in envelope}, {4, 5, 6, 7})
+        self.assertEqual({cell.y for cell in envelope}, {4, 5, 6, 7})
 
     def test_static_replay_preserves_no_false_confirmed_obstacle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -41,7 +41,7 @@ class MapBackgroundReplayTests(unittest.TestCase):
             )
             self.assertEqual(clear["second_decision"], "CLEAR_DIRECT_PATH_STATIC_ONLY")
             chair = root / "chair.json"
-            chair.write_text(json.dumps(capture([[0.02, 0.02, 0.5], [0.02, 0.12, 0.5], [0.12, 0.12, 0.5]])), encoding="utf-8")
+            chair.write_text(json.dumps(capture([[0.02, -1.48, 0.5], [0.02, -1.38, 0.5], [0.12, -1.38, 0.5]])), encoding="utf-8")
             blocked = replay(
                 background_capture=background, observed_capture=chair, static_database=database,
                 maximum_match_distance_m=0.02, minimum_cluster_cells=3,

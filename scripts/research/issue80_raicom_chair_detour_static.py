@@ -178,6 +178,38 @@ def heading_points(points: tuple[tuple[float, float], ...], final_yaw_rad: float
     return tuple(output)
 
 
+def observed_detour_points(path: Path) -> tuple[tuple[float, float], ...]:
+    """Load only a confirmed LiDAR replay detour; reject synthetic route input."""
+    if path.is_symlink() or not path.is_file():
+        raise ChairDetourError("observed detour replay is missing or unsafe")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ChairDetourError("observed detour replay is unreadable") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != "robotsim.issue80.lidar-map-background-replay.v1"
+        or payload.get("status") != "PASS_CAPTURE_REPLAYED"
+        or payload.get("second_decision") != "DETOUR_READY_STATIC_ONLY"
+    ):
+        raise ChairDetourError("observed detour replay did not confirm a map-frame obstacle detour")
+    raw = payload.get("detour_waypoints")
+    if not isinstance(raw, list) or len(raw) < 2:
+        raise ChairDetourError("observed detour replay has no usable waypoint sequence")
+    points: list[tuple[float, float]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ChairDetourError("observed detour waypoint is malformed")
+        try:
+            point = (float(item["x_m"]), float(item["y_m"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ChairDetourError("observed detour waypoint lacks finite x/y") from exc
+        if not all(math.isfinite(value) for value in point):
+            raise ChairDetourError("observed detour waypoint is nonfinite")
+        points.append(point)
+    return tuple(points)
+
+
 def segment_samples(a: tuple[float, float, float], b: tuple[float, float, float]) -> Iterable[tuple[float, float, float]]:
     distance = math.hypot(b[0] - a[0], b[1] - a[1])
     yaw_delta = math.atan2(math.sin(b[2] - a[2]), math.cos(b[2] - a[2]))
@@ -262,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--goal-x-m", type=float, default=0.90)
     parser.add_argument("--goal-y-m", type=float, default=-1.50)
     parser.add_argument("--goal-yaw-rad", type=float, default=0.0)
+    parser.add_argument("--observed-detour-replay", type=Path, default=None)
     args = parser.parse_args(argv)
     output = args.output_dir.resolve(strict=True)
     allowed_existing = {".robotsim-output-reservation.json"}
@@ -317,7 +350,13 @@ def main(argv: list[str] | None = None) -> int:
         goal = grid.world_to_cell(args.goal_x_m, args.goal_y_m)
         raw_path = plan_a_star(start, goal, grid=grid, blocked=blocked)
         path = simplify_grid_path(raw_path, blocked=blocked)
-        pose_path = heading_points(path_world_points(path, grid), args.goal_yaw_rad)
+        observed_path = (
+            None if args.observed_detour_replay is None
+            else observed_detour_points(args.observed_detour_replay)
+        )
+        route_points = path_world_points(path, grid) if observed_path is None else observed_path
+        route_source = "STATIC_A_STAR" if observed_path is None else "OBSERVED_LIDAR_BACKGROUND_REPLAY"
+        pose_path = heading_points(route_points, args.goal_yaw_rad)
         clearance = static_clearance_audit(
             model, data, poses=pose_path, robot_geoms=robot_geoms, environment_geoms=environment_geoms, root_joint=root_joint,
         )
@@ -331,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         "generated": {"scene": str(scene_output), "chair_model": str(chair_model), "mug_wrapper": str(mug_model)},
         "chair_pose": {"x_m": args.chair_x_m, "y_m": args.chair_y_m, "yaw_rad": args.chair_yaw_rad, "aabb": {"lower": chair_lower.tolist(), "upper": chair_upper.tolist()}},
         "native_robot_equivalence": robot_equivalence,
-        "planner": {"algorithm": "A_STAR_8_CONNECTED", "grid_resolution_m": GRID_RESOLUTION_M, "robot_radial_upper_bound_m": radius, "tracking_envelope_m": TRACKING_ENVELOPE_M, "inflated_chair_blocked_cell_count": len(blocked), "raw_path_cell_count": len(raw_path), "simplified_path_cell_count": len(path), "map_waypoints": [{"x_m": x, "y_m": y, "yaw_rad": yaw} for x, y, yaw in pose_path]},
+        "planner": {"algorithm": "A_STAR_8_CONNECTED", "route_source": route_source, "observed_detour_replay": None if args.observed_detour_replay is None else str(args.observed_detour_replay), "grid_resolution_m": GRID_RESOLUTION_M, "robot_radial_upper_bound_m": radius, "tracking_envelope_m": TRACKING_ENVELOPE_M, "inflated_chair_blocked_cell_count": len(blocked), "raw_path_cell_count": len(raw_path), "simplified_path_cell_count": len(route_points), "map_waypoints": [{"x_m": x, "y_m": y, "yaw_rad": yaw} for x, y, yaw in pose_path]},
         "static_fullbody_clearance": clearance,
         "velocity_publisher_created": False,
         "mc_action_or_source_client_created": False,

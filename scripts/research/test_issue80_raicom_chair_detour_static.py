@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import ast
+import json
 import math
 import tempfile
 import unittest
-import ast
 from pathlib import Path
 
 import numpy as np
 
 from issue80_lidar_obstacle_layer import GridCell, GridSpec
 from issue80_raicom_chair_detour_static import (
+    ChairDetourError,
     aabb_blocked_cells,
     chair_model_xml,
     heading_points,
+    observed_detour_points,
 )
 
 
@@ -48,6 +51,24 @@ class ChairDetourStaticTests(unittest.TestCase):
         calls = [node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
         self.assertIn("mj_forward", calls)
         self.assertNotIn("mj_step", calls)
+
+
+class ObservedDetourTests(unittest.TestCase):
+    def test_requires_confirmed_background_replay_and_finite_waypoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "replay.json"
+            good = {
+                "schema": "robotsim.issue80.lidar-map-background-replay.v1",
+                "status": "PASS_CAPTURE_REPLAYED",
+                "second_decision": "DETOUR_READY_STATIC_ONLY",
+                "detour_waypoints": [{"x_m": -1.5, "y_m": -1.5}, {"x_m": 0.9, "y_m": -1.5}],
+            }
+            path.write_text(json.dumps(good), encoding="utf-8")
+            self.assertEqual(observed_detour_points(path), ((-1.5, -1.5), (0.9, -1.5)))
+            good["second_decision"] = "CLEAR_DIRECT_PATH_STATIC_ONLY"
+            path.write_text(json.dumps(good), encoding="utf-8")
+            with self.assertRaisesRegex(ChairDetourError, "did not confirm"):
+                observed_detour_points(path)
 
 
 if __name__ == "__main__":

@@ -324,6 +324,33 @@ def connected_cell_components(cells: Iterable[GridCell]) -> tuple[frozenset[Grid
     return tuple(sorted(output, key=lambda component: (min(component), len(component))))
 
 
+def minimum_span_envelope(
+    cells: Iterable[GridCell], *, grid: GridSpec, minimum_span_x_m: float, minimum_span_y_m: float,
+) -> frozenset[GridCell]:
+    """Fill one component's grid-aligned AABB to explicit physical minimum spans."""
+    if not math.isfinite(minimum_span_x_m) or not math.isfinite(minimum_span_y_m):
+        raise ObstacleLayerError("minimum obstacle spans must be finite")
+    if minimum_span_x_m < 0.0 or minimum_span_y_m < 0.0:
+        raise ObstacleLayerError("minimum obstacle spans must be non-negative")
+    source = frozenset(cell for cell in cells if grid.contains(cell))
+    if not source:
+        return frozenset()
+    low_x, high_x = min(cell.x for cell in source), max(cell.x for cell in source)
+    low_y, high_y = min(cell.y for cell in source), max(cell.y for cell in source)
+    target_x = max(high_x - low_x + 1, math.ceil(minimum_span_x_m / grid.resolution_m))
+    target_y = max(high_y - low_y + 1, math.ceil(minimum_span_y_m / grid.resolution_m))
+    left_x = (target_x - (high_x - low_x + 1)) // 2
+    right_x = target_x - (high_x - low_x + 1) - left_x
+    low_y_pad = (target_y - (high_y - low_y + 1)) // 2
+    high_y_pad = target_y - (high_y - low_y + 1) - low_y_pad
+    return frozenset(
+        GridCell(x, y)
+        for x in range(low_x - left_x, high_x + right_x + 1)
+        for y in range(low_y - low_y_pad, high_y + high_y_pad + 1)
+        if grid.contains(GridCell(x, y))
+    )
+
+
 def _neighbors(cell: GridCell, grid: GridSpec, blocked: frozenset[GridCell]) -> Iterable[tuple[GridCell, float]]:
     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
         candidate = GridCell(cell.x + dx, cell.y + dy)

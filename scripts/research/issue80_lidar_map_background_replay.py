@@ -26,6 +26,7 @@ def point_bytes(points: tuple) -> bytes:
 def replay(
     *, background_capture: Path, observed_capture: Path, static_database: Path,
     maximum_match_distance_m: float, minimum_cluster_cells: int,
+    minimum_obstacle_span_x_m: float = 0.0, minimum_obstacle_span_y_m: float = 0.0,
 ) -> dict:
     background = load_map_background_capture(background_capture)
     observed = load_map_background_capture(observed_capture)
@@ -42,6 +43,8 @@ def replay(
         confirmation_frames=2,
         minimum_confirmed_cluster_cells=minimum_cluster_cells,
         map_background_points=background,
+        minimum_obstacle_span_x_m=minimum_obstacle_span_x_m,
+        minimum_obstacle_span_y_m=minimum_obstacle_span_y_m,
     ))
     kwargs = {
         "frame_id": "map",
@@ -65,11 +68,13 @@ def replay(
             "observed_point_count": len(observed),
             "maximum_match_distance_m": maximum_match_distance_m,
             "minimum_cluster_cells": minimum_cluster_cells,
+            "minimum_obstacle_span_m": {"x": minimum_obstacle_span_x_m, "y": minimum_obstacle_span_y_m},
         },
         "first_decision": first.status.value,
         "second_decision": second.status.value,
         "novel_point_count": second.novel_point_count,
         "confirmed_cells": [{"x": cell.x, "y": cell.y} for cell in second.confirmed_cells],
+        "obstacle_envelope_cells": [{"x": cell.x, "y": cell.y} for cell in second.obstacle_envelope_cells],
         "detour_waypoints": [{"x_m": x, "y_m": y} for x, y in second.detour_map_waypoints],
         "read_only": True,
         "mj_step_calls": 0,
@@ -86,10 +91,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--maximum-match-distance-m", type=float, default=0.02)
     parser.add_argument("--minimum-cluster-cells", type=int, default=3)
+    parser.add_argument("--minimum-obstacle-span-x-m", type=float, default=0.0)
+    parser.add_argument("--minimum-obstacle-span-y-m", type=float, default=0.0)
     args = parser.parse_args(argv)
     if args.result.exists() or args.result.is_symlink():
         parser.error("--result must be new")
-    if args.maximum_match_distance_m <= 0.0 or args.minimum_cluster_cells < 1:
+    if args.maximum_match_distance_m <= 0.0 or args.minimum_cluster_cells < 1 or args.minimum_obstacle_span_x_m < 0.0 or args.minimum_obstacle_span_y_m < 0.0:
         parser.error("invalid replay thresholds")
     try:
         result = replay(
@@ -98,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
             static_database=args.static_database,
             maximum_match_distance_m=args.maximum_match_distance_m,
             minimum_cluster_cells=args.minimum_cluster_cells,
+            minimum_obstacle_span_x_m=args.minimum_obstacle_span_x_m,
+            minimum_obstacle_span_y_m=args.minimum_obstacle_span_y_m,
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))

@@ -91,6 +91,17 @@ class ObstaclePipelineTests(unittest.TestCase):
         self.assertEqual(pipeline.observe(sequence=2, **chair).status, PipelineStatus.WAITING_FOR_CONFIRMATION)
         self.assertEqual(pipeline.observe(sequence=3, **chair).status, PipelineStatus.DETOUR_READY)
 
+    def test_off_route_cluster_does_not_claim_a_detour(self) -> None:
+        pipeline = MapFrameObstaclePipeline(self.config)
+        kwargs = {
+            "frame_id": "map", "data": cloud([(-0.75, 0.75, 0.5), (-0.65, 0.75, 0.5), (-0.55, 0.75, 0.5)]),
+            "width": 3, "height": 1, "point_step": 12, "field_offsets": {"x": 0, "y": 4, "z": 8},
+        }
+        pipeline.observe(sequence=1, **kwargs)
+        result = pipeline.observe(sequence=2, **kwargs)
+        self.assertEqual(result.status, PipelineStatus.OBSTACLE_CLEAR_OF_DIRECT_PATH)
+        self.assertEqual(result.detour_map_waypoints, ())
+
     def test_wrong_frame_fails_closed_without_route(self) -> None:
         pipeline = MapFrameObstaclePipeline(self.config)
         result = pipeline.observe(
