@@ -1398,7 +1398,10 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 " --target-name TABLE_APPROACH --target-tolerance-m 0.15"
             )
             if getattr(args, "raicom_lidar_static_map_source", None):
-                command[-1] += " --localization-topic /map_tf_distribution/localization_pose"
+                command[-1] += (
+                    " --localization-topic /map_tf_distribution/localization_pose"
+                    " --target-trigger-tolerance-m 0.10"
+                )
             if bool(getattr(args, "raicom_vendor_direct_heading_hold", False)):
                 command[-1] += " --heading-hold"
         return command

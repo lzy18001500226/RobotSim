@@ -1609,6 +1609,31 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(child[child.index("--target-tolerance-m") + 1], "0.15")
         self.assertIn("--heading-hold", child)
 
+    def test_lidar_table_target_uses_stricter_trigger_without_changing_acceptance(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=0.0, pulse_duration=5.0, forward_speed=0.2,
+            ramp_start_speed=None, ramp_duration_s=0.0, attempt_id="lidar-trigger",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            local01_scene_world_poses="/committed/local01/scene_world_poses.json",
+            table_approach_mission="/review/aligned-start-table-approach.json",
+            aligned_start_table_approach=True, native_x2_timestep=True, route_config=None,
+            raicom_low_cruise_profile=False, raicom_zero_forward_heading_acquisition=False,
+            raicom_continuous_ten_second_transit=False, raicom_forward_gait_yaw_inversion=False,
+            raicom_native_nominal_straight_gait_diagnostic=False,
+            raicom_vendor_example_forward_baseline=False, raicom_vendor_table_approach=True,
+            raicom_vendor_direct_distance_m=None, raicom_vendor_direct_table_target=True,
+            raicom_vendor_direct_heading_hold=True,
+            raicom_lidar_static_map_source="/review/static-map",
+            raicom_native_mjdata_route_feedback=True, run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0, startup_speed=None,
+            startup_transition_displacement=None, startup_transition_timeout_s=0.0,
+        )
+        child = shlex.split(build_m1_child_command(args, "lidar-trigger")[-1].rsplit(" && ", 1)[1])
+        self.assertEqual(child[child.index("--target-trigger-tolerance-m") + 1], "0.10")
+        self.assertEqual(child[child.index("--target-tolerance-m") + 1], "0.15")
+
     def make_runner(self, evidence: Path) -> BoundedRun:
         return BoundedRun(
             argparse.Namespace(

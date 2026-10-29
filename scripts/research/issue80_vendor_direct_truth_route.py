@@ -469,6 +469,10 @@ def main() -> int:
     parser.add_argument("--target-route-config", type=Path, default=None)
     parser.add_argument("--target-name", default=None)
     parser.add_argument("--target-tolerance-m", type=float, default=None)
+    parser.add_argument(
+        "--target-trigger-tolerance-m", type=float, default=None,
+        help="optional stricter target radius that initiates zero/SD; final acceptance is unchanged",
+    )
     parser.add_argument("--heading-hold", action="store_true")
     parser.add_argument("--localization-topic", default=None)
     args = parser.parse_args()
@@ -483,9 +487,20 @@ def main() -> int:
         parser.error("target route, target name, and target tolerance must be supplied together")
     if target_requested and not 0.0 < float(args.target_tolerance_m) <= 0.15:
         parser.error("--target-tolerance-m must be in (0, 0.15]")
+    if args.target_trigger_tolerance_m is not None and (
+        not target_requested
+        or not 0.0 < float(args.target_trigger_tolerance_m) <= float(args.target_tolerance_m)
+    ):
+        parser.error("--target-trigger-tolerance-m must be in (0, target tolerance]")
     if args.heading_hold and not target_requested:
         parser.error("--heading-hold requires an explicit truth target")
     target = load_truth_target(args.target_route_config, str(args.target_name)) if target_requested else None
+    target_trigger_tolerance_m = (
+        float(args.target_trigger_tolerance_m)
+        if args.target_trigger_tolerance_m is not None
+        else float(args.target_tolerance_m)
+        if target_requested else None
+    )
     rclpy.init()
     node = DirectTruthRoute(args.distance_m, args.trace, args.localization_topic)
     result: dict[str, Any] = {
@@ -499,6 +514,7 @@ def main() -> int:
         "target_pose_odom": target,
         "target_pose_source": "map_localization" if args.localization_topic else "odom",
         "target_tolerance_m": args.target_tolerance_m,
+        "target_trigger_tolerance_m": target_trigger_tolerance_m,
         "final_target_error_m": None,
         "final_odom_target_error_m": None,
         "command": {
@@ -560,7 +576,7 @@ def main() -> int:
             terminal = direct_target_terminal_reason(
                 target_requested=target is not None,
                 target_error_m=target_error if target is not None else None,
-                target_tolerance_m=float(args.target_tolerance_m) if target is not None else None,
+                target_tolerance_m=target_trigger_tolerance_m if target is not None else None,
                 travelled_distance_m=distance,
                 distance_cap_m=args.distance_m,
             )
