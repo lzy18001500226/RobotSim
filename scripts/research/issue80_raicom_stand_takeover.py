@@ -231,7 +231,13 @@ class StandingRun(ResetOnlyRun):
                 capture_summary,
             )
             result['native_mjdata_capture']=capture_summary
-            if capture_summary['status']!='PASS_NATIVE_MJDATA_CAPTURE':
+            partial_truncated_only=(
+                capture_summary.get('status')=='PARTIAL_NATIVE_MJDATA_CAPTURE'
+                and capture_summary.get('failure_reasons')==['TRUNCATED_FINAL_RECORD']
+            )
+            if partial_truncated_only:
+                result['native_mjdata_capture_limitation']='TRUNCATED_FINAL_RECORD_AFTER_VALID_SAMPLES'
+            elif capture_summary['status']!='PASS_NATIVE_MJDATA_CAPTURE':
                 result['native_mjdata_capture_failure']=capture_summary['failure_reasons']
                 if result.get('status')=='PASS':
                     result['status']='BLOCKED'
