@@ -9273,8 +9273,8 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("LiDAR map route requires its own --route-config and cannot combine with Local01/table route modes")
         if not str(getattr(args, "lidar_localization_topic", "")).startswith("/"):
             raise ValueError("LiDAR localization topic must be an absolute ROS topic")
-        if abs(float(args.forward_speed) - 0.12) > 1e-9 or abs(float(args.pulse_duration) - 5.0) > 1e-9:
-            raise ValueError("LiDAR map route retains the validated 0.12 m/s, 5 s window profile")
+        if abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) > 1e-9 or abs(float(args.pulse_duration) - 5.0) > 1e-9:
+            raise ValueError("LiDAR map route retains the validated 0.105 m/s, 5 s low-cruise window profile")
     low_cruise_supported_route = short_scene_route or (
         table_approach_mission and aligned_start_table_approach
     )
@@ -9352,7 +9352,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         (
             lidar_map_route
             and configured_route
-            and abs(float(args.forward_speed) - 0.12) <= 1e-9
+            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
         )
         or (
             table_approach_mission
@@ -9473,7 +9473,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         or (
             lidar_map_route
             and configured_route
-            and abs(float(args.forward_speed) - 0.12) <= 1e-9
+            and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
         )
     ):
         raise ValueError(

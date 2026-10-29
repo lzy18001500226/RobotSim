@@ -384,7 +384,8 @@ def validate_configured_route_motion_profile(args: argparse.Namespace) -> None:
     if vendor_example and low_cruise:
         raise ValueError("vendor-example baseline cannot combine with the RAICOM low-cruise profile")
     expected_forward = (
-        0.2 if vendor_example else RAICOM_LOW_CRUISE_FORWARD_M_S if low_cruise else 0.12
+        0.2 if vendor_example else RAICOM_LOW_CRUISE_FORWARD_M_S
+        if (low_cruise or bool(getattr(args, "raicom_lidar_obstacle_route", False))) else 0.12
     )
     expected_pulse = 5.0 if (
         vendor_example or bool(getattr(args, "raicom_lidar_obstacle_route", False))
@@ -6543,7 +6544,7 @@ def main() -> int:
                 and args.maintainer_authorized_first_motion
                 and args.require_stand_warmup_composite
                 and args.raicom_lidar_overlay_source
-                and abs(float(args.forward_speed) - 0.12) <= 1e-9
+                and abs(float(args.forward_speed) - RAICOM_LOW_CRUISE_FORWARD_M_S) <= 1e-9
                 and abs(float(args.pulse_duration) - 5.0) <= 1e-9
             )
             or (

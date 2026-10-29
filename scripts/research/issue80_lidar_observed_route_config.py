@@ -19,6 +19,7 @@ from issue80_waypoint_route import (
     RouteSpec,
     _corridor_polygon,
 )
+from issue80_m1_mode_logic import RAICOM_LOW_CRUISE_FORWARD_M_S
 
 
 class LidarRouteConfigError(ValueError):
@@ -126,8 +127,8 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
                 "minimum_obstacle_clearance_m": clearance,
             },
             "command_bounds": {
-                "target_forward_m_s": 0.12,
-                "max_forward_m_s": 0.12,
+                "target_forward_m_s": RAICOM_LOW_CRUISE_FORWARD_M_S,
+                "max_forward_m_s": RAICOM_LOW_CRUISE_FORWARD_M_S,
                 "max_angular_rad_s": 0.075,
                 "max_command_window_s": 5.0,
             },
@@ -167,6 +168,7 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
             "measured_static_fullbody_envelope_m": measured_envelope,
             "route_corridor_half_width_m": half_width,
             "permitted_tracking_m": permitted_tracking,
+            "route_forward_m_s": RAICOM_LOW_CRUISE_FORWARD_M_S,
         },
     }
     RouteSpec.from_mapping(raw)
