@@ -40,6 +40,9 @@ class CaptureOnlyRunnerTests(unittest.TestCase):
         self.assertIn("MC_SIM_CONFIG_DUMP_CONTAINER_PATH", source)
         self.assertIn("MC_SIM_GENERATED_DIRECTORY", source)
         self.assertIn("mc_sim_generated_tmpfs=True", source)
+        self.assertIn("SIMULATOR_GENERATED_CONFIG_DIRECTORY", source)
+        self.assertIn("simulator_generated_tmpfs=True", source)
+        self.assertIn("stage_simulator_generated_config", source)
 
     def test_capture_duration_is_bounded(self) -> None:
         self.assertLessEqual(MAX_CAPTURE_S, 12.0)
