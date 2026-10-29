@@ -277,6 +277,8 @@ def run_once(
         (evidence / "runtime_immutable_before.json").write_text(json.dumps(before_runtime, indent=2) + "\n", encoding="utf-8")
     try:
         runtime.stage_research_scripts()
+        if known_good_startup_profile:
+            runtime.prepare_foundationwalk_diagnostic_overlay()
         runtime.prepare_native_mjdata_capture()
         result["native_mjdata_capture_overlay"] = runtime.native_mjdata_overlay
         result["native_mjdata_capture_smoke"] = runtime.native_mjdata_smoke
@@ -289,7 +291,6 @@ def run_once(
             timeout_s=2.0,
         )
         if known_good_startup_profile:
-            runtime.prepare_foundationwalk_diagnostic_overlay()
             runtime.start_sim_first(start_mc=False)
         else:
             start_simulator_then_native_mc(runtime)
