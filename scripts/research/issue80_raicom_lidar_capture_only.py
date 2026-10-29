@@ -295,6 +295,8 @@ def run_once(
         else:
             start_simulator_then_native_mc(runtime)
         command = (
+            "source /opt/ros/humble/setup.bash && "
+            "source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && "
             "cd /workspace/evidence && timeout " + f"{duration_s + 3.0:g}s "
             "python3 issue80_capture_lidar_pointcloud.py "
             "--output /workspace/evidence/lidar_map_frame_capture.json "
