@@ -1891,9 +1891,35 @@ def validate_short_route_static_scene(
     if mujoco.__version__ != "3.3.6":
         raise Local01SceneRouteError(f"static scene preflight requires MuJoCo 3.3.6, got {mujoco.__version__}")
     try:
-        original = mujoco.MjModel.from_xml_path(str(scene_path))
-        scene_tree = native_name_scene_tree(scene_path)
-        model = mujoco.MjModel.from_xml_string(ET.tostring(scene_tree, encoding="unicode"))
+        # Navigation worktrees share the heavyweight runtime/reference inputs
+        # instead of copying them beneath every checkout. Resolve model paths
+        # explicitly and provide the portable mug with reference-root asset
+        # paths via MuJoCo's VFS; this is a compiler-only adapter.
+        def resolved_tree(*, native_names: bool) -> tuple[ET.Element, dict[str, bytes]]:
+            tree = native_name_scene_tree(scene_path) if native_names else ET.parse(scene_path).getroot()
+            for item in tree.findall("./asset/model"):
+                item.set("file", str(_resolve_scene_model_path(scene_path, item.attrib["file"])))
+            mug = next((item for item in tree.findall("./asset/model") if item.get("name") == "raicom_mug"), None)
+            if mug is None:
+                raise Local01SceneRouteError("Local01 scene lacks portable mug model")
+            mug_path = Path(mug.attrib["file"])
+            mug_tree = ET.parse(mug_path)
+            compiler = mug_tree.getroot().find("./compiler")
+            if compiler is None:
+                raise Local01SceneRouteError("portable mug has no compiler asset declaration")
+            reference_root = _resolve_raicom_reference_root(_find_repository_root(scene_path))
+            mug_assets = reference_root / "robot/lx2501_3_t2d5/model_info/object/model/mug"
+            if mug_assets.is_symlink() or not mug_assets.is_dir():
+                raise Local01SceneRouteError("portable mug asset root is missing or unsafe")
+            compiler.set("meshdir", str(mug_assets))
+            compiler.set("texturedir", str(mug_assets))
+            mug.set("file", "portable_mug_runtime.xml")
+            return tree, {"portable_mug_runtime.xml": ET.tostring(mug_tree.getroot(), encoding="utf-8")}
+
+        original_tree, original_assets = resolved_tree(native_names=False)
+        original = mujoco.MjModel.from_xml_string(ET.tostring(original_tree, encoding="unicode"), assets=original_assets)
+        scene_tree, corrected_assets = resolved_tree(native_names=True)
+        model = mujoco.MjModel.from_xml_string(ET.tostring(scene_tree, encoding="unicode"), assets=corrected_assets)
         x2_source = Path(scene_tree.find("./asset/model[@name='x2_mc_runtime']").attrib["file"])
         native = mujoco.MjModel.from_xml_path(str(x2_source.with_name("scene.xml")))
         name_contract = audit_runtime_name_contract(native, model, x2_source.with_name("default.yaml"))
