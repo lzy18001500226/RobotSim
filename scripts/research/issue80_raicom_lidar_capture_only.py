@@ -49,6 +49,7 @@ FORBIDDEN_NAMES = frozenset({
 ALLOWED_RUNTIME_METHODS = frozenset({
     "run", "docker_exec", "start_container", "start_mc_after_sim_topics", "cleanup",
     "apply_container_teardown_gate", "remaining", "stage_research_scripts",
+    "prepare_native_mjdata_capture", "finalize_native_mjdata_capture",
 })
 
 
@@ -123,7 +124,9 @@ def _bounded_args(evidence: Path, container: str, lidar_overlay_source: Path) ->
         mc_prearm_before_simulator=False, direct_stand_from_passive=False,
         raicom_lidar_overlay_source=str(lidar_overlay_source), raicom_lidar_static_map_source=None,
         runtime_readonly=True, mc_sim_generated_tmpfs=True,
-        native_mjdata_capture=False, native_mjdata_capture_interval_steps=0,
+        # This is the already-validated read-only LD_PRELOAD capture used by
+        # the successful LiDAR baseline. It does not produce control signals.
+        native_mjdata_capture=True, native_mjdata_capture_interval_steps=10,
         forward_speed=0.0, pulse_duration=0.0,
     )
 
@@ -199,6 +202,9 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
     }
     try:
         runtime.stage_research_scripts()
+        runtime.prepare_native_mjdata_capture()
+        result["native_mjdata_capture_overlay"] = runtime.native_mjdata_overlay
+        result["native_mjdata_capture_smoke"] = runtime.native_mjdata_smoke
         result["capture_tool_sha256"] = stage_capture_tools(evidence)
         runtime.start_container()
         runtime.docker_exec(
@@ -225,6 +231,7 @@ def run_once(evidence: Path, container: str, lidar_overlay_source: Path, duratio
     except Exception as exc:
         result["failure"] = f"{type(exc).__name__}: {exc}"
     finally:
+        result["native_mjdata_capture"] = runtime.finalize_native_mjdata_capture()
         runtime.cleanup()
         runtime.apply_container_teardown_gate(result)
         result["cleanup"] = runtime.cleanup_evidence
