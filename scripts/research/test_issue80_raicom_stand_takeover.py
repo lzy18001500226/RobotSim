@@ -2,8 +2,9 @@
 import ast
 import math
 import unittest
+from pathlib import Path
 
-from issue80_raicom_stand_takeover import StandingRun, OBSERVER
+from issue80_raicom_stand_takeover import StandingRun, OBSERVER, summarize_raw_lidar_trace
 
 
 def pure(name):
@@ -19,6 +20,32 @@ def pure(name):
 
 
 class StandingTests(unittest.TestCase):
+    def test_source_local_raw_trace_requires_complete_fixed_ray_rows(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            trace=Path(directory)/'lidar_raw_frames.jsonl'
+            self.assertEqual(summarize_raw_lidar_trace(trace)['status'],'BLOCKED_RAW_TRACE_MISSING')
+            trace.write_text('',encoding='utf-8')
+            self.assertEqual(summarize_raw_lidar_trace(trace)['status'],'BLOCKED_RAW_TRACE_EMPTY')
+            trace.write_text(json.dumps({'schema':'robotsim.issue80.lidar-raw.v1','horizontal':2,'vertical':1,'xyz':[[0,0,0],None]})+'\n',encoding='utf-8')
+            summary=summarize_raw_lidar_trace(trace)
+            self.assertEqual(summary['status'],'PASS_SOURCE_LOCAL_RAY_TRACE')
+            self.assertEqual(summary['row_count'],1)
+            self.assertEqual(summary['ray_count'],2)
+            trace.write_text(json.dumps({'schema':'robotsim.issue80.lidar-raw.v1','horizontal':2,'vertical':1,'xyz':[[0,0,0]]})+'\n',encoding='utf-8')
+            self.assertEqual(summarize_raw_lidar_trace(trace)['status'],'BLOCKED_RAW_TRACE_RAY_COUNT')
+
+    def test_raw_trace_enable_is_after_qualified_hold_and_never_a_control_path(self):
+        source=Path(__file__).with_name('issue80_raicom_stand_takeover.py').read_text(encoding='utf-8')
+        method=source[source.index('    def after_observer_completion'):source.index('    def run_once')]
+        self.assertIn("enable_source_local_lidar_trace_after_sd_stable_hold",method)
+        self.assertIn("': > /workspace/evidence/lidar_raw_enable'",method)
+        self.assertGreater(method.index('enable_source_local_lidar_trace_after_sd_stable_hold'),method.index("summary=summaries.get('stand_takeover_summary.json')"))
+        self.assertNotIn('create_publisher(',method)
+        self.assertNotIn('SetMcInputSource',method)
+
     def test_safe_request_requires_reset_effect_fresh_advancing_one_shot(self):
         args=dict(reset_verified=True,reset_effect=True,fresh=True,
                   pose={'x_m':-1.5,'y_m':-1.5,'yaw_rad':math.pi/2,

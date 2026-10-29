@@ -31,6 +31,44 @@ OBSERVER=Path(__file__).with_name('issue80_raicom_stand_observer.py')
 LIDAR_CAPTURE=Path(__file__).with_name('issue80_capture_lidar_pointcloud.py')
 LIDAR_MAP_FIELD=Path(__file__).with_name('issue80_lidar_map_obstacle_field.py')
 LIDAR_OBSTACLE_LAYER=Path(__file__).with_name('issue80_lidar_obstacle_layer.py')
+RAW_LIDAR_SCHEMA='robotsim.issue80.lidar-raw.v1'
+
+
+def summarize_raw_lidar_trace(path: Path) -> dict:
+    """Validate source-local LiDAR rows without interpreting them as a map pose.
+
+    The RayCaster plugin writes this evidence only after the standing hold has
+    passed and the explicit enable marker exists.  Treat an absent, malformed,
+    or partial row as a failed capture rather than silently falling back to the
+    coarser map-frame surface-distance heuristic.
+    """
+    if path.is_symlink() or not path.is_file():
+        return {'status':'BLOCKED_RAW_TRACE_MISSING','path':str(path)}
+    rows=path.read_text(encoding='utf-8').splitlines()
+    if not rows:
+        return {'status':'BLOCKED_RAW_TRACE_EMPTY','path':str(path),'row_count':0}
+    valid=0
+    rays=None
+    for number,line in enumerate(rows, start=1):
+        try:
+            row=json.loads(line)
+        except json.JSONDecodeError:
+            return {'status':'BLOCKED_RAW_TRACE_INVALID_JSON','path':str(path),'line_number':number}
+        if not isinstance(row,dict) or row.get('schema')!=RAW_LIDAR_SCHEMA:
+            return {'status':'BLOCKED_RAW_TRACE_SCHEMA','path':str(path),'line_number':number}
+        horizontal=row.get('horizontal')
+        vertical=row.get('vertical')
+        xyz=row.get('xyz')
+        if not isinstance(horizontal,int) or not isinstance(vertical,int) or horizontal<=0 or vertical<=0:
+            return {'status':'BLOCKED_RAW_TRACE_DIMENSIONS','path':str(path),'line_number':number}
+        if not isinstance(xyz,list) or len(xyz)!=horizontal*vertical:
+            return {'status':'BLOCKED_RAW_TRACE_RAY_COUNT','path':str(path),'line_number':number}
+        if rays is None:
+            rays=horizontal*vertical
+        elif rays!=horizontal*vertical:
+            return {'status':'BLOCKED_RAW_TRACE_DIMENSION_CHANGED','path':str(path),'line_number':number}
+        valid+=1
+    return {'status':'PASS_SOURCE_LOCAL_RAY_TRACE','path':str(path),'row_count':valid,'ray_count':rays}
 
 
 class StandingRun(ResetOnlyRun):
@@ -181,8 +219,18 @@ class StandingRun(ResetOnlyRun):
         if not isinstance(summary,dict) or summary.get('status')!='PASS':
             return {'status':'NOT_RUN_STANDING_NOT_QUALIFIED'}
         capture=self.evidence/'lidar_standing_map_frame_capture.json'
+        raw_trace=self.evidence/'lidar_raw_frames.jsonl'
         if self.runtime is None:
             raise RuntimeError('runtime missing after standing observer completion')
+        # The sensor plugin has always been loaded, but source-local ray rows
+        # are deliberately disabled while Reset/JD/SD settle.  Enable them
+        # only after the independently qualified active-standing hold so this
+        # diagnostic cannot perturb the controller handoff or write commands.
+        self.runtime.docker_exec(
+            'enable_source_local_lidar_trace_after_sd_stable_hold',
+            ': > /workspace/evidence/lidar_raw_enable',
+            timeout_s=2.0,
+        )
         result=self.runtime.docker_exec(
             'capture_lidar_after_sd_stable_hold',
             'source /opt/ros/humble/setup.bash && '
@@ -193,7 +241,8 @@ class StandingRun(ResetOnlyRun):
             timeout_s=8.0,check=False,
         )
         payload=json.loads(capture.read_text()) if capture.is_file() and not capture.is_symlink() else None
-        return {'status':'PASS' if payload and payload.get('status')=='PASS_NONEMPTY_POINTCLOUD' else 'BLOCKED','capture':payload,'returncode':result.returncode,
+        raw_trace_summary=summarize_raw_lidar_trace(raw_trace)
+        return {'status':'PASS' if payload and payload.get('status')=='PASS_NONEMPTY_POINTCLOUD' and raw_trace_summary.get('status')=='PASS_SOURCE_LOCAL_RAY_TRACE' else 'BLOCKED','capture':payload,'raw_trace':raw_trace_summary,'returncode':result.returncode,
                 'velocity_publisher_created':False,'service_clients_created':0}
 
     def run_once(self,preflight):
