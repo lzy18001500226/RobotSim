@@ -349,15 +349,18 @@ def run_once(
             result["status"] = "PASS" if result["capture"].get("status") == "PASS_NONEMPTY_POINTCLOUD" else "BLOCKED"
         else:
             result["failure"] = "capture process produced no result file"
-    except Exception as exc:
-        result["failure"] = f"{type(exc).__name__}: {exc}"
-    finally:
-        diagnostic_result = evidence / "lidar_obstacle_diagnostic_result.json"
         if capture_obstacle_diagnostic:
+            diagnostic_result = evidence / "lidar_obstacle_diagnostic_result.json"
+            diagnostic_deadline = min(time.monotonic() + 3.0, runtime.deadline)
+            while time.monotonic() < diagnostic_deadline and not diagnostic_result.is_file():
+                time.sleep(0.05)
             if diagnostic_result.is_file() and not diagnostic_result.is_symlink():
                 result["obstacle_diagnostic"] = json.loads(diagnostic_result.read_text(encoding="utf-8"))
             else:
                 result["obstacle_diagnostic"] = {"status": "BLOCKED_NO_DIAGNOSTIC_RESULT"}
+    except Exception as exc:
+        result["failure"] = f"{type(exc).__name__}: {exc}"
+    finally:
         result["native_mjdata_capture"] = runtime.finalize_native_mjdata_capture()
         runtime.cleanup()
         runtime.apply_container_teardown_gate(result)
