@@ -167,10 +167,12 @@ def main() -> None:
     parser.add_argument("--freeze-record", required=True, type=Path)
     parser.add_argument("--handoff", required=True, type=Path)
     parser.add_argument("--route-config", required=True, type=Path)
+    parser.add_argument("--perception-refinement", type=Path, help="optional known-upright-cylinder refinement result in the same world frame")
     parser.add_argument("--height-offset-mm", nargs="+", type=float, default=(80.0, 100.0, 120.0))
     parser.add_argument("--commands", nargs="+", type=int, default=(30, 32, 34, 36, 38, 40))
     args = parser.parse_args()
-    if not all(path.is_file() for path in (args.freeze_record, args.handoff, args.route_config)):
+    required_inputs = (args.freeze_record, args.handoff, args.route_config)
+    if not all(path.is_file() for path in required_inputs) or (args.perception_refinement is not None and not args.perception_refinement.is_file()):
         raise SystemExit("freeze record, navigation handoff, or route config is missing")
     if any(not math.isfinite(value) for value in args.height_offset_mm) or any(command < 0 or command > 100 for command in args.commands):
         raise SystemExit("scan parameters are invalid")
@@ -224,9 +226,21 @@ def main() -> None:
     cylinder = body_id(model, "test_cylinder")
     elbow, wrist, narrow, wide = (body_id(model, name) for name in ("right_elbow_link", "right_wrist_roll_link", *DISTAL_BODIES))
     cylinder_center = reference.xipos[cylinder].copy()
+    perception = None
+    target_cylinder_center = cylinder_center.copy()
+    if args.perception_refinement is not None:
+        perception = json.loads(args.perception_refinement.read_text(encoding="utf-8"))
+        if (
+            perception.get("classification") != "SIMULATION_ONLY_KNOWN_UPRIGHT_CYLINDER_GEOMETRIC_REFINEMENT"
+            or perception.get("gates", {}).get("GEOMETRIC_CENTRE_REFINEMENT") != "PASS"
+        ):
+            raise SystemExit("perception refinement is not a passing known-upright-cylinder result")
+        target_cylinder_center = np.asarray(perception["refined_center_world_m"], dtype=float)
+        if target_cylinder_center.shape != (3,) or not np.isfinite(target_cylinder_center).all():
+            raise SystemExit("perception refinement centre is invalid")
     rows = []
     for height_mm in args.height_offset_mm:
-        target = cylinder_center + np.array([0.0, 0.0, height_mm / 1000.0])
+        target = target_cylinder_center + np.array([0.0, 0.0, height_mm / 1000.0])
         q, metrics = solve_level_pose(static, force, orient, model, state, names, limits, seed, initial_command, target, elbow, wrist, narrow, wide)
         for command in args.commands:
             data = mujoco.MjData(model)
@@ -243,11 +257,17 @@ def main() -> None:
         "model": {"id": loaded.model_id, "sha256": loaded.model_sha256},
         "navigation": {"handoff_path": str(args.handoff), "handoff_sha256": sha256(args.handoff), "route_path": str(args.route_config), "route_sha256": sha256(args.route_config), "base_pose_scene_world": base_pose.tolist(), "contract": route["runtime_coordinate_contract"]},
         "source_scene": {"path": str(source_scene), "sha256": sha256(source_scene), "asset_rebindings": rebindings},
+        "object_centre": {
+            "scene_truth_world_m": cylinder_center.tolist(),
+            "target_for_ik_world_m": target_cylinder_center.tolist(),
+            "source": "SCENE_TRUTH" if perception is None else "PERCEPTION_REFINEMENT",
+            "perception_refinement": None if perception is None else {"path": str(args.perception_refinement), "sha256": sha256(args.perception_refinement), "translation_delta_to_scene_truth_mm": float(np.linalg.norm(target_cylinder_center - cylinder_center) * 1000.0)},
+        },
         "review_state": {"path": str(review_path), "sha256": sha256(review_path), "initial_command_percent": initial_command},
         "overlay": {"path": str(overlay), "sha256": sha256(overlay), "pelvis_pose_change": base_overlay},
         "rows": rows,
         "valid_dual_pad_candidates": valid,
-        "gates": {"TABLE_APPROACH_NAVIGATION_EVIDENCE": "PASS", "TABLE_DOCKING": "NOT_COMPLETE", "ROBOT_TABLE_CLEARANCE": "PASS" if valid else "BLOCKED", "STATIC_IK": "PASS" if valid else "BLOCKED", "BALANCE_AT_APPROACH_ENDPOINT": "NOT_RUN", "DYNAMICS": "NOT_RUN"},
+        "gates": {"TABLE_APPROACH_NAVIGATION_EVIDENCE": "PASS", "TABLE_DOCKING": "NOT_COMPLETE", "PERCEPTION_TO_STATIC_IK": "NOT_RUN" if perception is None else ("PASS" if valid else "BLOCKED"), "ROBOT_TABLE_CLEARANCE": "PASS" if valid else "BLOCKED", "STATIC_IK": "PASS" if valid else "BLOCKED", "BALANCE_AT_APPROACH_ENDPOINT": "NOT_RUN", "DYNAMICS": "NOT_RUN"},
         "limitations": ["The navigation evidence ends at TABLE_APPROACH, not TABLE_DOCKING.", "The pelvis change is a static scene overlay only; it does not prove walking-to-standing or balance after navigation.", "No model geometry, gripper parameter, collision setting, or MuJoCo dynamic state was changed."],
     }
     pg.write_new_text(output / "result.json", json.dumps(result, ensure_ascii=False, indent=2) + "\n")
