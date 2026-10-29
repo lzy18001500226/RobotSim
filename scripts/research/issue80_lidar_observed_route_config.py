@@ -117,7 +117,12 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
             "segment_timeout_s": 60.0,
             "recovery_limit": 0,
             "corridor": {
-                "polygon": [list(item) for item in _corridor_polygon(start, target, half_width_m=half_width, extension_m=0.15)],
+                # The route manager measures clearance to every rectangle
+                # edge, including the start/end caps.  The LiDAR localizer's
+                # accepted 75 mm initial correspondence residual plus the
+                # 0.466 m footprint/boundary margin needs a longitudinal cap
+                # extension larger than the 0.15 m arrival tolerance.
+                "polygon": [list(item) for item in _corridor_polygon(start, target, half_width_m=half_width, extension_m=0.75)],
                 "minimum_obstacle_clearance_m": clearance,
             },
             "command_bounds": {
