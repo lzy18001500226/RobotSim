@@ -78,6 +78,7 @@ from issue80_m1_first_motion import (
     stand_action_and_common_confirmed,
     target_bearing_heading_error_rad,
     arc_limited_forward_speed,
+    direct_target_terminal_reason,
     source_readback_gap,
     validate_first_motion_authorization,
     validate_local_sim_publishers,
@@ -314,6 +315,20 @@ class FirstMotionSafetyTests(unittest.TestCase):
         self.assertEqual(arc_limited_forward_speed(0.24), 0.20)
         self.assertEqual(arc_limited_forward_speed(0.26), 0.12)
         self.assertEqual(arc_limited_forward_speed(-0.26), 0.12)
+
+    def test_target_route_does_not_consume_vendor_distance_baseline_cap(self) -> None:
+        self.assertIsNone(direct_target_terminal_reason(
+            target_requested=True, target_error_m=0.20, target_tolerance_m=0.15,
+            travelled_distance_m=2.6, distance_cap_m=2.5,
+        ))
+        self.assertEqual(direct_target_terminal_reason(
+            target_requested=True, target_error_m=0.15, target_tolerance_m=0.15,
+            travelled_distance_m=2.6, distance_cap_m=2.5,
+        ), "target_reached")
+        self.assertEqual(direct_target_terminal_reason(
+            target_requested=False, target_error_m=None, target_tolerance_m=None,
+            travelled_distance_m=2.5, distance_cap_m=2.5,
+        ), "distance_reached")
 
     def snapshot(self, **overrides):
         value = {

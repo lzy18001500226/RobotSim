@@ -2639,6 +2639,32 @@ def arc_limited_forward_speed(
     return turn_arc_m_s if abs(heading_error_rad) > prealign_error_rad else cruise_m_s
 
 
+def direct_target_terminal_reason(
+    *, target_requested: bool, target_error_m: float | None,
+    target_tolerance_m: float | None, travelled_distance_m: float | None,
+    distance_cap_m: float,
+) -> str | None:
+    """Apply an endpoint gate to target routes and a distance cap to baselines.
+
+    A target-following route can curve, so its planar travelled distance is not
+    an acceptance or termination surrogate.  The retained distance cap belongs
+    only to the vendor-style no-target baseline.
+    """
+    if not math.isfinite(distance_cap_m) or distance_cap_m <= 0.0:
+        raise ValueError("distance cap must be positive and finite")
+    if target_requested:
+        if (
+            target_error_m is not None and target_tolerance_m is not None
+            and math.isfinite(target_error_m) and math.isfinite(target_tolerance_m)
+            and target_tolerance_m > 0.0 and target_error_m <= target_tolerance_m
+        ):
+            return "target_reached"
+        return None
+    if travelled_distance_m is not None and math.isfinite(travelled_distance_m) and travelled_distance_m >= distance_cap_m:
+        return "distance_reached"
+    return None
+
+
 def classify_turning_rotation(
     *, start_yaw_rad: float | None, end_yaw_rad: float | None,
     commanded_angular_velocity_rad_s: float, baseline_yaw_noise_rad: float | None,

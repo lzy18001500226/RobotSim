@@ -29,6 +29,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from issue80_m1_first_motion import (
     arc_limited_forward_speed,
+    direct_target_terminal_reason,
     stand_action_and_common_confirmed,
     target_bearing_heading_error_rad,
 )
@@ -555,12 +556,16 @@ def main() -> int:
                     target_pose.x_m - float(target["x_m"]),
                     target_pose.y_m - float(target["y_m"]),
                 )
-                if target_error <= float(args.target_tolerance_m):
-                    terminal_reason = "target_reached"
-                    break
             distance = node.distance_m()
-            if distance is not None and distance >= args.distance_m:
-                terminal_reason = "distance_reached"
+            terminal = direct_target_terminal_reason(
+                target_requested=target is not None,
+                target_error_m=target_error if target is not None else None,
+                target_tolerance_m=float(args.target_tolerance_m) if target is not None else None,
+                travelled_distance_m=distance,
+                distance_cap_m=args.distance_m,
+            )
+            if terminal is not None:
+                terminal_reason = terminal
                 break
             now = time.monotonic()
             if now >= next_publish:
