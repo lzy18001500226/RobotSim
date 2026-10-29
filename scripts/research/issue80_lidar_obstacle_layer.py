@@ -138,7 +138,7 @@ def raw_xyz_ranges(raw_xyz: Sequence[object], profile: RayCasterProfile = RAICOM
     return tuple(ranges)
 
 
-def _ray_direction_in_base(ray_index: int, profile: RayCasterProfile) -> tuple[float, float]:
+def ray_direction_in_base(ray_index: int, profile: RayCasterProfile) -> tuple[float, float]:
     """Return projected forward/lateral direction for one RayCaster slot.
 
     The source camera makes camera ``-Z`` point forward and camera ``+X``
@@ -190,7 +190,7 @@ def novel_returns_from_ranges(
         # farther return than a known static surface cannot be an occlusion.
         if expected is not None and observed > expected - novelty_margin_m:
             continue
-        forward, lateral = _ray_direction_in_base(index, profile)
+        forward, lateral = ray_direction_in_base(index, profile)
         base_x, base_y = observed * forward, observed * lateral
         output.append(NovelReturn(
             ray_index=index,
