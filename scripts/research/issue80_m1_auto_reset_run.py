@@ -1537,8 +1537,6 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 command[-1] += " --native-x2-timestep"
             if getattr(args, "raicom_native_mjdata_route_feedback", False):
                 command[-1] += " --raicom-native-mjdata-route-feedback"
-        elif bool(getattr(args, "raicom_lidar_obstacle_route", False)):
-            command[-1] += " --native-x2-timestep"
         if getattr(args, "raicom_low_cruise_profile", False):
             command[-1] += " --raicom-low-cruise-profile"
         if getattr(args, "raicom_zero_forward_heading_acquisition", False):
@@ -2232,7 +2230,7 @@ class BoundedRun:
             self.local01_scene_source = source
             self.local01_scene_bundle = prepare_local01_scene_runtime_bundle(
                 source, self.evidence, runtime_root=RUNTIME,
-                aligned_start=True, native_x2_timestep=True,
+                aligned_start=True, native_x2_timestep=False,
             )
             staged = self.evidence / "lidar_route_template.json"
             with staged.open("xb") as stream:
@@ -6815,7 +6813,7 @@ def main() -> int:
         if not (
             (args.table_approach_mission or args.raicom_lidar_obstacle_route)
             and (args.aligned_start_table_approach or args.raicom_lidar_obstacle_route)
-            and args.native_x2_timestep
+            and (args.native_x2_timestep or args.raicom_lidar_obstacle_route)
             and args.direct_stand_from_passive
             and args.maintainer_authorized_first_motion
             and args.require_stand_warmup_composite
@@ -6847,10 +6845,10 @@ def main() -> int:
         if not all(required):
             parser.error("LiDAR obstacle route requires route, Local01 scene, overlay, static map, static audit, and static occupancy inputs")
         if not (
-            args.direct_stand_from_passive and args.native_x2_timestep
+            args.direct_stand_from_passive
             and args.maintainer_authorized_first_motion and args.require_stand_warmup_composite
         ):
-            parser.error("LiDAR obstacle route requires the existing direct-stand/native-timestep/warmup gates")
+            parser.error("LiDAR obstacle route requires the existing direct-stand/warmup gates")
         try:
             background = Path(args.raicom_lidar_background_capture).resolve(strict=True)
             background.relative_to(REPO / "reviews/issue-80")

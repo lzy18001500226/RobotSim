@@ -9454,7 +9454,6 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         or (
             lidar_map_route
             and configured_route
-            and native_x2_timestep
             and abs(float(args.forward_speed) - 0.12) <= 1e-9
         )
     ):
