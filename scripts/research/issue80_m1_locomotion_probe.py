@@ -3165,6 +3165,9 @@ class FocusedM1Diagnostic(Node):
         )
         route_config_mode = bool(getattr(self.args, "route_config", None))
         lidar_map_route_mode = bool(getattr(self.args, "lidar_map_route", False))
+        community_navigation_profile_mode = bool(
+            getattr(self.args, "community_navigation_profile", False)
+        )
         route_pose_age_limit_s = 0.40 if lidar_map_route_mode else MAX_POSE_AGE_S
         short_scene_route_mode = bool(getattr(self.args, "short_scene_route", False))
         table_approach_mission_mode = bool(getattr(self.args, "table_approach_mission", False))
@@ -4547,6 +4550,7 @@ class FocusedM1Diagnostic(Node):
                 maximum_forward_m_s=(
                     VENDOR_EXAMPLE_FORWARD_M_S if route.vendor_gait_profile else 0.14
                 ),
+                maximum_angular_rad_s=(0.35 if route.vendor_gait_profile else 0.075),
             )
             initial_readiness = readiness_from_snapshot(initial)
             transit_plan = bridge.plan_next(

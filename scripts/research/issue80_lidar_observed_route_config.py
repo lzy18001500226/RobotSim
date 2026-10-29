@@ -163,7 +163,7 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
             "command_bounds": {
                 "target_forward_m_s": VENDOR_EXAMPLE_FORWARD_M_S,
                 "max_forward_m_s": VENDOR_EXAMPLE_FORWARD_M_S,
-                "max_angular_rad_s": 0.075,
+                "max_angular_rad_s": 0.35,
                 "max_command_window_s": 5.0,
             },
         })

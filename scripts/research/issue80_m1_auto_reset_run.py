@@ -1530,6 +1530,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                 " --lidar-map-route"
                 " --lidar-localization-topic /map_tf_distribution/localization_pose"
                 " --raicom-zero-forward-heading-acquisition"
+                " --community-navigation-profile"
             )
         if local01_short_route:
             command[-1] += " --short-scene-route"

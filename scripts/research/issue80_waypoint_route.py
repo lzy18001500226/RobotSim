@@ -428,8 +428,13 @@ class RouteSpec:
         if self.steps[-1].stop_behavior is not StopBehavior.VERIFY_PHYSICAL_STOP:
             raise RouteError("the final route step must require a measured physical stop")
         maximum_forward_m_s = 0.20 if self.vendor_gait_profile else MAX_FORWARD_M_S
+        maximum_angular_rad_s = 0.35 if self.vendor_gait_profile else MAX_ANGULAR_RAD_S
         for index, step in enumerate(self.steps):
-            _validate_step(step, maximum_forward_m_s=maximum_forward_m_s)
+            _validate_step(
+                step,
+                maximum_forward_m_s=maximum_forward_m_s,
+                maximum_angular_rad_s=maximum_angular_rad_s,
+            )
             start_x, start_y = (
                 (self.start_x_m, self.start_y_m)
                 if index == 0 else (self.steps[index - 1].x_m, self.steps[index - 1].y_m)
@@ -1216,7 +1221,12 @@ def _parse_step(raw: Any) -> RouteStep:
     )
 
 
-def _validate_step(step: RouteStep, *, maximum_forward_m_s: float = MAX_FORWARD_M_S) -> None:
+def _validate_step(
+    step: RouteStep,
+    *,
+    maximum_forward_m_s: float = MAX_FORWARD_M_S,
+    maximum_angular_rad_s: float = MAX_ANGULAR_RAD_S,
+) -> None:
     values = (
         step.x_m, step.y_m, step.position_tolerance_m, step.segment_timeout_s,
         step.minimum_obstacle_clearance_m, step.max_forward_m_s,
@@ -1255,8 +1265,10 @@ def _validate_step(step: RouteStep, *, maximum_forward_m_s: float = MAX_FORWARD_
         )
     if step.target_forward_m_s > step.max_forward_m_s + 1e-9:
         raise RouteError(f"{step.waypoint_id}: target forward speed exceeds its declared bound")
-    if step.max_angular_rad_s > MAX_ANGULAR_RAD_S + 1e-9:
-        raise RouteError(f"{step.waypoint_id}: yaw command exceeds the existing 0.075 rad/s envelope")
+    if step.max_angular_rad_s > maximum_angular_rad_s + 1e-9:
+        if abs(maximum_angular_rad_s - MAX_ANGULAR_RAD_S) <= 1e-9:
+            raise RouteError(f"{step.waypoint_id}: yaw command exceeds the existing 0.075 rad/s envelope")
+        raise RouteError(f"{step.waypoint_id}: yaw command exceeds the declared route envelope")
     if step.max_command_window_s > MAX_ACTION_WINDOW_S + 1e-9:
         raise RouteError(f"{step.waypoint_id}: command window exceeds the existing 10 s bound")
     if step.yaw_policy is YawPolicy.EXPLICIT:
