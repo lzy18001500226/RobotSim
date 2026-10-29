@@ -1530,7 +1530,6 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
             command[-1] += (
                 " --lidar-map-route"
                 " --lidar-localization-topic /map_tf_distribution/localization_pose"
-                " --raicom-forward-gait-yaw-inversion"
             )
         if local01_short_route:
             command[-1] += " --short-scene-route"
