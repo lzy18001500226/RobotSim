@@ -5659,7 +5659,7 @@ class FocusedM1Diagnostic(Node):
                             forward_command_m_s=float(current_plan.forward_m_s),
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
-                            ),
+                            ) or lidar_map_route_mode,
                             allow_vendor_example=vendor_velocity_profile_mode,
                             zero_forward_heading_acquisition=heading_acquisition_this_window,
                         )
@@ -6199,7 +6199,7 @@ class FocusedM1Diagnostic(Node):
                         source_grounded_activation_timeout_s=ACTIVATION_PROBE_DURATION_S,
                         allow_raicom_low_cruise_source_activation=bool(
                             getattr(self.args, "raicom_low_cruise_profile", False)
-                        ),
+                        ) or lidar_map_route_mode,
                         allow_vendor_example_source_activation=vendor_velocity_profile_mode,
                     )
                     # The complete physical-stop window is fresh when the
@@ -6990,7 +6990,7 @@ class FocusedM1Diagnostic(Node):
                             forward_command_m_s=float(self.args.forward_speed),
                             allow_raicom_low_cruise=bool(
                                 getattr(self.args, "raicom_low_cruise_profile", False)
-                            ),
+                            ) or lidar_map_route_mode,
                             zero_forward_heading_acquisition=(
                                 fixed_window_heading_acquisition_required(
                                     fixed_window_table_approach=fixed_window_table_approach_mode,
@@ -8508,7 +8508,7 @@ class FocusedM1Diagnostic(Node):
                         forward_command_m_s=float(self.args.forward_speed),
                         allow_raicom_low_cruise=bool(
                             getattr(self.args, "raicom_low_cruise_profile", False)
-                        ),
+                        ) or bool(getattr(self.args, "lidar_map_route", False)),
                         allow_vendor_example=bool(
                             getattr(self.args, "raicom_vendor_example_forward_baseline", False)
                             or getattr(self.args, "raicom_vendor_table_approach", False)
