@@ -300,6 +300,30 @@ def inflate_cells(
     return frozenset(result)
 
 
+def connected_cell_components(cells: Iterable[GridCell]) -> tuple[frozenset[GridCell], ...]:
+    """Return deterministic eight-connected obstacle-cell components."""
+    remaining = set(cells)
+    output: list[frozenset[GridCell]] = []
+    while remaining:
+        seed = min(remaining)
+        remaining.remove(seed)
+        component = {seed}
+        frontier = [seed]
+        while frontier:
+            current = frontier.pop()
+            neighbors = {
+                GridCell(current.x + dx, current.y + dy)
+                for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                if dx or dy
+            }
+            joined = neighbors & remaining
+            remaining -= joined
+            component.update(joined)
+            frontier.extend(joined)
+        output.append(frozenset(component))
+    return tuple(sorted(output, key=lambda component: (min(component), len(component))))
+
+
 def _neighbors(cell: GridCell, grid: GridSpec, blocked: frozenset[GridCell]) -> Iterable[tuple[GridCell, float]]:
     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
         candidate = GridCell(cell.x + dx, cell.y + dy)

@@ -21,6 +21,7 @@ from issue80_lidar_obstacle_layer import (
     path_world_points,
     plan_a_star,
     raw_xyz_ranges,
+    connected_cell_components,
     simplify_grid_path,
 )
 from issue80_lidar_map_localizer import MAGIC
@@ -119,6 +120,10 @@ class LidarObstacleLayerTests(unittest.TestCase):
         grid = GridSpec(0.0, 0.0, 0.10, 3, 3)
         with self.assertRaisesRegex(ObstacleLayerError, "start or goal"):
             plan_a_star(GridCell(0, 0), GridCell(2, 2), grid=grid, blocked={GridCell(0, 0)})
+
+    def test_components_separate_scattered_noise_from_chair_cluster(self) -> None:
+        components = connected_cell_components({GridCell(1, 1), GridCell(1, 2), GridCell(2, 2), GridCell(9, 9)})
+        self.assertEqual(sorted(len(component) for component in components), [1, 3])
 
     def test_static_replay_preserves_no_false_confirmed_obstacle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

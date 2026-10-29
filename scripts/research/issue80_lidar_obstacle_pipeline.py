@@ -23,6 +23,7 @@ from issue80_lidar_obstacle_layer import (
     GridCell,
     NovelObstacleTracker,
     ObstacleLayerError,
+    connected_cell_components,
     inflate_cells,
     path_world_points,
     plan_a_star,
@@ -48,6 +49,7 @@ class ObstaclePipelineConfig:
     static_match_distance_m: float
     obstacle_inflation_m: float
     confirmation_frames: int
+    minimum_confirmed_cluster_cells: int
     expected_frame_id: str = "map"
 
 
@@ -100,11 +102,16 @@ class MapFrameObstaclePipeline:
                 grid=self.config.grid,
                 static_match_distance_m=self.config.static_match_distance_m,
             )
-            confirmed = self.tracker.update_positions(sequence, ((item.x_m, item.y_m) for item in novel))
+            raw_confirmed = self.tracker.update_positions(sequence, ((item.x_m, item.y_m) for item in novel))
         except ObstacleLayerError as exc:
             return ObstaclePipelineDecision(
                 PipelineStatus.BLOCKED_INVALID_OBSERVATION, sequence, 0, 0, (), (), (), (), str(exc),
             )
+        qualified_components = tuple(
+            component for component in connected_cell_components(raw_confirmed)
+            if len(component) >= self.config.minimum_confirmed_cluster_cells
+        )
+        confirmed = frozenset().union(*qualified_components) if qualified_components else frozenset()
         inflated = inflate_cells(
             confirmed, grid=self.config.grid, radius_m=self.config.obstacle_inflation_m,
         )
@@ -113,7 +120,7 @@ class MapFrameObstaclePipeline:
             return ObstaclePipelineDecision(
                 PipelineStatus.CLEAR_DIRECT_PATH if not novel else PipelineStatus.WAITING_FOR_CONFIRMATION,
                 sequence, len(points), len(novel), (), (), (), (),
-                "no confirmed new obstacle intersects a route decision",
+                "no spatially confirmed new obstacle intersects a route decision",
             )
         try:
             raw = plan_a_star(self.config.start, self.config.goal, grid=self.config.grid, blocked=blocked)

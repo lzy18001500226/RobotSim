@@ -29,6 +29,7 @@ class ObstaclePipelineTests(unittest.TestCase):
             static_match_distance_m=0.15,
             obstacle_inflation_m=0.21,
             confirmation_frames=2,
+            minimum_confirmed_cluster_cells=3,
         )
 
     def test_known_static_point_does_not_replan(self) -> None:
@@ -42,8 +43,8 @@ class ObstaclePipelineTests(unittest.TestCase):
     def test_new_chair_requires_confirmation_then_generates_detour(self) -> None:
         pipeline = MapFrameObstaclePipeline(self.config)
         kwargs = {
-            "frame_id": "map", "data": cloud([(0.02, 0.02, 0.5)]),
-            "width": 1, "height": 1, "point_step": 12, "field_offsets": {"x": 0, "y": 4, "z": 8},
+            "frame_id": "map", "data": cloud([(0.02, 0.02, 0.5), (0.02, 0.12, 0.5), (0.12, 0.12, 0.5)]),
+            "width": 3, "height": 1, "point_step": 12, "field_offsets": {"x": 0, "y": 4, "z": 8},
         }
         first = pipeline.observe(sequence=1, **kwargs)
         self.assertEqual(first.status, PipelineStatus.WAITING_FOR_CONFIRMATION)
@@ -52,6 +53,16 @@ class ObstaclePipelineTests(unittest.TestCase):
         self.assertEqual(second.detour_cells[0], self.config.start)
         self.assertEqual(second.detour_cells[-1], self.config.goal)
         self.assertTrue(any(cell.y != self.config.start.y for cell in second.detour_cells))
+
+    def test_confirmed_single_cell_noise_does_not_replan(self) -> None:
+        pipeline = MapFrameObstaclePipeline(self.config)
+        kwargs = {
+            "frame_id": "map", "data": cloud([(0.02, 0.02, 0.5)]),
+            "width": 1, "height": 1, "point_step": 12, "field_offsets": {"x": 0, "y": 4, "z": 8},
+        }
+        pipeline.observe(sequence=1, **kwargs)
+        result = pipeline.observe(sequence=2, **kwargs)
+        self.assertEqual(result.status, PipelineStatus.WAITING_FOR_CONFIRMATION)
 
     def test_wrong_frame_fails_closed_without_route(self) -> None:
         pipeline = MapFrameObstaclePipeline(self.config)
