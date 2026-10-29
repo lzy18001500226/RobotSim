@@ -60,6 +60,43 @@ class StandingTests(unittest.TestCase):
         self.assertIn("parser.add_argument('--lidar-background-capture'",source)
         self.assertIn("parser.add_argument('--lidar-static-map-source'",source)
 
+    def test_background_staging_does_not_replace_the_overlay_directory(self):
+        import argparse
+        import json
+        import tempfile
+        from pathlib import Path
+        class Runtime:
+            lidar_overlay_source = None
+            lidar_overlay_dir = None
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            overlay=root/'overlay-source'
+            lidar=overlay/'lidar_overlay'
+            plugins=overlay/'mujoco_plugin'
+            lidar.mkdir(parents=True)
+            plugins.mkdir()
+            for name in ('x2_lidar_overlay.xml','robot_lidar_overlay.yaml','scene_lidar_overlay.xml','simulator_lidar_overlay.yaml'):
+                (lidar/name).write_text(name,encoding='utf-8')
+            (plugins/'libissue80_ray.so').write_bytes(b'plugin')
+            background=root/'background.json'
+            background.write_text(json.dumps({'status':'PASS_NONEMPTY_POINTCLOUD'}),encoding='utf-8')
+            static=root/'static-map'
+            static.mkdir()
+            (static/'lidar_static_map.bin').write_bytes(b'map')
+            (static/'lidar_map_localization_trace.jsonl').write_text('{}\n',encoding='utf-8')
+            evidence=root/'evidence'
+            evidence.mkdir()
+            args=argparse.Namespace(
+                attempt_id='offline',protocol='jd-sd',lidar_overlay_source=overlay,
+                lidar_background_capture=background,lidar_static_map_source=static,
+            )
+            run=StandingRun(args,evidence,'none')
+            runtime=Runtime()
+            run.configure_runtime_overlay(runtime,{})
+            self.assertEqual(runtime.lidar_overlay_dir,evidence/'lidar_overlay')
+            self.assertEqual(run.lidar_static_map_inputs['lidar_map_localization_trace.jsonl'],evidence/'lidar_map_localization_trace.jsonl')
+            self.assertTrue((runtime.lidar_overlay_dir/'x2_lidar_overlay.xml').is_file())
+
     def test_safe_request_requires_reset_effect_fresh_advancing_one_shot(self):
         args=dict(reset_verified=True,reset_effect=True,fresh=True,
                   pose={'x_m':-1.5,'y_m':-1.5,'yaw_rad':math.pi/2,
