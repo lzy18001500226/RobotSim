@@ -16,6 +16,7 @@ from issue80_lidar_map_obstacle_field import load_map_background_capture, static
 from issue80_lidar_map_localizer import load_database
 from issue80_lidar_static_surface_audit import calibration_from_localization_trace
 from issue80_lidar_obstacle_layer import GridSpec
+from issue80_lidar_obstacle_layer import GridCell
 from issue80_lidar_obstacle_pipeline import MapFrameObstaclePipeline, ObstaclePipelineConfig
 from issue80_lidar_obstacle_replay import grid_from_candidates
 
@@ -61,6 +62,39 @@ class Diagnostic(Node):
         self.trace.close()
 
 
+def load_static_route_blocked(path: Path | None, *, grid: GridSpec) -> frozenset[GridCell]:
+    """Load a provenance-pinned known-static occupancy layer, if supplied."""
+    if path is None:
+        return frozenset()
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("static route occupancy must be a regular file")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    expected_grid = raw.get("grid") if isinstance(raw, dict) else None
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema") != "robotsim.issue80.raicom-static-occupancy.v1"
+        or not isinstance(expected_grid, dict)
+        or float(expected_grid.get("origin_x_m")) != grid.origin_x_m
+        or float(expected_grid.get("origin_y_m")) != grid.origin_y_m
+        or float(expected_grid.get("resolution_m")) != grid.resolution_m
+        or int(expected_grid.get("width")) != grid.width
+        or int(expected_grid.get("height")) != grid.height
+    ):
+        raise ValueError("static route occupancy does not match the LiDAR static-map grid")
+    raw_cells = raw.get("blocked_cells")
+    if not isinstance(raw_cells, list):
+        raise ValueError("static route occupancy has no blocked cells")
+    cells: set[GridCell] = set()
+    for item in raw_cells:
+        if not isinstance(item, dict):
+            raise ValueError("static route occupancy cell is malformed")
+        cell = GridCell(int(item["x"]), int(item["y"]))
+        if not grid.contains(cell):
+            raise ValueError("static route occupancy contains an out-of-grid cell")
+        cells.add(cell)
+    return frozenset(cells)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--static-database", type=Path, required=True)
@@ -68,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--background-capture", type=Path, default=None)
+    parser.add_argument("--static-route-blocked", type=Path, default=None)
     parser.add_argument("--topic", default=DEFAULT_TOPIC)
     parser.add_argument("--duration-s", type=float, default=20.0)
     parser.add_argument("--static-match-distance-m", type=float, default=0.40)
@@ -81,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("invalid bounded diagnostic arguments")
     candidates, ranges = load_database(args.static_database)
     grid = grid_from_candidates(candidates, resolution_m=0.10)
+    static_route_blocked = load_static_route_blocked(args.static_route_blocked, grid=grid)
     background = () if args.background_capture is None else load_map_background_capture(args.background_capture)
     # A measured map-frame background deliberately supersedes the coarse
     # static-signature surface for novelty matching.  Avoid spending the
@@ -96,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
             grid=grid,
         )
     config = ObstaclePipelineConfig(
-        grid=grid, static_surface=static_surface, static_route_blocked=frozenset(),
+        grid=grid, static_surface=static_surface, static_route_blocked=static_route_blocked,
         start=grid.world_to_cell(-1.5, -1.5), goal=grid.world_to_cell(0.9, -1.5),
         static_match_distance_m=args.static_match_distance_m,
         obstacle_inflation_m=0.46565748847422734,
@@ -120,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
             "novelty_reference": "MAP_BACKGROUND_CAPTURE" if background else "STATIC_SURFACE_FIELD",
             "background_point_count": len(background),
             "static_surface_cell_count": len(static_surface),
+            "static_route_blocked_cell_count": len(static_route_blocked),
+            "static_route_blocked_source": None if args.static_route_blocked is None else str(args.static_route_blocked),
             "topic": args.topic,
             "minimum_obstacle_span_m": {"x": args.minimum_obstacle_span_x_m, "y": args.minimum_obstacle_span_y_m},
             "velocity_publisher_created": False, "service_clients_created": 0,

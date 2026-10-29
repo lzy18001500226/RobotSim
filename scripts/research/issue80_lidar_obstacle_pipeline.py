@@ -143,13 +143,33 @@ class MapFrameObstaclePipeline:
             envelope, grid=self.config.grid, radius_m=self.config.obstacle_inflation_m,
         )
         blocked = frozenset((*self.config.static_route_blocked, *inflated))
+        static_direct_blocked = direct_path_intersects_blocked(
+            self.config.start, self.config.goal, blocked=self.config.static_route_blocked,
+        )
         if not confirmed:
+            if static_direct_blocked:
+                try:
+                    raw = plan_a_star(
+                        self.config.start, self.config.goal, grid=self.config.grid,
+                        blocked=self.config.static_route_blocked,
+                    )
+                    detour = simplify_grid_path(raw, blocked=self.config.static_route_blocked)
+                except ObstacleLayerError as exc:
+                    return ObstaclePipelineDecision(
+                        PipelineStatus.BLOCKED_NO_PATH, sequence, len(points), len(novel), (), (), (), (), (), str(exc),
+                    )
+                return ObstaclePipelineDecision(
+                    PipelineStatus.DETOUR_READY,
+                    sequence, len(points), len(novel), (), (), (), detour,
+                    path_world_points(detour, self.config.grid),
+                    "known static-map occupancy blocks the direct route; the resulting detour still requires independent full-body clearance before execution",
+                )
             return ObstaclePipelineDecision(
                 PipelineStatus.CLEAR_DIRECT_PATH if not novel else PipelineStatus.WAITING_FOR_CONFIRMATION,
                 sequence, len(points), len(novel), (), (), (), (), (),
                 "no spatially confirmed new obstacle intersects a route decision",
             )
-        if not direct_path_intersects_blocked(self.config.start, self.config.goal, blocked=inflated):
+        if not direct_path_intersects_blocked(self.config.start, self.config.goal, blocked=blocked):
             return ObstaclePipelineDecision(
                 PipelineStatus.OBSTACLE_CLEAR_OF_DIRECT_PATH,
                 sequence, len(points), len(novel), tuple(sorted(confirmed)), tuple(sorted(envelope)),

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from issue80_lidar_map_localizer import load_database
 from issue80_lidar_map_obstacle_field import load_map_background_capture
-from issue80_lidar_obstacle_layer import GridCell
+from issue80_lidar_obstacle_layer import GridCell, GridSpec
 from issue80_lidar_obstacle_pipeline import MapFrameObstaclePipeline, ObstaclePipelineConfig
 from issue80_lidar_obstacle_replay import grid_from_candidates
 
@@ -23,19 +23,50 @@ def point_bytes(points: tuple) -> bytes:
     return b"".join(struct.pack("<fff", point.x_m, point.y_m, point.z_m) for point in points)
 
 
+def load_static_route_blocked(path: Path | None, *, grid: GridSpec) -> frozenset[GridCell]:
+    if path is None:
+        return frozenset()
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("static route occupancy must be a regular file")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    expected_grid = raw.get("grid") if isinstance(raw, dict) else None
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema") != "robotsim.issue80.raicom-static-occupancy.v1"
+        or not isinstance(expected_grid, dict)
+        or float(expected_grid.get("origin_x_m")) != grid.origin_x_m
+        or float(expected_grid.get("origin_y_m")) != grid.origin_y_m
+        or float(expected_grid.get("resolution_m")) != grid.resolution_m
+        or int(expected_grid.get("width")) != grid.width
+        or int(expected_grid.get("height")) != grid.height
+    ):
+        raise ValueError("static route occupancy does not match the LiDAR static-map grid")
+    cells: set[GridCell] = set()
+    for item in raw.get("blocked_cells", []):
+        if not isinstance(item, dict):
+            raise ValueError("static route occupancy cell is malformed")
+        cell = GridCell(int(item["x"]), int(item["y"]))
+        if not grid.contains(cell):
+            raise ValueError("static route occupancy contains an out-of-grid cell")
+        cells.add(cell)
+    return frozenset(cells)
+
+
 def replay(
     *, background_capture: Path, observed_capture: Path, static_database: Path,
     maximum_match_distance_m: float, minimum_cluster_cells: int,
     minimum_obstacle_span_x_m: float = 0.0, minimum_obstacle_span_y_m: float = 0.0,
+    static_route_blocked_path: Path | None = None,
 ) -> dict:
     background = load_map_background_capture(background_capture)
     observed = load_map_background_capture(observed_capture)
     candidates, _ = load_database(static_database)
     grid = grid_from_candidates(candidates, resolution_m=0.10)
+    static_route_blocked = load_static_route_blocked(static_route_blocked_path, grid=grid)
     pipeline = MapFrameObstaclePipeline(ObstaclePipelineConfig(
         grid=grid,
         static_surface=frozenset(),
-        static_route_blocked=frozenset(),
+        static_route_blocked=static_route_blocked,
         start=grid.world_to_cell(-1.5, -1.5),
         goal=grid.world_to_cell(0.9, -1.5),
         static_match_distance_m=maximum_match_distance_m,
@@ -69,6 +100,8 @@ def replay(
             "maximum_match_distance_m": maximum_match_distance_m,
             "minimum_cluster_cells": minimum_cluster_cells,
             "minimum_obstacle_span_m": {"x": minimum_obstacle_span_x_m, "y": minimum_obstacle_span_y_m},
+            "static_route_blocked_source": None if static_route_blocked_path is None else str(static_route_blocked_path),
+            "static_route_blocked_cell_count": len(static_route_blocked),
         },
         "first_decision": first.status.value,
         "second_decision": second.status.value,
@@ -93,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--minimum-cluster-cells", type=int, default=3)
     parser.add_argument("--minimum-obstacle-span-x-m", type=float, default=0.0)
     parser.add_argument("--minimum-obstacle-span-y-m", type=float, default=0.0)
+    parser.add_argument("--static-route-blocked", type=Path, default=None)
     args = parser.parse_args(argv)
     if args.result.exists() or args.result.is_symlink():
         parser.error("--result must be new")
@@ -107,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             minimum_cluster_cells=args.minimum_cluster_cells,
             minimum_obstacle_span_x_m=args.minimum_obstacle_span_x_m,
             minimum_obstacle_span_y_m=args.minimum_obstacle_span_y_m,
+            static_route_blocked_path=args.static_route_blocked,
         )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))

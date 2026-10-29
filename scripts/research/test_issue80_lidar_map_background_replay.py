@@ -50,6 +50,28 @@ class MapBackgroundReplayTests(unittest.TestCase):
             self.assertEqual(len(blocked["confirmed_cells"]), 3)
             self.assertFalse(blocked["velocity_publisher_created"])
 
+    def test_invalid_static_occupancy_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            background = root / "background.json"
+            observed = root / "observed.json"
+            database = root / "map.bin"
+            invalid = root / "invalid.json"
+            values = [0.0, 0.0, 0.0] + [2.0] * 450
+            with database.open("wb") as stream:
+                stream.write(MAGIC)
+                stream.write(struct.pack("<II", 1, 450))
+                stream.write(struct.pack("<" + "f" * len(values), *values))
+            background.write_text(json.dumps(capture([[0.0, 0.0, 0.0]])), encoding="utf-8")
+            observed.write_text(json.dumps(capture([[0.0, 0.0, 0.0]])), encoding="utf-8")
+            invalid.write_text("{}", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                replay(
+                    background_capture=background, observed_capture=observed, static_database=database,
+                    maximum_match_distance_m=0.02, minimum_cluster_cells=3,
+                    static_route_blocked_path=invalid,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

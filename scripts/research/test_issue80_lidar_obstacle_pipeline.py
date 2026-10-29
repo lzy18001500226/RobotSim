@@ -102,6 +102,26 @@ class ObstaclePipelineTests(unittest.TestCase):
         self.assertEqual(result.status, PipelineStatus.OBSTACLE_CLEAR_OF_DIRECT_PATH)
         self.assertEqual(result.detour_map_waypoints, ())
 
+    def test_known_static_occupancy_produces_a_static_detour(self) -> None:
+        config = ObstaclePipelineConfig(
+            grid=self.grid,
+            static_surface=frozenset(),
+            static_route_blocked=frozenset({GridCell(10, 10)}),
+            start=GridCell(1, 10),
+            goal=GridCell(19, 10),
+            static_match_distance_m=0.15,
+            obstacle_inflation_m=0.21,
+            confirmation_frames=2,
+            minimum_confirmed_cluster_cells=3,
+        )
+        result = MapFrameObstaclePipeline(config).observe(
+            sequence=1, frame_id="map", data=cloud([]), width=0, height=1,
+            point_step=12, field_offsets={"x": 0, "y": 4, "z": 8},
+        )
+        self.assertEqual(result.status, PipelineStatus.DETOUR_READY)
+        self.assertEqual(result.detour_cells[0], config.start)
+        self.assertEqual(result.detour_cells[-1], config.goal)
+
     def test_wrong_frame_fails_closed_without_route(self) -> None:
         pipeline = MapFrameObstaclePipeline(self.config)
         result = pipeline.observe(
