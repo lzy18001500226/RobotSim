@@ -63,6 +63,9 @@ class StandingTests(unittest.TestCase):
         self.assertIn('start_simulation_only_world_projected_lidar_bridge',method)
         self.assertIn('--coordinate-field world_xyz',method)
         self.assertIn('--topic /robotsim/lidar/map_points --frame map',method)
+        self.assertIn('--minimum-obstacle-span-x-m',method)
+        self.assertIn("parser.add_argument('--lidar-minimum-obstacle-span-x-m'",source)
+        self.assertIn("parser.add_argument('--lidar-minimum-obstacle-span-y-m'",source)
 
     def test_background_staging_does_not_replace_the_overlay_directory(self):
         import argparse

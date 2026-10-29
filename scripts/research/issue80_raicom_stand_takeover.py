@@ -101,6 +101,14 @@ class StandingRun(ResetOnlyRun):
         self.lidar_background_capture: Path | None = None
         self.lidar_static_map_inputs: dict[str, Path] | None = None
         self.lidar_world_projection=bool(getattr(args,'lidar_world_projection',False))
+        self.lidar_minimum_obstacle_span_x_m=float(
+            getattr(args,'lidar_minimum_obstacle_span_x_m',0.0)
+        )
+        self.lidar_minimum_obstacle_span_y_m=float(
+            getattr(args,'lidar_minimum_obstacle_span_y_m',0.0)
+        )
+        if self.lidar_minimum_obstacle_span_x_m<0.0 or self.lidar_minimum_obstacle_span_y_m<0.0:
+            raise ValueError('LiDAR minimum obstacle spans must be non-negative')
 
     def _capture_optional_screenshot(self,pid,title,window_id):
         if self.protocol=='jd-sd':
@@ -236,6 +244,10 @@ class StandingRun(ResetOnlyRun):
             'static_map_inputs':None if self.lidar_static_map_inputs is None else {
                 name:{'staged_sha256':_sha256(path)} for name,path in self.lidar_static_map_inputs.items()
             },
+            'minimum_obstacle_span_m':{
+                'x':self.lidar_minimum_obstacle_span_x_m,
+                'y':self.lidar_minimum_obstacle_span_y_m,
+            },
             'no_robot_model_source_modified':True,
         }
 
@@ -301,6 +313,8 @@ class StandingRun(ResetOnlyRun):
                 '--result /workspace/evidence/lidar_background_diagnostic_result.json '
                 '--topic ' + capture_topic + ' '
                 '--duration-s 4 --static-match-distance-m 0.02 --minimum-cluster-cells 3 '
+                f'--minimum-obstacle-span-x-m {self.lidar_minimum_obstacle_span_x_m:g} '
+                f'--minimum-obstacle-span-y-m {self.lidar_minimum_obstacle_span_y_m:g} '
                 '> /workspace/evidence/lidar_background_diagnostic.stdout '
                 '2> /workspace/evidence/lidar_background_diagnostic.stderr',
                 timeout_s=3.0,
@@ -409,6 +423,8 @@ def main():
     parser.add_argument('--lidar-background-capture',type=Path,default=None)
     parser.add_argument('--lidar-static-map-source',type=Path,default=None)
     parser.add_argument('--lidar-world-projection',action='store_true')
+    parser.add_argument('--lidar-minimum-obstacle-span-x-m',type=float,default=0.0)
+    parser.add_argument('--lidar-minimum-obstacle-span-y-m',type=float,default=0.0)
     parser.add_argument(
         '--capture-interval-steps',
         type=int,
