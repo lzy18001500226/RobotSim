@@ -186,3 +186,27 @@ def novel_map_points(
         if grid.contains(cell) and cell not in known_neighborhood:
             result.append(point)
     return tuple(result)
+
+
+def static_surface_distances_m(
+    observed_points: Sequence[MapPoint],
+    *,
+    static_surface: Iterable[GridCell],
+    grid: GridSpec,
+) -> tuple[float, ...]:
+    """Return nearest 2D static-surface-cell distance for every map point.
+
+    This deliberately returns ``inf`` outside the bounded field rather than
+    projecting or clamping an out-of-map point into a false static match.
+    """
+    surface = tuple(cell for cell in static_surface if grid.contains(cell))
+    if not surface:
+        raise ObstacleLayerError("static surface field is empty")
+    result: list[float] = []
+    for point in observed_points:
+        cell = grid.world_to_cell(point.x_m, point.y_m)
+        if not grid.contains(cell):
+            result.append(math.inf)
+            continue
+        result.append(min(math.hypot(cell.x - candidate.x, cell.y - candidate.y) * grid.resolution_m for candidate in surface))
+    return tuple(result)

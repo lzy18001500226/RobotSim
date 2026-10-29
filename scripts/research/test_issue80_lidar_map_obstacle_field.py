@@ -16,6 +16,7 @@ from issue80_lidar_map_obstacle_field import (
     decode_map_xyz,
     novel_map_points,
     static_surface_cells_from_database,
+    static_surface_distances_m,
     surface_neighborhood,
 )
 from issue80_lidar_obstacle_layer import GridCell, GridSpec, Pose2D, RayCasterProfile
@@ -109,6 +110,15 @@ class MapObstacleFieldTests(unittest.TestCase):
             classify_map_frame_capture(message_count=1, nonempty_message_count=1, last_frame_id="lidar", expected_frame_id="map"),
             "BLOCKED_POINTCLOUD_FRAME_MISMATCH",
         )
+
+    def test_static_surface_distance_returns_inf_outside_grid(self) -> None:
+        grid = GridSpec(0.0, 0.0, 0.10, 3, 3)
+        distances = static_surface_distances_m(
+            (MapPoint(0.05, 0.05, 0.2), MapPoint(2.0, 2.0, 0.2)),
+            static_surface={GridCell(0, 0)}, grid=grid,
+        )
+        self.assertEqual(distances[0], 0.0)
+        self.assertTrue(math.isinf(distances[1]))
 
 
 if __name__ == "__main__":
