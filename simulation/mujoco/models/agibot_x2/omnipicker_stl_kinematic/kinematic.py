@@ -22,6 +22,14 @@ TRAJECTORY_COLUMNS = {
     "R_hand_wide3_joint": "wide3_q_rad",
     "R_hand_wide_loop_joint": "wide_loop_q_rad",
 }
+LEFT_JOINT_MAPPING = {
+    "right_claw_joint": "left_claw_joint",
+    "R_hand_wide1_joint": "L_hand_wide1_joint",
+    "R_hand_narrow3_joint": "L_hand_narrow3_joint",
+    "R_hand_narrow_loop_joint": "L_hand_narrow_loop_joint",
+    "R_hand_wide3_joint": "L_hand_wide3_joint",
+    "R_hand_wide_loop_joint": "L_hand_wide_loop_joint",
+}
 _REQUIRED_COLUMNS = ("command_percent", *TRAJECTORY_COLUMNS.values())
 
 
@@ -113,20 +121,34 @@ def apply_stl_kinematic_pose(
     command_percent: float,
     *,
     command_rate_percent_s: float = 0.0,
+    side: str = "right",
     forward: bool = True,
 ) -> KinematicPose:
-    """Write the six registered hand joints and optionally refresh MuJoCo kinematics.
+    """Write the registered table pose to an approved hand-side mapping.
 
     This is intentionally a kinematic driver.  It must not be used to claim
     dynamic transmission, contact, load-transfer, or grasp validation.
     """
+    if side not in {"right", "left"}:
+        raise STLKinematicTrajectoryError("side must be 'right' or 'left'")
     pose = trajectory.pose(command_percent, command_rate_percent_s=command_rate_percent_s)
+    joint_mapping = {joint: joint for joint in TRAJECTORY_COLUMNS} if side == "right" else LEFT_JOINT_MAPPING
+    positions: dict[str, float] = {}
+    velocities: dict[str, float] = {}
     for joint, position in pose.positions_rad.items():
-        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint)
+        target_joint = joint_mapping[joint]
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, target_joint)
         if joint_id < 0:
-            raise STLKinematicTrajectoryError(f"selected model lacks table-driven joint: {joint}")
+            raise STLKinematicTrajectoryError(f"selected model lacks {side} table-driven joint: {target_joint}")
         data.qpos[model.jnt_qposadr[joint_id]] = position
-        data.qvel[model.jnt_dofadr[joint_id]] = pose.velocities_rad_s[joint]
+        velocity = pose.velocities_rad_s[joint]
+        data.qvel[model.jnt_dofadr[joint_id]] = velocity
+        positions[target_joint] = position
+        velocities[target_joint] = velocity
     if forward:
         mujoco.mj_forward(model, data)
-    return pose
+    return KinematicPose(
+        command_percent=pose.command_percent,
+        positions_rad=positions,
+        velocities_rad_s=velocities,
+    )

@@ -61,6 +61,11 @@ RIGHT_HAND_JOINTS = {
     "R_hand_wide3_joint",
     "R_hand_wide_loop_joint",
 }
+LEFT_HAND_BODIES = {name.replace("R_", "L_", 1) for name in RIGHT_HAND_BODIES}
+LEFT_HAND_JOINTS = {
+    "left_claw_joint" if name == "right_claw_joint" else name.replace("R_", "L_", 1)
+    for name in RIGHT_HAND_JOINTS
+}
 STL_EXCLUSIONS = (
     ("R_hand_narrow1_Link", "R_hand_narrow_loop_Link"),
     ("R_hand_narrow2_Link", "R_hand_narrow_loop_Link"),
@@ -69,6 +74,10 @@ STL_EXCLUSIONS = (
     ("R_hand_wide2_Link", "R_hand_wide_loop_Link"),
     ("R_hand_wide3_Link", "R_hand_wide_loop_Link"),
     ("R_hand_narrow3_Link", "R_hand_wide3_Link"),
+)
+LEFT_STL_EXCLUSIONS = tuple(
+    tuple(name.replace("R_", "L_", 1) for name in pair)
+    for pair in STL_EXCLUSIONS
 )
 MESH_RENAMES = {
     "mesh_base_link": "base_link",
@@ -112,21 +121,44 @@ def remap_meshes(element: ET.Element) -> None:
             geom.set("group", "3")
 
 
-def references_right_hand(element: ET.Element) -> bool:
-    return any(value in RIGHT_HAND_JOINTS or value in RIGHT_HAND_BODIES for value in element.attrib.values())
+def left_name(name: str) -> str:
+    if name == "right_claw_joint":
+        return "left_claw_joint"
+    if name.startswith("R_"):
+        return "L_" + name[2:]
+    return name
 
 
-def compose_scene(base_scene: Path, stl_model: Path, output_scene: Path) -> dict[str, object]:
-    tree = ET.parse(base_scene)
-    root = tree.getroot()
-    stl_root = ET.parse(stl_model).getroot()
-    _, target = find_with_parent(root, "R_omnipicker_base_link")
-    _, source = find_with_parent(stl_root, "R_omnipicker_base_link")
+def remap_left_names(element: ET.Element) -> None:
+    for node in element.iter():
+        for key, value in list(node.attrib.items()):
+            if value == "right_claw_joint" or value.startswith("R_"):
+                node.set(key, left_name(value))
+
+
+def references_hand(element: ET.Element, bodies: set[str], joints: set[str]) -> bool:
+    return any(value in bodies or value in joints for value in element.attrib.values())
+
+
+def replace_hand(
+    root: ET.Element,
+    source_root: ET.Element,
+    *,
+    target_name: str,
+    bodies: set[str],
+    joints: set[str],
+    exclusions: tuple[tuple[str, str], ...],
+    left: bool,
+) -> dict[str, str | None]:
+    _, target = find_with_parent(root, target_name)
+    _, source = find_with_parent(source_root, "R_omnipicker_base_link")
     original_pose = {key: target.get(key) for key in ("name", "pos", "quat", "childclass")}
     for child in list(target):
         target.remove(child)
     for child in list(source):
         cloned = copy.deepcopy(child)
+        if left:
+            remap_left_names(cloned)
         remap_meshes(cloned)
         target.append(cloned)
     for key, value in original_pose.items():
@@ -137,37 +169,54 @@ def compose_scene(base_scene: Path, stl_model: Path, output_scene: Path) -> dict
     if contact is None:
         contact = ET.SubElement(root, "contact")
     for child in list(contact):
-        if child.tag == "exclude" and child.get("body1") in RIGHT_HAND_BODIES and child.get("body2") in RIGHT_HAND_BODIES:
+        if child.tag == "exclude" and child.get("body1") in bodies and child.get("body2") in bodies:
             contact.remove(child)
-    for body1, body2 in STL_EXCLUSIONS:
+    for body1, body2 in exclusions:
         ET.SubElement(contact, "exclude", {"body1": body1, "body2": body2})
 
-    # The source review scene used CAD equality and actuator overlays.  Neither
-    # is part of the table-driven STL right hand and neither is needed for a
-    # zero-step static review.
+    for container_name in ("actuator", "sensor", "tendon"):
+        container = root.find(container_name)
+        if container is not None:
+            for child in list(container):
+                if references_hand(child, bodies, joints):
+                    container.remove(child)
+            if not list(container):
+                root.remove(container)
+    return original_pose
+
+
+def compose_scene(base_scene: Path, stl_model: Path, output_scene: Path) -> dict[str, object]:
+    tree = ET.parse(base_scene)
+    root = tree.getroot()
+    stl_root = ET.parse(stl_model).getroot()
+    right_pose = replace_hand(
+        root, stl_root, target_name="R_omnipicker_base_link", bodies=RIGHT_HAND_BODIES,
+        joints=RIGHT_HAND_JOINTS, exclusions=STL_EXCLUSIONS, left=False,
+    )
+    left_pose = replace_hand(
+        root, stl_root, target_name="L_omnipicker_base_link", bodies=LEFT_HAND_BODIES,
+        joints=LEFT_HAND_JOINTS, exclusions=LEFT_STL_EXCLUSIONS, left=True,
+    )
+
+    # The source review scene used CAD equality and actuator overlays. Neither
+    # is part of either table-driven STL hand and neither is needed for review.
     equality = root.find("equality")
     if equality is not None:
         # The saved scene's equality set belongs to the historical CAD overlay.
         # Static STL review applies direct table poses and therefore retains none.
         root.remove(equality)
-    for container_name in ("actuator", "sensor", "tendon"):
-        container = root.find(container_name)
-        if container is not None:
-            for child in list(container):
-                if references_right_hand(child):
-                    container.remove(child)
-            if not list(container):
-                root.remove(container)
     keyframe = root.find("keyframe")
     if keyframe is not None:
         root.remove(keyframe)
     ET.indent(tree, space="  ")
     pg.write_new_bytes(output_scene, ET.tostring(root, encoding="utf-8", xml_declaration=True))
     return {
-        "base_right_mount": original_pose,
-        "right_hand_replacement": "X2-OmniPicker-STL only",
-        "left_hand": "unchanged source-scene hand; no unreviewed STL mirror mapping was inferred",
+        "base_right_mount": right_pose,
+        "base_left_mount": left_pose,
+        "right_hand_replacement": "X2-OmniPicker-STL source-table trajectory",
+        "left_hand_replacement": "X2-OmniPicker-STL approved official-frame mapping",
         "right_internal_collision_exclusions": [list(pair) for pair in STL_EXCLUSIONS],
+        "left_internal_collision_exclusions": [list(pair) for pair in LEFT_STL_EXCLUSIONS],
     }
 
 
@@ -221,28 +270,48 @@ def render_static_png(model, data, *, closeup: bool = False) -> tuple[bytes | No
         return None, f"{type(exc).__name__}: {exc}"
 
 
-def check_scene(model, trajectory, command_percent: int) -> dict[str, object]:
+def apply_dual_stl_pose(model, data, trajectory, left_command: float, right_command: float) -> tuple[object, object]:
+    right = apply_stl_kinematic_pose(
+        mujoco, model, data, trajectory, right_command, side="right", forward=False,
+    )
+    left = apply_stl_kinematic_pose(
+        mujoco, model, data, trajectory, left_command, side="left", forward=True,
+    )
+    return left, right
+
+
+def check_scene(model, trajectory, left_command: int, right_command: int) -> dict[str, object]:
     data = mujoco.MjData(model)
-    pose = apply_stl_kinematic_pose(mujoco, model, data, trajectory, float(command_percent))
-    joint_values = {}
-    for name, value in pose.positions_rad.items():
+    left_pose, right_pose = apply_dual_stl_pose(model, data, trajectory, left_command, right_command)
+    right_joint_values = {}
+    left_joint_values = {}
+    for name, value in right_pose.positions_rad.items():
         joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
-        joint_values[name] = float(data.qpos[model.jnt_qposadr[joint_id]])
+        right_joint_values[name] = float(data.qpos[model.jnt_qposadr[joint_id]])
+    for name, value in left_pose.positions_rad.items():
+        joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        left_joint_values[name] = float(data.qpos[model.jnt_qposadr[joint_id]])
     contacts = []
-    right_hand_contacts = []
+    hand_contacts = {"left": [], "right": []}
     for contact in data.contact:
         geom1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom1)
         geom2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, contact.geom2)
         record = {"geom1": geom1, "geom2": geom2, "distance_m": float(contact.dist)}
         contacts.append(record)
         if (geom1 or "").startswith("R_hand") or (geom2 or "").startswith("R_hand"):
-            right_hand_contacts.append(record)
+            hand_contacts["right"].append(record)
+        if (geom1 or "").startswith("L_hand") or (geom2 or "").startswith("L_hand"):
+            hand_contacts["left"].append(record)
     return {
-        "command_percent": command_percent,
-        "right_stl_joint_qpos_rad": joint_values,
+        "left_command_percent": left_command,
+        "right_command_percent": right_command,
+        "left_stl_joint_qpos_rad": left_joint_values,
+        "right_stl_joint_qpos_rad": right_joint_values,
         "static_contact_count": int(data.ncon),
-        "right_stl_hand_contact_count": len(right_hand_contacts),
-        "right_stl_hand_contacts": right_hand_contacts,
+        "left_stl_hand_contact_count": len(hand_contacts["left"]),
+        "right_stl_hand_contact_count": len(hand_contacts["right"]),
+        "left_stl_hand_contacts": hand_contacts["left"],
+        "right_stl_hand_contacts": hand_contacts["right"],
         "static_contacts": contacts,
         "finite_qpos": bool(np.isfinite(data.qpos).all()),
         "finite_qvel": bool(np.isfinite(data.qvel).all()),
@@ -276,24 +345,25 @@ def run_live_viewer(model, trajectory) -> None:
     camera.azimuth = REVIEW_AZIMUTH
     camera.elevation = REVIEW_ELEVATION
     state = {
-        "command": 0.0,
+        "left_command": 0.0,
+        "right_command": 0.0,
         "mode": "visual",
         "previous": None,
         "left": False,
         "right": False,
         "middle": False,
-        "slider": False,
+        "slider": None,
         "lastx": 0.0,
         "lasty": 0.0,
     }
 
-    def set_command_from_x(x: float) -> None:
+    def set_command_from_x(x: float, side: str) -> None:
         width, _ = glfw.get_window_size(window)
-        state["command"] = float(min(100, max(0, round((x - 40.0) * 100.0 / max(1.0, width - 80.0)))))
+        state[f"{side}_command"] = float(min(100, max(0, round((x - 40.0) * 100.0 / max(1.0, width - 80.0)))))
 
     def cursor_callback(_window, x, y) -> None:
         if state["slider"]:
-            set_command_from_x(x)
+            set_command_from_x(x, state["slider"])
         elif state["left"] or state["right"] or state["middle"]:
             _, height = glfw.get_window_size(window)
             dx = float(x - state["lastx"]) / max(1, height)
@@ -311,10 +381,16 @@ def run_live_viewer(model, trajectory) -> None:
     def mouse_button_callback(_window, button, action, _mods) -> None:
         x, y = glfw.get_cursor_pos(window)
         _, height = glfw.get_window_size(window)
-        if button == glfw.MOUSE_BUTTON_LEFT and action == glfw.PRESS and y >= height - 100:
-            state["slider"] = True
-            set_command_from_x(x)
-            return
+        if button == glfw.MOUSE_BUTTON_LEFT and action == glfw.PRESS:
+            bottom = height - y
+            if 24 <= bottom <= 50:
+                state["slider"] = "right"
+                set_command_from_x(x, "right")
+                return
+            if 58 <= bottom <= 84:
+                state["slider"] = "left"
+                set_command_from_x(x, "left")
+                return
         if button == glfw.MOUSE_BUTTON_LEFT:
             state["left"] = action == glfw.PRESS
         elif button == glfw.MOUSE_BUTTON_RIGHT:
@@ -322,7 +398,7 @@ def run_live_viewer(model, trajectory) -> None:
         elif button == glfw.MOUSE_BUTTON_MIDDLE:
             state["middle"] = action == glfw.PRESS
         if action == glfw.RELEASE:
-            state["slider"] = False
+            state["slider"] = None
         state["lastx"], state["lasty"] = x, y
 
     def scroll_callback(_window, _xoffset, yoffset) -> None:
@@ -334,9 +410,13 @@ def run_live_viewer(model, trajectory) -> None:
         if key == glfw.KEY_ESCAPE:
             glfw.set_window_should_close(window, True)
         elif key == glfw.KEY_LEFT:
-            state["command"] = max(0.0, state["command"] - 1.0)
+            state["right_command"] = max(0.0, state["right_command"] - 1.0)
         elif key == glfw.KEY_RIGHT:
-            state["command"] = min(100.0, state["command"] + 1.0)
+            state["right_command"] = min(100.0, state["right_command"] + 1.0)
+        elif key == glfw.KEY_A:
+            state["left_command"] = max(0.0, state["left_command"] - 1.0)
+        elif key == glfw.KEY_D:
+            state["left_command"] = min(100.0, state["left_command"] + 1.0)
         elif key == glfw.KEY_V:
             state["mode"] = "visual"
         elif key == glfw.KEY_C:
@@ -350,27 +430,28 @@ def run_live_viewer(model, trajectory) -> None:
     glfw.set_key_callback(window, key_callback)
     try:
         while not glfw.window_should_close(window):
-            state_key = (state["command"], state["mode"])
+            state_key = (state["left_command"], state["right_command"], state["mode"])
             if state_key != state["previous"]:
-                apply_stl_kinematic_pose(mujoco, model, data, trajectory, state["command"])
+                apply_dual_stl_pose(model, data, trajectory, state["left_command"], state["right_command"])
                 state["previous"] = state_key
             configure_viewer_groups(type("ViewerOption", (), {"opt": option})(), state["mode"])
             width, height = glfw.get_framebuffer_size(window)
             viewport = mujoco.MjrRect(0, 0, width, height)
             mujoco.mjv_updateScene(model, data, option, None, camera, mujoco.mjtCatBit.mjCAT_ALL, scene)
             mujoco.mjr_render(viewport, scene, context)
-            slider_y = 30
-            track = mujoco.MjrRect(40, slider_y, max(1, width - 80), 12)
-            mujoco.mjr_rectangle(track, 0.14, 0.18, 0.22, 0.92)
-            fill = mujoco.MjrRect(40, slider_y, int(track.width * state["command"] / 100.0), 12)
-            mujoco.mjr_rectangle(fill, 0.18, 0.75, 0.60, 1.0)
-            marker_x = int(40 + track.width * state["command"] / 100.0)
-            mujoco.mjr_rectangle(mujoco.MjrRect(marker_x - 4, slider_y - 6, 8, 24), 0.97, 0.70, 0.18, 1.0)
-            left = "X2-OmniPicker-STL | KINEMATIC_SIMULATION_ONLY | 0 mj_step"
-            right = f"command {int(state['command'])}%  |  V visual, C collision, O overlay"
+            for side, slider_y, color in (("right", 30, (0.18, 0.75, 0.60)), ("left", 64, (0.25, 0.58, 0.95))):
+                track = mujoco.MjrRect(40, slider_y, max(1, width - 80), 12)
+                mujoco.mjr_rectangle(track, 0.14, 0.18, 0.22, 0.92)
+                value = state[f"{side}_command"]
+                fill = mujoco.MjrRect(40, slider_y, int(track.width * value / 100.0), 12)
+                mujoco.mjr_rectangle(fill, *color, 1.0)
+                marker_x = int(40 + track.width * value / 100.0)
+                mujoco.mjr_rectangle(mujoco.MjrRect(marker_x - 4, slider_y - 6, 8, 24), 0.97, 0.70, 0.18, 1.0)
+            left = "X2-OmniPicker-STL | bilateral kinematic review | 0 mj_step"
+            right = f"Left {int(state['left_command'])}% | Right {int(state['right_command'])}% | V visual, C collision, O overlay"
             mujoco.mjr_overlay(mujoco.mjtFontScale.mjFONTSCALE_150, mujoco.mjtGridPos.mjGRID_TOPLEFT, viewport, left, right, context)
-            footer = "drag slider or Left/Right | left-drag rotate | right-drag pan | wheel zoom | Esc close"
-            mujoco.mjr_overlay(mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_BOTTOMLEFT, viewport, footer, "right hand STL; left remains source-scene state", context)
+            footer = "blue left slider or A/D | green right slider or Left/Right | left-drag rotate | right-drag pan | wheel zoom | Esc close"
+            mujoco.mjr_overlay(mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_BOTTOMLEFT, viewport, footer, "both hands: approved source-frame STL table mapping", context)
             glfw.swap_buffers(window)
             glfw.poll_events()
             time.sleep(0.005)
@@ -426,22 +507,26 @@ def main() -> None:
         raise SystemExit("right STL review scene unexpectedly retains narrow2 joint")
     if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "R_hand_wide2_joint") >= 0:
         raise SystemExit("right STL review scene unexpectedly retains wide2 joint")
-    states = [check_scene(model, trajectory, percent) for percent in (0, 50, 100)]
+    states = [
+        check_scene(model, trajectory, left, right)
+        for left, right in ((0, 0), (50, 50), (100, 100), (0, 100), (100, 0))
+    ]
     render_errors = {}
     for state in states:
-        command_percent = int(state["command_percent"])
+        left_command = int(state["left_command_percent"])
+        right_command = int(state["right_command_percent"])
         render_data = mujoco.MjData(model)
-        apply_stl_kinematic_pose(mujoco, model, render_data, trajectory, command_percent)
+        apply_dual_stl_pose(model, render_data, trajectory, left_command, right_command)
         payload, error = render_static_png(model, render_data)
         if payload is not None:
-            pg.write_new_bytes(output / f"full_x2_stl_{command_percent:03d}.png", payload)
+            pg.write_new_bytes(output / f"full_x2_stl_L{left_command:03d}_R{right_command:03d}.png", payload)
         if error is not None:
-            render_errors[str(command_percent)] = error
+            render_errors[f"L{left_command}_R{right_command}"] = error
         closeup_payload, closeup_error = render_static_png(model, render_data, closeup=True)
         if closeup_payload is not None:
-            pg.write_new_bytes(output / f"right_hand_stl_{command_percent:03d}.png", closeup_payload)
+            pg.write_new_bytes(output / f"right_hand_stl_L{left_command:03d}_R{right_command:03d}.png", closeup_payload)
         if closeup_error is not None:
-            render_errors[f"right_hand_{command_percent}"] = closeup_error
+            render_errors[f"right_hand_L{left_command}_R{right_command}"] = closeup_error
     result = {
         "schema": "robotsim.issue46.full-x2-stl-static-review.v1",
         "classification": "KINEMATIC_SIMULATION_ONLY",
@@ -460,9 +545,9 @@ def main() -> None:
         "mj_step_calls": 0,
         "render_errors": render_errors,
         "qualification": {
-            "right_stl_hand_kinematic_slider": "READY_FOR_HUMAN_REVIEW",
+            "bilateral_stl_hand_kinematic_sliders": "READY_FOR_HUMAN_REVIEW",
             "full_x2_visual_assembly": "READY_FOR_HUMAN_REVIEW",
-            "left_stl_mirror_mapping": "NOT_IMPLEMENTED",
+            "left_stl_official_frame_mapping": "PENDING_HUMAN_VISUAL_REVIEW",
             "dynamic_physics": "NOT_RUN",
             "external_object_contact": "NOT_RUN",
             "grasp": "NOT_RUN",
@@ -473,13 +558,14 @@ def main() -> None:
     pg.write_new_text(output / "README.md", """# Full X2 STL OmniPicker human review
 
 This is a **zero-step** MuJoCo review scene. The complete X2, floor, RAICOM table,
-and existing cylinder remain from the recorded source scene. Only the right
-OmniPicker hand has been replaced with `X2-OmniPicker-STL`; the left hand stays
-unchanged because no left-side STL mirror table has been inferred.
+and existing cylinder remain from the recorded source scene. Both OmniPicker hands
+use the approved source-frame `X2-OmniPicker-STL` table mapping. The left mapping
+copies the right numerical table only because the official URDF audit proved the
+corresponding local joint frames and mimic sign match.
 
-The native MuJoCo GLFW window has a direct bottom slider for the 101 reviewed
-source-STL command rows at integer commands 0–100. Each change calls
-`mj_forward`; it does not run physics.
+The native MuJoCo GLFW window has separate left/right sliders for the 101 reviewed
+source-STL command rows at integer commands 0–100. Each change calls `mj_forward`;
+it does not run physics.
 
 Classification: `KINEMATIC_SIMULATION_ONLY`. No object contact, load transfer,
 grasp, full-X2 dynamics, or manufacturer transmission claim is made.
