@@ -4834,7 +4834,11 @@ class BoundedRun:
         if getattr(self.args, "capture_mc_rl_debug", False):
             self.start_mc_rl_debug_capture()
         if self.lidar_overlay_source is not None:
-            lidar_duration_s = 190.0 if self.lidar_obstacle_route else LIDAR_RUNTIME_DURATION_S
+            # Both delivered Python LiDAR helpers enforce a 120 s maximum.
+            # This still outlives the 75 s aggregate transit cap plus the
+            # bounded scan/standing setup; do not pass an invalid duration
+            # and silently lose map feedback before the first route window.
+            lidar_duration_s = 120.0 if self.lidar_obstacle_route else LIDAR_RUNTIME_DURATION_S
             lidar_process_timeout_s = lidar_duration_s + 3.0
             if self.lidar_static_map is not None:
                 self.docker_exec(
