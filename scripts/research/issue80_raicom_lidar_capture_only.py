@@ -136,6 +136,7 @@ def _bounded_args(
     return argparse.Namespace(
         evidence_dir=str(evidence), container=container, max_runtime_s=MAX_RUNTIME_S,
         local01_scene_world_poses=POSES if known_good_startup_profile else None,
+        local01_scene_source=None if table_preflight is None else table_preflight["source"],
         route_config=None,
         table_approach_mission=KNOWN_GOOD_MISSION if known_good_startup_profile else None,
         table_approach_static_plan=KNOWN_GOOD_STATIC_PLAN if known_good_startup_profile else None,
