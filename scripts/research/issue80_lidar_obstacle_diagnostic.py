@@ -77,10 +77,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("invalid bounded diagnostic arguments")
     candidates, ranges = load_database(args.static_database)
     grid = grid_from_candidates(candidates, resolution_m=0.10)
-    static_surface = static_surface_cells_from_database(
-        candidates, ranges, static_to_map=calibration_from_localization_trace(args.localization_trace), grid=grid,
-    )
     background = () if args.background_capture is None else load_map_background_capture(args.background_capture)
+    # A measured map-frame background deliberately supersedes the coarse
+    # static-signature surface for novelty matching.  Avoid spending the
+    # diagnostic's bounded capture window rasterizing a field it will not use.
+    static_surface = (
+        frozenset() if background else static_surface_cells_from_database(
+            candidates, ranges,
+            static_to_map=calibration_from_localization_trace(args.localization_trace),
+            grid=grid,
+        )
+    )
     config = ObstaclePipelineConfig(
         grid=grid, static_surface=static_surface, static_route_blocked=frozenset(),
         start=grid.world_to_cell(-1.5, -1.5), goal=grid.world_to_cell(0.9, -1.5),
@@ -103,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             "final_decision": node.decisions[-1] if node.decisions else None,
             "novelty_reference": "MAP_BACKGROUND_CAPTURE" if background else "STATIC_SURFACE_FIELD",
             "background_point_count": len(background),
+            "static_surface_cell_count": len(static_surface),
             "velocity_publisher_created": False, "service_clients_created": 0,
         }
         args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

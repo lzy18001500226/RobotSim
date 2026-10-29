@@ -15,6 +15,7 @@ class DiagnosticSourceTests(unittest.TestCase):
         self.assertNotIn("create_client", calls)
         self.assertNotIn("publish", calls)
         self.assertIn("--background-capture", source)
+        self.assertIn("frozenset() if background", source)
 
 
 if __name__ == "__main__":
