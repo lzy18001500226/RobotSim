@@ -4526,7 +4526,7 @@ class FocusedM1Diagnostic(Node):
                 )
 
             bridge = RouteMotionBridge(
-                route_frame_id="odom",
+                route_frame_id=route.frame_id,
                 incremental_window_s=(
                     TABLE_APPROACH_CONTINUOUS_WINDOW_S
                     if (
