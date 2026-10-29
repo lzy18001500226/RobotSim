@@ -17,7 +17,7 @@ from sensor_msgs.msg import PointCloud2
 from issue80_lidar_map_obstacle_field import classify_map_frame_capture
 
 
-TOPIC = "/aima/sim/lidar/points"
+DEFAULT_TOPIC = "/aima/sim/lidar/points"
 MAX_RETAINED_FINITE_POINTS = 4_096
 
 
@@ -70,7 +70,7 @@ def summarize(message: PointCloud2, *, retain_all_finite_points: bool = False) -
 
 
 class Capture(Node):
-    def __init__(self, *, retain_all_finite_points: bool = False) -> None:
+    def __init__(self, *, topic: str, retain_all_finite_points: bool = False) -> None:
         super().__init__("issue80_lidar_capture")
         self.count = 0
         self.nonempty_count = 0
@@ -82,7 +82,7 @@ class Capture(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.create_subscription(PointCloud2, TOPIC, self._callback, qos)
+        self.create_subscription(PointCloud2, topic, self._callback, qos)
 
     def _callback(self, message: PointCloud2) -> None:
         self.count += 1
@@ -94,6 +94,7 @@ class Capture(Node):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--topic", default=DEFAULT_TOPIC)
     parser.add_argument("--duration-s", type=float, default=8.0)
     parser.add_argument(
         "--expected-frame-id", default=None,
@@ -109,7 +110,7 @@ def main() -> int:
     if not 1.0 <= args.duration_s <= 20.0:
         parser.error("duration must be within [1, 20] seconds")
     rclpy.init()
-    node = Capture(retain_all_finite_points=args.save_all_finite_points)
+    node = Capture(topic=args.topic, retain_all_finite_points=args.save_all_finite_points)
     try:
         deadline = time.monotonic() + args.duration_s
         while rclpy.ok() and time.monotonic() < deadline:
@@ -126,7 +127,7 @@ def main() -> int:
             "schema": "robotsim.issue80.raicom-lidar-capture.v1",
             "classification": "SIMULATION_ONLY_RAYCASTER_POINTCLOUD_CAPTURE",
             "status": status,
-            "topic": TOPIC,
+            "topic": args.topic,
             "expected_frame_id": args.expected_frame_id,
             "save_all_finite_points": args.save_all_finite_points,
             "duration_s": args.duration_s,

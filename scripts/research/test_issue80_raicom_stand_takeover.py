@@ -59,6 +59,10 @@ class StandingTests(unittest.TestCase):
         self.assertIn('staged_input=self.evidence/name',source)
         self.assertIn("parser.add_argument('--lidar-background-capture'",source)
         self.assertIn("parser.add_argument('--lidar-static-map-source'",source)
+        self.assertIn("parser.add_argument('--lidar-world-projection'",source)
+        self.assertIn('start_simulation_only_world_projected_lidar_bridge',method)
+        self.assertIn('--coordinate-field world_xyz',method)
+        self.assertIn('--topic /robotsim/lidar/map_points --frame map',method)
 
     def test_background_staging_does_not_replace_the_overlay_directory(self):
         import argparse

@@ -20,11 +20,11 @@ from issue80_lidar_obstacle_pipeline import MapFrameObstaclePipeline, ObstaclePi
 from issue80_lidar_obstacle_replay import grid_from_candidates
 
 
-TOPIC = "/aima/sim/lidar/points"
+DEFAULT_TOPIC = "/aima/sim/lidar/points"
 
 
 class Diagnostic(Node):
-    def __init__(self, pipeline: MapFrameObstaclePipeline, trace: Path) -> None:
+    def __init__(self, pipeline: MapFrameObstaclePipeline, trace: Path, *, topic: str) -> None:
         super().__init__("issue80_lidar_obstacle_diagnostic", enable_rosout=False, start_parameter_services=False)
         parameter_events = getattr(self, "_parameter_event_publisher", None)
         if parameter_events is not None:
@@ -35,7 +35,7 @@ class Diagnostic(Node):
         self.decisions = []
         self.trace = trace.open("x", encoding="utf-8", buffering=1)
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
-        self.subscription_handles = [self.create_subscription(PointCloud2, TOPIC, self.callback, qos)]
+        self.subscription_handles = [self.create_subscription(PointCloud2, topic, self.callback, qos)]
 
     def callback(self, message: PointCloud2) -> None:
         offsets = {str(field.name): int(field.offset) for field in message.fields}
@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trace", type=Path, required=True)
     parser.add_argument("--result", type=Path, required=True)
     parser.add_argument("--background-capture", type=Path, default=None)
+    parser.add_argument("--topic", default=DEFAULT_TOPIC)
     parser.add_argument("--duration-s", type=float, default=20.0)
     parser.add_argument("--static-match-distance-m", type=float, default=0.40)
     parser.add_argument("--minimum-cluster-cells", type=int, default=3)
@@ -97,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         map_background_points=background,
     )
     rclpy.init()
-    node = Diagnostic(MapFrameObstaclePipeline(config), args.trace)
+    node = Diagnostic(MapFrameObstaclePipeline(config), args.trace, topic=args.topic)
     try:
         deadline = time.monotonic() + args.duration_s
         while rclpy.ok() and time.monotonic() < deadline:
@@ -111,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             "novelty_reference": "MAP_BACKGROUND_CAPTURE" if background else "STATIC_SURFACE_FIELD",
             "background_point_count": len(background),
             "static_surface_cell_count": len(static_surface),
+            "topic": args.topic,
             "velocity_publisher_created": False, "service_clients_created": 0,
         }
         args.result.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

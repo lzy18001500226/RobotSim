@@ -100,6 +100,7 @@ class StandingRun(ResetOnlyRun):
         self.mjdata_capture_smoke=None
         self.lidar_background_capture: Path | None = None
         self.lidar_static_map_inputs: dict[str, Path] | None = None
+        self.lidar_world_projection=bool(getattr(args,'lidar_world_projection',False))
 
     def _capture_optional_screenshot(self,pid,title,window_id):
         if self.protocol=='jd-sd':
@@ -264,6 +265,28 @@ class StandingRun(ResetOnlyRun):
         raw_trace=self.evidence/'lidar_raw_frames.jsonl'
         if self.runtime is None:
             raise RuntimeError('runtime missing after standing observer completion')
+        world_bridge_result=None
+        capture_topic='/aima/sim/lidar/points'
+        self.runtime.docker_exec(
+            'enable_source_local_lidar_trace_after_sd_stable_hold',
+            ': > /workspace/evidence/lidar_raw_enable',
+            timeout_s=2.0,
+        )
+        if self.lidar_world_projection:
+            capture_topic='/robotsim/lidar/map_points'
+            self.runtime.docker_exec(
+                'start_simulation_only_world_projected_lidar_bridge',
+                'source /opt/ros/humble/setup.bash && '
+                'source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && '
+                'cd /workspace/evidence && timeout 7s python3 issue80_lidar_raw_bridge.py '
+                '--trace /workspace/evidence/lidar_raw_frames.jsonl '
+                '--coordinate-field world_xyz --topic /robotsim/lidar/map_points --frame map '
+                '--duration-s 4 --result /workspace/evidence/lidar_world_bridge_result.json '
+                '> /workspace/evidence/lidar_world_bridge.stdout '
+                '2> /workspace/evidence/lidar_world_bridge.stderr',
+                timeout_s=3.0,
+                detached=True,
+            )
         diagnostic_result=None
         if self.lidar_background_capture is not None:
             self.runtime.docker_exec(
@@ -276,27 +299,20 @@ class StandingRun(ResetOnlyRun):
                 '--background-capture /workspace/evidence/lidar_map_background_capture.json '
                 '--trace /workspace/evidence/lidar_background_diagnostic_trace.jsonl '
                 '--result /workspace/evidence/lidar_background_diagnostic_result.json '
+                '--topic ' + capture_topic + ' '
                 '--duration-s 4 --static-match-distance-m 0.02 --minimum-cluster-cells 3 '
                 '> /workspace/evidence/lidar_background_diagnostic.stdout '
                 '2> /workspace/evidence/lidar_background_diagnostic.stderr',
                 timeout_s=3.0,
                 detached=True,
             )
-        # The sensor plugin has always been loaded, but source-local ray rows
-        # are deliberately disabled while Reset/JD/SD settle.  Enable them
-        # only after the independently qualified active-standing hold so this
-        # diagnostic cannot perturb the controller handoff or write commands.
-        self.runtime.docker_exec(
-            'enable_source_local_lidar_trace_after_sd_stable_hold',
-            ': > /workspace/evidence/lidar_raw_enable',
-            timeout_s=2.0,
-        )
         result=self.runtime.docker_exec(
             'capture_lidar_after_sd_stable_hold',
             'source /opt/ros/humble/setup.bash && '
             'source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && '
             'cd /workspace/evidence && timeout 7s python3 issue80_capture_lidar_pointcloud.py '
             '--output /workspace/evidence/lidar_standing_map_frame_capture.json '
+            '--topic ' + capture_topic + ' '
             '--duration-s 4 --expected-frame-id map --save-all-finite-points',
             timeout_s=8.0,check=False,
         )
@@ -311,8 +327,18 @@ class StandingRun(ResetOnlyRun):
                 diagnostic_result=json.loads(diagnostic_path.read_text())
             else:
                 diagnostic_result={'status':'BLOCKED_NO_BACKGROUND_DIAGNOSTIC_RESULT'}
+        if self.lidar_world_projection:
+            bridge_path=self.evidence/'lidar_world_bridge_result.json'
+            deadline=time.monotonic()+3.0
+            while time.monotonic()<deadline and not bridge_path.is_file():
+                time.sleep(.05)
+            if bridge_path.is_file() and not bridge_path.is_symlink():
+                world_bridge_result=json.loads(bridge_path.read_text())
+            else:
+                world_bridge_result={'status':'BLOCKED_NO_WORLD_BRIDGE_RESULT'}
         diagnostic_pass=(diagnostic_result is None or diagnostic_result.get('status')=='PASS_DIAGNOSTIC_CAPTURED')
-        return {'status':'PASS' if payload and payload.get('status')=='PASS_NONEMPTY_POINTCLOUD' and raw_trace_summary.get('status')=='PASS_SOURCE_LOCAL_RAY_TRACE' and diagnostic_pass else 'BLOCKED','capture':payload,'raw_trace':raw_trace_summary,'background_diagnostic':diagnostic_result,'returncode':result.returncode,
+        bridge_pass=(world_bridge_result is None or world_bridge_result.get('status')=='PASS')
+        return {'status':'PASS' if payload and payload.get('status')=='PASS_NONEMPTY_POINTCLOUD' and raw_trace_summary.get('status')=='PASS_SOURCE_LOCAL_RAY_TRACE' and diagnostic_pass and bridge_pass else 'BLOCKED','capture':payload,'raw_trace':raw_trace_summary,'background_diagnostic':diagnostic_result,'world_projection_bridge':world_bridge_result,'returncode':result.returncode,
                 'velocity_publisher_created':False,'service_clients_created':0}
 
     def run_once(self,preflight):
@@ -382,6 +408,7 @@ def main():
     parser.add_argument('--lidar-overlay-source',type=Path,default=None)
     parser.add_argument('--lidar-background-capture',type=Path,default=None)
     parser.add_argument('--lidar-static-map-source',type=Path,default=None)
+    parser.add_argument('--lidar-world-projection',action='store_true')
     parser.add_argument(
         '--capture-interval-steps',
         type=int,
