@@ -49,15 +49,16 @@ def smooth_initial_heading(points: tuple[tuple[float, float], ...]) -> tuple[tup
         raise LidarRouteConfigError("LiDAR path first outgoing segment is degenerate")
     # The source map's fixed start heading is +X.  The endpoint tangent uses
     # the following A* segment to preserve continuity at the first corner.
-    control_one = (start[0] + 0.90, start[1])
+    entry = (start[0] + 0.35, start[1])
+    control_one = (entry[0] + 0.90, entry[1])
     control_two = (first[0] - 0.90 * next_dx / next_norm, first[1] - 0.90 * next_dy / next_norm)
-    samples: list[tuple[float, float]] = [start]
+    samples: list[tuple[float, float]] = [start, entry]
     for fraction in (0.10, 0.25, 0.50, 0.75, 1.00):
         complement = 1.0 - fraction
         samples.append((
-            complement ** 3 * start[0] + 3.0 * complement ** 2 * fraction * control_one[0]
+            complement ** 3 * entry[0] + 3.0 * complement ** 2 * fraction * control_one[0]
             + 3.0 * complement * fraction ** 2 * control_two[0] + fraction ** 3 * first[0],
-            complement ** 3 * start[1] + 3.0 * complement ** 2 * fraction * control_one[1]
+            complement ** 3 * entry[1] + 3.0 * complement ** 2 * fraction * control_one[1]
             + 3.0 * complement * fraction ** 2 * control_two[1] + fraction ** 3 * first[1],
         ))
     return tuple(samples + list(points[2:]))
