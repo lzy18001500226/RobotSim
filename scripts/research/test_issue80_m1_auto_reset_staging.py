@@ -1599,7 +1599,7 @@ class ResearchScriptStagingTests(unittest.TestCase):
             child[child.index("--timeout-s") + 1],
             str(VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S),
         )
-        self.assertEqual(VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S, 35.0)
+        self.assertEqual(VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S, 40.0)
         direct_source = Path(__file__).with_name("issue80_vendor_direct_truth_route.py").read_text(
             encoding="utf-8"
         )

@@ -160,12 +160,12 @@ TABLE_APPROACH_MIN_PARENT_RUNTIME_S = 500.0
 # A direct table target can use the complete 25 s active-command interval and
 # then a 2 s physical-stop hold.  The raw LiDAR bridge/localizer must outlive
 # both phases; 28 s was a race with their startup and shutdown bookkeeping.
-LIDAR_RUNTIME_DURATION_S = 42.0
-LIDAR_RUNTIME_PROCESS_TIMEOUT_S = 45.0
+LIDAR_RUNTIME_DURATION_S = 50.0
+LIDAR_RUNTIME_PROCESS_TIMEOUT_S = 53.0
 # A large initial bearing error now uses the independently qualified 0.12 m/s
 # forward-arc profile before resuming 0.20 m/s cruise.  Keep enough bounded
 # time for that lower-speed alignment while preserving the final 0.15 m gate.
-VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S = 35.0
+VENDOR_DIRECT_TABLE_TARGET_TIMEOUT_S = 40.0
 PREARMED_STANDING_MIN_PARENT_RUNTIME_S = 90.0
 STATIC_NOMINAL_START_MAX_LEG_RESIDUAL_RAD = 0.020
 # The already-established root-motion guard is 0.20 m/s.  The pre-armed
