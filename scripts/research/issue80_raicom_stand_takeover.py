@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import uuid
 
@@ -27,6 +28,9 @@ from issue80_raicom_mjdata_capture import (
 )
 
 OBSERVER=Path(__file__).with_name('issue80_raicom_stand_observer.py')
+LIDAR_CAPTURE=Path(__file__).with_name('issue80_capture_lidar_pointcloud.py')
+LIDAR_MAP_FIELD=Path(__file__).with_name('issue80_lidar_map_obstacle_field.py')
+LIDAR_OBSTACLE_LAYER=Path(__file__).with_name('issue80_lidar_obstacle_layer.py')
 
 
 class StandingRun(ResetOnlyRun):
@@ -124,6 +128,74 @@ class StandingRun(ResetOnlyRun):
                 'duplicate_odom':'never ticks stable hold; unique age capped at .5 s'},
         })
 
+    def configure_runtime_overlay(self, runtime, prepared):
+        source_arg=getattr(self.args,'lidar_overlay_source',None)
+        if source_arg is None:
+            return
+        source=Path(source_arg).resolve(strict=True)
+        overlay=source/'lidar_overlay'
+        plugins=source/'mujoco_plugin'
+        if source.is_symlink() or overlay.is_symlink() or plugins.is_symlink() or not overlay.is_dir() or not plugins.is_dir():
+            raise RuntimeError('LiDAR overlay source is missing or unsafe')
+        target=self.evidence/'lidar_overlay'
+        if target.exists():
+            raise RuntimeError('LiDAR overlay target already exists')
+        shutil.copytree(overlay,target)
+        for item in plugins.iterdir():
+            if item.is_symlink() or not item.is_file():
+                raise RuntimeError('LiDAR plugin source contains unsafe entry')
+        runtime.lidar_overlay_source=source
+        runtime.lidar_overlay_dir=target
+        for source_file in (LIDAR_CAPTURE,LIDAR_MAP_FIELD,LIDAR_OBSTACLE_LAYER):
+            if source_file.is_symlink() or not source_file.is_file():
+                raise RuntimeError('LiDAR capture source is missing or unsafe')
+            (self.evidence/source_file.name).write_bytes(source_file.read_bytes())
+        self.result['lidar_overlay']={
+            'source':str(source),
+            'x2_overlay_sha256':_sha256(target/'x2_lidar_overlay.xml'),
+            'robot_overlay_sha256':_sha256(target/'robot_lidar_overlay.yaml'),
+            'capture_source_sha256':{path.name:_sha256(self.evidence/path.name) for path in (LIDAR_CAPTURE,LIDAR_MAP_FIELD,LIDAR_OBSTACLE_LAYER)},
+            'no_robot_model_source_modified':True,
+        }
+
+    def verify_runtime_scene(self,runtime,bundle):
+        if getattr(self.args,'lidar_overlay_source',None) is None:
+            return super().verify_runtime_scene(runtime,bundle)
+        config='/workspace/evidence/lidar_overlay/simulator_lidar_overlay.yaml'
+        check=runtime.docker_exec(
+            'verify_standing_lidar_scene_and_model',
+            "set -e; pid=$(pgrep -x soc_sim | head -n1); test -n \"$pid\"; "
+            "envs=$(tr '\\0' '\\n' < /proc/$pid/environ); "
+            f"printf '%s\\n' \"$envs\" | grep -F 'ROBOTSIM_SIMULATOR_CFG_OVERRIDE={config}'; "
+            "grep -F 'Odom initialized:' /workspace/evidence/mujoco-console.log | grep -F 'name=pelvis'; "
+            "grep -F 'issue80_lidar_init ok' /workspace/evidence/mujoco-console.log; "
+            "grep -F 'MujocoSimModule Started Succeeded' /workspace/evidence/mujoco-console.log",
+            timeout_s=4.0,
+        )
+        return {'status':'PASS_RUNTIME_LIDAR_SCENE_AND_NATIVE_LOOKUPS','runtime_config_path':config,'process_check_stdout':check.stdout}
+
+    def after_observer_completion(self,summaries):
+        if getattr(self.args,'lidar_overlay_source',None) is None:
+            return None
+        summary=summaries.get('stand_takeover_summary.json')
+        if not isinstance(summary,dict) or summary.get('status')!='PASS':
+            return {'status':'NOT_RUN_STANDING_NOT_QUALIFIED'}
+        capture=self.evidence/'lidar_standing_map_frame_capture.json'
+        if self.runtime is None:
+            raise RuntimeError('runtime missing after standing observer completion')
+        result=self.runtime.docker_exec(
+            'capture_lidar_after_sd_stable_hold',
+            'source /opt/ros/humble/setup.bash && '
+            'source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash && '
+            'cd /workspace/evidence && timeout 7s python3 issue80_capture_lidar_pointcloud.py '
+            '--output /workspace/evidence/lidar_standing_map_frame_capture.json '
+            '--duration-s 4 --expected-frame-id map --save-all-finite-points',
+            timeout_s=8.0,check=False,
+        )
+        payload=json.loads(capture.read_text()) if capture.is_file() and not capture.is_symlink() else None
+        return {'status':'PASS' if payload and payload.get('status')=='PASS_NONEMPTY_POINTCLOUD' else 'BLOCKED','capture':payload,'returncode':result.returncode,
+                'velocity_publisher_created':False,'service_clients_created':0}
+
     def run_once(self,preflight):
         result=super().run_once(preflight)
         result['inherited_reset_only_infrastructure_audit']=result.pop('static_capability_audit',None)
@@ -182,6 +254,7 @@ def main():
     parser.add_argument('--attempt-id',required=True)
     parser.add_argument('--protocol',choices=('sd','jd-sd'),default='sd')
     parser.add_argument('--native-mjdata-capture',action='store_true')
+    parser.add_argument('--lidar-overlay-source',type=Path,default=None)
     parser.add_argument(
         '--capture-interval-steps',
         type=int,

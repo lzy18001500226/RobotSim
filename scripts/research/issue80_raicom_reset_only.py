@@ -622,6 +622,17 @@ class ResetOnlyRun:
     observer_cli_suffix = ""
     required_observer_summaries = (BASE_SUMMARY_FILENAME,)
 
+    def configure_runtime_overlay(self, runtime: BoundedRun, prepared: Mapping[str, Any]) -> None:
+        """Optional subclass hook before the isolated container is created."""
+
+    def verify_runtime_scene(self, runtime: BoundedRun, bundle: Mapping[str, Any]) -> dict[str, Any]:
+        """Optional subclass hook for a source-verified simulator scene."""
+        return _verify_loaded_scene(runtime, bundle)
+
+    def after_observer_completion(self, summaries: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Optional read-only subclass capture after the observer terminal event."""
+        return None
+
     def prepare_observer(self) -> None:
         """Dedicated diagnostics may stage a separate, audited observer."""
 
@@ -870,6 +881,7 @@ class ResetOnlyRun:
             self.runtime.runtime_writeback_mounts = [
                 (staged_mc_dump, MC_SIM_CONFIG_DUMP_CONTAINER_PATH)
             ]
+            self.configure_runtime_overlay(self.runtime, prepared)
             self.result["mc_runtime_writeback"] = mc_writeback_manifest
             self.prepare_observer()
             self.runtime.start_container()
@@ -883,7 +895,7 @@ class ResetOnlyRun:
             self.runtime.start_sim_first()
             self.result["mc_startup"] = _verify_mc_started_without_crash(self.runtime)
             self.result["velocity_topic_graph_pre_reset"] = self.inspect_velocity_endpoint()
-            scene_identity = _verify_loaded_scene(self.runtime, bundle)
+            scene_identity = self.verify_runtime_scene(self.runtime, bundle)
             reference_hashes = {
                 name: _sha256(Path(path))
                 for name, path in source["reference_files"].items()
@@ -962,6 +974,9 @@ class ResetOnlyRun:
             self.result["observer_terminal"] = terminal
             self.result["observer_process_exit"] = observer_exit
             self.result["observer_summaries"] = observer_summaries
+            extension = self.after_observer_completion(observer_summaries)
+            if extension is not None:
+                self.result["post_observer_readonly_extension"] = extension
             summary = observer_summaries[BASE_SUMMARY_FILENAME]
             self.result["telemetry"] = summary
             self.result["odom_frame_assessment"] = classify_odom_frame(
