@@ -33,6 +33,7 @@ START_XY = (-1.5, -1.5)
 TABLE_APPROACH_XY = (0.9, -1.5)
 OBSTACLE_CLEARANCE_M = 0.75
 CHAIR_SPACING_M = 0.85
+ALIGNED_START_QUAT_WXYZ = "1 0 0 0"
 
 
 class ScenarioError(ValueError):
@@ -95,6 +96,13 @@ def dynamic_scene(*, chair_mesh: Path, reference_root: Path, chairs: list[dict],
     worldbody = tree.find("./worldbody")
     if asset is None or worldbody is None:
         raise ScenarioError("source scene lacks asset/worldbody")
+    start_frame = worldbody.find("./frame[@name='x2_start_frame']")
+    if start_frame is None:
+        raise ScenarioError("source scene lacks x2_start_frame")
+    # This is the same reviewed pre-physics aligned-start wrapper used by the
+    # TABLE_APPROACH and LiDAR background runs. It avoids treating a 90-degree
+    # initial pose rotation as an unknown environment change.
+    start_frame.set("quat", ALIGNED_START_QUAT_WXYZ)
     x2_model = _resolve_runtime_x2_path(WORKTREE)
     room_model = (reference_root / ROOM_RELATIVE).resolve(strict=True)
     mug_source = SCENE_SOURCE.parent / "mug_portable.xml"
@@ -158,6 +166,12 @@ def generate(output: Path, *, seed: int, chair_count: int, barrier_count: int) -
             "scene": str(static_scene),
             "scene_sha256": sha256(static_scene),
             "table_approach_target_odom": {"x_m": TABLE_APPROACH_XY[0], "y_m": TABLE_APPROACH_XY[1], "yaw_rad": 0.0},
+        },
+        "derived_start": {
+            "classification": "SIMULATION_ONLY_ALIGNED_START_PRE_PHYSICS",
+            "x2_start_frame_quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+            "source_start_yaw_rad": math.pi / 2.0,
+            "active_qpos_write": False,
         },
         "runtime_unknown_obstacles": {
             "scene": str(runtime_scene),

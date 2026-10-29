@@ -25,3 +25,4 @@ class RandomScenarioTests(unittest.TestCase):
         self.assertNotIn("create_publisher", calls)
         self.assertNotIn("create_client", calls)
         self.assertIn("ET.ElementTree(tree).write", source)
+        self.assertIn("ALIGNED_START_QUAT_WXYZ", source)
