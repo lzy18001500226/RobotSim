@@ -7098,6 +7098,8 @@ class FocusedM1Diagnostic(Node):
                         result.update({
                             "status": "BLOCKED",
                             "fault": transit_summary.get("fault") or route_fault or last_result.get("fault") or "configured_route_step_or_stop_gate_failed",
+                            "last_route_window_result": last_result,
+                            "last_route_window_stop_gate": last_gate,
                             "route_events": route_events + route_motion.events,
                             "route_step_results": route_step_results,
                             "route_total_nonzero_command_time_s": route_total_nonzero_s,
