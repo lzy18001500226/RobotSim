@@ -93,6 +93,8 @@ from issue80_raicom_mjdata_capture import (
     summarize_mjdata_capture,
     write_new_json as write_new_capture_json,
 )
+from issue80_raicom_observed_detour_static import audit as audit_observed_lidar_detour
+from issue80_lidar_observed_route_config import build as build_observed_lidar_route_config
 
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
@@ -2230,7 +2232,7 @@ class BoundedRun:
                 source, self.evidence, runtime_root=RUNTIME,
                 aligned_start=True, native_x2_timestep=True,
             )
-            staged = self.evidence / "route_config.json"
+            staged = self.evidence / "lidar_route_template.json"
             with staged.open("xb") as stream:
                 stream.write(route_bytes)
             self.route_config_sha256 = hashlib.sha256(route_bytes).hexdigest()
@@ -2250,7 +2252,7 @@ class BoundedRun:
                 "unknown_obstacle_generator_truth_used_for_route": False,
                 "runtime_recheck_required": "fresh map-frame LiDAR pose and exact staged route provenance before every motion window",
             }
-            with (self.evidence / "workcell_geometry_preflight.json").open("x", encoding="utf-8") as stream:
+            with (self.evidence / "lidar_route_template_workcell.json").open("x", encoding="utf-8") as stream:
                 json.dump(workcell, stream, indent=2)
                 stream.write("\n")
             route_manifest = {
@@ -2263,7 +2265,7 @@ class BoundedRun:
                 "static_occupancy_sha256": workcell["static_occupancy_sha256"],
                 "runtime_lidar_reconfirmation_required": True,
             }
-            with (self.evidence / "route_config_input.json").open("x", encoding="utf-8") as stream:
+            with (self.evidence / "lidar_route_template_input.json").open("x", encoding="utf-8") as stream:
                 json.dump(route_manifest, stream, indent=2)
                 stream.write("\n")
             runtime_scene_filename = str(self.local01_scene_bundle["runtime_scene_filename"])
@@ -2277,7 +2279,7 @@ class BoundedRun:
                 (self.evidence / "local01_scene/mug_portable_runtime.xml", "/workspace/evidence/local01_scene/mug_portable_runtime.xml"),
                 (self.evidence / "local01_scene" / runtime_config_filename, "/workspace/evidence/local01_scene/" + runtime_config_filename),
                 (self.evidence / "local01_scene/runtime_bundle_manifest.json", "/workspace/evidence/local01_scene/runtime_bundle_manifest.json"),
-                (self.evidence / "workcell_geometry_preflight.json", "/workspace/evidence/workcell_geometry_preflight.json"),
+                (self.evidence / "lidar_route_template_workcell.json", "/workspace/evidence/lidar_route_template_workcell.json"),
             ]
         elif getattr(args, "table_approach_mission", None):
             preflight = getattr(args, "configured_table_approach_preflight", None)
@@ -4916,7 +4918,6 @@ class BoundedRun:
             self.lidar_static_map,
             self.evidence / "lidar_map_background_capture.json",
             self.evidence / "lidar_static_occupancy.json",
-            self.evidence / "route_config.json",
         )
         if any(path is None or not Path(path).is_file() for path in required):
             return {"status": "BLOCKED", "fault": "LIDAR_ROUTE_CONFIRMATION_INPUT_MISSING"}
@@ -4957,20 +4958,78 @@ class BoundedRun:
             return {"status": "BLOCKED", "fault": "LIDAR_ROUTE_CONFIRMATION_RESULT_MISSING"}
         try:
             observed = json.loads(result_path.read_text(encoding="utf-8"))
-            route = RouteSpec.load(self.evidence / "route_config.json")
             decision = observed.get("final_decision") if isinstance(observed, Mapping) else None
             points = decision.get("detour_map_waypoints") if isinstance(decision, Mapping) else None
-            expected = [(route.start_x_m, route.start_y_m)] + [
-                (step.x_m, step.y_m) for step in route.steps
-            ]
             actual = [
                 (float(item["x_m"]), float(item["y_m"]))
                 for item in points
             ] if isinstance(points, list) else []
-            matches = (
-                len(actual) == len(expected)
-                and all(math.hypot(a[0] - b[0], a[1] - b[1]) <= 1e-9 for a, b in zip(actual, expected))
+            if len(actual) < 3:
+                raise ValueError("fresh LiDAR diagnostic has no multi-segment detour")
+            if (
+                math.hypot(actual[0][0] + 1.45, actual[0][1] + 1.45) > 0.02
+                or math.hypot(actual[-1][0] - 0.95, actual[-1][1] + 1.45) > 0.02
+            ):
+                raise ValueError("fresh LiDAR detour endpoints differ from the approved start/table-approach cells")
+            provenance_path = self.lidar_overlay_source / "lidar_overlay" / "RANDOM_OBSTACLE_LIDAR_OVERLAY_PROVENANCE.json"
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            scenario_root = Path(str(provenance["scenario_source"])).resolve(strict=True)
+            runtime_scene = scenario_root / "scene_runtime_unknown_obstacles.xml"
+            replay_path = self.evidence / "lidar_live_observed_replay.json"
+            replay = {
+                "schema": "robotsim.issue80.lidar-map-background-replay.v1",
+                "classification": "SIMULATION_ONLY_LIVE_MAP_BACKGROUND_REPLAY",
+                "status": "PASS_CAPTURE_REPLAYED",
+                "second_decision": "DETOUR_READY_STATIC_ONLY",
+                "detour_waypoints": [{"x_m": x, "y_m": y} for x, y in actual],
+                "source_live_diagnostic_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            }
+            with replay_path.open("x", encoding="utf-8") as stream:
+                json.dump(replay, stream, indent=2)
+                stream.write("\n")
+            audit = audit_observed_lidar_detour(runtime_scene, replay_path, final_yaw_rad=0.0)
+            audit_path = self.evidence / "lidar_live_observed_detour_static_result.json"
+            with audit_path.open("x", encoding="utf-8") as stream:
+                json.dump(audit, stream, indent=2)
+                stream.write("\n")
+            if audit.get("status") != "PASS_STATIC_FULLBODY_DETOUR_CLEARANCE":
+                raise ValueError("fresh LiDAR detour failed full-body static clearance")
+            route = build_observed_lidar_route_config(
+                replay_path=replay_path,
+                static_audit_path=audit_path,
+                occupancy_path=self.evidence / "lidar_static_occupancy.json",
             )
+            route_path = self.evidence / "route_config.json"
+            with route_path.open("x", encoding="utf-8") as stream:
+                json.dump(route, stream, indent=2)
+                stream.write("\n")
+            route_sha = hashlib.sha256(route_path.read_bytes()).hexdigest()
+            clearance = float(audit["static_fullbody_clearance"]["minimum_tracking_inflated_aabb_clearance_m"])
+            workcell = {
+                "status": "PASS",
+                "classification": "SIMULATION_ONLY_LIVE_LIDAR_OBSERVED_DETOUR_STATIC_FULLBODY_CLEARANCE",
+                "robot_collision_footprint_radial_upper_bound_m": float(route["safety"]["robot_footprint_radius_m"]),
+                "verified_local_clear_radius_m": float(route["safety"]["robot_footprint_radius_m"]) + clearance,
+                "minimum_swept_aabb_clearance_lower_bound_m": clearance,
+                "static_audit_sha256": hashlib.sha256(audit_path.read_bytes()).hexdigest(),
+                "static_occupancy_sha256": hashlib.sha256((self.evidence / "lidar_static_occupancy.json").read_bytes()).hexdigest(),
+                "unknown_obstacle_generator_truth_used_for_route": False,
+            }
+            with (self.evidence / "lidar_route_live_workcell_geometry.json").open("x", encoding="utf-8") as stream:
+                json.dump(workcell, stream, indent=2)
+                stream.write("\n")
+            with (self.evidence / "lidar_route_live_input.json").open("x", encoding="utf-8") as stream:
+                json.dump({
+                    "schema": "robotsim.issue80.lidar-live-route-input.v1",
+                    "classification": route["provenance"]["classification"],
+                    "source_sha256": route_sha,
+                    "live_diagnostic_sha256": replay["source_live_diagnostic_sha256"],
+                    "static_audit_sha256": workcell["static_audit_sha256"],
+                    "static_occupancy_sha256": workcell["static_occupancy_sha256"],
+                    "runtime_lidar_reconfirmation_passed": True,
+                }, stream, indent=2)
+                stream.write("\n")
+            matches = True
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             return {"status": "BLOCKED", "fault": f"LIDAR_ROUTE_CONFIRMATION_INVALID:{type(exc).__name__}:{exc}"}
         payload = {
@@ -4982,8 +5041,8 @@ class BoundedRun:
                 and matches
             ) else "BLOCKED",
             "diagnostic": observed,
-            "staged_route_points": [{"x_m": x, "y_m": y} for x, y in expected],
-            "route_matches_fresh_lidar_observation": matches,
+            "fresh_route_points": [{"x_m": x, "y_m": y} for x, y in actual],
+            "route_generated_from_fresh_lidar_observation": matches,
             "velocity_publisher_created_by_confirmation": False,
             "mc_action_or_source_client_created_by_confirmation": False,
         }

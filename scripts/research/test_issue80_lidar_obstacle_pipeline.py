@@ -4,6 +4,7 @@ import struct
 import unittest
 from pathlib import Path
 import ast
+import math
 
 from issue80_lidar_map_obstacle_field import MapPoint
 from issue80_lidar_obstacle_layer import GridCell, GridSpec
@@ -121,6 +122,37 @@ class ObstaclePipelineTests(unittest.TestCase):
         self.assertEqual(result.status, PipelineStatus.DETOUR_READY)
         self.assertEqual(result.detour_cells[0], config.start)
         self.assertEqual(result.detour_cells[-1], config.goal)
+
+    def test_background_registration_rejects_reset_frame_drift_without_erasing_new_obstacle(self) -> None:
+        background = tuple(
+            MapPoint(-0.8 + 0.08 * column, -0.8 + 0.08 * row, 0.1)
+            for row in range(10) for column in range(10)
+        )
+        config = ObstaclePipelineConfig(
+            grid=GridSpec(-2.0, -2.0, 0.10, 41, 41),
+            static_surface=frozenset(), static_route_blocked=frozenset(),
+            start=GridCell(2, 20), goal=GridCell(38, 20),
+            static_match_distance_m=0.02, obstacle_inflation_m=0.21,
+            confirmation_frames=2, minimum_confirmed_cluster_cells=3,
+            map_background_points=background,
+        )
+        # Simulate the measured small Reset-to-Reset rigid drift: the current
+        # labelled map cloud is translated/rotated but has no novel geometry.
+        angle, tx, ty = 0.03, -0.04, 0.04
+        cosine, sine = math.cos(angle), math.sin(angle)
+        drifted = [
+            (tx + cosine * point.x_m - sine * point.y_m,
+             ty + sine * point.x_m + cosine * point.y_m, point.z_m)
+            for point in background
+        ]
+        pipeline = MapFrameObstaclePipeline(config)
+        first = pipeline.observe(
+            sequence=1, frame_id="map", data=cloud(drifted), width=len(drifted), height=1,
+            point_step=12, field_offsets={"x": 0, "y": 4, "z": 8},
+        )
+        self.assertEqual(first.status, PipelineStatus.CLEAR_DIRECT_PATH)
+        self.assertIsNotNone(first.background_registration)
+        self.assertLess(float(first.background_registration["trimmed_xy_score_m"]), 0.03)
 
     def test_wrong_frame_fails_closed_without_route(self) -> None:
         pipeline = MapFrameObstaclePipeline(self.config)

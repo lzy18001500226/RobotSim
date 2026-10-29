@@ -3782,8 +3782,8 @@ class FocusedM1Diagnostic(Node):
                 result["qualified_right_turn_evidence"] = turn_provenance
             if route_config_mode and lidar_map_route_mode:
                 route_config_path = Path(self.args.route_config)
-                manifest_path = evidence_root / "route_config_input.json"
-                workcell_path = evidence_root / "workcell_geometry_preflight.json"
+                manifest_path = evidence_root / "lidar_route_live_input.json"
+                workcell_path = evidence_root / "lidar_route_live_workcell_geometry.json"
                 if any(path.is_symlink() or not path.is_file() for path in (
                     route_config_path, manifest_path, workcell_path,
                 )):
