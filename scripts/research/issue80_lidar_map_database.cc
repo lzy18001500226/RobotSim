@@ -43,14 +43,15 @@ static mjtNum RaySkippingRobot(const mjModel* model, const mjData* data,
 }
 
 int main(int argc, char** argv) {
-  if (argc != 5) {
-    std::cerr << "usage: lidar_map_database <plugin_dir> <scene_xml> <database_bin> <result_json>\n";
+  if (argc != 5 && argc != 6) {
+    std::cerr << "usage: lidar_map_database <plugin_dir> <scene_xml> <database_bin> <result_json> [standing_qpos.txt]\n";
     return 2;
   }
   const std::string plugin_dir(argv[1]);
   const std::string scene(argv[2]);
   const std::string output_path(argv[3]);
   const std::string result_path(argv[4]);
+  const std::string posture_path(argc == 6 ? argv[5] : "");
   mj_loadAllPluginLibraries(plugin_dir.c_str(), nullptr);
   char error[4096] = {};
   mjModel* model = mj_loadXML(scene.c_str(), nullptr, error, sizeof(error));
@@ -68,6 +69,17 @@ int main(int argc, char** argv) {
     mj_deleteData(data); mj_deleteModel(model); return 4;
   }
   const int qpos = model->jnt_qposadr[free_joint];
+  std::vector<mjtNum> standing_qpos;
+  if (!posture_path.empty()) {
+    std::ifstream posture(posture_path);
+    mjtNum value = 0;
+    while (posture >> value) standing_qpos.push_back(value);
+    if (standing_qpos.size() != static_cast<size_t>(model->nq)) {
+      std::ofstream result(result_path);
+      result << "{\"status\":\"FAIL_POSTURE_QPOS_SIZE\"}\n";
+      mj_deleteData(data); mj_deleteModel(model); return 5;
+    }
+  }
   const int root = RootBody(model, model->cam_bodyid[camera]);
   constexpr int horizontal = 90;
   constexpr int vertical = 5;
@@ -83,9 +95,12 @@ int main(int argc, char** argv) {
       for (int ai = -4; ai <= 4; ++ai) {
         const float yaw = 0.10f * ai;
         mj_resetData(model, data);
+        if (!standing_qpos.empty()) {
+          std::memcpy(data->qpos, standing_qpos.data(), sizeof(mjtNum) * model->nq);
+        }
         data->qpos[qpos] = x;
         data->qpos[qpos + 1] = y;
-        data->qpos[qpos + 2] = 0.68;
+        data->qpos[qpos + 2] = standing_qpos.empty() ? 0.68 : standing_qpos[qpos + 2];
         data->qpos[qpos + 3] = std::cos(yaw * 0.5f);
         data->qpos[qpos + 4] = 0;
         data->qpos[qpos + 5] = 0;
@@ -126,7 +141,7 @@ int main(int argc, char** argv) {
   }
   output.close();
   std::ofstream result(result_path);
-  result << "{\"schema\":\"robotsim.issue80.lidar-static-map.v1\",\"status\":\"PASS\",\"candidates\":" << count << ",\"rays\":" << rays << ",\"x_range_m\":[-1.5,1.0],\"y_range_m\":[-2.0,-0.8],\"yaw_range_rad\":[-0.4,0.4],\"source\":\"STATIC_RAICOM_SCENE_MJ_RAY\",\"mj_step_calls\":0}\n";
+  result << "{\"schema\":\"robotsim.issue80.lidar-static-map.v1\",\"status\":\"PASS\",\"candidates\":" << count << ",\"rays\":" << rays << ",\"x_range_m\":[-1.5,1.0],\"y_range_m\":[-2.0,-0.8],\"yaw_range_rad\":[-0.4,0.4],\"source\":\"STATIC_RAICOM_SCENE_MJ_RAY\",\"standing_posture_qpos\":" << (!standing_qpos.empty() ? "true" : "false") << ",\"mj_step_calls\":0}\n";
   mj_deleteData(data); mj_deleteModel(model);
   return 0;
 }
