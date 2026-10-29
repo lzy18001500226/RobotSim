@@ -5389,8 +5389,8 @@ class BoundedRun:
                         if transferred.get("status") != "PASS_STATIC_NOMINAL_START_TABLE_APPROACH_CLEARANCE":
                             raise RuntimeError("static nominal-start table-approach clearance transfer did not pass")
                 elif self.lidar_obstacle_route:
-                    workcell_path = self.evidence / "workcell_geometry_preflight.json"
-                    manifest_path = self.evidence / "route_config_input.json"
+                    workcell_path = self.evidence / "lidar_route_template_workcell.json"
+                    manifest_path = self.evidence / "lidar_route_template_input.json"
                     if any(path.is_symlink() or not path.is_file() for path in (workcell_path, manifest_path)):
                         raise RuntimeError("LiDAR route static preflight/manifest is missing or unsafe")
                     workcell = json.loads(workcell_path.read_text(encoding="utf-8"))
