@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
 
-from issue80_lidar_observed_route_config import LidarRouteConfigError, build
+from issue80_lidar_observed_route_config import LidarRouteConfigError, build, smooth_initial_heading
 
 
 class LidarObservedRouteConfigTests(unittest.TestCase):
+    def test_initial_heading_smoothing_preserves_endpoints_and_starts_near_forward(self) -> None:
+        points = ((-1.45, -1.45), (-0.45, 0.45), (0.35, 0.45), (0.95, -1.45))
+        smoothed = smooth_initial_heading(points)
+        self.assertEqual(smoothed[0], points[0])
+        self.assertEqual(smoothed[-2:], points[-2:])
+        self.assertGreater(len(smoothed), len(points))
+        heading = math.atan2(smoothed[1][1] - smoothed[0][1], smoothed[1][0] - smoothed[0][0])
+        self.assertLess(abs(heading), 0.25)
+
     def test_rejects_unqualified_replay(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

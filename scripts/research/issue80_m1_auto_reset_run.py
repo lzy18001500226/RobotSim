@@ -94,7 +94,10 @@ from issue80_raicom_mjdata_capture import (
     write_new_json as write_new_capture_json,
 )
 from issue80_raicom_observed_detour_static import audit as audit_observed_lidar_detour
-from issue80_lidar_observed_route_config import build as build_observed_lidar_route_config
+from issue80_lidar_observed_route_config import (
+    build as build_observed_lidar_route_config,
+    smooth_initial_heading as smooth_lidar_route_initial_heading,
+)
 
 
 REPO = Path("/home/lzy18001500226/projects/RobotSim")
@@ -4982,12 +4985,14 @@ class BoundedRun:
             scenario_root = Path(str(provenance["scenario_source"])).resolve(strict=True)
             runtime_scene = scenario_root / "scene_runtime_unknown_obstacles.xml"
             replay_path = self.evidence / "lidar_live_observed_replay.json"
+            smoothed = smooth_lidar_route_initial_heading(tuple(actual))
             replay = {
                 "schema": "robotsim.issue80.lidar-map-background-replay.v1",
                 "classification": "SIMULATION_ONLY_LIVE_MAP_BACKGROUND_REPLAY",
                 "status": "PASS_CAPTURE_REPLAYED",
                 "second_decision": "DETOUR_READY_STATIC_ONLY",
-                "detour_waypoints": [{"x_m": x, "y_m": y} for x, y in actual],
+                "raw_lidar_a_star_waypoints": [{"x_m": x, "y_m": y} for x, y in actual],
+                "detour_waypoints": [{"x_m": x, "y_m": y} for x, y in smoothed],
                 "source_live_diagnostic_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
             }
             with replay_path.open("x", encoding="utf-8") as stream:
@@ -5047,7 +5052,8 @@ class BoundedRun:
                 and matches
             ) else "BLOCKED",
             "diagnostic": observed,
-            "fresh_route_points": [{"x_m": x, "y_m": y} for x, y in actual],
+            "fresh_raw_lidar_a_star_points": [{"x_m": x, "y_m": y} for x, y in actual],
+            "fresh_route_points": [{"x_m": x, "y_m": y} for x, y in smoothed],
             "route_generated_from_fresh_lidar_observation": matches,
             "velocity_publisher_created_by_confirmation": False,
             "mc_action_or_source_client_created_by_confirmation": False,

@@ -30,6 +30,39 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def smooth_initial_heading(points: tuple[tuple[float, float], ...]) -> tuple[tuple[float, float], ...]:
+    """Insert a source-frame forward-tangent entry into a LiDAR A* polyline.
+
+    Grid simplification can turn a collision-free path into an initial corner
+    of roughly one radian.  FoundationWalk has a bounded yaw-rate channel, so
+    the route manager must not ask it to instantaneously follow that corner.
+    This deterministic Bézier sampling uses only the observed path's first
+    two tangents and the known Reset heading (+map X); it neither uses
+    obstacle-generator geometry nor modifies the A* goal.
+    """
+    if len(points) < 3:
+        raise LidarRouteConfigError("LiDAR path needs at least three points for entry smoothing")
+    start, first, second = points[:3]
+    next_dx, next_dy = second[0] - first[0], second[1] - first[1]
+    next_norm = math.hypot(next_dx, next_dy)
+    if next_norm <= 0.05:
+        raise LidarRouteConfigError("LiDAR path first outgoing segment is degenerate")
+    # The source map's fixed start heading is +X.  The endpoint tangent uses
+    # the following A* segment to preserve continuity at the first corner.
+    control_one = (start[0] + 0.90, start[1])
+    control_two = (first[0] - 0.90 * next_dx / next_norm, first[1] - 0.90 * next_dy / next_norm)
+    samples: list[tuple[float, float]] = [start]
+    for fraction in (0.10, 0.25, 0.50, 0.75, 1.00):
+        complement = 1.0 - fraction
+        samples.append((
+            complement ** 3 * start[0] + 3.0 * complement ** 2 * fraction * control_one[0]
+            + 3.0 * complement * fraction ** 2 * control_two[0] + fraction ** 3 * first[0],
+            complement ** 3 * start[1] + 3.0 * complement ** 2 * fraction * control_one[1]
+            + 3.0 * complement * fraction ** 2 * control_two[1] + fraction ** 3 * first[1],
+        ))
+    return tuple(samples + list(points[2:]))
+
+
 def _read(path: Path) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file():
         raise LidarRouteConfigError("route input must be a regular file")
@@ -169,6 +202,9 @@ def build(*, replay_path: Path, static_audit_path: Path, occupancy_path: Path) -
             "route_corridor_half_width_m": half_width,
             "permitted_tracking_m": permitted_tracking,
             "route_forward_m_s": RAICOM_LOW_CRUISE_FORWARD_M_S,
+            "raw_lidar_a_star_waypoint_count": len(replay.get("raw_lidar_a_star_waypoints", points)),
+            "smoothed_route_waypoint_count": len(points),
+            "initial_heading_smoothing": "deterministic_bezier_from_observed_ASTAR_first_corner_and_known_+mapX_Reset_heading",
         },
     }
     RouteSpec.from_mapping(raw)
