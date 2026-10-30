@@ -36,6 +36,24 @@ class NativeHandStartupTests(unittest.TestCase):
         output = Path("/tmp/raicom-stl-native-hand-startup-20261030T123456Z")
         self.assertEqual(MODULE.docker_container_name(output), "robotsim-i46-stl-hand-20261030t123456z")
 
+    def test_mc_launch_uses_only_delivered_runtime_and_evidence_logs(self) -> None:
+        script = MODULE.build_mc_launch_script()
+        self.assertIn("/workspace/raicom2026/mc/bin", script)
+        self.assertIn("LOG_PATH=/workspace/evidence/mc_logs", script)
+        self.assertNotIn("set -euo", script)
+        self.assertNotIn("/home/", script)
+
+    def test_mc_writeback_paths_are_limited_to_the_known_generated_inputs(self) -> None:
+        self.assertEqual(str(MODULE.MC_DUMP_RELATIVE), "mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml.dump")
+        self.assertEqual(str(MODULE.MC_GENERATED_RELATIVE), "mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim")
+
+    def test_stand_client_uses_pinned_aimdk_service_contract(self) -> None:
+        script = MODULE.build_stand_client_script()
+        self.assertIn("SetMcAction", script)
+        self.assertIn("GetMcAction", script)
+        self.assertIn("/aimdk_5Fmsgs/srv/SetMcAction", script)
+        self.assertIn("STAND_DEFAULT", script)
+
 
 if __name__ == "__main__":
     unittest.main()

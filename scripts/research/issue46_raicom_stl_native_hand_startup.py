@@ -25,8 +25,10 @@ RUNTIME = EVIDENCE_REPO / "simulation/mujoco/raicom2026"
 IMAGE = "robotsim:humble-raicom-runtime-20261019"
 IMAGE_ID = "fed10384dea8"
 MC_DUMP_RELATIVE = Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml.dump")
+MC_GENERATED_RELATIVE = Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim")
 SIM_READY_MARKER = "MujocoSimModule Started Succeeded"
 HAND_MARKERS = ("hand_joint_command", "hand_joint_state")
+MC_READY_MARKER = "MotionControlModule Started Succeeded"
 sys.path.insert(0, str(REPO))
 
 from scripts.agent import path_governance as pg  # noqa: E402
@@ -97,16 +99,109 @@ exec \"$current_dir/aima-sim-app\" --cfg_file_path=/workspace/evidence/{config_n
 """
 
 
+def build_mc_launch_script() -> str:
+    return """#!/bin/bash
+set -eo pipefail
+source /opt/ros/humble/setup.bash
+source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash
+export LOG_PATH=/workspace/evidence/mc_logs
+mkdir -p "$LOG_PATH"
+cd /workspace/raicom2026/mc/bin
+exec ./em_run_wsl2.sh
+"""
+
+
+def build_stand_client_script() -> str:
+    """Minimal equivalent of the delivered ``set_mc_action SD`` example."""
+    return """#!/usr/bin/env python3
+import json
+import math
+import time
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from aimdk_msgs.msg import CommonRequest, McActionCommand, RequestHeader
+from aimdk_msgs.srv import GetMcAction, SetMcAction
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
+
+
+def call(node, client, request):
+    if not client.wait_for_service(timeout_sec=5.0):
+        raise RuntimeError('service unavailable')
+    future = client.call_async(request)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+    if not future.done() or future.result() is None:
+        raise RuntimeError('service call timed out')
+    return future.result()
+
+
+rclpy.init()
+node = Node('robotsim_stl_native_stand_request')
+odom_samples = []
+tilt_samples = []
+def on_odom(message):
+    odom_samples.append((float(message.pose.pose.position.x), float(message.pose.pose.position.y), float(message.pose.pose.position.z)))
+def on_imu(message):
+    q = message.orientation
+    sinp = 2.0 * (q.w * q.y - q.z * q.x)
+    pitch = math.asin(max(-1.0, min(1.0, sinp)))
+    roll = math.atan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
+    tilt_samples.append(max(abs(roll), abs(pitch)))
+state_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+node.create_subscription(Odometry, '/aima/hal/odom/state', on_odom, state_qos)
+node.create_subscription(Imu, '/aima/hal/imu/torso/state', on_imu, state_qos)
+try:
+    set_client = node.create_client(SetMcAction, '/aimdk_5Fmsgs/srv/SetMcAction')
+    request = SetMcAction.Request()
+    request.header = RequestHeader()
+    request.header.stamp = node.get_clock().now().to_msg()
+    request.source = 'node'
+    request.command = McActionCommand()
+    request.command.action_desc = 'STAND_DEFAULT'
+    set_result = call(node, set_client, request)
+    get_client = node.create_client(GetMcAction, '/aimdk_5Fmsgs/srv/GetMcAction')
+    samples = []
+    for _ in range(10):
+        get_request = GetMcAction.Request()
+        get_request.request = CommonRequest()
+        get_request.request.header.stamp = node.get_clock().now().to_msg()
+        get_result = call(node, get_client, get_request)
+        sample = {'mode_name': get_result.info.action_desc, 'mode_status': int(get_result.info.status.value)}
+        samples.append(sample)
+        if sample['mode_name'] == 'STAND_DEFAULT':
+            break
+        time.sleep(0.3)
+    deadline = time.monotonic() + 2.0
+    while rclpy.ok() and time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.02)
+    if len(odom_samples) >= 2:
+        first, last = odom_samples[0], odom_samples[-1]
+        planar_drift = math.hypot(last[0] - first[0], last[1] - first[1])
+    else:
+        planar_drift = None
+    max_tilt = max(tilt_samples) if tilt_samples else None
+    stability = {'sample_count': len(odom_samples), 'planar_drift_m': planar_drift, 'max_tilt_rad': max_tilt, 'pass': samples[-1]['mode_name'] == 'STAND_DEFAULT' and planar_drift is not None and planar_drift <= 0.05 and max_tilt is not None and max_tilt <= math.radians(15.0)}
+    print(json.dumps({'set_status': int(set_result.response.status.value), 'set_message': set_result.response.message, 'mode_name': samples[-1]['mode_name'], 'mode_status': samples[-1]['mode_status'], 'mode_samples': samples, 'stability': stability}))
+finally:
+    node.destroy_node()
+    rclpy.shutdown()
+"""
+
+
 def build_hand_probe_script(command_position: float = 0.6, hand_type: int = 2) -> str:
     """Return a self-contained ROS probe; it never writes MuJoCo qpos."""
     return """#!/usr/bin/env python3
 import json
+import math
 import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from aimdk_msgs.msg import HandCommand, HandCommandArray, HandType, HandStateArray
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
 
 
 class Probe(Node):
@@ -116,13 +211,28 @@ class Probe(Node):
         self.publisher = self.create_publisher(HandCommandArray, '/aima/hal/joint/hand/command', qos)
         self.latest = {}
         self.hand_types = {}
+        self.odom_samples = []
+        self.tilt_samples = []
         self.create_subscription(HandStateArray, '/aima/hal/joint/hand/state', self.on_state, qos)
+        state_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.create_subscription(Odometry, '/aima/hal/odom/state', self.on_odom, state_qos)
+        self.create_subscription(Imu, '/aima/hal/imu/torso/state', self.on_imu, state_qos)
 
     def on_state(self, message):
         self.hand_types = {'left': int(message.left_hand_type.value), 'right': int(message.right_hand_type.value)}
         for command in list(message.left_hands) + list(message.right_hands):
             canonical = {'L_claw_joint': 'left_claw_joint', 'R_claw_joint': 'right_claw_joint'}.get(command.name, command.name)
             self.latest[canonical] = float(command.position)
+
+    def on_odom(self, message):
+        self.odom_samples.append((float(message.pose.pose.position.x), float(message.pose.pose.position.y)))
+
+    def on_imu(self, message):
+        q = message.orientation
+        sinp = 2.0 * (q.w * q.y - q.z * q.x)
+        pitch = math.asin(max(-1.0, min(1.0, sinp)))
+        roll = math.atan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
+        self.tilt_samples.append(max(abs(roll), abs(pitch)))
 
     def spin_for(self, seconds):
         deadline = time.monotonic() + seconds
@@ -161,7 +271,14 @@ try:
     target = __COMMAND_POSITION__
     response = all(name in opened and (opened[name] < -0.10 if target > 0.0 else abs(opened[name] - target) < 0.12) for name in required)
     restored_ok = all(name in restored and abs(restored[name]) < 0.08 for name in required)
-    print(json.dumps({'initial': initial, 'closed': closed, 'opened': opened, 'restored': restored, 'state_hand_types': node.hand_types, 'publisher_subscription_count': node.publisher.get_subscription_count(), 'response_pass': response, 'restore_pass': restored_ok}, sort_keys=True))
+    if len(node.odom_samples) >= 2:
+        first, last = node.odom_samples[0], node.odom_samples[-1]
+        drift = math.hypot(last[0] - first[0], last[1] - first[1])
+    else:
+        drift = None
+    motion_stability = {'sample_count': len(node.odom_samples), 'planar_drift_m': drift, 'max_tilt_rad': max(node.tilt_samples) if node.tilt_samples else None}
+    motion_stability['pass'] = motion_stability['sample_count'] >= 100 and motion_stability['planar_drift_m'] is not None and motion_stability['planar_drift_m'] <= 0.05 and motion_stability['max_tilt_rad'] is not None and motion_stability['max_tilt_rad'] <= math.radians(15.0)
+    print(json.dumps({'initial': initial, 'closed': closed, 'opened': opened, 'restored': restored, 'state_hand_types': node.hand_types, 'publisher_subscription_count': node.publisher.get_subscription_count(), 'response_pass': response, 'restore_pass': restored_ok, 'motion_stability': motion_stability}, sort_keys=True))
 finally:
     node.destroy_node()
     rclpy.shutdown()
@@ -203,9 +320,21 @@ def host_preflight(container: str) -> dict[str, object]:
     if not Path("/tmp/.X11-unix").is_dir():
         raise RuntimeError("WSLg/X11 unix socket directory is unavailable")
     runtime_dump = RUNTIME / MC_DUMP_RELATIVE
-    if not runtime_dump.is_file():
-        raise RuntimeError("pinned MC runtime dump template is missing")
-    return {"image": image, "active_container_conflicts": conflicts, "runtime_dump": str(runtime_dump), "runtime_dump_sha256": sha256(runtime_dump)}
+    generated_directory = RUNTIME / MC_GENERATED_RELATIVE
+    if not runtime_dump.is_file() or not generated_directory.is_dir():
+        raise RuntimeError("pinned MC runtime generated-config inputs are missing")
+    entries = list(generated_directory.rglob("*"))
+    for entry in entries:
+        if not entry.is_symlink():
+            continue
+        try:
+            entry.resolve(strict=True).relative_to(RUNTIME.resolve(strict=True))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("pinned MC generated-config directory has an escaping or broken link") from exc
+    source_files = sorted(path for path in entries if path.is_file())
+    if not source_files:
+        raise RuntimeError("pinned MC generated-config directory is empty")
+    return {"image": image, "active_container_conflicts": conflicts, "runtime_dump": str(runtime_dump), "runtime_dump_sha256": sha256(runtime_dump), "generated_directory": str(generated_directory), "generated_file_count": len(source_files), "generated_symlink_count": sum(path.is_symlink() for path in entries)}
 
 
 def main() -> None:
@@ -215,8 +344,10 @@ def main() -> None:
     parser.add_argument("--run-hand-probe", action="store_true")
     parser.add_argument("--probe-command-position", type=float, default=0.6, help="diagnostic raw HandCommand.position; ordinary public command mapping is 0..1")
     parser.add_argument("--probe-hand-type", type=int, default=2, choices=(1, 2), help="diagnostic HandType; 2 is the public claw mode")
+    parser.add_argument("--start-mc", action="store_true", help="start native MC for initialization only; no action or motion command is issued")
+    parser.add_argument("--request-stand", action="store_true", help="issue the vendor SD standing request after MC startup; does not command arms, hands, or locomotion")
     args = parser.parse_args()
-    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0:
+    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc):
         raise SystemExit("overlay result and a startup timeout in [2,35] seconds are required")
     inputs = exact_generated_inputs(args.overlay_result)
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-native-hand-startup").native_path
@@ -228,8 +359,8 @@ def main() -> None:
         "overlay_result": {"path": str(args.overlay_result), "sha256": sha256(args.overlay_result)},
         "generated_inputs": {label: {"path": str(path), "sha256": sha256(path)} for label, path in inputs.items()},
         "container": container,
-        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "MC": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
-        "limitations": ["No arm, action, locomotion, or MC command is published by this check.", "No balance, physical contact, or grasp conclusion is permitted from a simulator hand readback."],
+        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
+        "limitations": ["No arm, upper-body, or locomotion command is published by this check.", "A successful SD request does not establish balance, physical contact, or grasp."],
     }
     try:
         host = host_preflight(container)
@@ -241,9 +372,18 @@ def main() -> None:
         runtime_dump = Path(str(host["runtime_dump"]))
         staged_dump = output / "mc_sim.yaml.dump"
         pg.write_new_bytes(staged_dump, runtime_dump.read_bytes())
+        generated_source = Path(str(host["generated_directory"]))
+        generated_target = output / "mc_sim_generated"
+        shutil.copytree(generated_source, generated_target)
         launch = output / "launch_sim.sh"
         pg.write_new_text(launch, build_launch_script(inputs["simulator_config"].name))
         launch.chmod(0o755)
+        if args.start_mc:
+            mc_launch = output / "launch_mc.sh"
+            pg.write_new_text(mc_launch, build_mc_launch_script())
+            mc_launch.chmod(0o755)
+        if args.request_stand:
+            pg.write_new_text(output / "native_stand_client.py", build_stand_client_script())
         if args.run_hand_probe:
             probe = output / "native_hand_probe.py"
             pg.write_new_text(probe, build_hand_probe_script(args.probe_command_position, args.probe_hand_type))
@@ -257,6 +397,7 @@ def main() -> None:
             "--mount", f"type=bind,source={output},target=/workspace/evidence",
             "--mount", "type=bind,source=/tmp/.X11-unix,target=/tmp/.X11-unix,readonly",
             "--mount", "type=bind,source=" + str(staged_dump) + ",target=/workspace/raicom2026/" + str(MC_DUMP_RELATIVE),
+            "--mount", "type=bind,source=" + str(generated_target) + ",target=/workspace/raicom2026/" + str(MC_GENERATED_RELATIVE),
             "-e", "DISPLAY=:0", "-e", "HOME=/tmp", "-e", "ROS_DOMAIN_ID=20", "-e", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp", IMAGE, "sleep", "infinity",
         ]
         started = run(command, timeout_s=10.0)
@@ -268,6 +409,24 @@ def main() -> None:
         result["gates"]["HAND_COMMAND_SUBSCRIBER"] = "PASS" if ready else "FAIL"
         result["gates"]["HAND_STATE_PUBLISHER"] = "PASS" if ready else "FAIL"
         result["simulator_log_markers"] = {marker: marker in console for marker in (SIM_READY_MARKER, *HAND_MARKERS)}
+        if ready and args.start_mc:
+            run(["docker", "exec", "-d", container, "bash", "-lc", "bash /workspace/evidence/launch_mc.sh > /workspace/evidence/mc-console.log 2>&1"], timeout_s=5.0)
+            mc_ready, mc_log = wait_for_log(output / "mc_logs/mc.log", (MC_READY_MARKER,), timeout_s=args.startup_timeout_s)
+            pg.write_new_text(output / "mc-console.tail.txt", (output / "mc-console.log").read_text(encoding="utf-8", errors="replace")[-12000:] if (output / "mc-console.log").is_file() else "")
+            pg.write_new_text(output / "mc-log.tail.txt", mc_log[-12000:])
+            result["gates"]["MC_INITIALIZATION"] = "PASS" if mc_ready else "FAIL"
+            if mc_ready and args.request_stand:
+                environment = "source /opt/ros/humble/setup.bash; source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash; "
+                stand = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 10s python3 /workspace/evidence/native_stand_client.py"], timeout_s=12.0, check=False)
+                pg.write_new_text(output / "native_stand_request.stdout", stand.stdout)
+                result["gates"]["NATIVE_STAND_REQUEST"] = "PASS" if stand.returncode == 0 else "FAIL"
+                try:
+                    stand_result = json.loads(stand.stdout.strip().splitlines()[-1])
+                except (IndexError, json.JSONDecodeError):
+                    stand_result = {"parse_error": True}
+                result["native_stand"] = {"returncode": stand.returncode, "result": stand_result, "stdout": stand.stdout}
+                result["gates"]["NATIVE_STAND_READBACK"] = "PASS" if stand.returncode == 0 and stand_result.get("mode_name") == "STAND_DEFAULT" else "FAIL"
+                result["gates"]["NATIVE_STAND_STABILITY"] = "PASS" if stand.returncode == 0 and stand_result.get("stability", {}).get("pass") else "FAIL"
         if ready and args.run_hand_probe:
             probe = run([
                 "docker", "exec", container, "bash", "-lc",
@@ -282,6 +441,8 @@ def main() -> None:
             result["hand_probe_command_position"] = args.probe_command_position
             result["hand_probe_hand_type"] = args.probe_hand_type
             result["gates"]["HAL_HAND_COMMAND_ROUNDTRIP"] = "PASS" if probe.returncode == 0 and hand_probe.get("response_pass") and hand_probe.get("restore_pass") else "FAIL"
+            if args.start_mc and args.request_stand:
+                result["gates"]["STL_HAND_COMMAND_STAND_STABILITY"] = "PASS" if hand_probe.get("motion_stability", {}).get("pass") else "FAIL"
     except Exception as exc:
         result["failure"] = {"type": type(exc).__name__, "message": str(exc)}
     finally:
