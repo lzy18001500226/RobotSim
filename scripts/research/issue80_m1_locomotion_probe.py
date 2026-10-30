@@ -295,6 +295,26 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
+def stationary_baseline_stale_odom_can_restart(
+    fault: str | None,
+    *,
+    now_s: float,
+    freshness_deadline_s: float,
+) -> bool:
+    """Allow only a bounded wait/restart before any source registration.
+
+    The stale packet itself is never accepted: the complete three-window
+    baseline is recollected only after a fresh odometry sample arrives.
+    """
+    return (
+        isinstance(fault, str)
+        and fault.startswith("stale_or_missing_state:odom")
+        and math.isfinite(now_s)
+        and math.isfinite(freshness_deadline_s)
+        and now_s < freshness_deadline_s
+    )
+
+
 class FocusedM1Diagnostic(Node):
     """Run one authorized 0.2 m/s first-motion test with fail-closed monitoring."""
 
@@ -1675,11 +1695,18 @@ class FocusedM1Diagnostic(Node):
                 # before the first fresh standing sample.  It is not a motion
                 # command or a safety override: wait briefly for a new packet
                 # before the no-command baseline starts.
-                if (
-                    baseline_start_s is None
-                    and str(fault).startswith("stale_or_missing_state:odom")
-                    and time.monotonic() < fresh_initial_deadline_s
+                if stationary_baseline_stale_odom_can_restart(
+                    fault,
+                    now_s=time.monotonic(),
+                    freshness_deadline_s=fresh_initial_deadline_s,
                 ):
+                    # A regressing simulator timestamp can arrive after the
+                    # first accepted sample. Discard the partial no-command
+                    # baseline rather than treating that old state as fresh.
+                    samples.clear()
+                    baseline_start_s = None
+                    baseline_end_s = None
+                    next_sample_s = None
                     self._spin_for(0.02)
                     continue
                 raise RuntimeError(f"stationary odometry baseline safety fault: {fault}")

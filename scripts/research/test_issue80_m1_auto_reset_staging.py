@@ -243,6 +243,17 @@ class ResearchScriptStagingTests(unittest.TestCase):
             method,
         )
 
+    def test_stale_odom_baseline_restart_discards_partial_samples_before_registration(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        helper = source[source.index("def stationary_baseline_stale_odom_can_restart("):source.index("\n\nclass FocusedM1Diagnostic")]
+        self.assertIn('fault.startswith("stale_or_missing_state:odom")', helper)
+        method = source[source.index("    def collect_stationary_odom_baseline("):source.index("    def _spin_for(")]
+        self.assertIn("stationary_baseline_stale_odom_can_restart(", method)
+        self.assertIn("samples.clear()", method)
+        self.assertIn("baseline_start_s = None", method)
+
     def test_configured_route_profile_uses_route_caps_and_existing_stop_observation(self) -> None:
         args = argparse.Namespace(
             route_config=None,
