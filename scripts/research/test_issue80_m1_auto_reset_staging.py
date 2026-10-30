@@ -487,6 +487,35 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertEqual(child[child.index("--max-observed-planar-speed-m-s") + 1], "0.35")
         self.assertNotIn("--route-integration", child)
 
+    def test_lateral_step_child_command_is_isolated_and_uses_the_documented_start_speed(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=5.0,
+            pulse_duration=2.0,
+            forward_speed=0.6,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="lateral-step-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+            cpg_step_diagnostic=False,
+            cpg_step_settle_envelope_diagnostic=False,
+            lateral_step_diagnostic=True,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "lateral-step-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--lateral-step-diagnostic", child)
+        self.assertEqual(child[child.index("--forward-speed") + 1], "0.6")
+        self.assertEqual(child[child.index("--max-observed-planar-speed-m-s") + 1], "0.65")
+        self.assertIn("--zero-only-stop", child)
+        self.assertNotIn("--route-integration", child)
+
     def test_zero_only_activation_command_has_separate_authority_and_no_motion_profile(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=0.0,

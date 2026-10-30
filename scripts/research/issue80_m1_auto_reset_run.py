@@ -321,6 +321,7 @@ def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, 
         or getattr(args, "local01_scene_world_poses", None)
     )
     cpg_step_diagnostic = bool(getattr(args, "cpg_step_diagnostic", False))
+    lateral_step_diagnostic = bool(getattr(args, "lateral_step_diagnostic", False))
     post_observation = getattr(args, "post_locomotion_convergence_observation_s", None)
     prearmed_standing_only = bool(
         getattr(args, "mc_prearm_before_simulator", False)
@@ -336,17 +337,17 @@ def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, 
     if require_warmup and (
         not (
             (getattr(args, "maintainer_authorized_first_motion", False)
-             and (extended_b or configured_route or cpg_step_diagnostic))
+             and (extended_b or configured_route or cpg_step_diagnostic or lateral_step_diagnostic))
             or ((prearmed_standing_only or direct_standing_only) and configured_route)
         )
     ):
         raise ValueError(
             "composite stand warmup gate requires authorized extended-B or configured-route motion "
-            "(or the isolated CPG STEP diagnostic), "
+            "(or an isolated CPG STEP/lateral-step diagnostic), "
             "or prearmed standing-only qualification"
         )
     if post_observation is None:
-        if require_warmup and not configured_route and not cpg_step_diagnostic:
+        if require_warmup and not configured_route and not cpg_step_diagnostic and not lateral_step_diagnostic:
             raise ValueError("composite stand warmup diagnostic requires the explicit post-locomotion observation horizon")
         return {
             "status": (
@@ -1447,7 +1448,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_right_turn_qualification", "run65_route_integration",
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
-        "route_config", "local01_scene_world_poses", "cpg_step_diagnostic",
+        "route_config", "local01_scene_world_poses", "cpg_step_diagnostic", "lateral_step_diagnostic",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in diagnostic_names) or run65_point_goal_enabled(args):
         command[-1] += (
@@ -1458,7 +1459,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                     getattr(args, "raicom_vendor_example_forward_baseline", False)
                     or getattr(args, "raicom_vendor_table_approach", False)
                     or getattr(args, "raicom_lidar_obstacle_route", False)
-                ) else "0.35"
+                ) else "0.65"
+                if bool(getattr(args, "lateral_step_diagnostic", False)) else "0.35"
                 if bool(getattr(args, "cpg_step_settle_envelope_diagnostic", False)) else "0.2"
             )
         )
@@ -1471,7 +1473,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_route_integration", "run65_waypoint_b_only",
         "run65_waypoint_b_short_diagnostic", "run65_waypoint_b_extended_diagnostic",
         "run65_curved_path_diagnostic", "route_config", "local01_scene_world_poses",
-        "cpg_step_diagnostic",
+        "cpg_step_diagnostic", "lateral_step_diagnostic",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in stand_timeout_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-until-stand-timeout-s 3.5"
@@ -1483,7 +1485,7 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         "run65_right_turn_qualification", "run65_route_integration",
         "run65_waypoint_b_only", "run65_waypoint_b_short_diagnostic",
         "run65_waypoint_b_extended_diagnostic", "run65_curved_path_diagnostic",
-        "route_config", "local01_scene_world_poses", "cpg_step_diagnostic",
+        "route_config", "local01_scene_world_poses", "cpg_step_diagnostic", "lateral_step_diagnostic",
     )
     if zero_only_activation or activation_probe or any(bool(getattr(args, name, False)) for name in zero_only_diagnostics) or run65_point_goal_enabled(args):
         command[-1] += " --zero-only-stop"
@@ -1499,6 +1501,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         command[-1] += " --locomotion-action LOCOMOTION_STEP --cpg-step-diagnostic"
         if bool(getattr(args, "cpg_step_settle_envelope_diagnostic", False)):
             command[-1] += " --cpg-step-settle-envelope-diagnostic"
+    if bool(getattr(args, "lateral_step_diagnostic", False)):
+        command[-1] += " --lateral-step-diagnostic"
     if getattr(args, "run49_smoothstop_diagnostic", False):
         command[-1] += " --deceleration-duration-s 1.0"
     if getattr(args, "run50_threshold_respecting_smoothstop_diagnostic", False):
@@ -5958,6 +5962,14 @@ def main() -> int:
             "does not alter joint, posture, stop, or route acceptance limits"
         ),
     )
+    parser.add_argument(
+        "--lateral-step-diagnostic",
+        action="store_true",
+        help=(
+            "one isolated SIMULATION_ONLY FoundationWalk lateral-step test at the documented 0.60 m/s startup command; "
+            "no route, turn, LiDAR, or controller/configuration change"
+        ),
+    )
     parser.add_argument("--ramp-start-speed", type=float, default=None)
     parser.add_argument("--ramp-duration-s", type=float, default=0.0)
     parser.add_argument("--startup-speed", type=float, default=None)
@@ -6450,13 +6462,22 @@ def main() -> int:
         parser.error("pulse duration must be positive and no greater than 10 seconds")
     if args.cpg_step_settle_envelope_diagnostic and not args.cpg_step_diagnostic:
         parser.error("CPG STEP settle envelope requires --cpg-step-diagnostic")
+    if args.lateral_step_diagnostic and args.cpg_step_diagnostic:
+        parser.error("lateral-step and CPG STEP diagnostics are mutually exclusive")
     if not 1 <= args.native_mjdata_capture_interval_steps <= 1000:
         parser.error("native MjData capture interval must be in [1, 1000]")
-    maximum_forward_speed = 0.3 if args.cpg_step_diagnostic else 0.2
+    maximum_forward_speed = (
+        0.6 if args.lateral_step_diagnostic else 0.3 if args.cpg_step_diagnostic else 0.2
+    )
     if not 0.0 < args.forward_speed <= maximum_forward_speed:
         parser.error(
             "forward speed must be positive and no greater than "
-            + ("0.3 m/s for the installed CPG STEP diagnostic" if args.cpg_step_diagnostic else "0.2 m/s")
+            + (
+                "0.6 m/s for the documented lateral-step diagnostic"
+                if args.lateral_step_diagnostic else
+                "0.3 m/s for the installed CPG STEP diagnostic"
+                if args.cpg_step_diagnostic else "0.2 m/s"
+            )
         )
     if not 0.0 <= args.ramp_duration_s <= args.pulse_duration:
         parser.error("velocity ramp duration must fit within the pulse duration")
@@ -6485,6 +6506,7 @@ def main() -> int:
         args.run65_curved_path_diagnostic,
         args.run65_ground_truth_point_goal,
         args.cpg_step_diagnostic,
+        args.lateral_step_diagnostic,
         bool((args.route_config or args.local01_scene_world_poses) and not args.table_approach_mission),
         bool(args.table_approach_mission),
     )
@@ -7032,7 +7054,26 @@ def main() -> int:
                 "FoundationWalk diagnostic requires first-motion authorization, except the zero-only activation preflight "
                 "or a bounded standing qualification"
             )
-        if args.cpg_step_diagnostic:
+        if args.lateral_step_diagnostic:
+            if (
+                abs(args.forward_speed - 0.6) > 1e-9
+                or abs(args.pulse_duration - 2.0) > 1e-9
+                or abs(args.extra_stop_observation - 5.0) > 1e-9
+                or args.ramp_duration_s != 0.0
+                or args.ramp_start_speed is not None
+                or args.startup_speed is not None
+                or args.startup_transition_displacement is not None
+                or args.startup_transition_timeout_s != 0.0
+                or args.capture_mc_rl_debug
+                or args.route_config
+                or args.local01_scene_world_poses
+                or args.raicom_lidar_obstacle_route
+            ):
+                parser.error(
+                    "lateral step is fixed to one isolated 0.60 m/s, 2 s window with 5 s post-stop observation "
+                    "and no route/LiDAR/debug overlay"
+                )
+        elif args.cpg_step_diagnostic:
             if (
                 abs(args.forward_speed - 0.3) > 1e-9
                 or abs(args.pulse_duration - 2.0) > 1e-9

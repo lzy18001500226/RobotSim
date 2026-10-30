@@ -96,6 +96,7 @@ from issue80_m1_mode_logic import (
     ACTIVATION_PROBE_DURATION_S,
     ACTIVATION_PROBE_FORWARD_M_S,
     CPG_STEP_FORWARD_M_S,
+    LATERAL_STEP_COMMAND_M_S,
     RAICOM_LOW_CRUISE_FORWARD_M_S,
     VENDOR_EXAMPLE_FORWARD_M_S,
     MCLocomotionAbortLifecycle,
@@ -366,6 +367,9 @@ class FocusedM1Diagnostic(Node):
         self.locomotion_action = str(getattr(args, "locomotion_action", MODE_LOCOMOTION))
         self.cpg_step_settle_envelope_diagnostic = bool(
             getattr(args, "cpg_step_settle_envelope_diagnostic", False)
+        )
+        self.lateral_step_diagnostic = bool(
+            getattr(args, "lateral_step_diagnostic", False)
         )
         self.lidar_map_route_mode = bool(getattr(args, "lidar_map_route", False))
         self.lidar_localization_topic = str(
@@ -1197,6 +1201,8 @@ class FocusedM1Diagnostic(Node):
         allow_raicom_low_cruise: bool = False,
         allow_vendor_example: bool = False,
         allow_cpg_step: bool = False,
+        lateral_command_m_s: float = 0.0,
+        allow_lateral_step: bool = False,
         zero_forward_heading_acquisition: bool = False,
     ) -> tuple[MCLocomotionAbortLifecycle, dict[str, Any], dict[str, Any]]:
         """Prepare the reviewed nonzero-acquisition phase for one route window.
@@ -1218,6 +1224,8 @@ class FocusedM1Diagnostic(Node):
                 allowed_profiles.append(VENDOR_EXAMPLE_FORWARD_M_S)
             if allow_cpg_step:
                 allowed_profiles.append(CPG_STEP_FORWARD_M_S)
+            if allow_lateral_step:
+                allowed_profiles.append(LATERAL_STEP_COMMAND_M_S)
             activation.update({
                 "classification": "SIMULATION_ONLY_SOURCE_GROUNDED_ROUTE_ACTIVATION",
                 "route_motion_authorized": True,
@@ -1227,6 +1235,8 @@ class FocusedM1Diagnostic(Node):
                 "raicom_low_cruise_profile": bool(allow_raicom_low_cruise),
                 "vendor_example_profile": bool(allow_vendor_example),
                 "cpg_step_profile": bool(allow_cpg_step),
+                "lateral_step_profile": bool(allow_lateral_step),
+                "lateral_velocity_m_s": float(lateral_command_m_s),
                 "zero_forward_heading_acquisition": bool(
                     zero_forward_heading_acquisition
                 ),
@@ -8428,6 +8438,10 @@ class FocusedM1Diagnostic(Node):
             "schema": "robotsim.issue80.m1.first-motion.v2",
             "simulation_only": True,
             "acceptance_scope": (
+                "SIMULATION_ONLY isolated installed FoundationWalk lateral-step and physical-stop validation; "
+                "not route, LiDAR, Nav2, or manufacturer-original navigation acceptance"
+                if bool(getattr(self.args, "lateral_step_diagnostic", False))
+                else
                 "SIMULATION_ONLY isolated installed LOCOMOTION_STEP/cpgstep_v1 gait and physical-stop validation; "
                 "not route, LiDAR, Nav2, or manufacturer-original navigation acceptance"
                 if bool(getattr(self.args, "cpg_step_diagnostic", False))
@@ -8451,6 +8465,19 @@ class FocusedM1Diagnostic(Node):
             ),
             "attempt_id": self.args.attempt_id,
             "requested_locomotion_action": self.locomotion_action,
+            "requested_velocity_vector": {
+                "forward_m_s": (
+                    0.0 if self.lateral_step_diagnostic else float(self.args.forward_speed)
+                ),
+                "lateral_m_s": (
+                    LATERAL_STEP_COMMAND_M_S if self.lateral_step_diagnostic else 0.0
+                ),
+                "angular_rad_s": 0.0,
+                "classification": (
+                    "SIMULATION_ONLY_FOUNDATIONWALK_LATERAL_STEP"
+                    if self.lateral_step_diagnostic else "EXISTING_PROFILE"
+                ),
+            },
             "cpg_step_root_speed_envelope_diagnostic": {
                 "enabled": self.cpg_step_settle_envelope_diagnostic,
                 "root_planar_speed_cap_m_s": 0.35 if self.cpg_step_settle_envelope_diagnostic else 0.2,
@@ -8629,15 +8656,21 @@ class FocusedM1Diagnostic(Node):
                 elif (
                     getattr(self.args, "route_integration", False)
                     or bool(getattr(self.args, "cpg_step_diagnostic", False))
+                    or bool(getattr(self.args, "lateral_step_diagnostic", False))
                 ):
                     lifecycle, set_action, activation_gate = self.begin_source_grounded_route_activation(
                         registration=registration,
                         phase=(
-                            "cpg-step-first-window"
+                            "lateral-step-first-window"
+                            if bool(getattr(self.args, "lateral_step_diagnostic", False))
+                            else "cpg-step-first-window"
                             if bool(getattr(self.args, "cpg_step_diagnostic", False))
                             else "initial-route-window"
                         ),
-                        forward_command_m_s=float(self.args.forward_speed),
+                        forward_command_m_s=(
+                            0.0 if bool(getattr(self.args, "lateral_step_diagnostic", False))
+                            else float(self.args.forward_speed)
+                        ),
                         allow_raicom_low_cruise=bool(
                             getattr(self.args, "raicom_low_cruise_profile", False)
                         ) or bool(getattr(self.args, "lidar_map_route", False)),
@@ -8648,6 +8681,14 @@ class FocusedM1Diagnostic(Node):
                         ),
                         allow_cpg_step=bool(
                             getattr(self.args, "cpg_step_diagnostic", False)
+                        ),
+                        lateral_command_m_s=(
+                            LATERAL_STEP_COMMAND_M_S
+                            if bool(getattr(self.args, "lateral_step_diagnostic", False))
+                            else 0.0
+                        ),
+                        allow_lateral_step=bool(
+                            getattr(self.args, "lateral_step_diagnostic", False)
                         ),
                         zero_forward_heading_acquisition=bool(
                             getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
@@ -8666,6 +8707,13 @@ class FocusedM1Diagnostic(Node):
                             "route_motion_authorized": False,
                             "initial_nonzero_is_part_of_route_window": False,
                             "first_nonzero_isolated_cpg_step_diagnostic": True,
+                        })
+                    if bool(getattr(self.args, "lateral_step_diagnostic", False)):
+                        activation_gate.update({
+                            "classification": "SIMULATION_ONLY_SOURCE_GROUNDED_FOUNDATIONWALK_LATERAL_STEP",
+                            "route_motion_authorized": False,
+                            "initial_nonzero_is_part_of_route_window": False,
+                            "first_nonzero_isolated_lateral_step_diagnostic": True,
                         })
                 else:
                     lifecycle, set_action, activation_gate = self.begin_zero_only_locomotion_activation(
@@ -8900,6 +8948,7 @@ class FocusedM1Diagnostic(Node):
                 if (
                     getattr(self.args, "route_integration", False)
                     or bool(getattr(self.args, "cpg_step_diagnostic", False))
+                    or bool(getattr(self.args, "lateral_step_diagnostic", False))
                 )
                 else {"PASS"}
             )
@@ -9065,9 +9114,24 @@ class FocusedM1Diagnostic(Node):
                     if stationary_baseline else None
                 ),
                 authorized=True,
-                forward_command_m_s=self.args.forward_speed,
+                publish_vector=self._publish,
+                forward_command_m_s=(
+                    0.0 if bool(getattr(self.args, "lateral_step_diagnostic", False))
+                    else self.args.forward_speed
+                ),
+                lateral_command_m_s=(
+                    LATERAL_STEP_COMMAND_M_S
+                    if bool(getattr(self.args, "lateral_step_diagnostic", False)) else 0.0
+                ),
+                commanded_motion_axis=(
+                    "lateral" if bool(getattr(self.args, "lateral_step_diagnostic", False)) else "forward"
+                ),
                 maximum_forward_command_m_s=(
                     0.3 if self.locomotion_action == MODE_LOCOMOTION_STEP else 0.2
+                ),
+                maximum_lateral_command_m_s=(
+                    LATERAL_STEP_COMMAND_M_S
+                    if bool(getattr(self.args, "lateral_step_diagnostic", False)) else 0.0
                 ),
                 expected_locomotion_mode=self.locomotion_action,
                 pulse_duration_s=self.args.pulse_duration,
@@ -9096,13 +9160,18 @@ class FocusedM1Diagnostic(Node):
                 activation_lifecycle=self.activation_lifecycle,
                 source_contract_supported=bool(
                     getattr(self.args, "cpg_step_diagnostic", False)
+                    or getattr(self.args, "lateral_step_diagnostic", False)
                 ),
                 source_grounded_route_activation=bool(
                     getattr(self.args, "cpg_step_diagnostic", False)
+                    or getattr(self.args, "lateral_step_diagnostic", False)
                 ),
                 source_grounded_activation_timeout_s=ACTIVATION_PROBE_DURATION_S,
                 allow_cpg_step_source_activation=bool(
                     getattr(self.args, "cpg_step_diagnostic", False)
+                ),
+                allow_lateral_step_source_activation=bool(
+                    getattr(self.args, "lateral_step_diagnostic", False)
                 ),
                 continue_zero_observation_after_post_stop_speed_fault=bool(
                     getattr(self.args, "cpg_step_diagnostic", False)
@@ -9301,12 +9370,46 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     cpg_step_settle_envelope = bool(
         getattr(args, "cpg_step_settle_envelope_diagnostic", False)
     )
+    lateral_step_diagnostic = bool(getattr(args, "lateral_step_diagnostic", False))
     if locomotion_action not in {MODE_LOCOMOTION, MODE_LOCOMOTION_STEP}:
         raise ValueError("locomotion action must be the installed LOCOMOTION_DEFAULT or LOCOMOTION_STEP")
     if cpg_step_diagnostic != (locomotion_action == MODE_LOCOMOTION_STEP):
         raise ValueError("LOCOMOTION_STEP requires the explicit --cpg-step-diagnostic contract")
     if cpg_step_settle_envelope and not cpg_step_diagnostic:
         raise ValueError("CPG STEP settle envelope requires --cpg-step-diagnostic")
+    if lateral_step_diagnostic and (
+        cpg_step_diagnostic or locomotion_action != MODE_LOCOMOTION
+    ):
+        raise ValueError("lateral step requires the installed LOCOMOTION_DEFAULT action only")
+    if lateral_step_diagnostic:
+        if any((
+            args.turning_diagnostic,
+            args.point_goal_diagnostic,
+            getattr(args, "right_turn_qualification", False),
+            getattr(args, "route_integration", False),
+            bool(getattr(args, "route_config", None)),
+            bool(getattr(args, "lidar_map_route", False)),
+            bool(getattr(args, "community_navigation_profile", False)),
+        )):
+            raise ValueError("lateral step is an isolated first-motion check, not a route or turn profile")
+        if (
+            abs(float(args.forward_speed) - LATERAL_STEP_COMMAND_M_S) > 1e-9
+            or abs(float(args.pulse_duration) - 2.0) > 1e-9
+            or args.max_observed_planar_speed_m_s != 0.65
+            or args.zero_until_stand_timeout_s != 3.5
+            or not args.zero_only_stop
+            or args.extra_stop_observation != 5.0
+            or args.ramp_duration_s != 0.0
+            or args.ramp_start_speed is not None
+            or args.deceleration_duration_s != 0.0
+            or args.startup_speed is not None
+            or args.startup_transition_displacement is not None
+            or args.startup_transition_timeout_s != 0.0
+        ):
+            raise ValueError(
+                "lateral step is fixed to the source-grounded 0.60 m/s lateral command for 2.0 s, "
+                "a separately named 0.65 m/s root-speed observation envelope, 3.5 s STAND wait, and 5 s stop observation"
+            )
     if cpg_step_diagnostic:
         if any((
             args.turning_diagnostic,
@@ -10238,6 +10341,7 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         not math.isfinite(args.max_observed_planar_speed_m_s)
         or not 0.0 < args.max_observed_planar_speed_m_s <= (
             0.8 if (vendor_example_forward_baseline or vendor_table_approach) else
+            0.65 if lateral_step_diagnostic else
             0.35 if cpg_step_settle_envelope else 0.2
         )
     ):
@@ -10246,6 +10350,8 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
             + (
                 "0.8 m/s for the vendor direct-velocity profile"
                 if (vendor_example_forward_baseline or vendor_table_approach) else
+                "0.65 m/s for the explicitly named lateral-step observation envelope"
+                if lateral_step_diagnostic else
                 "0.35 m/s for the explicitly named CPG settle-envelope diagnostic"
                 if cpg_step_settle_envelope else "0.2 m/s"
             )
@@ -10302,6 +10408,14 @@ def main() -> int:
         help=(
             "SIMULATION_ONLY CPG-only root-speed observation envelope of 0.35 m/s; "
             "does not alter joint, posture, stop, or navigation acceptance limits"
+        ),
+    )
+    first.add_argument(
+        "--lateral-step-diagnostic",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY isolated FoundationWalk lateral-step validation at the official 0.60 m/s startup command; "
+            "never a route profile"
         ),
     )
     first.add_argument("--ramp-start-speed", type=float, default=None)

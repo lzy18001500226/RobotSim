@@ -13,6 +13,7 @@ from issue80_m1_mode_logic import (
     ACTIVATION_PROBE_DURATION_S,
     ACTIVATION_PROBE_FORWARD_M_S,
     CPG_STEP_FORWARD_M_S,
+    LATERAL_STEP_COMMAND_M_S,
     VENDOR_EXAMPLE_FORWARD_M_S,
     MOTION_ACTIVE,
     MODE_LD,
@@ -426,6 +427,20 @@ class ActivationAbortLifecycleTests(unittest.TestCase):
         self.assertFalse(source_grounded_route_activation_speed_is_supported(
             CPG_STEP_FORWARD_M_S,
             allow_raicom_low_cruise=False,
+        ))
+
+    def test_lateral_step_requires_the_documented_midrange_start_command(self) -> None:
+        self.assertTrue(source_grounded_route_activation_speed_is_supported(
+            0.0,
+            lateral_command_m_s=LATERAL_STEP_COMMAND_M_S,
+            allow_raicom_low_cruise=False,
+            allow_lateral_step=True,
+        ))
+        self.assertFalse(source_grounded_route_activation_speed_is_supported(
+            0.0,
+            lateral_command_m_s=0.2,
+            allow_raicom_low_cruise=False,
+            allow_lateral_step=True,
         ))
 
     def test_zero_only_activation_observer_never_sends_nonzero_and_timeout_requires_abort(self) -> None:

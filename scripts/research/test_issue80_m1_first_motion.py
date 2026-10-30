@@ -669,6 +669,18 @@ class FirstMotionSafetyTests(unittest.TestCase):
             self.assertEqual(result["nonzero_publish_calls_returned"], 0)
             self.assertTrue(all(v == 0.0 for v in commands))
 
+    def test_lateral_command_requires_live_lateral_speed_bounds(self) -> None:
+        sample = self.snapshot()
+        sample["speed_status"] = {"lateral_bounds": {"min_value": -0.5, "max_value": 0.5}}
+        self.assertEqual(snapshot_fault(
+            sample,
+            LIMITS,
+            state_timeout_s=0.5,
+            min_root_z=0.52,
+            max_tilt_deg=15.0,
+            required_lateral_mps=0.6,
+        ), "lateral_speed_outside_live_mc_bounds")
+
     def test_shorter_pulse_cannot_extend_original_deadline(self):
         commands = []
         result = self.run_protocol(self.snapshot, commands.append, pulse_duration_s=0.6)
@@ -2829,6 +2841,24 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             pulse_forward_displacement_m=0.02,
             baseline_noise_bound_m=0.01,
         ), "UNEXPECTED_MOTION_WITHOUT_CONTROL_HANDSHAKE")
+
+    def test_lateral_motion_is_classified_against_the_lateral_body_axis(self) -> None:
+        self.assertEqual(classify_physical_motion(
+            control_handshake_confirmed=True,
+            pulse_forward_displacement_m=0.0,
+            pulse_lateral_displacement_m=0.02,
+            commanded_axis="lateral",
+            commanded_sign=1.0,
+            baseline_noise_bound_m=0.01,
+        ), "PHYSICAL_MOTION_CONFIRMED")
+        self.assertEqual(classify_physical_motion(
+            control_handshake_confirmed=True,
+            pulse_forward_displacement_m=0.02,
+            pulse_lateral_displacement_m=-0.02,
+            commanded_axis="lateral",
+            commanded_sign=1.0,
+            baseline_noise_bound_m=0.01,
+        ), "MOTION_OPPOSITE_COMMAND")
 
     def test_stationary_noise_bound_uses_observed_nonzero_windows_not_a_vendor_threshold(self) -> None:
         samples = []

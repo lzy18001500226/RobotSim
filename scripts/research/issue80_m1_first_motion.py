@@ -1065,16 +1065,29 @@ def classify_physical_motion(
     control_handshake_confirmed: bool,
     pulse_forward_displacement_m: float | None,
     baseline_noise_bound_m: float | None,
+    pulse_lateral_displacement_m: float | None = None,
+    commanded_axis: str = "forward",
+    commanded_sign: float = 1.0,
 ) -> str:
-    """Require measured forward movement beyond this run's empirical baseline envelope."""
+    """Require measured motion along the explicitly commanded body-frame axis."""
     if baseline_noise_bound_m is None or not math.isfinite(float(baseline_noise_bound_m)):
         return "BASELINE_UNAVAILABLE"
     if float(baseline_noise_bound_m) <= 0.0:
         return "BASELINE_NOISE_UNRESOLVED"
-    if pulse_forward_displacement_m is None or not math.isfinite(float(pulse_forward_displacement_m)):
+    displacement_value = (
+        pulse_forward_displacement_m if commanded_axis == "forward"
+        else pulse_lateral_displacement_m if commanded_axis == "lateral" else None
+    )
+    if (
+        commanded_axis not in {"forward", "lateral"}
+        or not math.isfinite(float(commanded_sign))
+        or commanded_sign == 0.0
+        or displacement_value is None
+        or not math.isfinite(float(displacement_value))
+    ):
         return "PULSE_ODOMETRY_UNAVAILABLE"
     noise = float(baseline_noise_bound_m)
-    displacement = float(pulse_forward_displacement_m)
+    displacement = float(displacement_value) * math.copysign(1.0, float(commanded_sign))
     if displacement < -noise:
         return "MOTION_OPPOSITE_COMMAND"
     if displacement <= noise:
@@ -1397,6 +1410,7 @@ def snapshot_fault(
     expected_source: str = VELOCITY_SOURCE_NAME,
     allowed_modes: frozenset[str] = ALLOWED_MODES,
     required_forward_mps: float = FORWARD_COMMAND_M_S,
+    required_lateral_mps: float = 0.0,
     max_observed_planar_speed_m_s: float | None = None,
     allow_source_readback_gap: bool = False,
     allow_common_uninterruptible_transition_during_zero_observation: bool = False,
@@ -1479,6 +1493,26 @@ def snapshot_fault(
         or not minimum <= required_forward_mps <= maximum
     ):
         return "activation_speed_outside_live_mc_bounds"
+    if abs(required_lateral_mps) > 1e-12:
+        speed_status = snapshot.get("speed_status")
+        lateral_bounds = (
+            speed_status.get("lateral_bounds")
+            if isinstance(speed_status, Mapping) else None
+        )
+        if not isinstance(lateral_bounds, Mapping):
+            return "missing_live_lateral_bounds"
+        try:
+            lateral_minimum = float(lateral_bounds["min_value"])
+            lateral_maximum = float(lateral_bounds["max_value"])
+        except (KeyError, TypeError, ValueError):
+            return "malformed_live_lateral_bounds"
+        if (
+            not math.isfinite(lateral_minimum)
+            or not math.isfinite(lateral_maximum)
+            or not math.isfinite(required_lateral_mps)
+            or not lateral_minimum <= required_lateral_mps <= lateral_maximum
+        ):
+            return "lateral_speed_outside_live_mc_bounds"
 
     source_names = (
         snapshot.get("get_source_name", ""),
@@ -1700,12 +1734,16 @@ class ActivationTracker:
         if self.first_pose is None or self.last_activation_pose is None:
             return None
         delta_yaw = self.last_activation_pose.get("yaw", 0.0) - self.first_pose.get("yaw", 0.0)
+        dx = self.last_activation_pose.get("x", 0.0) - self.first_pose.get("x", 0.0)
+        dy = self.last_activation_pose.get("y", 0.0) - self.first_pose.get("y", 0.0)
+        start_heading = self.first_pose.get("yaw", 0.0)
         return {
-            "dx_m": self.last_activation_pose.get("x", 0.0) - self.first_pose.get("x", 0.0),
-            "dy_m": self.last_activation_pose.get("y", 0.0) - self.first_pose.get("y", 0.0),
+            "dx_m": dx,
+            "dy_m": dy,
             "dyaw_rad": math.atan2(math.sin(delta_yaw), math.cos(delta_yaw)),
             "forward_projected_m": forward_projected_displacement(self.first_pose, self.last_activation_pose),
-            "start_heading_rad": self.first_pose.get("yaw", 0.0),
+            "lateral_projected_m": -dx * math.sin(start_heading) + dy * math.cos(start_heading),
+            "start_heading_rad": start_heading,
             "start_monotonic_s": self.first_pose_monotonic_s,
             "end_monotonic_s": self.last_activation_monotonic_s,
             "sample_count": len(self.samples),
@@ -3761,6 +3799,7 @@ def run_first_motion_window(
     *,
     sample: Callable[[], Mapping[str, Any]],
     publish: Callable[[float], None],
+    publish_vector: Callable[[float, float, float], None] | None = None,
     registration: Mapping[str, Any],
     set_action: Mapping[str, Any],
     joint_limits: Mapping[str, Mapping[str, float]],
@@ -3768,7 +3807,11 @@ def run_first_motion_window(
     authorized: bool,
     baseline_state_summary: Mapping[str, Any] | None = None,
     forward_command_m_s: float = FORWARD_COMMAND_M_S,
+    lateral_command_m_s: float = 0.0,
+    angular_command_rad_s: float = 0.0,
+    commanded_motion_axis: str = "forward",
     maximum_forward_command_m_s: float = FORWARD_COMMAND_M_S,
+    maximum_lateral_command_m_s: float = 0.0,
     expected_locomotion_mode: str = MODE_LOCOMOTION,
     pulse_duration_s: float = PULSE_LIMIT_S,
     max_pulse_duration_s: float = PULSE_LIMIT_S,
@@ -3803,6 +3846,7 @@ def run_first_motion_window(
     allow_raicom_low_cruise_source_activation: bool = False,
     allow_vendor_example_source_activation: bool = False,
     allow_cpg_step_source_activation: bool = False,
+    allow_lateral_step_source_activation: bool = False,
     continue_zero_observation_after_post_stop_speed_fault: bool = False,
     continuous_route_authorized: bool = False,
     continuous_route_nonzero_limit_s: float | None = None,
@@ -3815,10 +3859,12 @@ def run_first_motion_window(
         "status": "NOT_RUN",
         "source": VELOCITY_SOURCE_NAME,
         "command_forward_m_s": forward_command_m_s,
+        "command_lateral_m_s": lateral_command_m_s,
+        "command_angular_velocity_rad_s": angular_command_rad_s,
+        "commanded_motion_axis": commanded_motion_axis,
         "maximum_forward_command_m_s": maximum_forward_command_m_s,
+        "maximum_lateral_command_m_s": maximum_lateral_command_m_s,
         "expected_locomotion_mode": expected_locomotion_mode,
-        "command_lateral_m_s": 0.0,
-        "command_angular_velocity_rad_s": 0.0,
         "pulse_limit_s": max_pulse_duration_s,
         "pulse_duration_s_requested": pulse_duration_s,
         "velocity_profile": {
@@ -3871,6 +3917,10 @@ def run_first_motion_window(
             "allow_raicom_low_cruise": bool(allow_raicom_low_cruise_source_activation),
             "allow_vendor_example": bool(allow_vendor_example_source_activation),
             "allow_cpg_step": bool(allow_cpg_step_source_activation),
+            "allow_lateral_step": bool(allow_lateral_step_source_activation),
+            "selected_lateral_command_m_s": (
+                lateral_command_m_s if source_grounded_route_activation else None
+            ),
             "selected_forward_command_m_s": (
                 forward_command_m_s if source_grounded_route_activation else None
             ),
@@ -3898,6 +3948,19 @@ def run_first_motion_window(
         "termination_condition_name": None,
     }
     motion_allowed_modes = frozenset((MODE_STAND, expected_locomotion_mode))
+
+    def publish_command(forward_m_s: float, lateral_m_s: float, angular_rad_s: float) -> None:
+        if publish_vector is None:
+            if abs(lateral_m_s) > 1e-12 or abs(angular_rad_s) > 1e-12:
+                raise RuntimeError("vector velocity requires an explicit vector publisher")
+            publish(forward_m_s)
+            return
+        publish_vector(forward_m_s, lateral_m_s, angular_rad_s)
+
+    motion_command_magnitude_m_s = (
+        abs(lateral_command_m_s)
+        if commanded_motion_axis == "lateral" else abs(forward_command_m_s)
+    )
     if not authorized:
         result["status"] = "NOT_AUTHORIZED"
         return result
@@ -3928,6 +3991,8 @@ def run_first_motion_window(
             allow_raicom_low_cruise=allow_raicom_low_cruise_source_activation,
             allow_vendor_example=allow_vendor_example_source_activation,
             allow_cpg_step=allow_cpg_step_source_activation,
+            lateral_command_m_s=lateral_command_m_s,
+            allow_lateral_step=allow_lateral_step_source_activation,
         )
         or not math.isfinite(float(source_grounded_activation_timeout_s))
         or abs(float(source_grounded_activation_timeout_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
@@ -3942,6 +4007,8 @@ def run_first_motion_window(
         pulse_fault = pulse_fault or "vendor_example_source_activation_requires_route_mode"
     elif allow_cpg_step_source_activation and not source_grounded_route_activation:
         pulse_fault = pulse_fault or "cpg_step_source_activation_requires_explicit_diagnostic_mode"
+    elif allow_lateral_step_source_activation and not source_grounded_route_activation:
+        pulse_fault = pulse_fault or "lateral_step_source_activation_requires_explicit_diagnostic_mode"
     if (
         not math.isfinite(extra_post_stop_observe_limit_s)
         or not 0.0 <= extra_post_stop_observe_limit_s <= MAX_EXTRA_POST_STOP_OBSERVE_S
@@ -3982,16 +4049,36 @@ def run_first_motion_window(
             if continuous_route_authorized else "pulse_duration_outside_authorized_cap"
         )
     elif (
-        not math.isfinite(maximum_forward_command_m_s)
+        commanded_motion_axis not in {"forward", "lateral"}
+        or not math.isfinite(maximum_forward_command_m_s)
         or not 0.0 < maximum_forward_command_m_s <= 0.3
+        or not math.isfinite(maximum_lateral_command_m_s)
+        or not 0.0 <= maximum_lateral_command_m_s <= 0.6
         or not math.isfinite(forward_command_m_s)
-        or not 0.0 < forward_command_m_s <= maximum_forward_command_m_s
+        or (
+            commanded_motion_axis == "forward"
+            and not 0.0 < forward_command_m_s <= maximum_forward_command_m_s
+        )
+        or (
+            commanded_motion_axis == "lateral"
+            and abs(forward_command_m_s) > 1e-12
+        )
+        or not math.isfinite(lateral_command_m_s)
+        or (
+            commanded_motion_axis == "lateral"
+            and not 0.0 < abs(lateral_command_m_s) <= maximum_lateral_command_m_s
+        )
+        or (
+            commanded_motion_axis == "forward"
+            and abs(lateral_command_m_s) > 1e-12
+        )
     ):
         pulse_fault = pulse_fault or "forward_command_outside_authorized_cap"
     elif max_observed_planar_speed_m_s is not None and (
         not math.isfinite(max_observed_planar_speed_m_s)
         or not 0.0 < max_observed_planar_speed_m_s <= (
             0.8 if allow_vendor_example_source_activation else
+            0.65 if allow_lateral_step_source_activation else
             0.35 if allow_cpg_step_source_activation else FORWARD_COMMAND_M_S
         )
     ):
@@ -4133,7 +4220,7 @@ def run_first_motion_window(
             on_sample(phase, row)
 
     zero_stop = ZeroStopWindow(
-        lambda: publish(0.0),
+        lambda: publish_command(0.0, 0.0, 0.0),
         timeout_s=max(ZERO_STOP_MIN_S, SOURCE_TIMEOUT_MS / 1000.0) + 1.0 / PUBLISH_HZ,
         publish_hz=PUBLISH_HZ,
         clock=clock,
@@ -4183,6 +4270,11 @@ def run_first_motion_window(
                             source_grounded_route_activation
                             and allow_cpg_step_source_activation
                         ),
+                        lateral_command_m_s=lateral_command_m_s,
+                        allow_lateral_step=(
+                            source_grounded_route_activation
+                            and allow_lateral_step_source_activation
+                        ),
                     )
                 else:
                     activation_lifecycle.begin_motion(now_s=clock())
@@ -4199,6 +4291,7 @@ def run_first_motion_window(
                 min_root_z=min_root_z,
                 max_tilt_deg=max_tilt_deg,
                 allowed_modes=motion_allowed_modes,
+                required_lateral_mps=lateral_command_m_s,
                 max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
             )
             record_sample("pre-activation", initial, initial_fault)
@@ -4237,6 +4330,7 @@ def run_first_motion_window(
                     min_root_z=min_root_z,
                     max_tilt_deg=max_tilt_deg,
                     allowed_modes=motion_allowed_modes,
+                    required_lateral_mps=lateral_command_m_s,
                     max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                 )
                 if current_fault:
@@ -4421,13 +4515,17 @@ def run_first_motion_window(
                                 command_speed = (
                                     smoothstep_velocity(
                                         float(ramp_start_speed_m_s),
-                                        forward_command_m_s,
+                                        motion_command_magnitude_m_s,
                                         command_offset,
                                         ramp_duration_s,
-                                    )
-                                    if ramp_duration_s > 0.0 else forward_command_m_s
+                                    ) if ramp_duration_s > 0.0 else motion_command_magnitude_m_s
                                 )
-                            publish(command_speed)
+                            publish_command(
+                                command_speed if commanded_motion_axis == "forward" else 0.0,
+                                math.copysign(command_speed, lateral_command_m_s)
+                                if commanded_motion_axis == "lateral" else 0.0,
+                                angular_command_rad_s,
+                            )
                             published_offset = clock() - pulse_start
                             nonzero_success_offsets_s.append(published_offset)
                             if published_offset > pulse_duration_s:
@@ -4515,7 +4613,7 @@ def run_first_motion_window(
         def publish_post_stop_zero(now_s: float) -> str | None:
             try:
                 with command_lock:
-                    publish(0.0)
+                    publish_command(0.0, 0.0, 0.0)
                 returned = clock()
                 previous = post_stop_zero_extension["last_publish_monotonic_s"]
                 if previous is not None:
@@ -4672,6 +4770,7 @@ def run_first_motion_window(
                 min_root_z=min_root_z,
                 max_tilt_deg=max_tilt_deg,
                 allowed_modes=motion_allowed_modes,
+                required_lateral_mps=lateral_command_m_s,
                 max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                 allow_source_readback_gap=True,
                 allow_common_uninterruptible_transition_during_zero_observation=True,
@@ -4802,6 +4901,7 @@ def run_first_motion_window(
                     min_root_z=min_root_z,
                     max_tilt_deg=max_tilt_deg,
                     allowed_modes=motion_allowed_modes,
+                    required_lateral_mps=lateral_command_m_s,
                     max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                     allow_source_readback_gap=True,
                     allow_common_uninterruptible_transition_during_zero_observation=True,
@@ -4910,7 +5010,7 @@ def run_first_motion_window(
                     current_fault = None
                 else:
                     emergency_stop = ZeroStopWindow(
-                        lambda: publish(0.0),
+                        lambda: publish_command(0.0, 0.0, 0.0),
                         timeout_s=max(ZERO_STOP_MIN_S, SOURCE_TIMEOUT_MS / 1000.0) + 1.0 / PUBLISH_HZ,
                         publish_hz=PUBLISH_HZ,
                         clock=clock,
@@ -4989,9 +5089,15 @@ def run_first_motion_window(
     pulse_forward = (
         result["pulse_odometry"].get("forward_projected_m") if result["pulse_odometry"] else None
     )
+    pulse_lateral = (
+        result["pulse_odometry"].get("lateral_projected_m") if result["pulse_odometry"] else None
+    )
     result["physical_motion_status"] = classify_physical_motion(
         control_handshake_confirmed=tracker.control_handshake_confirmed,
         pulse_forward_displacement_m=pulse_forward,
+        pulse_lateral_displacement_m=pulse_lateral,
+        commanded_axis=commanded_motion_axis,
+        commanded_sign=(lateral_command_m_s if commanded_motion_axis == "lateral" else forward_command_m_s),
         baseline_noise_bound_m=baseline_noise_bound_m,
     )
     post_stop_forward = None

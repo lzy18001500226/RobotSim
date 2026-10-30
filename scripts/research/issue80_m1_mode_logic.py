@@ -39,6 +39,9 @@ VENDOR_EXAMPLE_FORWARD_M_S = 0.2
 # Exact installed `cpgstep_config.yaml` start threshold. This is only valid
 # for the separately named LOCOMOTION_STEP diagnostic, never FoundationWalk.
 CPG_STEP_FORWARD_M_S = 0.3
+# Official AimDK documentation gives approximately 0.5--0.7 m/s as the
+# lateral startup range. Keep the midpoint as one isolated first-step probe.
+LATERAL_STEP_COMMAND_M_S = 0.6
 TASK_STATES = {
     0: "UNKNOWN",
     1: "SUCCESS",
@@ -60,6 +63,8 @@ def source_grounded_route_activation_speed_is_supported(
     allow_raicom_low_cruise: bool,
     allow_vendor_example: bool = False,
     allow_cpg_step: bool = False,
+    lateral_command_m_s: float = 0.0,
+    allow_lateral_step: bool = False,
 ) -> bool:
     """Accept only the reviewed source-acquisition speeds for a route window."""
     try:
@@ -68,7 +73,13 @@ def source_grounded_route_activation_speed_is_supported(
         return False
     if not math.isfinite(speed):
         return False
-    return (
+    lateral_supported = (
+        allow_lateral_step
+        and abs(speed) <= 1e-9
+        and math.isfinite(float(lateral_command_m_s))
+        and abs(abs(float(lateral_command_m_s)) - LATERAL_STEP_COMMAND_M_S) <= 1e-9
+    )
+    return lateral_supported or (
         abs(speed - ACTIVATION_PROBE_FORWARD_M_S) <= 1e-9
         or (
             allow_raicom_low_cruise
@@ -488,6 +499,8 @@ class MCLocomotionAbortLifecycle:
         allow_raicom_low_cruise: bool = False,
         allow_vendor_example: bool = False,
         allow_cpg_step: bool = False,
+        lateral_command_m_s: float = 0.0,
+        allow_lateral_step: bool = False,
     ) -> None:
         """Allow only the explicitly source-grounded, short activation qualification probe."""
         if self.rearm_forbidden:
@@ -504,6 +517,8 @@ class MCLocomotionAbortLifecycle:
                 allow_raicom_low_cruise=allow_raicom_low_cruise,
                 allow_vendor_example=allow_vendor_example,
                 allow_cpg_step=allow_cpg_step,
+                lateral_command_m_s=lateral_command_m_s,
+                allow_lateral_step=allow_lateral_step,
             )
             or abs(float(duration_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
         ):
