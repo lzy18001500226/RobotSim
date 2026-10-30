@@ -3991,7 +3991,8 @@ def run_first_motion_window(
     elif max_observed_planar_speed_m_s is not None and (
         not math.isfinite(max_observed_planar_speed_m_s)
         or not 0.0 < max_observed_planar_speed_m_s <= (
-            0.8 if allow_vendor_example_source_activation else FORWARD_COMMAND_M_S
+            0.8 if allow_vendor_example_source_activation else
+            0.35 if allow_cpg_step_source_activation else FORWARD_COMMAND_M_S
         )
     ):
         pulse_fault = pulse_fault or "observed_planar_speed_gate_outside_authorized_cap"

@@ -2800,6 +2800,14 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         self.assertIn("or terminal_speed_fault_observation", post_stop)
         self.assertIn("CONTINUE_ZERO_ONLY_AFTER_TERMINAL_ROOT_SPEED_FAULT", post_stop)
 
+    def test_cpg_step_envelope_is_limited_to_the_explicit_0p35_profile(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_first_motion.py").read_text(
+            encoding="utf-8"
+        )
+        window = source[source.index("def run_first_motion_window("):]
+        self.assertIn("0.35 if allow_cpg_step_source_activation", window)
+        self.assertIn("allow_cpg_step_source_activation: bool = False", window)
+
     def test_physical_motion_requires_positive_displacement_above_empirical_noise(self) -> None:
         self.assertEqual(classify_physical_motion(
             control_handshake_confirmed=True,
