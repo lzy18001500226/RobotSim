@@ -86,6 +86,39 @@ class NativeHandStartupTests(unittest.TestCase):
         self.assertIn("node.publish(start,0.5)", script)
         self.assertNotIn("qpos", script)
 
+    def test_arm_state_capture_is_read_only(self) -> None:
+        script = MODULE.build_arm_state_capture_script()
+        self.assertIn("/aima/hal/joint/arm/state", script)
+        self.assertIn("/aima/hal/joint/leg/state", script)
+        self.assertIn("/aima/hal/joint/waist/state", script)
+        self.assertIn("arm_positions_rad", script)
+        self.assertIn("leg_positions_rad", script)
+        self.assertIn("waist_positions_rad", script)
+        self.assertIn("base_pose_world", script)
+        self.assertNotIn("create_publisher", script)
+        self.assertNotIn("qpos", script)
+
+    def test_stand_command_capture_is_read_only_and_records_pd_fields(self) -> None:
+        script = MODULE.build_stand_command_capture_script()
+        self.assertIn("/aima/hal/joint/leg/command", script)
+        self.assertIn("/aima/hal/joint/waist/command", script)
+        self.assertIn("/aima/hal/joint/arm/command", script)
+        self.assertIn("'stiffness'", script)
+        self.assertIn("'damping'", script)
+        self.assertIn("'effort'", script)
+        self.assertNotIn("create_publisher", script)
+        self.assertNotIn("qpos", script)
+
+    def test_full_arm_plan_has_bounded_ramp_and_safe_return(self) -> None:
+        gains = MODULE.load_source_arm_pd_parameters()
+        target = [-0.3, -0.2, 0.1, -1.4, 0.0, 0.1, 0.0]
+        script = MODULE.build_hal_arm_plan_script(gains, target, duration_s=8.0, hold_s=1.0)
+        self.assertIn("max_delta>1.1", script)
+        self.assertIn("node.ramp(start,target,DURATION)", script)
+        self.assertIn("node.ramp(target,start,DURATION)", script)
+        self.assertIn("node.publish(start,0.5)", script)
+        self.assertNotIn("qpos", script)
+
     def test_arm_split_overlay_changes_only_the_mc_arm_publisher_enable_flag(self) -> None:
         source = {"MotionControlModule": {"PublisherManager": {"publisher_cfg_list": [{"name": "leg_joint_command", "enable": True}, {"name": "arm_joint_command", "enable": True}]}}}
         result = MODULE.build_arm_split_mc_config(source)
