@@ -32,6 +32,7 @@ REPO = Path(__file__).resolve().parents[2]
 EVIDENCE_REPO = Path("/home/lzy18001500226/projects/RobotSim")
 MODEL_ID = "X2-OmniPicker-STL"
 CONFIG_DEFAULT = REPO / "simulation/mujoco/scenes/raicom2026/config/x2_stl_autonomy_scene.json"
+COLLISION_RENDER_GROUPS = (1, 3)
 
 sys.path.insert(0, str(REPO))
 from scripts.agent import path_governance as pg  # noqa: E402
@@ -112,6 +113,7 @@ def add_stl_hands(
     mounts = mount_audit.official_mounts(official_urdf)
     tree = ET.parse(raicom_model)
     root = tree.getroot()
+    removed_hand_roots = remove_existing_hand_roots(root, mounts)
     asset_rebindings = mount_audit.remap_mesh_paths(root, raicom_model)
     stl_root = ET.parse(stl_model).getroot()
     asset = root.find("asset")
@@ -128,8 +130,31 @@ def add_stl_hands(
         "path": str(output),
         "sha256": sha256(output),
         "official_wrist_mounts": mounts,
+        "preexisting_hand_roots_removed": removed_hand_roots,
         "raicom_asset_rebindings": asset_rebindings,
     }
+
+
+def remove_existing_hand_roots(root: ET.Element, mounts: dict[str, dict[str, str]]) -> list[dict[str, str]]:
+    """Detach only an exact old OmniPicker root before adding its STL replacement.
+
+    The delivered RAICOM input currently ends at each wrist and therefore
+    returns an empty list.  Keeping this check here prevents a future scene
+    input that already embeds the standard OmniPicker roots from rendering or
+    colliding with a second copy of the reviewed STL hand.  Wrist geometry is
+    deliberately not touched.
+    """
+    removed: list[dict[str, str]] = []
+    for side, root_name in (("right", "R_omnipicker_base_link"), ("left", "L_omnipicker_base_link")):
+        mount = mounts.get(side)
+        if not isinstance(mount, dict):
+            raise ValueError(f"missing official {side} wrist mount")
+        wrist = mount_audit.find_body(root, str(mount["parent_link"]))
+        for child in list(wrist.findall("body")):
+            if child.get("name") == root_name:
+                wrist.remove(child)
+                removed.append({"side": side, "root": root_name, "parent": str(mount["parent_link"])})
+    return removed
 
 
 def scene_xml(*, x2_overlay: Path, room: Path, mug: Path, poses: dict[str, object]) -> bytes:
@@ -227,12 +252,56 @@ def contacts_after_forward(model: mujoco.MjModel, data: mujoco.MjData) -> list[d
     return records
 
 
+def stl_hand_geometry_inventory(model: mujoco.MjModel) -> dict[str, dict[str, int]]:
+    """Prove visual and collision meshes are paired on the same STL hand bodies."""
+    inventory: dict[str, dict[str, int]] = {}
+    for side in ("R", "L"):
+        prefix = f"x2_{side}_"
+        visual = collision = unexpected = 0
+        bodies = {
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id)
+            for body_id in range(model.nbody)
+            if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id) or "")
+            in {prefix + "omnipicker_base_link", *(prefix + "hand_" + suffix for suffix in (
+                "narrow1_Link", "narrow2_Link", "narrow3_Link", "narrow4_Link", "narrow_loop_Link",
+                "wide1_Link", "wide2_Link", "wide3_Link", "wide4_Link", "wide_loop_Link",
+            ))}
+        }
+        for geom_id in range(model.ngeom):
+            body_id = int(model.geom_bodyid[geom_id])
+            body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_id) or ""
+            if not (body == prefix + "omnipicker_base_link" or body.startswith(prefix + "hand_")):
+                continue
+            group = int(model.geom_group[geom_id])
+            contype = int(model.geom_contype[geom_id])
+            conaffinity = int(model.geom_conaffinity[geom_id])
+            if group == 0 and contype == 0 and conaffinity == 0:
+                visual += 1
+            elif group == 1 and contype == 1 and conaffinity == 1:
+                collision += 1
+            else:
+                unexpected += 1
+        if len(bodies) != 11 or visual != 9 or collision != 8 or unexpected:
+            raise RuntimeError(
+                f"unexpected {side} STL hand geometry inventory: bodies={len(bodies)}, "
+                f"visual={visual}, collision={collision}, unexpected={unexpected}"
+            )
+        inventory[side] = {
+            "source_hand_bodies": len(bodies),
+            "visual_geoms_group_0": visual,
+            "collision_geoms_group_1": collision,
+            "unexpected_hand_geoms": unexpected,
+        }
+    return inventory
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene-config", type=Path, default=CONFIG_DEFAULT)
     parser.add_argument("--left-command-percent", type=float, default=0.0)
     parser.add_argument("--right-command-percent", type=float, default=0.0)
     parser.add_argument("--live-viewer", action="store_true", help="open the generated static scene in the native MuJoCo GLFW viewer")
+    parser.add_argument("--show-collision-proxies", action="store_true", help="render collision groups 1 and 3; collision physics is always retained")
     args = parser.parse_args()
     if not all(0.0 <= value <= 100.0 and math.isfinite(value) for value in (args.left_command_percent, args.right_command_percent)):
         raise SystemExit("each STL command must be finite and lie in 0..100 percent")
@@ -265,6 +334,7 @@ def main() -> None:
     if not np.isfinite(data.qpos).all() or not np.isfinite(data.xpos).all():
         raise RuntimeError("assembled scene has non-finite static state")
     contacts = contacts_after_forward(model, data)
+    geometry_inventory = stl_hand_geometry_inventory(model)
     result = {
         "schema": "robotsim.issue46.x2-stl-raicom-autonomy-static.v1",
         "classification": "SIMULATION_ONLY_STATIC_AUTONOMY_SCENE",
@@ -273,6 +343,12 @@ def main() -> None:
         "selected_gripper": {"model_id": loaded.model_id, "model_sha256": loaded.model_sha256, "trajectory_sha256": loaded.metadata["trajectory_sha256"]},
         "generated": {"x2_stl_overlay": overlay, "scene": {"path": str(scene_path), "sha256": sha256(scene_path)}},
         "inherited_internal_collision_exclusions": [list(pair) for pair in PREFIXED_INHERITED_EXCLUSIONS],
+        "hand_geometry_inventory": geometry_inventory,
+        "viewer": {
+            "collision_proxies_visible": args.show_collision_proxies,
+            "hidden_groups_by_default": [] if args.show_collision_proxies else list(COLLISION_RENDER_GROUPS),
+            "note": "Render-group changes do not modify contype, conaffinity, or any physics collision pair.",
+        },
         "model": {
             "nq": int(model.nq), "nv": int(model.nv), "nu": int(model.nu), "neq": int(model.neq),
             "ncon_after_mj_forward": int(data.ncon), "contacts_after_mj_forward": contacts,
@@ -300,6 +376,9 @@ def main() -> None:
         from mujoco import viewer as mujoco_viewer
 
         with mujoco_viewer.launch_passive(model, data) as viewer:
+            if not args.show_collision_proxies:
+                for group in COLLISION_RENDER_GROUPS:
+                    viewer.opt.geomgroup[group] = 0
             viewer.cam.lookat[:] = [0.3, -1.1, 0.85]
             viewer.cam.distance = 3.2
             viewer.cam.azimuth = 130.0

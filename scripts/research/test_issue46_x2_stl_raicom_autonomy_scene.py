@@ -16,6 +16,34 @@ SPEC.loader.exec_module(MODULE)
 
 
 class RAICOMSTLAutonomySceneTests(unittest.TestCase):
+    def test_preexisting_standard_hand_roots_are_detached_but_wrists_remain(self) -> None:
+        root = ET.fromstring(
+            """
+            <mujoco><worldbody>
+              <body name='right_wrist_roll_link'><geom name='right_wrist_visual'/><body name='R_omnipicker_base_link'/></body>
+              <body name='left_wrist_roll_link'><geom name='left_wrist_visual'/><body name='L_omnipicker_base_link'/></body>
+            </worldbody></mujoco>
+            """
+        )
+        removed = MODULE.remove_existing_hand_roots(
+            root,
+            {
+                "right": {"parent_link": "right_wrist_roll_link"},
+                "left": {"parent_link": "left_wrist_roll_link"},
+            },
+        )
+        self.assertEqual(
+            removed,
+            [
+                {"side": "right", "root": "R_omnipicker_base_link", "parent": "right_wrist_roll_link"},
+                {"side": "left", "root": "L_omnipicker_base_link", "parent": "left_wrist_roll_link"},
+            ],
+        )
+        self.assertIsNotNone(root.find(".//body[@name='right_wrist_roll_link']/geom"))
+        self.assertIsNotNone(root.find(".//body[@name='left_wrist_roll_link']/geom"))
+        self.assertIsNone(root.find(".//body[@name='R_omnipicker_base_link']"))
+        self.assertIsNone(root.find(".//body[@name='L_omnipicker_base_link']"))
+
     def test_generated_scene_selects_only_the_generated_stl_x2_overlay(self) -> None:
         payload = MODULE.scene_xml(
             x2_overlay=Path("/tmp/x2_stl_overlay.xml"),

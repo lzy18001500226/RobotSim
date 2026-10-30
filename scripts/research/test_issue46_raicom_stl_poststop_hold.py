@@ -13,7 +13,8 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
-TRAJECTORY = Path("/home/lzy18001500226/robotsim-issue46-perception-groundtruth-20261029/simulation/mujoco/models/agibot_x2/omnipicker_stl_kinematic/trajectory.csv")
+REPO = Path(__file__).resolve().parents[2]
+TRAJECTORY = REPO / "simulation/mujoco/models/agibot_x2/omnipicker_stl_kinematic/trajectory.csv"
 
 
 class PostStopHoldTests(unittest.TestCase):
