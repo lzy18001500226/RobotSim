@@ -61,6 +61,12 @@ class NativeHandStartupTests(unittest.TestCase):
         self.assertIn("node.publish_for(start, 2.0)", script)
         self.assertNotIn("qpos", script)
 
+    def test_upperbody_split_reuses_the_bounded_vendor_action_contract(self) -> None:
+        script = MODULE.build_upperbody_split_client_script()
+        self.assertIn("UPPERBODY_REMOTE_SPLIT", script)
+        self.assertIn("SetMcAction", script)
+        self.assertIn("GetMcAction", script)
+
 
 if __name__ == "__main__":
     unittest.main()

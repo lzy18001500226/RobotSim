@@ -189,6 +189,13 @@ finally:
 """
 
 
+def build_upperbody_split_client_script() -> str:
+    """Same bounded service/readback pattern for the delivered US mode."""
+    return build_stand_client_script().replace(
+        "robotsim_stl_native_stand_request", "robotsim_stl_native_upperbody_split_request"
+    ).replace("STAND_DEFAULT", "UPPERBODY_REMOTE_SPLIT")
+
+
 def build_hand_probe_script(command_position: float = 0.6, hand_type: int = 2) -> str:
     """Return a self-contained ROS probe; it never writes MuJoCo qpos."""
     return """#!/usr/bin/env python3
@@ -435,8 +442,9 @@ def main() -> None:
     parser.add_argument("--start-mc", action="store_true", help="start native MC for initialization only; no action or motion command is issued")
     parser.add_argument("--request-stand", action="store_true", help="issue the vendor SD standing request after MC startup; does not command arms, hands, or locomotion")
     parser.add_argument("--run-upper-body-probe", action="store_true", help="small 0.05 rad right-shoulder probe during native stand, then restore")
+    parser.add_argument("--request-upperbody-split", action="store_true", help="switch from SD to the delivered US upper-body remote split mode before any arm probe")
     args = parser.parse_args()
-    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand)):
+    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.request_upperbody_split and not (args.start_mc and args.request_stand)) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand and args.request_upperbody_split)):
         raise SystemExit("overlay result and a startup timeout in [2,35] seconds are required")
     inputs = exact_generated_inputs(args.overlay_result)
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-native-hand-startup").native_path
@@ -448,7 +456,7 @@ def main() -> None:
         "overlay_result": {"path": str(args.overlay_result), "sha256": sha256(args.overlay_result)},
         "generated_inputs": {label: {"path": str(path), "sha256": sha256(path)} for label, path in inputs.items()},
         "container": container,
-        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "UPPER_BODY_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_COMMAND_STAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
+        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "UPPERBODY_SPLIT_REQUEST": "NOT_RUN", "UPPERBODY_SPLIT_READBACK": "NOT_RUN", "UPPER_BODY_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_COMMAND_STAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
         "limitations": ["No arm, upper-body, or locomotion command is published by this check.", "A successful SD request does not establish balance, physical contact, or grasp."],
     }
     try:
@@ -473,6 +481,8 @@ def main() -> None:
             mc_launch.chmod(0o755)
         if args.request_stand:
             pg.write_new_text(output / "native_stand_client.py", build_stand_client_script())
+        if args.request_upperbody_split:
+            pg.write_new_text(output / "native_upperbody_split_client.py", build_upperbody_split_client_script())
         if args.run_upper_body_probe:
             pg.write_new_text(output / "native_upper_body_probe.py", build_upper_body_probe_script())
         if args.run_hand_probe:
@@ -522,7 +532,20 @@ def main() -> None:
                 result["native_stand"] = {"returncode": stand.returncode, "result": stand_result, "stdout": stand.stdout}
                 result["gates"]["NATIVE_STAND_READBACK"] = "PASS" if stand.returncode == 0 and stand_result.get("mode_name") == "STAND_DEFAULT" else "FAIL"
                 result["gates"]["NATIVE_STAND_STABILITY"] = "PASS" if stand.returncode == 0 and stand_result.get("stability", {}).get("pass") else "FAIL"
-                if args.run_upper_body_probe and result["gates"]["NATIVE_STAND_STABILITY"] == "PASS":
+                if args.request_upperbody_split and result["gates"]["NATIVE_STAND_STABILITY"] == "PASS":
+                    split = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/native_upperbody_split_client.py"], timeout_s=14.0, check=False)
+                    pg.write_new_text(output / "native_upperbody_split.stdout", split.stdout)
+                    try:
+                        split_result = json.loads(split.stdout.strip().splitlines()[-1])
+                    except (IndexError, json.JSONDecodeError):
+                        split_result = {"parse_error": True}
+                    result["native_upperbody_split"] = {"returncode": split.returncode, "result": split_result, "stdout": split.stdout}
+                    result["gates"]["UPPERBODY_SPLIT_REQUEST"] = "PASS" if split.returncode == 0 else "FAIL"
+                    result["gates"]["UPPERBODY_SPLIT_READBACK"] = "PASS" if split.returncode == 0 and split_result.get("mode_name") == "UPPERBODY_REMOTE_SPLIT" else "FAIL"
+                    topics_after = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 8s ros2 topic list -t"], timeout_s=10.0, check=False)
+                    pg.write_new_text(output / "native_ros_topics_after_upperbody_split.txt", topics_after.stdout)
+                    result["native_ros_topics_after_upperbody_split"] = {"returncode": topics_after.returncode, "upper_body_topic_present": "/mc/upper_body_command" in topics_after.stdout}
+                if args.run_upper_body_probe and result["gates"]["UPPERBODY_SPLIT_READBACK"] == "PASS":
                     upper = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/native_upper_body_probe.py"], timeout_s=14.0, check=False)
                     pg.write_new_text(output / "native_upper_body_probe.stdout", upper.stdout)
                     try:
