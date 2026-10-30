@@ -26,11 +26,17 @@ class RAICOMSTLMountAuditTests(unittest.TestCase):
         self.assertEqual(mounts["left"]["rpy"], "3.14 0.0 3.14")
 
     def test_left_remap_changes_hand_identifiers_but_not_other_values(self) -> None:
-        root = ET.fromstring("<body name='R_hand_narrow1_Link'><joint name='right_claw_joint'/><geom mesh='mesh_base_link'/></body>")
+        root = ET.fromstring(
+            "<body name='R_hand_narrow1_Link'><joint name='right_claw_joint'/>"
+            "<geom name='visual' mesh='mesh_base_link' group='0' contype='0' conaffinity='0'/>"
+            "<geom name='collision' mesh='mesh_base_link' group='1' contype='1' conaffinity='1'/></body>"
+        )
         MODULE.remap_hand(root, "left")
         self.assertEqual(root.get("name"), "L_hand_narrow1_Link")
         self.assertEqual(root.find("joint").get("name"), "left_claw_joint")
-        self.assertEqual(root.find("geom").get("mesh"), "stl_L_mesh_base_link")
+        self.assertEqual(root.findall("geom")[0].get("mesh"), "stl_L_mesh_base_link")
+        self.assertEqual(root.findall("geom")[0].get("group"), "0")
+        self.assertEqual(root.findall("geom")[1].get("group"), str(MODULE.STL_COLLISION_RENDER_GROUP))
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ RIGHT_EXCLUSIONS = (
     ("R_hand_wide3_Link", "R_hand_wide_loop_Link"),
     ("R_hand_narrow3_Link", "R_hand_wide3_Link"),
 )
+STL_COLLISION_RENDER_GROUP = 4
 
 
 def sha256(path: Path) -> str:
@@ -142,6 +143,17 @@ def remap_hand(element: ET.Element, side: str) -> None:
             if key == "mesh" and value in MESH_NAMES:
                 value = prefix + value
             node.set(key, value)
+        # The RAICOM robot uses group 1 for its own visual geometry.  Assign
+        # only copied STL collision geoms an unused rendering group so the
+        # viewer can hide their duplicate mesh rendering without hiding X2.
+        # Rendering groups do not change MuJoCo contact behavior.
+        if (
+            node.tag == "geom"
+            and node.get("group") == "1"
+            and node.get("contype") == "1"
+            and node.get("conaffinity") == "1"
+        ):
+            node.set("group", str(STL_COLLISION_RENDER_GROUP))
 
 
 def add_hand(root: ET.Element, stl_root: ET.Element, *, side: str, mount: dict[str, str]) -> None:

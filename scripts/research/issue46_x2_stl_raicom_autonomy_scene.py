@@ -32,7 +32,6 @@ REPO = Path(__file__).resolve().parents[2]
 EVIDENCE_REPO = Path("/home/lzy18001500226/projects/RobotSim")
 MODEL_ID = "X2-OmniPicker-STL"
 CONFIG_DEFAULT = REPO / "simulation/mujoco/scenes/raicom2026/config/x2_stl_autonomy_scene.json"
-COLLISION_RENDER_GROUPS = (1, 3)
 
 sys.path.insert(0, str(REPO))
 from scripts.agent import path_governance as pg  # noqa: E402
@@ -42,6 +41,9 @@ from simulation.mujoco.models.agibot_x2.omnipicker_stl_kinematic import (  # noq
     LEFT_JOINT_MAPPING,
     load_registered_trajectory,
 )
+
+
+COLLISION_RENDER_GROUPS = (3, mount_audit.STL_COLLISION_RENDER_GROUP)
 
 
 PREFIXED_INHERITED_EXCLUSIONS = (
@@ -277,7 +279,7 @@ def stl_hand_geometry_inventory(model: mujoco.MjModel) -> dict[str, dict[str, in
             conaffinity = int(model.geom_conaffinity[geom_id])
             if group == 0 and contype == 0 and conaffinity == 0:
                 visual += 1
-            elif group == 1 and contype == 1 and conaffinity == 1:
+            elif group == mount_audit.STL_COLLISION_RENDER_GROUP and contype == 1 and conaffinity == 1:
                 collision += 1
             else:
                 unexpected += 1
@@ -289,7 +291,7 @@ def stl_hand_geometry_inventory(model: mujoco.MjModel) -> dict[str, dict[str, in
         inventory[side] = {
             "source_hand_bodies": len(bodies),
             "visual_geoms_group_0": visual,
-            "collision_geoms_group_1": collision,
+            "collision_geoms_group_4": collision,
             "unexpected_hand_geoms": unexpected,
         }
     return inventory
