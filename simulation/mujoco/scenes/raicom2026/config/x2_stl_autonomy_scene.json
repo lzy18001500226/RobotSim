@@ -1,5 +1,5 @@
 {
-  "schema": "robotsim.raicom2026.x2-stl-autonomy-scene.v2",
+  "schema": "robotsim.raicom2026.x2-stl-autonomy-scene.v3",
   "classification": "SIMULATION_ONLY_STATIC_AUTONOMY_SCENE_INPUT",
   "frame": {
     "frame_id": "raicom_scene_world",
@@ -7,19 +7,9 @@
     "axes": {"x": "forward", "y": "left", "z": "up", "yaw_positive": "counterclockwise_about_+z"}
   },
   "sources": {
-    "approved_full_x2_stl_scene": {
-      "path": "reviews/issue-46/full-x2-stl-human-review-20261030T112328Z/full_x2_stl_static_review.xml",
-      "sha256": "4a98706f05862190cc12d56fd960656af5795d7938ecedcd22913a2b169acebf"
-    },
     "raicom_room": {
       "path": "reference/AgiBot/raicom2026-x2-mujoco-scene/robot/lx2501_3_t2d5/model_info/scene/room/room_with_chair_review.xml",
       "sha256": "d72618e8d88f1c6417cc239bc3ae690068845665a5db01775ed24dd81edc6c0a"
-    },
-    "collision_proxy_recovery": {
-      "parts_path": "reviews/issue-46/omnipicker-collision-decomp-20261020T061939Z/collision_parts",
-      "manifest_path": "simulation/mujoco/models/agibot_x2/omnipicker_sim_functional_v0_1/collision_proxy_manifest.json",
-      "manifest_sha256": "7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a",
-      "piece_count": 161
     }
   },
   "selected_gripper": {

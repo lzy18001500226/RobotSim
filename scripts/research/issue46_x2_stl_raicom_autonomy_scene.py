@@ -72,8 +72,8 @@ def load_scene_config(path: Path) -> dict[str, object]:
     if not path.is_file() or path.is_symlink():
         raise ValueError(f"scene config is missing or unsafe: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema") != "robotsim.raicom2026.x2-stl-autonomy-scene.v2":
-        raise ValueError("scene config schema is not the approved-full-X2 variant")
+    if payload.get("schema") != "robotsim.raicom2026.x2-stl-autonomy-scene.v3":
+        raise ValueError("scene config schema is not the explicit-review-input variant")
     if payload.get("classification") != "SIMULATION_ONLY_STATIC_AUTONOMY_SCENE_INPUT":
         raise ValueError("scene config qualification is unexpected")
     if not isinstance(payload.get("sources"), dict) or not isinstance(payload.get("environment"), dict):
@@ -81,24 +81,31 @@ def load_scene_config(path: Path) -> dict[str, object]:
     return payload
 
 
+def require_explicit_file(path: Path, expected_sha256: str, *, label: str) -> Path:
+    """Validate a review-only CLI input without making it a runtime config dependency."""
+    if not path.is_absolute() or not path.is_file() or path.is_symlink():
+        raise ValueError(f"{label} must be an absolute regular file")
+    if len(expected_sha256) != 64 or any(char not in "0123456789abcdef" for char in expected_sha256.lower()):
+        raise ValueError(f"{label} expected SHA-256 is malformed")
+    actual = sha256(path)
+    if actual != expected_sha256:
+        raise ValueError(f"{label} hash mismatch: expected {expected_sha256}, got {actual}")
+    return path.resolve()
+
+
 def body_names(root: ET.Element) -> list[str]:
     return [body.get("name", "") for body in root.findall(".//body")]
 
 
-def verify_collision_proxy_recovery(repo_root: Path, record: dict[str, object]) -> dict[str, object]:
-    raw_parts = record.get("parts_path")
-    raw_manifest = record.get("manifest_path")
-    manifest_hash = record.get("manifest_sha256")
-    expected_count = record.get("piece_count")
-    if not all(isinstance(value, str) for value in (raw_parts, raw_manifest, manifest_hash)) or not isinstance(expected_count, int):
-        raise ValueError("collision proxy recovery record is incomplete")
-    parts_relative = Path(raw_parts)
-    if parts_relative.is_absolute() or ".." in parts_relative.parts or not parts_relative.parts or parts_relative.parts[0] != "reviews":
-        raise ValueError("collision proxy recovery must be a governed reviews path")
-    parts = (EVIDENCE_REPO / parts_relative).resolve()
-    if not parts.is_dir() or parts.is_symlink():
-        raise ValueError(f"collision proxy recovery directory is missing or unsafe: {parts}")
-    manifest = require_source(repo_root, {"path": raw_manifest, "sha256": manifest_hash}, label="collision proxy manifest")
+def verify_collision_proxy_recovery(
+    parts: Path,
+    manifest: Path,
+    manifest_hash: str,
+    expected_count: int,
+) -> dict[str, object]:
+    if not parts.is_absolute() or not parts.is_dir() or parts.is_symlink():
+        raise ValueError(f"collision proxy directory is missing or unsafe: {parts}")
+    manifest = require_explicit_file(manifest, manifest_hash, label="collision proxy manifest")
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     expected = {
         str(part["filename"]): str(part["sha256"])
@@ -114,7 +121,7 @@ def verify_collision_proxy_recovery(repo_root: Path, record: dict[str, object]) 
         actual_hash = sha256(parts / filename)
         if actual_hash != expected_hash:
             raise ValueError(f"collision proxy hash mismatch for {filename}: expected {expected_hash}, got {actual_hash}")
-    return {"parts_directory": parts, "manifest": manifest, "manifest_sha256": manifest_hash, "expected_hashes": expected}
+    return {"parts_directory": parts.resolve(), "manifest": manifest, "manifest_sha256": manifest_hash, "expected_hashes": expected}
 
 
 def rebind_collision_proxy_meshes(root: ET.Element, recovery: dict[str, object]) -> list[dict[str, str]]:
@@ -299,6 +306,11 @@ def contacts_after_forward(model: mujoco.MjModel, data: mujoco.MjData) -> list[d
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scene-config", type=Path, default=CONFIG_DEFAULT)
+    parser.add_argument("--approved-full-x2-scene", required=True, type=Path, help="absolute human-approved full X2-STL review scene")
+    parser.add_argument("--approved-full-x2-scene-sha256", required=True, help="SHA-256 paired with --approved-full-x2-scene")
+    parser.add_argument("--collision-proxy-parts", required=True, type=Path, help="absolute governed directory containing the reviewed CoACD proxy pieces")
+    parser.add_argument("--collision-proxy-manifest", required=True, type=Path, help="absolute frozen collision proxy manifest")
+    parser.add_argument("--collision-proxy-manifest-sha256", required=True, help="SHA-256 paired with --collision-proxy-manifest")
     parser.add_argument("--left-command-percent", type=float, default=0.0)
     parser.add_argument("--right-command-percent", type=float, default=0.0)
     parser.add_argument("--live-viewer", action="store_true", help="open the generated static scene in native MuJoCo GLFW")
@@ -309,12 +321,14 @@ def main() -> None:
     config = load_scene_config(args.scene_config)
     sources = config["sources"]
     assert isinstance(sources, dict)
-    approved_scene = require_source(REPO, sources["approved_full_x2_stl_scene"], label="approved full X2-STL scene")
+    approved_scene = require_explicit_file(args.approved_full_x2_scene, args.approved_full_x2_scene_sha256, label="approved full X2-STL scene")
     room = require_source(REPO, sources["raicom_room"], label="RAICOM competition room")
-    recovery_record = sources.get("collision_proxy_recovery")
-    if not isinstance(recovery_record, dict):
-        raise ValueError("scene config lacks collision proxy recovery record")
-    recovery = verify_collision_proxy_recovery(REPO, recovery_record)
+    recovery = verify_collision_proxy_recovery(
+        args.collision_proxy_parts,
+        args.collision_proxy_manifest,
+        args.collision_proxy_manifest_sha256,
+        161,
+    )
     loaded = load_x2_omnipicker(MODEL_ID, repo_root=REPO)
     selected = config["selected_gripper"]
     assert isinstance(selected, dict)
