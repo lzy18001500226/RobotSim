@@ -9054,6 +9054,9 @@ class FocusedM1Diagnostic(Node):
                 allow_cpg_step_source_activation=bool(
                     getattr(self.args, "cpg_step_diagnostic", False)
                 ),
+                continue_zero_observation_after_post_stop_speed_fault=bool(
+                    getattr(self.args, "cpg_step_diagnostic", False)
+                ),
             )
             self.pulse_result = pulse
             result["activation"] = pulse

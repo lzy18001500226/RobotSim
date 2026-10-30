@@ -75,6 +75,7 @@ from issue80_m1_first_motion import (
     run_first_motion_window,
     readback_refresh_needed,
     snapshot_fault,
+    post_stop_speed_fault_can_continue_zero_observation,
     stand_mode_readback_confirmed,
     stand_action_and_common_confirmed,
     target_bearing_heading_error_rad,
@@ -2775,6 +2776,20 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             min_root_z=0.52,
             max_tilt_deg=15.0,
             allowed_modes=frozenset((MODE_STAND, MODE_LOCOMOTION_STEP)),
+        ))
+
+    def test_only_speed_fault_can_extend_the_zero_only_cpg_observation(self) -> None:
+        self.assertTrue(post_stop_speed_fault_can_continue_zero_observation(
+            "measured_root_planar_speed_limit:0.205491>0.200000",
+            explicitly_enabled=True,
+        ))
+        self.assertFalse(post_stop_speed_fault_can_continue_zero_observation(
+            "source_joint_velocity_limit:right_knee_joint",
+            explicitly_enabled=True,
+        ))
+        self.assertFalse(post_stop_speed_fault_can_continue_zero_observation(
+            "measured_root_planar_speed_limit:0.205491>0.200000",
+            explicitly_enabled=False,
         ))
 
     def test_physical_motion_requires_positive_displacement_above_empirical_noise(self) -> None:

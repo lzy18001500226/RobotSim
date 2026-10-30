@@ -1540,6 +1540,22 @@ def snapshot_fault(
     return None
 
 
+def post_stop_speed_fault_can_continue_zero_observation(
+    fault: str | None,
+    *,
+    explicitly_enabled: bool,
+) -> bool:
+    """Keep publishing zero after a measured root-speed fault for diagnosis only.
+
+    This does not clear the recorded safety fault, cannot make the physical-stop
+    gate pass, and cannot permit rearming.  It exists solely to distinguish a
+    transient gait deceleration from an action that never converges.
+    """
+    return bool(explicitly_enabled) and isinstance(fault, str) and fault.startswith(
+        "measured_root_planar_speed_limit:"
+    )
+
+
 class ActivationTracker:
     """Keep source acquisition, LD observation, and same-sample handshake distinct."""
 
@@ -3787,6 +3803,7 @@ def run_first_motion_window(
     allow_raicom_low_cruise_source_activation: bool = False,
     allow_vendor_example_source_activation: bool = False,
     allow_cpg_step_source_activation: bool = False,
+    continue_zero_observation_after_post_stop_speed_fault: bool = False,
     continuous_route_authorized: bool = False,
     continuous_route_nonzero_limit_s: float | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -3857,6 +3874,11 @@ def run_first_motion_window(
             "selected_forward_command_m_s": (
                 forward_command_m_s if source_grounded_route_activation else None
             ),
+        },
+        "post_stop_speed_fault_zero_observation": {
+            "enabled": bool(continue_zero_observation_after_post_stop_speed_fault),
+            "continued_faults": [],
+            "safety_fault_remains_terminal_for_pass_and_rearm": True,
         },
         "activation_probe": {
             "enabled": bool(activation_probe_only),
@@ -4860,17 +4882,28 @@ def run_first_motion_window(
                 post_stop_fault = f"post_stop_exception:{type(exc).__name__}:{exc}"
                 current_fault = post_stop_fault
             if current_fault:
-                emergency_stop = ZeroStopWindow(
-                    lambda: publish(0.0),
-                    timeout_s=max(ZERO_STOP_MIN_S, SOURCE_TIMEOUT_MS / 1000.0) + 1.0 / PUBLISH_HZ,
-                    publish_hz=PUBLISH_HZ,
-                    clock=clock,
-                    sleep=sleep,
-                    command_lock=command_lock,
-                    during_zero_callback=during_zero_callback,
-                )
-                result["post_stop_emergency_zero"] = emergency_stop.run_once()
-                break
+                if post_stop_speed_fault_can_continue_zero_observation(
+                    current_fault,
+                    explicitly_enabled=continue_zero_observation_after_post_stop_speed_fault,
+                ):
+                    result["post_stop_speed_fault_zero_observation"]["continued_faults"].append({
+                        "sample_monotonic_s": current.get("sample_monotonic_s"),
+                        "fault": current_fault,
+                        "action": "ZERO_ONLY_OBSERVATION_CONTINUES_NO_REARM",
+                    })
+                    current_fault = None
+                else:
+                    emergency_stop = ZeroStopWindow(
+                        lambda: publish(0.0),
+                        timeout_s=max(ZERO_STOP_MIN_S, SOURCE_TIMEOUT_MS / 1000.0) + 1.0 / PUBLISH_HZ,
+                        publish_hz=PUBLISH_HZ,
+                        clock=clock,
+                        sleep=sleep,
+                        command_lock=command_lock,
+                        during_zero_callback=during_zero_callback,
+                    )
+                    result["post_stop_emergency_zero"] = emergency_stop.run_once()
+                    break
             remaining = post_stop_end - clock()
             if remaining > 0.0:
                 sleep(min(1.0 / PUBLISH_HZ, remaining))
