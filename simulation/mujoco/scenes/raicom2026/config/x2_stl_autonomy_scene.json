@@ -1,0 +1,46 @@
+{
+  "schema": "robotsim.raicom2026.x2-stl-autonomy-scene.v1",
+  "classification": "SIMULATION_ONLY_STATIC_AUTONOMY_SCENE_INPUT",
+  "frame": {
+    "frame_id": "raicom_scene_world",
+    "units": {"position": "m", "yaw": "rad"},
+    "axes": {"x": "forward", "y": "left", "z": "up", "yaw_positive": "counterclockwise_about_+z"}
+  },
+  "sources": {
+    "raicom_x2_model": {
+      "path": "simulation/mujoco/raicom2026/sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/x2.xml",
+      "sha256": "3ff43f05beb57412a804ba9fe05cd9adcdfce78e9ce73a95a71ac58ad20d91a3"
+    },
+    "official_x2_urdf": {
+      "path": "reference/AgibotTech/agibot_x2_urdf/X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
+      "sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d"
+    },
+    "raicom_room": {
+      "path": "reference/AgiBot/raicom2026-x2-mujoco-scene/robot/lx2501_3_t2d5/model_info/scene/room/room_with_chair_review.xml",
+      "sha256": "d72618e8d88f1c6417cc239bc3ae690068845665a5db01775ed24dd81edc6c0a"
+    },
+    "raicom_mug": {
+      "path": "reference/AgiBot/raicom2026-x2-mujoco-scene/robot/lx2501_3_t2d5/model_info/object/model/mug/mug.xml",
+      "sha256": "26970e7b7a4ff2556dda6102c92a62b0f6c5957008c7d4e139630393640e7d90"
+    }
+  },
+  "selected_gripper": {
+    "model_id": "X2-OmniPicker-STL",
+    "model_sha256": "088c1f44963773b6a3cebe0ca3e428b409fa16077bdb930e7b142c5c75981857",
+    "trajectory_sha256": "117bc4e81edbef8b341341c1cb81baba5a7bde61b590eaea93553ec77c4b540a",
+    "command_percent_range": [0, 100],
+    "command_mapping": "0..100 percent maps to the reviewed registered STL table; this is a SIMULATION_ONLY kinematic trajectory."
+  },
+  "poses": {
+    "robot_start": {"xyz_m": [-1.5, -1.5, 0.0], "yaw_rad": 1.5707963267948966},
+    "table_docking": {"xyz_m": [1.0, -1.5, 0.0], "yaw_rad": 0.0},
+    "mug_source": {"xyz_m": [1.5, -1.4, 0.55], "yaw_rad": 0.0}
+  },
+  "evidence_status": {
+    "source_scene_coordinates": "re-expressed from the preserved Issue #80 RAICOM scene audit",
+    "static_scene": "PENDING",
+    "navigation": "NOT_RUN",
+    "balanced_arm_approach": "NOT_RUN",
+    "contact_driven_lift": "NOT_RUN"
+  }
+}
