@@ -152,7 +152,12 @@ def replace_hand(
 ) -> dict[str, str | None]:
     _, target = find_with_parent(root, target_name)
     _, source = find_with_parent(source_root, "R_omnipicker_base_link")
-    original_pose = {key: target.get(key) for key in ("name", "pos", "quat", "childclass")}
+    # ``target`` is the existing wrist-mounted hand root.  Its attributes are
+    # the source-scene mount transform and must remain, but every child node
+    # (including its direct base geom/inertial) belongs to the old hand.  The
+    # previous implementation only removed child links and left that direct
+    # base geometry behind, rendering two hand bases in the same mount frame.
+    original_pose = dict(target.attrib)
     for child in list(target):
         target.remove(child)
     for child in list(source):
@@ -161,9 +166,8 @@ def replace_hand(
             remap_left_names(cloned)
         remap_meshes(cloned)
         target.append(cloned)
-    for key, value in original_pose.items():
-        if value is not None:
-            target.set(key, value)
+    target.attrib.clear()
+    target.attrib.update(original_pose)
 
     contact = root.find("contact")
     if contact is None:
@@ -185,6 +189,39 @@ def replace_hand(
     return original_pose
 
 
+def assert_replaced_hand_payload(
+    root: ET.Element,
+    *,
+    target_name: str,
+    bodies: set[str],
+) -> dict[str, object]:
+    """Fail closed if a source scene retains an extra geometry at a hand root."""
+    matching = [body for body in root.findall(".//body") if body.get("name") == target_name]
+    if len(matching) != 1:
+        raise RuntimeError(f"expected one replaced hand root {target_name}, found {len(matching)}")
+    target = matching[0]
+    direct_geom_names = [geom.get("name") for geom in target.findall("geom")]
+    expected_geom = f"{target_name}__visual_0"
+    if direct_geom_names != [expected_geom]:
+        raise RuntimeError(
+            f"{target_name} retains non-STL root geometry: expected [{expected_geom}], got {direct_geom_names}"
+        )
+    observed_names = [body.get("name") for body in root.findall(".//body")]
+    duplicate_or_missing = {
+        name: observed_names.count(name)
+        for name in sorted(bodies)
+        if observed_names.count(name) != 1
+    }
+    if duplicate_or_missing:
+        raise RuntimeError(f"replaced hand does not have one body per source link: {duplicate_or_missing}")
+    return {
+        "root": target_name,
+        "direct_stl_geom": expected_geom,
+        "source_hand_body_count": len(bodies),
+        "duplicate_or_missing_bodies": duplicate_or_missing,
+    }
+
+
 def compose_scene(base_scene: Path, stl_model: Path, output_scene: Path) -> dict[str, object]:
     tree = ET.parse(base_scene)
     root = tree.getroot()
@@ -197,6 +234,14 @@ def compose_scene(base_scene: Path, stl_model: Path, output_scene: Path) -> dict
         root, stl_root, target_name="L_omnipicker_base_link", bodies=LEFT_HAND_BODIES,
         joints=LEFT_HAND_JOINTS, exclusions=LEFT_STL_EXCLUSIONS, left=True,
     )
+    root_payloads = {
+        "right": assert_replaced_hand_payload(
+            root, target_name="R_omnipicker_base_link", bodies=RIGHT_HAND_BODIES,
+        ),
+        "left": assert_replaced_hand_payload(
+            root, target_name="L_omnipicker_base_link", bodies=LEFT_HAND_BODIES,
+        ),
+    }
 
     # The source review scene used CAD equality and actuator overlays. Neither
     # is part of either table-driven STL hand and neither is needed for review.
@@ -213,6 +258,7 @@ def compose_scene(base_scene: Path, stl_model: Path, output_scene: Path) -> dict
     return {
         "base_right_mount": right_pose,
         "base_left_mount": left_pose,
+        "root_payloads": root_payloads,
         "right_hand_replacement": "X2-OmniPicker-STL source-table trajectory",
         "left_hand_replacement": "X2-OmniPicker-STL approved official-frame mapping",
         "right_internal_collision_exclusions": [list(pair) for pair in STL_EXCLUSIONS],
@@ -572,7 +618,7 @@ grasp, full-X2 dynamics, or manufacturer transmission claim is made.
 """)
     launch = (
         "# Open the native MuJoCo window; no mj_step is called.\n"
-        "$wt = \"/home/lzy18001500226/robotsim-issue46-stl-mainline-audit\"\n"
+        f"$wt = \"{REPO}\"\n"
         f"$scene = \"{scene}\"\n"
         f"$result = \"{output / 'result.json'}\"\n"
         "wsl.exe -d Ubuntu-22.04 --cd $wt --exec env PYTHONDONTWRITEBYTECODE=1 MUJOCO_GL=glfw "
