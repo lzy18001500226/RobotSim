@@ -253,6 +253,9 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("stationary_baseline_stale_odom_can_restart(", method)
         self.assertIn("samples.clear()", method)
         self.assertIn("baseline_start_s = None", method)
+        self.assertIn("stale_odom_restart_limit = 2", method)
+        self.assertIn("stale_odom_restart_count > stale_odom_restart_limit", method)
+        self.assertIn("fresh_initial_deadline_s = time.monotonic() + 2.0", method)
 
     def test_configured_route_profile_uses_route_caps_and_existing_stop_observation(self) -> None:
         args = argparse.Namespace(

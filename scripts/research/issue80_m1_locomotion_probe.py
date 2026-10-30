@@ -1674,6 +1674,8 @@ class FocusedM1Diagnostic(Node):
         next_sample_s: float | None = None
         baseline_end_s: float | None = None
         fresh_initial_deadline_s = time.monotonic() + 2.0
+        stale_odom_restart_count = 0
+        stale_odom_restart_limit = 2
         while rclpy.ok():
             if self.interrupted.is_set():
                 raise RuntimeError("operator_shutdown during stationary odometry baseline")
@@ -1707,6 +1709,12 @@ class FocusedM1Diagnostic(Node):
                     baseline_start_s = None
                     baseline_end_s = None
                     next_sample_s = None
+                    stale_odom_restart_count += 1
+                    if stale_odom_restart_count > stale_odom_restart_limit:
+                        raise RuntimeError(
+                            "stationary odometry baseline exhausted its bounded stale-odom restart budget"
+                        )
+                    fresh_initial_deadline_s = time.monotonic() + 2.0
                     self._spin_for(0.02)
                     continue
                 raise RuntimeError(f"stationary odometry baseline safety fault: {fault}")
@@ -1736,6 +1744,8 @@ class FocusedM1Diagnostic(Node):
             "start_monotonic_s": baseline_start_s,
             "end_monotonic_s": samples[-1]["sample_monotonic_s"],
             "commands_sent": 0,
+            "stale_odom_restart_count": stale_odom_restart_count,
+            "stale_odom_restart_limit": stale_odom_restart_limit,
             "physical_state_summary": summarize_stationary_physical_state(samples),
         })
         return baseline
