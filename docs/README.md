@@ -12,7 +12,8 @@ This map identifies the documents that own RobotSim guidance.
 | [`setup/codex.md`](setup/codex.md) | Local/Cloud Codex boundaries, hooks, notifications, and closeout | Choosing where Codex work runs or finishing a task. |
 | [`setup/evidence-path-governance.md`](setup/evidence-path-governance.md) | Canonical local experiment output paths, artifact manifests, and closeout validation | Creating or advertising local evidence. |
 | [`setup/reference-sources.md`](setup/reference-sources.md) | External upstream source checkout location, pins, fetching, and legacy migration boundary | Adding or reviewing an external Git source checkout. |
-| [`workflows/`](workflows/) | Repeatable procedures for baseline bring-up, navigation, and robot porting | Implementing or validating one of those workflows. |
+| [`workflows/`](workflows/) | Repeatable procedures for baseline bring-up, navigation, robot porting, and the X2 autonomy handoff | Implementing or validating one of those workflows. |
+| [`workflows/06_X2_AUTONOMY_TASK.md`](workflows/06_X2_AUTONOMY_TASK.md) | X2 autonomy task state machine and navigation/perception/manipulation interface contracts | Splitting or integrating the RAICOM fetch task. |
 | [`workflows/05_G1_ROS2_ADAPTER.md`](workflows/05_G1_ROS2_ADAPTER.md) | Build and validate the topology-independent ROS 2 workspace and G1 SDK2 adapter | Working on the initial G1 ROS boundary. |
 | [`workflows/goal_driven_development.md`](workflows/goal_driven_development.md) | Codex prompt-versus-Goal conventions, continuation, evidence, and review gates | Starting multi-step or long-running Codex work. |
 | [`workflows/agent_behavior_eval.md`](workflows/agent_behavior_eval.md) | Executable local Agent behavior fixtures, graders, and manual evidence limits | Evaluating observable Agent infrastructure behavior. |
