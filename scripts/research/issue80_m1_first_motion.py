@@ -4745,12 +4745,27 @@ def run_first_motion_window(
             and result["activation_probe"].get("mode_source_confirmed") is True
             and pulse_fault == "activation_probe_complete_abort_to_stand"
         )
+        terminal_speed_fault_observation = post_stop_speed_fault_can_continue_zero_observation(
+            pulse_fault,
+            explicitly_enabled=continue_zero_observation_after_post_stop_speed_fault,
+        )
         post_stop_extra_applied_s = (
             extra_post_stop_observe_s
-            if pulse_fault is None or intentional_activation_probe_abort
+            if (
+                pulse_fault is None
+                or intentional_activation_probe_abort
+                or terminal_speed_fault_observation
+            )
             else 0.0
         )
         result["post_stop_extra_observation_applied_s"] = post_stop_extra_applied_s
+        result["post_stop_extra_observation_reason"] = (
+            "CONTINUE_ZERO_ONLY_AFTER_TERMINAL_ROOT_SPEED_FAULT"
+            if terminal_speed_fault_observation
+            else "NORMAL_OR_INTENTIONAL_ACTIVATION_ABORT"
+            if post_stop_extra_applied_s > 0.0
+            else "SAFETY_FAULT_ABORT"
+        )
         post_stop_end = clock() + POST_STOP_OBSERVE_S + post_stop_extra_applied_s
         post_stop_samples = 0
         while clock() < post_stop_end:

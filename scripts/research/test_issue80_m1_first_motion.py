@@ -2792,6 +2792,14 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
             explicitly_enabled=False,
         ))
 
+    def test_cpg_speed_fault_keeps_the_bounded_extra_zero_observation_path(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_first_motion.py").read_text(
+            encoding="utf-8"
+        )
+        post_stop = source[source.index("        terminal_speed_fault_observation ="):source.index("        post_stop_end =")]
+        self.assertIn("or terminal_speed_fault_observation", post_stop)
+        self.assertIn("CONTINUE_ZERO_ONLY_AFTER_TERMINAL_ROOT_SPEED_FAULT", post_stop)
+
     def test_physical_motion_requires_positive_displacement_above_empirical_noise(self) -> None:
         self.assertEqual(classify_physical_motion(
             control_handshake_confirmed=True,
