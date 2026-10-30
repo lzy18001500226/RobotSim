@@ -9,6 +9,17 @@ Expected components:
 
 X2's official simulation stack is useful because MC can provide vendor locomotion capabilities. E1R / Gemini335 simulation remains a separate project layer.
 
+## Pinned community navigation reference
+
+`reference/AgiBot-Community/agibot-x2-navigation` is a read-only checkout of
+https://github.com/AgiBot-Community/agibot-x2-navigation at immutable commit
+`9ad1ad8af1b47b1d8fda42c3ca9c828bc5625629` (repository `LICENSE`: MIT).
+It is a reference for FAST-LIO, NDT-OMP localization, OctoMap, Nav2 and a
+`/cmd_vel` to X2 velocity bridge. It is not an x86 PNC binary release and must
+not be run or copied into the runtime directly: its physical-robot source name,
+minimum velocities, map/TF assumptions and dependencies require a bounded
+adapter plus separate x86 MuJoCo validation.
+
 ## Issue #80 RAICOM scene namespace contract
 
 The installed 2026-05-22 MC/simulator model manager uses the native X2
