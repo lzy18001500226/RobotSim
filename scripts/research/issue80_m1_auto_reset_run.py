@@ -320,6 +320,7 @@ def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, 
         getattr(args, "route_config", None)
         or getattr(args, "local01_scene_world_poses", None)
     )
+    cpg_step_diagnostic = bool(getattr(args, "cpg_step_diagnostic", False))
     post_observation = getattr(args, "post_locomotion_convergence_observation_s", None)
     prearmed_standing_only = bool(
         getattr(args, "mc_prearm_before_simulator", False)
@@ -335,16 +336,17 @@ def validate_stand_convergence_arguments(args: argparse.Namespace) -> dict[str, 
     if require_warmup and (
         not (
             (getattr(args, "maintainer_authorized_first_motion", False)
-             and (extended_b or configured_route))
+             and (extended_b or configured_route or cpg_step_diagnostic))
             or ((prearmed_standing_only or direct_standing_only) and configured_route)
         )
     ):
         raise ValueError(
-            "composite stand warmup gate requires authorized extended-B or configured-route motion, "
+            "composite stand warmup gate requires authorized extended-B or configured-route motion "
+            "(or the isolated CPG STEP diagnostic), "
             "or prearmed standing-only qualification"
         )
     if post_observation is None:
-        if require_warmup and not configured_route:
+        if require_warmup and not configured_route and not cpg_step_diagnostic:
             raise ValueError("composite stand warmup diagnostic requires the explicit post-locomotion observation horizon")
         return {
             "status": (

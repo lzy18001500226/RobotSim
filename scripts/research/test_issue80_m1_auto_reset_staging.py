@@ -219,6 +219,20 @@ class ResearchScriptStagingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit post-locomotion observation horizon"):
             validate_stand_convergence_arguments(args)
 
+    def test_isolated_cpg_step_can_require_the_existing_warmup_without_route_observation(self) -> None:
+        args = argparse.Namespace(
+            require_stand_warmup_composite=True,
+            maintainer_authorized_first_motion=True,
+            run65_waypoint_b_extended_diagnostic=False,
+            local01_scene_world_poses=None,
+            route_config=None,
+            cpg_step_diagnostic=True,
+            post_locomotion_convergence_observation_s=None,
+            extra_stop_observation=5.0,
+        )
+        profile = validate_stand_convergence_arguments(args)
+        self.assertEqual(profile["status"], "SIMULATION_ONLY_STAND_WARMUP_COMPOSITE")
+
     def test_configured_route_profile_uses_route_caps_and_existing_stop_observation(self) -> None:
         args = argparse.Namespace(
             route_config=None,
