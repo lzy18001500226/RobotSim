@@ -1,5 +1,5 @@
 {
-  "schema": "robotsim.raicom2026.x2-stl-autonomy-scene.v1",
+  "schema": "robotsim.raicom2026.x2-stl-autonomy-scene.v2",
   "classification": "SIMULATION_ONLY_STATIC_AUTONOMY_SCENE_INPUT",
   "frame": {
     "frame_id": "raicom_scene_world",
@@ -7,21 +7,19 @@
     "axes": {"x": "forward", "y": "left", "z": "up", "yaw_positive": "counterclockwise_about_+z"}
   },
   "sources": {
-    "raicom_x2_model": {
-      "path": "simulation/mujoco/raicom2026/sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/x2.xml",
-      "sha256": "3ff43f05beb57412a804ba9fe05cd9adcdfce78e9ce73a95a71ac58ad20d91a3"
-    },
-    "official_x2_urdf": {
-      "path": "reference/AgibotTech/agibot_x2_urdf/X2_URDF-v1.4.0/X2-Ultra_omnipicker.urdf",
-      "sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d"
+    "approved_full_x2_stl_scene": {
+      "path": "reviews/issue-46/full-x2-stl-human-review-20261030T112328Z/full_x2_stl_static_review.xml",
+      "sha256": "4a98706f05862190cc12d56fd960656af5795d7938ecedcd22913a2b169acebf"
     },
     "raicom_room": {
       "path": "reference/AgiBot/raicom2026-x2-mujoco-scene/robot/lx2501_3_t2d5/model_info/scene/room/room_with_chair_review.xml",
       "sha256": "d72618e8d88f1c6417cc239bc3ae690068845665a5db01775ed24dd81edc6c0a"
     },
-    "raicom_mug": {
-      "path": "reference/AgiBot/raicom2026-x2-mujoco-scene/robot/lx2501_3_t2d5/model_info/object/model/mug/mug.xml",
-      "sha256": "26970e7b7a4ff2556dda6102c92a62b0f6c5957008c7d4e139630393640e7d90"
+    "collision_proxy_recovery": {
+      "parts_path": "reviews/issue-46/omnipicker-collision-decomp-20261020T061939Z/collision_parts",
+      "manifest_path": "simulation/mujoco/models/agibot_x2/omnipicker_sim_functional_v0_1/collision_proxy_manifest.json",
+      "manifest_sha256": "7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a",
+      "piece_count": 161
     }
   },
   "selected_gripper": {
@@ -31,13 +29,16 @@
     "command_percent_range": [0, 100],
     "command_mapping": "0..100 percent maps to the reviewed registered STL table; this is a SIMULATION_ONLY kinematic trajectory."
   },
-  "poses": {
-    "robot_start": {"xyz_m": [-1.5, -1.5, 0.0], "yaw_rad": 1.5707963267948966},
-    "table_docking": {"xyz_m": [1.0, -1.5, 0.0], "yaw_rad": 0.0},
-    "mug_source": {"xyz_m": [1.5, -1.4, 0.55], "yaw_rad": 0.0}
+  "environment": {
+    "remove_from_approved_scene": ["raicom_table"],
+    "attach_model_name": "raicom_room",
+    "attach_prefix": "raicom_map_",
+    "retain_body": "test_cylinder",
+    "table_body_after_attach": "raicom_map_table"
   },
   "evidence_status": {
-    "source_scene_coordinates": "re-expressed from the preserved Issue #80 RAICOM scene audit",
+    "robot_visual": "approved full-X2 STL human review scene",
+    "competition_environment": "preserved RAICOM room, table and chair model",
     "static_scene": "PENDING",
     "navigation": "NOT_RUN",
     "balanced_arm_approach": "NOT_RUN",

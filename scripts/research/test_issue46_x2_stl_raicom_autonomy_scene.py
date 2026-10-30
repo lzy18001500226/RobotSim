@@ -1,86 +1,65 @@
-"""Focused static tests for the RAICOM-to-STL autonomy-scene boundary."""
+"""Focused guards for composing the approved full X2 scene with the RAICOM room."""
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
 
-ROOT = Path(__file__).resolve().parents[2]
-TARGET = ROOT / "scripts/research/issue46_x2_stl_raicom_autonomy_scene.py"
-SPEC = importlib.util.spec_from_file_location("issue46_x2_stl_raicom_autonomy_scene", TARGET)
+MODULE_PATH = Path(__file__).with_name("issue46_x2_stl_raicom_autonomy_scene.py")
+SPEC = importlib.util.spec_from_file_location("issue46_x2_stl_raicom_autonomy_scene", MODULE_PATH)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
-class RAICOMSTLAutonomySceneTests(unittest.TestCase):
-    def test_preexisting_standard_hand_roots_are_detached_but_wrists_remain(self) -> None:
-        root = ET.fromstring(
-            """
-            <mujoco><worldbody>
-              <body name='right_wrist_roll_link'><geom name='right_wrist_visual'/><body name='R_omnipicker_base_link'/></body>
-              <body name='left_wrist_roll_link'><geom name='left_wrist_visual'/><body name='L_omnipicker_base_link'/></body>
-            </worldbody></mujoco>
-            """
-        )
-        removed = MODULE.remove_existing_hand_roots(
-            root,
-            {
-                "right": {"parent_link": "right_wrist_roll_link"},
-                "left": {"parent_link": "left_wrist_roll_link"},
-            },
-        )
-        self.assertEqual(
-            removed,
-            [
-                {"side": "right", "root": "R_omnipicker_base_link", "parent": "right_wrist_roll_link"},
-                {"side": "left", "root": "L_omnipicker_base_link", "parent": "left_wrist_roll_link"},
-            ],
-        )
-        self.assertIsNotNone(root.find(".//body[@name='right_wrist_roll_link']/geom"))
-        self.assertIsNotNone(root.find(".//body[@name='left_wrist_roll_link']/geom"))
-        self.assertIsNone(root.find(".//body[@name='R_omnipicker_base_link']"))
-        self.assertIsNone(root.find(".//body[@name='L_omnipicker_base_link']"))
+ENVIRONMENT = {
+    "remove_from_approved_scene": ["raicom_table"],
+    "attach_model_name": "raicom_room",
+    "attach_prefix": "raicom_map_",
+    "retain_body": "test_cylinder",
+    "table_body_after_attach": "raicom_map_table",
+}
 
-    def test_generated_scene_selects_only_the_generated_stl_x2_overlay(self) -> None:
-        payload = MODULE.scene_xml(
-            x2_overlay=Path("/tmp/x2_stl_overlay.xml"),
-            room=Path("/tmp/room.xml"),
-            mug=Path("/tmp/mug.xml"),
-            poses={
-                "robot_start": {"xyz_m": [-1.5, -1.5, 0.0], "yaw_rad": 1.5707963267948966},
-                "mug_source": {"xyz_m": [1.5, -1.4, 0.55], "yaw_rad": 0.0},
-            },
-        )
-        root = ET.fromstring(payload)
-        models = {item.get("name"): item.get("file") for item in root.findall("./asset/model")}
-        self.assertEqual(models["x2_stl_runtime"], "/tmp/x2_stl_overlay.xml")
-        self.assertNotIn("x2_runtime", models)
-        attached = root.find("./worldbody/frame[@name='x2_start_frame']/attach")
+
+class RAICOMSTLAutonomySceneTests(unittest.TestCase):
+    def test_composition_retains_approved_robot_and_object_but_replaces_table(self) -> None:
+        source = """<mujoco><asset/><worldbody>
+          <body name='pelvis'/><body name='R_omnipicker_base_link'/><body name='L_omnipicker_base_link'/>
+          <body name='raicom_table'/><body name='test_cylinder'/><geom name='floor' type='plane'/>
+        </worldbody></mujoco>"""
+        room = "<mujoco model='room'><worldbody><body name='table'/></worldbody></mujoco>"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path, room_path = root / "approved.xml", root / "room.xml"
+            source_path.write_text(source, encoding="utf-8")
+            room_path.write_text(room, encoding="utf-8")
+            payload, record = MODULE.compose_scene(source_path, room_path, ENVIRONMENT)
+        scene = ET.fromstring(payload)
+        names = [body.get("name") for body in scene.findall(".//body")]
+        self.assertIn("pelvis", names)
+        self.assertIn("R_omnipicker_base_link", names)
+        self.assertIn("L_omnipicker_base_link", names)
+        self.assertIn("test_cylinder", names)
+        self.assertNotIn("raicom_table", names)
+        attached = scene.find("./worldbody/frame[@name='raicom_competition_room']/attach")
         self.assertIsNotNone(attached)
         assert attached is not None
-        self.assertEqual(attached.get("model"), "x2_stl_runtime")
-        self.assertEqual(attached.get("prefix"), "x2_")
+        self.assertEqual(attached.get("model"), "raicom_room")
+        self.assertEqual(record["approved_scene_environment_bodies_removed"], ["raicom_table"])
 
-    def test_generated_scene_carries_only_the_existing_scoped_hand_exclusions(self) -> None:
-        payload = MODULE.scene_xml(
-            x2_overlay=Path("/tmp/x2_stl_overlay.xml"),
-            room=Path("/tmp/room.xml"),
-            mug=Path("/tmp/mug.xml"),
-            poses={
-                "robot_start": {"xyz_m": [0.0, 0.0, 0.0], "yaw_rad": 0.0},
-                "mug_source": {"xyz_m": [1.0, 2.0, 3.0], "yaw_rad": 0.0},
-            },
-        )
-        root = ET.fromstring(payload)
-        exclusions = {
-            (item.get("body1"), item.get("body2"))
-            for item in root.findall("./contact/exclude")
-        }
-        self.assertEqual(exclusions, set(MODULE.PREFIXED_INHERITED_EXCLUSIONS))
-        self.assertEqual(len(exclusions), 16)
+    def test_composition_rejects_missing_approved_hand(self) -> None:
+        source = "<mujoco><asset/><worldbody><body name='pelvis'/><body name='test_cylinder'/></worldbody></mujoco>"
+        room = "<mujoco model='room'><worldbody/></mujoco>"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path, room_path = root / "approved.xml", root / "room.xml"
+            source_path.write_text(source, encoding="utf-8")
+            room_path.write_text(room, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "complete X2-STL"):
+                MODULE.compose_scene(source_path, room_path, ENVIRONMENT)
 
 
 if __name__ == "__main__":
