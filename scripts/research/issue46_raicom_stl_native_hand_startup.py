@@ -285,6 +285,94 @@ finally:
 """.replace("__COMMAND_POSITION__", f"{command_position:.17g}").replace("__HAND_TYPE__", str(hand_type))
 
 
+def build_upper_body_probe_script() -> str:
+    """Small source-compatible arm command/readback probe during native stand."""
+    return """#!/usr/bin/env python3
+import json
+import math
+import time
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from aimdk_msgs.msg import JointStateArray, UpperBodyCommandArray
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
+
+ARM_ORDER = ('left_shoulder_pitch_joint', 'left_shoulder_roll_joint', 'left_shoulder_yaw_joint', 'left_elbow_joint', 'left_wrist_yaw_joint', 'left_wrist_pitch_joint', 'left_wrist_roll_joint', 'right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_shoulder_yaw_joint', 'right_elbow_joint', 'right_wrist_yaw_joint', 'right_wrist_pitch_joint', 'right_wrist_roll_joint')
+
+class Probe(Node):
+    def __init__(self):
+        super().__init__('robotsim_stl_upper_body_probe')
+        self.arm = {}
+        self.odom = []
+        self.tilt = []
+        state_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.create_subscription(JointStateArray, '/aima/hal/joint/arm/state', self.on_arm, state_qos)
+        self.create_subscription(Odometry, '/aima/hal/odom/state', self.on_odom, state_qos)
+        self.create_subscription(Imu, '/aima/hal/imu/torso/state', self.on_imu, state_qos)
+        self.publisher = self.create_publisher(UpperBodyCommandArray, '/mc/upper_body_command', 10)
+
+    def on_arm(self, message):
+        for joint in message.joints:
+            self.arm[joint.name] = float(joint.position)
+    def on_odom(self, message):
+        self.odom.append((float(message.pose.pose.position.x), float(message.pose.pose.position.y)))
+    def on_imu(self, message):
+        q = message.orientation
+        sinp = 2.0 * (q.w * q.y - q.z * q.x)
+        pitch = math.asin(max(-1.0, min(1.0, sinp)))
+        roll = math.atan2(2.0 * (q.w * q.x + q.y * q.z), 1.0 - 2.0 * (q.x * q.x + q.y * q.y))
+        self.tilt.append(max(abs(roll), abs(pitch)))
+    def spin_for(self, seconds):
+        deadline = time.monotonic() + seconds
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.02)
+    def publish_for(self, arm_pos, seconds):
+        message = UpperBodyCommandArray()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = 'mc_upper_body'
+        message.source = 'x2_arm'
+        message.hand_sub_mode = 1
+        message.head_pos = [0.0, 0.0]
+        message.arm_pos = [float(value) for value in arm_pos]
+        message.hand_pos = [0.0, 0.0]
+        deadline = time.monotonic() + seconds
+        while rclpy.ok() and time.monotonic() < deadline:
+            message.header.stamp = self.get_clock().now().to_msg()
+            self.publisher.publish(message)
+            self.spin_for(0.02)
+
+rclpy.init()
+node = Probe()
+try:
+    node.spin_for(1.0)
+    if any(name not in node.arm for name in ARM_ORDER):
+        raise RuntimeError('missing named arm state')
+    start = [node.arm[name] for name in ARM_ORDER]
+    goal = list(start)
+    goal[7] -= 0.05
+    subscriptions = node.publisher.get_subscription_count()
+    node.publish_for(goal, 2.0)
+    moved = [node.arm.get(name) for name in ARM_ORDER]
+    node.publish_for(start, 2.0)
+    restored = [node.arm.get(name) for name in ARM_ORDER]
+    observed_delta = None if moved[7] is None else moved[7] - start[7]
+    restore_error = None if restored[7] is None else abs(restored[7] - start[7])
+    if len(node.odom) >= 2:
+        drift = math.hypot(node.odom[-1][0] - node.odom[0][0], node.odom[-1][1] - node.odom[0][1])
+    else:
+        drift = None
+    stability = {'sample_count': len(node.odom), 'planar_drift_m': drift, 'max_tilt_rad': max(node.tilt) if node.tilt else None}
+    stability['pass'] = stability['sample_count'] >= 100 and stability['planar_drift_m'] is not None and stability['planar_drift_m'] <= 0.05 and stability['max_tilt_rad'] is not None and stability['max_tilt_rad'] <= math.radians(15.0)
+    response = subscriptions >= 1 and observed_delta is not None and observed_delta <= -0.02 and restore_error is not None and restore_error <= 0.03
+    print(json.dumps({'publisher_subscription_count': subscriptions, 'start_right_shoulder_pitch': start[7], 'goal_right_shoulder_pitch': goal[7], 'moved_right_shoulder_pitch': moved[7], 'restored_right_shoulder_pitch': restored[7], 'observed_delta_rad': observed_delta, 'restore_error_rad': restore_error, 'response_pass': response, 'motion_stability': stability}))
+finally:
+    node.destroy_node()
+    rclpy.shutdown()
+"""
+
+
 def docker_container_name(output: Path) -> str:
     suffix = output.name.rsplit("-", 1)[-1].lower()
     return "robotsim-i46-stl-hand-" + suffix
@@ -346,8 +434,9 @@ def main() -> None:
     parser.add_argument("--probe-hand-type", type=int, default=2, choices=(1, 2), help="diagnostic HandType; 2 is the public claw mode")
     parser.add_argument("--start-mc", action="store_true", help="start native MC for initialization only; no action or motion command is issued")
     parser.add_argument("--request-stand", action="store_true", help="issue the vendor SD standing request after MC startup; does not command arms, hands, or locomotion")
+    parser.add_argument("--run-upper-body-probe", action="store_true", help="small 0.05 rad right-shoulder probe during native stand, then restore")
     args = parser.parse_args()
-    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc):
+    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand)):
         raise SystemExit("overlay result and a startup timeout in [2,35] seconds are required")
     inputs = exact_generated_inputs(args.overlay_result)
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-native-hand-startup").native_path
@@ -359,7 +448,7 @@ def main() -> None:
         "overlay_result": {"path": str(args.overlay_result), "sha256": sha256(args.overlay_result)},
         "generated_inputs": {label: {"path": str(path), "sha256": sha256(path)} for label, path in inputs.items()},
         "container": container,
-        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
+        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "UPPER_BODY_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_COMMAND_STAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
         "limitations": ["No arm, upper-body, or locomotion command is published by this check.", "A successful SD request does not establish balance, physical contact, or grasp."],
     }
     try:
@@ -384,6 +473,8 @@ def main() -> None:
             mc_launch.chmod(0o755)
         if args.request_stand:
             pg.write_new_text(output / "native_stand_client.py", build_stand_client_script())
+        if args.run_upper_body_probe:
+            pg.write_new_text(output / "native_upper_body_probe.py", build_upper_body_probe_script())
         if args.run_hand_probe:
             probe = output / "native_hand_probe.py"
             pg.write_new_text(probe, build_hand_probe_script(args.probe_command_position, args.probe_hand_type))
@@ -415,8 +506,12 @@ def main() -> None:
             pg.write_new_text(output / "mc-console.tail.txt", (output / "mc-console.log").read_text(encoding="utf-8", errors="replace")[-12000:] if (output / "mc-console.log").is_file() else "")
             pg.write_new_text(output / "mc-log.tail.txt", mc_log[-12000:])
             result["gates"]["MC_INITIALIZATION"] = "PASS" if mc_ready else "FAIL"
-            if mc_ready and args.request_stand:
+            if mc_ready:
                 environment = "source /opt/ros/humble/setup.bash; source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash; "
+                topics = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 8s ros2 topic list -t"], timeout_s=10.0, check=False)
+                pg.write_new_text(output / "native_ros_topics.txt", topics.stdout)
+                result["native_ros_topics"] = {"returncode": topics.returncode, "upper_body_topic_present": "/mc/upper_body_command" in topics.stdout, "arm_hal_topic_present": "/aima/hal/joint/arm/command" in topics.stdout}
+            if mc_ready and args.request_stand:
                 stand = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 10s python3 /workspace/evidence/native_stand_client.py"], timeout_s=12.0, check=False)
                 pg.write_new_text(output / "native_stand_request.stdout", stand.stdout)
                 result["gates"]["NATIVE_STAND_REQUEST"] = "PASS" if stand.returncode == 0 else "FAIL"
@@ -427,6 +522,16 @@ def main() -> None:
                 result["native_stand"] = {"returncode": stand.returncode, "result": stand_result, "stdout": stand.stdout}
                 result["gates"]["NATIVE_STAND_READBACK"] = "PASS" if stand.returncode == 0 and stand_result.get("mode_name") == "STAND_DEFAULT" else "FAIL"
                 result["gates"]["NATIVE_STAND_STABILITY"] = "PASS" if stand.returncode == 0 and stand_result.get("stability", {}).get("pass") else "FAIL"
+                if args.run_upper_body_probe and result["gates"]["NATIVE_STAND_STABILITY"] == "PASS":
+                    upper = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/native_upper_body_probe.py"], timeout_s=14.0, check=False)
+                    pg.write_new_text(output / "native_upper_body_probe.stdout", upper.stdout)
+                    try:
+                        upper_result = json.loads(upper.stdout.strip().splitlines()[-1])
+                    except (IndexError, json.JSONDecodeError):
+                        upper_result = {"parse_error": True}
+                    result["upper_body_probe"] = {"returncode": upper.returncode, "result": upper_result, "stdout": upper.stdout}
+                    result["gates"]["UPPER_BODY_COMMAND_ROUNDTRIP"] = "PASS" if upper.returncode == 0 and upper_result.get("response_pass") else "FAIL"
+                    result["gates"]["UPPER_BODY_COMMAND_STAND_STABILITY"] = "PASS" if upper.returncode == 0 and upper_result.get("motion_stability", {}).get("pass") else "FAIL"
         if ready and args.run_hand_probe:
             probe = run([
                 "docker", "exec", container, "bash", "-lc",

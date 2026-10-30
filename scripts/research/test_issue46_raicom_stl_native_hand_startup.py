@@ -54,6 +54,13 @@ class NativeHandStartupTests(unittest.TestCase):
         self.assertIn("/aimdk_5Fmsgs/srv/SetMcAction", script)
         self.assertIn("STAND_DEFAULT", script)
 
+    def test_upper_body_probe_is_bounded_and_restores_the_test_joint(self) -> None:
+        script = MODULE.build_upper_body_probe_script()
+        self.assertIn("/mc/upper_body_command", script)
+        self.assertIn("goal[7] -= 0.05", script)
+        self.assertIn("node.publish_for(start, 2.0)", script)
+        self.assertNotIn("qpos", script)
+
 
 if __name__ == "__main__":
     unittest.main()
