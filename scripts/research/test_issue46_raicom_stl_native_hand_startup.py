@@ -67,6 +67,13 @@ class NativeHandStartupTests(unittest.TestCase):
         self.assertIn("SetMcAction", script)
         self.assertIn("GetMcAction", script)
 
+    def test_hal_arm_probe_clones_then_restores_the_mc_command(self) -> None:
+        script = MODULE.build_hal_arm_probe_script()
+        self.assertIn("/aima/hal/joint/arm/command", script)
+        self.assertIn("target.position=float(source.position)+0.03", script)
+        self.assertIn("node.publish({name:item for name,item in node.commands.items()},2.0)", script)
+        self.assertNotIn("qpos", script)
+
 
 if __name__ == "__main__":
     unittest.main()

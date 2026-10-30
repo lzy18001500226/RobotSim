@@ -380,6 +380,65 @@ finally:
 """
 
 
+def build_hal_arm_probe_script() -> str:
+    """Bounded direct HAL wrist probe using the MC's current command fields."""
+    return """#!/usr/bin/env python3
+import json
+import math
+import time
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
+
+TARGET = 'right_wrist_roll_joint'
+
+class Probe(Node):
+    def __init__(self):
+        super().__init__('robotsim_stl_hal_arm_probe')
+        qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+        self.states, self.commands, self.odom, self.tilt = {}, {}, [], []
+        self.create_subscription(JointStateArray, '/aima/hal/joint/arm/state', self.on_state, qos)
+        self.create_subscription(JointCommandArray, '/aima/hal/joint/arm/command', self.on_command, qos)
+        self.create_subscription(Odometry, '/aima/hal/odom/state', self.on_odom, qos)
+        self.create_subscription(Imu, '/aima/hal/imu/torso/state', self.on_imu, qos)
+        self.publisher = self.create_publisher(JointCommandArray, '/aima/hal/joint/arm/command', qos)
+    def on_state(self, msg):
+        self.states = {item.name: float(item.position) for item in msg.joints}
+    def on_command(self, msg):
+        self.commands = {item.name: item for item in msg.joints}
+    def on_odom(self, msg):
+        self.odom.append((float(msg.pose.pose.position.x), float(msg.pose.pose.position.y)))
+    def on_imu(self, msg):
+        q=msg.orientation; pitch=math.asin(max(-1.0,min(1.0,2.0*(q.w*q.y-q.z*q.x)))); roll=math.atan2(2.0*(q.w*q.x+q.y*q.z),1.0-2.0*(q.x*q.x+q.y*q.y)); self.tilt.append(max(abs(roll),abs(pitch)))
+    def spin(self, seconds):
+        end=time.monotonic()+seconds
+        while rclpy.ok() and time.monotonic()<end: rclpy.spin_once(self,timeout_sec=0.001)
+    def publish(self, command_map, seconds):
+        end=time.monotonic()+seconds; seq=0
+        while rclpy.ok() and time.monotonic()<end:
+            msg=JointCommandArray(); msg.header=MessageHeader(); now=self.get_clock().now(); msg.header.stamp=now.to_msg(); msg.header.frame_id='hal_arm_probe'; msg.header.sequence=seq
+            for name, source in command_map.items():
+                out=JointCommand(); out.name=name; out.position=float(source.position); out.velocity=float(source.velocity); out.effort=float(source.effort); out.stiffness=float(source.stiffness); out.damping=float(source.damping); msg.joints.append(out)
+            self.publisher.publish(msg); rclpy.spin_once(self,timeout_sec=0.001); seq+=1; time.sleep(0.001)
+
+rclpy.init(); node=Probe()
+try:
+    node.spin(1.0)
+    if TARGET not in node.states or TARGET not in node.commands: raise RuntimeError('missing arm state or MC arm command')
+    start=float(node.states[TARGET]); command={name:item for name,item in node.commands.items()}; target=JointCommand(); source=command[TARGET]; target.name=source.name; target.position=float(source.position)+0.03; target.velocity=float(source.velocity); target.effort=float(source.effort); target.stiffness=float(source.stiffness); target.damping=float(source.damping); command[TARGET]=target
+    node.publish(command,2.0); moved=float(node.states.get(TARGET,float('nan'))); node.publish({name:item for name,item in node.commands.items()},2.0); restored=float(node.states.get(TARGET,float('nan')))
+    delta=moved-start; restore_error=abs(restored-start)
+    drift=math.hypot(node.odom[-1][0]-node.odom[0][0],node.odom[-1][1]-node.odom[0][1]) if len(node.odom)>=2 else None
+    stability={'sample_count':len(node.odom),'planar_drift_m':drift,'max_tilt_rad':max(node.tilt) if node.tilt else None}; stability['pass']=stability['sample_count']>=100 and drift is not None and drift<=0.05 and stability['max_tilt_rad'] is not None and stability['max_tilt_rad']<=math.radians(15)
+    print(json.dumps({'subscription_count':node.publisher.get_subscription_count(),'start_rad':start,'target_rad':target.position,'moved_rad':moved,'restored_rad':restored,'delta_rad':delta,'restore_error_rad':restore_error,'response_pass':delta>=0.005 and delta<=0.08 and restore_error<=0.04,'motion_stability':stability}))
+finally:
+    node.destroy_node(); rclpy.shutdown()
+"""
+
+
 def docker_container_name(output: Path) -> str:
     suffix = output.name.rsplit("-", 1)[-1].lower()
     return "robotsim-i46-stl-hand-" + suffix
@@ -443,8 +502,9 @@ def main() -> None:
     parser.add_argument("--request-stand", action="store_true", help="issue the vendor SD standing request after MC startup; does not command arms, hands, or locomotion")
     parser.add_argument("--run-upper-body-probe", action="store_true", help="small 0.05 rad right-shoulder probe during native stand, then restore")
     parser.add_argument("--request-upperbody-split", action="store_true", help="switch from SD to the delivered US upper-body remote split mode before any arm probe")
+    parser.add_argument("--run-hal-arm-probe", action="store_true", help="direct 0.03 rad wrist probe on the delivered HAL arm command channel during SD")
     args = parser.parse_args()
-    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.request_upperbody_split and not (args.start_mc and args.request_stand)) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand and args.request_upperbody_split)):
+    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.request_upperbody_split and not (args.start_mc and args.request_stand)) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand and args.request_upperbody_split)) or (args.run_hal_arm_probe and not (args.start_mc and args.request_stand)):
         raise SystemExit("overlay result and a startup timeout in [2,35] seconds are required")
     inputs = exact_generated_inputs(args.overlay_result)
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-native-hand-startup").native_path
@@ -456,7 +516,7 @@ def main() -> None:
         "overlay_result": {"path": str(args.overlay_result), "sha256": sha256(args.overlay_result)},
         "generated_inputs": {label: {"path": str(path), "sha256": sha256(path)} for label, path in inputs.items()},
         "container": container,
-        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "UPPERBODY_SPLIT_REQUEST": "NOT_RUN", "UPPERBODY_SPLIT_READBACK": "NOT_RUN", "UPPER_BODY_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_COMMAND_STAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
+        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "HAL_ARM_COMMAND_ROUNDTRIP": "NOT_RUN", "HAL_ARM_COMMAND_STAND_STABILITY": "NOT_RUN", "UPPERBODY_SPLIT_REQUEST": "NOT_RUN", "UPPERBODY_SPLIT_READBACK": "NOT_RUN", "UPPER_BODY_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_COMMAND_STAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
         "limitations": ["No arm, upper-body, or locomotion command is published by this check.", "A successful SD request does not establish balance, physical contact, or grasp."],
     }
     try:
@@ -485,6 +545,8 @@ def main() -> None:
             pg.write_new_text(output / "native_upperbody_split_client.py", build_upperbody_split_client_script())
         if args.run_upper_body_probe:
             pg.write_new_text(output / "native_upper_body_probe.py", build_upper_body_probe_script())
+        if args.run_hal_arm_probe:
+            pg.write_new_text(output / "native_hal_arm_probe.py", build_hal_arm_probe_script())
         if args.run_hand_probe:
             probe = output / "native_hand_probe.py"
             pg.write_new_text(probe, build_hand_probe_script(args.probe_command_position, args.probe_hand_type))
@@ -532,6 +594,16 @@ def main() -> None:
                 result["native_stand"] = {"returncode": stand.returncode, "result": stand_result, "stdout": stand.stdout}
                 result["gates"]["NATIVE_STAND_READBACK"] = "PASS" if stand.returncode == 0 and stand_result.get("mode_name") == "STAND_DEFAULT" else "FAIL"
                 result["gates"]["NATIVE_STAND_STABILITY"] = "PASS" if stand.returncode == 0 and stand_result.get("stability", {}).get("pass") else "FAIL"
+                if args.run_hal_arm_probe and result["gates"]["NATIVE_STAND_STABILITY"] == "PASS":
+                    hal = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/native_hal_arm_probe.py"], timeout_s=14.0, check=False)
+                    pg.write_new_text(output / "native_hal_arm_probe.stdout", hal.stdout)
+                    try:
+                        hal_result = json.loads(hal.stdout.strip().splitlines()[-1])
+                    except (IndexError, json.JSONDecodeError):
+                        hal_result = {"parse_error": True}
+                    result["hal_arm_probe"] = {"returncode": hal.returncode, "result": hal_result, "stdout": hal.stdout}
+                    result["gates"]["HAL_ARM_COMMAND_ROUNDTRIP"] = "PASS" if hal.returncode == 0 and hal_result.get("response_pass") else "FAIL"
+                    result["gates"]["HAL_ARM_COMMAND_STAND_STABILITY"] = "PASS" if hal.returncode == 0 and hal_result.get("motion_stability", {}).get("pass") else "FAIL"
                 if args.request_upperbody_split and result["gates"]["NATIVE_STAND_STABILITY"] == "PASS":
                     split = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/native_upperbody_split_client.py"], timeout_s=14.0, check=False)
                     pg.write_new_text(output / "native_upperbody_split.stdout", split.stdout)
