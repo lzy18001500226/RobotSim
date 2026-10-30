@@ -10,6 +10,7 @@ from typing import Any
 
 MODE_SD = "STAND_DEFAULT"
 MODE_LD = "LOCOMOTION_DEFAULT"
+MODE_LS = "LOCOMOTION_STEP"
 OFFICIAL_VELOCITY_SOURCE = "node.locomotion_velocity"
 OFFICIAL_ACTION_SOURCE = "rc"
 SUCCESS_STATUS = 1
@@ -35,6 +36,9 @@ RAICOM_LOW_CRUISE_FORWARD_M_S = 0.105
 # Keep this as an explicitly named compatibility baseline; it does not expand
 # the existing table-route speed profile.
 VENDOR_EXAMPLE_FORWARD_M_S = 0.2
+# Exact installed `cpgstep_config.yaml` start threshold. This is only valid
+# for the separately named LOCOMOTION_STEP diagnostic, never FoundationWalk.
+CPG_STEP_FORWARD_M_S = 0.3
 TASK_STATES = {
     0: "UNKNOWN",
     1: "SUCCESS",
@@ -55,6 +59,7 @@ def source_grounded_route_activation_speed_is_supported(
     *,
     allow_raicom_low_cruise: bool,
     allow_vendor_example: bool = False,
+    allow_cpg_step: bool = False,
 ) -> bool:
     """Accept only the reviewed source-acquisition speeds for a route window."""
     try:
@@ -72,6 +77,10 @@ def source_grounded_route_activation_speed_is_supported(
         or (
             allow_vendor_example
             and abs(speed - VENDOR_EXAMPLE_FORWARD_M_S) <= 1e-9
+        )
+        or (
+            allow_cpg_step
+            and abs(speed - CPG_STEP_FORWARD_M_S) <= 1e-9
         )
     )
 
@@ -183,6 +192,7 @@ def classify_ld_transition(
     common_mode: str | None,
     *,
     readback_error: bool = False,
+    expected_locomotion_mode: str = MODE_LD,
 ) -> str:
     """Separate service rejection, request acceptance, and later mode application."""
     if not set_result:
@@ -202,13 +212,13 @@ def classify_ld_transition(
     get_mode = last_action.get("action_desc") if last_action else None
     if last_action and last_action.get("response_header_code") != 0:
         return "READBACK_INTERFACE_ERROR"
-    if get_mode and common_mode and get_mode not in {MODE_SD, MODE_LD}:
+    if get_mode and common_mode and get_mode not in {MODE_SD, expected_locomotion_mode}:
         return "UNRELATED_GET_MODE"
-    if common_mode and common_mode not in {MODE_SD, MODE_LD}:
+    if common_mode and common_mode not in {MODE_SD, expected_locomotion_mode}:
         return "UNRELATED_COMMON_MODE"
     if get_mode and common_mode and get_mode != common_mode:
         return "READBACK_TRANSITION_IN_PROGRESS"
-    if get_mode == MODE_LD and common_mode == MODE_LD:
+    if get_mode == expected_locomotion_mode and common_mode == expected_locomotion_mode:
         return "LD_CONFIRMED"
     if get_mode == MODE_SD and common_mode == MODE_SD:
         return "ACCEPTED_WAITING_FOR_VALID_LOCOMOTION_INPUT"
@@ -219,6 +229,7 @@ def classify_locomotion_activation_readbacks(
     snapshot: Mapping[str, Any],
     *,
     expected_source: str = OFFICIAL_VELOCITY_SOURCE,
+    expected_locomotion_mode: str = MODE_LD,
     maximum_readback_age_s: float = 0.5,
     maximum_sync_skew_s: float = READBACK_SYNC_MAX_S,
 ) -> dict[str, Any]:
@@ -287,11 +298,11 @@ def classify_locomotion_activation_readbacks(
         "source_common_skew_s": abs(get_source_time - common_time),
         "motion_allowed": False,
     }
-    allowed_modes = {MODE_SD, MODE_LD}
+    allowed_modes = {MODE_SD, expected_locomotion_mode}
     if get_mode not in allowed_modes or common_mode not in allowed_modes:
         return {
             "classification": "ERROR_UNRELATED_MODE",
-            "reason": "GetMcAction or CommonState reports a mode outside STAND/LOCOMOTION",
+            "reason": "GetMcAction or CommonState reports a mode outside STAND/the requested locomotion action",
             **result,
         }
     if (
@@ -476,6 +487,7 @@ class MCLocomotionAbortLifecycle:
         now_s: float,
         allow_raicom_low_cruise: bool = False,
         allow_vendor_example: bool = False,
+        allow_cpg_step: bool = False,
     ) -> None:
         """Allow only the explicitly source-grounded, short activation qualification probe."""
         if self.rearm_forbidden:
@@ -491,6 +503,7 @@ class MCLocomotionAbortLifecycle:
                 forward_command_m_s,
                 allow_raicom_low_cruise=allow_raicom_low_cruise,
                 allow_vendor_example=allow_vendor_example,
+                allow_cpg_step=allow_cpg_step,
             )
             or abs(float(duration_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
         ):

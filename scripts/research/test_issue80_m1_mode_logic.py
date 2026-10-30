@@ -12,9 +12,11 @@ from issue80_m1_mode_logic import (
     ACTIVATION_PROBE,
     ACTIVATION_PROBE_DURATION_S,
     ACTIVATION_PROBE_FORWARD_M_S,
+    CPG_STEP_FORWARD_M_S,
     VENDOR_EXAMPLE_FORWARD_M_S,
     MOTION_ACTIVE,
     MODE_LD,
+    MODE_LS,
     MODE_SD,
     OFFICIAL_VELOCITY_SOURCE,
     STAND_VERIFIED,
@@ -390,6 +392,41 @@ class ActivationAbortLifecycleTests(unittest.TestCase):
         )
         self.assertEqual(confirmed["classification"], "LOCOMOTION_CONFIRMED")
         self.assertTrue(confirmed["motion_allowed"])
+
+    def test_step_action_requires_step_readbacks_and_installed_start_speed(self) -> None:
+        default_mode = classify_locomotion_activation_readbacks(
+            activation_snapshot(
+                10.0,
+                get_mode=MODE_LD,
+                common_mode=MODE_LD,
+                get_source=OFFICIAL_VELOCITY_SOURCE,
+                common_source=OFFICIAL_VELOCITY_SOURCE,
+            ),
+            expected_source=OFFICIAL_VELOCITY_SOURCE,
+            expected_locomotion_mode=MODE_LS,
+        )
+        self.assertEqual(default_mode["classification"], "ERROR_UNRELATED_MODE")
+        step_mode = classify_locomotion_activation_readbacks(
+            activation_snapshot(
+                10.0,
+                get_mode=MODE_LS,
+                common_mode=MODE_LS,
+                get_source=OFFICIAL_VELOCITY_SOURCE,
+                common_source=OFFICIAL_VELOCITY_SOURCE,
+            ),
+            expected_source=OFFICIAL_VELOCITY_SOURCE,
+            expected_locomotion_mode=MODE_LS,
+        )
+        self.assertEqual(step_mode["classification"], "LOCOMOTION_CONFIRMED")
+        self.assertTrue(source_grounded_route_activation_speed_is_supported(
+            CPG_STEP_FORWARD_M_S,
+            allow_raicom_low_cruise=False,
+            allow_cpg_step=True,
+        ))
+        self.assertFalse(source_grounded_route_activation_speed_is_supported(
+            CPG_STEP_FORWARD_M_S,
+            allow_raicom_low_cruise=False,
+        ))
 
     def test_zero_only_activation_observer_never_sends_nonzero_and_timeout_requires_abort(self) -> None:
         clock = FakeClock()

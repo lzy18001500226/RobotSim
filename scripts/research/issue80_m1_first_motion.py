@@ -121,6 +121,7 @@ TURN_YAW_RATE_WINDOW_S = 0.4
 
 MODE_STAND = "STAND_DEFAULT"
 MODE_LOCOMOTION = "LOCOMOTION_DEFAULT"
+MODE_LOCOMOTION_STEP = "LOCOMOTION_STEP"
 ALLOWED_MODES = frozenset((MODE_STAND, MODE_LOCOMOTION))
 MC_ACTION_STATUSES = frozenset((0, 100, 200))  # IDLE, RUNNING, TRANSITION
 
@@ -1394,6 +1395,7 @@ def snapshot_fault(
     min_root_z: float,
     max_tilt_deg: float,
     expected_source: str = VELOCITY_SOURCE_NAME,
+    allowed_modes: frozenset[str] = ALLOWED_MODES,
     required_forward_mps: float = FORWARD_COMMAND_M_S,
     max_observed_planar_speed_m_s: float | None = None,
     allow_source_readback_gap: bool = False,
@@ -1422,7 +1424,7 @@ def snapshot_fault(
 
     get_mode = snapshot.get("get_mode_desc")
     common_mode = snapshot.get("common_mode_desc")
-    if get_mode not in ALLOWED_MODES or common_mode not in ALLOWED_MODES:
+    if get_mode not in allowed_modes or common_mode not in allowed_modes:
         return f"unrelated_or_missing_mode:{get_mode!r}:{common_mode!r}"
     if snapshot.get("get_mode_header_code") != 0:
         return "get_mc_action_readback_error"
@@ -1541,8 +1543,13 @@ def snapshot_fault(
 class ActivationTracker:
     """Keep source acquisition, LD observation, and same-sample handshake distinct."""
 
-    def __init__(self, expected_source: str = VELOCITY_SOURCE_NAME) -> None:
+    def __init__(
+        self,
+        expected_source: str = VELOCITY_SOURCE_NAME,
+        expected_locomotion_mode: str = MODE_LOCOMOTION,
+    ) -> None:
         self.expected_source = expected_source
+        self.expected_locomotion_mode = expected_locomotion_mode
         self.get_source_seen = False
         self.common_source_seen = False
         self.get_locomotion_seen = False
@@ -1586,8 +1593,11 @@ class ActivationTracker:
 
         source_get = row["get_source_header_code"] == 0 and row["get_source_name"] == self.expected_source
         source_common = row["common_source_name"] == self.expected_source
-        mode_get_seen = row["get_mode_header_code"] == 0 and row["get_mode_desc"] == MODE_LOCOMOTION
-        mode_common_seen = row["common_mode_desc"] == MODE_LOCOMOTION
+        mode_get_seen = (
+            row["get_mode_header_code"] == 0
+            and row["get_mode_desc"] == self.expected_locomotion_mode
+        )
+        mode_common_seen = row["common_mode_desc"] == self.expected_locomotion_mode
         mode_get = mode_get_seen and row.get("get_mode_status_value") == 100
         mode_common = mode_common_seen and row.get("common_mode_status_value") == 100
         source_pair = source_get and source_common
@@ -3742,6 +3752,8 @@ def run_first_motion_window(
     authorized: bool,
     baseline_state_summary: Mapping[str, Any] | None = None,
     forward_command_m_s: float = FORWARD_COMMAND_M_S,
+    maximum_forward_command_m_s: float = FORWARD_COMMAND_M_S,
+    expected_locomotion_mode: str = MODE_LOCOMOTION,
     pulse_duration_s: float = PULSE_LIMIT_S,
     max_pulse_duration_s: float = PULSE_LIMIT_S,
     ramp_start_speed_m_s: float | None = None,
@@ -3774,6 +3786,7 @@ def run_first_motion_window(
     source_grounded_activation_timeout_s: float = ACTIVATION_PROBE_DURATION_S,
     allow_raicom_low_cruise_source_activation: bool = False,
     allow_vendor_example_source_activation: bool = False,
+    allow_cpg_step_source_activation: bool = False,
     continuous_route_authorized: bool = False,
     continuous_route_nonzero_limit_s: float | None = None,
     clock: Callable[[], float] = time.monotonic,
@@ -3785,6 +3798,8 @@ def run_first_motion_window(
         "status": "NOT_RUN",
         "source": VELOCITY_SOURCE_NAME,
         "command_forward_m_s": forward_command_m_s,
+        "maximum_forward_command_m_s": maximum_forward_command_m_s,
+        "expected_locomotion_mode": expected_locomotion_mode,
         "command_lateral_m_s": 0.0,
         "command_angular_velocity_rad_s": 0.0,
         "pulse_limit_s": max_pulse_duration_s,
@@ -3838,6 +3853,7 @@ def run_first_motion_window(
             "first_nonzero_is_part_of_this_window": bool(source_grounded_route_activation),
             "allow_raicom_low_cruise": bool(allow_raicom_low_cruise_source_activation),
             "allow_vendor_example": bool(allow_vendor_example_source_activation),
+            "allow_cpg_step": bool(allow_cpg_step_source_activation),
             "selected_forward_command_m_s": (
                 forward_command_m_s if source_grounded_route_activation else None
             ),
@@ -3859,6 +3875,7 @@ def run_first_motion_window(
         "termination_condition_met": False,
         "termination_condition_name": None,
     }
+    motion_allowed_modes = frozenset((MODE_STAND, expected_locomotion_mode))
     if not authorized:
         result["status"] = "NOT_AUTHORIZED"
         return result
@@ -3888,6 +3905,7 @@ def run_first_motion_window(
             forward_command_m_s,
             allow_raicom_low_cruise=allow_raicom_low_cruise_source_activation,
             allow_vendor_example=allow_vendor_example_source_activation,
+            allow_cpg_step=allow_cpg_step_source_activation,
         )
         or not math.isfinite(float(source_grounded_activation_timeout_s))
         or abs(float(source_grounded_activation_timeout_s) - ACTIVATION_PROBE_DURATION_S) > 1e-9
@@ -3900,6 +3918,8 @@ def run_first_motion_window(
         pulse_fault = pulse_fault or "low_cruise_source_activation_requires_route_mode"
     elif allow_vendor_example_source_activation and not source_grounded_route_activation:
         pulse_fault = pulse_fault or "vendor_example_source_activation_requires_route_mode"
+    elif allow_cpg_step_source_activation and not source_grounded_route_activation:
+        pulse_fault = pulse_fault or "cpg_step_source_activation_requires_explicit_diagnostic_mode"
     if (
         not math.isfinite(extra_post_stop_observe_limit_s)
         or not 0.0 <= extra_post_stop_observe_limit_s <= MAX_EXTRA_POST_STOP_OBSERVE_S
@@ -3939,7 +3959,12 @@ def run_first_motion_window(
             "continuous_route_pulse_duration_outside_authorized_cap"
             if continuous_route_authorized else "pulse_duration_outside_authorized_cap"
         )
-    elif not math.isfinite(forward_command_m_s) or not 0.0 < forward_command_m_s <= FORWARD_COMMAND_M_S:
+    elif (
+        not math.isfinite(maximum_forward_command_m_s)
+        or not 0.0 < maximum_forward_command_m_s <= 0.3
+        or not math.isfinite(forward_command_m_s)
+        or not 0.0 < forward_command_m_s <= maximum_forward_command_m_s
+    ):
         pulse_fault = pulse_fault or "forward_command_outside_authorized_cap"
     elif max_observed_planar_speed_m_s is not None and (
         not math.isfinite(max_observed_planar_speed_m_s)
@@ -4017,7 +4042,7 @@ def run_first_motion_window(
 
     command_lock = threading.RLock()
     stop_requested = threading.Event()
-    tracker = ActivationTracker()
+    tracker = ActivationTracker(expected_locomotion_mode=expected_locomotion_mode)
     post_stop_first_pose: Mapping[str, Any] | None = None
     post_stop_last_pose: Mapping[str, Any] | None = None
     post_stop_first_observation: dict[str, Any] | None = None
@@ -4131,6 +4156,10 @@ def run_first_motion_window(
                             source_grounded_route_activation
                             and allow_vendor_example_source_activation
                         ),
+                        allow_cpg_step=(
+                            source_grounded_route_activation
+                            and allow_cpg_step_source_activation
+                        ),
                     )
                 else:
                     activation_lifecycle.begin_motion(now_s=clock())
@@ -4146,6 +4175,7 @@ def run_first_motion_window(
                 state_timeout_s=state_timeout_s,
                 min_root_z=min_root_z,
                 max_tilt_deg=max_tilt_deg,
+                allowed_modes=motion_allowed_modes,
                 max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
             )
             record_sample("pre-activation", initial, initial_fault)
@@ -4183,6 +4213,7 @@ def run_first_motion_window(
                     state_timeout_s=state_timeout_s,
                     min_root_z=min_root_z,
                     max_tilt_deg=max_tilt_deg,
+                    allowed_modes=motion_allowed_modes,
                     max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                 )
                 if current_fault:
@@ -4236,6 +4267,7 @@ def run_first_motion_window(
                     probe_classification = classify_locomotion_activation_readbacks(
                         current,
                         expected_source=VELOCITY_SOURCE_NAME,
+                        expected_locomotion_mode=expected_locomotion_mode,
                         maximum_readback_age_s=state_timeout_s,
                         maximum_sync_skew_s=MODE_SOURCE_READBACK_SKEW_MAX_S,
                     )
@@ -4616,6 +4648,7 @@ def run_first_motion_window(
                 state_timeout_s=state_timeout_s,
                 min_root_z=min_root_z,
                 max_tilt_deg=max_tilt_deg,
+                allowed_modes=motion_allowed_modes,
                 max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                 allow_source_readback_gap=True,
                 allow_common_uninterruptible_transition_during_zero_observation=True,
@@ -4730,6 +4763,7 @@ def run_first_motion_window(
                     state_timeout_s=state_timeout_s,
                     min_root_z=min_root_z,
                     max_tilt_deg=max_tilt_deg,
+                    allowed_modes=motion_allowed_modes,
                     max_observed_planar_speed_m_s=max_observed_planar_speed_m_s,
                     allow_source_readback_gap=True,
                     allow_common_uninterruptible_transition_during_zero_observation=True,

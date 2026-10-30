@@ -391,6 +391,38 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertNotIn("--route-integration", child)
         self.assertNotIn("--maintainer-authorized", child)
 
+    def test_cpg_step_child_command_is_isolated_and_preserves_stop_gates(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=5.0,
+            pulse_duration=2.0,
+            forward_speed=0.3,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="cpg-step-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+            cpg_step_diagnostic=True,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "cpg-step-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--maintainer-authorized", child)
+        self.assertIn("--locomotion-action", child)
+        self.assertEqual(child[child.index("--locomotion-action") + 1], "LOCOMOTION_STEP")
+        self.assertIn("--cpg-step-diagnostic", child)
+        self.assertEqual(child[child.index("--forward-speed") + 1], "0.3")
+        self.assertEqual(child[child.index("--pulse-duration") + 1], "2.0")
+        self.assertEqual(child[child.index("--extra-stop-observation") + 1], "5.0")
+        self.assertEqual(child[child.index("--max-observed-planar-speed-m-s") + 1], "0.2")
+        self.assertIn("--zero-only-stop", child)
+        self.assertNotIn("--route-integration", child)
+
     def test_zero_only_activation_command_has_separate_authority_and_no_motion_profile(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=0.0,

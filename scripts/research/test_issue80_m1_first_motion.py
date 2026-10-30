@@ -27,6 +27,7 @@ from issue80_m1_first_motion import (
     MC_FSM_SAFE,
     MC_FSM_STABLE,
     MODE_LOCOMOTION,
+    MODE_LOCOMOTION_STEP,
     MODE_STAND,
     measure_post_stop_forward_tail,
     evaluate_physical_stop_gate,
@@ -2735,6 +2736,46 @@ Create subscriber: locomotion_velocity succeeded, topic: /aima/mc/locomotion/vel
         ), phase="activation")
         self.assertTrue(tracker.control_handshake_confirmed)
         self.assertEqual(tracker.classify_control_handshake(), "CONTROL_HANDSHAKE_CONFIRMED")
+
+    def test_step_action_requires_matching_step_readbacks(self) -> None:
+        tracker = ActivationTracker(expected_locomotion_mode=MODE_LOCOMOTION_STEP)
+        tracker.observe(self.snapshot(
+            get_source_name=VELOCITY_SOURCE_NAME,
+            common_source_name=VELOCITY_SOURCE_NAME,
+            get_mode_desc=MODE_LOCOMOTION,
+            common_mode_desc=MODE_LOCOMOTION,
+            fsm_state=int(McFsmStateCode.MOVING),
+        ), phase="activation")
+        self.assertFalse(tracker.control_handshake_confirmed)
+        tracker.observe(self.snapshot(
+            get_source_name=VELOCITY_SOURCE_NAME,
+            common_source_name=VELOCITY_SOURCE_NAME,
+            get_mode_desc=MODE_LOCOMOTION_STEP,
+            common_mode_desc=MODE_LOCOMOTION_STEP,
+            fsm_state=int(McFsmStateCode.MOVING),
+        ), phase="activation")
+        self.assertTrue(tracker.control_handshake_confirmed)
+
+    def test_step_mode_is_only_accepted_when_the_calling_profile_explicitly_allows_it(self) -> None:
+        sample = self.snapshot(
+            get_mode_desc=MODE_LOCOMOTION_STEP,
+            common_mode_desc=MODE_LOCOMOTION_STEP,
+            fsm_state=int(McFsmStateCode.MOVING),
+        )
+        self.assertEqual(
+            snapshot_fault(
+                sample, LIMITS, state_timeout_s=0.5, min_root_z=0.52, max_tilt_deg=15.0,
+            ),
+            "unrelated_or_missing_mode:'LOCOMOTION_STEP':'LOCOMOTION_STEP'",
+        )
+        self.assertIsNone(snapshot_fault(
+            sample,
+            LIMITS,
+            state_timeout_s=0.5,
+            min_root_z=0.52,
+            max_tilt_deg=15.0,
+            allowed_modes=frozenset((MODE_STAND, MODE_LOCOMOTION_STEP)),
+        ))
 
     def test_physical_motion_requires_positive_displacement_above_empirical_noise(self) -> None:
         self.assertEqual(classify_physical_motion(

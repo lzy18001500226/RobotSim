@@ -33,7 +33,7 @@ from std_msgs.msg import Float64MultiArray
 from issue80_m1_first_motion import (
     ACTION_SOURCE_NAME, ActivationTracker, COMMAND_PUBLISHER_TOPIC, COMMAND_QOS_DEPTH, COMMAND_QOS_DURABILITY,
     BASELINE_DURATION_S, BASELINE_SAMPLE_PERIOD_S, BASELINE_WINDOW_COUNT,
-    COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_STAND, PUBLISH_HZ,
+    COMMAND_QOS_RELIABILITY, MC_SIM_CONFIG_PATH, MODE_LOCOMOTION, MODE_LOCOMOTION_STEP, MODE_STAND, PUBLISH_HZ,
     MC_FSM_ACTIVE_STATES, MC_FSM_SAFE, MC_FSM_STABLE, MAX_AUTHORIZED_PULSE_S,
     MAX_EXTRA_POST_STOP_OBSERVE_S, PHYSICAL_STOP_MAX_YAW_RATE_RAD_S, verify_mc_fsm_runtime_contract,
     MODE_SOURCE_READBACK_SKEW_MAX_S,
@@ -95,6 +95,7 @@ from issue80_coordinated_pose_goal import (
 from issue80_m1_mode_logic import (
     ACTIVATION_PROBE_DURATION_S,
     ACTIVATION_PROBE_FORWARD_M_S,
+    CPG_STEP_FORWARD_M_S,
     RAICOM_LOW_CRUISE_FORWARD_M_S,
     VENDOR_EXAMPLE_FORWARD_M_S,
     MCLocomotionAbortLifecycle,
@@ -342,6 +343,7 @@ class FocusedM1Diagnostic(Node):
         )
         super().__init__("issue80_m1_first_motion")
         self.args = args
+        self.locomotion_action = str(getattr(args, "locomotion_action", MODE_LOCOMOTION))
         self.lidar_map_route_mode = bool(getattr(args, "lidar_map_route", False))
         self.lidar_localization_topic = str(
             getattr(args, "lidar_localization_topic", "/map_tf_distribution/localization_pose")
@@ -892,8 +894,8 @@ class FocusedM1Diagnostic(Node):
         if not math.isfinite(measured_planar_speed) or not math.isfinite(speed_cap) or speed_cap <= 0.0:
             raise RuntimeError("post-stop stand request lacks finite planar speed telemetry")
         if (
-            snapshot.get("get_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
-            or snapshot.get("common_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
+            snapshot.get("get_mode_desc") not in (MODE_STAND, self.locomotion_action)
+            or snapshot.get("common_mode_desc") not in (MODE_STAND, self.locomotion_action)
         ):
             raise RuntimeError("post-stop stand request observed unrelated MC action")
         if (
@@ -944,7 +946,7 @@ class FocusedM1Diagnostic(Node):
         request.header.stamp = self.get_clock().now().to_msg()
         request.source = ACTION_SOURCE_NAME
         request.command = McActionCommand()
-        request.command.action_desc = MODE_LOCOMOTION
+        request.command.action_desc = self.locomotion_action
         submitted = datetime.now(timezone.utc).isoformat()
         response = self._call(self.set_mode_client, request, "SetMcAction:LOCOMOTION_DEFAULT", timeout=1.0)
         response_payload = _json_safe(response.response)
@@ -963,7 +965,7 @@ class FocusedM1Diagnostic(Node):
             "response": response_payload,
             **diagnostics,
         }
-        self.events.append({"event": "set_mc_action_ld", **result})
+        self.events.append({"event": "set_mc_action_locomotion", **result})
         return result
 
     def _activation_speed_cap(self) -> float:
@@ -1170,6 +1172,7 @@ class FocusedM1Diagnostic(Node):
         forward_command_m_s: float = ACTIVATION_PROBE_FORWARD_M_S,
         allow_raicom_low_cruise: bool = False,
         allow_vendor_example: bool = False,
+        allow_cpg_step: bool = False,
         zero_forward_heading_acquisition: bool = False,
     ) -> tuple[MCLocomotionAbortLifecycle, dict[str, Any], dict[str, Any]]:
         """Prepare the reviewed nonzero-acquisition phase for one route window.
@@ -1184,6 +1187,13 @@ class FocusedM1Diagnostic(Node):
             phase=phase,
         )
         if activation.get("status") == "READY":
+            allowed_profiles = [ACTIVATION_PROBE_FORWARD_M_S]
+            if allow_raicom_low_cruise:
+                allowed_profiles.append(RAICOM_LOW_CRUISE_FORWARD_M_S)
+            if allow_vendor_example:
+                allowed_profiles.append(VENDOR_EXAMPLE_FORWARD_M_S)
+            if allow_cpg_step:
+                allowed_profiles.append(CPG_STEP_FORWARD_M_S)
             activation.update({
                 "classification": "SIMULATION_ONLY_SOURCE_GROUNDED_ROUTE_ACTIVATION",
                 "route_motion_authorized": True,
@@ -1192,6 +1202,7 @@ class FocusedM1Diagnostic(Node):
                 "forward_velocity_m_s": float(forward_command_m_s),
                 "raicom_low_cruise_profile": bool(allow_raicom_low_cruise),
                 "vendor_example_profile": bool(allow_vendor_example),
+                "cpg_step_profile": bool(allow_cpg_step),
                 "zero_forward_heading_acquisition": bool(
                     zero_forward_heading_acquisition
                 ),
@@ -1202,18 +1213,7 @@ class FocusedM1Diagnostic(Node):
                         if zero_forward_heading_acquisition
                         else "forward_transit_command"
                     ),
-                    "allowed_profiles_m_s": (
-                        [
-                            ACTIVATION_PROBE_FORWARD_M_S,
-                            RAICOM_LOW_CRUISE_FORWARD_M_S,
-                            VENDOR_EXAMPLE_FORWARD_M_S,
-                        ]
-                        if allow_raicom_low_cruise and allow_vendor_example else
-                        [ACTIVATION_PROBE_FORWARD_M_S, VENDOR_EXAMPLE_FORWARD_M_S]
-                        if allow_vendor_example else
-                        [ACTIVATION_PROBE_FORWARD_M_S, RAICOM_LOW_CRUISE_FORWARD_M_S]
-                        if allow_raicom_low_cruise else [ACTIVATION_PROBE_FORWARD_M_S]
-                    ),
+                    "allowed_profiles_m_s": allowed_profiles,
                     "all_other_motion_and_stop_limits_unchanged": True,
                 },
             })
@@ -1683,8 +1683,8 @@ class FocusedM1Diagnostic(Node):
                     continue
                 raise RuntimeError(f"stationary odometry baseline safety fault: {fault}")
             if (
-                snapshot.get("get_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
-                or snapshot.get("common_mode_desc") not in (MODE_STAND, MODE_LOCOMOTION)
+                snapshot.get("get_mode_desc") not in (MODE_STAND, self.locomotion_action)
+                or snapshot.get("common_mode_desc") not in (MODE_STAND, self.locomotion_action)
                 or snapshot.get("fsm_state") != MC_FSM_STABLE
             ):
                 raise RuntimeError("stationary odometry baseline requires SD/LD with stable FSM state")
@@ -4483,8 +4483,8 @@ class FocusedM1Diagnostic(Node):
                     and abs(mode_time - source_time) <= MODE_SOURCE_READBACK_SKEW_MAX_S
                     and snapshot.get("get_mode_header_code") == 0
                     and snapshot.get("get_mode_status_value") == 100
-                    and snapshot.get("get_mode_desc") == MODE_LOCOMOTION
-                    and snapshot.get("common_mode_desc") == MODE_LOCOMOTION
+                    and snapshot.get("get_mode_desc") == self.locomotion_action
+                    and snapshot.get("common_mode_desc") == self.locomotion_action
                     and snapshot.get("common_mode_status_value") == 100
                     and snapshot.get("get_source_header_code") == 0
                     and snapshot.get("get_source_name") == self.source
@@ -8387,6 +8387,10 @@ class FocusedM1Diagnostic(Node):
             "schema": "robotsim.issue80.m1.first-motion.v2",
             "simulation_only": True,
             "acceptance_scope": (
+                "SIMULATION_ONLY isolated installed LOCOMOTION_STEP/cpgstep_v1 gait and physical-stop validation; "
+                "not route, LiDAR, Nav2, or manufacturer-original navigation acceptance"
+                if bool(getattr(self.args, "cpg_step_diagnostic", False))
+                else
                 "SIMULATION_ONLY direct MuJoCo ground-truth point-goal; not Nav2, localization, LiDAR, or manufacturer-original acceptance"
                 if getattr(self.args, "point_goal_diagnostic", False)
                 else "SIMULATION_ONLY Local01 start-heading short two-target route; not table docking, full-distance route, Nav2, or manufacturer-original acceptance"
@@ -8405,6 +8409,7 @@ class FocusedM1Diagnostic(Node):
                 else "SIMULATION_ONLY derived-configuration locomotion and physical-stop validation; not manufacturer-original acceptance, turning, or point-goal navigation"
             ),
             "attempt_id": self.args.attempt_id,
+            "requested_locomotion_action": self.locomotion_action,
             "maintainer_authorized": bool(self.args.maintainer_authorized),
             "zero_only_activation_authorized": bool(
                 getattr(self.args, "maintainer_authorized_zero_only_activation", False)
@@ -8571,10 +8576,17 @@ class FocusedM1Diagnostic(Node):
                         registration=registration,
                         phase="controlled-activation-probe",
                     )
-                elif getattr(self.args, "route_integration", False):
+                elif (
+                    getattr(self.args, "route_integration", False)
+                    or bool(getattr(self.args, "cpg_step_diagnostic", False))
+                ):
                     lifecycle, set_action, activation_gate = self.begin_source_grounded_route_activation(
                         registration=registration,
-                        phase="initial-route-window",
+                        phase=(
+                            "cpg-step-first-window"
+                            if bool(getattr(self.args, "cpg_step_diagnostic", False))
+                            else "initial-route-window"
+                        ),
                         forward_command_m_s=float(self.args.forward_speed),
                         allow_raicom_low_cruise=bool(
                             getattr(self.args, "raicom_low_cruise_profile", False)
@@ -8583,6 +8595,9 @@ class FocusedM1Diagnostic(Node):
                             getattr(self.args, "raicom_vendor_example_forward_baseline", False)
                             or getattr(self.args, "raicom_vendor_table_approach", False)
                             or getattr(self.args, "lidar_map_route", False)
+                        ),
+                        allow_cpg_step=bool(
+                            getattr(self.args, "cpg_step_diagnostic", False)
                         ),
                         zero_forward_heading_acquisition=bool(
                             getattr(self.args, "raicom_zero_forward_heading_acquisition", False)
@@ -8595,6 +8610,13 @@ class FocusedM1Diagnostic(Node):
                             )
                         ),
                     )
+                    if bool(getattr(self.args, "cpg_step_diagnostic", False)):
+                        activation_gate.update({
+                            "classification": "SIMULATION_ONLY_SOURCE_GROUNDED_CPG_STEP_ACTIVATION",
+                            "route_motion_authorized": False,
+                            "initial_nonzero_is_part_of_route_window": False,
+                            "first_nonzero_isolated_cpg_step_diagnostic": True,
+                        })
                 else:
                     lifecycle, set_action, activation_gate = self.begin_zero_only_locomotion_activation(
                         registration=registration,
@@ -8824,7 +8846,12 @@ class FocusedM1Diagnostic(Node):
                 return result
 
             allowed_activation_statuses = (
-                {"READY"} if getattr(self.args, "route_integration", False) else {"PASS"}
+                {"READY"}
+                if (
+                    getattr(self.args, "route_integration", False)
+                    or bool(getattr(self.args, "cpg_step_diagnostic", False))
+                )
+                else {"PASS"}
             )
             if activation_gate.get("status") not in allowed_activation_statuses or lifecycle is None:
                 recovery = None
@@ -8989,6 +9016,10 @@ class FocusedM1Diagnostic(Node):
                 ),
                 authorized=True,
                 forward_command_m_s=self.args.forward_speed,
+                maximum_forward_command_m_s=(
+                    0.3 if self.locomotion_action == MODE_LOCOMOTION_STEP else 0.2
+                ),
+                expected_locomotion_mode=self.locomotion_action,
                 pulse_duration_s=self.args.pulse_duration,
                 max_pulse_duration_s=MAX_AUTHORIZED_PULSE_S,
                 ramp_start_speed_m_s=self.args.ramp_start_speed,
@@ -9013,6 +9044,16 @@ class FocusedM1Diagnostic(Node):
                 zero_until_stand_timeout_s=getattr(self.args, "zero_until_stand_timeout_s", 0.0),
                 require_locomotion_confirmation=True,
                 activation_lifecycle=self.activation_lifecycle,
+                source_contract_supported=bool(
+                    getattr(self.args, "cpg_step_diagnostic", False)
+                ),
+                source_grounded_route_activation=bool(
+                    getattr(self.args, "cpg_step_diagnostic", False)
+                ),
+                source_grounded_activation_timeout_s=ACTIVATION_PROBE_DURATION_S,
+                allow_cpg_step_source_activation=bool(
+                    getattr(self.args, "cpg_step_diagnostic", False)
+                ),
             )
             self.pulse_result = pulse
             result["activation"] = pulse
@@ -9202,6 +9243,41 @@ def validate_route_turn_qualification_evidence(path: str | None) -> dict[str, An
 
 def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     """Validate the complete child CLI profile without initializing ROS or the simulator."""
+    locomotion_action = str(getattr(args, "locomotion_action", MODE_LOCOMOTION))
+    cpg_step_diagnostic = bool(getattr(args, "cpg_step_diagnostic", False))
+    if locomotion_action not in {MODE_LOCOMOTION, MODE_LOCOMOTION_STEP}:
+        raise ValueError("locomotion action must be the installed LOCOMOTION_DEFAULT or LOCOMOTION_STEP")
+    if cpg_step_diagnostic != (locomotion_action == MODE_LOCOMOTION_STEP):
+        raise ValueError("LOCOMOTION_STEP requires the explicit --cpg-step-diagnostic contract")
+    if cpg_step_diagnostic:
+        if any((
+            args.turning_diagnostic,
+            args.point_goal_diagnostic,
+            getattr(args, "right_turn_qualification", False),
+            getattr(args, "route_integration", False),
+            bool(getattr(args, "route_config", None)),
+            bool(getattr(args, "lidar_map_route", False)),
+            bool(getattr(args, "community_navigation_profile", False)),
+        )):
+            raise ValueError("CPG STEP diagnostic is an isolated first-motion check, not a route or turn profile")
+        if (
+            abs(float(args.forward_speed) - CPG_STEP_FORWARD_M_S) > 1e-9
+            or abs(float(args.pulse_duration) - 2.0) > 1e-9
+            or args.max_observed_planar_speed_m_s != 0.2
+            or args.zero_until_stand_timeout_s != 3.5
+            or not args.zero_only_stop
+            or args.extra_stop_observation != 5.0
+            or args.ramp_duration_s != 0.0
+            or args.ramp_start_speed is not None
+            or args.deceleration_duration_s != 0.0
+            or args.startup_speed is not None
+            or args.startup_transition_displacement is not None
+            or args.startup_transition_timeout_s != 0.0
+        ):
+            raise ValueError(
+                "CPG STEP diagnostic is fixed to source-configured 0.30 m/s for 2.0 s, "
+                "the existing 0.20 m/s measured-speed gate, 3.5 s STAND wait, and 5 s stop observation"
+            )
     zero_only_verification = bool(getattr(args, "zero_only_activation_verification", False))
     zero_only_authorized = bool(getattr(args, "maintainer_authorized_zero_only_activation", False))
     activation_probe = bool(getattr(args, "activation_probe_qualification", False))
@@ -10139,6 +10215,20 @@ def main() -> int:
     first.add_argument("--extra-stop-observation", type=float, default=0.0)
     first.add_argument("--pulse-duration", type=float, default=1.0)
     first.add_argument("--forward-speed", type=float, default=0.2)
+    first.add_argument(
+        "--locomotion-action",
+        choices=(MODE_LOCOMOTION, MODE_LOCOMOTION_STEP),
+        default=MODE_LOCOMOTION,
+        help="installed MC action to request; LOCOMOTION_STEP is permitted only with its isolated diagnostic flag",
+    )
+    first.add_argument(
+        "--cpg-step-diagnostic",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY isolated LOCOMOTION_STEP first-motion check using the installed "
+            "cpgstep_v1 policy; never a navigation or route profile"
+        ),
+    )
     first.add_argument("--ramp-start-speed", type=float, default=None)
     first.add_argument("--ramp-duration-s", type=float, default=0.0)
     first.add_argument("--deceleration-duration-s", type=float, default=0.0)
