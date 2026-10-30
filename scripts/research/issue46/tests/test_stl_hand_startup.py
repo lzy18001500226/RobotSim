@@ -57,8 +57,10 @@ class NativeHandStartupTests(unittest.TestCase):
     def test_upper_body_probe_is_bounded_and_restores_the_test_joint(self) -> None:
         script = MODULE.build_upper_body_probe_script()
         self.assertIn("/mc/upper_body_command", script)
-        self.assertIn("goal[7] -= 0.05", script)
+        self.assertIn("goal[7] -= 0.03", script)
         self.assertIn("node.publish_for(start, 2.0)", script)
+        self.assertIn("message.hand_sub_mode = 0", script)
+        self.assertIn("message.hand_pos = []", script)
         self.assertNotIn("qpos", script)
 
     def test_upperbody_split_reuses_the_bounded_vendor_action_contract(self) -> None:
@@ -72,6 +74,16 @@ class NativeHandStartupTests(unittest.TestCase):
         self.assertIn("/aima/hal/joint/arm/command", script)
         self.assertIn("target.position=float(source.position)+0.03", script)
         self.assertIn("node.publish(baseline,2.0)", script)
+        self.assertNotIn("qpos", script)
+
+    def test_delivered_remote_arm_gains_feed_the_bounded_pd_probe(self) -> None:
+        gains = MODULE.load_source_arm_pd_parameters()
+        self.assertEqual(gains["right_shoulder_pitch_joint"], (3.0, 0.1))
+        script = MODULE.build_hal_arm_pd_probe_script(gains)
+        self.assertIn("right_shoulder_pitch_joint", script)
+        self.assertIn("\"right_shoulder_pitch_joint\": [3.0, 0.1]", script)
+        self.assertIn("goal[TARGET]=start[TARGET]-0.03", script)
+        self.assertIn("node.publish(start,0.5)", script)
         self.assertNotIn("qpos", script)
 
     def test_arm_split_overlay_changes_only_the_mc_arm_publisher_enable_flag(self) -> None:
