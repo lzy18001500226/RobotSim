@@ -233,6 +233,16 @@ class ResearchScriptStagingTests(unittest.TestCase):
         profile = validate_stand_convergence_arguments(args)
         self.assertEqual(profile["status"], "SIMULATION_ONLY_STAND_WARMUP_COMPOSITE")
 
+    def test_postwalk_stand_recovery_accepts_the_explicit_cpg_step_mode_for_preflight_only(self) -> None:
+        source = Path(__file__).with_name("issue80_m1_locomotion_probe.py").read_text(
+            encoding="utf-8"
+        )
+        method = source[source.index("    def request_postwalk_stand_once("):source.index("    def request_ld_once(")]
+        self.assertIn(
+            "allowed_modes=frozenset((MODE_STAND, self.locomotion_action))",
+            method,
+        )
+
     def test_configured_route_profile_uses_route_caps_and_existing_stop_observation(self) -> None:
         args = argparse.Namespace(
             route_config=None,

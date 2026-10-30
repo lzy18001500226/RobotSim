@@ -882,6 +882,7 @@ class FocusedM1Diagnostic(Node):
             state_timeout_s=self.args.state_timeout,
             min_root_z=self.args.min_root_z,
             max_tilt_deg=self.args.max_tilt_deg,
+            allowed_modes=frozenset((MODE_STAND, self.locomotion_action)),
         )
         if fault:
             raise RuntimeError(f"post-stop stand request safety gate failed: {fault}")
