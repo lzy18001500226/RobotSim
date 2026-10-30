@@ -461,6 +461,32 @@ class ResearchScriptStagingTests(unittest.TestCase):
         self.assertIn("--zero-only-stop", child)
         self.assertNotIn("--route-integration", child)
 
+    def test_cpg_step_settle_envelope_is_explicit_and_never_a_route_profile(self) -> None:
+        args = argparse.Namespace(
+            extra_stop_observation=5.0,
+            pulse_duration=2.0,
+            forward_speed=0.3,
+            ramp_start_speed=None,
+            ramp_duration_s=0.0,
+            attempt_id="cpg-step-envelope-cli-test",
+            maintainer_authorized_first_motion=True,
+            maintainer_authorized_zero_only_activation=False,
+            maintainer_authorized_activation_probe=False,
+            run65_ground_truth_point_goal=False,
+            heading_change_rad=0.0,
+            startup_speed=None,
+            startup_transition_displacement=None,
+            startup_transition_timeout_s=0.0,
+            cpg_step_diagnostic=True,
+            cpg_step_settle_envelope_diagnostic=True,
+        )
+        child = shlex.split(
+            build_m1_child_command(args, "cpg-step-envelope-test")[-1].rsplit(" && ", 1)[1]
+        )
+        self.assertIn("--cpg-step-settle-envelope-diagnostic", child)
+        self.assertEqual(child[child.index("--max-observed-planar-speed-m-s") + 1], "0.35")
+        self.assertNotIn("--route-integration", child)
+
     def test_zero_only_activation_command_has_separate_authority_and_no_motion_profile(self) -> None:
         args = argparse.Namespace(
             extra_stop_observation=0.0,

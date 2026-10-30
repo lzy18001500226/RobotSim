@@ -1458,7 +1458,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
                     getattr(args, "raicom_vendor_example_forward_baseline", False)
                     or getattr(args, "raicom_vendor_table_approach", False)
                     or getattr(args, "raicom_lidar_obstacle_route", False)
-                ) else "0.2"
+                ) else "0.35"
+                if bool(getattr(args, "cpg_step_settle_envelope_diagnostic", False)) else "0.2"
             )
         )
     stand_timeout_diagnostics = (
@@ -1496,6 +1497,8 @@ def build_m1_child_command(args: argparse.Namespace, container: str) -> list[str
         command[-1] += " --activation-probe-prerequisite-path /workspace/evidence/activation_probe_prerequisite.json"
     if bool(getattr(args, "cpg_step_diagnostic", False)):
         command[-1] += " --locomotion-action LOCOMOTION_STEP --cpg-step-diagnostic"
+        if bool(getattr(args, "cpg_step_settle_envelope_diagnostic", False)):
+            command[-1] += " --cpg-step-settle-envelope-diagnostic"
     if getattr(args, "run49_smoothstop_diagnostic", False):
         command[-1] += " --deceleration-duration-s 1.0"
     if getattr(args, "run50_threshold_respecting_smoothstop_diagnostic", False):
@@ -5947,6 +5950,14 @@ def main() -> int:
             "no route, turn, LiDAR, or controller/configuration change"
         ),
     )
+    parser.add_argument(
+        "--cpg-step-settle-envelope-diagnostic",
+        action="store_true",
+        help=(
+            "CPG-only SIMULATION_ONLY root-speed observation envelope of 0.35 m/s; "
+            "does not alter joint, posture, stop, or route acceptance limits"
+        ),
+    )
     parser.add_argument("--ramp-start-speed", type=float, default=None)
     parser.add_argument("--ramp-duration-s", type=float, default=0.0)
     parser.add_argument("--startup-speed", type=float, default=None)
@@ -6437,6 +6448,8 @@ def main() -> int:
         )
     if not 0.0 < args.pulse_duration <= 10.0:
         parser.error("pulse duration must be positive and no greater than 10 seconds")
+    if args.cpg_step_settle_envelope_diagnostic and not args.cpg_step_diagnostic:
+        parser.error("CPG STEP settle envelope requires --cpg-step-diagnostic")
     if not 1 <= args.native_mjdata_capture_interval_steps <= 1000:
         parser.error("native MjData capture interval must be in [1, 1000]")
     maximum_forward_speed = 0.3 if args.cpg_step_diagnostic else 0.2

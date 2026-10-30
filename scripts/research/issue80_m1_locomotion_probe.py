@@ -364,6 +364,9 @@ class FocusedM1Diagnostic(Node):
         super().__init__("issue80_m1_first_motion")
         self.args = args
         self.locomotion_action = str(getattr(args, "locomotion_action", MODE_LOCOMOTION))
+        self.cpg_step_settle_envelope_diagnostic = bool(
+            getattr(args, "cpg_step_settle_envelope_diagnostic", False)
+        )
         self.lidar_map_route_mode = bool(getattr(args, "lidar_map_route", False))
         self.lidar_localization_topic = str(
             getattr(args, "lidar_localization_topic", "/map_tf_distribution/localization_pose")
@@ -8448,6 +8451,15 @@ class FocusedM1Diagnostic(Node):
             ),
             "attempt_id": self.args.attempt_id,
             "requested_locomotion_action": self.locomotion_action,
+            "cpg_step_root_speed_envelope_diagnostic": {
+                "enabled": self.cpg_step_settle_envelope_diagnostic,
+                "root_planar_speed_cap_m_s": 0.35 if self.cpg_step_settle_envelope_diagnostic else 0.2,
+                "classification": (
+                    "SIMULATION_ONLY_CPG_COMMAND_0P30_PLUS_0P05_TRANSIENT_OBSERVATION_ENVELOPE"
+                    if self.cpg_step_settle_envelope_diagnostic else "NOT_ENABLED"
+                ),
+                "does_not_change_source_joint_limits_or_navigation_acceptance": True,
+            },
             "maintainer_authorized": bool(self.args.maintainer_authorized),
             "zero_only_activation_authorized": bool(
                 getattr(self.args, "maintainer_authorized_zero_only_activation", False)
@@ -9286,10 +9298,15 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     """Validate the complete child CLI profile without initializing ROS or the simulator."""
     locomotion_action = str(getattr(args, "locomotion_action", MODE_LOCOMOTION))
     cpg_step_diagnostic = bool(getattr(args, "cpg_step_diagnostic", False))
+    cpg_step_settle_envelope = bool(
+        getattr(args, "cpg_step_settle_envelope_diagnostic", False)
+    )
     if locomotion_action not in {MODE_LOCOMOTION, MODE_LOCOMOTION_STEP}:
         raise ValueError("locomotion action must be the installed LOCOMOTION_DEFAULT or LOCOMOTION_STEP")
     if cpg_step_diagnostic != (locomotion_action == MODE_LOCOMOTION_STEP):
         raise ValueError("LOCOMOTION_STEP requires the explicit --cpg-step-diagnostic contract")
+    if cpg_step_settle_envelope and not cpg_step_diagnostic:
+        raise ValueError("CPG STEP settle envelope requires --cpg-step-diagnostic")
     if cpg_step_diagnostic:
         if any((
             args.turning_diagnostic,
@@ -9304,7 +9321,9 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         if (
             abs(float(args.forward_speed) - CPG_STEP_FORWARD_M_S) > 1e-9
             or abs(float(args.pulse_duration) - 2.0) > 1e-9
-            or args.max_observed_planar_speed_m_s != 0.2
+            or args.max_observed_planar_speed_m_s != (
+                0.35 if cpg_step_settle_envelope else 0.2
+            )
             or args.zero_until_stand_timeout_s != 3.5
             or not args.zero_only_stop
             or args.extra_stop_observation != 5.0
@@ -9317,7 +9336,11 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
         ):
             raise ValueError(
                 "CPG STEP diagnostic is fixed to source-configured 0.30 m/s for 2.0 s, "
-                "the existing 0.20 m/s measured-speed gate, 3.5 s STAND wait, and 5 s stop observation"
+                + (
+                    "the separately named 0.35 m/s root-speed observation envelope"
+                    if cpg_step_settle_envelope else "the existing 0.20 m/s measured-speed gate"
+                )
+                + ", 3.5 s STAND wait, and 5 s stop observation"
             )
     zero_only_verification = bool(getattr(args, "zero_only_activation_verification", False))
     zero_only_authorized = bool(getattr(args, "maintainer_authorized_zero_only_activation", False))
@@ -10214,14 +10237,17 @@ def validate_first_motion_cli_args(args: argparse.Namespace) -> dict[str, Any]:
     if args.max_observed_planar_speed_m_s is not None and (
         not math.isfinite(args.max_observed_planar_speed_m_s)
         or not 0.0 < args.max_observed_planar_speed_m_s <= (
-            0.8 if (vendor_example_forward_baseline or vendor_table_approach) else 0.2
+            0.8 if (vendor_example_forward_baseline or vendor_table_approach) else
+            0.35 if cpg_step_settle_envelope else 0.2
         )
     ):
         raise ValueError(
             "observed planar speed gate must be positive and no greater than "
             + (
                 "0.8 m/s for the vendor direct-velocity profile"
-                if (vendor_example_forward_baseline or vendor_table_approach) else "0.2 m/s"
+                if (vendor_example_forward_baseline or vendor_table_approach) else
+                "0.35 m/s for the explicitly named CPG settle-envelope diagnostic"
+                if cpg_step_settle_envelope else "0.2 m/s"
             )
         )
     if not math.isfinite(args.zero_until_stand_timeout_s) or not 0.0 <= args.zero_until_stand_timeout_s <= 3.5:
@@ -10268,6 +10294,14 @@ def main() -> int:
         help=(
             "SIMULATION_ONLY isolated LOCOMOTION_STEP first-motion check using the installed "
             "cpgstep_v1 policy; never a navigation or route profile"
+        ),
+    )
+    first.add_argument(
+        "--cpg-step-settle-envelope-diagnostic",
+        action="store_true",
+        help=(
+            "SIMULATION_ONLY CPG-only root-speed observation envelope of 0.35 m/s; "
+            "does not alter joint, posture, stop, or navigation acceptance limits"
         ),
     )
     first.add_argument("--ramp-start-speed", type=float, default=None)
