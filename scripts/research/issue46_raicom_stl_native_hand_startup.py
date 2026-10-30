@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+import yaml
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -26,6 +27,7 @@ IMAGE = "robotsim:humble-raicom-runtime-20261019"
 IMAGE_ID = "fed10384dea8"
 MC_DUMP_RELATIVE = Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml.dump")
 MC_GENERATED_RELATIVE = Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/sim")
+MC_SIM_CONFIG_RELATIVE = Path("mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml")
 SIM_READY_MARKER = "MujocoSimModule Started Succeeded"
 HAND_MARKERS = ("hand_joint_command", "hand_joint_state")
 MC_READY_MARKER = "MotionControlModule Started Succeeded"
@@ -109,6 +111,23 @@ mkdir -p "$LOG_PATH"
 cd /workspace/raicom2026/mc/bin
 exec ./em_run_wsl2.sh
 """
+
+
+def build_arm_split_mc_config(source: dict[str, object]) -> dict[str, object]:
+    """Disable only MC's arm HAL publisher in an evidence-local config copy."""
+    import copy
+    result = copy.deepcopy(source)
+    module = result.get("MotionControlModule")
+    if not isinstance(module, dict):
+        raise ValueError("MC config lacks MotionControlModule")
+    manager = module.get("PublisherManager")
+    if not isinstance(manager, dict) or not isinstance(manager.get("publisher_cfg_list"), list):
+        raise ValueError("MC config lacks publisher_cfg_list")
+    matches = [item for item in manager["publisher_cfg_list"] if isinstance(item, dict) and item.get("name") == "arm_joint_command"]
+    if len(matches) != 1 or matches[0].get("enable") is not True:
+        raise ValueError("MC config does not expose exactly one enabled arm_joint_command publisher")
+    matches[0]["enable"] = False
+    return result
 
 
 def build_stand_client_script() -> str:
@@ -427,9 +446,12 @@ class Probe(Node):
 rclpy.init(); node=Probe()
 try:
     node.spin(1.0)
-    if TARGET not in node.states or TARGET not in node.commands: raise RuntimeError('missing arm state or MC arm command')
-    start=float(node.states[TARGET]); command={name:item for name,item in node.commands.items()}; target=JointCommand(); source=command[TARGET]; target.name=source.name; target.position=float(source.position)+0.03; target.velocity=float(source.velocity); target.effort=float(source.effort); target.stiffness=float(source.stiffness); target.damping=float(source.damping); command[TARGET]=target
-    node.publish(command,2.0); moved=float(node.states.get(TARGET,float('nan'))); node.publish({name:item for name,item in node.commands.items()},2.0); restored=float(node.states.get(TARGET,float('nan')))
+    if TARGET not in node.states or len(node.states) < 14: raise RuntimeError('missing complete arm state')
+    start=float(node.states[TARGET]); command={}
+    for name, position in node.states.items():
+        item=JointCommand(); item.name=name; item.position=float(position); item.velocity=0.0; item.effort=0.0; item.stiffness=0.0; item.damping=0.0; command[name]=item
+    baseline={name:item for name,item in command.items()}; target=JointCommand(); source=command[TARGET]; target.name=source.name; target.position=float(source.position)+0.03; target.velocity=0.0; target.effort=0.0; target.stiffness=0.0; target.damping=0.0; command[TARGET]=target
+    node.publish(command,2.0); moved=float(node.states.get(TARGET,float('nan'))); node.publish(baseline,2.0); restored=float(node.states.get(TARGET,float('nan')))
     delta=moved-start; restore_error=abs(restored-start)
     drift=math.hypot(node.odom[-1][0]-node.odom[0][0],node.odom[-1][1]-node.odom[0][1]) if len(node.odom)>=2 else None
     stability={'sample_count':len(node.odom),'planar_drift_m':drift,'max_tilt_rad':max(node.tilt) if node.tilt else None}; stability['pass']=stability['sample_count']>=100 and drift is not None and drift<=0.05 and stability['max_tilt_rad'] is not None and stability['max_tilt_rad']<=math.radians(15)
@@ -503,8 +525,9 @@ def main() -> None:
     parser.add_argument("--run-upper-body-probe", action="store_true", help="small 0.05 rad right-shoulder probe during native stand, then restore")
     parser.add_argument("--request-upperbody-split", action="store_true", help="switch from SD to the delivered US upper-body remote split mode before any arm probe")
     parser.add_argument("--run-hal-arm-probe", action="store_true", help="direct 0.03 rad wrist probe on the delivered HAL arm command channel during SD")
+    parser.add_argument("--disable-mc-arm-publisher", action="store_true", help="SIMULATION_ONLY: evidence-local MC config disables only arm HAL publishing for the direct arm probe")
     args = parser.parse_args()
-    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.request_upperbody_split and not (args.start_mc and args.request_stand)) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand and args.request_upperbody_split)) or (args.run_hal_arm_probe and not (args.start_mc and args.request_stand)):
+    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.request_upperbody_split and not (args.start_mc and args.request_stand)) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand and args.request_upperbody_split)) or (args.run_hal_arm_probe and not (args.start_mc and args.request_stand)) or (args.disable_mc_arm_publisher and not (args.start_mc and args.run_hal_arm_probe)):
         raise SystemExit("overlay result and a startup timeout in [2,35] seconds are required")
     inputs = exact_generated_inputs(args.overlay_result)
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-native-hand-startup").native_path
@@ -532,6 +555,11 @@ def main() -> None:
         generated_source = Path(str(host["generated_directory"]))
         generated_target = output / "mc_sim_generated"
         shutil.copytree(generated_source, generated_target)
+        arm_split_config = None
+        if args.disable_mc_arm_publisher:
+            mc_source = RUNTIME / MC_SIM_CONFIG_RELATIVE
+            arm_split_config = output / "mc_sim_arm_split.yaml"
+            pg.write_new_text(arm_split_config, yaml.safe_dump(build_arm_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
         launch = output / "launch_sim.sh"
         pg.write_new_text(launch, build_launch_script(inputs["simulator_config"].name))
         launch.chmod(0o755)
@@ -563,6 +591,9 @@ def main() -> None:
             "--mount", "type=bind,source=" + str(generated_target) + ",target=/workspace/raicom2026/" + str(MC_GENERATED_RELATIVE),
             "-e", "DISPLAY=:0", "-e", "HOME=/tmp", "-e", "ROS_DOMAIN_ID=20", "-e", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp", IMAGE, "sleep", "infinity",
         ]
+        if arm_split_config is not None:
+            command[command.index(IMAGE):command.index(IMAGE)] = ["--mount", "type=bind,source=" + str(arm_split_config) + ",target=/workspace/raicom2026/" + str(MC_SIM_CONFIG_RELATIVE) + ",readonly"]
+            result["mc_arm_split_overlay"] = {"path": str(arm_split_config), "sha256": sha256(arm_split_config), "disabled_publisher": "arm_joint_command"}
         started = run(command, timeout_s=10.0)
         pg.write_new_text(output / "container_id.txt", started.stdout)
         run(["docker", "exec", "-d", container, "bash", "-lc", "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"], timeout_s=5.0)

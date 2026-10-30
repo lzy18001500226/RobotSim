@@ -71,8 +71,16 @@ class NativeHandStartupTests(unittest.TestCase):
         script = MODULE.build_hal_arm_probe_script()
         self.assertIn("/aima/hal/joint/arm/command", script)
         self.assertIn("target.position=float(source.position)+0.03", script)
-        self.assertIn("node.publish({name:item for name,item in node.commands.items()},2.0)", script)
+        self.assertIn("node.publish(baseline,2.0)", script)
         self.assertNotIn("qpos", script)
+
+    def test_arm_split_overlay_changes_only_the_mc_arm_publisher_enable_flag(self) -> None:
+        source = {"MotionControlModule": {"PublisherManager": {"publisher_cfg_list": [{"name": "leg_joint_command", "enable": True}, {"name": "arm_joint_command", "enable": True}]}}}
+        result = MODULE.build_arm_split_mc_config(source)
+        self.assertTrue(source["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"][1]["enable"])
+        publishers = result["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
+        self.assertTrue(publishers[0]["enable"])
+        self.assertFalse(publishers[1]["enable"])
 
 
 if __name__ == "__main__":
