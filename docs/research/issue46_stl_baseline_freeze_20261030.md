@@ -34,9 +34,9 @@ RAICOM-room static review.
 
 | Group | Disposition |
 | --- | --- |
-| `scripts/research/issue46_stl_*`, force/contact scans and historical lift runners | retain as historical reproducibility tools; do not import from runtime |
-| `issue46_raicom_stl_*` mount/native probes | retain as source/runtime diagnostic tools; do not treat as full task runtime |
-| `issue46_rgbd_*`, `issue46_foundationpose_*`, `issue46_upright_cylinder_refine.py` | retain as offline perception/docking tools pending ROS adapter implementation |
+| `scripts/research/issue46/grasp/` force/contact scans and historical lift runners | retain as historical reproducibility tools; do not import from runtime |
+| `scripts/research/issue46/native_runtime/` and `scene/` mount/native probes | retain as source/runtime diagnostic tools; do not treat as full task runtime |
+| `scripts/research/issue46/perception/` | retain as offline perception/docking tools pending ROS adapter implementation |
 | Candidate CAD/G2/passive-loop variants | retain as evidence only; not selectable from the active registry |
 
 The next cleanup step is organizational: move retained research tools into
