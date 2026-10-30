@@ -447,15 +447,15 @@ rclpy.init(); node=Probe()
 try:
     node.spin(1.0)
     if TARGET not in node.states or len(node.states) < 14: raise RuntimeError('missing complete arm state')
-    start=float(node.states[TARGET]); command={}
+    start=float(node.states[TARGET]); observed_source=node.commands.get(TARGET); source_fields=None if observed_source is None else {'position':float(observed_source.position),'velocity':float(observed_source.velocity),'effort':float(observed_source.effort),'stiffness':float(observed_source.stiffness),'damping':float(observed_source.damping)}; command={}
     for name, position in node.states.items():
         item=JointCommand(); item.name=name; item.position=float(position); item.velocity=0.0; item.effort=0.0; item.stiffness=0.0; item.damping=0.0; command[name]=item
-    baseline={name:item for name,item in command.items()}; target=JointCommand(); source=command[TARGET]; target.name=source.name; target.position=float(source.position)+0.03; target.velocity=0.0; target.effort=0.0; target.stiffness=0.0; target.damping=0.0; command[TARGET]=target
+    baseline={name:item for name,item in command.items()}; target=JointCommand(); source=command[TARGET]; target.name=source.name; target.position=float(source.position)+0.03; target.velocity=0.0; target.effort=0.6; target.stiffness=0.0; target.damping=0.0; command[TARGET]=target
     node.publish(command,2.0); moved=float(node.states.get(TARGET,float('nan'))); node.publish(baseline,2.0); restored=float(node.states.get(TARGET,float('nan')))
     delta=moved-start; restore_error=abs(restored-start)
     drift=math.hypot(node.odom[-1][0]-node.odom[0][0],node.odom[-1][1]-node.odom[0][1]) if len(node.odom)>=2 else None
     stability={'sample_count':len(node.odom),'planar_drift_m':drift,'max_tilt_rad':max(node.tilt) if node.tilt else None}; stability['pass']=stability['sample_count']>=100 and drift is not None and drift<=0.05 and stability['max_tilt_rad'] is not None and stability['max_tilt_rad']<=math.radians(15)
-    print(json.dumps({'subscription_count':node.publisher.get_subscription_count(),'start_rad':start,'target_rad':target.position,'moved_rad':moved,'restored_rad':restored,'delta_rad':delta,'restore_error_rad':restore_error,'response_pass':delta>=0.005 and delta<=0.08 and restore_error<=0.04,'motion_stability':stability}))
+    print(json.dumps({'subscription_count':node.publisher.get_subscription_count(),'source_command_fields':source_fields,'start_rad':start,'target_rad':target.position,'command_effort_nm':target.effort,'moved_rad':moved,'restored_rad':restored,'delta_rad':delta,'restore_error_rad':restore_error,'response_pass':delta>=0.005 and delta<=0.08 and restore_error<=0.04,'motion_stability':stability}))
 finally:
     node.destroy_node(); rclpy.shutdown()
 """
