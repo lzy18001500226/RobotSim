@@ -46,6 +46,28 @@ class TableGraspSceneOverlayTests(unittest.TestCase):
             self.assertEqual(len(tree.getroot().findall(".//body")), 1)
             self.assertEqual(details["floor_geom"], "raicom_floor")
 
+    def test_generated_table_config_rebinds_scene_and_robot_contract_together(self) -> None:
+        simulator = {
+            "MujocoSimModule": {
+                "simulation_model": "/workspace/evidence/old_scene.xml",
+                "robot_model": "/workspace/evidence/old_robot.yaml",
+            }
+        }
+        MODULE.rebind_runtime_contract(
+            simulator,
+            runtime_scene_name="scene_stl_native_hand_table_runtime.xml",
+            runtime_robot_name="robot_stl_native_hand_table.yaml",
+        )
+        module = simulator["MujocoSimModule"]
+        self.assertEqual(
+            module["simulation_model"],
+            "/workspace/evidence/scene_stl_native_hand_table_runtime.xml",
+        )
+        self.assertEqual(
+            module["robot_model"],
+            "/workspace/evidence/robot_stl_native_hand_table.yaml",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

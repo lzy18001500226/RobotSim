@@ -55,6 +55,18 @@ class FoundationWalkSTLSceneWrapperTests(unittest.TestCase):
         self.assertIn("simulation_model: /workspace/evidence/scene_foundationwalk_stl_runtime.xml", rewritten)
         self.assertIn("robot_model: ${SIM_ROBOT_PATH}/model_info/default.yaml", rewritten)
 
+    def test_known_mesh_paths_map_to_readonly_container_roots(self) -> None:
+        runtime_mesh = MODULE.RAICOM_RUNTIME_ROOT / "sim_mujoco/mesh.stl"
+        source_mesh = MODULE.AGIBOT_SOURCE_ROOT / "X2_URDF-v1.4.0/meshes/base_link.stl"
+        self.assertEqual(
+            MODULE.runtime_mesh_path(runtime_mesh),
+            "/workspace/raicom2026/sim_mujoco/mesh.stl",
+        )
+        self.assertEqual(
+            MODULE.runtime_mesh_path(source_mesh),
+            "/workspace/agibot_x2_source/X2_URDF-v1.4.0/meshes/base_link.stl",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

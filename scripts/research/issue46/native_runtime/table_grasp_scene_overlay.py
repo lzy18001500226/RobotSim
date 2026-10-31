@@ -301,6 +301,17 @@ def compile_static(scene: Path, *, require_cylinder: bool, require_source_table:
     return {"nq": int(model.nq), "nv": int(model.nv), "nu": int(model.nu), "neq": int(model.neq), "ncon": int(data.ncon)}
 
 
+def rebind_runtime_contract(
+    simulator: dict[str, object], *, runtime_scene_name: str, runtime_robot_name: str,
+) -> None:
+    """Keep the generated scene and generated robot contract in one namespace."""
+    module = simulator.get("MujocoSimModule") if isinstance(simulator, dict) else None
+    if not isinstance(module, dict):
+        raise ValueError("hand overlay simulator config lacks MujocoSimModule")
+    module["simulation_model"] = f"{CONTAINER_EVIDENCE}/{runtime_scene_name}"
+    module["robot_model"] = f"{CONTAINER_EVIDENCE}/{runtime_robot_name}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hand-overlay-result", required=True, type=Path)
@@ -354,12 +365,18 @@ def main() -> None:
         require_source_table=not args.diagnostic_primitive_table,
     )
     simulator = yaml.safe_load(inputs["simulator_config"].read_text(encoding="utf-8"))
-    module = simulator.get("MujocoSimModule") if isinstance(simulator, dict) else None
-    if not isinstance(module, dict):
-        raise ValueError("hand overlay simulator config lacks MujocoSimModule")
-    module["simulation_model"] = f"{CONTAINER_EVIDENCE}/{runtime_scene.name}"
     simulator_output = output / "simulator_stl_native_hand_table.yaml"
     robot_output = output / "robot_stl_native_hand_table.yaml"
+    # The hand-overlay config names its generated robot contract explicitly.
+    # This table composition writes a differently named evidence-local copy,
+    # so repoint both paths as one atomic configuration unit.  Leaving the
+    # inherited robot path in place makes the native simulator publish empty
+    # joint arrays when that old evidence file is absent.
+    rebind_runtime_contract(
+        simulator,
+        runtime_scene_name=runtime_scene.name,
+        runtime_robot_name=robot_output.name,
+    )
     pg.write_new_text(simulator_output, yaml.safe_dump(simulator, allow_unicode=True, sort_keys=False))
     pg.write_new_bytes(robot_output, inputs["robot_config"].read_bytes())
     result = {

@@ -58,13 +58,17 @@ def exact_generated_inputs(overlay_result: Path) -> dict[str, Path]:
     if classification not in {
         "SIMULATION_ONLY_NATIVE_MC_HAND_BRIDGE_PREPARED",
         "SIMULATION_ONLY_NATIVE_MC_HAND_TABLE_BRIDGE_PREPARED",
+        "SIMULATION_ONLY_FULL_CONTACT_TABLE_SCENE_PREPARED",
     }:
         raise ValueError("not a native STL hand bridge preparation result")
     gates = result.get("gates", {})
     required = ("FROZEN_STL_MOUNT_INPUT", "HOST_STATIC_MODEL_COMPILE", "NATIVE_HAND_CHANNEL_CONFIGURATION")
     if any(gates.get(key) != "PASS" for key in required):
         raise ValueError("native STL hand overlay preflight did not pass")
-    if classification == "SIMULATION_ONLY_NATIVE_MC_HAND_TABLE_BRIDGE_PREPARED" and gates.get("TABLE_SCENE_STATIC_COMPILE") != "PASS":
+    if classification in {
+        "SIMULATION_ONLY_NATIVE_MC_HAND_TABLE_BRIDGE_PREPARED",
+        "SIMULATION_ONLY_FULL_CONTACT_TABLE_SCENE_PREPARED",
+    } and gates.get("TABLE_SCENE_STATIC_COMPILE") != "PASS":
         raise ValueError("native STL table overlay static preflight did not pass")
     generated = result.get("generated")
     if not isinstance(generated, dict):

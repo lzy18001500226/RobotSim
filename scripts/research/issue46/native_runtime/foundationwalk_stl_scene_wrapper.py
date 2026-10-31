@@ -38,6 +38,12 @@ REQUIRED_HAND_BODIES = (
     "L_hand_wide3_Link",
 )
 REQUIRED_HAND_JOINTS = ("right_claw_joint", "left_claw_joint")
+RAICOM_RUNTIME_ROOT = EVIDENCE_REPO / "simulation/mujoco/raicom2026"
+AGIBOT_SOURCE_ROOT = EVIDENCE_REPO / "reference/AgibotTech/agibot_x2_urdf"
+RUNTIME_MESH_ROOTS = (
+    (RAICOM_RUNTIME_ROOT, "/workspace/raicom2026"),
+    (AGIBOT_SOURCE_ROOT, "/workspace/agibot_x2_source"),
+)
 
 
 def sha256(path: Path) -> str:
@@ -99,6 +105,38 @@ def write_host_mug(source: Path, destination: Path, room_model: Path) -> Path:
     ET.indent(tree, space="  ")
     pg.write_new_bytes(destination, ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True))
     return mug_assets
+
+
+def write_runtime_x2_overlay(source: Path, destination: Path) -> list[dict[str, str]]:
+    """Rebind only known immutable mesh roots for the container namespace."""
+    tree = ET.parse(source)
+    mappings: list[dict[str, str]] = []
+    for mesh in tree.getroot().findall("./asset/mesh"):
+        raw = mesh.get("file")
+        if not raw:
+            raise ValueError(f"mesh asset {mesh.get('name')!r} has no file")
+        source_path = Path(raw)
+        if not source_path.is_absolute() or not source_path.is_file():
+            raise ValueError(f"mesh asset is not an existing absolute source file: {raw!r}")
+        target = runtime_mesh_path(source_path)
+        mesh.set("file", target)
+        mappings.append({"mesh": mesh.get("name", ""), "source": str(source_path), "runtime": target})
+    if not mappings:
+        raise ValueError("runtime X2 overlay has no mesh assets")
+    ET.indent(tree, space="  ")
+    pg.write_new_bytes(destination, ET.tostring(tree.getroot(), encoding="utf-8", xml_declaration=True))
+    return mappings
+
+
+def runtime_mesh_path(source_path: Path) -> str:
+    """Translate a checked immutable host mesh path to its container mount."""
+    for host_root, container_root in RUNTIME_MESH_ROOTS:
+        try:
+            relative = source_path.relative_to(host_root)
+        except ValueError:
+            continue
+        return f"{container_root}/{relative.as_posix()}"
+    raise ValueError(f"mesh asset is outside the approved immutable runtime mounts: {source_path!s}")
 
 
 def runtime_simulator_config_text(source: Path) -> str:
@@ -191,8 +229,10 @@ def main() -> None:
         prefix="foundationwalk-stl-scene-wrapper",
     ).native_path
     x2_host = output / "x2_stl_native_model.xml"
+    x2_runtime = output / "x2_stl_native_model_runtime.xml"
     mug_host = output / "mug_portable_runtime.xml"
     pg.write_new_bytes(x2_host, args.x2_stl_overlay.read_bytes())
+    runtime_mesh_rebindings = write_runtime_x2_overlay(args.x2_stl_overlay, x2_runtime)
     mug_asset_root = write_host_mug(args.mug_model, mug_host, args.room_model)
 
     host_tree = rebind_wrapper(
@@ -208,7 +248,7 @@ def main() -> None:
 
     runtime_tree = rebind_wrapper(
         args.source_wrapper,
-        x2_path="/workspace/evidence/x2_stl_native_model.xml",
+        x2_path="/workspace/evidence/x2_stl_native_model_runtime.xml",
         room_path="/workspace/raicom_scene_source/robot/lx2501_3_t2d5/model_info/scene/room/room_with_chair_review.xml",
         mug_path="/workspace/evidence/mug_portable_runtime.xml",
     )
@@ -232,8 +272,10 @@ def main() -> None:
         "host_only_asset_rebindings": {
             "mug_mesh_and_texture_directory": str(mug_asset_root),
         },
+        "runtime_mesh_rebindings": runtime_mesh_rebindings,
         "generated": {
             "x2_host": {"path": str(x2_host), "sha256": sha256(x2_host)},
+            "x2_runtime": {"path": str(x2_runtime), "sha256": sha256(x2_runtime)},
             "mug_host": {"path": str(mug_host), "sha256": sha256(mug_host)},
             "host_scene": {"path": str(host_scene), "sha256": sha256(host_scene)},
             "runtime_scene": {"path": str(runtime_scene), "sha256": sha256(runtime_scene)},
