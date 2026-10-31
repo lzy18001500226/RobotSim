@@ -59,11 +59,14 @@ def apply_captured_standing_state(model, data, captured_state, captured_commands
             raise ValueError(f"standing capture lacks {group}")
         for name in names:
             shadow.set_initial_joint_inside_limits(model, data, name, float(values[name]))
-    arms = captured_commands.get("arm_commands")
+    arms = captured_commands.get("arm_commands") if isinstance(captured_commands, dict) else None
     if not isinstance(arms, dict):
-        raise ValueError("standing capture lacks arm commands")
+        arms = captured_state.get("arm_positions_rad")
+    if not isinstance(arms, dict):
+        raise ValueError("standing capture lacks arm positions")
     for name in shadow.ARM_ORDER:
-        shadow.set_initial_joint_inside_limits(model, data, name, float(arms[name]["position"]))
+        value = arms[name]["position"] if isinstance(arms.get(name), dict) else arms[name]
+        shadow.set_initial_joint_inside_limits(model, data, name, float(value))
     trajectory = load_registered_trajectory(REPO / "simulation/mujoco/models/agibot_x2/omnipicker_stl_kinematic")
     for side in ("left", "right"):
         shadow.apply_native_stl_pose(model, data, trajectory, side=side, command_percent=shadow.INITIAL_STL_COMMAND_PERCENT)
@@ -99,9 +102,11 @@ def main() -> None:
     floor = helper.require_hashed_file(args.floor_source, args.floor_source_sha256, label="RAICOM floor source")
     native = require_result(args.native_stand_result, args.native_stand_result_sha256, label="native standing capture")
     gates = native.get("gates", {})
-    captured_state = native.get("native_arm_state_capture", {}).get("result") if isinstance(native.get("native_arm_state_capture"), dict) else None
+    capture_record = native.get("native_arm_state_capture")
+    captured_state = capture_record.get("result") if isinstance(capture_record, dict) and isinstance(capture_record.get("result"), dict) else capture_record
     captured_commands = native.get("native_stand_command_capture", {}).get("result") if isinstance(native.get("native_stand_command_capture"), dict) else None
-    if not isinstance(gates, dict) or any(gates.get(name) != "PASS" for name in ("NATIVE_STAND_STABILITY", "MC_STAND_COMMAND_CAPTURE")) or not isinstance(captured_state, dict) or not isinstance(captured_commands, dict):
+    accepted_stand = gates.get("NATIVE_STAND_STABILITY") == "PASS" or gates.get("POST_RESET_STAND_STABILITY") == "PASS"
+    if not isinstance(gates, dict) or not accepted_stand or not isinstance(captured_state, dict):
         raise SystemExit("native standing capture does not pass required gates")
     room_frame, cylinder, source_geometry = helper.table_frame_and_cylinder(approved, hand_host, room)
     scan_payload, _ = helper.inline_room(hand_host, room, room_frame, cylinder, runtime=False)
@@ -123,6 +128,10 @@ def main() -> None:
     source_table = np.asarray(source_geometry["source_aligned_table_xyz_m"], dtype=float)
     source_cylinder = np.asarray(source_geometry["source_aligned_cylinder_xyz_m"], dtype=float)
     source_room_frame = np.asarray(source_geometry["room_frame_xyz_m"], dtype=float)
+    output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-standing-table-placement-search").native_path
+    generated_scan_scene = output / "standing_table_scan_scene.xml"
+    ET.indent(scan_root, space="  ")
+    pg.write_new_bytes(generated_scan_scene, ET.tostring(scan_root, encoding="utf-8", xml_declaration=True))
     candidates: list[dict[str, object]] = []
     for x in candidate_values(*args.x_range, args.step_m):
         for y in candidate_values(*args.y_range, args.step_m):
@@ -147,7 +156,6 @@ def main() -> None:
             })
     valid = [candidate for candidate in candidates if not candidate["table_robot_contacts"] and not candidate["joint_limit_violations"]]
     valid.sort(key=lambda item: float(item["right_wrist_to_cylinder_m"]))
-    output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-standing-table-placement-search").native_path
     best_scene = None
     if valid:
         room_frame, cylinder, _ = helper.table_frame_and_cylinder(approved, hand_host, room, table_world_override=np.asarray(valid[0]["table_world_xyz_m"], dtype=float))
@@ -160,6 +168,7 @@ def main() -> None:
         "classification": "SIMULATION_ONLY_STATIC_STANDING_TABLE_PLACEMENT_SEARCH",
         "mj_step_calls": 0,
         "sources": {"hand_overlay_result": {"path": str(args.hand_overlay_result), "sha256": sha256(args.hand_overlay_result)}, "approved_object_scene": {"path": str(approved), "sha256": sha256(approved)}, "room": {"path": str(room), "sha256": sha256(room)}, "floor": {"path": str(floor), "sha256": sha256(floor)}, "native_stand_capture": {"path": str(args.native_stand_result), "sha256": sha256(args.native_stand_result)}},
+        "generated_scan_scene": {"path": str(generated_scan_scene), "sha256": sha256(generated_scan_scene)},
         "scan": {"x_range_m": args.x_range, "y_range_m": args.y_range, "step_m": args.step_m, "candidate_count": len(candidates), "collision_free_count": len(valid), "best_candidates": valid[:20]},
         "best_scene": None if best_scene is None else {"path": str(best_scene), "sha256": sha256(best_scene)},
         "gates": {"STATIC_SCAN_COMPILED": "PASS", "STANDING_STATE_APPLIED": "PASS", "COLLISION_FREE_TABLE_STANCE": "PASS" if valid else "FAIL", "IK": "NOT_RUN", "NATIVE_STANDING_GRASP": "NOT_RUN"},

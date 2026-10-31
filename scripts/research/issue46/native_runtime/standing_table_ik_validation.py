@@ -71,6 +71,7 @@ def main() -> None:
     parser.add_argument("--ik-sdk-root", required=True, type=Path)
     parser.add_argument("--candidate-index", type=int, default=0)
     parser.add_argument("--target-height-above-cylinder-m", type=float, default=0.12)
+    parser.add_argument("--target-offset-xyz-m", type=float, nargs=3, default=(0.0, 0.0, 0.0))
     args = parser.parse_args()
     placement_path = require_hashed(args.placement_result, args.placement_result_sha256, label="placement result")
     standing_path = require_hashed(args.standing_state_result, args.standing_state_result_sha256, label="standing state result")
@@ -82,7 +83,8 @@ def main() -> None:
     candidate = candidates[args.candidate_index]
     scan = placement.get("generated_scan_scene", {})
     scan_scene = require_hashed(Path(str(scan.get("path", ""))), str(scan.get("sha256", "")), label="placement scan scene")
-    captured = standing.get("native_arm_state_capture", {}).get("result", {})
+    capture_record = standing.get("native_arm_state_capture", {})
+    captured = capture_record.get("result", {}) if isinstance(capture_record, dict) and isinstance(capture_record.get("result"), dict) else capture_record
     arm = captured.get("arm_positions_rad", {})
     leg = captured.get("leg_positions_rad", {})
     waist = captured.get("waist_positions_rad", {})
@@ -99,7 +101,7 @@ def main() -> None:
         raise ValueError("standing state does not contain the SDK arm order")
     model = mujoco.MjModel.from_xml_path(str(scan_scene))
     data = mujoco.MjData(model)
-    mocap_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "scan_room_mocap")
+    mocap_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "raicom_table_room_frame")
     cylinder_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "test_cylinder_free")
     pelvis_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
     cylinder_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "test_cylinder")
@@ -116,14 +118,17 @@ def main() -> None:
     mujoco.mj_forward(model, data)
     pelvis = data.xpos[pelvis_body].copy()
     cylinder = data.xpos[cylinder_body].copy()
-    target = cylinder - pelvis + np.array((0.0, 0.0, args.target_height_above_cylinder_m))
+    target_offset = np.asarray(args.target_offset_xyz_m, dtype=float)
+    if target_offset.shape != (3,) or not np.isfinite(target_offset).all():
+        raise ValueError("target offset must be a finite three-vector")
+    target = cylinder - pelvis + target_offset + np.array((0.0, 0.0, args.target_height_above_cylinder_m))
     seed = [float(arm[name]) for name in arm_order]
     ik = solver.solve_position(sdk.ArmSide.RIGHT, target.tolist(), seed)
     for name, value in zip(arm_order[7:], ik.active_arm):
         set_joint(model, data, name, float(value))
     mujoco.mj_forward(model, data)
     contacts = contact_records(model, data)
-    table_contacts = [row for row in contacts if "scan_room_table" in row["body_names"] and any(not name.startswith("scan_room_") and name != "test_cylinder" for name in row["body_names"])]
+    table_contacts = [row for row in contacts if "raicom_table_table" in row["body_names"] and any(not name.startswith("raicom_table_") and name != "test_cylinder" for name in row["body_names"])]
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-standing-table-ik-validation").native_path
     result = {
         "schema": "robotsim.issue46.raicom-standing-table-ik-validation.v1",
@@ -136,7 +141,7 @@ def main() -> None:
             "ik_sdk_root": str(args.ik_sdk_root),
         },
         "candidate": candidate,
-        "target_pelvis_xyz_m": target.tolist(),
+        "target_pelvis_xyz_m": target.tolist(), "target_offset_xyz_m": target_offset.tolist(),
         "ik": {"success": bool(ik.success), "error_m": float(ik.error_norm), "iterations": int(ik.iterations), "right_arm_q_rad": ik.active_arm, "final_pelvis_xyz_m": ik.final_xyz},
         "contacts": contacts,
         "table_robot_contacts": table_contacts,
