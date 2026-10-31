@@ -284,10 +284,19 @@ def main() -> None:
     table = require_result(args.table_overlay_result, args.table_overlay_result_sha256, label="table overlay result")
     native = require_result(args.native_stand_result, args.native_stand_result_sha256, label="native stand result")
     ik_result = None if args.ik_validation_result is None else require_result(args.ik_validation_result, args.ik_validation_result_sha256 or "", label="IK validation result")
-    if table.get("classification") != "SIMULATION_ONLY_FULL_CONTACT_TABLE_SCENE_PREPARED":
+    accepted_scene_input = "SIMULATION_ONLY_ACCEPTED_STL_FULLBODY_SHADOW_INPUT"
+    if table.get("classification") not in {
+        "SIMULATION_ONLY_FULL_CONTACT_TABLE_SCENE_PREPARED",
+        accepted_scene_input,
+    }:
         raise SystemExit("table overlay has the wrong classification")
     table_gates = table.get("gates", {})
-    if not isinstance(table_gates, dict) or any(table_gates.get(name) != "PASS" for name in ("FROZEN_STL_MOUNT_INPUT", "HOST_STATIC_MODEL_COMPILE", "TABLE_SCENE_STATIC_COMPILE", "TRUE_POSE_CYLINDER_PRESENT")):
+    required_scene_gate = (
+        "FROZEN_ACCEPTED_STL_SCENE"
+        if table.get("classification") == accepted_scene_input
+        else "FROZEN_STL_MOUNT_INPUT"
+    )
+    if not isinstance(table_gates, dict) or any(table_gates.get(name) != "PASS" for name in (required_scene_gate, "HOST_STATIC_MODEL_COMPILE", "TABLE_SCENE_STATIC_COMPILE", "TRUE_POSE_CYLINDER_PRESENT")):
         raise SystemExit("table overlay did not pass static true-pose preflight")
     native_gates = native.get("gates", {})
     if not isinstance(native_gates, dict) or any(native_gates.get(name) != "PASS" for name in ("NATIVE_STAND_REQUEST", "NATIVE_STAND_READBACK", "NATIVE_STAND_STABILITY", "MC_STAND_COMMAND_CAPTURE")):
