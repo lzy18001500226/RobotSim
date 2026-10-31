@@ -1,0 +1,179 @@
+{
+  "schema": "robotsim.raicom_scene_world_poses.v1",
+  "frame": {
+    "frame_id": "raicom_scene_world",
+    "units": {
+      "position": "m",
+      "yaw": "rad"
+    },
+    "axes": {
+      "x": "forward",
+      "y": "left",
+      "z": "up",
+      "yaw_positive": "counterclockwise_about_+z"
+    },
+    "world_definition": "Identity-aligned with the MuJoCo world and raicom_room_frame in scene_workspace.xml."
+  },
+  "robot_reset_model": {
+    "model": "simulation/mujoco/raicom2026/sim_mujoco/configuration/robot/lx2501_3_t2d5/model_info/x2.xml",
+    "sha256": "3ff43f05beb57412a804ba9fe05cd9adcdfce78e9ce73a95a71ac58ad20d91a3",
+    "base_body": "x2_pelvis",
+    "local_home_pose": {
+      "xyz_m": [
+        0,
+        0,
+        0.68
+      ],
+      "yaw_rad": 0
+    },
+    "scene_frame": "x2_start_frame"
+  },
+  "transforms": {
+    "scene_world_from_odom": {
+      "parent_frame": "raicom_scene_world",
+      "child_frame": "odom",
+      "translation_xyz_m": [
+        -1.5,
+        -1.5,
+        0
+      ],
+      "yaw_rad": 1.5707963267948966,
+      "meaning": "Pose of the odom floor origin and axes expressed in raicom_scene_world."
+    },
+    "odom_from_scene_world": {
+      "parent_frame": "odom",
+      "child_frame": "raicom_scene_world",
+      "translation_xyz_m": [
+        1.5,
+        -1.5,
+        0
+      ],
+      "yaw_rad": -1.5707963267948966,
+      "meaning": "Inverse transform used to convert scene-world navigation goals into odom coordinates."
+    },
+    "odom_reset_anchor": {
+      "event": "MuJoCo Reset to the configured START root pose",
+      "odom_origin_definition": "Floor projection of the pelvis/root at START; odom +X is aligned with the START heading.",
+      "base_pose_in_odom_after_reset": {
+        "xyz_m": [
+          0,
+          0,
+          0.68
+        ],
+        "yaw_rad": 0
+      },
+      "verification": {
+        "status": "STATIC_TRANSFORM_AND_SCENE_COMPOSITION_PASS_RUNTIME_ODOMETRY_NOT_OBSERVED",
+        "method": "Pure SE(2) transform/inverse and scene XML root-frame composition checks in tests/test_scene_world_poses.py.",
+        "live_reset_or_ros_odom_sample": "NOT_RUN; no physics or navigation runtime was started in this task.",
+        "enablement_gate": "A live Reset must publish the expected odom pose before a navigation goal publisher consumes this transform."
+      }
+    }
+  },
+  "poses": {
+    "START": {
+      "xyz_m": [
+        -1.5,
+        -1.5,
+        0.68
+      ],
+      "yaw_rad": 1.5707963267948966,
+      "source": "RAICOM room START marker and scene_workspace x2_start_frame composed with the unchanged MC/runtime X2 local home pose."
+    },
+    "START_ALIGN": {
+      "xyz_m": [
+        -1.5,
+        -1.5,
+        0.68
+      ],
+      "yaw_rad": 0,
+      "source": "Static in-place alignment pose from the previously validated scene-world route."
+    },
+    "WAYPOINT": {
+      "xyz_m": [
+        -0.25,
+        -1.5,
+        0.68
+      ],
+      "yaw_rad": 0,
+      "source": "Previously validated straight south-corridor intermediate pose."
+    },
+    "TABLE_DOCKING": {
+      "xyz_m": [
+        1,
+        -1.5,
+        0.68
+      ],
+      "yaw_rad": 0,
+      "status": "SAFE_STATIC_BASELINE",
+      "source": "Center of the RAICOM WORK marker; X2 faces +X toward the table west side. Static clearance pass only; not dynamic navigation evidence."
+    },
+    "TABLE": {
+      "body": "raicom_table",
+      "xyz_m": [
+        1.5,
+        -1.4,
+        0
+      ],
+      "yaw_rad": 0,
+      "source_mesh": "reference/AgiBot/raicom2026-x2-mujoco-scene/robot/lx2501_3_t2d5/model_info/object/mesh/table.stl",
+      "source_mesh_sha256": "1467760febf4af9898e55ad3de30c45577d1f5d0e26ca525e85ced5f07035376",
+      "source_scale": [
+        0.15,
+        0.15,
+        0.23
+      ]
+    },
+    "MUG_SOURCE": {
+      "body": "mug_mug",
+      "pose_kind": "freejoint_root_initial_pose",
+      "xyz_m": [
+        1.5,
+        -1.4,
+        0.55
+      ],
+      "yaw_rad": 0,
+      "source_visual_mesh": "reference/AgiBot/raicom2026-x2-mujoco-scene/robot/lx2501_3_t2d5/model_info/object/model/mug/mug.obj",
+      "source_visual_mesh_sha256": "656bfc987a038c90417ec98c671ab481e6a3ebe35a17d3b92e2ec0ee9593eb19",
+      "static_support": "NO_CONTACT; source pose leaves a 0.00276906 m collision gap above the table."
+    }
+  },
+  "static_only_candidates": {
+    "LOCAL04_MUG_TABLE_TANGENCY": {
+      "xyz_m": [
+        1.5,
+        -1.4,
+        0.5472309428515005
+      ],
+      "yaw_rad": -1.4835298641951802,
+      "status": "STATIC_GRASP_FIXTURE_CANDIDATE_NO_ACTIVE_TABLE_CONTACT",
+      "note": "Derived source-table tangency placement for the Local04 static grasp fixture; the existing audit observed no active MuJoCo table contact at exact tangency. Not the source scene mug pose."
+    },
+    "LOCAL04_ORIGINAL_BASE": {
+      "xyz_m": [
+        1.58,
+        -1.08,
+        0.68
+      ],
+      "yaw_rad": -1.1344640137963142,
+      "status": "BLOCKED_FULL_X2_STATIC"
+    },
+    "LOCAL04_NEAREST_BASE": {
+      "xyz_m": [
+        1.58,
+        -0.745,
+        0.68
+      ],
+      "yaw_rad": -1.1344640137963142,
+      "clearance_m": 0.005204618590880505,
+      "status": "LOW_CLEARANCE_STATIC_ONLY_NOT_DYNAMIC_DOCKING",
+      "dynamic_docking_evidence": false,
+      "grasp_reachability_after_base_shift": "NOT_VALIDATED"
+    }
+  },
+  "evidence": {
+    "static_scene_route": "reviews/raicom-x2-eldercare-mujoco-map/scene-workspace-static-final-20261025T100145Z/result.json",
+    "static_docking": "reviews/raicom-x2-eldercare-mujoco-map/local04-route-final-20261025T102620Z/REPORT_FINAL.md",
+    "runtime_reset_odom": "NOT_OBSERVED"
+  }
+}
