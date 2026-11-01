@@ -37,6 +37,52 @@ returns a reasoned failure state rather than moving to the next stage.
 All spatial contracts use REP-103 units and frames. Map-specific semantic
 locations are configuration data, never hard-coded in planning code.
 
+## Standing OmniPicker grasp sequence
+
+For the frozen `X2-OmniPicker-STL` model, table grasp development follows one
+continuous sequence.  Do not treat a static pose, a working gripper slider, a
+passing arm IK solve, or a completed short physics probe as a completed grasp.
+
+1. Keep the accepted robot, both STL hands, source meshes, collision coverage,
+   table, and object geometry fixed.  Use a vertically supported object on
+   the table.
+2. Search the robot base pose, base yaw, object position on the supported
+   table area, knee bend, waist yaw/pitch, and wrist/arm pose.  The ordinary
+   posture constraint is waist roll within 2 degrees of the stable standing
+   state.  Prefer straight posture, then knee bend or forward waist pitch;
+   reject a side-bent waist as a grasp workaround.
+3. Screen every candidate with `mj_forward` before stepping: complete hand
+   pose, bilateral distal-pad contact at the requested close command, no
+   non-pad object intersection, no robot-table collision, finite source joint
+   margins, and object table support.
+4. Start physics from a stable table-preplaced standing state.  First hold the
+   stance, then ramp the upper body to pregrasp.  Record actual hand-to-object
+   error; a static target is not sufficient.
+5. Only after the physical pregrasp remains stable and the actual hand is in
+   the screened contact region may the gripper close.  Require sustained
+   bilateral distal-pad contact before attempting lift.
+6. Lift in order: a small clearance probe, then a 50 mm lift and hold.  A
+   grasp PASS requires table-support transfer, opposing pad contact, object
+   COM rise of at least 50 mm, and stable hold.  No weld, object qpos write,
+   hidden support, or collision exclusion may substitute for those checks.
+
+Failure handling remains local to the failed stage:
+
+- Static-screen failure: adjust only base stance, supported object placement,
+  knee/forward-pitch posture, or arm/wrist approach pose.
+- Standing or pregrasp failure: correct the initial state or the smooth
+  transition before issuing a close command.
+- Hand-to-object error or missing bilateral contact: search the screened
+  stance/IK neighbourhood using the measured MuJoCo hand pose; do not merely
+  increase gripper force.
+- Contact or lift failure: inspect contact forces, table support, root motion,
+  and object COM before trying the next bounded candidate.
+
+Each failed candidate must preserve its result and select the next local
+candidate.  The workstream stops for human review only at a visual posture
+choice, a source/model change, a true physical grasp result, or when the
+remaining failure is outside the documented controls and evidence.
+
 ## Workstream split
 
 1. **LiDAR navigation and randomized obstacles** consumes only map/LiDAR/odom
