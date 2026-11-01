@@ -172,8 +172,8 @@
     }
   },
   "evidence": {
-    "static_scene_route": "reviews/raicom-x2-eldercare-mujoco-map/scene-workspace-static-final-20261025T100145Z/result.json",
-    "static_docking": "reviews/raicom-x2-eldercare-mujoco-map/local04-route-final-20261025T102620Z/REPORT_FINAL.md",
+    "static_scene_route": "https://github.com/lzy18001500226/RobotSim/pull/106 (local-only evidence; see PR record)",
+    "static_docking": "https://github.com/lzy18001500226/RobotSim/pull/106 (local-only evidence; see PR record)",
     "runtime_reset_odom": "NOT_OBSERVED"
   }
 }
