@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>OmniPicker STL 弧面坐标审核</title>
+<style>
+  body{margin:0;background:#0d151b;color:#edf5f8;font:15px system-ui,sans-serif;overflow:hidden}
+  #ui{position:absolute;z-index:2;top:12px;left:12px;width:390px;padding:15px;background:#12212bdd;border:1px solid #49616e;border-radius:10px;backdrop-filter:blur(8px)}
+  h1{font-size:18px;margin:0 0 8px}p{margin:7px 0;line-height:1.45}.muted{color:#bacbd2;font-size:13px}.warn{color:#ffca65}.good{color:#7ee7c4}.cyan{color:#7ce7ef}.orange{color:#ffad58}.purple{color:#c6a0ff}
+  button{padding:8px 10px;margin:4px 3px 0 0;background:#244857;color:#f4fbff;border:1px solid #557888;border-radius:6px;cursor:pointer}label{display:block;margin-top:9px}input[type=range]{width:100%}#info{font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;margin-top:10px;color:#d8e8ed}canvas{display:block}
+</style>
+<div id="ui">
+  <h1>OmniPicker STL · 双侧弧面坐标审核</h1>
+  <p class="muted">左键旋转 · 右键平移 · 滚轮缩放。只做 <code>mj_forward</code>，不运行物理。</p>
+  <label>夹爪命令：<span id="commandValue">38</span>%（0=闭合，100=张开）</label>
+  <input id="command" type="range" min="0" max="100" value="38">
+  <div><button id="contact">接触参考 38%</button><button id="closed">闭合 0%</button><button id="open">张开 100%</button><button id="fit">聚焦弧面</button></div>
+  <label><input id="patches" type="checkbox" checked> 显示 <span class="orange">窄侧</span> / <span class="cyan">宽侧</span> 源 STL 几何面片</label>
+  <label><input id="references" type="checkbox" checked> 显示两侧最近源表面点与中点</label>
+  <label><input id="axes" type="checkbox" checked> 显示中点坐标轴（<span class="orange">X 红</span> / <span class="cyan">Y 绿</span> / <span class="purple">Z 蓝</span>）</label>
+  <label><input id="bottle" type="checkbox" checked> 显示 70 mm × 300 mm 审核圆柱（长轴严格沿橙/红 X 轴）</label>
+  <p id="status" class="warn">加载中…</p>
+  <div id="info"></div>
+  <p class="muted">这是按人工指定方向生成的静态审核：圆柱长轴 = 橙/红 X 轴，且与绿色 Y 闭合方向垂直。不运行物理，不代表已验证接触、夹持或抬升。官方二进制 STL 没有黑色包胶的材质/子网格标签；高亮仅是围绕既有 IK 内侧参考点的可复算几何邻域。</p>
+</div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script>/*__SCENE_DATA__*/</script>
+<script type="module">
+import * as T from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+const scene=new T.Scene();scene.background=new T.Color('#0d151b');scene.up.set(0,0,1);
+const camera=new T.PerspectiveCamera(43,innerWidth/innerHeight,.01,50);camera.up.set(0,0,1);
+const renderer=new T.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(devicePixelRatio);document.body.appendChild(renderer.domElement);
+const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
+scene.add(new T.HemisphereLight(0xeefaff,0x24323a,2.8));const light=new T.DirectionalLight(0xffffff,2.2);light.position.set(3,-3,5);scene.add(light);
+let data,command=38;const entries=[],patchEntries=[];const overlay=new T.Group();scene.add(overlay);const status=document.querySelector('#status'),info=document.querySelector('#info');
+function meshGeometry(mesh,faces=null){const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(mesh.vertices,3));g.setIndex(faces??mesh.faces);g.computeVertexNormals();return g}
+function marker(pos,color,size=.005){const o=new T.Mesh(new T.SphereGeometry(size,16,12),new T.MeshStandardMaterial({color,emissive:color,emissiveIntensity:.4}));o.position.fromArray(pos);overlay.add(o)}
+function line(a,b,color,width=1){const g=new T.BufferGeometry().setFromPoints([new T.Vector3(...a),new T.Vector3(...b)]);overlay.add(new T.Line(g,new T.LineBasicMaterial({color,linewidth:width})))}
+function transform(object,pose,id){const r=pose.rotation[id],p=pose.position[id];object.matrix.set(r[0],r[1],r[2],p[0],r[3],r[4],r[5],p[1],r[6],r[7],r[8],p[2],0,0,0,1)}
+function update(){const pose=data.poses[command];for(const e of entries)transform(e.object,pose,e.id);for(const e of patchEntries){transform(e.object,pose,e.id);e.object.visible=document.querySelector('#patches').checked}
+ overlay.clear();const n=pose.surface_points_world_m.R_hand_narrow3_Link,w=pose.surface_points_world_m.R_hand_wide3_Link,m=pose.midpoint_axis_world_m;
+ if(document.querySelector('#references').checked){marker(n,0xff9d3e,.006);marker(w,0x62eaf2,.006);marker(m,0xc6a0ff,.006);line(n,m,0xff9d3e);line(m,w,0x62eaf2)}
+ if(document.querySelector('#axes').checked){const triad=new T.AxesHelper(.07);triad.position.fromArray(m);overlay.add(triad)}
+ const frame=data.grasp_frame_contract.value,axisValues=frame.cylinder.axis_unit_vector_in_gripper_frame,axis=new T.Vector3(...axisValues).normalize(),dimensions=frame.cylinder.review_dimensions_mm;
+ if(document.querySelector('#bottle').checked){const cyl=new T.Mesh(new T.CylinderGeometry(dimensions.diameter/2000,dimensions.diameter/2000,dimensions.length/1000,64,1,false),new T.MeshStandardMaterial({color:0x377dff,transparent:true,opacity:.34,roughness:.42,side:T.DoubleSide}));cyl.quaternion.setFromUnitVectors(new T.Vector3(0,1,0),axis);cyl.position.fromArray(m);overlay.add(cyl)}
+ document.querySelector('#commandValue').textContent=command;
+ status.textContent=`审核圆柱长轴 = 橙/红 X；与绿色 Y 闭合方向垂直`;status.className='good';
+ info.textContent=`窄侧 Link3 最近源表面点\n  (${n.map(v=>v.toFixed(4)).join(', ')}) m\n宽侧 Link3 最近源表面点\n  (${w.map(v=>v.toFixed(4)).join(', ')}) m\n\n两侧中点\n  (${m.map(v=>v.toFixed(4)).join(', ')}) m\n两点高度差: ${pose.surface_height_delta_mm.toFixed(3)} mm\n参考间距: ${pose.surface_reference_gap_mm.toFixed(3)} mm\n\n审核圆柱：直径 ${dimensions.diameter.toFixed(0)} mm，长度 ${dimensions.length.toFixed(0)} mm\n长轴单位向量（${frame.cylinder.axis_label}）\n  (${axisValues.map(v=>v.toFixed(4)).join(', ')})\n闭合方向（${frame.jaw_closure.axis_label}）与长轴垂直。\n\n中心规则：完整两侧包胶面每个命令独立拟合；禁止复用尖端、固定点或固定中点。\n\n仅供视觉审核；尚未做曲面拟合或任何物理接触验证。`}
+function fit(){const c=data.poses[command].midpoint_axis_world_m;controls.target.fromArray(c);camera.position.set(c[0]+.18,c[1]-.18,c[2]+.11);controls.update()}
+try{data=window.SCENE_DATA;if(!data)throw new Error('embedded scene data is missing');const meshes=data.meshes;for(const g of data.geoms){const geo=meshGeometry(meshes[String(g.mesh)]);const mat=new T.MeshStandardMaterial({color:new T.Color(...g.rgba.slice(0,3)),roughness:.72,side:T.DoubleSide});const obj=new T.Mesh(geo,mat);obj.matrixAutoUpdate=false;scene.add(obj);entries.push({id:String(g.id),object:obj})}
+ const patchColors={R_hand_narrow3_Link:0xff9d3e,R_hand_wide3_Link:0x62eaf2};for(const [body,p] of Object.entries(data.patches)){const g=data.geoms.find(x=>x.id===p.geom);const obj=new T.Mesh(meshGeometry(meshes[String(p.mesh)],p.faces),new T.MeshStandardMaterial({color:patchColors[body],transparent:true,opacity:.78,roughness:.45,side:T.DoubleSide}));obj.matrixAutoUpdate=false;scene.add(obj);patchEntries.push({id:String(p.geom),object:obj})}
+ document.querySelector('#command').oninput=e=>{command=Number(e.target.value);update()};for(const id of ['patches','references','axes','bottle'])document.querySelector('#'+id).onchange=update;document.querySelector('#contact').onclick=()=>{command=38;document.querySelector('#command').value=38;update()};document.querySelector('#closed').onclick=()=>{command=0;document.querySelector('#command').value=0;update()};document.querySelector('#open').onclick=()=>{command=100;document.querySelector('#command').value=100;update()};document.querySelector('#fit').onclick=fit;fit();update()}catch(e){status.textContent='加载失败：'+e;console.error(e)}
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera)});
+</script>
+</html>

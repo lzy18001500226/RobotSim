@@ -1,0 +1,28 @@
+{
+  "schema": "robotsim.x2-omnipicker-stl-grasp-frame.v1",
+  "model_id": "X2-OmniPicker-STL",
+  "status": "HUMAN_APPROVED_VISUAL_ORIENTATION_ONLY",
+  "gripper_frame": "R_omnipicker_base_link",
+  "cylinder": {
+    "axis_unit_vector_in_gripper_frame": [1.0, 0.0, 0.0],
+    "axis_label": "orange_red_X",
+    "review_dimensions_mm": {
+      "diameter": 70.0,
+      "length": 300.0
+    }
+  },
+  "jaw_closure": {
+    "direction_unit_vector_in_gripper_frame": [0.0, 1.0, 0.0],
+    "axis_label": "green_Y",
+    "constraint": "cylinder_axis_must_be_perpendicular_to_jaw_closure"
+  },
+  "center_definition": {
+    "status": "NOT_FROZEN_PENDING_FULL_PAD_FIT",
+    "required_method": "fit the complete narrow and wide textured rubber-pad surfaces independently at each jaw command; derive the cylinder center from the fitted surfaces at that command",
+    "forbidden_substitute": "Do not use a fingertip, a fixed local point, or a single command-independent midpoint as the cylinder center."
+  },
+  "scope": [
+    "This fixes only the visual/grasp-frame orientation convention.",
+    "It does not change the frozen STL model, joint table, collision geometry, forces, contact settings, or physical-grasp qualification."
+  ]
+}
