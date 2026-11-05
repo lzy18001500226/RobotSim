@@ -29,7 +29,9 @@ def main():
     def run(command,**kwargs):
         if any(str(v).endswith("/runtime_actual_grasp_replan.py") for v in command):
             state=command[command.index("--dock-state")+1]
-            command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--base-offset-xyz-m",*[str(x) for x in args.base_offset_xyz_m],"--runtime-handoff"]
+            # Navigation already applied the requested docking offset. The new
+            # state is MEASURED; adding that offset again invents a root pose.
+            command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]
             kwargs["timeout_s"]=45.
         return original(command,**kwargs)
     native.run=run

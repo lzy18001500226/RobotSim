@@ -37,6 +37,12 @@ sys.path.insert(0, str(REPO))
 from scripts.agent import path_governance as pg  # noqa: E402
 
 
+RIGHT_ARM_ORDER = (
+    "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
+    "right_elbow_joint", "right_wrist_yaw_joint", "right_wrist_pitch_joint", "right_wrist_roll_joint",
+)
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -141,6 +147,72 @@ def build_arm_split_mc_config(source: dict[str, object]) -> dict[str, object]:
     return result
 
 
+def build_arm_hand_split_mc_config(source: dict[str, object]) -> dict[str, object]:
+    """Disable only MC's competing arm and hand publishers in an overlay.
+
+    Legs and waist remain owned by the delivered standing controller.  The
+    hand-topic ownership is needed only while the SIMULATION_ONLY external
+    sidecar sends the exact static-candidate claw command; no model parameter
+    or collision setting is changed.
+    """
+    import copy
+
+    result = copy.deepcopy(source)
+    module = result.get("MotionControlModule")
+    if not isinstance(module, dict):
+        raise ValueError("MC config lacks MotionControlModule")
+    manager = module.get("PublisherManager")
+    if not isinstance(manager, dict) or not isinstance(manager.get("publisher_cfg_list"), list):
+        raise ValueError("MC config lacks publisher_cfg_list")
+    for expected in ("arm_joint_command", "hand_joint_command"):
+        matches = [item for item in manager["publisher_cfg_list"] if isinstance(item, dict) and item.get("name") == expected]
+        if len(matches) != 1 or matches[0].get("enable") is not True:
+            raise ValueError(f"MC config does not expose exactly one enabled {expected} publisher")
+        matches[0]["enable"] = False
+    return result
+
+
+def build_waist_split_mc_config(source: dict[str, object]) -> dict[str, object]:
+    """Disable only MC's waist HAL publisher in an evidence-local config copy."""
+    import copy
+    result = copy.deepcopy(source)
+    module = result.get("MotionControlModule")
+    if not isinstance(module, dict):
+        raise ValueError("MC config lacks MotionControlModule")
+    manager = module.get("PublisherManager")
+    if not isinstance(manager, dict) or not isinstance(manager.get("publisher_cfg_list"), list):
+        raise ValueError("MC config lacks publisher_cfg_list")
+    matches = [item for item in manager["publisher_cfg_list"] if isinstance(item, dict) and item.get("name") == "waist_joint_command"]
+    if len(matches) != 1 or matches[0].get("enable") is not True:
+        raise ValueError("MC config does not expose exactly one enabled waist_joint_command publisher")
+    matches[0]["enable"] = False
+    return result
+
+
+def build_arm_waist_split_mc_config(source: dict[str, object]) -> dict[str, object]:
+    """Disable only the competing MC arm/waist publishers in an evidence overlay.
+
+    The delivered direct HAL example owns these two topics while legs remain
+    under the native standing controller.  This is a controller-source split,
+    not a mechanical-model or collision modification.
+    """
+    import copy
+
+    result = copy.deepcopy(source)
+    module = result.get("MotionControlModule")
+    if not isinstance(module, dict):
+        raise ValueError("MC config lacks MotionControlModule")
+    manager = module.get("PublisherManager")
+    if not isinstance(manager, dict) or not isinstance(manager.get("publisher_cfg_list"), list):
+        raise ValueError("MC config lacks publisher_cfg_list")
+    for expected in ("arm_joint_command", "waist_joint_command"):
+        matches = [item for item in manager["publisher_cfg_list"] if isinstance(item, dict) and item.get("name") == expected]
+        if len(matches) != 1 or matches[0].get("enable") is not True:
+            raise ValueError(f"MC config does not expose exactly one enabled {expected}")
+        matches[0]["enable"] = False
+    return result
+
+
 def build_stand_client_script() -> str:
     """Minimal equivalent of the delivered ``set_mc_action SD`` example."""
     return """#!/usr/bin/env python3
@@ -149,7 +221,7 @@ import math
 import time
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from aimdk_msgs.msg import CommonRequest, McActionCommand, RequestHeader
 from aimdk_msgs.srv import GetMcAction, SetMcAction
 from nav_msgs.msg import Odometry
@@ -159,11 +231,17 @@ from sensor_msgs.msg import Imu
 def call(node, client, request):
     if not client.wait_for_service(timeout_sec=5.0):
         raise RuntimeError('service unavailable')
-    future = client.call_async(request)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
-    if not future.done() or future.result() is None:
-        raise RuntimeError('service call timed out')
-    return future.result()
+    # The delivered MC service can be registered before its remote executor is
+    # ready immediately after a GUI Reset.  Follow the vendor examples: make
+    # a bounded sequence of short attempts rather than treating one missed
+    # response as a controller failure.
+    for _ in range(8):
+        future = client.call_async(request)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=0.25)
+        if future.done() and future.result() is not None:
+            return future.result()
+        time.sleep(0.05)
+    raise RuntimeError('service call timed out after 8 bounded retries')
 
 
 rclpy.init()
@@ -457,7 +535,7 @@ class Probe(Node):
 
 rclpy.init(); node=Probe()
 try:
-    node.spin(1.0)
+    node.spin(2.0)
     if TARGET not in node.states or len(node.states) < 14: raise RuntimeError('missing complete arm state')
     start=float(node.states[TARGET]); observed_source=node.commands.get(TARGET); source_fields=None if observed_source is None else {'position':float(observed_source.position),'velocity':float(observed_source.velocity),'effort':float(observed_source.effort),'stiffness':float(observed_source.stiffness),'damping':float(observed_source.damping)}; command={}
     for name, position in node.states.items():
@@ -485,7 +563,7 @@ def load_source_arm_pd_parameters() -> dict[str, tuple[float, float]]:
         if not isinstance(item, dict):
             continue
         name, stiffness, damping = item.get("name"), item.get("stiffness"), item.get("damping")
-        if isinstance(name, str) and name.endswith(("shoulder_pitch_joint", "shoulder_roll_joint", "shoulder_yaw_joint", "elbow_joint", "wrist_yaw_joint", "wrist_pitch_joint", "wrist_roll_joint")):
+        if isinstance(name, str) and (name in {"waist_yaw_joint", "waist_pitch_joint", "waist_roll_joint"} or name.endswith(("shoulder_pitch_joint", "shoulder_roll_joint", "shoulder_yaw_joint", "elbow_joint", "wrist_yaw_joint", "wrist_pitch_joint", "wrist_roll_joint"))):
             try:
                 gains = float(stiffness), float(damping)
             except (TypeError, ValueError) as exc:
@@ -493,14 +571,47 @@ def load_source_arm_pd_parameters() -> dict[str, tuple[float, float]]:
             if not all(math.isfinite(value) and value > 0.0 for value in gains):
                 raise RuntimeError(f"non-positive delivered arm gains for {name}")
             values[name] = gains
+    if len(values) != 17:
+        raise RuntimeError(f"delivered remote-controller model config provides {len(values)} arm/waist gain records, expected 17")
+    return values
+
+
+def load_animation_player_arm_pd_parameters() -> dict[str, tuple[float, float]]:
+    """Read the delivered AnimationPlayer PD values for the fourteen arms.
+
+    These are not invented gains: the old MC's own AnimationPlayer uses them
+    for its packaged upper-body CSV resources.  The hybrid controller may use
+    them only in an explicitly isolated simulation overlay.
+    """
+    path = RUNTIME / "mc/bin/mc_param/src/robot/lx2501_3_t2d5/classic/animation_player.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("arm_joints"), list):
+        raise RuntimeError("delivered AnimationPlayer config lacks arm_joints")
+    values: dict[str, tuple[float, float]] = {}
+    for item in payload["arm_joints"]:
+        if not isinstance(item, dict):
+            continue
+        name, stiffness, damping = item.get("name"), item.get("kp"), item.get("kd")
+        if not isinstance(name, str) or not name.startswith(("left_", "right_")):
+            continue
+        try:
+            gains = float(stiffness), float(damping)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"invalid delivered AnimationPlayer gain for {name}") from exc
+        if not all(math.isfinite(value) and value > 0.0 for value in gains):
+            raise RuntimeError(f"non-positive delivered AnimationPlayer gain for {name}")
+        values[name] = gains
     if len(values) != 14:
-        raise RuntimeError(f"delivered remote-controller model config provides {len(values)} arm gain records, expected 14")
+        raise RuntimeError(f"delivered AnimationPlayer provides {len(values)} arm gains, expected 14")
     return values
 
 
 def build_hal_arm_pd_probe_script(gains: dict[str, tuple[float, float]]) -> str:
     """Bounded direct position/stiffness arm probe using delivered gains."""
-    serialized = json.dumps({name: [stiffness, damping] for name, (stiffness, damping) in gains.items()}, sort_keys=True)
+    arm_gains = {name: values for name, values in gains.items() if name.startswith(("left_", "right_"))}
+    if len(arm_gains) != 14:
+        raise ValueError("delivered source gains do not contain exactly 14 arm joints")
+    serialized = json.dumps({name: [stiffness, damping] for name, (stiffness, damping) in arm_gains.items()}, sort_keys=True)
     return """#!/usr/bin/env python3
 import json
 import math
@@ -531,22 +642,25 @@ class Probe(Node):
     def spin(self, seconds):
         end=time.monotonic()+seconds
         while rclpy.ok() and time.monotonic()<end: rclpy.spin_once(self, timeout_sec=0.002)
-    def publish(self, targets, seconds):
+    def publish(self, targets, seconds, inject_effort=False):
         end=time.monotonic()+seconds; seq=0
         while rclpy.ok() and time.monotonic()<end:
             msg=JointCommandArray(); msg.header=MessageHeader(); msg.header.stamp=self.get_clock().now().to_msg(); msg.header.frame_id='hal_arm_pd_probe'; msg.header.sequence=seq
             for name in sorted(targets):
-                item=JointCommand(); item.name=name; item.position=float(targets[name]); item.velocity=0.0; item.effort=0.0; item.stiffness=float(GAINS[name][0]); item.damping=float(GAINS[name][1]); msg.joints.append(item)
+                item=JointCommand(); item.name=name; item.position=float(targets[name]); item.velocity=0.0; item.effort=0.6 if inject_effort and name == TARGET else 0.0; item.stiffness=float(GAINS[name][0]); item.damping=float(GAINS[name][1]); msg.joints.append(item)
             self.publisher.publish(msg); rclpy.spin_once(self, timeout_sec=0.002); seq+=1; time.sleep(0.01)
 
 rclpy.init(); node=Probe()
 try:
-    node.spin(1.0)
+    node.spin(2.0)
     if set(GAINS)-set(node.states): raise RuntimeError('missing complete arm state')
     start={name:float(node.states[name]) for name in sorted(GAINS)}
     goal=dict(start); goal[TARGET]=start[TARGET]-0.03
     subscriptions=node.publisher.get_subscription_count()
-    node.publish(goal,2.0); moved=float(node.states.get(TARGET,float('nan')))
+    # This validates position/stiffness tracking alone.  An additive effort
+    # pulse turns a 0.03-rad identification move into a force experiment and
+    # previously caused a large overshoot under the arm-split overlay.
+    node.publish(goal,2.0,inject_effort=False); moved=float(node.states.get(TARGET,float('nan')))
     node.publish(start,2.0); restored=float(node.states.get(TARGET,float('nan')))
     # Explicitly hold the restored safe pose during the final observation.
     node.publish(start,0.5)
@@ -557,6 +671,271 @@ try:
     print(json.dumps({'subscription_count':subscriptions,'source_gains':GAINS[TARGET],'start_rad':start[TARGET],'goal_rad':goal[TARGET],'moved_rad':moved,'restored_rad':restored,'delta_rad':delta,'restore_error_rad':restore_error,'response_pass':response,'motion_stability':stability}))
 finally:
     node.destroy_node(); rclpy.shutdown()
+""".replace("__GAINS__", serialized)
+
+
+def build_hal_bilateral_arm_plan_script(
+    gains: dict[str, tuple[float, float]],
+    right_target: list[float],
+    left_target: list[float],
+    *,
+    duration_s: float,
+    hold_s: float,
+    restore: bool = True,
+    right_hand_command: float | None = None,
+    hand_hold_s: float = 0.0,
+    initial_arm_state: dict[str, float] | None = None,
+) -> str:
+    """Build a bounded direct-HAL bilateral pregrasp -> restore trajectory.
+
+    This uses the delivered AnimationPlayer position gains and the existing
+    arm HAL topic.  It deliberately sends no additive effort: position and
+    stiffness tracking is the bounded validation here, while a hard-coded
+    effort pulse would be a different force experiment.  Legs, waist, source
+    geometry, the bottle and fingers remain under their normal controllers.
+    """
+    arm_gains = {name: values for name, values in gains.items() if name.startswith(("left_", "right_"))}
+    if len(arm_gains) != 14 or len(right_target) != 7 or len(left_target) != 7:
+        raise ValueError("bilateral arm plan requires fourteen source gains and two seven-joint targets")
+    if right_hand_command is not None and not 0.0 <= right_hand_command <= 1.0:
+        raise ValueError("right hand command must use the source 0..1 range")
+    if right_hand_command is None and hand_hold_s != 0.0:
+        raise ValueError("hand hold requires an explicit right hand command")
+    if right_hand_command is not None and not 0.5 <= hand_hold_s <= 5.0:
+        raise ValueError("hand-close hold must be bounded to 0.5..5 seconds")
+    if initial_arm_state is not None and any(name not in initial_arm_state or not math.isfinite(float(initial_arm_state[name])) for name in arm_gains):
+        raise ValueError("initial arm fallback must contain every finite bilateral arm joint")
+    serialized_gains = json.dumps({name: [stiffness, damping] for name, (stiffness, damping) in arm_gains.items()}, sort_keys=True)
+    return """#!/usr/bin/env python3
+import json, math, time, rclpy
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from aimdk_msgs.msg import HandCommand, HandCommandArray, HandStateArray, HandType, JointCommand, JointCommandArray, JointStateArray, MessageHeader
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
+
+LEFT=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint')
+RIGHT=('right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
+TARGET_LEFT=__LEFT_TARGET__; TARGET_RIGHT=__RIGHT_TARGET__; GAINS=__GAINS__; DURATION=__DURATION__; HOLD=__HOLD__; RESTORE=__RESTORE__; HAND_RIGHT=__HAND_RIGHT__; HAND_HOLD=__HAND_HOLD__; INITIAL_FALLBACK=__INITIAL_FALLBACK__
+class Plan(Node):
+ def __init__(self):
+  super().__init__('robotsim_hal_bilateral_pregrasp');q=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT);hand_q=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.TRANSIENT_LOCAL);self.arm={};self.hand={};self.odom=[];self.tilt=[];self.seq=0;self.trace=[]
+  # The simulator may publish the two arm groups in separate messages.  Merge
+  # named samples so a later partial packet cannot discard the already-read
+  # opposite-arm state before the bounded plan begins.
+  self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',lambda m:self.arm.update({j.name:float(j.position) for j in m.joints}),q)
+  self.create_subscription(HandStateArray,'/aima/hal/joint/hand/state',self.on_hand,hand_q)
+  self.create_subscription(Odometry,'/aima/hal/odom/state',lambda m:self.odom.append((float(m.pose.pose.position.x),float(m.pose.pose.position.y))),q)
+  self.create_subscription(Imu,'/aima/hal/imu/torso/state',self.imu,q);self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q);self.hand_pub=self.create_publisher(HandCommandArray,'/aima/hal/joint/hand/command',hand_q)
+ def on_hand(self,m):
+  for item in list(m.left_hands)+list(m.right_hands):self.hand[{'L_claw_joint':'left_claw_joint','R_claw_joint':'right_claw_joint'}.get(item.name,item.name)]=float(item.position)
+ def imu(self,m):
+  q=m.orientation;p=math.asin(max(-1.,min(1.,2*(q.w*q.y-q.z*q.x))));r=math.atan2(2*(q.w*q.x+q.y*q.z),1-2*(q.x*q.x+q.y*q.y));self.tilt.append(max(abs(r),abs(p)))
+ def spin(self,s):
+  end=time.monotonic()+s
+  while rclpy.ok() and time.monotonic()<end:rclpy.spin_once(self,timeout_sec=.002)
+ def send(self,target,seconds,stage,hand_right=None):
+  end=time.monotonic()+seconds;next_tick=time.monotonic();start=time.monotonic()
+  while rclpy.ok() and time.monotonic()<end:
+   m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hal_bilateral_pregrasp';m.header.sequence=self.seq;self.seq+=1
+   for name in LEFT+RIGHT:
+    x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1]);m.joints.append(x)
+   self.pub.publish(m)
+   if hand_right is not None:
+    # The RAICOM STL channel's earlier successful round-trip uses hand type 2.
+    # Type 1 acknowledges the topic but leaves the claw roots effectively at
+    # zero in this delivered runtime.
+    h=HandCommandArray();h.left_hand_type=HandType(value=2);h.right_hand_type=HandType(value=2)
+    # The delivered CLAW transport consumes a bilateral command packet.  The
+    # source-validated static pose likewise applies one normalized command to
+    # both mirrored STL roots; the left *arm* remains in its parked pose.
+    for name,value,collection in (('left_claw_joint',float(hand_right),h.left_hands),('right_claw_joint',float(hand_right),h.right_hands)):
+     x=HandCommand();x.name=name;x.position=value;x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;collection.append(x)
+    self.hand_pub.publish(h)
+   rclpy.spin_once(self,timeout_sec=.001)
+   if not self.trace or time.monotonic()-self.trace[-1]['time_s']>=.05:
+    err=max(abs(float(self.arm.get(name,float('nan')))-target[name]) for name in LEFT+RIGHT) if all(name in self.arm for name in LEFT+RIGHT) else float('inf')
+    self.trace.append({'time_s':time.monotonic()-start,'stage':stage,'max_arm_error_rad':err,'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
+   next_tick+=.02;time.sleep(max(0,next_tick-time.monotonic()))
+rclpy.init();n=Plan()
+try:
+ n.spin(2.0)
+ if any(name not in n.arm and name not in INITIAL_FALLBACK for name in LEFT+RIGHT):raise RuntimeError('missing complete arm state and dock-state fallback')
+ start={n_:float(n.arm.get(n_,INITIAL_FALLBACK[n_])) for n_ in LEFT+RIGHT};fallback_used=sorted(n_ for n_ in LEFT+RIGHT if n_ not in n.arm); goal={**dict(zip(LEFT,TARGET_LEFT)),**dict(zip(RIGHT,TARGET_RIGHT))}
+ if max(abs(goal[n_]-start[n_]) for n_ in LEFT+RIGHT)>1.1:raise RuntimeError('pregrasp target delta exceeds 1.1 rad')
+ # The delivered claw component is initialized by the same 0-command
+ # handshake used in the previously passing native hand round-trip before a
+ # nonzero target is sent.
+ if HAND_RIGHT is not None:
+  n.send(start,.8,'HAND_ACTIVATION',0.0)
+  # Open while the arms are still at the measured dock-safe pose.  Starting
+  # the arm approach with closed fingers can lodge a pad against the object
+  # before the root position actuator has clearance to move.
+  n.send(start,2.0,'HAND_OPEN_PREGRASP',.97)
+ steps=max(1,int(DURATION/.02))
+ for i in range(steps):
+  u=(i+1)/steps;u=3*u*u-2*u*u*u;n.send({name:start[name]+u*(goal[name]-start[name]) for name in LEFT+RIGHT},.02,'APPROACH',.97)
+ n.send(goal,HOLD,'PREGRASP_HOLD',.97);reached={n_:float(n.arm[n_]) for n_ in LEFT+RIGHT}
+ preclose_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
+ closure_issued=False
+ # Retain the existing bilateral 0.08 rad execution threshold. Failed arm
+ # tracking must never trigger closure just because the trajectory timer ended.
+ if HAND_RIGHT is not None and preclose_error<=.08:
+  n.send(goal,HAND_HOLD,'HAND_CLOSE_HOLD',HAND_RIGHT);closure_issued=True
+ if RESTORE:
+  for i in range(steps):
+   u=(i+1)/steps;u=3*u*u-2*u*u*u;n.send({name:goal[name]+u*(start[name]-goal[name]) for name in LEFT+RIGHT},.02,'RESTORE',.97)
+  # Keep the source-gain controller at the restored pose long enough for the
+  # existing 0.04-rad recovery gate to measure a settled state.
+  n.send(start,1.0,'RESTORE_HOLD',.97);restored={n_:float(n.arm[n_]) for n_ in LEFT+RIGHT};max_restore=max(abs(restored[n_]-start[n_]) for n_ in LEFT+RIGHT)
+ else:
+  n.send(goal,1.0,'PREGRASP_STABLE_HOLD',HAND_RIGHT if closure_issued else .97);restored={n_:float(n.arm[n_]) for n_ in LEFT+RIGHT};max_restore=None
+ max_goal=max(abs(reached[n_]-goal[n_]) for n_ in LEFT+RIGHT)
+ drift=math.hypot(n.odom[-1][0]-n.odom[0][0],n.odom[-1][1]-n.odom[0][1]) if len(n.odom)>=2 else None; stable=len(n.odom)>=100 and drift is not None and drift<=.05 and n.tilt and max(n.tilt)<=math.radians(15)
+ # No installed native-MjData/HandState mapping is calibrated for this overlay.
+ # Do not promote a normalized zero command, absent feedback, or q~=0 into a
+ # physical-grasp acknowledgement. Preserve observations pending calibration.
+ hand_pass=HAND_RIGHT is None
+ print(json.dumps({'preclose_arm_error_rad':preclose_error,'closure_issued':closure_issued,'hand_mapping_status':'UNVERIFIED_RUNTIME_MAPPING','physical_bilateral_contact':'NOT_OBSERVED'}),flush=True)
+ print(json.dumps({'plan_mode':'ROUND_TRIP' if RESTORE else ('PREGRASP_CLOSE_HOLD' if HAND_RIGHT is not None else 'PREGRASP_HOLD'),'subscription_count':n.pub.get_subscription_count(),'hand_subscription_count':n.hand_pub.get_subscription_count(),'start_arm_rad':start,'state_fallback_joint_names':fallback_used,'goal_arm_rad':goal,'reached_arm_rad':reached,'restored_arm_rad':restored,'right_hand_command':HAND_RIGHT,'final_hand_state_rad':n.hand,'hand_response_pass':hand_pass,'max_goal_error_rad':max_goal,'max_restore_error_rad':max_restore,'response_pass':max_goal<=.08 and hand_pass and ((not RESTORE) or max_restore<=.04),'motion_stability':{'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None,'pass':stable},'trace':n.trace}))
+finally:n.destroy_node();rclpy.shutdown()
+""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps({name: float((initial_arm_state or {}).get(name, float('nan'))) for name in arm_gains}, sort_keys=True))
+
+
+def build_hal_bilateral_upperbody_plan_script(
+    gains: dict[str, tuple[float, float]],
+    right_target: list[float],
+    waist_target: list[float],
+    *,
+    duration_s: float,
+    hold_s: float,
+    start_marker: str | None = None,
+) -> str:
+    """Build a bounded arm-plus-waist HAL pregrasp and safe restore.
+
+    Legs remain owned by the delivered standing controller.  This function is
+    intentionally separate from the arm-only probe because the static visual
+    candidate proved that the measured standing waist must participate in the
+    reachable double-pad posture.
+    """
+    arm_gains = {name: values for name, values in gains.items() if name.startswith(("left_", "right_"))}
+    waist_names = ("waist_yaw_joint", "waist_pitch_joint", "waist_roll_joint")
+    waist_gains = {name: gains[name] for name in waist_names}
+    if len(arm_gains) != 14 or len(right_target) != 7 or len(waist_target) != 3:
+        raise ValueError("upper-body plan requires fourteen arm gains, three waist gains, and complete targets")
+    if not all(math.isfinite(value) for value in right_target + waist_target):
+        raise ValueError("upper-body targets must be finite")
+    if not 4.0 <= duration_s <= 12.0 or not 0.5 <= hold_s <= 2.0:
+        raise ValueError("upper-body plan duration/hold are outside bounded range")
+    serialized_arm_gains = json.dumps({name: [stiffness, damping] for name, (stiffness, damping) in arm_gains.items()}, sort_keys=True)
+    serialized_waist_gains = json.dumps({name: [stiffness, damping] for name, (stiffness, damping) in waist_gains.items()}, sort_keys=True)
+    marker_literal = "None" if start_marker is None else json.dumps(start_marker)
+    return """#!/usr/bin/env python3
+import json, math, os, time, rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
+
+LEFT=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint')
+RIGHT=('right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
+WAIST=('waist_yaw_joint','waist_pitch_joint','waist_roll_joint')
+TARGET_RIGHT=__RIGHT_TARGET__; TARGET_WAIST=__WAIST_TARGET__; ARM_GAINS=__ARM_GAINS__; WAIST_GAINS=__WAIST_GAINS__; DURATION=__DURATION__; HOLD=__HOLD__; START_MARKER=__START_MARKER__
+class Plan(Node):
+ def __init__(self):
+  super().__init__('robotsim_hal_bilateral_upperbody_pregrasp');q=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT);self.arm={};self.waist={};self.odom=[];self.tilt=[];self.seq=0;self.trace=[]
+  self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',lambda m:self.arm.update({j.name:float(j.position) for j in m.joints}),q)
+  self.create_subscription(JointStateArray,'/aima/hal/joint/waist/state',lambda m:self.waist.update({j.name:float(j.position) for j in m.joints}),q)
+  self.create_subscription(Odometry,'/aima/hal/odom/state',lambda m:self.odom.append((float(m.pose.pose.position.x),float(m.pose.pose.position.y))),q)
+  self.create_subscription(Imu,'/aima/hal/imu/torso/state',self.imu,q);self.arm_pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q);self.waist_pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/waist/command',q)
+ def imu(self,m):
+  q=m.orientation;p=math.asin(max(-1.,min(1.,2*(q.w*q.y-q.z*q.x))));r=math.atan2(2*(q.w*q.x+q.y*q.z),1-2*(q.x*q.x+q.y*q.y));self.tilt.append(max(abs(r),abs(p)))
+ def spin(self,s):
+  end=time.monotonic()+s
+  while rclpy.ok() and time.monotonic()<end:rclpy.spin_once(self,timeout_sec=.002)
+ def send(self,arm_target,waist_target,seconds,stage):
+  end=time.monotonic()+seconds;next_tick=time.monotonic();started=time.monotonic()
+  while rclpy.ok() and time.monotonic()<end:
+   arm_msg=JointCommandArray();arm_msg.header=MessageHeader();arm_msg.header.stamp=self.get_clock().now().to_msg();arm_msg.header.frame_id='hal_upperbody_pregrasp';arm_msg.header.sequence=self.seq
+   for name in LEFT+RIGHT:
+    x=JointCommand();x.name=name;x.position=float(arm_target[name]);x.velocity=0.;x.effort=.6;x.stiffness=float(ARM_GAINS[name][0]);x.damping=float(ARM_GAINS[name][1]);arm_msg.joints.append(x)
+   waist_msg=JointCommandArray();waist_msg.header=MessageHeader();waist_msg.header.stamp=arm_msg.header.stamp;waist_msg.header.frame_id='hal_upperbody_pregrasp';waist_msg.header.sequence=self.seq;self.seq+=1
+   for name in WAIST:
+    x=JointCommand();x.name=name;x.position=float(waist_target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(WAIST_GAINS[name][0]);x.damping=float(WAIST_GAINS[name][1]);waist_msg.joints.append(x)
+   self.arm_pub.publish(arm_msg);self.waist_pub.publish(waist_msg);rclpy.spin_once(self,timeout_sec=.001)
+   if not self.trace or time.monotonic()-self.trace[-1]['time_s']>=.05:
+    arm_err=max(abs(float(self.arm.get(n,float('nan')))-arm_target[n]) for n in LEFT+RIGHT) if all(n in self.arm for n in LEFT+RIGHT) else float('inf')
+    waist_err=max(abs(float(self.waist.get(n,float('nan')))-waist_target[n]) for n in WAIST) if all(n in self.waist for n in WAIST) else float('inf')
+    self.trace.append({'time_s':time.monotonic()-started,'stage':stage,'max_arm_error_rad':arm_err,'max_waist_error_rad':waist_err,'right':{n:self.arm.get(n) for n in RIGHT},'waist':{n:self.waist.get(n) for n in WAIST}})
+   next_tick+=.02;time.sleep(max(0,next_tick-time.monotonic()))
+rclpy.init();n=Plan()
+try:
+ n.spin(2.0)
+ if any(name not in n.arm for name in LEFT+RIGHT) or any(name not in n.waist for name in WAIST):raise RuntimeError('missing complete upper-body state')
+ start_arm={name:float(n.arm[name]) for name in LEFT+RIGHT}; start_waist={name:float(n.waist[name]) for name in WAIST}; goal_arm=dict(start_arm);goal_arm.update(dict(zip(RIGHT,TARGET_RIGHT)));goal_waist=dict(zip(WAIST,TARGET_WAIST))
+ if max(abs(goal_arm[n]-start_arm[n]) for n in LEFT+RIGHT)>1.1 or max(abs(goal_waist[n]-start_waist[n]) for n in WAIST)>.45:raise RuntimeError('upper-body pregrasp target exceeds bounded delta')
+ if START_MARKER is not None:
+  deadline=time.monotonic()+55.0
+  while time.monotonic()<deadline and not os.path.exists(START_MARKER):
+   n.send(start_arm,start_waist,.02,'DOCK_HOLD')
+  if not os.path.exists(START_MARKER):raise RuntimeError('upper-body pregrasp start marker timed out')
+ steps=max(1,int(DURATION/.02))
+ for i in range(steps):
+  u=(i+1)/steps;u=3*u*u-2*u*u*u;n.send({n_:start_arm[n_]+u*(goal_arm[n_]-start_arm[n_]) for n_ in LEFT+RIGHT},{n_:start_waist[n_]+u*(goal_waist[n_]-start_waist[n_]) for n_ in WAIST},.02,'APPROACH')
+ n.send(goal_arm,goal_waist,HOLD,'PREGRASP_HOLD');reached_arm={n_:float(n.arm[n_]) for n_ in LEFT+RIGHT};reached_waist={n_:float(n.waist[n_]) for n_ in WAIST}
+ for i in range(steps):
+  u=(i+1)/steps;u=3*u*u-2*u*u*u;n.send({n_:goal_arm[n_]+u*(start_arm[n_]-goal_arm[n_]) for n_ in LEFT+RIGHT},{n_:goal_waist[n_]+u*(start_waist[n_]-goal_waist[n_]) for n_ in WAIST},.02,'RESTORE')
+ n.send(start_arm,start_waist,.5,'RESTORE_HOLD');restored_arm={n_:float(n.arm[n_]) for n_ in LEFT+RIGHT};restored_waist={n_:float(n.waist[n_]) for n_ in WAIST}
+ max_goal_arm=max(abs(reached_arm[n_]-goal_arm[n_]) for n_ in LEFT+RIGHT);max_goal_waist=max(abs(reached_waist[n_]-goal_waist[n_]) for n_ in WAIST);max_restore=max([abs(restored_arm[n_]-start_arm[n_]) for n_ in LEFT+RIGHT]+[abs(restored_waist[n_]-start_waist[n_]) for n_ in WAIST])
+ drift=math.hypot(n.odom[-1][0]-n.odom[0][0],n.odom[-1][1]-n.odom[0][1]) if len(n.odom)>=2 else None;stable=len(n.odom)>=100 and drift is not None and drift<=.05 and n.tilt and max(n.tilt)<=math.radians(15)
+ print(json.dumps({'arm_subscription_count':n.arm_pub.get_subscription_count(),'waist_subscription_count':n.waist_pub.get_subscription_count(),'start_arm_rad':start_arm,'start_waist_rad':start_waist,'goal_arm_rad':goal_arm,'goal_waist_rad':goal_waist,'reached_arm_rad':reached_arm,'reached_waist_rad':reached_waist,'restored_arm_rad':restored_arm,'restored_waist_rad':restored_waist,'max_goal_arm_error_rad':max_goal_arm,'max_goal_waist_error_rad':max_goal_waist,'max_restore_error_rad':max_restore,'response_pass':max_goal_arm<=.08 and max_goal_waist<=.05 and max_restore<=.04,'motion_stability':{'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None,'pass':stable},'trace':n.trace}))
+finally:n.destroy_node();rclpy.shutdown()
+""".replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__WAIST_TARGET__", json.dumps(waist_target)).replace("__ARM_GAINS__", serialized_arm_gains).replace("__WAIST_GAINS__", serialized_waist_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__START_MARKER__", marker_literal)
+
+
+def build_hal_waist_pd_probe_script(gains: dict[str, tuple[float, float]]) -> str:
+    """Probe the delivered waist HAL channel with its own source gains.
+
+    This is deliberately a 0.03-rad round trip.  It establishes whether the
+    simulator's documented waist command subscriber can coexist with native
+    STAND_DEFAULT before any grasp posture is attempted.
+    """
+    selected = {name: gains[name] for name in ("waist_yaw_joint", "waist_pitch_joint", "waist_roll_joint")}
+    serialized = json.dumps({name: [stiffness, damping] for name, (stiffness, damping) in selected.items()}, sort_keys=True)
+    return """#!/usr/bin/env python3
+import json, math, time, rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
+ORDER=('waist_yaw_joint','waist_pitch_joint','waist_roll_joint'); TARGET='waist_roll_joint'; GAINS=__GAINS__
+class Probe(Node):
+ def __init__(self):
+  super().__init__('robotsim_stl_hal_waist_pd_probe'); q=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT); self.state={}; self.odom=[]; self.tilt=[]
+  self.create_subscription(JointStateArray,'/aima/hal/joint/waist/state',lambda m:setattr(self,'state',{x.name:float(x.position) for x in m.joints}),q)
+  self.create_subscription(Odometry,'/aima/hal/odom/state',lambda m:self.odom.append((float(m.pose.pose.position.x),float(m.pose.pose.position.y))),q)
+  self.create_subscription(Imu,'/aima/hal/imu/torso/state',self.imu,q); self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/waist/command',q)
+ def imu(self,m):
+  q=m.orientation; p=math.asin(max(-1.,min(1.,2*(q.w*q.y-q.z*q.x)))); r=math.atan2(2*(q.w*q.x+q.y*q.z),1-2*(q.x*q.x+q.y*q.y)); self.tilt.append(max(abs(r),abs(p)))
+ def spin(self,s):
+  end=time.monotonic()+s
+  while rclpy.ok() and time.monotonic()<end:rclpy.spin_once(self,timeout_sec=.002)
+ def send(self,target,s):
+  end=time.monotonic()+s; seq=0
+  while rclpy.ok() and time.monotonic()<end:
+   m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hal_waist_probe';m.header.sequence=seq
+   for n in ORDER:
+    x=JointCommand();x.name=n;x.position=float(target[n]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[n][0]);x.damping=float(GAINS[n][1]);m.joints.append(x)
+   self.pub.publish(m);rclpy.spin_once(self,timeout_sec=.002);seq+=1;time.sleep(.01)
+rclpy.init();n=Probe()
+try:
+ n.spin(2.0);
+ if any(k not in n.state for k in ORDER):raise RuntimeError('missing complete waist state')
+ start={k:float(n.state[k]) for k in ORDER}; target=dict(start);target[TARGET]+=0.03; subs=n.pub.get_subscription_count();n.send(target,2.);moved=float(n.state.get(TARGET,float('nan')));n.send(start,2.);restored=float(n.state.get(TARGET,float('nan')))
+ drift=math.hypot(n.odom[-1][0]-n.odom[0][0],n.odom[-1][1]-n.odom[0][1]) if len(n.odom)>=2 else None; stability={'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None};stability['pass']=stability['sample_count']>=100 and drift is not None and drift<=.05 and stability['max_tilt_rad'] is not None and stability['max_tilt_rad']<=math.radians(15); delta=moved-start[TARGET]; err=abs(restored-start[TARGET]);print(json.dumps({'subscription_count':subs,'source_gains':GAINS[TARGET],'start_rad':start[TARGET],'goal_rad':target[TARGET],'moved_rad':moved,'restored_rad':restored,'delta_rad':delta,'restore_error_rad':err,'response_pass':subs>=1 and .005<=delta<=.08 and err<=.04,'motion_stability':stability}))
+finally:n.destroy_node();rclpy.shutdown()
 """.replace("__GAINS__", serialized)
 
 
@@ -586,9 +965,13 @@ class Capture(Node):
         self.create_subscription(JointStateArray,'/aima/hal/joint/waist/state',self.on_waist,qos)
         self.create_subscription(Odometry,'/aima/hal/odom/state',self.on_odom,qos)
         self.create_subscription(Imu,'/aima/hal/imu/torso/state',self.on_imu,qos)
-    def on_arm(self,msg): self.arm={item.name:float(item.position) for item in msg.joints}
-    def on_leg(self,msg): self.leg={item.name:float(item.position) for item in msg.joints}
-    def on_waist(self,msg): self.waist={item.name:float(item.position) for item in msg.joints}
+    # The delivered HAL can publish a transient partial JointStateArray when
+    # STAND_DEFAULT switches its internal runners.  Retain the latest value
+    # per named joint until a complete sampled state is available instead of
+    # mistaking that transient packet for an erased robot state.
+    def on_arm(self,msg): self.arm.update({item.name:float(item.position) for item in msg.joints})
+    def on_leg(self,msg): self.leg.update({item.name:float(item.position) for item in msg.joints})
+    def on_waist(self,msg): self.waist.update({item.name:float(item.position) for item in msg.joints})
     def on_odom(self,msg):
         p,q=msg.pose.pose.position,msg.pose.pose.orientation
         self.odom.append((float(p.x),float(p.y),float(p.z),float(q.w),float(q.x),float(q.y),float(q.z)))
@@ -596,8 +979,11 @@ class Capture(Node):
         q=msg.orientation; pitch=math.asin(max(-1.0,min(1.0,2.0*(q.w*q.y-q.z*q.x)))); roll=math.atan2(2.0*(q.w*q.x+q.y*q.z),1.0-2.0*(q.x*q.x+q.y*q.y)); self.tilt.append(max(abs(roll),abs(pitch)))
 rclpy.init(); node=Capture()
 try:
-    end=time.monotonic()+2.0
-    while rclpy.ok() and time.monotonic()<end: rclpy.spin_once(node,timeout_sec=0.02)
+    end=time.monotonic()+4.0
+    while rclpy.ok() and time.monotonic()<end:
+        rclpy.spin_once(node,timeout_sec=0.02)
+        if all(name in node.arm for name in ARM_ORDER) and all(name in node.leg for name in LEG_ORDER) and all(name in node.waist for name in WAIST_ORDER) and len(node.odom)>=100:
+            break
     if any(name not in node.arm for name in ARM_ORDER): raise RuntimeError('missing complete arm state')
     if any(name not in node.leg for name in LEG_ORDER): raise RuntimeError('missing complete leg state')
     if any(name not in node.waist for name in WAIST_ORDER): raise RuntimeError('missing complete waist state')
@@ -638,12 +1024,13 @@ rclpy.init(); node=Capture()
 try:
     end=time.monotonic()+2.0
     while rclpy.ok() and time.monotonic()<end: rclpy.spin_once(node,timeout_sec=0.02)
-    expected={'arm':ARM_ORDER,'leg':LEG_ORDER,'waist':WAIST_ORDER}
+    expected={'leg':LEG_ORDER,'waist':WAIST_ORDER}
     for area,names in expected.items():
         if node.samples[area] < 10 or any(name not in node.commands[area] for name in names): raise RuntimeError('missing complete '+area+' command stream')
         for name in names:
             if not all(math.isfinite(node.commands[area][name][field]) for field in ('position','velocity','effort','stiffness','damping')): raise RuntimeError('non-finite '+area+' command')
-    print(json.dumps({'sample_counts':node.samples,'arm_commands':{name:node.commands['arm'][name] for name in ARM_ORDER},'leg_commands':{name:node.commands['leg'][name] for name in LEG_ORDER},'waist_commands':{name:node.commands['waist'][name] for name in WAIST_ORDER}}))
+    arm_complete=all(name in node.commands['arm'] for name in ARM_ORDER)
+    print(json.dumps({'sample_counts':node.samples,'arm_command_stream_complete':arm_complete,'arm_commands':{name:node.commands['arm'][name] for name in ARM_ORDER} if arm_complete else {},'leg_commands':{name:node.commands['leg'][name] for name in LEG_ORDER},'waist_commands':{name:node.commands['waist'][name] for name in WAIST_ORDER}}))
 finally:
     node.destroy_node(); rclpy.shutdown()
 """
@@ -792,6 +1179,7 @@ def main() -> None:
     parser.add_argument("--request-upperbody-split", action="store_true", help="switch from SD to the delivered US upper-body remote split mode before any arm probe")
     parser.add_argument("--run-hal-arm-probe", action="store_true", help="direct 0.03 rad wrist probe on the delivered HAL arm command channel during SD")
     parser.add_argument("--run-hal-arm-pd-probe", action="store_true", help="direct 0.03 rad shoulder position/stiffness probe using the delivered remote-controller gains")
+    parser.add_argument("--run-hal-waist-pd-probe", action="store_true", help="direct 0.03 rad waist-roll probe using delivered waist gains during native standing")
     parser.add_argument("--run-hal-arm-plan", action="store_true", help="execute one bounded right-arm pregrasp plan from a static IK validation result")
     parser.add_argument("--ik-validation-result", type=Path, help="hash-validated static standing IK result required by --run-hal-arm-plan")
     parser.add_argument("--ik-validation-result-sha256", help="SHA-256 paired with --ik-validation-result")
@@ -802,7 +1190,7 @@ def main() -> None:
     parser.add_argument("--disable-mc-arm-publisher", action="store_true", help="SIMULATION_ONLY: evidence-local MC config disables only arm HAL publishing for the direct arm probe")
     args = parser.parse_args()
     plan_inputs = (args.ik_validation_result, args.ik_validation_result_sha256)
-    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.request_upperbody_split and not (args.start_mc and args.request_stand)) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand and args.request_upperbody_split)) or (args.run_upper_body_probe_in_stand and not (args.start_mc and args.request_stand)) or (args.run_hal_arm_probe and not (args.start_mc and args.request_stand)) or (args.run_hal_arm_pd_probe and not (args.start_mc and args.request_stand and args.disable_mc_arm_publisher)) or (args.capture_arm_state and not (args.start_mc and args.request_stand)) or (args.capture_stand_commands and not (args.start_mc and args.request_stand)) or (args.run_hal_arm_plan and not (args.start_mc and args.request_stand and args.disable_mc_arm_publisher and all(plan_inputs))) or ((not args.run_hal_arm_plan) and any(plan_inputs)) or (args.disable_mc_arm_publisher and not (args.start_mc and (args.run_hal_arm_probe or args.run_hal_arm_pd_probe or args.run_hal_arm_plan))):
+    if not args.overlay_result.is_file() or not 2.0 <= args.startup_timeout_s <= 35.0 or not -1.0 <= args.probe_command_position <= 1.0 or (args.request_stand and not args.start_mc) or (args.request_upperbody_split and not (args.start_mc and args.request_stand)) or (args.run_upper_body_probe and not (args.start_mc and args.request_stand and args.request_upperbody_split)) or (args.run_upper_body_probe_in_stand and not (args.start_mc and args.request_stand)) or (args.run_hal_arm_probe and not (args.start_mc and args.request_stand)) or (args.run_hal_arm_pd_probe and not (args.start_mc and args.request_stand and args.disable_mc_arm_publisher)) or (args.run_hal_waist_pd_probe and not (args.start_mc and args.request_stand)) or (args.capture_arm_state and not (args.start_mc and args.request_stand)) or (args.capture_stand_commands and not (args.start_mc and args.request_stand)) or (args.run_hal_arm_plan and not (args.start_mc and args.request_stand and all(plan_inputs))) or ((not args.run_hal_arm_plan) and any(plan_inputs)) or (args.disable_mc_arm_publisher and not (args.start_mc and (args.run_hal_arm_probe or args.run_hal_arm_pd_probe or args.run_hal_arm_plan))):
         raise SystemExit("overlay result and a startup timeout in [2,35] seconds are required")
     if args.run_hal_arm_plan and (not 4.0 <= args.arm_plan_duration_s <= 12.0 or not 0.5 <= args.arm_plan_hold_s <= 2.0):
         raise SystemExit("arm plan duration/hold are outside bounded range")
@@ -816,7 +1204,7 @@ def main() -> None:
         "overlay_result": {"path": str(args.overlay_result), "sha256": sha256(args.overlay_result)},
         "generated_inputs": {label: {"path": str(path), "sha256": sha256(path)} for label, path in inputs.items()},
         "container": container,
-        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "MC_STAND_COMMAND_CAPTURE": "NOT_RUN", "HAL_ARM_COMMAND_ROUNDTRIP": "NOT_RUN", "HAL_ARM_COMMAND_STAND_STABILITY": "NOT_RUN", "HAL_ARM_PD_COMMAND_ROUNDTRIP": "NOT_RUN", "HAL_ARM_PD_COMMAND_STAND_STABILITY": "NOT_RUN", "HAL_ARM_PLAN_ROUNDTRIP": "NOT_RUN", "HAL_ARM_PLAN_STAND_STABILITY": "NOT_RUN", "HAL_ARM_PLAN_RESTORE": "NOT_RUN", "UPPERBODY_SPLIT_REQUEST": "NOT_RUN", "UPPERBODY_SPLIT_READBACK": "NOT_RUN", "UPPER_BODY_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_COMMAND_STAND_STABILITY": "NOT_RUN", "UPPER_BODY_STAND_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_STAND_COMMAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
+        "gates": {"HOST_PREFLIGHT": "NOT_RUN", "NATIVE_SIMULATOR_MODEL_LOAD": "NOT_RUN", "HAND_COMMAND_SUBSCRIBER": "NOT_RUN", "HAND_STATE_PUBLISHER": "NOT_RUN", "HAL_HAND_COMMAND_ROUNDTRIP": "NOT_RUN", "STL_HAND_COMMAND_STAND_STABILITY": "NOT_RUN", "MC_INITIALIZATION": "NOT_RUN", "NATIVE_STAND_REQUEST": "NOT_RUN", "NATIVE_STAND_READBACK": "NOT_RUN", "NATIVE_STAND_STABILITY": "NOT_RUN", "MC_STAND_COMMAND_CAPTURE": "NOT_RUN", "HAL_ARM_COMMAND_ROUNDTRIP": "NOT_RUN", "HAL_ARM_COMMAND_STAND_STABILITY": "NOT_RUN", "HAL_ARM_PD_COMMAND_ROUNDTRIP": "NOT_RUN", "HAL_ARM_PD_COMMAND_STAND_STABILITY": "NOT_RUN", "HAL_WAIST_PD_COMMAND_ROUNDTRIP": "NOT_RUN", "HAL_WAIST_PD_COMMAND_STAND_STABILITY": "NOT_RUN", "HAL_ARM_PLAN_ROUNDTRIP": "NOT_RUN", "HAL_ARM_PLAN_STAND_STABILITY": "NOT_RUN", "HAL_ARM_PLAN_RESTORE": "NOT_RUN", "UPPERBODY_SPLIT_REQUEST": "NOT_RUN", "UPPERBODY_SPLIT_READBACK": "NOT_RUN", "UPPER_BODY_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_COMMAND_STAND_STABILITY": "NOT_RUN", "UPPER_BODY_STAND_COMMAND_ROUNDTRIP": "NOT_RUN", "UPPER_BODY_STAND_COMMAND_STABILITY": "NOT_RUN", "DYNAMICS_QUALIFICATION": "NOT_RUN"},
         "limitations": ["No arm, upper-body, or locomotion command is published by this check.", "A successful SD request does not establish balance, physical contact, or grasp."],
     }
     try:
@@ -856,15 +1244,31 @@ def main() -> None:
             source_arm_gains = load_source_arm_pd_parameters()
             pg.write_new_text(output / "native_hal_arm_pd_probe.py", build_hal_arm_pd_probe_script(source_arm_gains))
             result["source_arm_pd_gains"] = {name: {"stiffness": stiffness, "damping": damping} for name, (stiffness, damping) in source_arm_gains.items()}
+        if args.run_hal_waist_pd_probe:
+            source_gains = load_source_arm_pd_parameters()
+            pg.write_new_text(output / "native_hal_waist_pd_probe.py", build_hal_waist_pd_probe_script(source_gains))
+            result["source_waist_pd_gains"] = {name: {"stiffness": source_gains[name][0], "damping": source_gains[name][1]} for name in ("waist_yaw_joint", "waist_pitch_joint", "waist_roll_joint")}
         if args.run_hal_arm_plan:
             assert args.ik_validation_result is not None and args.ik_validation_result_sha256 is not None
             if not args.ik_validation_result.is_file() or sha256(args.ik_validation_result) != args.ik_validation_result_sha256:
                 raise ValueError("IK validation result is missing or hash-mismatched")
             ik_payload = json.loads(args.ik_validation_result.read_text(encoding="utf-8"))
-            if ik_payload.get("classification") != "SIMULATION_ONLY_STATIC_EXTERNAL_IK_REFERENCE" or ik_payload.get("gates", {}).get("IK_CONVERGED") != "PASS" or ik_payload.get("gates", {}).get("POST_IK_TABLE_CLEARANCE") != "PASS":
+            external_ik = (
+                ik_payload.get("classification") == "SIMULATION_ONLY_STATIC_EXTERNAL_IK_REFERENCE"
+                and ik_payload.get("gates", {}).get("IK_CONVERGED") == "PASS"
+                and ik_payload.get("gates", {}).get("POST_IK_TABLE_CLEARANCE") == "PASS"
+            )
+            native_truth_ik = (
+                ik_payload.get("classification") == "SIMULATION_ONLY_STATIC_NATIVE_STAND_TRUTH_IK"
+                and all(ik_payload.get("gates", {}).get(name) == "PASS" for name in ("TRUTH_IK_ALIGNMENT", "JOINT_LIMIT_MARGIN", "TABLE_CLEARANCE", "OPEN_PREGRASP_NONPAD_CLEAR"))
+            )
+            if not (external_ik or native_truth_ik):
                 raise ValueError("IK validation does not pass standing/table preflight")
             right_target = ik_payload.get("ik", {}).get("right_arm_q_rad")
-            if not isinstance(right_target, list):
+            if native_truth_ik:
+                named_target = ik_payload.get("right_arm_q_rad")
+                right_target = [named_target.get(name) for name in RIGHT_ARM_ORDER] if isinstance(named_target, dict) else None
+            if not isinstance(right_target, list) or len(right_target) != len(RIGHT_ARM_ORDER):
                 raise ValueError("IK validation lacks right arm target")
             source_arm_gains = load_source_arm_pd_parameters()
             pg.write_new_text(output / "native_hal_arm_plan.py", build_hal_arm_plan_script(source_arm_gains, [float(value) for value in right_target], duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s))
@@ -943,6 +1347,16 @@ def main() -> None:
                     result["hal_arm_pd_probe"] = {"returncode": pd_probe.returncode, "result": pd_result, "stdout": pd_probe.stdout}
                     result["gates"]["HAL_ARM_PD_COMMAND_ROUNDTRIP"] = "PASS" if pd_probe.returncode == 0 and pd_result.get("response_pass") else "FAIL"
                     result["gates"]["HAL_ARM_PD_COMMAND_STAND_STABILITY"] = "PASS" if pd_probe.returncode == 0 and pd_result.get("motion_stability", {}).get("pass") else "FAIL"
+                if args.run_hal_waist_pd_probe and result["gates"]["NATIVE_STAND_STABILITY"] == "PASS":
+                    waist_probe = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 14s python3 /workspace/evidence/native_hal_waist_pd_probe.py"], timeout_s=16.0, check=False)
+                    pg.write_new_text(output / "native_hal_waist_pd_probe.stdout", waist_probe.stdout)
+                    try:
+                        waist_result = json.loads(waist_probe.stdout.strip().splitlines()[-1])
+                    except (IndexError, json.JSONDecodeError):
+                        waist_result = {"parse_error": True}
+                    result["hal_waist_pd_probe"] = {"returncode": waist_probe.returncode, "result": waist_result, "stdout": waist_probe.stdout}
+                    result["gates"]["HAL_WAIST_PD_COMMAND_ROUNDTRIP"] = "PASS" if waist_probe.returncode == 0 and waist_result.get("response_pass") else "FAIL"
+                    result["gates"]["HAL_WAIST_PD_COMMAND_STAND_STABILITY"] = "PASS" if waist_probe.returncode == 0 and waist_result.get("motion_stability", {}).get("pass") else "FAIL"
                 if args.run_hal_arm_plan and result["gates"]["NATIVE_STAND_STABILITY"] == "PASS":
                     plan = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 28s python3 /workspace/evidence/native_hal_arm_plan.py"], timeout_s=30.0, check=False)
                     pg.write_new_text(output / "native_hal_arm_plan.stdout", plan.stdout)
