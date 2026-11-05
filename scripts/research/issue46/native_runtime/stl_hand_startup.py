@@ -910,22 +910,26 @@ try:
  # One bounded closed-loop correction uses measured joint error. It is not a
  # gain change or a guessed offset: the target is recomputed from fresh state,
  # capped per joint, then subjected to the same TCP/pose gates.
- correction_target=dict(goal); correction_issued=False; correction_error=None
+ correction_target=dict(goal); correction_issued=False; correction_error=None; correction_iterations=0
  if CIRCLE_CONTRACT is not None and not arrival['pass'] and preclose_error<=.15:
-  for name in RIGHT:
-   delta=max(-.05,min(.05,goal[name]-reached[name]))
-   candidate=goal[name]+delta
-   limits=SOURCE_LIMITS.get(name)
-   if limits is None or not limits[0]+.01<=candidate<=limits[1]-.01:raise RuntimeError('CORRECTION_SOURCE_LIMIT:'+name)
-   correction_target[name]=candidate
-  correction_issued=True
-  n.send(correction_target,HOLD,'PREGRASP_CORRECTION',HAND_OPEN)
-  reached={n_:float(n.arm[n_]) for n_ in CONTROL}
-  correction_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
-  arrival=native_circle_arrival(CIRCLE_CONTRACT)
-  print(json.dumps({'native_tcp_arrival_after_correction':arrival,'correction_issued':correction_issued,'correction_error_rad':correction_error}),flush=True)
-  goal=correction_target
-  preclose_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
+  for correction_iterations in range(1,4):
+   if arrival['pass']:break
+   correction_target=dict(goal)
+   for name in RIGHT:
+    delta=max(-.05,min(.05,goal[name]-reached[name]))
+    candidate=goal[name]+delta
+    limits=SOURCE_LIMITS.get(name)
+    if limits is None or not limits[0]+.01<=candidate<=limits[1]-.01:raise RuntimeError('CORRECTION_SOURCE_LIMIT:'+name)
+    correction_target[name]=candidate
+   correction_issued=True
+   n.send(correction_target,HOLD,'PREGRASP_CORRECTION_'+str(correction_iterations),HAND_OPEN)
+   reached={n_:float(n.arm[n_]) for n_ in CONTROL}
+   correction_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
+   arrival=native_circle_arrival(CIRCLE_CONTRACT)
+   print(json.dumps({'native_tcp_arrival_after_correction':arrival,'correction_issued':correction_issued,'correction_error_rad':correction_error,'correction_iteration':correction_iterations}),flush=True)
+   goal=correction_target
+   preclose_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
+   if preclose_error>.15:break
  closure_issued=False
  # Retain the existing bilateral 0.08 rad execution threshold. Failed arm
  # tracking must never trigger closure just because the trajectory timer ended.
@@ -947,7 +951,7 @@ try:
  close_rows=[x for x in n.trace if x['stage']=='HAND_CLOSE_HOLD']
  contact_result=native_bilateral_contact(min((x['host_monotonic_s'] for x in close_rows),default=float('inf'))) if HAND_RIGHT is not None else {'pass':True,'classification':'NO_CLOSE_REQUESTED'}
  hand_pass=HAND_RIGHT is None or contact_result['pass']
- print(json.dumps({'native_tcp_arrival':arrival,'correction_issued':correction_issued,'correction_error_rad':correction_error,'preclose_waist_error_rad':preclose_waist_error,'preclose_arm_error_rad':preclose_error,'closure_issued':closure_issued,'arm_feedback_fresh':n.arm_fresh(),'arm_callback_count':n.arm_callbacks,'arm_late_sample_discard_count':n.arm_regressions,'hand_mapping_status':'COMMAND_SENT; native qpos/actuator mapping not yet calibrated','physical_bilateral_contact':contact_result}),flush=True)
+ print(json.dumps({'native_tcp_arrival':arrival,'correction_issued':correction_issued,'correction_error_rad':correction_error,'correction_iterations':correction_iterations,'preclose_waist_error_rad':preclose_waist_error,'preclose_arm_error_rad':preclose_error,'closure_issued':closure_issued,'arm_feedback_fresh':n.arm_fresh(),'arm_callback_count':n.arm_callbacks,'arm_late_sample_discard_count':n.arm_regressions,'hand_mapping_status':'COMMAND_SENT; native qpos/actuator mapping not yet calibrated','physical_bilateral_contact':contact_result}),flush=True)
  print(json.dumps({'plan_mode':'ROUND_TRIP' if RESTORE else ('PREGRASP_CLOSE_HOLD' if HAND_RIGHT is not None else 'PREGRASP_HOLD'),'subscription_count':n.pub.get_subscription_count(),'hand_subscription_count':n.hand_pub.get_subscription_count(),'start_arm_rad':start,'state_fallback_joint_names':fallback_used,'goal_arm_rad':goal,'reached_arm_rad':reached,'restored_arm_rad':restored,'right_hand_command':HAND_RIGHT,'physical_bilateral_contact':contact_result,'final_hand_state_rad':n.hand,'hand_response_pass':hand_pass,'max_goal_error_rad':max_goal,'max_restore_error_rad':max_restore,'response_pass':max_goal<=.08 and preclose_waist_error<=.05 and hand_pass and ((not RESTORE) or max_restore<=.04),'motion_stability':{'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None,'pass':stable},'trace':n.trace}))
 finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
