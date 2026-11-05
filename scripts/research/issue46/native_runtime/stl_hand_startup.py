@@ -774,7 +774,7 @@ class Plan(Node):
   # The simulator may publish the two arm groups in separate messages.  Merge
   # named samples so a later partial packet cannot discard the already-read
   # opposite-arm state before the bounded plan begins.
-  self.arm_receipt={};self.arm_stamp={};self.arm_callbacks=0;self.run_started=time.monotonic();self.last_trace_at=None
+  self.arm_receipt={};self.arm_stamp={};self.arm_regressions=0;self.arm_callbacks=0;self.run_started=time.monotonic();self.last_trace_at=None
   self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',self.on_arm,q)
   self.waist_pub=None
   if WAIST:
@@ -791,13 +791,14 @@ class Plan(Node):
    old=self.arm_stamp.get(item.name)
    if old is not None and stamp<old:
     fault={'gate':'REGRESSING_ARM_STATE','joint':item.name,'previous_source_stamp_ns':old,'received_source_stamp_ns':stamp,'regression_ns':old-stamp,'host_receipt_monotonic_s':now,'last_unique_receipt_monotonic_s':self.arm_receipt.get(item.name),'arm_callback_count':self.arm_callbacks,'control_sequence':self.seq}
-    print(json.dumps({'arm_feedback_fault':fault}),flush=True)
-    # Initial DDS history may arrive out of order during subscription warmup.
-    # Before any control publish only: reject the old frame without updating
-    # position, timestamp or receipt age. All axes must still qualify fresh at
-    # the fixed startup deadline. A regression during control remains fatal.
-    if self.seq==0:continue
-    raise RuntimeError('REGRESSING_ARM_STATE:'+json.dumps(fault))
+    self.arm_regressions+=1
+    print(json.dumps({'arm_feedback_late_sample_discarded':fault,'regression_count':self.arm_regressions}),flush=True)
+    # DDS can deliver an older source-stamped frame after a newer one. Never
+    # apply or refresh from it. Keep consuming only strictly increasing frames;
+    # if those stop, arm_fresh() fails against the last unique receipt age.
+    if now-self.arm_receipt.get(item.name,0.)>.20:
+     raise RuntimeError('STALE_ARM_FEEDBACK_AFTER_SOURCE_REGRESSION:'+json.dumps(fault))
+    continue
    if stamp>0 and (old is None or stamp>old):
     self.arm[item.name]=float(item.position);self.arm_receipt[item.name]=now;self.arm_stamp[item.name]=stamp
  def arm_fresh(self,max_age=.20):
@@ -835,7 +836,7 @@ class Plan(Node):
    if self.last_trace_at is None or time.monotonic()-self.last_trace_at>=.05:
     err=max(abs(float(self.arm.get(name,float('nan')))-target[name]) for name in LEFT+RIGHT) if all(name in self.arm for name in LEFT+RIGHT) else float('inf')
     self.last_trace_at=time.monotonic()
-    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'arm_fresh':self.arm_fresh(),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'published_target_rad':dict(target),'max_arm_error_rad':err,'waist':{n:self.arm.get(n) for n in WAIST},'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
+    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'arm_fresh':self.arm_fresh(),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'arm_regression_discard_count':self.arm_regressions,'published_target_rad':dict(target),'max_arm_error_rad':err,'waist':{n:self.arm.get(n) for n in WAIST},'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
    # Drain feedback during the remainder of the 50Hz period. Sleeping here
    # starved callbacks from 1000Hz arm + 500Hz IMU/odom subscriptions.
    next_tick+=.02
@@ -884,7 +885,7 @@ try:
  # Do not promote a normalized zero command, absent feedback, or q~=0 into a
  # physical-grasp acknowledgement. Preserve observations pending calibration.
  hand_pass=HAND_RIGHT is None
- print(json.dumps({'native_tcp_arrival':arrival,'preclose_waist_error_rad':preclose_waist_error,'preclose_arm_error_rad':preclose_error,'closure_issued':closure_issued,'arm_feedback_fresh':n.arm_fresh(),'arm_callback_count':n.arm_callbacks,'hand_mapping_status':'UNVERIFIED_RUNTIME_MAPPING','physical_bilateral_contact':'NOT_OBSERVED'}),flush=True)
+ print(json.dumps({'native_tcp_arrival':arrival,'preclose_waist_error_rad':preclose_waist_error,'preclose_arm_error_rad':preclose_error,'closure_issued':closure_issued,'arm_feedback_fresh':n.arm_fresh(),'arm_callback_count':n.arm_callbacks,'arm_late_sample_discard_count':n.arm_regressions,'hand_mapping_status':'UNVERIFIED_RUNTIME_MAPPING','physical_bilateral_contact':'NOT_OBSERVED'}),flush=True)
  print(json.dumps({'plan_mode':'ROUND_TRIP' if RESTORE else ('PREGRASP_CLOSE_HOLD' if HAND_RIGHT is not None else 'PREGRASP_HOLD'),'subscription_count':n.pub.get_subscription_count(),'hand_subscription_count':n.hand_pub.get_subscription_count(),'start_arm_rad':start,'state_fallback_joint_names':fallback_used,'goal_arm_rad':goal,'reached_arm_rad':reached,'restored_arm_rad':restored,'right_hand_command':HAND_RIGHT,'final_hand_state_rad':n.hand,'hand_response_pass':hand_pass,'max_goal_error_rad':max_goal,'max_restore_error_rad':max_restore,'response_pass':max_goal<=.08 and preclose_waist_error<=.05 and hand_pass and ((not RESTORE) or max_restore<=.04),'motion_stability':{'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None,'pass':stable},'trace':n.trace}))
 finally:n.destroy_node();rclpy.shutdown()
 """.replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract))

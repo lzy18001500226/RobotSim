@@ -26,7 +26,7 @@ class FeedbackTests(unittest.TestCase):
         self.ns={'time':NS(monotonic=lambda:self.clock.now),'math':math,'LEFT':('left',),'RIGHT':('right',),'CONTROL':('left','right')}
         exec(compile(ast.Module(body=[cls],type_ignores=[]),'runtime','exec'),self.ns)
         self.ns['json']=json
-        self.n=self.ns['Plan']();self.n.arm={};self.n.arm_stamp={};self.n.arm_receipt={};self.n.arm_callbacks=0;self.n.seq=0
+        self.n=self.ns['Plan']();self.n.arm={};self.n.arm_stamp={};self.n.arm_receipt={};self.n.arm_callbacks=0;self.n.arm_regressions=0;self.n.seq=0
 
     def message(self,stamp,names=('left','right'),position=.1):
         return NS(header=NS(stamp=NS(sec=1,nanosec=stamp)),joints=[NS(name=n,position=position) for n in names])
@@ -42,13 +42,13 @@ class FeedbackTests(unittest.TestCase):
     def test_regression_and_nonfinite_fail_closed(self):
         self.n.on_arm(self.message(2))
         self.n.seq=1
-        with self.assertRaisesRegex(RuntimeError,'REGRESSING'):self.n.on_arm(self.message(1))
+        self.n.on_arm(self.message(1,position=.8));self.assertEqual(self.n.arm['left'],.1);self.assertEqual(self.n.arm_regressions,2);self.assertTrue(self.n.arm_fresh())
         with self.assertRaisesRegex(RuntimeError,'NONFINITE'):self.n.on_arm(self.message(3,position=float('nan')))
 
     def test_initial_history_disorder_never_refreshes_freshness(self):
         self.n.on_arm(self.message(20));receipts=dict(self.n.arm_receipt)
         self.clock.now+=.3
-        self.n.on_arm(self.message(10,position=.8))
+        with self.assertRaisesRegex(RuntimeError,'STALE_ARM_FEEDBACK'):self.n.on_arm(self.message(10,position=.8))
         self.assertEqual(self.n.arm_receipt,receipts)
         self.assertEqual(self.n.arm['left'],.1)
         self.assertEqual(self.n.arm_stamp['left'],1000000020)
@@ -63,7 +63,7 @@ class FeedbackTests(unittest.TestCase):
     def test_full_run_trace_and_callback_drain(self):
         self.assertIn('self.spin(max(0,min(next_tick,end)-time.monotonic()))',self.code)
         self.assertIn('self.last_trace_at-self.run_started',self.code)
-        self.assertIn('arm_source_stamp_ns',self.code)
+        self.assertIn('arm_source_stamp_ns',self.code);self.assertIn('arm_regression_discard_count',self.code)
         self.assertNotIn('time.sleep(max(0,next_tick-time.monotonic()))',self.code)
         compile(self.code,'generated_pregrasp.py','exec')
 
