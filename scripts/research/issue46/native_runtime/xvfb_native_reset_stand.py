@@ -92,29 +92,41 @@ from rclpy.node import Node
 from aimdk_msgs.msg import CommonRequest, McActionCommand, RequestHeader
 from aimdk_msgs.srv import GetMcAction, SetMcAction
 
-def call(node, client, request):
+def call(node, client, request, attempts=8):
     if not client.wait_for_service(timeout_sec=5.0): raise RuntimeError('service unavailable')
     # The delivered MC endpoint can advertise before its executor completes
     # post-start initialization.  Use bounded short retries, matching the
     # existing stand client instead of treating a first missed readback as a
     # robot-control failure.
-    for _ in range(8):
+    for _ in range(attempts):
         future=client.call_async(request); rclpy.spin_until_future_complete(node,future,timeout_sec=.25)
         if future.done() and future.result() is not None: return future.result()
         time.sleep(.05)
     raise RuntimeError('service call timed out after 8 bounded retries')
 rclpy.init(); node=Node('robotsim_xvfb_native_prearm')
 try:
+    # A registered RPC endpoint preceded the installed ActionManager's initial
+    # PASSIVE_DEFAULT transition in the 175044Z trace. Observe initialized mode
+    # before sending the one SD request; never retry a rejected action.
+    get_client=node.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction')
+    readiness=[]
+    for _ in range(10):
+        r=GetMcAction.Request();r.request=CommonRequest();r.request.header.stamp=node.get_clock().now().to_msg()
+        info=call(node,get_client,r).info
+        readiness.append({'mode_name':info.action_desc,'mode_status':int(info.status.value)})
+        if info.action_desc in ('PASSIVE_DEFAULT','STAND_DEFAULT') and int(info.status.value)!=0:break
+        time.sleep(.3)
+    else:raise RuntimeError('MC action manager not initialized; no SD request sent:'+json.dumps(readiness))
     set_client=node.create_client(SetMcAction,'/aimdk_5Fmsgs/srv/SetMcAction')
     request=SetMcAction.Request(); request.header=RequestHeader(); request.header.stamp=node.get_clock().now().to_msg(); request.source='node'; request.command=McActionCommand(); request.command.action_desc='STAND_DEFAULT'
-    set_result=call(node,set_client,request)
+    set_result=call(node,set_client,request,attempts=1)
     get_client=node.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction'); samples=[]
     for _ in range(10):
         get_request=GetMcAction.Request(); get_request.request=CommonRequest(); get_request.request.header.stamp=node.get_clock().now().to_msg(); get_result=call(node,get_client,get_request)
         sample={'mode_name':get_result.info.action_desc,'mode_status':int(get_result.info.status.value)}; samples.append(sample)
         if sample['mode_name']=='STAND_DEFAULT': break
         time.sleep(0.3)
-    print(json.dumps({'set_status':int(set_result.response.status.value),'set_message':set_result.response.message,'mode_name':samples[-1]['mode_name'],'mode_status':samples[-1]['mode_status'],'mode_samples':samples}))
+    print(json.dumps({'initialization_readbacks':readiness,'set_header_code':int(set_result.response.header.code),'set_status':int(set_result.response.status.value),'set_message':set_result.response.message,'mode_name':samples[-1]['mode_name'],'mode_status':samples[-1]['mode_status'],'mode_samples':samples}))
 finally:
     node.destroy_node(); rclpy.shutdown()
 """
