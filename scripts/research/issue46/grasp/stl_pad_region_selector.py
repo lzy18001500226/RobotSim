@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Create a human selector for possible OmniPicker textured contact regions.
+"""Review approved lower pad arcs and bounded numerical clearance circles.
 
-The official Link3 STL meshes have no material groups for the black rubber.
-This page deliberately exposes several reproducible geometric candidates rather
-than silently deciding which one is the contact surface.  It runs only
-``mj_forward`` to animate the already frozen STL joint table.
+The official meshes and frozen joint table are unchanged; only ``mj_forward``
+is used. The circle is an offline source-triangle section, not grasp physics.
 """
 from __future__ import annotations
 
@@ -13,6 +11,7 @@ import json
 from pathlib import Path
 import struct
 import sys
+from stl_lower_arc_circle import scan_scene
 
 import mujoco
 import numpy as np
@@ -40,6 +39,12 @@ RULES = {
 DENSE_TRIANGLE_AREA_M2 = 0.1e-6
 MIN_COMPONENT_TRIANGLES = 50
 REVIEW_SEED_FACES = {"R_hand_narrow3_Link": 4406, "R_hand_wide3_Link": 16751}
+# Source-STL local X runs from the Link3 pivot toward its distal end.
+# The lower curved band meets the upper approximately planar tip near 31.45 mm.
+# These fixed face-selection bounds are exposed for human review, not adopted
+# as a manufacturer material/functional annotation.
+BOTTLE_ARC_MAX_SOURCE_X_M = 0.031453
+BOTTLE_ARC_MIN_INNER_Y_M = 0.012
 
 
 def sha256(path: Path) -> str:
@@ -160,6 +165,10 @@ def pad_candidates(model: mujoco.MjModel, body: str) -> dict[str, object]:
     compiled_seed = model.mesh_vert[model.mesh_vertadr[mesh] + indices]
     if not np.allclose(converted[seed], compiled_seed, atol=1e-8, rtol=0):
         raise RuntimeError(f"source/compiled seed triangle mismatch for {body}")
+    face_start, face_count = int(model.mesh_faceadr[mesh]), int(model.mesh_facenum[mesh])
+    compiled = model.mesh_vert[model.mesh_vertadr[mesh] + model.mesh_face[face_start:face_start + face_count]]
+    if compiled.shape != converted.shape or not np.allclose(converted, compiled, atol=1e-8, rtol=0):
+        raise RuntimeError(f"full source/compiled triangle mapping mismatch for {body}")
     shell = shell_labels == shell_labels[seed]
     shell_points = raw[shell].reshape(-1, 3)
     low, high = shell_points.min(axis=0) - 1e-6, shell_points.max(axis=0) + 1e-6
@@ -171,6 +180,14 @@ def pad_candidates(model: mujoco.MjModel, body: str) -> dict[str, object]:
         points = raw[mask].reshape(-1, 3)
         if np.all(points.min(axis=0) >= low) and np.all(points.max(axis=0) <= high):
             complete |= mask
+    inward_sign = -1.0 if rule["sense"] == "lt" else 1.0
+    bottle_arc = (
+        complete
+        & (centroid[:, 0] <= BOTTLE_ARC_MAX_SOURCE_X_M)
+        & (inward_sign * centroid[:, 1] >= BOTTLE_ARC_MIN_INNER_Y_M)
+    )
+    if not bottle_arc[seed]:
+        raise RuntimeError(f"bottle-arc candidate lost the human contact seed for {body}")
     dense = inner & (area <= DENSE_TRIANGLE_AREA_M2)
     dense_indices = np.flatnonzero(dense)
     labels = connected_components(raw[dense])
@@ -180,6 +197,7 @@ def pad_candidates(model: mujoco.MjModel, body: str) -> dict[str, object]:
         reverse=True,
     )
     candidates = {
+        "bottle_arc_review": mesh_candidate(converted, bottle_arc, "下方瓶身凹弧面（用户已确认）", "完整包胶候选区域内，排除源 STL 局部 X 大于 31.453 mm 的上方尖端区，保留朝内侧 Y 大于 12 mm 的下方弯曲带；固定三角形集合覆盖全开合行程。"),
         "rubber_shell_review": mesh_candidate(converted, complete, "完整包胶块高亮（待视觉审核）", "从人工种子沿双面边邻接扩展，以多面接缝分区；补入壳包围范围内的纹理/封口碎片。包含下部、侧面和封口候选面，尚未认定材质或闭合实体。"),
         "dense_all_fragments": mesh_candidate(converted, dense, "全部内侧纹理高密度面（含无关碎片）", "对照项：包含所有小三角形纹理碎片，通常过宽，不应默认采用。"),
         "inner_surface_all": mesh_candidate(converted, inner, "全部内侧几何面（含非包胶区域）", "对照项：包含所有满足内侧坐标阈值的面，通常过宽，不应默认采用。"),
@@ -211,6 +229,7 @@ def pad_candidates(model: mujoco.MjModel, body: str) -> dict[str, object]:
         "source_mesh_sha256": sha256(source_path),
         "inner_rule": {**rule, "min_x_m": 0.018, "dense_triangle_area_mm2_le": DENSE_TRIANGLE_AREA_M2 * 1e6, "component_min_triangles": MIN_COMPONENT_TRIANGLES},
         "shell_review": {"seed_source_face": seed, "primary_skin_triangles": int(np.sum(shell)), "complete_highlight_triangles": int(np.sum(complete)), "source_face_indices": np.flatnonzero(complete).tolist(), "status": "PENDING_HUMAN_VISUAL_REVIEW", "watertight_certified": False},
+        "bottle_arc_review": {"seed_source_face": seed, "highlight_triangles": int(np.sum(bottle_arc)), "source_face_indices": np.flatnonzero(bottle_arc).tolist(), "source_local_bounds": {"centroid_x_max_m": BOTTLE_ARC_MAX_SOURCE_X_M, "signed_inner_centroid_y_min_m": BOTTLE_ARC_MIN_INNER_Y_M, "inner_y_sign": inward_sign}, "status": "USER_CONFIRMED_LOWER_ARC_20261105", "all_source_compiled_faces_verified": True},
         "candidates": candidates,
     }
 
@@ -226,6 +245,11 @@ def main() -> None:
     if contract.get("cylinder", {}).get("axis_unit_vector_in_gripper_frame") != [1.0, 0.0, 0.0]:
         raise RuntimeError("frozen orientation contract is not +X")
     model = loaded.model
+    frame_data = mujoco.MjData(model)
+    mujoco.mj_forward(model, frame_data)
+    base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "R_omnipicker_base_link")
+    if base < 0 or not np.allclose(frame_data.xpos[base], 0, atol=1e-12) or not np.allclose(frame_data.xmat[base].reshape(3, 3), np.eye(3), atol=1e-12):
+        raise RuntimeError("cross-section scan requires identity gripper-base/world transform")
     trajectory = load_registered_trajectory(loaded.package_path)
     pads = {body: pad_candidates(model, body) for body in RULES}
     geoms = []
@@ -253,8 +277,10 @@ def main() -> None:
         "meshes": meshes,
         "pads": pads,
         "poses": poses,
-        "selection_instruction": "Review the automatically highlighted full pad candidates, including their lower, side and capped surfaces. No dropdown selection, circle fitting or grasp is required.",
+        "selection_instruction": "The lower arc face selection was confirmed by the user. Review numerical cross-section circles; no grasp or dynamics is run.",
     }
+    payload["circle_review"] = scan_scene(payload)
+    payload["classification"] = "STATIC_LOWER_ARC_CIRCLE_REVIEW_ONLY"
     template = Path(__file__).with_name("stl_pad_region_selector.html")
     output = pg.create_unique_output_directory(EVIDENCE / "reviews/issue-46", prefix="stl-pad-region-selector").native_path
     scene = json.dumps(payload, separators=(",", ":"))
@@ -262,10 +288,17 @@ def main() -> None:
     if page.count("/*__SCENE_DATA__*/") != 1:
         raise RuntimeError("selector template lacks embedded scene marker")
     pg.write_new_text(output / "scene.json", scene)
+    pg.write_new_text(output / "circle_scan.json", json.dumps(payload["circle_review"], ensure_ascii=False, indent=2) + "\n")
+    rows = ["opening_percent,diameter_mm,center_x_m,center_y_m,center_z_m,status,center_on_height_boundary"]
+    for sample in payload["circle_review"]["samples"]:
+        rows.append(",".join(map(str, [sample["opening_percent"], sample.get("diameter_mm", ""), *sample.get("center_m", ["", "", ""]), sample["status"], sample.get("center_on_search_boundary", "")])))
+    pg.write_new_text(output / "circle_scan.csv", "\n".join(rows) + "\n")
     pg.write_new_text(output / "index.html", page.replace("/*__SCENE_DATA__*/", "window.SCENE_DATA=" + scene + ";"))
     result = {"schema": payload["schema"], "classification": payload["classification"], "mj_step_calls": 0, "model": payload["model"], "candidates": {body: {key: {"label": item["label"], "triangle_count": item["triangle_count"], "mesh_local_bbox_mm": item["mesh_local_bbox_mm"]} for key, item in pad["candidates"].items()} for body, pad in pads.items()}}
     pg.write_new_text(output / "result.json", json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     pg.write_new_bytes(output / Path(__file__).name, Path(__file__).read_bytes())
+    for name in ("stl_lower_arc_circle.py", "test_stl_lower_arc_circle.py", "stl_pad_region_selector.html"):
+        pg.write_new_bytes(output / name, Path(__file__).with_name(name).read_bytes())
     pg.write_artifact_manifest(output)
     print(json.dumps({"output_wsl": str(output), "candidates": result["candidates"], "mj_step_calls": 0}, ensure_ascii=False, indent=2))
 

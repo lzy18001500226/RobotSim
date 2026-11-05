@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>OmniPicker 完整包胶块高亮审核</title>
+<head><meta charset="utf-8"><title>OmniPicker 凹弧容纳圆审核 · 0–100%</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#101a23;color:#edf5f8;font:14px system-ui,sans-serif;overflow:hidden}
 #ui{position:fixed;z-index:2;inset:0 auto 0 0;width:330px;padding:20px;background:#142734;overflow:auto;border-right:1px solid #3b5566}
@@ -11,16 +11,19 @@ label{display:block;margin:12px 0 6px}input[type=range]{width:100%;accent-color:
 @media(max-width:700px){#ui{width:270px;padding:12px}#view{left:270px}h1{font-size:17px}}
 </style></head>
 <body><aside id="ui">
-<span class="badge">仅包胶区域视觉审核</span><h1>两块完整包胶候选区域<br>已经默认高亮</h1>
-<p><span class="orange">橙色：窄侧包胶块</span><br><span class="cyan">青色：宽侧包胶块</span></p>
-<p class="muted">请检查颜色是否覆盖整块包胶：纹理正面、弯下去的下半段、两侧和顶部封口。灰色为其余结构。</p>
-<label for="command">夹爪开合：<b id="commandValue">26</b>%</label><input id="command" type="range" min="0" max="100" step="1" value="26">
+<span class="badge">已确认接触区 · 截面几何审核</span><h1>下方凹弧容纳圆<br>0–100% 逐档计算</h1>
+<p><span class="orange">橙色：窄侧下方凹弧面</span><br><span class="cyan">青色：宽侧下方凹弧面</span></p>
+<p class="muted">接触区域沿用你确认的下方凹弧。黄色圆＝X=0 截面内的数值最大容纳圆；绿色点＝两侧最近点。灰色尖端和支架也参与截面避碰。</p>
+<label for="command">夹爪开合：<b id="commandValue">50</b>%</label><input id="command" type="range" min="0" max="100" step="1" value="50">
 <div><button data-command="0">闭合 0%</button><button data-command="50">50%</button><button data-command="100">张开 100%</button></div>
 <p>查看角度</p><div><button data-view="oblique">斜视</button><button data-view="front">正面</button><button data-view="back">背面</button><button data-view="bottom">底部</button><button data-view="side">侧面</button></div>
 <div><button id="isolate">只看两块高亮面</button><button id="wire">三角网格</button></div>
+<div><button id="circleToggle">隐藏圆</button><button id="bottleToggle">显示 70 mm 对照圆</button></div>
 <p id="status">正在加载高亮区域…</p><div id="info"></div>
-<p class="muted">左键拖动旋转，右键平移，滚轮缩放。滑块覆盖 0–100%。颜色表示本次提取区域，等待你的视觉确认。材质边界及封闭性尚未认证。</p>
-<p class="muted">本页不计算圆、不运行动力学。官方 STL、关节与碰撞模型保持原样。</p>
+<p>直径—开合曲线（点击选档）</p><svg id="curve" viewBox="0 0 280 125" style="width:100%;background:#0e1d27;border-radius:6px;cursor:pointer"></svg>
+<button id="download">下载 101 档数据 CSV</button>
+<p class="muted">圆心限定在两侧凹弧截面的共同高度与内侧间隙。开放凹槽不存在无限制的最大圆；这是该搜索域内的网格＋局部优化数值结果，未证明全局最优。黄点若落在灰色结构，不能当作凹弧双侧夹持。</p>
+<p class="muted">圆可超出接触带的高度，不添加实体封口。未验证有限长度瓶身、MuJoCo 凸包碰撞或抓取受力。仅静态截面，不运行动力学，不更改模型。</p>
 </aside><main id="view"></main>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
 <script>/*__SCENE_DATA__*/</script>
@@ -32,11 +35,16 @@ const camera=new T.PerspectiveCamera(43,1,.001,50);camera.up.set(0,0,1);
 const renderer=new T.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));viewport.appendChild(renderer.domElement);
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
 scene.add(new T.HemisphereLight(0xf3faff,0x293b4b,2.5));const light=new T.DirectionalLight(0xffffff,2.4);light.position.set(2,-2,4);scene.add(light);
-let command=26,isolate=false,wire=false,data;const entries=[];const neutral=new T.Color('#8196a6');
+let command=50,isolate=false,wire=false,data,showCircle=true,showBottle=false;const entries=[];const neutral=new T.Color('#8196a6');const overlay=new T.Group();scene.add(overlay);
 function transform(object,pose,id){const r=pose.rotation[id],p=pose.position[id];object.matrix.set(r[0],r[1],r[2],p[0],r[3],r[4],r[5],p[1],r[6],r[7],r[8],p[2],0,0,0,1);object.matrixWorldNeedsUpdate=true}
 function geometry(mesh,faceIds,color){const vertices=[],colors=[];for(const f of faceIds){for(let corner=0;corner<3;corner++){const i=mesh.faces[f*3+corner]*3;vertices.push(mesh.vertices[i],mesh.vertices[i+1],mesh.vertices[i+2]);colors.push(color.r,color.g,color.b)}}const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(vertices,3));g.setAttribute('color',new T.Float32BufferAttribute(colors,3));g.computeVertexNormals();return g}
 function material(){return new T.MeshStandardMaterial({vertexColors:true,roughness:.7,side:T.DoubleSide})}
-function update(){const pose=data.poses[command];for(const e of entries){transform(e.object,pose,e.id);e.object.visible=!(isolate&&e.structure);e.object.material.wireframe=wire}document.querySelector('#commandValue').textContent=command;document.querySelector('#status').textContent='高亮已完成 · 请审核完整范围';document.querySelector('#info').textContent=Object.entries(data.pads).map(([body,pad])=>`${body.includes('narrow')?'窄侧（橙色）':'宽侧（青色）'}\n高亮三角形：${pad.shell_review.complete_highlight_triangles}\n人工种子面：${pad.shell_review.seed_source_face}\n区域状态：等待视觉确认`).join('\n\n')}
+function polyline(points,color){const g=new T.BufferGeometry().setFromPoints(points.map(p=>new T.Vector3(...p)));const m=new T.LineBasicMaterial({color,depthTest:false,transparent:true,opacity:.95});const line=new T.Line(g,m);line.renderOrder=10;overlay.add(line)}
+function dot(p,color,size=.0008){const s=new T.Mesh(new T.SphereGeometry(size,12,8),new T.MeshBasicMaterial({color,depthTest:false}));s.position.set(...p);s.renderOrder=11;overlay.add(s)}
+function ring(c,r,color){polyline(Array.from({length:181},(_,i)=>[c[0],c[1]+r*Math.cos(i*Math.PI/90),c[2]+r*Math.sin(i*Math.PI/90)]),color)}
+function drawOverlay(s){while(overlay.children.length){const o=overlay.children[0];overlay.remove(o);o.geometry?.dispose();o.material?.dispose()}overlay.visible=showCircle;if(!s.center_m)return;const c=s.center_m;ring(c,s.radius_m,0xffe15d);if(showBottle)ring(c,.035,0xfa72dd);dot(c,0xffe15d);for(const p of s.pad_contact_points_m){dot(p,0x8cff8a);polyline([c,p],0x8cff8a)}dot(s.limiting_point_m,0xffe15d);for(const segs of s.arc_sections_m)for(const seg of segs)polyline(seg.map(p=>[0,...p]),0xffffff);const [lo,hi]=s.center_height_bounds_m;polyline([[0,c[1],lo],[0,c[1],hi]],0xa9b7c8)}
+function drawChart(){const values=data.circle_review.samples,max=Math.max(...values.map(s=>s.diameter_mm||0))*1.12;const points=values.map((s,i)=>`${10+i*2.6},${105-(s.diameter_mm||0)/max*90}`).join(' ');document.querySelector('#curve').innerHTML=`<text x="8" y="13" fill="#b7cad6" font-size="10">直径 mm / 最大 ${max.toFixed(1)}</text><polyline points="${points}" fill="none" stroke="#ffe15d" stroke-width="2"/><line x1="${10+command*2.6}" x2="${10+command*2.6}" y1="18" y2="108" stroke="#70e9f2"/><text x="10" y="120" fill="white" font-size="10">0%</text><text x="242" y="120" fill="white" font-size="10">100%</text>`}
+function update(){const pose=data.poses[command];for(const e of entries){transform(e.object,pose,e.id);e.object.visible=!(isolate&&e.structure);e.object.material.wireframe=wire}document.querySelector('#commandValue').textContent=command;const s=data.circle_review.samples[command];drawOverlay(s);drawChart();document.querySelector('#status').textContent=s.status==='BILATERAL_LOWER_ARC'?'双侧下凹弧共同约束 · 待审核':'其他结构或单侧约束 · 不能认定双侧抓取';document.querySelector('#info').textContent=s.center_m?`开合 ${command}%\n容纳圆直径：${s.diameter_mm.toFixed(3)} mm\n半径：${(s.radius_m*1000).toFixed(3)} mm\n圆心 XYZ（夹爪基座，mm）：\n${s.center_m.map(v=>(v*1000).toFixed(3)).join(', ')}\n两侧最近距离：\n${s.pad_distances_mm.map(v=>v.toFixed(3)).join(', ')} mm\n最紧限制：${s.nearest_geometry}\n圆心触及搜索高度边界：${s.center_on_search_boundary?'是（需注意边界效应）':'否'}\n70 mm 对照：${s.diameter_mm>=70?'此截面尺寸可容纳':'大于当前容纳圆'}\n\n黄色：容纳圆及圆心\n绿色：两侧最近点及半径\n白色：已确认凹弧的真实网格截线\n紫色：70 mm 对照（可开关）\n静态几何，不代表物理抓取通过`:s.status}
 function center(){const box=new T.Box3();for(const e of entries){if(!e.structure){e.object.updateMatrixWorld(true);box.expandByObject(e.object)}}return box.getCenter(new T.Vector3())}
 function setView(view){const c=center(),offset={oblique:[.18,-.16,.10],front:[.25,0,.005],back:[-.25,0,.005],bottom:[.015,0,-.25],side:[.02,-.25,.015]}[view];controls.target.copy(c);camera.position.copy(c).add(new T.Vector3(...offset));controls.update()}
 function resize(){const w=viewport.clientWidth,h=viewport.clientHeight;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h)}
@@ -44,11 +52,12 @@ try{
  data=window.SCENE_DATA;if(!data)throw Error('缺少场景数据');
  const byGeom=new Map(Object.entries(data.pads).map(([name,p])=>[String(p.geom),{name,p}]));
  for(const geom of data.geoms){const mesh=data.meshes[String(geom.mesh)],pad=byGeom.get(String(geom.id)),allFaces=Array.from({length:mesh.faces.length/3},(_,i)=>i);let rest=allFaces;
-  if(pad){const ids=pad.p.shell_review.source_face_indices,chosen=new Set(ids);rest=allFaces.filter(i=>!chosen.has(i));const color=new T.Color(pad.name.includes('narrow')?'#ff972c':'#35e3ef');const object=new T.Mesh(geometry(mesh,ids,color),material());object.matrixAutoUpdate=false;scene.add(object);entries.push({id:String(geom.id),object,structure:false})}
+  if(pad){const ids=pad.p.bottle_arc_review.source_face_indices,chosen=new Set(ids);rest=allFaces.filter(i=>!chosen.has(i));const color=new T.Color(pad.name.includes('narrow')?'#ff972c':'#35e3ef');const object=new T.Mesh(geometry(mesh,ids,color),material());object.matrixAutoUpdate=false;scene.add(object);entries.push({id:String(geom.id),object,structure:false})}
   const object=new T.Mesh(geometry(mesh,rest,neutral),material());object.matrixAutoUpdate=false;scene.add(object);entries.push({id:String(geom.id),object,structure:true});
  }
  document.querySelector('#command').oninput=e=>{command=+e.target.value;update()};for(const b of document.querySelectorAll('[data-command]'))b.onclick=()=>{command=+b.dataset.command;document.querySelector('#command').value=command;update()};for(const b of document.querySelectorAll('[data-view]'))b.onclick=()=>setView(b.dataset.view);
  document.querySelector('#isolate').onclick=()=>{isolate=!isolate;document.querySelector('#isolate').textContent=isolate?'显示其余结构':'只看两块高亮面';update()};document.querySelector('#wire').onclick=()=>{wire=!wire;update()};resize();update();setView('oblique');
+ document.querySelector('#circleToggle').onclick=()=>{showCircle=!showCircle;document.querySelector('#circleToggle').textContent=showCircle?'隐藏圆':'显示圆';update()};document.querySelector('#bottleToggle').onclick=()=>{showBottle=!showBottle;document.querySelector('#bottleToggle').textContent=showBottle?'隐藏 70 mm 对照圆':'显示 70 mm 对照圆';update()};document.querySelector('#curve').onclick=e=>{const rect=e.currentTarget.getBoundingClientRect();command=Math.max(0,Math.min(100,Math.round(((e.clientX-rect.left)/rect.width*280-10)/2.6)));document.querySelector('#command').value=command;update()};document.querySelector('#download').onclick=()=>{const rows=['opening_percent,diameter_mm,center_x_m,center_y_m,center_z_m,status,center_on_height_boundary',...data.circle_review.samples.map(s=>[s.opening_percent,s.diameter_mm,...(s.center_m||['','','']),s.status,s.center_on_search_boundary].join(','))];const url=URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='lower_arc_circle_0_100.csv';a.click();URL.revokeObjectURL(url)};setView('front');
 }catch(error){document.querySelector('#status').textContent='加载失败：'+error.message;console.error(error)}
 addEventListener('resize',resize);renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera)});
 </script></body></html>
