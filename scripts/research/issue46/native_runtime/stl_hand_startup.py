@@ -742,15 +742,10 @@ class Plan(Node):
     x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1]);m.joints.append(x)
    self.pub.publish(m)
    if hand_right is not None:
-    # The RAICOM STL channel's earlier successful round-trip uses hand type 2.
-    # Type 1 acknowledges the topic but leaves the claw roots effectively at
-    # zero in this delivered runtime.
-    h=HandCommandArray();h.left_hand_type=HandType(value=2);h.right_hand_type=HandType(value=2)
-    # The delivered CLAW transport consumes a bilateral command packet.  The
-    # source-validated static pose likewise applies one normalized command to
-    # both mirrored STL roots; the left *arm* remains in its parked pose.
-    for name,value,collection in (('left_claw_joint',float(hand_right),h.left_hands),('right_claw_joint',float(hand_right),h.right_hands)):
-     x=HandCommand();x.name=name;x.position=value;x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;collection.append(x)
+    # Match the pinned vendor example: activate only the right claw and leave
+    # the parked left hand in NONE mode.
+    h=HandCommandArray();h.left_hand_type=HandType(value=0);h.right_hand_type=HandType(value=2)
+    x=HandCommand();x.name='right_claw_joint';x.position=float(hand_right);x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;h.right_hands.append(x)
     self.hand_pub.publish(h)
    rclpy.spin_once(self,timeout_sec=.001)
    if not self.trace or time.monotonic()-self.trace[-1]['time_s']>=.05:
