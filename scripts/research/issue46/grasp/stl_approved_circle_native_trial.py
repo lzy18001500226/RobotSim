@@ -52,10 +52,10 @@ def main():
             # Navigation already applied the requested docking offset. The new
             # state is MEASURED; adding that offset again invents a root pose.
             command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]
-            command.extend(["--target-source",args.target_source])
+            command.extend(["--target-source",args.target_source,"--free-bottle-axis-roll"])
             command[command.index("--grasp-height-above-center-m")+1]=str(args.grasp_height_above_center_m)
             if args.coordinated_waist_pitch_offset_rad:
-                command.extend(["--free-bottle-axis-roll","--waist-pitch-offset-rad",str(args.coordinated_waist_pitch_offset_rad)])
+                command.extend(["--waist-pitch-offset-rad",str(args.coordinated_waist_pitch_offset_rad)])
             kwargs["timeout_s"]=45.
         return original(command,**kwargs)
     native.run=run
@@ -67,6 +67,7 @@ def main():
     dock_xy=args.dock_world_xy or (0.74+args.base_offset_xyz_m[0],-1.44+args.base_offset_xyz_m[1])
     argv=["native", "--table-overlay-result",str(table),"--table-overlay-result-sha256",native.sha256(table),"--claw-control-overlay-result",str(claw),"--claw-control-overlay-result-sha256",native.sha256(claw),"--reset-helper",str(helper),"--reset-helper-sha256",native.sha256(helper),"--xvfb-root","/tmp/robotsim-xvfb-pkg/root","--xvfb-libs","/tmp/robotsim-xvfb-pkg/libs","--xkb-root","/tmp/robotsim-xvfb-pkg/xkb","--interactive-x11-display",display,"--hal-arm-candidate",str(args.candidate),"--hal-arm-candidate-sha256",native.sha256(args.candidate),"--disable-mc-arm-publisher","--disable-mc-hand-publisher","--hal-arm-plan-mode","pregrasp-hold","--hal-right-hand-command","0.0","--hal-hand-close-hold-s","2","--dock-world-xy",str(dock_xy[0]),str(dock_xy[1]),"--dock-yaw-rad","-0.07591850724454846","--dock-position-only","--use-official-cmd-vel-bridge","--dock-timeout-s","30"]
     if args.pause_for_human_review:argv.append("--pause-on-claw-failure")
+    if args.coordinated_waist_pitch_offset_rad and not args.native_physics_audit:raise ValueError("coordinated circle execution requires native TCP observation")
     if args.coordinated_waist_pitch_offset_rad:argv.extend(["--coordinated-circle-waist","--disable-mc-waist-publisher"])
     sys.argv=argv
     native.main()

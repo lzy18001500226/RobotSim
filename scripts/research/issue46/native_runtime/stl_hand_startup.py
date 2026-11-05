@@ -774,15 +774,19 @@ class Plan(Node):
   # The simulator may publish the two arm groups in separate messages.  Merge
   # named samples so a later partial packet cannot discard the already-read
   # opposite-arm state before the bounded plan begins.
-  self.arm_receipt={};self.arm_stamp={};self.arm_regressions=0;self.arm_callbacks=0;self.run_started=time.monotonic();self.last_trace_at=None
+  self.odom_trace=[];self.arm_receipt={};self.arm_stamp={};self.arm_regressions=0;self.arm_callbacks=0;self.run_started=time.monotonic();self.last_trace_at=None
   self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',self.on_arm,q)
   self.waist_pub=None
   if WAIST:
    self.create_subscription(JointStateArray,'/aima/hal/joint/waist/state',self.on_arm,q)
    self.waist_pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/waist/command',q)
   self.create_subscription(HandStateArray,'/aima/hal/joint/hand/state',self.on_hand,hand_q)
-  self.create_subscription(Odometry,'/aima/hal/odom/state',lambda m:self.odom.append((float(m.pose.pose.position.x),float(m.pose.pose.position.y))),q)
+  self.create_subscription(Odometry,'/aima/hal/odom/state',self.on_odom,q)
   self.create_subscription(Imu,'/aima/hal/imu/torso/state',self.imu,q);self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q);self.hand_pub=self.create_publisher(HandCommandArray,'/aima/hal/joint/hand/command',hand_q)
+ def on_odom(self,m):
+  p=m.pose.pose.position;q=m.pose.pose.orientation;v=m.twist.twist.linear
+  self.odom.append((float(p.x),float(p.y)))
+  self.odom_trace.append({'host_monotonic_s':time.monotonic(),'source_stamp_ns':int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec),'xyz_m':[p.x,p.y,p.z],'quaternion_wxyz':[q.w,q.x,q.y,q.z],'linear_velocity':[v.x,v.y,v.z]})
  def on_arm(self,m):
   now=time.monotonic();stamp=int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec)
   self.arm_callbacks+=1
@@ -815,7 +819,7 @@ class Plan(Node):
   end=time.monotonic()+seconds;next_tick=time.monotonic();start=time.monotonic()
   while rclpy.ok() and time.monotonic()<end:
    if self.tilt and max(self.tilt)>math.radians(15):raise RuntimeError('PREGRASP_TILT_LIMIT')
-   if len(self.odom)>1 and math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])>.05:raise RuntimeError('PREGRASP_BASE_DRIFT_LIMIT')
+   if len(self.odom)>1 and math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])>.05:raise RuntimeError('PREGRASP_BASE_DRIFT_LIMIT:'+json.dumps({'stage':stage,'start_xy':self.odom[0],'current_xy':self.odom[-1],'measured_drift_m':math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])}))
    if not self.arm_fresh():raise RuntimeError('STALE_BILATERAL_ARM_FEEDBACK_DURING:'+stage)
    m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hal_bilateral_pregrasp';m.header.sequence=self.seq;self.seq+=1
    for name in LEFT+RIGHT:
@@ -887,7 +891,9 @@ try:
  hand_pass=HAND_RIGHT is None
  print(json.dumps({'native_tcp_arrival':arrival,'preclose_waist_error_rad':preclose_waist_error,'preclose_arm_error_rad':preclose_error,'closure_issued':closure_issued,'arm_feedback_fresh':n.arm_fresh(),'arm_callback_count':n.arm_callbacks,'arm_late_sample_discard_count':n.arm_regressions,'hand_mapping_status':'UNVERIFIED_RUNTIME_MAPPING','physical_bilateral_contact':'NOT_OBSERVED'}),flush=True)
  print(json.dumps({'plan_mode':'ROUND_TRIP' if RESTORE else ('PREGRASP_CLOSE_HOLD' if HAND_RIGHT is not None else 'PREGRASP_HOLD'),'subscription_count':n.pub.get_subscription_count(),'hand_subscription_count':n.hand_pub.get_subscription_count(),'start_arm_rad':start,'state_fallback_joint_names':fallback_used,'goal_arm_rad':goal,'reached_arm_rad':reached,'restored_arm_rad':restored,'right_hand_command':HAND_RIGHT,'final_hand_state_rad':n.hand,'hand_response_pass':hand_pass,'max_goal_error_rad':max_goal,'max_restore_error_rad':max_restore,'response_pass':max_goal<=.08 and preclose_waist_error<=.05 and hand_pass and ((not RESTORE) or max_restore<=.04),'motion_stability':{'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None,'pass':stable},'trace':n.trace}))
-finally:n.destroy_node();rclpy.shutdown()
+finally:
+ with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
+ n.destroy_node();rclpy.shutdown()
 """.replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract))
 
 
