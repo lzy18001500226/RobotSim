@@ -20,6 +20,7 @@ def main():
     p.add_argument("--circle-review",type=Path,required=True)
     p.add_argument("--candidate",type=Path,required=True)
     p.add_argument("--execute-simulation",action="store_true")
+    p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay"),default="truth-diagnostic",help="truth baseline or explicitly historical RGB-D replay; not fresh camera capture")
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     p.add_argument("--dock-world-xy",type=float,nargs=2,default=None)
     args=p.parse_args()
@@ -33,6 +34,7 @@ def main():
             # Navigation already applied the requested docking offset. The new
             # state is MEASURED; adding that offset again invents a root pose.
             command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]
+            command.extend(["--target-source",args.target_source])
             kwargs["timeout_s"]=45.
         return original(command,**kwargs)
     native.run=run

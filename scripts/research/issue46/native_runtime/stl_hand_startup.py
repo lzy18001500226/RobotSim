@@ -723,10 +723,23 @@ class Plan(Node):
   # The simulator may publish the two arm groups in separate messages.  Merge
   # named samples so a later partial packet cannot discard the already-read
   # opposite-arm state before the bounded plan begins.
-  self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',lambda m:self.arm.update({j.name:float(j.position) for j in m.joints}),q)
+  self.arm_receipt={};self.arm_stamp={};self.arm_callbacks=0;self.run_started=time.monotonic();self.last_trace_at=None
+  self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',self.on_arm,q)
   self.create_subscription(HandStateArray,'/aima/hal/joint/hand/state',self.on_hand,hand_q)
   self.create_subscription(Odometry,'/aima/hal/odom/state',lambda m:self.odom.append((float(m.pose.pose.position.x),float(m.pose.pose.position.y))),q)
   self.create_subscription(Imu,'/aima/hal/imu/torso/state',self.imu,q);self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q);self.hand_pub=self.create_publisher(HandCommandArray,'/aima/hal/joint/hand/command',hand_q)
+ def on_arm(self,m):
+  now=time.monotonic();stamp=int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec)
+  self.arm_callbacks+=1
+  for item in m.joints:
+   if not math.isfinite(float(item.position)):raise RuntimeError('NONFINITE_ARM_STATE:'+item.name)
+   old=self.arm_stamp.get(item.name)
+   if old is not None and stamp<old:raise RuntimeError('REGRESSING_ARM_STATE:'+item.name)
+   if stamp>0 and (old is None or stamp>old):
+    self.arm[item.name]=float(item.position);self.arm_receipt[item.name]=now;self.arm_stamp[item.name]=stamp
+ def arm_fresh(self,max_age=.20):
+  now=time.monotonic()
+  return all(name in self.arm_receipt and now-self.arm_receipt[name]<=max_age for name in LEFT+RIGHT)
  def on_hand(self,m):
   for item in list(m.left_hands)+list(m.right_hands):self.hand[{'L_claw_joint':'left_claw_joint','R_claw_joint':'right_claw_joint'}.get(item.name,item.name)]=float(item.position)
  def imu(self,m):
@@ -737,6 +750,7 @@ class Plan(Node):
  def send(self,target,seconds,stage,hand_right=None):
   end=time.monotonic()+seconds;next_tick=time.monotonic();start=time.monotonic()
   while rclpy.ok() and time.monotonic()<end:
+   if not self.arm_fresh():raise RuntimeError('STALE_BILATERAL_ARM_FEEDBACK_DURING:'+stage)
    m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hal_bilateral_pregrasp';m.header.sequence=self.seq;self.seq+=1
    for name in LEFT+RIGHT:
     x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1]);m.joints.append(x)
@@ -748,15 +762,20 @@ class Plan(Node):
     x=HandCommand();x.name='right_claw_joint';x.position=float(hand_right);x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;h.right_hands.append(x)
     self.hand_pub.publish(h)
    rclpy.spin_once(self,timeout_sec=.001)
-   if not self.trace or time.monotonic()-self.trace[-1]['time_s']>=.05:
+   if self.last_trace_at is None or time.monotonic()-self.last_trace_at>=.05:
     err=max(abs(float(self.arm.get(name,float('nan')))-target[name]) for name in LEFT+RIGHT) if all(name in self.arm for name in LEFT+RIGHT) else float('inf')
-    self.trace.append({'time_s':time.monotonic()-start,'stage':stage,'max_arm_error_rad':err,'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
-   next_tick+=.02;time.sleep(max(0,next_tick-time.monotonic()))
+    self.last_trace_at=time.monotonic()
+    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'arm_fresh':self.arm_fresh(),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'published_target_rad':dict(target),'max_arm_error_rad':err,'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
+   # Drain feedback during the remainder of the 50Hz period. Sleeping here
+   # starved callbacks from 1000Hz arm + 500Hz IMU/odom subscriptions.
+   next_tick+=.02
+   self.spin(max(0,min(next_tick,end)-time.monotonic()))
 rclpy.init();n=Plan()
 try:
  n.spin(2.0)
+ if not n.arm_fresh():raise RuntimeError('STALE_OR_MISSING_BILATERAL_ARM_STATE')
  if any(name not in n.arm and name not in INITIAL_FALLBACK for name in LEFT+RIGHT):raise RuntimeError('missing complete arm state and dock-state fallback')
- start={n_:float(n.arm.get(n_,INITIAL_FALLBACK[n_])) for n_ in LEFT+RIGHT};fallback_used=sorted(n_ for n_ in LEFT+RIGHT if n_ not in n.arm); goal={**dict(zip(LEFT,TARGET_LEFT)),**dict(zip(RIGHT,TARGET_RIGHT))}
+ start={n_:float(n.arm[n_]) for n_ in LEFT+RIGHT};fallback_used=[]; goal={**dict(zip(LEFT,TARGET_LEFT)),**dict(zip(RIGHT,TARGET_RIGHT))}
  if max(abs(goal[n_]-start[n_]) for n_ in LEFT+RIGHT)>1.1:raise RuntimeError('pregrasp target delta exceeds 1.1 rad')
  # The delivered claw component is initialized by the same 0-command
  # handshake used in the previously passing native hand round-trip before a
@@ -775,7 +794,7 @@ try:
  closure_issued=False
  # Retain the existing bilateral 0.08 rad execution threshold. Failed arm
  # tracking must never trigger closure just because the trajectory timer ended.
- if HAND_RIGHT is not None and preclose_error<=.08:
+ if HAND_RIGHT is not None and n.arm_fresh() and preclose_error<=.08:
   n.send(goal,HAND_HOLD,'HAND_CLOSE_HOLD',HAND_RIGHT);closure_issued=True
  if RESTORE:
   for i in range(steps):
@@ -791,10 +810,10 @@ try:
  # Do not promote a normalized zero command, absent feedback, or q~=0 into a
  # physical-grasp acknowledgement. Preserve observations pending calibration.
  hand_pass=HAND_RIGHT is None
- print(json.dumps({'preclose_arm_error_rad':preclose_error,'closure_issued':closure_issued,'hand_mapping_status':'UNVERIFIED_RUNTIME_MAPPING','physical_bilateral_contact':'NOT_OBSERVED'}),flush=True)
+ print(json.dumps({'preclose_arm_error_rad':preclose_error,'closure_issued':closure_issued,'arm_feedback_fresh':n.arm_fresh(),'arm_callback_count':n.arm_callbacks,'hand_mapping_status':'UNVERIFIED_RUNTIME_MAPPING','physical_bilateral_contact':'NOT_OBSERVED'}),flush=True)
  print(json.dumps({'plan_mode':'ROUND_TRIP' if RESTORE else ('PREGRASP_CLOSE_HOLD' if HAND_RIGHT is not None else 'PREGRASP_HOLD'),'subscription_count':n.pub.get_subscription_count(),'hand_subscription_count':n.hand_pub.get_subscription_count(),'start_arm_rad':start,'state_fallback_joint_names':fallback_used,'goal_arm_rad':goal,'reached_arm_rad':reached,'restored_arm_rad':restored,'right_hand_command':HAND_RIGHT,'final_hand_state_rad':n.hand,'hand_response_pass':hand_pass,'max_goal_error_rad':max_goal,'max_restore_error_rad':max_restore,'response_pass':max_goal<=.08 and hand_pass and ((not RESTORE) or max_restore<=.04),'motion_stability':{'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None,'pass':stable},'trace':n.trace}))
 finally:n.destroy_node();rclpy.shutdown()
-""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps({name: float((initial_arm_state or {}).get(name, float('nan'))) for name in arm_gains}, sort_keys=True))
+""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False))
 
 
 def build_hal_bilateral_upperbody_plan_script(

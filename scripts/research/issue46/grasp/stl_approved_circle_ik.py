@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--standing-state", type=Path, required=True)
     parser.add_argument("--grasp-height-above-center-m",type=float,default=0.0)
     parser.add_argument("--runtime-handoff",action="store_true")
+    parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic"),default="historical-rgbd-replay",help="explicit target provenance; neither mode is fresh runtime RGB-D")
     parser.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     args = parser.parse_args()
     scene = json.loads(args.circle_review.read_text())
@@ -50,6 +51,13 @@ def main():
     q = np.array([state["waist_positions_rad"][n] for n in ("waist_yaw_joint","waist_pitch_joint")]+[state["arm_positions_rad"][n] for n in ik.ARM])
     perception = candidate["perception"]
     object_center = np.array(perception["estimated_center_world_m"])
+    if args.target_source == "truth-diagnostic":
+        source_data=mujoco.MjData(model)
+        mujoco.mj_forward(model,source_data)
+        object_center=source_data.xpos[ik.native.bid(model,"test_cylinder")].copy()
+        perception={"source":"MUJOCO_TRUTH_DIAGNOSTIC_ONLY","object_center_world_m":object_center.tolist(),"scene_sha256":candidate["scene"]["sha256"]}
+    else:
+        perception={**perception,"source":"HISTORICAL_RGBD_REPLAY_NOT_CURRENT_EPISODE","fresh_capture":False}
     if not 0<=args.grasp_height_above_center_m<=.075:
         raise ValueError("grasp section height must be within the canonical bottle body")
     object_center[2]+=args.grasp_height_above_center_m
@@ -115,6 +123,8 @@ def main():
     rows.sort(key=lambda r:(not r["pass"],r["metrics"]["hand_position_error_m"]))
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path
     record={"classification":"SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK","mj_step_calls":0,"grasp_section_center_world_m":object_center.tolist(),"grasp_height_above_center_m":args.grasp_height_above_center_m,"circle_review":str(args.circle_review),"circle_review_sha256":hashlib.sha256(args.circle_review.read_bytes()).hexdigest(),"circle":match,"standing_state":str(args.standing_state),"scene":candidate["scene"],"perception":perception,"root_legs_waist_frozen":True,"commands":{"open":min(command+10,100),"match":command,"closure_probe":max(command-1,0)},"rows":rows,"gate":"PASS" if rows[0]["pass"] else "FAIL","dynamics":"NOT_RUN"}
+    record["target_source"]=args.target_source
+    record["fresh_runtime_rgbd_verified"]=False
     if args.runtime_handoff:
         best=rows[0];target_state=json.loads(json.dumps(state))
         target_state["arm_positions_rad"].update({n:best["q_rad"][n] for n in ik.ARM})
