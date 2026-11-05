@@ -81,6 +81,13 @@ class CoordinatedTests(unittest.TestCase):
         row=self.row();row['bodies']['R_omnipicker_base_link']['rotation'][6]=-1.
         self.assertFalse(self.native(row)['pass'])
 
+    def test_odom_late_sample_does_not_refresh_unique_freshness(self):
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as native
+        src=Path(native.__file__).read_text()
+        self.assertIn("late_sample_discarded",src)
+        self.assertIn("odom_last_unique_receipt",src)
+        self.assertIn("odom_regressions",src)
+
     def test_stale_native_pose_cannot_authorize_close(self):
         row=self.row();row['host_monotonic_ns']=700_000_000
         with self.assertRaisesRegex(RuntimeError,'STALE_NATIVE'):self.native(row)

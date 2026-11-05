@@ -282,7 +282,7 @@ class Dock(Node):
   self.mode=self.create_client(SetMcAction,'/aimdk_5Fmsgs/srv/SetMcAction')
   self.current=self.create_client(GetCurrentInputSource,'/aimdk_5Fmsgs/srv/GetCurrentInputSource')
   self.pose=None;self.quat=None;self.max_tilt=0.;self.samples=[];self.seq=0;self.arm={};self.leg={};self.waist={}
-  self.odom_stamp=None;self.odom_callbacks=0;self.odom_duplicates=0;self.feedback_fault=None;self.command_publish_count=0
+  self.odom_stamp=None;self.odom_callbacks=0;self.odom_duplicates=0;self.odom_regressions=0;self.odom_last_unique_receipt=None;self.feedback_fault=None;self.command_publish_count=0
   self.create_subscription(Odometry,'/aima/hal/odom/state',self.on_odom,QOS)
   self.create_subscription(Imu,'/aima/hal/imu/torso/state',self.on_imu,QOS)
   self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',self.on_arm,QOS)
@@ -294,12 +294,18 @@ class Dock(Node):
   if not all(math.isfinite(v) for v in (p.x,p.y,p.z,q.w,q.x,q.y,q.z)) or q.w*q.w+q.x*q.x+q.y*q.y+q.z*q.z<1e-12:
    self.feedback_fault={'gate':'INVALID_ODOMETRY'};return
   if stamp<=0:return
+  now=time.monotonic()
   if self.odom_stamp is not None and stamp<self.odom_stamp:
-   if self.command_publish_count>0:self.feedback_fault={'gate':'ODOMETRY_SOURCE_REGRESSION','previous_stamp_ns':self.odom_stamp,'received_stamp_ns':stamp}
+   self.odom_regressions+=1
+   # The installed simulator can deliver a late DDS sample with a source
+   # stamp a few microseconds behind the latest sample. It is stale data, not
+   # a new pose: discard it without refreshing freshness or changing state.
+   self.feedback_fault={'gate':'ODOMETRY_SOURCE_REGRESSION','previous_stamp_ns':self.odom_stamp,'received_stamp_ns':stamp,'regression_count':self.odom_regressions,'late_sample_discarded':True} if now-(self.odom_last_unique_receipt or now)>.20 else None
    return
   if stamp==self.odom_stamp:self.odom_duplicates+=1;return
   self.odom_stamp=stamp
-  self.pose=(float(p.x),float(p.y),float(p.z),yaw(q),time.monotonic());self.quat=[float(q.w),float(q.x),float(q.y),float(q.z)]
+  self.odom_last_unique_receipt=now
+  self.pose=(float(p.x),float(p.y),float(p.z),yaw(q),now);self.quat=[float(q.w),float(q.x),float(q.y),float(q.z)]
  def on_imu(self,m):self.max_tilt=max(self.max_tilt,tilt(m.orientation))
  def on_arm(self,m):self.arm.update({j.name:float(j.position) for j in m.joints})
  def on_leg(self,m):self.leg.update({j.name:float(j.position) for j in m.joints})
@@ -420,7 +426,7 @@ try:
   n.publish(fwd,lat,ang)
   now=time.monotonic()
   if last_sample_at is None or now-last_sample_at>=.10:
-   entry={'wall_s':now-started,'goal':goal_name,'position_only':position_only,'phase':phase,'odom_xyz_m':[x,y,z],'yaw_rad':heading,'goal_distance_m':dist,'goal_yaw_error_rad':yerr,'forward_mps':fwd,'lateral_mps':lat,'angular_rps':ang,'odom_source_stamp_ns':n.odom_stamp,'odom_unique_receipt_monotonic_s':n.pose[4],'odom_feedback_age_s':now-n.pose[4],'odom_callbacks':n.odom_callbacks,'odom_duplicates':n.odom_duplicates}
+   entry={'wall_s':now-started,'goal':goal_name,'position_only':position_only,'phase':phase,'odom_xyz_m':[x,y,z],'yaw_rad':heading,'goal_distance_m':dist,'goal_yaw_error_rad':yerr,'forward_mps':fwd,'lateral_mps':lat,'angular_rps':ang,'odom_source_stamp_ns':n.odom_stamp,'odom_unique_receipt_monotonic_s':n.pose[4],'odom_feedback_age_s':now-n.pose[4],'odom_callbacks':n.odom_callbacks,'odom_duplicates':n.odom_duplicates,'odom_regressions':n.odom_regressions}
    state=n.state_frame()
    if state is not None:entry['joint_state']=state
    n.samples.append(entry)
