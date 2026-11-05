@@ -66,7 +66,7 @@ void mj_step(const mjModel* m,mjData* d) {
   body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");
   fputs("},\"joints\":{",sink);
   const char* joints[]={"L_claw_joint","R_claw_joint","right_shoulder_pitch_joint","right_shoulder_roll_joint","right_shoulder_yaw_joint","right_elbow_joint","right_wrist_yaw_joint","right_wrist_pitch_joint","right_wrist_roll_joint"};
-  for (int i=0;i<5;i++) {
+  for (int i=0;i<(int)(sizeof(joints)/sizeof(joints[0]));i++) {
     int j=id_real(m,mjOBJ_JOINT,joints[i]);fprintf(sink,"%s\"%s\":",i?",":"",joints[i]);
     if (j<0) fputs("null",sink);
     else fprintf(sink,"{\"q\":%.17g,\"qvel\":%.17g,\"bias_force\":%.17g}",(double)d->qpos[m->jnt_qposadr[j]],(double)d->qvel[m->jnt_dofadr[j]],(double)d->qfrc_bias[m->jnt_dofadr[j]]);
