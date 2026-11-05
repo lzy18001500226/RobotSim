@@ -58,6 +58,8 @@ class CoordinatedTests(unittest.TestCase):
         self.assertEqual(ns['HAND_OPEN'],.5)
         self.assertIn("self.waist_pub.publish(w)",code)
         self.assertIn("x.effort=0.",code)
+        self.assertIn("NATIVE_BIAS_FILE_MISSING",code)
+        self.assertIn("INCOMPLETE_NATIVE_BIAS_SAMPLE",code)
         self.assertIn("preclose_waist_error<=.05",code)
         self.assertIn("arrival[\"pass\"]",code)
         with self.assertRaises(ValueError):builder()({n:(30.,1.) for n in names},[0.]*7,[0.]*7,duration_s=6.,hold_s=1.,waist_target=[0.,.2,0.])

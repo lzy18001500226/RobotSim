@@ -65,7 +65,7 @@ void mj_step(const mjModel* m,mjData* d) {
   fprintf(sink,"{\"host_monotonic_ns\":%lld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"bodies\":{",started,(double)d->time,generation,version_real(),(double)m->opt.timestep);
   body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");
   fputs("},\"joints\":{",sink);
-  const char* joints[]={"L_claw_joint","R_claw_joint","right_shoulder_pitch_joint","right_elbow_joint","right_wrist_pitch_joint"};
+  const char* joints[]={"L_claw_joint","R_claw_joint","right_shoulder_pitch_joint","right_shoulder_roll_joint","right_shoulder_yaw_joint","right_elbow_joint","right_wrist_yaw_joint","right_wrist_pitch_joint","right_wrist_roll_joint"};
   for (int i=0;i<5;i++) {
     int j=id_real(m,mjOBJ_JOINT,joints[i]);fprintf(sink,"%s\"%s\":",i?",":"",joints[i]);
     if (j<0) fputs("null",sink);

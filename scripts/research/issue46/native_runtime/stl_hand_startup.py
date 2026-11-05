@@ -708,6 +708,7 @@ def build_hal_bilateral_arm_plan_script(
     waist_target: list[float] | None = None,
     hand_open_command: float = .97,
     circle_contract: dict | None = None,
+    use_native_bias_effort: bool = False,
 ) -> str:
     """Build a bounded direct-HAL bilateral pregrasp -> restore trajectory.
 
@@ -745,7 +746,7 @@ from sensor_msgs.msg import Imu
 
 LEFT=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint')
 RIGHT=('right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
-CIRCLE_CONTRACT=__CIRCLE_CONTRACT__; HAND_OPEN=__HAND_OPEN__; WAIST=__WAIST_NAMES__; TARGET_WAIST=__WAIST_TARGET__; CONTROL=LEFT+RIGHT+WAIST
+CIRCLE_CONTRACT=__CIRCLE_CONTRACT__; USE_NATIVE_BIAS=__USE_NATIVE_BIAS__; HAND_OPEN=__HAND_OPEN__; WAIST=__WAIST_NAMES__; TARGET_WAIST=__WAIST_TARGET__; CONTROL=LEFT+RIGHT+WAIST
 TARGET_LEFT=__LEFT_TARGET__; TARGET_RIGHT=__RIGHT_TARGET__; GAINS=__GAINS__; DURATION=__DURATION__; HOLD=__HOLD__; RESTORE=__RESTORE__; HAND_RIGHT=__HAND_RIGHT__; HAND_HOLD=__HAND_HOLD__; INITIAL_FALLBACK=__INITIAL_FALLBACK__
 def native_circle_arrival(contract):
  if contract is None:return {'pass':True,'classification':'LEGACY_NO_NATIVE_TCP_GATE'}
@@ -815,15 +816,30 @@ class Plan(Node):
  def spin(self,s):
   end=time.monotonic()+s
   while rclpy.ok() and time.monotonic()<end:rclpy.spin_once(self,timeout_sec=.002)
+ def native_bias(self):
+  if not USE_NATIVE_BIAS:return {}
+  path='/workspace/evidence/native_physics.jsonl'
+  try:
+   with open(path,'rb') as f:
+    f.seek(0,2);f.seek(max(0,f.tell()-262144));lines=f.read().splitlines()
+   for raw in reversed(lines):
+    try:row=json.loads(raw);break
+    except (ValueError,UnicodeDecodeError):continue
+   else:raise RuntimeError('NO_NATIVE_BIAS_SAMPLE')
+   if time.monotonic_ns()/1e9-float(row['host_monotonic_ns'])/1e9>.20:raise RuntimeError('STALE_NATIVE_BIAS')
+   return {n:float(row['joints'][n]['bias_force']) for n in RIGHT if n in row.get('joints',{})}
+  except FileNotFoundError as exc:raise RuntimeError('NATIVE_BIAS_FILE_MISSING') from exc
  def send(self,target,seconds,stage,hand_right=None):
   end=time.monotonic()+seconds;next_tick=time.monotonic();start=time.monotonic()
   while rclpy.ok() and time.monotonic()<end:
    if self.tilt and max(self.tilt)>math.radians(15):raise RuntimeError('PREGRASP_TILT_LIMIT')
    if len(self.odom)>1 and math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])>.05:raise RuntimeError('PREGRASP_BASE_DRIFT_LIMIT:'+json.dumps({'stage':stage,'start_xy':self.odom[0],'current_xy':self.odom[-1],'measured_drift_m':math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])}))
    if not self.arm_fresh():raise RuntimeError('STALE_BILATERAL_ARM_FEEDBACK_DURING:'+stage)
+   bias=self.native_bias()
+   if USE_NATIVE_BIAS and any(name not in bias for name in RIGHT):raise RuntimeError('INCOMPLETE_NATIVE_BIAS_SAMPLE')
    m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hal_bilateral_pregrasp';m.header.sequence=self.seq;self.seq+=1
    for name in LEFT+RIGHT:
-    x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=0.;x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1]);m.joints.append(x)
+    x=JointCommand();x.name=name;x.position=float(target[name]);x.velocity=0.;x.effort=float(bias.get(name,0.));x.stiffness=float(GAINS[name][0]);x.damping=float(GAINS[name][1]);m.joints.append(x)
    self.pub.publish(m)
    if WAIST:
     w=JointCommandArray();w.header=m.header
@@ -894,7 +910,7 @@ try:
 finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
-""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract))
+""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort))
 
 
 def build_hal_bilateral_upperbody_plan_script(
