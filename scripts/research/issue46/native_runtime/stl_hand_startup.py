@@ -710,6 +710,7 @@ def build_hal_bilateral_arm_plan_script(
     circle_contract: dict | None = None,
     use_native_bias_effort: bool = False,
     source_joint_limits: dict[str, list[float]] | None = None,
+    enable_measured_correction: bool = False,
 ) -> str:
     """Build a bounded direct-HAL bilateral pregrasp -> restore trajectory.
 
@@ -747,7 +748,7 @@ from sensor_msgs.msg import Imu
 
 LEFT=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint')
 RIGHT=('right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
-CIRCLE_CONTRACT=__CIRCLE_CONTRACT__; USE_NATIVE_BIAS=__USE_NATIVE_BIAS__; SOURCE_LIMITS=__SOURCE_LIMITS__; HAND_OPEN=__HAND_OPEN__; WAIST=__WAIST_NAMES__; TARGET_WAIST=__WAIST_TARGET__; CONTROL=LEFT+RIGHT+WAIST
+CIRCLE_CONTRACT=__CIRCLE_CONTRACT__; USE_NATIVE_BIAS=__USE_NATIVE_BIAS__; SOURCE_LIMITS=__SOURCE_LIMITS__; ENABLE_CORRECTION=__ENABLE_CORRECTION__; HAND_OPEN=__HAND_OPEN__; WAIST=__WAIST_NAMES__; TARGET_WAIST=__WAIST_TARGET__; CONTROL=LEFT+RIGHT+WAIST
 TARGET_LEFT=__LEFT_TARGET__; TARGET_RIGHT=__RIGHT_TARGET__; GAINS=__GAINS__; DURATION=__DURATION__; HOLD=__HOLD__; RESTORE=__RESTORE__; HAND_RIGHT=__HAND_RIGHT__; HAND_HOLD=__HAND_HOLD__; INITIAL_FALLBACK=__INITIAL_FALLBACK__
 def native_circle_arrival(contract):
  if contract is None:return {'pass':True,'classification':'LEGACY_NO_NATIVE_TCP_GATE'}
@@ -907,29 +908,7 @@ try:
  preclose_waist_error=max((abs(reached[name]-goal[name]) for name in WAIST),default=0.)
  arrival=native_circle_arrival(CIRCLE_CONTRACT)
  print(json.dumps({'native_tcp_arrival':arrival}),flush=True)
- # One bounded closed-loop correction uses measured joint error. It is not a
- # gain change or a guessed offset: the target is recomputed from fresh state,
- # capped per joint, then subjected to the same TCP/pose gates.
  correction_target=dict(goal); correction_issued=False; correction_error=None; correction_iterations=0
- if CIRCLE_CONTRACT is not None and not arrival['pass'] and preclose_error<=.15:
-  for correction_iterations in range(1,4):
-   if arrival['pass']:break
-   correction_target=dict(goal)
-   for name in RIGHT:
-    delta=max(-.05,min(.05,goal[name]-reached[name]))
-    candidate=goal[name]+delta
-    limits=SOURCE_LIMITS.get(name)
-    if limits is None or not limits[0]+.01<=candidate<=limits[1]-.01:raise RuntimeError('CORRECTION_SOURCE_LIMIT:'+name)
-    correction_target[name]=candidate
-   correction_issued=True
-   n.send(correction_target,HOLD,'PREGRASP_CORRECTION_'+str(correction_iterations),HAND_OPEN)
-   reached={n_:float(n.arm[n_]) for n_ in CONTROL}
-   correction_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
-   arrival=native_circle_arrival(CIRCLE_CONTRACT)
-   print(json.dumps({'native_tcp_arrival_after_correction':arrival,'correction_issued':correction_issued,'correction_error_rad':correction_error,'correction_iteration':correction_iterations}),flush=True)
-   goal=correction_target
-   preclose_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
-   if preclose_error>.15:break
  closure_issued=False
  # Retain the existing bilateral 0.08 rad execution threshold. Failed arm
  # tracking must never trigger closure just because the trajectory timer ended.
@@ -956,7 +935,7 @@ try:
 finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
-""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {}))
+""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction))
 
 
 def build_hal_bilateral_upperbody_plan_script(
