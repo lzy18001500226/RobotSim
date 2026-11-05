@@ -66,8 +66,6 @@ def main():
     q[1]+=args.waist_pitch_offset_rad
     limits=model.jnt_range[ik.native.jid(model,"waist_pitch_joint")]
     if not limits[0]+1e-3<=q[1]<=limits[1]-1e-3:raise ValueError("planned waist pitch violates unchanged source joint limits")
-    if args.runtime_handoff and args.waist_pitch_offset_rad!=0:
-        raise ValueError("nonzero waist bend is offline-only until exclusive waist-control handoff is implemented")
     perception = candidate["perception"]
     object_center = np.array(perception["estimated_center_world_m"])
     if args.target_source == "truth-diagnostic":
@@ -110,7 +108,8 @@ def main():
         data=mujoco.MjData(model)
         hand=ik.native.bid(model,"R_omnipicker_base_link")
         cylinder=ik.native.bid(model,"test_cylinder")
-        bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+        source_bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+        bounds=np.column_stack((np.maximum(source_bounds[:,0],approach_start[2:]-1.1),np.minimum(source_bounds[:,1],approach_start[2:]+1.1)))
         def residual(arm):
             trial=np.r_[q[:2],arm]
             ik.set_pose(model,data,state,trial,np.zeros(3),0.,command,np.zeros(3),0.,None)
@@ -127,7 +126,7 @@ def main():
             if np.linalg.norm(e[:3])+.1*np.linalg.norm(e[3:]) < metrics["hand_position_error_m"]+.01*metrics["hand_orientation_error_rad"]:
                 solved=np.r_[q[:2],opt.x]
                 angle=float(2*np.arcsin(np.clip(np.linalg.norm(e[3:])/.2,0,1))) if args.free_bottle_axis_roll else float(np.linalg.norm(e[3:])/.1)
-                metrics={**metrics,"solver":"bounded_least_squares_directed_axis" if args.free_bottle_axis_roll else "bounded_least_squares_SO3","hand_position_error_m":float(np.linalg.norm(e[:3])),"hand_orientation_error_rad":angle,"orientation_constraint":"directed_bottle_axis_free_axial_roll" if args.free_bottle_axis_roll else "full_rotation","minimum_joint_margin_rad":float(np.min(np.minimum(opt.x-bounds[:,0],bounds[:,1]-opt.x)))}
+                metrics={**metrics,"solver":"bounded_least_squares_directed_axis" if args.free_bottle_axis_roll else "bounded_least_squares_SO3","hand_position_error_m":float(np.linalg.norm(e[:3])),"hand_orientation_error_rad":angle,"orientation_constraint":"directed_bottle_axis_free_axial_roll" if args.free_bottle_axis_roll else "full_rotation","minimum_joint_margin_rad":float(np.min(np.minimum(opt.x-source_bounds[:,0],source_bounds[:,1]-opt.x)))}
         checked={}
         for opening in (min(command+10,100),command,max(command-1,0)):
             d=mujoco.MjData(model)
@@ -164,6 +163,7 @@ def main():
     if args.runtime_handoff:
         best=rows[0];target_state=json.loads(json.dumps(state))
         target_state["arm_positions_rad"].update({n:best["q_rad"][n] for n in ik.ARM})
+        target_state["waist_positions_rad"].update({n:best["q_rad"][n] for n in ik.ACTIVE[:2]})
         record.update({"classification":"SIMULATION_ONLY_RUNTIME_CAPTURED_STATIC_REPLAN","initial_state":target_state,"gates":{"DOCK_CAPTURE":"PASS" if state.get("motion_stability",{}).get("pass") is True else "FAIL",**best["gates"]}})
     pg.write_new_text(out/"result.json",json.dumps(record,indent=2)+"\n")
     pg.write_new_bytes(out/Path(__file__).name,Path(__file__).read_bytes())

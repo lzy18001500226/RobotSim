@@ -567,7 +567,7 @@ gcc -std=c11 -O2 -Wall -Wextra -D_DEFAULT_SOURCE \"${include_dirs[@]}\" \\
 """
 
 
-def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]]) -> str:
+def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, waist_gains: dict[str, tuple[float, float]] | None = None) -> str:
     """Hold arms at the installed MC's neutral target before MC owns the legs.
 
     This is an explicitly simulation-only bootstrap for an arm-split MC
@@ -576,21 +576,38 @@ def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]]) -> str:
     """
     encoded = json.dumps({name: [float(kp), float(kd)] for name, (kp, kd) in gains.items()}, sort_keys=True)
     return """#!/usr/bin/env python3
-import json, os, time, rclpy
+import json, math, os, time, rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader
 ARM=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint','right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
 TARGET=(.4,0.,0.,-1.2,0.,0.,0.,.4,0.,0.,-1.2,0.,0.,0.)
+WAIST_GAINS=__WAIST_GAINS__; WAIST=tuple(WAIST_GAINS)
 GAINS=__GAINS__; STOP='/workspace/evidence/stop_arm_bootstrap'
 class Hold(Node):
  def __init__(self):
-  super().__init__('robotsim_arm_split_bootstrap');q=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT);self.state={};self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q);self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',lambda m:self.state.update({x.name:float(x.position) for x in m.joints}),q);self.seq=0;self.ready=False
+  super().__init__('robotsim_arm_split_bootstrap');q=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT);self.state={};self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q);self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',lambda m:self.state.update({x.name:float(x.position) for x in m.joints}),q);self.seq=0;self.ready=False;self.waist_initial={};self.waist_receipt={};self.waist_stamp={}
+  self.waist_pub=None
+  if WAIST:
+   self.waist_pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/waist/command',q)
+   self.create_subscription(JointStateArray,'/aima/hal/joint/waist/state',self.on_waist,q)
+ def on_waist(self,m):
+  stamp=int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec)
+  for j in m.joints:
+   if j.name in WAIST and stamp>self.waist_stamp.get(j.name,0):
+    if not math.isfinite(float(j.position)):raise RuntimeError('NONFINITE_WAIST')
+    self.waist_initial.setdefault(j.name,float(j.position));self.waist_receipt[j.name]=time.monotonic();self.waist_stamp[j.name]=stamp
  def send(self):
   m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hybrid_arm_bootstrap';m.header.sequence=self.seq;self.seq+=1
   for name,target in zip(ARM,TARGET):
    x=JointCommand();x.name=name;x.position=target;x.velocity=0.;x.effort=0.;x.stiffness=GAINS[name][0];x.damping=GAINS[name][1];m.joints.append(x)
   self.pub.publish(m)
+  if WAIST and all(name in self.waist_initial for name in WAIST):
+   if any(time.monotonic()-self.waist_receipt[name]>.20 for name in WAIST):raise RuntimeError('STALE_WAIST_BOOTSTRAP')
+   w=JointCommandArray();w.header=m.header
+   for name in WAIST:
+    x=JointCommand();x.name=name;x.position=self.waist_initial[name];x.velocity=0.;x.effort=0.;x.stiffness=WAIST_GAINS[name][0];x.damping=WAIST_GAINS[name][1];w.joints.append(x)
+   self.waist_pub.publish(w)
 rclpy.init();n=Hold()
 try:
  # Native docking plus a host-side zero-step IK replan can take longer than
@@ -599,12 +616,12 @@ try:
  end=time.monotonic()+90.;next_tick=time.monotonic()
  while rclpy.ok() and time.monotonic()<end and not os.path.exists(STOP):
   n.send();rclpy.spin_once(n,timeout_sec=.001)
-  if not n.ready and all(name in n.state for name in ARM):
+  if not n.ready and all(name in n.state for name in ARM) and all(name in n.waist_initial for name in WAIST):
    n.ready=True;print(json.dumps({'ready':True,'subscription_count':n.pub.get_subscription_count(),'arm_positions_rad':{name:n.state[name] for name in ARM}}),flush=True)
   next_tick+=.01;time.sleep(max(0.,next_tick-time.monotonic()))
  print(json.dumps({'stopped':os.path.exists(STOP),'ready':n.ready,'subscription_count':n.pub.get_subscription_count()}),flush=True)
 finally:n.destroy_node();rclpy.shutdown()
-""".replace("__GAINS__", encoded)
+""".replace("__GAINS__", encoded).replace("__WAIST_GAINS__", repr(waist_gains or {}))
 
 
 def retarget_neutral_script() -> str:
@@ -817,6 +834,7 @@ def main() -> None:
     parser.add_argument("--run-hal-waist-pd-probe", action="store_true", help="after verified Reset→Stand, perform one 0.03-rad source-gain waist-roll round trip and restore")
     parser.add_argument("--disable-mc-arm-publisher", action="store_true")
     parser.add_argument("--disable-mc-hand-publisher", action="store_true", help="SIMULATION_ONLY: let the bounded external STL hand command own only hand_joint_command while MC retains legs and waist")
+    parser.add_argument("--coordinated-circle-waist", action="store_true", help="SIMULATION_ONLY measured waist hold and source-gain waist/arm pregrasp; requires exclusive ownership")
     parser.add_argument("--disable-mc-waist-publisher", action="store_true", help="SIMULATION_ONLY: let the direct waist HAL probe own only waist_joint_command; leg standing remains MC-controlled")
     parser.add_argument("--dock-world-xy", type=float, nargs=2, metavar=("X", "Y"), help="run one bounded official velocity-control route to this source-map table-docking point")
     parser.add_argument("--dock-yaw-rad", type=float, help="required final source-map yaw for --dock-world-xy")
@@ -864,7 +882,9 @@ def main() -> None:
         raise ValueError("choose either the HAL arm probe or the arm-only HAL pregrasp candidate")
     if args.hal_arm_candidate is not None and not args.disable_mc_arm_publisher:
         raise ValueError("the arm-only HAL candidate requires exclusive arm publisher ownership")
-    if args.hal_arm_candidate is not None and args.disable_mc_waist_publisher:
+    if args.coordinated_circle_waist and not (args.hal_arm_candidate is not None and args.disable_mc_arm_publisher and args.disable_mc_waist_publisher and args.disable_mc_hand_publisher):
+        raise ValueError("coordinated circle waist requires exclusive arm/waist/hand publishers")
+    if args.hal_arm_candidate is not None and args.disable_mc_waist_publisher and not args.coordinated_circle_waist:
         raise ValueError("the arm-only HAL candidate leaves waist ownership with MC")
     if args.hal_arm_candidate is not None and args.dock_world_xy is None:
         raise ValueError("the arm-only HAL candidate requires a measured native table-docking route")
@@ -884,9 +904,9 @@ def main() -> None:
         raise ValueError("right-hand close hold must lie in 0.5..5 seconds")
     if args.disable_mc_arm_publisher and args.arm_ik_result is None and args.hal_grasp_candidate is None and args.hal_arm_candidate is None and not args.run_hal_arm_pd_probe:
         raise ValueError("disabling the MC arm publisher requires a bounded HAL arm plan or probe")
-    if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher and args.hal_grasp_candidate is None:
+    if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher and args.hal_grasp_candidate is None and not args.coordinated_circle_waist:
         raise ValueError("the combined arm/waist split requires a bounded HAL grasp candidate")
-    if args.disable_mc_waist_publisher and args.hal_grasp_candidate is None and not args.run_hal_waist_pd_probe:
+    if args.disable_mc_waist_publisher and args.hal_grasp_candidate is None and not args.run_hal_waist_pd_probe and not args.coordinated_circle_waist:
         raise ValueError("disabling the MC waist publisher requires a bounded waist plan or probe")
     if args.hal_grasp_candidate is not None and not (args.disable_mc_arm_publisher and args.disable_mc_waist_publisher) and not args.allow_concurrent_hal_upperbody_probe:
         raise ValueError("a HAL grasp candidate requires explicit arm and waist publisher ownership")
@@ -1000,7 +1020,17 @@ def main() -> None:
         if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_waist_split.yaml"
-            pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_waist_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
+            split = stl_hand_startup.build_arm_waist_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))
+            if args.coordinated_circle_waist:
+                publishers=split["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
+                hand=[x for x in publishers if x.get("name")=="hand_joint_command"]
+                if len(hand)!=1 or hand[0].get("enable") is not True:raise ValueError("expected one enabled source hand publisher")
+                hand[0]["enable"]=False
+                bootstrap_gains=stl_hand_startup.load_animation_player_arm_pd_parameters()
+                waist_gains={n:v for n,v in stl_hand_startup.load_source_arm_pd_parameters().items() if n.startswith("waist_")}
+                pg.write_new_text(output/"native_arm_bootstrap_hold.py",arm_bootstrap_hold_script(bootstrap_gains,waist_gains=waist_gains))
+                arm_bootstrap_enabled=True
+            pg.write_new_text(arm_split_config,yaml.safe_dump(split,allow_unicode=True,sort_keys=False))
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
@@ -1212,7 +1242,7 @@ def main() -> None:
             command[command.index(IMAGE):command.index(IMAGE)] = ["-e", "X2_SIM_ONLY=1", "-e", "ROS_LOCALHOST_ONLY=1"]
         if arm_split_config is not None:
             command[command.index(IMAGE):command.index(IMAGE)] = ["--mount", f"type=bind,source={arm_split_config},target=/workspace/raicom2026/{stl_hand_startup.MC_SIM_CONFIG_RELATIVE},readonly"]
-            result["mc_command_split_overlay"] = {"path": str(arm_split_config), "sha256": sha256(arm_split_config), "disabled_publishers": (["arm_joint_command", "waist_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher else ["arm_joint_command", "hand_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_hand_publisher else ["arm_joint_command" if args.disable_mc_arm_publisher else "waist_joint_command"])}
+            result["mc_command_split_overlay"] = {"path": str(arm_split_config), "sha256": sha256(arm_split_config), "disabled_publishers": (["arm_joint_command", "waist_joint_command", "hand_joint_command"] if args.coordinated_circle_waist else ["arm_joint_command", "waist_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher else ["arm_joint_command", "hand_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_hand_publisher else ["arm_joint_command" if args.disable_mc_arm_publisher else "waist_joint_command"])}
         pg.write_new_text(output / "docker_command.json", json.dumps(command, indent=2) + "\n")
         run(command, timeout_s=12.0)
         if not args.interactive_x11_display:
@@ -1490,10 +1520,19 @@ def main() -> None:
                             hal_arm_target_right = [float(runtime_arm[name]) for name in order]
                             hal_arm_target_left = [float(runtime_arm[name]) for name in left_order]
                             arm_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-                            dock_arm_state = dock_state.get("arm_positions_rad")
+                            waist_target=None
+                            if args.coordinated_circle_waist:
+                                runtime_waist=runtime_state.get("waist_positions_rad",{})
+                                waist_order=("waist_yaw_joint","waist_pitch_joint","waist_roll_joint")
+                                if any(n not in runtime_waist for n in waist_order):raise RuntimeError("replan lacks coordinated waist target")
+                                waist_target=[float(runtime_waist[n]) for n in waist_order]
+                                arm_gains.update({n:v for n,v in stl_hand_startup.load_source_arm_pd_parameters().items() if n.startswith("waist_")})
+                            elif replan_record.get("waist_actuation_required"):
+                                raise RuntimeError("waist target cannot execute on arm-only controller")
+                            dock_arm_state = {**dock_state.get("arm_positions_rad",{}),**dock_state.get("waist_positions_rad",{})}
                             if not isinstance(dock_arm_state, dict):
                                 raise RuntimeError("native docking capture lacks a complete arm fallback state")
-                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=args.hal_right_hand_command, hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)}))
+                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=args.hal_right_hand_command, hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"]} if args.coordinated_circle_waist else None),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
                 if hal_pregrasp_background:

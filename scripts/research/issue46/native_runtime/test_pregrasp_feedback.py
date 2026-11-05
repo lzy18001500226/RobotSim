@@ -23,7 +23,7 @@ class FeedbackTests(unittest.TestCase):
         cls=next(n for n in self.tree.body if isinstance(n,ast.ClassDef) and n.name=='Plan')
         cls.bases=[];cls.body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ('on_arm','arm_fresh')]
         self.clock=NS(now=1.)
-        self.ns={'time':NS(monotonic=lambda:self.clock.now),'math':math,'LEFT':('left',),'RIGHT':('right',)}
+        self.ns={'time':NS(monotonic=lambda:self.clock.now),'math':math,'LEFT':('left',),'RIGHT':('right',),'CONTROL':('left','right')}
         exec(compile(ast.Module(body=[cls],type_ignores=[]),'runtime','exec'),self.ns)
         self.ns['json']=json
         self.n=self.ns['Plan']();self.n.arm={};self.n.arm_stamp={};self.n.arm_receipt={};self.n.arm_callbacks=0;self.n.seq=0
@@ -58,7 +58,7 @@ class FeedbackTests(unittest.TestCase):
         guard=next(n for n in ast.walk(self.tree) if isinstance(n,ast.If) and isinstance(n.test,ast.BoolOp) and 'preclose_error' in ast.unparse(n.test))
         test=compile(ast.Expression(guard.test),'closure','eval')
         for fresh,error,expected in [(False,0.,False),(True,.435,False),(True,.079,True)]:
-            self.assertEqual(eval(test,{'HAND_RIGHT':0.,'preclose_error':error,'n':NS(arm_fresh=lambda:fresh)}),expected)
+            self.assertEqual(eval(test,{'HAND_RIGHT':0.,'preclose_error':error,'n':NS(arm_fresh=lambda:fresh),'preclose_waist_error':0.,'arrival':{'pass':True}}),expected)
 
     def test_full_run_trace_and_callback_drain(self):
         self.assertIn('self.spin(max(0,min(next_tick,end)-time.monotonic()))',self.code)
