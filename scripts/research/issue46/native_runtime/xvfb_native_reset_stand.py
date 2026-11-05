@@ -1079,7 +1079,9 @@ def main() -> None:
             candidate_path = require_hashed(args.hal_arm_candidate, args.hal_arm_candidate_sha256 or "", label="HAL arm candidate")
             candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
             required_candidate = ("SEARCH_CANDIDATE", "STANDING_WAIST_ROLL_RETAINED", "OPEN_PREGRASP_CLEAR", "CLOSED_CONTACT_CLEAR")
-            if candidate.get("classification") not in {"SIMULATION_ONLY_STATIC_TABLE_PREPLACED_TRUTH_GRASP_CANDIDATE", "SIMULATION_ONLY_STATIC_TABLE_PREPLACED_VISUAL_GRASP_CANDIDATE"} or any(candidate.get("gates", {}).get(name) != "PASS" for name in required_candidate):
+            legacy_ok = candidate.get("classification") in {"SIMULATION_ONLY_STATIC_TABLE_PREPLACED_TRUTH_GRASP_CANDIDATE", "SIMULATION_ONLY_STATIC_TABLE_PREPLACED_VISUAL_GRASP_CANDIDATE"} and all(candidate.get("gates", {}).get(name) == "PASS" for name in required_candidate)
+            approved_circle_ok = candidate.get("classification") == "SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK" and candidate.get("gate") == "PASS"
+            if not (legacy_ok or approved_circle_ok):
                 raise ValueError("arm-only HAL candidate does not pass its static preflight")
             if candidate.get("scene", {}).get("sha256") != overlay.get("generated", {}).get("host_scene", {}).get("sha256"):
                 raise ValueError("arm-only HAL candidate is not for this table scene")
