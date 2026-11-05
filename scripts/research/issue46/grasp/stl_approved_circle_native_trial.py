@@ -20,6 +20,7 @@ def main():
     p.add_argument("--circle-review",type=Path,required=True)
     p.add_argument("--candidate",type=Path,required=True)
     p.add_argument("--execute-simulation",action="store_true")
+    p.add_argument("--native-physics-audit",action="store_true",help="read-only actual-engine pose/contact/force observer; ABI must match installed library")
     p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay"),default="truth-diagnostic",help="truth baseline or explicitly historical RGB-D replay; not fresh camera capture")
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     p.add_argument("--dock-world-xy",type=float,nargs=2,default=None)
@@ -28,7 +29,21 @@ def main():
     baseline=json.loads((args.baseline/"result.json").read_text())
     original=native.run
     if original(["docker","ps","-q"],timeout_s=5).stdout.strip():raise RuntimeError("conflicting container")
+    audit_output=None
     def run(command,**kwargs):
+        nonlocal audit_output
+        if args.native_physics_audit and command[:2]==['docker','run']:
+            from scripts.research.issue46.native_runtime.native_grasp_audit import build
+            from scripts.agent import path_governance as pg
+            mounts=[value for value in command if isinstance(value,str) and value.startswith('type=bind,source=') and ',target=/workspace/evidence' in value]
+            if len(mounts)!=1:raise RuntimeError('cannot identify one exact native observation evidence mount')
+            audit_output=Path(mounts[0].split(',source=',1)[1].split(',target=',1)[0])
+            library=Path('/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/sim_mujoco/lib/libmujoco.so.3.3.7')
+            build(audit_output,library)
+        if audit_output is not None and command[:2]==['docker','exec'] and isinstance(command[-1],str) and command[-1].startswith('bash /workspace/evidence/launch_sim.sh'):
+            command=list(command)
+            command[-1]='env LD_PRELOAD=/workspace/evidence/native_grasp_audit.so ROBOTSIM_NATIVE_AUDIT_OUT=/workspace/evidence/native_physics.jsonl '+command[-1]
+            pg.write_new_text(audit_output/'native_audit_launch.json',json.dumps({'command':command,'read_only':True},indent=2)+'\n')
         if any(str(v).endswith("/runtime_actual_grasp_replan.py") for v in command):
             state=command[command.index("--dock-state")+1]
             # Navigation already applied the requested docking offset. The new

@@ -282,22 +282,35 @@ class Dock(Node):
   self.mode=self.create_client(SetMcAction,'/aimdk_5Fmsgs/srv/SetMcAction')
   self.current=self.create_client(GetCurrentInputSource,'/aimdk_5Fmsgs/srv/GetCurrentInputSource')
   self.pose=None;self.quat=None;self.max_tilt=0.;self.samples=[];self.seq=0;self.arm={};self.leg={};self.waist={}
+  self.odom_stamp=None;self.odom_callbacks=0;self.odom_duplicates=0;self.feedback_fault=None;self.command_publish_count=0
   self.create_subscription(Odometry,'/aima/hal/odom/state',self.on_odom,QOS)
   self.create_subscription(Imu,'/aima/hal/imu/torso/state',self.on_imu,QOS)
   self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',self.on_arm,QOS)
   self.create_subscription(JointStateArray,'/aima/hal/joint/leg/state',self.on_leg,QOS)
   self.create_subscription(JointStateArray,'/aima/hal/joint/waist/state',self.on_waist,QOS)
  def on_odom(self,m):
-  p,q=m.pose.pose.position,m.pose.pose.orientation;self.pose=(float(p.x),float(p.y),float(p.z),yaw(q),time.monotonic());self.quat=[float(q.w),float(q.x),float(q.y),float(q.z)]
+  p,q=m.pose.pose.position,m.pose.pose.orientation
+  stamp=int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec);self.odom_callbacks+=1
+  if not all(math.isfinite(v) for v in (p.x,p.y,p.z,q.w,q.x,q.y,q.z)) or q.w*q.w+q.x*q.x+q.y*q.y+q.z*q.z<1e-12:
+   self.feedback_fault={'gate':'INVALID_ODOMETRY'};return
+  if stamp<=0:return
+  if self.odom_stamp is not None and stamp<self.odom_stamp:
+   if self.command_publish_count>0:self.feedback_fault={'gate':'ODOMETRY_SOURCE_REGRESSION','previous_stamp_ns':self.odom_stamp,'received_stamp_ns':stamp}
+   return
+  if stamp==self.odom_stamp:self.odom_duplicates+=1;return
+  self.odom_stamp=stamp
+  self.pose=(float(p.x),float(p.y),float(p.z),yaw(q),time.monotonic());self.quat=[float(q.w),float(q.x),float(q.y),float(q.z)]
  def on_imu(self,m):self.max_tilt=max(self.max_tilt,tilt(m.orientation))
- def on_arm(self,m):self.arm={j.name:float(j.position) for j in m.joints}
- def on_leg(self,m):self.leg={j.name:float(j.position) for j in m.joints}
- def on_waist(self,m):self.waist={j.name:float(j.position) for j in m.joints}
+ def on_arm(self,m):self.arm.update({j.name:float(j.position) for j in m.joints})
+ def on_leg(self,m):self.leg.update({j.name:float(j.position) for j in m.joints})
+ def on_waist(self,m):self.waist.update({j.name:float(j.position) for j in m.joints})
  def state_frame(self):
   if self.pose is None or self.quat is None or any(j not in self.arm for j in ARM) or any(j not in self.leg for j in LEG) or any(j not in self.waist for j in WAIST):return None
   x,y,z,heading,_=self.pose
   return {'base_pose_world':{'xyz_m':[x,y,z],'quaternion_wxyz':self.quat},'leg_positions_rad':{j:self.leg[j] for j in LEG},'waist_positions_rad':{j:self.waist[j] for j in WAIST},'arm_positions_rad':{j:self.arm[j] for j in ARM}}
  def publish(self,fwd=0.,lat=0.,ang=0.):
+  if self.feedback_fault is not None:fwd=lat=ang=0.
+  self.command_publish_count+=1
   if PLAN['use_cmd_vel_bridge']:
    m=Twist();m.linear.x=float(fwd);m.linear.y=float(lat);m.angular.z=float(ang);self.pub.publish(m);return
   m=McLocomotionVelocity();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.sequence=self.seq;self.seq+=1;m.source=SOURCE;m.forward_velocity=float(fwd);m.lateral_velocity=float(lat);m.angular_velocity=float(ang);self.pub.publish(m)
@@ -323,7 +336,8 @@ class Dock(Node):
   while rclpy.ok() and time.monotonic()<end:rclpy.spin_once(self,timeout_sec=.02)
  def zero_hold(self,seconds):
   end=time.monotonic()+seconds
-  while rclpy.ok() and time.monotonic()<end:self.publish();rclpy.spin_once(self,timeout_sec=.001);time.sleep(.019)
+  while rclpy.ok() and time.monotonic()<end:
+   tick=time.monotonic();self.publish();self.spin(max(0,min(end,tick+.02)-time.monotonic()))
 
 rclpy.init();n=Dock();registered=False
 try:
@@ -347,8 +361,8 @@ try:
  started=time.monotonic(); stable_since=None; phase='ALIGN'; failure=None; last_sample_at=None
  while time.monotonic()-started < PLAN['timeout_s']:
   rclpy.spin_once(n,timeout_sec=.001)
-  if n.pose is None or time.monotonic()-n.pose[4]>.20:
-   n.publish(); failure={'gate':'ODOMETRY_FRESHNESS'};break
+  if n.feedback_fault is not None or n.pose is None or time.monotonic()-n.pose[4]>.20:
+   n.publish(); failure=n.feedback_fault or {'gate':'ODOMETRY_FRESHNESS'};break
   x,y,z,heading,_=n.pose;dist=math.hypot(gx-x,gy-y);bearing=math.atan2(gy-y,gx-x);berr=wrap(bearing-heading);yerr=wrap(gyaw-heading);lat=0.
   if z < .45 or n.max_tilt > math.radians(15):
    n.publish();failure={'gate':'BALANCE_ENVELOPE','z_m':z,'max_tilt_rad':n.max_tilt};break
@@ -406,12 +420,12 @@ try:
   n.publish(fwd,lat,ang)
   now=time.monotonic()
   if last_sample_at is None or now-last_sample_at>=.10:
-   entry={'wall_s':now-started,'goal':goal_name,'position_only':position_only,'phase':phase,'odom_xyz_m':[x,y,z],'yaw_rad':heading,'goal_distance_m':dist,'goal_yaw_error_rad':yerr,'forward_mps':fwd,'lateral_mps':lat,'angular_rps':ang}
+   entry={'wall_s':now-started,'goal':goal_name,'position_only':position_only,'phase':phase,'odom_xyz_m':[x,y,z],'yaw_rad':heading,'goal_distance_m':dist,'goal_yaw_error_rad':yerr,'forward_mps':fwd,'lateral_mps':lat,'angular_rps':ang,'odom_source_stamp_ns':n.odom_stamp,'odom_unique_receipt_monotonic_s':n.pose[4],'odom_feedback_age_s':now-n.pose[4],'odom_callbacks':n.odom_callbacks,'odom_duplicates':n.odom_duplicates}
    state=n.state_frame()
    if state is not None:entry['joint_state']=state
    n.samples.append(entry)
    last_sample_at=now
-  time.sleep(.019)
+  n.spin(.019)
  n.zero_hold(1.5)
  # The delivered velocity interface returns to stable standing after its
  # timeout.  Request and observe that transition explicitly before exposing a
@@ -419,6 +433,8 @@ try:
  # for a docked manipulation posture.
  n.stand(); n.spin(2.2)
  if n.pose is None:raise RuntimeError('odometry lost during final hold')
+ if n.feedback_fault is not None or time.monotonic()-n.pose[4]>.20:
+  failure=n.feedback_fault or {'gate':'FINAL_ODOMETRY_FRESHNESS'}
  x,y,z,heading,_=n.pose;dist=math.hypot(gx-x,gy-y);yerr=wrap(gyaw-heading)
  if failure is None and not (stable_since is not None and time.monotonic()-stable_since>=1.5):failure={'gate':'TABLE_DOCK_ARRIVAL','distance_m':dist,'yaw_error_rad':yerr}
  frame_count=sum(1 for row in n.samples if 'joint_state' in row)
