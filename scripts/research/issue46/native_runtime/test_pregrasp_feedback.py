@@ -55,10 +55,10 @@ class FeedbackTests(unittest.TestCase):
         self.assertFalse(self.n.arm_fresh())
 
     def test_closure_needs_both_freshness_and_bilateral_tracking(self):
-        guard=next(n for n in ast.walk(self.tree) if isinstance(n,ast.If) and isinstance(n.test,ast.BoolOp) and 'preclose_error' in ast.unparse(n.test))
+        guard=next(n for n in ast.walk(self.tree) if isinstance(n,ast.If) and isinstance(n.test,ast.BoolOp) and 'HAND_RIGHT' in ast.unparse(n.test) and 'preclose_error' in ast.unparse(n.test))
         test=compile(ast.Expression(guard.test),'closure','eval')
         for fresh,error,expected in [(False,0.,False),(True,.435,False),(True,.079,True)]:
-            self.assertEqual(eval(test,{'HAND_RIGHT':0.,'preclose_error':error,'n':NS(arm_fresh=lambda:fresh),'preclose_waist_error':0.,'arrival':{'pass':True}}),expected)
+            self.assertEqual(eval(test,{'HAND_RIGHT':0.,'preclose_error':error,'n':NS(arm_fresh=lambda:fresh),'preclose_waist_error':0.,'arrival':{'pass':True},'CIRCLE_CONTRACT':None,'native_bilateral_contact':lambda t:{'pass':True}}),expected)
 
     def test_full_run_trace_and_callback_drain(self):
         self.assertIn('self.spin(max(0,min(next_tick,end)-time.monotonic()))',self.code)
