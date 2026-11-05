@@ -31,10 +31,15 @@ def main():
     parser.add_argument("--standing-state", type=Path, required=True)
     parser.add_argument("--grasp-height-above-center-m",type=float,default=0.0)
     parser.add_argument("--runtime-handoff",action="store_true")
+    parser.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     args = parser.parse_args()
     scene = json.loads(args.circle_review.read_text())
     candidate = json.loads(args.candidate.read_text())
     state = json.loads(args.standing_state.read_text())
+    base_offset=np.asarray(args.base_offset_xyz_m,dtype=float)
+    if base_offset.shape!=(3,) or not np.isfinite(base_offset).all(): raise ValueError("base offset must be finite")
+    state=json.loads(json.dumps(state))
+    state["base_pose_world"]["xyz_m"]=(np.asarray(state["base_pose_world"]["xyz_m"])+base_offset).tolist()
     samples = scene["circle_review"]["samples"]
     if scene["circle_review"]["classification"] != "STATIC_VARIABLE_DIAMETER_SUPPORT_CIRCLE_REVIEW_ONLY":
         raise ValueError("expected approved variable-diameter support-circle record")
