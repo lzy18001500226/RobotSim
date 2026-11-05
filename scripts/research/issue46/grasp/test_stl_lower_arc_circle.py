@@ -1,7 +1,7 @@
 """Analytic fixtures for the offline review geometry, no MuJoCo stepping."""
 import unittest
 import numpy as np
-from stl_lower_arc_circle import nearest, section_segments, solve_circle
+from stl_lower_arc_circle import nearest, section_segments, solve_circle, solve_support_circle
 
 
 def rectangle(y0, y1, z0, z1):
@@ -10,6 +10,34 @@ def rectangle(y0, y1, z0, z1):
 
 
 class CircleGeometryTests(unittest.TestCase):
+    def test_variable_radius_support_and_four_separated_bands(self):
+        for radius in (.003, .035):
+            z = np.linspace(-radius*.7, radius*.7, 101)
+            y = np.sqrt(radius**2-z**2)
+            arcs = []
+            for sign in (-1,1):
+                p = np.column_stack([sign*y,z])
+                arcs.append(np.stack([p[:-1],p[1:]],axis=1))
+            shells=[]
+            for arc,sign in zip(arcs,(-1,1)):
+                first,last=arc[0,0],arc[-1,1]
+                outer_first=first+np.array([sign*radius,0]);outer_last=last+np.array([sign*radius,0])
+                shells.append(np.concatenate([arc,np.array([[last,outer_last],[outer_last,outer_first],[outer_first,first]])]))
+            obstacles = np.concatenate(shells)
+            r = solve_support_circle(arcs, obstacles, ["left"]*103+["right"]*103)
+            self.assertAlmostEqual(r["radius_m"],radius,delta=radius*0.001)
+            self.assertLess(r["worst_support_band_gap_mm"],.01)
+            self.assertEqual(len(r["support_bands"]),4)
+            self.assertLess(r["support_bands"][0]["point_m"][2],r["support_bands"][1]["point_m"][2])
+            self.assertFalse(r["physical_contact_area_measured"])
+
+    def test_support_diameter_is_not_fixed(self):
+        arcs=[np.array([[[-.006,-.02],[-.006,.02]]]),np.array([[[.006,-.02],[.006,.02]]])]
+        obstacles=np.concatenate([rectangle(-.02,-.006,-.02,.02),rectangle(.006,.02,-.02,.02)])
+        r=solve_support_circle(arcs,obstacles,["left"]*4+["right"]*4)
+        self.assertAlmostEqual(r["diameter_mm"],12.,places=4)
+        self.assertEqual(len(r["gap_profiles"]),2)
+
     def test_exact_triangle_section(self):
         triangles = np.array([[[-1, 0, 0], [1, 2, 0], [1, 0, 2]]], dtype=float)
         np.testing.assert_allclose(section_segments(triangles), [[[1, 0], [0, 1]]])
