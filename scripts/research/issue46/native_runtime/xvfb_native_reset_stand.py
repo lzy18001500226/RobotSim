@@ -365,6 +365,8 @@ try:
     failure={'gate':'DOCK_HOLD_DRIFT','distance_m':dist,'limit_m':drift_limit};break
    if stable_since is None:stable_since=time.monotonic()
    if time.monotonic()-stable_since>=1.5:
+    if dist>position_tolerance:
+     failure={'gate':'DOCK_POST_ZERO_OUTSIDE_TOLERANCE','distance_m':dist,'tolerance_m':position_tolerance};break
     milestones.append({'goal':goal_name,'position_only':position_only,'odom_xy_m':[x,y],'odom_yaw_rad':heading,'distance_m':dist,'yaw_error_rad':yerr,'arrival_latched':True})
     if goal_index+1<len(goals):
      goal_index+=1;goal_name,gx,gy,gyaw,position_only=goals[goal_index];stable_since=None;arrival_latched=False;phase='REFINE_ALIGN';continue
