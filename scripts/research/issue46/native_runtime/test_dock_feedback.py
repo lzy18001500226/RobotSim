@@ -22,7 +22,7 @@ class DockFeedbackTests(unittest.TestCase):
         self.clock=NS(now=1.)
         self.ns={'math':math,'time':NS(monotonic=lambda:self.clock.now),'yaw':lambda q:0.,'rclpy':NS(ok=lambda:True),'Twist':lambda:NS(linear=NS(x=0.,y=0.),angular=NS(z=0.)),'PLAN':{'use_cmd_vel_bridge':True}}
         exec(compile(ast.Module(body=[cls],type_ignores=[]),'node','exec'),self.ns)
-        self.n=self.ns['Dock']();self.n.pose=None;self.n.quat=None;self.n.odom_stamp=None;self.n.odom_callbacks=0;self.n.odom_duplicates=0;self.n.feedback_fault=None;self.n.command_publish_count=0;self.n.arm={}
+        self.n=self.ns['Dock']();self.n.pose=None;self.n.quat=None;self.n.odom_stamp=None;self.n.odom_callbacks=0;self.n.odom_duplicates=0;self.n.odom_regressions=0;self.n.odom_last_unique_receipt=None;self.n.feedback_fault=None;self.n.command_publish_count=0;self.n.arm={}
 
     def message(self,stamp,position=1.):
         return NS(header=NS(stamp=NS(sec=1,nanosec=stamp)),pose=NS(pose=NS(position=NS(x=position,y=0.,z=.65),orientation=NS(w=1.,x=0.,y=0.,z=0.))))
@@ -33,7 +33,7 @@ class DockFeedbackTests(unittest.TestCase):
 
     def test_warmup_history_discards_but_active_regression_latches_stop(self):
         self.n.on_odom(self.message(2));self.n.on_odom(self.message(1));self.assertIsNone(self.n.feedback_fault)
-        self.n.command_publish_count=1;self.n.on_odom(self.message(1));self.assertEqual(self.n.feedback_fault['gate'],'ODOMETRY_SOURCE_REGRESSION')
+        self.n.command_publish_count=1;self.clock.now+=.21;self.n.on_odom(self.message(1));self.assertEqual(self.n.feedback_fault['gate'],'ODOMETRY_SOURCE_REGRESSION')
 
     def test_nonfinite_pose_is_invalid(self):
         self.n.on_odom(self.message(2,float('nan')));self.assertEqual(self.n.feedback_fault['gate'],'INVALID_ODOMETRY')
