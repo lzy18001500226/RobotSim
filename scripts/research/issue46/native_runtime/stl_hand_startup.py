@@ -734,7 +734,15 @@ class Plan(Node):
   for item in m.joints:
    if not math.isfinite(float(item.position)):raise RuntimeError('NONFINITE_ARM_STATE:'+item.name)
    old=self.arm_stamp.get(item.name)
-   if old is not None and stamp<old:raise RuntimeError('REGRESSING_ARM_STATE:'+item.name)
+   if old is not None and stamp<old:
+    fault={'gate':'REGRESSING_ARM_STATE','joint':item.name,'previous_source_stamp_ns':old,'received_source_stamp_ns':stamp,'regression_ns':old-stamp,'host_receipt_monotonic_s':now,'last_unique_receipt_monotonic_s':self.arm_receipt.get(item.name),'arm_callback_count':self.arm_callbacks,'control_sequence':self.seq}
+    print(json.dumps({'arm_feedback_fault':fault}),flush=True)
+    # Initial DDS history may arrive out of order during subscription warmup.
+    # Before any control publish only: reject the old frame without updating
+    # position, timestamp or receipt age. All axes must still qualify fresh at
+    # the fixed startup deadline. A regression during control remains fatal.
+    if self.seq==0:continue
+    raise RuntimeError('REGRESSING_ARM_STATE:'+json.dumps(fault))
    if stamp>0 and (old is None or stamp>old):
     self.arm[item.name]=float(item.position);self.arm_receipt[item.name]=now;self.arm_stamp[item.name]=stamp
  def arm_fresh(self,max_age=.20):

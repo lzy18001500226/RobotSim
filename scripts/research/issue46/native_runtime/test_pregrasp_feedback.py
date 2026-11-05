@@ -25,7 +25,8 @@ class FeedbackTests(unittest.TestCase):
         self.clock=NS(now=1.)
         self.ns={'time':NS(monotonic=lambda:self.clock.now),'math':math,'LEFT':('left',),'RIGHT':('right',)}
         exec(compile(ast.Module(body=[cls],type_ignores=[]),'runtime','exec'),self.ns)
-        self.n=self.ns['Plan']();self.n.arm={};self.n.arm_stamp={};self.n.arm_receipt={};self.n.arm_callbacks=0
+        self.ns['json']=json
+        self.n=self.ns['Plan']();self.n.arm={};self.n.arm_stamp={};self.n.arm_receipt={};self.n.arm_callbacks=0;self.n.seq=0
 
     def message(self,stamp,names=('left','right'),position=.1):
         return NS(header=NS(stamp=NS(sec=1,nanosec=stamp)),joints=[NS(name=n,position=position) for n in names])
@@ -40,8 +41,18 @@ class FeedbackTests(unittest.TestCase):
 
     def test_regression_and_nonfinite_fail_closed(self):
         self.n.on_arm(self.message(2))
+        self.n.seq=1
         with self.assertRaisesRegex(RuntimeError,'REGRESSING'):self.n.on_arm(self.message(1))
         with self.assertRaisesRegex(RuntimeError,'NONFINITE'):self.n.on_arm(self.message(3,position=float('nan')))
+
+    def test_initial_history_disorder_never_refreshes_freshness(self):
+        self.n.on_arm(self.message(20));receipts=dict(self.n.arm_receipt)
+        self.clock.now+=.3
+        self.n.on_arm(self.message(10,position=.8))
+        self.assertEqual(self.n.arm_receipt,receipts)
+        self.assertEqual(self.n.arm['left'],.1)
+        self.assertEqual(self.n.arm_stamp['left'],1000000020)
+        self.assertFalse(self.n.arm_fresh())
 
     def test_closure_needs_both_freshness_and_bilateral_tracking(self):
         guard=next(n for n in ast.walk(self.tree) if isinstance(n,ast.If) and isinstance(n.test,ast.BoolOp) and 'preclose_error' in ast.unparse(n.test))

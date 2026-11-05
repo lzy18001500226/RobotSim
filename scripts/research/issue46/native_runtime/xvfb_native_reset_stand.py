@@ -1530,9 +1530,10 @@ def main() -> None:
                     result["commands_not_sent"].remove("hand command")
                 if args.pause_on_claw_failure and result["gates"]["HAL_RIGHT_HAND_CLOSE"] == "FAIL":
                     release = output / "continue_after_manual_review"
-                    result["manual_review_pause"] = {"reason": "HAL_RIGHT_HAND_CLOSE_FAIL", "container": container, "display": args.interactive_x11_display, "release_file": str(release), "instructions": "Rotate the visible MuJoCo window; create the release file after review."}
+                    pause_reason = "ARM_CHILD_EXECUTION_ERROR" if arm_pregrasp.returncode != 0 else "HAND_MAPPING_OR_RESPONSE_UNQUALIFIED"
+                    result["manual_review_pause"] = {"reason": pause_reason, "child_returncode": arm_pregrasp.returncode, "child_output_tail": arm_pregrasp.stdout[-2000:], "container": container, "display": args.interactive_x11_display, "release_file": str(release), "instructions": "Rotate the visible MuJoCo window; create the release file after review. This is not proof that closure occurred."}
                     pg.write_new_text(output / "manual_review_pause.json", json.dumps(result["manual_review_pause"], ensure_ascii=False, indent=2) + "\n")
-                    print("CLAW RESPONSE FAILED. MuJoCo remains open. Create continue_after_manual_review to clean up.", flush=True)
+                    print(pause_reason + ". MuJoCo remains open. Create continue_after_manual_review to clean up.", flush=True)
                     deadline = time.monotonic() + 900.0
                     while time.monotonic() < deadline and not release.exists():
                         time.sleep(0.5)
