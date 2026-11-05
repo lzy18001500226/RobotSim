@@ -20,6 +20,32 @@ def builder():
 
 
 class CoordinatedTests(unittest.TestCase):
+    def test_waist_relay_preserves_mc_policy_and_every_other_config_field(self):
+        import copy
+        tree=ast.parse(Path(__file__).with_name('stl_hand_startup.py').read_text())
+        funcs=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('build_arm_hand_split_mc_config','build_coordinated_waist_relay_config')]
+        ns={};exec(compile(ast.Module(body=funcs,type_ignores=[]),'relay_config','exec'),ns)
+        names=('arm_joint_command','waist_joint_command','hand_joint_command','leg_joint_command')
+        source={'MotionControlModule':{'PublisherManager':{'publisher_cfg_list':[{'name':n,'enable':True,'topic':'/aima/hal/joint/'+n.split('_')[0]+'/command','frequency':500} for n in names]}},'aimrt':{'channel':{'pub_topics_options':[{'topic_name':'/aima/hal/joint/waist/command','backend':'ros2'}]}},'policy':{'gains':'UNCHANGED'}}
+        expected=copy.deepcopy(source)
+        for item in expected['MotionControlModule']['PublisherManager']['publisher_cfg_list']:
+            if item['name'] in ('arm_joint_command','hand_joint_command'):item['enable']=False
+            if item['name']=='waist_joint_command':item['topic']='/robotsim/issue46/mc/waist/command'
+        expected['aimrt']['channel']['pub_topics_options'][0]['topic_name']='/robotsim/issue46/mc/waist/command'
+        actual=ns['build_coordinated_waist_relay_config'](source)
+        self.assertEqual(actual,expected)
+        self.assertTrue(source['MotionControlModule']['PublisherManager']['publisher_cfg_list'][0]['enable'])
+
+    def test_bootstrap_relays_exact_command_not_pre_reset_angle(self):
+        path=Path(__file__).with_name('xvfb_native_reset_stand.py')
+        fn=next(n for n in ast.parse(path.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='arm_bootstrap_hold_script')
+        ns={'json':json};exec(compile(ast.Module(body=[fn],type_ignores=[]),'bootstrap','exec'),ns)
+        code=ns[fn.name]({},relay_waist=True);compile(code,'bootstrap','exec')
+        self.assertIn('self.waist_pub.publish(m)',code)
+        self.assertNotIn('waist_initial',code)
+        self.assertIn("STALE_MC_WAIST_RELAY",code)
+        self.assertIn('while rclpy.ok() and time.monotonic()<next_tick',code)
+
     def test_source_gains_and_all_controlled_axes(self):
         constants={}
         exec(compile(ast.Module(body=[n for n in ast.parse(generated()).body if isinstance(n,ast.Assign) and not any(isinstance(x,ast.Call) for x in ast.walk(n))],type_ignores=[]),'constants','exec'),constants)

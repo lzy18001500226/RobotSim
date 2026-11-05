@@ -213,6 +213,26 @@ def build_arm_waist_split_mc_config(source: dict[str, object]) -> dict[str, obje
     return result
 
 
+
+def build_coordinated_waist_relay_config(source: dict[str, object]) -> dict[str, object]:
+    """Redirect only MC waist output through the pregrasp handoff relay.
+
+    The MC computes the original waist commands throughout standing/navigation;
+    this overlay changes only transport ownership, never gains or policy.
+    """
+    result=build_arm_hand_split_mc_config(source)
+    original='/aima/hal/joint/waist/command'
+    private='/robotsim/issue46/mc/waist/command'
+    entries=result["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
+    publishers=[x for x in entries if x.get("name")=="waist_joint_command"]
+    channels=[x for x in result["aimrt"]["channel"]["pub_topics_options"] if x.get("topic_name")==original]
+    if len(publishers)!=1 or publishers[0].get("enable") is not True or publishers[0].get("topic")!=original or len(channels)!=1:
+        raise ValueError("expected exact enabled MC waist publisher and ROS channel")
+    publishers[0]["topic"]=private
+    channels[0]["topic_name"]=private
+    return result
+
+
 def build_stand_client_script() -> str:
     """Minimal equivalent of the delivered ``set_mc_action SD`` example."""
     return """#!/usr/bin/env python3
