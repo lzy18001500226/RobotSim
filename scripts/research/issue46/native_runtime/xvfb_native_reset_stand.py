@@ -330,7 +330,7 @@ try:
   return sx+dx,sy+dy,wrap(world_yaw)
  goals=[('TABLE_DOCK',*odom_goal(PLAN['dock_world_xy'],PLAN['dock_world_yaw_rad']),PLAN['dock_position_only'])]
  if PLAN['refine_world_xy'] is not None:goals.append(('LOCAL_REFINE',*odom_goal(PLAN['refine_world_xy'],PLAN['refine_world_yaw_rad']),PLAN['refine_position_only']))
- goal_index=0;goal_name,gx,gy,gyaw,position_only=goals[goal_index];milestones=[]
+ goal_index=0;goal_name,gx,gy,gyaw,position_only=goals[goal_index];milestones=[];arrival_latched=False
  source=n.register();registered=True
  started=time.monotonic(); stable_since=None; phase='ALIGN'; failure=None; last_sample_at=None
  while time.monotonic()-started < PLAN['timeout_s']:
@@ -341,7 +341,23 @@ try:
   if z < .45 or n.max_tilt > math.radians(15):
    n.publish();failure={'gate':'BALANCE_ENVELOPE','z_m':z,'max_tilt_rad':n.max_tilt};break
   position_tolerance=PLAN['refine_position_tolerance_m'] if goal_name=='LOCAL_REFINE' else PLAN['dock_position_tolerance_m']
-  if position_only and dist>position_tolerance:
+  # Once a position-only goal enters its accepted radius, latch the hold phase.
+  # Re-entering LOCAL_TURN after stand-transition drift caused large yaw changes
+  # and walked the base back out of the docking area.
+  if position_only and not arrival_latched and dist<=position_tolerance:
+   arrival_latched=True;stable_since=None
+  if arrival_latched:
+   phase='HOLD';fwd=lat=ang=0.
+   drift_limit=max(.35,position_tolerance+.15)
+   if dist>drift_limit:
+    failure={'gate':'DOCK_HOLD_DRIFT','distance_m':dist,'limit_m':drift_limit};break
+   if stable_since is None:stable_since=time.monotonic()
+   if time.monotonic()-stable_since>=1.5:
+    milestones.append({'goal':goal_name,'position_only':position_only,'odom_xy_m':[x,y],'odom_yaw_rad':heading,'distance_m':dist,'yaw_error_rad':yerr,'arrival_latched':True})
+    if goal_index+1<len(goals):
+     goal_index+=1;goal_name,gx,gy,gyaw,position_only=goals[goal_index];stable_since=None;arrival_latched=False;phase='REFINE_ALIGN';continue
+    break
+  elif position_only and dist>position_tolerance:
    # Follow the delivered/community move_toward controller: turn toward the
    # local target before moving, then reduce forward speed with distance.
    # Earlier direct strafe and forced forward-arc variants both failed this
