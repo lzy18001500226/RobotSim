@@ -1476,6 +1476,7 @@ def main() -> None:
                     else:
                         replan_record = json.loads(replan_result_path.read_text(encoding="utf-8"))
                         required_replan = ("DOCK_CAPTURE", "RUNTIME_STATIC_IK", "LEFT_ARM_PARK_CLEAR", "OPEN_PREGRASP_CLEAR", "CLOSED_CONTACT_CLEAR")
+                        if "circle" in replan_record:required_replan+=("APPROACH_SWEEP",)
                         replan_ok = replan_record.get("classification") == "SIMULATION_ONLY_RUNTIME_CAPTURED_STATIC_REPLAN" and all(replan_record.get("gates", {}).get(name) == "PASS" for name in required_replan)
                         result["hal_arm_runtime_replan"] = {"path": str(replan_result_path), "sha256": sha256(replan_result_path), "returncode": replan.returncode, "gates": replan_record.get("gates")}
                         result["gates"]["HAL_ARM_RUNTIME_REPLAN"] = "PASS" if replan_ok else "FAIL"

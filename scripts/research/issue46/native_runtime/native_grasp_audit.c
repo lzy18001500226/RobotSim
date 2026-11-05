@@ -80,7 +80,8 @@ void mj_step(const mjModel* m,mjData* d) {
   }
   fprintf(sink,"},\"active_contact_count\":%d,\"contacts\":[",d->ncon);
   int bottle=id_real(m,mjOBJ_BODY,"test_cylinder");
-  int table=id_real(m,mjOBJ_BODY,"raicom_table"),emitted=0;
+  int table=id_real(m,mjOBJ_BODY,"raicom_table_table"),emitted=0;
+  if(table<0)table=id_real(m,mjOBJ_BODY,"raicom_table");
   for(int i=0;i<d->ncon;i++) {
     const mjContact* c=d->contact+i;
     if(c->geom1<0 || c->geom2<0) continue;

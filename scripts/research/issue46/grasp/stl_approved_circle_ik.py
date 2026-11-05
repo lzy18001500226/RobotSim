@@ -58,7 +58,10 @@ def main():
         perception={"source":"MUJOCO_TRUTH_DIAGNOSTIC_ONLY","object_center_world_m":object_center.tolist(),"scene_sha256":candidate["scene"]["sha256"]}
     else:
         perception={**perception,"source":"HISTORICAL_RGBD_REPLAY_NOT_CURRENT_EPISODE","fresh_capture":False}
-    if not 0<=args.grasp_height_above_center_m<=.075:
+    # Canonical bottle half-height=150mm; the wide pad spans roughly +/-30mm
+    # along the bottle axis. A 100mm section offset retains >=20mm top margin.
+    # This is a task grasp-height choice, not a joint/model/safety-limit edit.
+    if not 0<=args.grasp_height_above_center_m<=.10:
         raise ValueError("grasp section height must be within the canonical bottle body")
     object_center[2]+=args.grasp_height_above_center_m
     # The canonical existing fixture is 70mm diameter. Match its circumference
@@ -109,6 +112,8 @@ def main():
             ik.set_pose(model,d,state,solved,np.zeros(3),0.,opening,np.zeros(3),0.,None)
             pads,bad,table,robot_table=ik.contacts(model,d,ik.native.bid(model,"test_cylinder"))
             checked[str(opening)]={"pad_bodies":pads,"forbidden_object_bodies":bad,"robot_table_bodies":robot_table,"table_support":table}
+        final_check=checked[str(command)]
+        metrics.update({"pad_bodies":final_check["pad_bodies"],"nonpad_cylinder_bodies":final_check["forbidden_object_bodies"],"robot_table_bodies":final_check["robot_table_bodies"],"table_support":final_check["table_support"]})
         position_ok=metrics["hand_position_error_m"]<=1e-4 and metrics["hand_orientation_error_rad"]<=1e-3 and metrics["minimum_joint_margin_rad"]>=1e-3
         clear=all(not c["forbidden_object_bodies"] and not c["robot_table_bodies"] for c in checked.values())
         open_clear=not checked[str(min(command+10,100))]["pad_bodies"]
@@ -119,7 +124,8 @@ def main():
             ik.set_pose(model,d,state,q+(solved-q)*fraction,np.zeros(3),0.,min(command+10,100),np.zeros(3),0.,None)
             pads,bad,table,robot_table=ik.contacts(model,d,ik.native.bid(model,"test_cylinder"))
             if pads or bad or robot_table:sweep.append({"fraction":float(fraction),"pads":pads,"forbidden_object":bad,"robot_table":robot_table})
-        rows.append({"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
+        row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(min(command+10,100))]["forbidden_object_bodies"] and not checked[str(min(command+10,100))]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if not sweep else "FAIL"}
+        rows.append({"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
     rows.sort(key=lambda r:(not r["pass"],r["metrics"]["hand_position_error_m"]))
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path
     record={"classification":"SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK","mj_step_calls":0,"grasp_section_center_world_m":object_center.tolist(),"grasp_height_above_center_m":args.grasp_height_above_center_m,"circle_review":str(args.circle_review),"circle_review_sha256":hashlib.sha256(args.circle_review.read_bytes()).hexdigest(),"circle":match,"standing_state":str(args.standing_state),"scene":candidate["scene"],"perception":perception,"root_legs_waist_frozen":True,"commands":{"open":min(command+10,100),"match":command,"closure_probe":max(command-1,0)},"rows":rows,"gate":"PASS" if rows[0]["pass"] else "FAIL","dynamics":"NOT_RUN"}
@@ -128,7 +134,7 @@ def main():
     if args.runtime_handoff:
         best=rows[0];target_state=json.loads(json.dumps(state))
         target_state["arm_positions_rad"].update({n:best["q_rad"][n] for n in ik.ARM})
-        record.update({"classification":"SIMULATION_ONLY_RUNTIME_CAPTURED_STATIC_REPLAN","initial_state":target_state,"gates":{name:record["gate"] for name in ("DOCK_CAPTURE","RUNTIME_STATIC_IK","LEFT_ARM_PARK_CLEAR","OPEN_PREGRASP_CLEAR","CLOSED_CONTACT_CLEAR")}})
+        record.update({"classification":"SIMULATION_ONLY_RUNTIME_CAPTURED_STATIC_REPLAN","initial_state":target_state,"gates":{"DOCK_CAPTURE":"PASS" if state.get("motion_stability",{}).get("pass") is True else "FAIL",**best["gates"]}})
     pg.write_new_text(out/"result.json",json.dumps(record,indent=2)+"\n")
     pg.write_new_bytes(out/Path(__file__).name,Path(__file__).read_bytes())
     pg.write_artifact_manifest(out)

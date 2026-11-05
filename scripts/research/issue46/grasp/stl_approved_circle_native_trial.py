@@ -12,6 +12,7 @@ import sys
 REPO=Path(__file__).resolve().parents[4]
 sys.path.insert(0,str(REPO))
 from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as native
+from scripts.agent import path_governance as pg
 
 
 def main():
@@ -22,6 +23,7 @@ def main():
     p.add_argument("--execute-simulation",action="store_true")
     p.add_argument("--native-physics-audit",action="store_true",help="read-only actual-engine pose/contact/force observer; ABI must match installed library")
     p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay"),default="truth-diagnostic",help="truth baseline or explicitly historical RGB-D replay; not fresh camera capture")
+    p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     p.add_argument("--dock-world-xy",type=float,nargs=2,default=None)
     args=p.parse_args()
@@ -34,7 +36,6 @@ def main():
         nonlocal audit_output
         if args.native_physics_audit and command[:2]==['docker','run']:
             from scripts.research.issue46.native_runtime.native_grasp_audit import build
-            from scripts.agent import path_governance as pg
             mounts=[value for value in command if isinstance(value,str) and value.startswith('type=bind,source=') and ',target=/workspace/evidence' in value]
             if len(mounts)!=1:raise RuntimeError('cannot identify one exact native observation evidence mount')
             audit_output=Path(mounts[0].split(',source=',1)[1].split(',target=',1)[0])
@@ -50,6 +51,7 @@ def main():
             # state is MEASURED; adding that offset again invents a root pose.
             command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]
             command.extend(["--target-source",args.target_source])
+            command[command.index("--grasp-height-above-center-m")+1]=str(args.grasp_height_above_center_m)
             kwargs["timeout_s"]=45.
         return original(command,**kwargs)
     native.run=run
