@@ -61,6 +61,23 @@ class NativeLaunchTests(TestCase):
         self.assertFalse(budget['estimate_within_command_range'])
 
 
+    def test_startup_open_is_explicit_and_walking_requires_measured_opening(self):
+        source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
+        fn=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='arm_bootstrap_hold_script')
+        ns={'json':json};exec(compile(ast.Module(body=[fn],type_ignores=[]),'bootstrap','exec'),ns)
+        default=ns[fn.name]({});opened=ns[fn.name]({},initial_hand_opening=1.)
+        self.assertIn('INITIAL_HAND_OPENING=None',default)
+        self.assertIn('INITIAL_HAND_OPENING=1.0',opened)
+        compile(opened,'open_bootstrap','exec')
+        with self.assertRaises(ValueError):ns[fn.name]({},initial_hand_opening=.5)
+        self.assertLess(source.index('INITIAL_HANDS_NOT_FULLY_OPEN'),source.index('dock = run('))
+        self.assertIn('abs(q+1.0)<=.03',source)
+        code=generated();tree=ast.parse(code)
+        guard=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and ast.unparse(n.test)=='not startup_open')
+        self.assertIn('HAND_ACTIVATION',ast.unparse(guard.body))
+        self.assertNotIn('n.send',ast.unparse(guard.orelse))
+
+
     def test_native_feedback_cannot_refresh_from_stale_or_reset_generation(self):
         code=generated();tree=ast.parse(code)
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Plan')

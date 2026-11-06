@@ -927,7 +927,10 @@ try:
  # handshake used in the previously passing native hand round-trip before a
  # nonzero target is sent.
  if HAND_RIGHT is not None:
-  n.send(start,.8,'HAND_ACTIVATION',0.0)
+  # An already active/open hand must not close again at docking handoff.
+  startup_open=USE_NATIVE_FEEDBACK and float(n.native_row['joints']['R_claw_joint']['q'])<-.03
+  if not startup_open:n.send(start,.8,'HAND_ACTIVATION',0.0)
+  else:print(json.dumps({'hand_activation':'PRESERVED_ALREADY_OPEN_NATIVE_STATE'}),flush=True)
   # Open while the arms are still at the measured dock-safe pose.  Starting
   # the arm approach with closed fingers can lodge a pad against the object
   # before the root position actuator has clearance to move.

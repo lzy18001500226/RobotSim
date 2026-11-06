@@ -48,12 +48,10 @@ class CoordinatedTests(unittest.TestCase):
 
     def test_native_observer_exports_every_arm_bias_joint(self):
         source=Path(__file__).with_name('native_grasp_audit.c').read_text()
-        self.assertIn('right_shoulder_roll_joint',source)
-        self.assertIn('right_shoulder_yaw_joint',source)
-        self.assertIn('right_elbow_joint',source)
-        self.assertIn('right_wrist_yaw_joint',source)
-        self.assertIn('right_wrist_roll_joint',source)
-        self.assertIn('sizeof(joints)/sizeof(joints[0])',source)
+        self.assertIn('j<m->njnt',source)
+        self.assertIn('mjJNT_FREE',source)
+        self.assertIn('mjJNT_BALL',source)
+        self.assertIn('qfrc_bias[m->jnt_dofadr[j]]',source)
 
     def test_source_gains_and_all_controlled_axes(self):
         constants={}

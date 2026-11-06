@@ -81,3 +81,31 @@ retains the failure window up to 15 minutes; normal bounded execution cleans up.
 No new physical run is justified merely to rediscover the recorded opening
 failure. Review the parameter correction first. The full objective remains
 >=50 mm lift plus >=1 s unsupported hold and is not achieved.
+
+## Startup fully-open request (2026-11-06)
+
+User requested opening from initialization, holding open through walking, and
+avoiding close/reopen on docking. Added explicit `--initial-hands-fully-open`
+to the existing approved-circle adapter and native runner. The arm bootstrap
+publishes both existing hand commands: delivered 0.8 s activation handshake,
+then normalized 1.0 continuously. This changes command ordering only; it does
+not write model state or alter actuator gains, force limits or geometry.
+A fresh native opening check requires each root within 0.03 rad of -1 before
+walking. The grasp child preserves an already-open activation state, then
+checks the planned approach opening before moving arms.
+
+Actual native run:
+`reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T104944Z/`.
+Reset and standing passed. At the pre-walk gate, L=-0.136957 and R=-0.137559
+rad, target=-1.0 rad. Gate failed, so walking, approach, closure and lift were
+NOT_RUN. Last cleanup-era sample at sim=12.101 s was about -0.250 rad with
+ctrl=1.0 and actuator force about 1.499 Nm. This establishes actual early
+opening progress, not full-opening success, permanent stall, or a new torque
+measurement of hardware. Delayed full opening remains unproven; do not infer
+it from the command or simply lengthen timeouts to claim success.
+
+Focused offline suite including bootstrap generation, preservation of open
+state, and pre-walk opening gate: 32 tests PASS. Container absence confirmed.
+
+Reproduce this specific opening-first diagnostic with the previous command
+plus `--initial-hands-fully-open`; do not present it as a successful grasp demo.

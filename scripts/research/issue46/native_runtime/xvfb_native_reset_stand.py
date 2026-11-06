@@ -573,26 +573,31 @@ gcc -std=c11 -O2 -Wall -Wextra -D_DEFAULT_SOURCE \"${include_dirs[@]}\" \\
 """
 
 
-def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False) -> str:
+def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, initial_hand_opening: float | None = None) -> str:
     """Hold arms at the installed MC's neutral target before MC owns the legs.
 
     This is an explicitly simulation-only bootstrap for an arm-split MC
     overlay.  It does not publish leg, waist, hand, or locomotion commands.
     A marker gives the caller an orderly hand-off to the bounded arm probe.
     """
+    if initial_hand_opening is not None and initial_hand_opening != 1.0:
+        raise ValueError("startup hand opening must be exactly 1.0 or disabled")
     encoded = json.dumps({name: [float(kp), float(kd)] for name, (kp, kd) in gains.items()}, sort_keys=True)
     return """#!/usr/bin/env python3
 import json, math, os, time, rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
-from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader, HandCommand, HandCommandArray, HandType
 ARM=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint','right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
 TARGET=(.4,0.,0.,-1.2,0.,0.,0.,.4,0.,0.,-1.2,0.,0.,0.)
-RELAY_WAIST=__RELAY_WAIST__
+RELAY_WAIST=__RELAY_WAIST__; INITIAL_HAND_OPENING=__INITIAL_HAND_OPENING__
 GAINS=__GAINS__; STOP='/workspace/evidence/stop_arm_bootstrap'
 class Hold(Node):
  def __init__(self):
   super().__init__('robotsim_arm_split_bootstrap');q=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT);self.state={};self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q);self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',lambda m:self.state.update({x.name:float(x.position) for x in m.joints}),q);self.seq=0;self.ready=False;self.waist_last_receipt=None;self.waist_relay_count=0
+  self.started=time.monotonic();self.hand_pub=None
+  if INITIAL_HAND_OPENING is not None:
+   self.hand_pub=self.create_publisher(HandCommandArray,'/aima/hal/joint/hand/command',QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.TRANSIENT_LOCAL))
   self.waist_pub=None
   if RELAY_WAIST:
    self.waist_pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/waist/command',q)
@@ -608,6 +613,13 @@ class Hold(Node):
   for name,target in zip(ARM,TARGET):
    x=JointCommand();x.name=name;x.position=target;x.velocity=0.;x.effort=0.;x.stiffness=GAINS[name][0];x.damping=GAINS[name][1];m.joints.append(x)
   self.pub.publish(m)
+  if self.hand_pub is not None:
+   # Retain the delivered initialization handshake, then hold fully open.
+   command=0.0 if time.monotonic()-self.started<.8 else INITIAL_HAND_OPENING
+   h=HandCommandArray();h.left_hand_type=HandType(value=2);h.right_hand_type=HandType(value=2)
+   for side,items in (('left',h.left_hands),('right',h.right_hands)):
+    x=HandCommand();x.name=side+'_claw_joint';x.position=command;x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;items.append(x)
+   self.hand_pub.publish(h)
   if self.waist_last_receipt is not None and time.monotonic()-self.waist_last_receipt>.20:raise RuntimeError('STALE_MC_WAIST_RELAY')
 rclpy.init();n=Hold()
 try:
@@ -623,7 +635,7 @@ try:
   while rclpy.ok() and time.monotonic()<next_tick:rclpy.spin_once(n,timeout_sec=.001)
  print(json.dumps({'stopped':os.path.exists(STOP),'ready':n.ready,'waist_relay_count':n.waist_relay_count,'subscription_count':n.pub.get_subscription_count()}),flush=True)
 finally:n.destroy_node();rclpy.shutdown()
-""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist))
+""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening))
 
 
 def retarget_neutral_script() -> str:
@@ -814,6 +826,7 @@ def main() -> None:
     parser.add_argument("--xvfb-libs", required=True, type=Path)
     parser.add_argument("--xkb-root", required=True, type=Path)
     parser.add_argument("--interactive-x11-display", help="use a user-visible WSLg X11 display and pause after failed claw response; requires the host X socket mounted explicitly")
+    parser.add_argument("--initial-hands-fully-open", action="store_true", help="hold both hands open from bootstrap; require actual native opening before walking")
     parser.add_argument("--pause-on-claw-failure", action="store_true", help="retain the simulator/container at the failed closure stage for manual inspection")
     parser.add_argument("--arm-ik-result", type=Path)
     parser.add_argument("--arm-ik-result-sha256")
@@ -961,6 +974,8 @@ def main() -> None:
     if args.preset_motion_area not in (0, 1, 2, 3, 4, 8, 11):
         raise ValueError("preset motion area must be an official control-area value")
 
+    if args.initial_hands_fully_open and not (args.hal_arm_candidate is not None and args.disable_mc_arm_publisher and args.disable_mc_hand_publisher):
+        raise ValueError("startup hand command requires exclusive arm/hand candidate path")
     table_result = require_hashed(args.table_overlay_result, args.table_overlay_result_sha256, label="table overlay result")
     reset_helper = require_hashed(args.reset_helper, args.reset_helper_sha256, label="native reset helper")
     for label, path in (("xvfb root", args.xvfb_root), ("xvfb libraries", args.xvfb_libs), ("XKB root", args.xkb_root)):
@@ -1033,7 +1048,7 @@ def main() -> None:
             if args.coordinated_circle_waist:
                 split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))
                 bootstrap_gains=stl_hand_startup.load_animation_player_arm_pd_parameters()
-                pg.write_new_text(output/"native_arm_bootstrap_hold.py",arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True))
+                pg.write_new_text(output/"native_arm_bootstrap_hold.py",arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None))
                 arm_bootstrap_enabled=True
             pg.write_new_text(arm_split_config,yaml.safe_dump(split,allow_unicode=True,sort_keys=False))
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
@@ -1041,14 +1056,14 @@ def main() -> None:
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
             pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None))
             arm_bootstrap_enabled = True
         elif args.disable_mc_arm_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_split.yaml"
             pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None))
             arm_bootstrap_enabled = True
         elif args.disable_mc_waist_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
@@ -1312,6 +1327,19 @@ def main() -> None:
         if sample.returncode != 0 or not sample_data.get("stability", {}).get("pass"):
             raise RuntimeError(f"post-reset stand is unstable: {sample.stdout[-1200:]}")
         result["gates"]["POST_RESET_STAND_STABILITY"] = "PASS"
+        if args.initial_hands_fully_open:
+            native_grasp_audit.require_fresh_sample(output / "native_physics.jsonl")
+            data=(output / "native_physics.jsonl").read_bytes()[-1048576:]
+            lines=data.splitlines()
+            if not data.endswith(b"\n"):lines=lines[:-1]
+            for line in reversed(lines):
+                try:hand_row=json.loads(line);break
+                except (ValueError,UnicodeDecodeError):continue
+            opening={name:float(hand_row["joints"][name]["q"]) for name in ("L_claw_joint","R_claw_joint")}
+            hand_ok=all(abs(q+1.0)<=.03 for q in opening.values())
+            result["initial_hand_opening"]={"command":1.0,"actual_root_rad":opening,"pass":hand_ok,"native_host_ns":hand_row["host_monotonic_ns"]}
+            result["gates"]["INITIAL_HANDS_ACTUALLY_OPEN"]="PASS" if hand_ok else "FAIL"
+            if not hand_ok:raise RuntimeError("INITIAL_HANDS_NOT_FULLY_OPEN; walking and grasp NOT_RUN")
         capture = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 8s python3 /workspace/evidence/native_arm_state_capture.py"], timeout_s=10.0, check=False)
         pg.write_new_text(output / "native_arm_state_capture.stdout", capture.stdout)
         result["native_arm_state_capture"] = json.loads(capture.stdout.strip().splitlines()[-1]) if capture.returncode == 0 else {"returncode": capture.returncode}
