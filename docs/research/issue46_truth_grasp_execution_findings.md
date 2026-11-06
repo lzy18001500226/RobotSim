@@ -306,3 +306,25 @@ bounded and native telemetry freshness remains 0.20s.
 rejection in both phases, false-arrival and generation-mismatch rejection.
 This correction has not been physically validated; do not launch a new episode
 until the actual lower-pad placement at the saved review checkpoint is reviewed.
+
+### Recorded native-state review, without another physical attempt
+
+The existing approved-circle entry point now accepts `--review-captured-run`.
+It verifies the exact derived scene/replan hashes and restores all recorded
+scalar joints plus pelvis and bottle poses in a separate display MjData.
+It does not call mj_step, Docker, ROS or MC. GUI keys 1/2/3 select attained
+arrival, partial closing and final captured state; arrows change frames and
+space plays recorded frames. Yellow shows the actual hand-frame support circle;
+magenta marks the measured bottle target section. Full robot and scene remain
+visible. It is clearly labeled RECORDED REVIEW / NO PHYSICS.
+
+The capture used native 3.3.7; the display uses existing Python MuJoCo 3.3.6.
+Representative recorded/rendered body translations must agree within 5mm;
+static display contacts/forces cannot be promoted to new physical evidence.
+This review avoids rerunning motion merely because the retained live window
+expired. The prior native physical result and unresolved grasp/lift gates
+remain unchanged.
+
+```powershell
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec bash scripts/research/issue46/grasp/run_truth_circle_review.sh --review-captured-run /home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T130347Z
+```

@@ -160,6 +160,19 @@ class NativeLaunchTests(TestCase):
         self.assertIn('BOTTLE_MOVED_DURING_CLOSURE',ast.unparse(task))
 
 
+    def test_recorded_review_cannot_invoke_runtime_physics(self):
+        tree=ast.parse(Path(__file__).with_name('native_grasp_audit.py').read_text())
+        for name in ('apply_recorded_native_frame','review_native_capture'):
+            fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
+            code=ast.unparse(fn)
+            self.assertNotIn('mj_step(',code)
+            self.assertNotIn('subprocess.',code)
+        adapter=ast.parse(Path(__file__).parents[1].joinpath('grasp/stl_approved_circle_native_trial.py').read_text())
+        fn=next(n for n in adapter.body if isinstance(n,ast.FunctionDef) and n.name=='main')
+        review=next(n for n in fn.body if isinstance(n,ast.If) and ast.unparse(n.test)=='args.review_captured_run')
+        self.assertIsInstance(review.body[-1],ast.Return)
+
+
     def test_native_feedback_cannot_refresh_from_stale_or_reset_generation(self):
         code=generated();tree=ast.parse(code)
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Plan')

@@ -105,3 +105,85 @@ def coupled_opening_budget(model, root_joint, actuator, q):
         raise ValueError("budget requires the recorded gear=-1 position servo")
     command=-q+resistance/kp
     return {"q_rad":q,"estimated_coupled_coulomb_nm":resistance,"terms":terms,"kp":kp,"opening_command_to_balance_coulomb_estimate":command,"command_upper_bound":float(model.actuator_ctrlrange[actuator,1]),"estimate_within_command_range":command<=float(model.actuator_ctrlrange[actuator,1]),"classification":"QUASISTATIC_ESTIMATE_NOT_PHYSICS_ACCEPTANCE"}
+
+
+def apply_recorded_native_frame(model, data, row):
+    """Review data only: restore captured configuration, never step physics."""
+    import mujoco
+    import numpy as np
+    for name, item in row['joints'].items():
+        j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
+        if j<0:raise ValueError('recorded joint absent:'+name)
+        if model.jnt_type[j] in (mujoco.mjtJoint.mjJNT_FREE,mujoco.mjtJoint.mjJNT_BALL):raise ValueError('unexpected nonscalar snapshot joint')
+        data.qpos[model.jnt_qposadr[j]]=float(item['q'])
+        data.qvel[model.jnt_dofadr[j]]=float(item['qvel'])
+    for name in ('pelvis','test_cylinder'):
+        body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,name)
+        if body<0:raise ValueError('recorded body absent:'+name)
+        j=int(model.body_jntadr[body])
+        if j<0 or model.jnt_type[j]!=mujoco.mjtJoint.mjJNT_FREE:raise ValueError('recorded body lacks free joint:'+name)
+        pose=row['bodies'][name];qadr=int(model.jnt_qposadr[j])
+        data.qpos[qadr:qadr+7]=[*pose['position_m'],*pose['quaternion_wxyz']]
+    if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():raise ValueError('nonfinite captured frame')
+    data.time=float(row['sim_time_s'])
+    mujoco.mj_forward(model,data)
+
+
+def review_native_capture(run, *, dry_run=False):
+    import math,time
+    import mujoco
+    import numpy as np
+    run=Path(run);record=json.loads((run/'result.json').read_text())
+    overlay_ref=record['claw_control_overlay'];overlay_path=Path(overlay_ref['path'])
+    if digest(overlay_path)!=overlay_ref['sha256']:raise ValueError('capture overlay hash mismatch')
+    overlay=json.loads(overlay_path.read_text());scene=overlay['generated']['host_scene']
+    if digest(scene['path'])!=scene['sha256']:raise ValueError('captured scene hash mismatch')
+    model=mujoco.MjModel.from_xml_path(scene['path']);data=mujoco.MjData(model)
+    with (run/'native_physics.jsonl').open() as stream:rows=[json.loads(line) for line in stream if line.strip()]
+    generation=max(r['generation'] for r in rows);rows=[r for r in rows if r['generation']==generation]
+    if len(rows)<2:raise ValueError('capture lacks post-reset frames')
+    if any(b['host_monotonic_ns']<=a['host_monotonic_ns'] for a,b in zip(rows,rows[1:])):raise ValueError('nonmonotonic capture')
+    replan_ref=record['hal_arm_runtime_replan'];replan_path=Path(replan_ref['path'])
+    if digest(replan_path)!=replan_ref['sha256']:raise ValueError('capture replan hash mismatch')
+    plan=json.loads(replan_path.read_text());centre=np.asarray(plan['circle']['center_m']);radius=float(plan['circle']['radius_m']);height=float(plan['grasp_height_above_center_m'])
+    trace=json.loads((run/'native_hal_pregrasp_trace.json').read_text())['trace']
+    close=[r['host_monotonic_s'] for r in trace if r['stage']=='HAND_CLOSE_HOLD']
+    if not close:raise ValueError('capture has no executed close phase')
+    close_ns=min(close)*1e9
+    stages=[min(range(len(rows)),key=lambda i:abs(rows[i]['host_monotonic_ns']-t)) for t in (close_ns-5e7,close_ns+5e8,rows[-1]['host_monotonic_ns'])]
+    pose_errors=[]
+    for i in stages:
+        apply_recorded_native_frame(model,data,rows[i])
+        for body in ('pelvis','R_omnipicker_base_link','test_cylinder'):
+            bid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,body)
+            pose_errors.append(float(np.linalg.norm(data.xpos[bid]-np.asarray(rows[i]['bodies'][body]['position_m']))))
+    if max(pose_errors)>.005:raise ValueError('recorded/rendered body pose mismatch exceeds 5mm')
+    summary={'classification':'RECORDED_NATIVE_PHYSICS_VISUAL_REVIEW_ONLY','mj_step_calls':0,'docker_or_ros_commands':0,'frames':len(rows),'max_recorded_render_pose_error_m':max(pose_errors),'stage_sim_times':[rows[i]['sim_time_s'] for i in stages],'source_engine_version':rows[-1]['engine_version'],'review_engine_version':mujoco.mj_version(),'scene_sha256':scene['sha256'],'controls':'1=arrival; 2=closing; 3=final; arrows=frame; space=recorded playback; mouse=rotate/pan/zoom','limitation':'Recorded actual poses; displayed forces are not recomputed physical evidence; no new rollout.'}
+    print(json.dumps(summary,ensure_ascii=False,indent=2),flush=True)
+    if dry_run:return summary
+    from mujoco import viewer
+    state={'index':stages[0],'play':False}
+    def key(code):
+        if code in (49,50,51):state['index']=stages[code-49];state['play']=False
+        elif code==262:state['index']=min(len(rows)-1,state['index']+1);state['play']=False
+        elif code==263:state['index']=max(0,state['index']-1);state['play']=False
+        elif code==32:state['play']=not state['play']
+    with viewer.launch_passive(model,data,key_callback=key,show_left_ui=True,show_right_ui=True) as window:
+        window.cam.lookat[:]=[1.05,-1.50,.85];window.cam.distance=1.65;window.cam.azimuth=135.;window.cam.elevation=-20.
+        window.opt.geomgroup[3:]=0
+        while window.is_running():
+            row=rows[state['index']];apply_recorded_native_frame(model,data,row)
+            h=row['bodies']['R_omnipicker_base_link'];R=np.array(h['rotation']).reshape(3,3);actual=np.array(h['position_m'])+R@centre
+            bottle=row['bodies']['test_cylinder'];B=np.array(bottle['rotation']).reshape(3,3);target=np.array(bottle['position_m'])+height*B[:,2]
+            with window.lock():
+                window.user_scn.ngeom=0
+                for point,color in ((actual,[1.,.8,0.,1.]),(target,[1.,0.,.6,1.])):
+                    geom=window.user_scn.geoms[window.user_scn.ngeom];mujoco.mjv_initGeom(geom,mujoco.mjtGeom.mjGEOM_SPHERE,np.array([.004,.004,.004]),point,np.eye(3).reshape(-1),np.array(color,dtype=np.float32));window.user_scn.ngeom+=1
+                for j in range(64):
+                    points=[]
+                    for angle in (2*math.pi*j/64,2*math.pi*(j+1)/64):points.append(actual+R@np.array([0.,radius*math.cos(angle),radius*math.sin(angle)]))
+                    geom=window.user_scn.geoms[window.user_scn.ngeom];mujoco.mjv_initGeom(geom,mujoco.mjtGeom.mjGEOM_CAPSULE,np.zeros(3),np.zeros(3),np.eye(3).reshape(-1),np.array([1.,.8,0.,1.],dtype=np.float32));mujoco.mjv_connector(geom,mujoco.mjtGeom.mjGEOM_CAPSULE,.0006,points[0],points[1]);window.user_scn.ngeom+=1
+            window.set_texts([(None,mujoco.mjtGridPos.mjGRID_TOPLEFT,'RECORDED REVIEW / NO PHYSICS','1 arrival | 2 closing | 3 final | arrows frames | space replay'),(None,mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,'YELLOW circle / MAGENTA bottle section',f"sim={row['sim_time_s']:.3f}s  centre_error={np.linalg.norm(actual-target)*1000:.2f}mm")])
+            window.sync();time.sleep(.02)
+            if state['play']:state['index']=min(len(rows)-1,state['index']+1)
+    return summary

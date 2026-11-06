@@ -22,6 +22,8 @@ def main():
     p.add_argument("--baseline",type=Path,required=True)
     p.add_argument("--circle-review",type=Path,required=True)
     p.add_argument("--candidate",type=Path,required=True)
+    p.add_argument("--review-captured-run",type=Path)
+    p.add_argument("--review-dry-run",action="store_true")
     p.add_argument("--execute-simulation",action="store_true")
     p.add_argument("--startup-opening-diagnostic",action="store_true")
     p.add_argument("--both-claws-zero-internal-friction",action="store_true")
@@ -38,6 +40,10 @@ def main():
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
     args=p.parse_args()
+    if args.review_captured_run:
+        from scripts.research.issue46.native_runtime.native_grasp_audit import review_native_capture
+        review_native_capture(args.review_captured_run,dry_run=args.review_dry_run)
+        return
     if not args.execute_simulation:raise ValueError("explicit simulation execution flag required")
     baseline=json.loads((args.baseline/"result.json").read_text())
     if not args.native_physics_audit:
