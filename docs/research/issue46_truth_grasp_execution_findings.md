@@ -130,3 +130,24 @@ The next mechanical/control review must address provenance and consistency
 of the inherited 0.3 Nm friction on every added scalar joint versus the
 experimental root actuator, rather than another arbitrary gain increase.
 Model parameters remain unchanged; full-open walking and grasp remain unqualified.
+
+## Friction provenance review and proposed causal comparison
+
+The existing full-body MJCF default class x2 specifies joint frictionloss=0.3,
+armature=0.03 and damping=0.0. The six right claw active scalar joint elements
+lack explicit frictionloss and inherit this default. Checked official v1.4.0
+OmniPicker URDF joints provide no matching dynamics values. Absence of a URDF
+value is not evidence that real hardware friction is zero.
+
+Exact source/scene hashes and a **not implemented** proposal are in
+`reviews/issue-46/claw-friction-provenance-review-20261106T110223Z/`.
+
+Preferred discriminating proposal supersedes gain-only tuning: one separate
+SIMULATION_ONLY right-hand overlay setting frictionloss 0.3 -> 0 on only
+R_claw_joint, R_hand_wide1_joint, R_hand_narrow3_joint,
+R_hand_narrow_loop_joint, R_hand_wide3_joint, R_hand_wide_loop_joint.
+Keep kp=2, kv=0.05, +/-2 Nm force, armature, all geometry/constraints and MC
+unchanged. Run no-load opening for at most 8 seconds; no walking, approach or
+bottle contact. This would test inherited friction as a cause, not establish
+hardware parameters or authorize grasp acceptance. Case-specific human approval
+is still required before producing that overlay or running it.
