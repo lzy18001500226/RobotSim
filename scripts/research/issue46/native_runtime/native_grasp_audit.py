@@ -44,7 +44,9 @@ def launch_prefix():
 def require_fresh_sample(path, *, now_ns=None):
     import time
     import math
-    raw = Path(path).read_bytes()[-1048576:]
+    path=Path(path)
+    latest=path.with_name("native_latest.json")
+    raw = (latest if latest.exists() else path).read_bytes()[-1048576:]
     lines = raw.splitlines()
     if not raw.endswith(b"\n"):
         lines = lines[:-1]

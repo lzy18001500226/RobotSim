@@ -68,6 +68,7 @@ class NativeLaunchTests(TestCase):
         default=ns[fn.name]({});opened=ns[fn.name]({},initial_hand_opening=1.)
         self.assertIn('INITIAL_HAND_OPENING=None',default)
         self.assertIn('INITIAL_HAND_OPENING=1.0',opened)
+        self.assertIn('and n.pub.get_subscription_count()==1:',opened)
         compile(opened,'open_bootstrap','exec')
         with self.assertRaises(ValueError):ns[fn.name]({},initial_hand_opening=.5)
         self.assertLess(source.index('INITIAL_HANDS_NOT_FULLY_OPEN'),source.index('dock = run('))
@@ -78,12 +79,78 @@ class NativeLaunchTests(TestCase):
         self.assertNotIn('n.send',ast.unparse(guard.orelse))
 
 
+    def test_friction_diagnostic_changes_only_six_named_joint_attributes(self):
+        import xml.etree.ElementTree as ET
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import change_friction, JOINTS
+        xml='<mujoco><worldbody><body>'+''.join('<joint name="'+n+'" axis="0 0 1"/>' for n in JOINTS+('left_claw_joint',))+'</body></worldbody></mujoco>'
+        before=ET.fromstring(xml);after=ET.fromstring(change_friction(xml))
+        for a,b in zip(before.iter(),after.iter()):
+            expected=dict(a.attrib)
+            if a.tag=='joint' and a.get('name') in JOINTS:expected['frictionloss']='0'
+            self.assertEqual(b.attrib,expected)
+        with self.assertRaises(ValueError):change_friction('<mujoco/>')
+
+    def test_open_diagnostic_returns_before_locomotion(self):
+        source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text();tree=ast.parse(source)
+        branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and ast.unparse(n.test)=='args.startup_opening_diagnostic')
+        self.assertTrue(any(isinstance(n,ast.Return) for n in branch.body))
+        self.assertNotIn('SetMcInputSource',ast.unparse(branch))
+        self.assertNotIn('native_locomotion_dock.py',ast.unparse(branch))
+
+
+    def test_both_friction_scope_still_preserves_all_other_attributes(self):
+        import xml.etree.ElementTree as ET
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import change_friction, JOINTS
+        names=JOINTS+tuple('L_'+n[2:] for n in JOINTS)
+        xml='<mujoco><worldbody><body>'+''.join('<joint name="'+n+'" axis="0 0 1"/>' for n in names)+'</body></worldbody></mujoco>'
+        result=ET.fromstring(change_friction(xml,both_hands=True))
+        self.assertEqual(len(result.findall('.//joint[@frictionloss="0"]')),12)
+
+    def test_native_truth_dock_source_is_explicit_and_absolute(self):
+        from scripts.research.issue46.native_runtime.test_dock_feedback import script
+        source=script()
+        self.assertIn("PLAN.get('native_pose_feedback')",source)
+        self.assertIn('return world_xy[0],world_xy[1],wrap(world_yaw)',source)
+        self.assertIn("NATIVE_DOCK_RESET_GENERATION_CHANGED",source)
+        self.assertIn("STALE_NATIVE_DOCK_POSE",source)
+        compile(source,'native_dock.py','exec')
+
+
+    def test_latest_snapshot_and_live_tracking_preserve_deadlines(self):
+        code=generated()
+        self.assertIn('/workspace/evidence/native_latest.json',code)
+        self.assertIn('/workspace/evidence/native_tracking_target.json',code)
+        self.assertIn('BOTTLE_MOVED_OR_TILTED_BEFORE_CLOSURE',code)
+        self.assertIn('STALE_NATIVE_CIRCLE_TRACKING_TARGET',code)
+        self.assertIn('self.approach_fraction',code)
+        self.assertIn('n.closing_started=True',code)
+        compile(code,'tracked_plan.py','exec')
+
+
+    def test_native_contact_does_not_promote_disconnected_samples(self):
+        tree=ast.parse(generated());fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='native_bilateral_contact')
+        ns={'json':json};exec(compile(ast.Module(body=[fn],type_ignores=[]),'contact','exec'),ns)
+        contacts=[{'body1':'test_cylinder','body2':n,'local_force_torque':[1.,0.,0.,0.,0.,0.]} for n in ('R_hand_narrow3_Link','R_hand_wide3_Link')]
+        rows=[{'host_monotonic_ns':int(t*1e9),'sim_time_s':t,'contacts':contacts} for t in (1.,1.02,1.04,1.5,1.52)]
+        with mock.patch('builtins.open',return_value=io.BytesIO(('\n'.join(json.dumps(r) for r in rows)+'\n').encode())):
+            self.assertFalse(ns['native_bilateral_contact'](.5)['pass'])
+
+
+    def test_tracking_readiness_does_not_relax_active_freshness(self):
+        code=Path(__file__).parents[1].joinpath('grasp/stl_approved_circle_ik.py').read_text()
+        self.assertIn('readiness_deadline=time.monotonic()+3.',code)
+        self.assertIn('0.<=initial_age<=.10',code)
+        self.assertIn('0<=age<=.20',code)
+        self.assertIn('NATIVE_TRACKING_COMPUTE_DEADLINE',code)
+        compile(code,'circle.py','exec')
+
+
     def test_native_feedback_cannot_refresh_from_stale_or_reset_generation(self):
         code=generated();tree=ast.parse(code)
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Plan')
         cls.bases=[];cls.body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ('refresh_native','arm_fresh')]
         clock=NS(ns=1100000000)
-        ns={'USE_NATIVE_FEEDBACK':True,'CONTROL':('left','right'),'time':NS(monotonic_ns=lambda:clock.ns),'json':json,'math':math}
+        ns={'USE_NATIVE_FEEDBACK':True,'CONTROL':('left','right'),'TRACK_NATIVE_CIRCLE':False,'time':NS(monotonic_ns=lambda:clock.ns),'json':json,'math':math}
         exec(compile(ast.Module(body=[cls],type_ignores=[]),'feedback','exec'),ns)
         n=ns['Plan']();n.arm={};n.native_generation=None;n.native_receipt_ns=None;n.native_sim_time=None
         row={'host_monotonic_ns':1000000000,'engine_version':337,'generation':1,'sim_time_s':3.,'joints':{x:{'q':.2,'qvel':0.} for x in ('left','right')}}

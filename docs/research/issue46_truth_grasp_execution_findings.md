@@ -159,3 +159,72 @@ unchanged. Run no-load opening for at most 8 seconds; no walking, approach or
 bottle contact. This would test inherited friction as a cause, not establish
 hardware parameters or authorize grasp acceptance. Case-specific human approval
 is still required before producing that overlay or running it.
+
+## Authorized friction isolation and live tracking implementation (2026-11-06)
+
+The approved separate right-hand comparison is implemented in
+`claw_parameter_diagnostic.py`; it changes only six explicit joint frictionloss
+values to zero. Baseline and derived compiled numeric arrays are checked, with
+exactly the selected loss entries excepted. A bilateral version then applies
+the same correction to both hands. Separate host/runtime compilation parity
+is checked. Geometry, joint/transmission/equality definitions, inertia, contact
+friction and actuator gains/limits remain unchanged. This remains an assumption
+for simulation diagnosis, not measured hardware friction.
+
+Actual comparison:
+`reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T113843Z/`.
+Right opening after observation: -0.980390 rad, velocity 0.016782 rad/s;
+left unchanged-friction reference: -0.293138 rad. Right opening gate PASS.
+Bilateral startup opening subsequently passed in real native episodes.
+
+The full-open approach now uses opening=100 and the reviewed match circle at
+opening=40 for the 70mm object. It screens open, match and close-contact poses
+and an approach sweep. Old 50%-open clearance checks are not reused to qualify
+full-open motion.
+
+Instantaneous native state is exposed via an atomic latest JSON sidecar while
+all raw history remains in JSONL. The truth-diagnostic dock client can consume
+fresh native pose and joints explicitly; ROS remains the command transport and
+its raw telemetry is preserved. This is not LiDAR/odometry estimator acceptance.
+The existing approved-circle IK can update its endpoint at 10Hz from measured
+root/waist state, using MuJoCo point/axis analytic Jacobians. Missing/stale
+updates, generation changes, failed IK, nonpad contact, or pre-close bottle
+translation above 10mm/tilt above 0.10rad abort execution. Active freshness is
+still 0.20s. Model-loading readiness precedes executable target creation.
+
+Failure evidence remains retained:
+
+- `...115106Z`: docking passed, arm initialization rejected stale native state.
+- `...115755Z`: full-open arm approach used frozen-root endpoint, pushed bottle;
+  closure NOT_RUN. This precedes the measured bottle-motion abort fix.
+- `...120643Z`: tracking initialization did not converge; arm NOT_RUN.
+- `...121439Z`: low neutral full-open hand contacted bottle before arm approach;
+  tracker rejected bottle movement, closure NOT_RUN.
+- `...122319Z`: attempted 0.8rad shoulder transit park disrupted route heading;
+  position arrival failed. This park is optional and not the default.
+- `...123355Z`: safer 0.74m docking target arrived; tracking startup state stale;
+  arm NOT_RUN. Added fresh pre-target readiness, not a relaxed active deadline.
+- `...123730Z`: command-subscriber discovery race before Reset; readiness now
+  requires exactly one discovered arm subscriber.
+
+Above suffixes refer to full directories beginning
+`reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T`.
+Do not label any of these episodes a physical grasp PASS.
+
+The current default truth docking x target is 0.74 instead of 0.89m, with y
+unchanged -1.44m, to keep the low full-open transit hand away from the bottle.
+An offline representative stance x=0.85m passed open/contact/sweep checks at
+`reviews/issue-46/approved-circle-standing-ik-20261106T123153Z/`.
+It is not a live arrival/grasp guarantee or a change to bottle/table geometry.
+
+Full reproduction (currently a diagnostic, not a grasp-success demo):
+
+```powershell
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec bash scripts/research/issue46/grasp/run_truth_circle_review.sh --initial-hands-fully-open --both-claws-zero-internal-friction --dock-world-xy 0.74 -1.44 --pause-for-human-review
+```
+
+On a manipulation failure the runner attempts process/window-verified native
+pause and verifies stopped simulation time before retaining the renderer for
+15-minute multi-angle review. Do not resume physics manually; use the recorded
+release marker for teardown. Earlier-stage failures still clean up immediately.
+No lift or >=1s unsupported hold has been qualified.

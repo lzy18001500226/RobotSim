@@ -216,6 +216,7 @@ def locomotion_dock_script(
     refine_position_tolerance_m: float,
     timeout_s: float,
     use_cmd_vel_bridge: bool = False,
+    native_pose_feedback: bool = False,
 ) -> str:
     """Build one bounded, odometry-closed official velocity-control route.
 
@@ -238,6 +239,7 @@ def locomotion_dock_script(
             "refine_position_tolerance_m": refine_position_tolerance_m,
             "timeout_s": timeout_s,
             "use_cmd_vel_bridge": use_cmd_vel_bridge,
+            "native_pose_feedback": native_pose_feedback,
         }
     )
     return """#!/usr/bin/env python3
@@ -289,6 +291,8 @@ class Dock(Node):
   self.create_subscription(JointStateArray,'/aima/hal/joint/leg/state',self.on_leg,QOS)
   self.create_subscription(JointStateArray,'/aima/hal/joint/waist/state',self.on_waist,QOS)
  def on_odom(self,m):
+  if PLAN.get('native_pose_feedback'):
+   self.odom_callbacks+=1;return
   p,q=m.pose.pose.position,m.pose.pose.orientation
   stamp=int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec);self.odom_callbacks+=1
   if not all(math.isfinite(v) for v in (p.x,p.y,p.z,q.w,q.x,q.y,q.z)) or q.w*q.w+q.x*q.x+q.y*q.y+q.z*q.z<1e-12:
@@ -337,9 +341,31 @@ class Dock(Node):
  def stand(self):
   r=SetMcAction.Request();r.header=RequestHeader();r.header.stamp=self.get_clock().now().to_msg();r.source=SOURCE;r.command=McActionCommand();r.command.action_desc='STAND_DEFAULT';z=call(self,self.mode,r)
   if int(z.response.status.value)!=1:raise RuntimeError('STAND_DEFAULT request rejected')
+ def refresh_native_pose(self):
+  if not PLAN.get('native_pose_feedback'):return
+  with open('/workspace/evidence/native_latest.json','rb') as f:
+   f.seek(0,2);f.seek(max(0,f.tell()-262144));raw=f.read()
+  lines=raw.splitlines()
+  if not raw.endswith(bytes([10])):lines=lines[:-1]
+  for line in reversed(lines):
+   try:row=json.loads(line);break
+   except (ValueError,UnicodeDecodeError):continue
+  else:self.feedback_fault={'gate':'NO_NATIVE_DOCK_POSE'};return
+  stamp=int(row['host_monotonic_ns']);now=time.monotonic();age=now-stamp*1e-9
+  if not 0.<=age<=.20 or row.get('engine_version')!=337:self.feedback_fault={'gate':'STALE_NATIVE_DOCK_POSE'};return
+  if self.odom_stamp is not None and stamp<=self.odom_stamp:return
+  if hasattr(self,'native_generation') and row['generation']!=self.native_generation:self.feedback_fault={'gate':'NATIVE_DOCK_RESET_GENERATION_CHANGED'};return
+  p=row['bodies']['pelvis'];q=p['quaternion_wxyz'];R=p['rotation'];x,y,z=p['position_m']
+  if not all(math.isfinite(v) for v in [x,y,z,*q]):self.feedback_fault={'gate':'NONFINITE_NATIVE_DOCK_POSE'};return
+  self.native_generation=row['generation'];self.odom_stamp=stamp;self.odom_last_unique_receipt=stamp*1e-9
+  self.pose=(x,y,z,math.atan2(R[3],R[0]),stamp*1e-9);self.quat=q
+  self.max_tilt=max(self.max_tilt,abs(math.asin(max(-1.,min(1.,-R[6])))),abs(math.atan2(R[7],R[8])))
+  for names,target in ((ARM,self.arm),(LEG,self.leg),(WAIST,self.waist)):
+   for name in names:target[name]=float(row['joints'][name]['q'])
  def spin(self,seconds):
   end=time.monotonic()+seconds
-  while rclpy.ok() and time.monotonic()<end:rclpy.spin_once(self,timeout_sec=.02)
+  while rclpy.ok() and time.monotonic()<end:
+   rclpy.spin_once(self,timeout_sec=.005);self.refresh_native_pose()
  def zero_hold(self,seconds):
   end=time.monotonic()+seconds
   while rclpy.ok() and time.monotonic()<end:
@@ -354,6 +380,7 @@ try:
  # translated at startup but preserves the planar world axes in this delivery,
  # so apply the measured start offset and preserve the requested yaw delta.
  def odom_goal(world_xy,world_yaw):
+  if PLAN.get('native_pose_feedback'):return world_xy[0],world_xy[1],wrap(world_yaw)
   dx=world_xy[0]-PLAN['world_start_xy'][0];dy=world_xy[1]-PLAN['world_start_xy'][1]
   # Position has an initial odom translation, but the delivered odometry yaw
   # is already expressed in the source-map world convention.  Do not add the
@@ -366,7 +393,7 @@ try:
  source=n.register();registered=True
  started=time.monotonic(); stable_since=None; phase='ALIGN'; failure=None; last_sample_at=None
  while time.monotonic()-started < PLAN['timeout_s']:
-  rclpy.spin_once(n,timeout_sec=.001)
+  rclpy.spin_once(n,timeout_sec=.001);n.refresh_native_pose()
   if n.feedback_fault is not None or n.pose is None or time.monotonic()-n.pose[4]>.20:
    n.publish(); failure=n.feedback_fault or {'gate':'ODOMETRY_FRESHNESS'};break
   x,y,z,heading,_=n.pose;dist=math.hypot(gx-x,gy-y);bearing=math.atan2(gy-y,gx-x);berr=wrap(bearing-heading);yerr=wrap(gyaw-heading);lat=0.
@@ -426,7 +453,7 @@ try:
   n.publish(fwd,lat,ang)
   now=time.monotonic()
   if last_sample_at is None or now-last_sample_at>=.10:
-   entry={'wall_s':now-started,'goal':goal_name,'position_only':position_only,'phase':phase,'odom_xyz_m':[x,y,z],'yaw_rad':heading,'goal_distance_m':dist,'goal_yaw_error_rad':yerr,'forward_mps':fwd,'lateral_mps':lat,'angular_rps':ang,'odom_source_stamp_ns':n.odom_stamp,'odom_unique_receipt_monotonic_s':n.pose[4],'odom_feedback_age_s':now-n.pose[4],'odom_callbacks':n.odom_callbacks,'odom_duplicates':n.odom_duplicates,'odom_regressions':n.odom_regressions}
+   entry={'wall_s':now-started,'goal':goal_name,'position_only':position_only,'phase':phase,'odom_xyz_m':[x,y,z],'yaw_rad':heading,'goal_distance_m':dist,'goal_yaw_error_rad':yerr,'forward_mps':fwd,'lateral_mps':lat,'angular_rps':ang,'feedback_source':'NATIVE_MJDATA_TRUTH' if PLAN.get('native_pose_feedback') else 'ROS_ODOM','odom_source_stamp_ns':n.odom_stamp,'odom_unique_receipt_monotonic_s':n.pose[4],'odom_feedback_age_s':now-n.pose[4],'odom_callbacks':n.odom_callbacks,'odom_duplicates':n.odom_duplicates,'odom_regressions':n.odom_regressions}
    state=n.state_frame()
    if state is not None:entry['joint_state']=state
    n.samples.append(entry)
@@ -573,7 +600,7 @@ gcc -std=c11 -O2 -Wall -Wextra -D_DEFAULT_SOURCE \"${include_dirs[@]}\" \\
 """
 
 
-def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, initial_hand_opening: float | None = None) -> str:
+def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, initial_hand_opening: float | None = None, open_hand_transit_park: bool = False) -> str:
     """Hold arms at the installed MC's neutral target before MC owns the legs.
 
     This is an explicitly simulation-only bootstrap for an arm-split MC
@@ -590,7 +617,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader, HandCommand, HandCommandArray, HandType
 ARM=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint','right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
 TARGET=(.4,0.,0.,-1.2,0.,0.,0.,.4,0.,0.,-1.2,0.,0.,0.)
-RELAY_WAIST=__RELAY_WAIST__; INITIAL_HAND_OPENING=__INITIAL_HAND_OPENING__
+RELAY_WAIST=__RELAY_WAIST__; INITIAL_HAND_OPENING=__INITIAL_HAND_OPENING__; OPEN_HAND_TRANSIT_PARK=__OPEN_HAND_TRANSIT_PARK__
 GAINS=__GAINS__; STOP='/workspace/evidence/stop_arm_bootstrap'
 class Hold(Node):
  def __init__(self):
@@ -611,6 +638,8 @@ class Hold(Node):
  def send(self):
   m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hybrid_arm_bootstrap';m.header.sequence=self.seq;self.seq+=1
   for name,target in zip(ARM,TARGET):
+   if OPEN_HAND_TRANSIT_PARK and name=='right_shoulder_pitch_joint':
+    u=max(0.,min(1.,(time.monotonic()-self.started)/2.));target=.4+.4*(3*u*u-2*u*u*u)
    x=JointCommand();x.name=name;x.position=target;x.velocity=0.;x.effort=0.;x.stiffness=GAINS[name][0];x.damping=GAINS[name][1];m.joints.append(x)
   self.pub.publish(m)
   if self.hand_pub is not None:
@@ -629,13 +658,13 @@ try:
  end=time.monotonic()+90.;next_tick=time.monotonic()
  while rclpy.ok() and time.monotonic()<end and not os.path.exists(STOP):
   n.send();rclpy.spin_once(n,timeout_sec=.001)
-  if not n.ready and all(name in n.state for name in ARM):
+  if not n.ready and all(name in n.state for name in ARM) and n.pub.get_subscription_count()==1:
    n.ready=True;print(json.dumps({'ready':True,'subscription_count':n.pub.get_subscription_count(),'arm_positions_rad':{name:n.state[name] for name in ARM}}),flush=True)
   next_tick+=.01
   while rclpy.ok() and time.monotonic()<next_tick:rclpy.spin_once(n,timeout_sec=.001)
  print(json.dumps({'stopped':os.path.exists(STOP),'ready':n.ready,'waist_relay_count':n.waist_relay_count,'subscription_count':n.pub.get_subscription_count()}),flush=True)
 finally:n.destroy_node();rclpy.shutdown()
-""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening))
+""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening)).replace("__OPEN_HAND_TRANSIT_PARK__", repr(open_hand_transit_park))
 
 
 def retarget_neutral_script() -> str:
@@ -826,6 +855,10 @@ def main() -> None:
     parser.add_argument("--xvfb-libs", required=True, type=Path)
     parser.add_argument("--xkb-root", required=True, type=Path)
     parser.add_argument("--interactive-x11-display", help="use a user-visible WSLg X11 display and pause after failed claw response; requires the host X socket mounted explicitly")
+    parser.add_argument("--open-hand-transit-park",action="store_true",help="source-limited right shoulder parked at 0.8rad to keep open hand away from bottle during walking")
+    parser.add_argument("--native-circle-tracking",action="store_true",help="consume fresh source-limited native circle IK updates during arm execution")
+    parser.add_argument("--native-dock-truth-feedback",action="store_true",help="SIMULATION_ONLY exact native pose feedback; not estimator/navigation qualification")
+    parser.add_argument("--startup-opening-diagnostic", action="store_true", help="8s no-locomotion native opening observation, then mandatory teardown")
     parser.add_argument("--initial-hands-fully-open", action="store_true", help="hold both hands open from bootstrap; require actual native opening before walking")
     parser.add_argument("--pause-on-claw-failure", action="store_true", help="retain the simulator/container at the failed closure stage for manual inspection")
     parser.add_argument("--arm-ik-result", type=Path)
@@ -974,6 +1007,9 @@ def main() -> None:
     if args.preset_motion_area not in (0, 1, 2, 3, 4, 8, 11):
         raise ValueError("preset motion area must be an official control-area value")
 
+    if args.native_dock_truth_feedback and args.hal_arm_candidate is None:raise ValueError("native truth docking requires the observed arm-candidate path")
+    if args.startup_opening_diagnostic and not args.initial_hands_fully_open:
+        raise ValueError("opening diagnostic requires initial hands open")
     if args.initial_hands_fully_open and not (args.hal_arm_candidate is not None and args.disable_mc_arm_publisher and args.disable_mc_hand_publisher):
         raise ValueError("startup hand command requires exclusive arm/hand candidate path")
     table_result = require_hashed(args.table_overlay_result, args.table_overlay_result_sha256, label="table overlay result")
@@ -1048,7 +1084,7 @@ def main() -> None:
             if args.coordinated_circle_waist:
                 split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))
                 bootstrap_gains=stl_hand_startup.load_animation_player_arm_pd_parameters()
-                pg.write_new_text(output/"native_arm_bootstrap_hold.py",arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None))
+                pg.write_new_text(output/"native_arm_bootstrap_hold.py",arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park))
                 arm_bootstrap_enabled=True
             pg.write_new_text(arm_split_config,yaml.safe_dump(split,allow_unicode=True,sort_keys=False))
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
@@ -1056,14 +1092,14 @@ def main() -> None:
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
             pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park))
             arm_bootstrap_enabled = True
         elif args.disable_mc_arm_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_split.yaml"
             pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park))
             arm_bootstrap_enabled = True
         elif args.disable_mc_waist_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
@@ -1122,6 +1158,7 @@ def main() -> None:
                     refine_position_tolerance_m=float(args.refine_position_tolerance_m),
                     timeout_s=float(args.dock_timeout_s),
                     use_cmd_vel_bridge=bool(args.use_official_cmd_vel_bridge),
+                    native_pose_feedback=bool(args.native_dock_truth_feedback),
                 ),
             )
         if args.lateral_probe_mps is not None:
@@ -1327,19 +1364,53 @@ def main() -> None:
         if sample.returncode != 0 or not sample_data.get("stability", {}).get("pass"):
             raise RuntimeError(f"post-reset stand is unstable: {sample.stdout[-1200:]}")
         result["gates"]["POST_RESET_STAND_STABILITY"] = "PASS"
+        if args.startup_opening_diagnostic:
+            # No route/source/arm plan may execute after this diagnostic branch.
+            observed=[];deadline=time.monotonic()+8.;initial_xy=None
+            while time.monotonic()<deadline:
+                sample=native_grasp_audit.require_fresh_sample(output/'native_physics.jsonl')
+                with (output/'native_physics.jsonl').open('rb') as f:
+                    f.seek(0,2);f.seek(max(0,f.tell()-1048576));raw=f.read()
+                lines=raw.splitlines()
+                if not raw.endswith(bytes([10])):lines=lines[:-1]
+                for line in reversed(lines):
+                    try:row=json.loads(line);break
+                    except (ValueError,UnicodeDecodeError):continue
+                pelvis=row['bodies']['pelvis'];R=pelvis['rotation'];xyz=pelvis['position_m']
+                initial_xy=initial_xy or xyz[:2]
+                roll=math.atan2(R[7],R[8]);pitch=math.asin(max(-1.,min(1.,-R[6])))
+                if not .50<=xyz[2]<=.82 or max(abs(roll),abs(pitch))>math.radians(15) or math.hypot(xyz[0]-initial_xy[0],xyz[1]-initial_xy[1])>.05:
+                    raise RuntimeError('OPENING_DIAGNOSTIC_POSTURE')
+                observed.append({'sim_time_s':row['sim_time_s'],'host_monotonic_ns':row['host_monotonic_ns'],'pelvis':pelvis,'joints':row['joints'],'actuators':row['claw_actuators']})
+                time.sleep(.05)
+            end=observed[-1]
+            passed=all(abs(end['joints'][n]['q']+1.)<=.03 and abs(end['joints'][n]['qvel'])<=.05 for n in ('R_claw_joint',))
+            result['startup_opening_diagnostic']={'classification':'RIGHT_HAND_CAUSAL_COMPARISON_LEFT_REFERENCE','duration_s':8.,'right_pass':passed,'samples':observed}
+            result['gates']['STARTUP_RIGHT_OPENING_DIAGNOSTIC']='PASS' if passed else 'FAIL'
+            return
         if args.initial_hands_fully_open:
-            native_grasp_audit.require_fresh_sample(output / "native_physics.jsonl")
-            data=(output / "native_physics.jsonl").read_bytes()[-1048576:]
-            lines=data.splitlines()
-            if not data.endswith(b"\n"):lines=lines[:-1]
-            for line in reversed(lines):
-                try:hand_row=json.loads(line);break
-                except (ValueError,UnicodeDecodeError):continue
-            opening={name:float(hand_row["joints"][name]["q"]) for name in ("L_claw_joint","R_claw_joint")}
-            hand_ok=all(abs(q+1.0)<=.03 for q in opening.values())
-            result["initial_hand_opening"]={"command":1.0,"actual_root_rad":opening,"pass":hand_ok,"native_host_ns":hand_row["host_monotonic_ns"]}
-            result["gates"]["INITIAL_HANDS_ACTUALLY_OPEN"]="PASS" if hand_ok else "FAIL"
-            if not hand_ok:raise RuntimeError("INITIAL_HANDS_NOT_FULLY_OPEN; walking and grasp NOT_RUN")
+            opening_deadline=time.monotonic()+8.;qualified_since=None
+            while True:
+                native_grasp_audit.require_fresh_sample(output / "native_physics.jsonl")
+                data=(output / "native_physics.jsonl").read_bytes()[-1048576:]
+                lines=data.splitlines()
+                if not data.endswith(b"\n"):lines=lines[:-1]
+                for line in reversed(lines):
+                    try:hand_row=json.loads(line);break
+                    except (ValueError,UnicodeDecodeError):continue
+                opening={name:float(hand_row["joints"][name]["q"]) for name in ("L_claw_joint","R_claw_joint")}
+                hand_ok=all(abs(q+1.0)<=.03 and abs(hand_row['joints'][name]['qvel'])<=.05 for name,q in opening.items())
+                pelvis=hand_row['bodies']['pelvis'];R=pelvis['rotation']
+                if not .5<=pelvis['position_m'][2]<=.82 or abs(math.asin(max(-1.,min(1.,-R[6]))))>math.radians(15) or abs(math.atan2(R[7],R[8]))>math.radians(15):raise RuntimeError('UNSAFE_POSTURE_DURING_STARTUP_OPENING')
+                if hand_ok:
+                    qualified_since=qualified_since or time.monotonic()
+                    if time.monotonic()-qualified_since>=.3:break
+                else:qualified_since=None
+                if time.monotonic()>=opening_deadline:break
+                time.sleep(.05)
+            result["initial_hand_opening"]={"command":1.0,"actual_root_rad":opening,"pass":hand_ok and qualified_since is not None and time.monotonic()-qualified_since>=.3,"native_host_ns":hand_row["host_monotonic_ns"]}
+            result["gates"]["INITIAL_HANDS_ACTUALLY_OPEN"]="PASS" if result['initial_hand_opening']['pass'] else "FAIL"
+            if result['gates']['INITIAL_HANDS_ACTUALLY_OPEN']!='PASS':raise RuntimeError("INITIAL_HANDS_NOT_FULLY_OPEN; walking and grasp NOT_RUN")
         capture = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 8s python3 /workspace/evidence/native_arm_state_capture.py"], timeout_s=10.0, check=False)
         pg.write_new_text(output / "native_arm_state_capture.stdout", capture.stdout)
         result["native_arm_state_capture"] = json.loads(capture.stdout.strip().splitlines()[-1]) if capture.returncode == 0 else {"returncode": capture.returncode}
@@ -1579,7 +1650,7 @@ def main() -> None:
                             dock_arm_state = {**dock_state.get("arm_positions_rad",{}),**dock_state.get("waist_positions_rad",{})}
                             if not isinstance(dock_arm_state, dict):
                                 raise RuntimeError("native docking capture lacks a complete arm fallback state")
-                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=(float(replan_record.get("commands",{}).get("closure_probe",0))/100. if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"]} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.))
+                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=(float(replan_record.get("commands",{}).get("closure_probe",0))/100. if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"]} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
                 if hal_pregrasp_background:
@@ -1645,6 +1716,16 @@ def main() -> None:
                 if "hand command" in result["commands_not_sent"]:
                     result["commands_not_sent"].remove("hand command")
                 if args.pause_on_claw_failure and result["gates"]["HAL_RIGHT_HAND_CLOSE"] != "PASS":
+                    # Freeze physical stepping through the verified native UI,
+                    # keeping the renderer interactive for multi-angle review.
+                    before_pause=json.loads((output/'native_latest.json').read_text())
+                    paused=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py send-pause --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])+" --dispatch-event-json /workspace/evidence/manual_pause_dispatch.json"],timeout_s=8.,check=False)
+                    pg.write_new_text(output/'manual_pause.stdout',paused.stdout)
+                    time.sleep(.35)
+                    paused_first=json.loads((output/'native_latest.json').read_text());time.sleep(.35);paused_second=json.loads((output/'native_latest.json').read_text())
+                    if paused.returncode or paused_first['sim_time_s']!=paused_second['sim_time_s']:raise RuntimeError('MANUAL_REVIEW_NATIVE_PAUSE_UNCONFIRMED')
+                    result['manual_review_physics_pause']={'confirmed':True,'before_sim_time':before_pause['sim_time_s'],'paused_sim_time':paused_second['sim_time_s'],'do_not_resume_physics':True}
+                    pg.write_new_text(output/'manual_review_partial_result.json',json.dumps(result,indent=2)+'\n')
                     release = output / "continue_after_manual_review"
                     pause_reason = "ARM_CHILD_EXECUTION_ERROR" if arm_pregrasp.returncode != 0 else "HAND_MAPPING_OR_RESPONSE_UNQUALIFIED"
                     result["manual_review_pause"] = {"reason": pause_reason, "child_returncode": arm_pregrasp.returncode, "child_output_tail": arm_pregrasp.stdout[-2000:], "container": container, "display": args.interactive_x11_display, "release_file": str(release), "instructions": "Rotate the visible MuJoCo window; create the release file after review. This is not proof that closure occurred."}

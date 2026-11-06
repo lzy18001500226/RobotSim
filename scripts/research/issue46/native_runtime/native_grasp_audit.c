@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
+#include <string.h>
 
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 static void (*step_real)(const mjModel*, mjData*);
@@ -18,6 +19,7 @@ static int (*id_real)(const mjModel*, int, const char*);
 static const char* (*name_real)(const mjModel*, int, int);
 static void (*force_real)(const mjModel*, const mjData*, int, mjtNum*);
 static FILE* sink;
+static char latest_path[4096], latest_tmp[4104];
 static int count, generation;
 static double previous = -1, next_time = -1;
 
@@ -37,7 +39,14 @@ static void init(void) {
     fprintf(stderr,"NATIVE_GRASP_AUDIT_ABI_OR_API_MISMATCH\n"); return;
   }
   const char* path=getenv("ROBOTSIM_NATIVE_AUDIT_OUT");
-  if (path && *path) sink=fopen(path,"wx");
+  if (path && *path) {
+    sink=fopen(path,"wx");
+    const char* slash=strrchr(path,'/');
+    if(slash) {
+      snprintf(latest_path,sizeof(latest_path),"%.*s/native_latest.json",(int)(slash-path),path);
+      snprintf(latest_tmp,sizeof(latest_tmp),"%s.tmp",latest_path);
+    }
+  }
   if (!sink) fprintf(stderr,"NATIVE_GRASP_AUDIT_NO_EXCLUSIVE_OUTPUT\n");
 }
 static void array(const mjtNum* x, int n) {
@@ -50,6 +59,7 @@ static void body(const mjModel* m,const mjData* d,const char* name) {
   fprintf(sink,"\"%s\":",name);
   if (b<0) {fputs("null",sink); return;}
   fputs("{\"position_m\":",sink);array(d->xpos+3*b,3);
+  fputs(",\"quaternion_wxyz\":",sink);array(d->xquat+4*b,4);
   fputs(",\"com_m\":",sink);array(d->xipos+3*b,3);
   fputs(",\"rotation\":",sink);array(d->xmat+9*b,9);fputc('}',sink);
 }
@@ -61,6 +71,9 @@ void mj_step(const mjModel* m,mjData* d) {
   previous=d->time;
   if (d->time+1e-10<next_time) return;
   next_time=d->time+.02;count++;
+  char* buffer=NULL;size_t length=0;FILE* logfile=sink;
+  sink=open_memstream(&buffer,&length);
+  if(!sink){sink=logfile;return;}
   long long started=mono_ns();
   fprintf(sink,"{\"host_monotonic_ns\":%lld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"bodies\":{",started,(double)d->time,generation,version_real(),(double)m->opt.timestep);
   body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");
@@ -100,5 +113,11 @@ void mj_step(const mjModel* m,mjData* d) {
     fprintf(sink,",\"signed_bottle_world_z_force_n\":%.17g}",support);
   }
   fprintf(sink,"],\"observer_work_ns\":%lld}\n",mono_ns()-started);
-  fflush(sink);
+  fclose(sink);sink=logfile;
+  fwrite(buffer,1,length,sink);fflush(sink);
+  if(*latest_path){
+    FILE* latest=fopen(latest_tmp,"w");
+    if(latest){fwrite(buffer,1,length,latest);fclose(latest);rename(latest_tmp,latest_path);}
+  }
+  free(buffer);
 }

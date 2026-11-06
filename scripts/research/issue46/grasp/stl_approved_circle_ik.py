@@ -34,6 +34,68 @@ def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_
                  .1*(np.asarray(hand_rotation)[:,0]-np.asarray(bottle_axis))]
 
 
+def solve_tracking_endpoint(model, row, reference, seed):
+    """Re-solve existing circle task using one actual native snapshot (offline MjData)."""
+    data=mujoco.MjData(model)
+    base=row['bodies']['pelvis'];root=ik.native.jid(model,'floating_base_joint');adr=int(model.jnt_qposadr[root])
+    data.qpos[adr:adr+3]=base['position_m'];data.qpos[adr+3:adr+7]=base['quaternion_wxyz']
+    for name,item in row['joints'].items():
+        j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
+        if j>=0:data.qpos[model.jnt_qposadr[j]]=float(item['q'])
+    b=row['bodies']['test_cylinder'];bottle=ik.native.bid(model,'test_cylinder');adr=int(model.jnt_qposadr[ik.native.jid(model,'test_cylinder_free')]);data.qpos[adr:adr+3]=b['position_m'];data.qpos[adr+3:adr+7]=b['quaternion_wxyz']
+    centre=np.array(reference['circle']['center_m']);B=np.array(b['rotation']).reshape(3,3);target=np.array(b['position_m'])+reference['grasp_height_above_center_m']*B[:,2]
+    if np.linalg.norm(target-np.array(reference['grasp_section_center_world_m']))>.01:raise RuntimeError('BOTTLE_MOVED_BEFORE_CLOSURE')
+    ids=[ik.native.jid(model,n) for n in ik.ARM];qa=np.array([model.jnt_qposadr[j] for j in ids]);bounds=np.array([model.jnt_range[j] for j in ids]);hand=ik.native.bid(model,'R_omnipicker_base_link')
+    def residual(q):
+        data.qpos[qa]=q;mujoco.mj_forward(model,data)
+        return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,target,B[:,2])
+    dofs=np.array([model.jnt_dofadr[j] for j in ids])
+    def jacobian(q):
+        data.qpos[qa]=q;mujoco.mj_forward(model,data)
+        R=data.xmat[hand].reshape(3,3);point=data.xpos[hand]+R@centre
+        linear=np.zeros((3,model.nv));angular=np.zeros((3,model.nv))
+        mujoco.mj_jac(model,data,linear,angular,point,hand)
+        return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R[:,0]).T])
+    opt=least_squares(residual,np.clip(seed,bounds[:,0]+.01,bounds[:,1]-.01),jac=jacobian,bounds=(bounds[:,0]+.01,bounds[:,1]-.01),max_nfev=45,ftol=1e-8,xtol=1e-8,gtol=1e-8)
+    error=residual(opt.x)
+    if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'nfev':opt.nfev,'status':opt.status,'q':opt.x.tolist()}))
+    return opt.x,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns']}
+
+
+def track_native(reference_path, latest_path, output_path):
+    import os,time
+    reference=json.loads(Path(reference_path).read_text());model=mujoco.MjModel.from_xml_path(reference['scene']['path'])
+    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.;generation=None;trace=[]
+    output_path=Path(output_path);stop=output_path.with_suffix('.stop')
+    # Loading the offline model can temporarily contend with the native runtime.
+    # Before producing any executable target, await a genuinely fresh sample.
+    # Once tracking starts the unchanged 0.20s deadline remains fail-closed.
+    readiness_deadline=time.monotonic()+3.
+    while True:
+        initial=json.loads(Path(latest_path).read_text())
+        initial_age=(time.monotonic_ns()-initial['host_monotonic_ns'])*1e-9
+        if 0.<=initial_age<=.10:break
+        if time.monotonic()>=readiness_deadline:raise RuntimeError('NATIVE_TRACKING_INITIAL_FRESHNESS_NOT_READY')
+        time.sleep(.02)
+    try:
+        while time.monotonic()<deadline and not stop.exists():
+            tick=time.monotonic();row=json.loads(Path(latest_path).read_text());age=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9
+            if not 0<=age<=.20:raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')
+            if generation is not None and row['generation']!=generation:raise RuntimeError('NATIVE_TRACKING_GENERATION_CHANGED')
+            generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed)
+            now=time.monotonic_ns()
+            if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
+            record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'metrics':metrics}
+            temp=output_path.with_suffix('.tmp');temp.write_text(json.dumps(record));os.replace(temp,output_path);trace.append(record)
+            time.sleep(max(0,.1-(time.monotonic()-tick)))
+    except Exception as exc:
+        output_path.with_suffix('.failure-input.json').write_text(json.dumps(row))
+        record={'pass':False,'failure':str(exc),'created_host_ns':time.monotonic_ns()};temp=output_path.with_suffix('.tmp');temp.write_text(json.dumps(record));os.replace(temp,output_path)
+        raise
+    finally:
+        output_path.with_suffix('.trace.json').write_text(json.dumps(trace))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--circle-review", type=Path, required=True)
@@ -41,6 +103,7 @@ def main():
     parser.add_argument("--standing-state", type=Path, required=True)
     parser.add_argument("--grasp-height-above-center-m",type=float,default=0.0)
     parser.add_argument("--runtime-handoff",action="store_true")
+    parser.add_argument("--approach-opening-percent",type=int,default=100)
     parser.add_argument("--free-bottle-axis-roll",action="store_true",help="constrain reviewed bottle axis and circle centre, letting IK choose axial roll")
     parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic"),default="historical-rgbd-replay",help="explicit target provenance; neither mode is fresh runtime RGB-D")
     parser.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
@@ -85,6 +148,8 @@ def main():
     # with the nearest approved opening, then inspect adjacent closure commands.
     match = min(samples,key=lambda s:abs(s["diameter_mm"]-70))
     command = match["opening_percent"]
+    open_command=args.approach_opening_percent
+    if not command+5<=open_command<=100:raise ValueError("approach opening must exceed bottle-match opening by at least 5 percent")
     if match["status"] != "FOUR_BANDS_NEAR_0_5MM":
         raise ValueError("canonical diameter has no qualified support distribution")
     center = np.array(match["center_m"])
@@ -128,7 +193,7 @@ def main():
                 angle=float(2*np.arcsin(np.clip(np.linalg.norm(e[3:])/.2,0,1))) if args.free_bottle_axis_roll else float(np.linalg.norm(e[3:])/.1)
                 metrics={**metrics,"solver":"bounded_least_squares_directed_axis" if args.free_bottle_axis_roll else "bounded_least_squares_SO3","hand_position_error_m":float(np.linalg.norm(e[:3])),"hand_orientation_error_rad":angle,"orientation_constraint":"directed_bottle_axis_free_axial_roll" if args.free_bottle_axis_roll else "full_rotation","minimum_joint_margin_rad":float(np.min(np.minimum(opt.x-source_bounds[:,0],source_bounds[:,1]-opt.x)))}
         checked={}
-        for opening in (min(command+10,100),command,max(command-1,0)):
+        for opening in (open_command,command,max(command-1,0)):
             d=mujoco.MjData(model)
             ik.set_pose(model,d,state,solved,np.zeros(3),0.,opening,np.zeros(3),0.,None)
             pads,bad,table,robot_table=ik.contacts(model,d,ik.native.bid(model,"test_cylinder"))
@@ -138,21 +203,21 @@ def main():
         metrics["mc_owned_waist_fixed"]=args.waist_pitch_offset_rad==0
         position_ok=metrics["hand_position_error_m"]<=1e-4 and metrics["hand_orientation_error_rad"]<=1e-3 and metrics["minimum_joint_margin_rad"]>=1e-3
         clear=all(not c["forbidden_object_bodies"] and not c["robot_table_bodies"] for c in checked.values())
-        open_clear=not checked[str(min(command+10,100))]["pad_bodies"]
+        open_clear=not checked[str(open_command)]["pad_bodies"]
         bilateral=any(set(c["pad_bodies"])==ik.DISTALS for k,c in checked.items() if int(k)<=command)
         sweep=[]
         for fraction in np.linspace(0,1,31):
             d=mujoco.MjData(model)
-            ik.set_pose(model,d,state,approach_start+(solved-approach_start)*fraction,np.zeros(3),0.,min(command+10,100),np.zeros(3),0.,None)
+            ik.set_pose(model,d,state,approach_start+(solved-approach_start)*fraction,np.zeros(3),0.,open_command,np.zeros(3),0.,None)
             pads,bad,table,robot_table=ik.contacts(model,d,ik.native.bid(model,"test_cylinder"))
             if pads or bad or robot_table:sweep.append({"fraction":float(fraction),"pads":pads,"forbidden_object":bad,"robot_table":robot_table})
-        row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(min(command+10,100))]["forbidden_object_bodies"] and not checked[str(min(command+10,100))]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if not sweep else "FAIL"}
+        row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(open_command)]["forbidden_object_bodies"] and not checked[str(open_command)]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if not sweep else "FAIL"}
         rows.append({"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
     # Among truly passing candidates, prefer source-limit margin rather than
     # nanometre differences in numerical convergence residuals.
     rows.sort(key=lambda r:(not r["pass"],-r["metrics"]["minimum_joint_margin_rad"] if r["pass"] else r["metrics"]["hand_position_error_m"],r["metrics"]["hand_position_error_m"]))
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path
-    record={"classification":"SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK","mj_step_calls":0,"grasp_section_center_world_m":object_center.tolist(),"grasp_height_above_center_m":args.grasp_height_above_center_m,"circle_review":str(args.circle_review),"circle_review_sha256":hashlib.sha256(args.circle_review.read_bytes()).hexdigest(),"circle":match,"standing_state":str(args.standing_state),"scene":candidate["scene"],"perception":perception,"root_legs_waist_frozen":True,"commands":{"open":min(command+10,100),"match":command,"closure_probe":max(command-1,0)},"rows":rows,"gate":"PASS" if rows[0]["pass"] else "FAIL","dynamics":"NOT_RUN"}
+    record={"classification":"SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK","mj_step_calls":0,"grasp_section_center_world_m":object_center.tolist(),"grasp_height_above_center_m":args.grasp_height_above_center_m,"circle_review":str(args.circle_review),"circle_review_sha256":hashlib.sha256(args.circle_review.read_bytes()).hexdigest(),"circle":match,"standing_state":str(args.standing_state),"scene":candidate["scene"],"perception":perception,"root_legs_waist_frozen":True,"commands":{"open":open_command,"match":command,"closure_probe":max(command-1,0)},"rows":rows,"gate":"PASS" if rows[0]["pass"] else "FAIL","dynamics":"NOT_RUN"}
     record["source_joint_limits_rad"]={name:model.jnt_range[ik.native.jid(model,name)].tolist() for name in ik.ACTIVE}
     record["target_source"]=args.target_source
     record["free_bottle_axis_roll"]=args.free_bottle_axis_roll
@@ -173,4 +238,6 @@ def main():
 
 
 if __name__=="__main__":
-    main()
+    if len(sys.argv)>1 and sys.argv[1]=='--track-native':
+        track_native(*sys.argv[2:])
+    else:main()

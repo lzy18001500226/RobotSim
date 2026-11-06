@@ -8,6 +8,8 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import subprocess
+import time
 
 REPO=Path(__file__).resolve().parents[4]
 sys.path.insert(0,str(REPO))
@@ -21,6 +23,10 @@ def main():
     p.add_argument("--circle-review",type=Path,required=True)
     p.add_argument("--candidate",type=Path,required=True)
     p.add_argument("--execute-simulation",action="store_true")
+    p.add_argument("--startup-opening-diagnostic",action="store_true")
+    p.add_argument("--both-claws-zero-internal-friction",action="store_true")
+    p.add_argument("--right-claw-zero-internal-friction",action="store_true")
+    p.add_argument("--open-hand-transit-park",action="store_true")
     p.add_argument("--initial-hands-fully-open",action="store_true")
     p.add_argument("--pause-for-human-review",action="store_true")
     p.add_argument("--native-physics-audit",action="store_true",help="read-only actual-engine pose/contact/force observer; ABI must match installed library")
@@ -28,7 +34,7 @@ def main():
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--coordinated-waist-pitch-offset-rad",type=float,default=0.)
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
-    p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.89,-1.44))
+    p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.74,-1.44))
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
     args=p.parse_args()
@@ -38,7 +44,10 @@ def main():
         raise ValueError("approved-circle execution requires --native-physics-audit")
     original=native.run
     if original(["docker","ps","-q"],timeout_s=5).stdout.strip():raise RuntimeError("conflicting container")
+    tracking=None
+    tracking_output=None
     def run(command,**kwargs):
+        nonlocal tracking,tracking_output
         # The native parent now builds, launches and checks its required observer.
         # Keep one owner: a wrapper must not inject a second LD_PRELOAD launch.
         if any(str(v).endswith("/runtime_actual_grasp_replan.py") for v in command):
@@ -67,22 +76,46 @@ def main():
             if args.coordinated_waist_pitch_offset_rad:
                 command.extend(["--waist-pitch-offset-rad",str(args.coordinated_waist_pitch_offset_rad)])
             kwargs["timeout_s"]=45.
-        return original(command,**kwargs)
+        result=original(command,**kwargs)
+        if any(str(v).endswith('/stl_approved_circle_ik.py') for v in command) and '--runtime-handoff' in command and result.returncode==0:
+            reference=Path(json.loads(result.stdout.strip().splitlines()[-1])['output_wsl'])/'result.json'
+            evidence=Path(command[command.index('--standing-state')+1]).parent
+            tracking_output=evidence/'native_tracking_target.json'
+            track_command=['/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python',str(Path(__file__).with_name('stl_approved_circle_ik.py')),'--track-native',str(reference),str(evidence/'native_latest.json'),str(tracking_output)]
+            pg.write_new_text(evidence/'native_tracking_command.json',json.dumps(track_command)+'\n')
+            log=(evidence/'native_tracking.stdout').open('x')
+            tracking=subprocess.Popen(track_command,stdout=log,stderr=subprocess.STDOUT,cwd=REPO);log.close()
+            deadline=time.monotonic()+8.
+            while time.monotonic()<deadline and tracking.poll() is None and not tracking_output.exists():time.sleep(.02)
+            if not tracking_output.exists() or not json.loads(tracking_output.read_text()).get('pass'):raise RuntimeError('native circle tracker did not qualify')
+        return result
     native.run=run
     table=Path(baseline["table_overlay"]["path"])
     claw=Path(baseline["claw_control_overlay"]["path"])
+    if args.right_claw_zero_internal_friction and args.both_claws_zero_internal_friction:raise ValueError("select only one friction scope")
+    if args.right_claw_zero_internal_friction or args.both_claws_zero_internal_friction:
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import build
+        claw=build(claw,both_hands=args.both_claws_zero_internal_friction)
     helper=REPO/"scripts/research/issue46/native_runtime/native_mujoco_reset.py"
     display=__import__("os").environ.get("DISPLAY")
     if not display:raise RuntimeError("DISPLAY is unset; run this command from the WSLg terminal")
     dock_xy=args.dock_world_xy or (0.74+args.base_offset_xyz_m[0],-1.44+args.base_offset_xyz_m[1])
     argv=["native", "--table-overlay-result",str(table),"--table-overlay-result-sha256",native.sha256(table),"--claw-control-overlay-result",str(claw),"--claw-control-overlay-result-sha256",native.sha256(claw),"--reset-helper",str(helper),"--reset-helper-sha256",native.sha256(helper),"--xvfb-root","/tmp/robotsim-xvfb-pkg/root","--xvfb-libs","/tmp/robotsim-xvfb-pkg/libs","--xkb-root","/tmp/robotsim-xvfb-pkg/xkb","--interactive-x11-display",display,"--hal-arm-candidate",str(args.candidate),"--hal-arm-candidate-sha256",native.sha256(args.candidate),"--disable-mc-arm-publisher","--disable-mc-hand-publisher","--hal-arm-plan-mode","pregrasp-hold","--hal-right-hand-command","0.0","--hal-hand-close-hold-s","2","--dock-world-xy",str(dock_xy[0]),str(dock_xy[1]),"--dock-yaw-rad","-0.07591850724454846","--dock-position-only","--use-official-cmd-vel-bridge","--dock-timeout-s","30"]
     argv.extend(["--arm-plan-duration-s",str(args.arm_plan_duration_s),"--arm-plan-hold-s",str(args.arm_plan_hold_s)])
+    if args.target_source=="truth-diagnostic":argv.extend(["--native-dock-truth-feedback","--native-circle-tracking"])
+    if args.startup_opening_diagnostic:argv.append("--startup-opening-diagnostic")
     if args.initial_hands_fully_open:argv.append("--initial-hands-fully-open")
+    if args.open_hand_transit_park:argv.append("--open-hand-transit-park")
     if args.pause_for_human_review:argv.append("--pause-on-claw-failure")
     if args.coordinated_waist_pitch_offset_rad and not args.native_physics_audit:raise ValueError("coordinated circle execution requires native TCP observation")
     if args.coordinated_waist_pitch_offset_rad:argv.extend(["--coordinated-circle-waist","--disable-mc-waist-publisher"])
     sys.argv=argv
-    native.main()
+    try:native.main()
+    finally:
+        if tracking_output is not None:tracking_output.with_suffix('.stop').write_text('stop')
+        if tracking is not None:
+            try:tracking.wait(timeout=3.)
+            except subprocess.TimeoutExpired:tracking.terminate();tracking.wait(timeout=3.)
 
 
 if __name__=="__main__":main()
