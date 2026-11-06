@@ -34,7 +34,7 @@ def main():
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--coordinated-waist-pitch-offset-rad",type=float,default=0.)
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
-    p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.74,-1.44))
+    p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.80,-1.44))
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
     args=p.parse_args()
@@ -77,7 +77,7 @@ def main():
                 command.extend(["--waist-pitch-offset-rad",str(args.coordinated_waist_pitch_offset_rad)])
             kwargs["timeout_s"]=45.
         result=original(command,**kwargs)
-        if any(str(v).endswith('/stl_approved_circle_ik.py') for v in command) and '--runtime-handoff' in command and result.returncode==0:
+        if any(str(v).endswith('/stl_approved_circle_ik.py') for v in command) and '--runtime-handoff' in command and result.returncode==0 and json.loads(result.stdout.strip().splitlines()[-1]).get('gate')=='PASS':
             reference=Path(json.loads(result.stdout.strip().splitlines()[-1])['output_wsl'])/'result.json'
             evidence=Path(command[command.index('--standing-state')+1]).parent
             tracking_output=evidence/'native_tracking_target.json'

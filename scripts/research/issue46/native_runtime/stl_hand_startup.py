@@ -907,7 +907,7 @@ class Plan(Node):
      desired=endpoint[name]+self.ff_offset[name]
      if stage=='APPROACH':desired=self.approach_start[name]+self.approach_fraction*(desired-self.approach_start[name])
      limits=SOURCE_LIMITS.get(name)
-     if limits is None or not limits[0]+.01<=desired<=limits[1]-.01:raise RuntimeError('LIVE_TARGET_SOURCE_LIMIT:'+name)
+     if limits is None or not limits[0]+.001<=desired<=limits[1]-.001:raise RuntimeError('LIVE_TARGET_SOURCE_LIMIT:'+name)
      target[name]=desired
    if not self.arm_fresh():raise RuntimeError('STALE_BILATERAL_ARM_FEEDBACK_DURING:'+stage)
    bias=({name:float(self.native_row['joints'][name]['bias_force']) for name in RIGHT} if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK else self.native_bias())

@@ -228,3 +228,51 @@ pause and verifies stopped simulation time before retaining the renderer for
 15-minute multi-angle review. Do not resume physics manually; use the recorded
 release marker for teardown. Earlier-stage failures still clean up immediately.
 No lift or >=1s unsupported hold has been qualified.
+
+### Follow-up endpoint and timing corrections
+
+The default truth diagnostic docking x target was refined from 0.74 to 0.80m:
+the actual 0.74m-target run stopped at x=0.797m and static IK failed its wrist
+margin; the same captured pose translated +53mm passed all static gates at
+`approved-circle-standing-ik-20261106T124527Z`. The 0.8rad shoulder park remains
+optional and disabled by default, because its live route did not arrive.
+
+`...124738Z` reached manipulation startup, but the iterative tracker exceeded
+its 0.20s compute/feedback deadline before approach. Tracking FK now uses only
+mj_kinematics and mj_comPos for the analytic point/axis Jacobian, with damped
+least-squares updates and bound-aware recovery; full preflight collision scans
+still use mj_forward. A 30-frame saved-state replay measured max 3.1ms and
+<0.1mm centre residual; this is offline timing, not a runtime guarantee.
+
+`...125429Z` rejected initial tracking near the wrist limit. Fixed an
+inconsistent 0.01rad tracking margin by aligning it to the original static
+0.001rad source-limit margin. No physical source limits changed. Same-state
+offline checks at section offsets 0.05/0.10m found the higher 0.10m section
+with 0.086rad minimum margin; the lower one did not converge. The 0.10m
+section leaves 20mm nominal top margin for the canonical 300mm bottle and
+30mm axial half-width pad. It still requires actual approach/contact proof.
+
+Native review-pause verification now waits up to 3s for 0.5s unchanged native
+simulation time after one verified space event, rather than presuming the
+renderer processes input within a fixed 0.35s sleep. A dispatched key alone
+never establishes paused physics. Preserve any original execution failure
+independently if pause verification fails.
+
+### Current human-review checkpoint
+
+`reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T130347Z/`:
+actual bilateral startup opening, native-feedback table docking/stop and static
+IK passed. Actual arm approach executed. First measured circle error was
+55.345mm, axis error 0.136171rad; closure was not issued. During subsequent
+residual compensation, pre-close bottle movement stopped the tracker/arm.
+Native physics pause was confirmed at sim=93.581s; screenshot and
+`human_review_checkpoint.json` identify the full robot/table/bottle review.
+The bounded 15-minute retained renderer is a human-review checkpoint, not
+successful grasp or lift. Do not automatically rerun before reviewing this
+endpoint/contact geometry. Goal remains incomplete.
+
+Reproduce that exact reviewed section with the full command above, changing
+`--dock-world-xy 0.80 -1.44` and adding
+`--grasp-height-above-center-m 0.10`. Frozen vendor assets, gains, force limits,
+contact friction and model geometry are unchanged; zero joint-internal loss
+remains a separately labeled SIMULATION_ONLY assumption.

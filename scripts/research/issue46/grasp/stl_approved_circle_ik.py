@@ -47,19 +47,30 @@ def solve_tracking_endpoint(model, row, reference, seed):
     if np.linalg.norm(target-np.array(reference['grasp_section_center_world_m']))>.01:raise RuntimeError('BOTTLE_MOVED_BEFORE_CLOSURE')
     ids=[ik.native.jid(model,n) for n in ik.ARM];qa=np.array([model.jnt_qposadr[j] for j in ids]);bounds=np.array([model.jnt_range[j] for j in ids]);hand=ik.native.bid(model,'R_omnipicker_base_link')
     def residual(q):
-        data.qpos[qa]=q;mujoco.mj_forward(model,data)
+        data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
         return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,target,B[:,2])
     dofs=np.array([model.jnt_dofadr[j] for j in ids])
     def jacobian(q):
-        data.qpos[qa]=q;mujoco.mj_forward(model,data)
+        data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
         R=data.xmat[hand].reshape(3,3);point=data.xpos[hand]+R@centre
         linear=np.zeros((3,model.nv));angular=np.zeros((3,model.nv))
         mujoco.mj_jac(model,data,linear,angular,point,hand)
         return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R[:,0]).T])
-    opt=least_squares(residual,np.clip(seed,bounds[:,0]+.01,bounds[:,1]-.01),jac=jacobian,bounds=(bounds[:,0]+.01,bounds[:,1]-.01),max_nfev=45,ftol=1e-8,xtol=1e-8,gtol=1e-8)
-    error=residual(opt.x)
-    if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'nfev':opt.nfev,'status':opt.status,'q':opt.x.tolist()}))
-    return opt.x,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns']}
+    q=np.clip(seed,bounds[:,0]+.001,bounds[:,1]-.001)
+    for iteration in range(20):
+        error=residual(q)
+        if np.linalg.norm(error[:3])<1e-4 and np.linalg.norm(error[3:])<1e-4:break
+        J=jacobian(q)
+        dq=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-error)
+        q=np.clip(q+np.clip(dq,-.03,.03),bounds[:,0]+.001,bounds[:,1]-.001)
+    error=residual(q)
+    if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001:
+        # Bound-aware recovery can redistribute axial-roll redundancy instead
+        # of repeatedly clipping the same wrist joint at its source limit.
+        opt=least_squares(residual,q,jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=70,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        q=opt.x;error=residual(q)
+    if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'q':q.tolist()}))
+    return q,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns']}
 
 
 def track_native(reference_path, latest_path, output_path):

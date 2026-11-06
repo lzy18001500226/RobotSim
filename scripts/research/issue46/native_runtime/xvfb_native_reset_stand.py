@@ -1590,6 +1590,7 @@ def main() -> None:
             dock_pass = dock.returncode == 0 and dock_result.get("pass") is True
             result["gates"]["NATIVE_TABLE_DOCK_ARRIVAL"] = "PASS" if dock_pass else "FAIL"
             result["gates"]["NATIVE_TABLE_DOCK_STOP_HOLD"] = "PASS" if dock_pass else "FAIL"
+            if not dock_pass:result["failure"]={"gate":"NATIVE_TABLE_DOCK_ARRIVAL_OR_STOP","detail":dock_result.get("failure"),"child_returncode":dock.returncode}
             if dock_pass:
                 dock_capture = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 8s python3 /workspace/evidence/native_arm_state_capture.py"], timeout_s=10.0, check=False)
                 pg.write_new_text(output / "native_dock_state_capture.stdout", dock_capture.stdout)
@@ -1721,9 +1722,15 @@ def main() -> None:
                     before_pause=json.loads((output/'native_latest.json').read_text())
                     paused=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py send-pause --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])+" --dispatch-event-json /workspace/evidence/manual_pause_dispatch.json"],timeout_s=8.,check=False)
                     pg.write_new_text(output/'manual_pause.stdout',paused.stdout)
-                    time.sleep(.35)
-                    paused_first=json.loads((output/'native_latest.json').read_text());time.sleep(.35);paused_second=json.loads((output/'native_latest.json').read_text())
-                    if paused.returncode or paused_first['sim_time_s']!=paused_second['sim_time_s']:raise RuntimeError('MANUAL_REVIEW_NATIVE_PAUSE_UNCONFIRMED')
+                    pause_deadline=time.monotonic()+3.;pause_stable_since=None;last_sim=None
+                    while time.monotonic()<pause_deadline:
+                        paused_second=json.loads((output/'native_latest.json').read_text())
+                        if paused_second['sim_time_s']==last_sim:
+                            pause_stable_since=pause_stable_since or time.monotonic()
+                            if time.monotonic()-pause_stable_since>=.5:break
+                        else:pause_stable_since=None
+                        last_sim=paused_second['sim_time_s'];time.sleep(.05)
+                    if paused.returncode or pause_stable_since is None or time.monotonic()-pause_stable_since<.5:raise RuntimeError('MANUAL_REVIEW_NATIVE_PAUSE_UNCONFIRMED')
                     result['manual_review_physics_pause']={'confirmed':True,'before_sim_time':before_pause['sim_time_s'],'paused_sim_time':paused_second['sim_time_s'],'do_not_resume_physics':True}
                     pg.write_new_text(output/'manual_review_partial_result.json',json.dumps(result,indent=2)+'\n')
                     release = output / "continue_after_manual_review"
@@ -1766,10 +1773,14 @@ def main() -> None:
             if "arm trajectory" in result["commands_not_sent"]:
                 result["commands_not_sent"].remove("arm trajectory")
     except Exception as exc:
-        result["failure"] = {"type": type(exc).__name__, "message": str(exc)}
+        observed_failure={"type": type(exc).__name__, "message": str(exc)}
+        if result.get("failure") is not None:result.setdefault("secondary_failures",[]).append(observed_failure)
+        else:result["failure"]=observed_failure
     finally:
         subprocess.run(["docker", "stop", "--time", "5", container], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
         subprocess.run(["docker", "rm", container], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+        absent=subprocess.run(["docker","inspect",container],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=5.,check=False)
+        result['cleanup']={'container':container,'inspect_returncode':absent.returncode,'confirmed_absent':absent.returncode==1 and 'No such object' in absent.stdout,'inspect_output':absent.stdout.strip()}
         pg.write_new_text(output / "result.json", json.dumps(result, ensure_ascii=False, indent=2) + "\n")
         pg.write_new_bytes(output / Path(__file__).name, Path(__file__).read_bytes())
         pg.write_artifact_manifest(output)

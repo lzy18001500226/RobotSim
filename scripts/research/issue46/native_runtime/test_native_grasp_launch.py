@@ -145,6 +145,18 @@ class NativeLaunchTests(TestCase):
         compile(code,'circle.py','exec')
 
 
+    def test_tracking_uses_kinematics_not_full_dynamics_for_fast_updates(self):
+        tree=ast.parse(Path(__file__).parents[1].joinpath('grasp/stl_approved_circle_ik.py').read_text())
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='solve_tracking_endpoint')
+        code=ast.unparse(fn)
+        self.assertIn('mj_kinematics',code)
+        self.assertIn('mj_comPos',code)
+        self.assertIn('mj_jac',code)
+        self.assertNotIn('mj_forward',code)
+        self.assertIn('LIVE_CIRCLE_IK_NOT_CONVERGED',code)
+        self.assertIn('BOTTLE_MOVED_BEFORE_CLOSURE',code)
+
+
     def test_native_feedback_cannot_refresh_from_stale_or_reset_generation(self):
         code=generated();tree=ast.parse(code)
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Plan')
