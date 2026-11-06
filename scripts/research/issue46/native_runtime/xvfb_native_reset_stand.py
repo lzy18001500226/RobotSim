@@ -1703,7 +1703,7 @@ def main() -> None:
             result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] = "PASS" if arm_pregrasp.returncode == 0 and arm_pregrasp_result.get("native_tcp_arrival", {}).get("pass") and arm_pregrasp_result.get("motion_stability", {}).get("pass") else "FAIL"
             if args.hal_right_hand_command is not None:
                 closure_issued = arm_pregrasp_result.get("closure_issued")
-                if closure_issued is None and arm_pregrasp.returncode == 0:
+                if closure_issued is None:
                     for line in arm_pregrasp.stdout.splitlines():
                         try:
                             observed = json.loads(line)

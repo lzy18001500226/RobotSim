@@ -263,8 +263,14 @@ independently if pause verification fails.
 `reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T130347Z/`:
 actual bilateral startup opening, native-feedback table docking/stop and static
 IK passed. Actual arm approach executed. First measured circle error was
-55.345mm, axis error 0.136171rad; closure was not issued. During subsequent
-residual compensation, pre-close bottle movement stopped the tracker/arm.
+55.345mm, axis error 0.136171rad. After residual compensation, actual centre
+error was 4.245mm and axis error 0.008740rad: native arrival PASS. The trace
+then contains 19 HAND_CLOSE_HOLD samples over about 1.1s, and actual native
+actuator ctrl changed from 1.0 to 0.39 with joint movement. The tracker aborted
+because its pre-close 10mm bottle-displacement test incorrectly remained active
+during closure. Earlier parent/checkpoint NOT_RUN/no-closure labels are
+superseded by closure_stage_correction.json; no stable bilateral grasp PASS
+is established by this partial close.
 Native physics pause was confirmed at sim=93.581s; screenshot and
 `human_review_checkpoint.json` identify the full robot/table/bottle review.
 The bounded 15-minute retained renderer is a human-review checkpoint, not
@@ -276,3 +282,12 @@ Reproduce that exact reviewed section with the full command above, changing
 `--grasp-height-above-center-m 0.10`. Frozen vendor assets, gains, force limits,
 contact friction and model geometry are unchanged; zero joint-internal loss
 remains a separately labeled SIMULATION_ONLY assumption.
+
+Closure-stage reporting now distinguishes publish start from completed hold:
+the child emits close publish-call count even on exceptions, and the parent
+parses it on nonzero child exit. Python publication remains distinct from
+native actuator receipt; this particular run has separate native ctrl evidence.
+The next scoped correction is phase-aware tracker observation during closure,
+plus damping review for the measured root oscillation. Human review checkpoint
+remains active before another trial; no automatic new attempt is authorized
+by the checkpoint itself.
