@@ -34,7 +34,24 @@ def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_
                  .1*(np.asarray(hand_rotation)[:,0]-np.asarray(bottle_axis))]
 
 
-def solve_tracking_endpoint(model, row, reference, seed):
+def tracking_task(row, reference, phase=None):
+    """Phase-aware fixed grasp target, without promoting motion to success."""
+    bottle=row['bodies']['test_cylinder'];B=np.array(bottle['rotation']).reshape(3,3)
+    centre=np.array(bottle['position_m']);measured=centre+reference['grasp_height_above_center_m']*B[:,2]
+    if phase is None:
+        if np.linalg.norm(measured-np.array(reference['grasp_section_center_world_m']))>.01:raise RuntimeError('BOTTLE_MOVED_BEFORE_CLOSURE')
+        return measured,B[:,2]
+    if phase.get('phase')!='CLOSING' or phase.get('native_arrival_pass') is not True:raise RuntimeError('INVALID_CLOSURE_PHASE_HANDOFF')
+    if phase.get('generation')!=row['generation']:raise RuntimeError('CLOSURE_PHASE_GENERATION_MISMATCH')
+    anchor=np.asarray(phase['target_world_m'],dtype=float);axis=np.asarray(phase['bottle_axis_world'],dtype=float);initial=np.asarray(phase['bottle_center_world_m'],dtype=float)
+    if any(x.shape!=(3,) or not np.isfinite(x).all() for x in (anchor,axis,initial)) or abs(np.linalg.norm(axis)-1.)>.001:raise RuntimeError('INVALID_CLOSURE_ANCHOR')
+    if np.linalg.norm(centre-initial)>.01:raise RuntimeError('BOTTLE_MOVED_DURING_CLOSURE')
+    if np.dot(B[:,2],axis)<np.cos(.10):raise RuntimeError('BOTTLE_TILTED_DURING_CLOSURE')
+    # Hold the attained world target; never chase an object pushed by one pad.
+    return anchor,axis
+
+
+def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     """Re-solve existing circle task using one actual native snapshot (offline MjData)."""
     data=mujoco.MjData(model)
     base=row['bodies']['pelvis'];root=ik.native.jid(model,'floating_base_joint');adr=int(model.jnt_qposadr[root])
@@ -43,12 +60,11 @@ def solve_tracking_endpoint(model, row, reference, seed):
         j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
         if j>=0:data.qpos[model.jnt_qposadr[j]]=float(item['q'])
     b=row['bodies']['test_cylinder'];bottle=ik.native.bid(model,'test_cylinder');adr=int(model.jnt_qposadr[ik.native.jid(model,'test_cylinder_free')]);data.qpos[adr:adr+3]=b['position_m'];data.qpos[adr+3:adr+7]=b['quaternion_wxyz']
-    centre=np.array(reference['circle']['center_m']);B=np.array(b['rotation']).reshape(3,3);target=np.array(b['position_m'])+reference['grasp_height_above_center_m']*B[:,2]
-    if np.linalg.norm(target-np.array(reference['grasp_section_center_world_m']))>.01:raise RuntimeError('BOTTLE_MOVED_BEFORE_CLOSURE')
+    centre=np.array(reference['circle']['center_m']);target,bottle_axis=tracking_task(row,reference,phase)
     ids=[ik.native.jid(model,n) for n in ik.ARM];qa=np.array([model.jnt_qposadr[j] for j in ids]);bounds=np.array([model.jnt_range[j] for j in ids]);hand=ik.native.bid(model,'R_omnipicker_base_link')
     def residual(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
-        return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,target,B[:,2])
+        return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,target,bottle_axis)
     dofs=np.array([model.jnt_dofadr[j] for j in ids])
     def jacobian(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
@@ -93,7 +109,10 @@ def track_native(reference_path, latest_path, output_path):
             tick=time.monotonic();row=json.loads(Path(latest_path).read_text());age=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9
             if not 0<=age<=.20:raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')
             if generation is not None and row['generation']!=generation:raise RuntimeError('NATIVE_TRACKING_GENERATION_CHANGED')
-            generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed)
+            phase_path=output_path.with_name('native_tracking_phase.json')
+            phase=json.loads(phase_path.read_text()) if phase_path.exists() else None
+            if phase is not None and not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=5.:raise RuntimeError('CLOSURE_PHASE_EXPIRED')
+            generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
             record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'metrics':metrics}

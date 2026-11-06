@@ -291,3 +291,18 @@ The next scoped correction is phase-aware tracker observation during closure,
 plus damping review for the measured root oscillation. Human review checkpoint
 remains active before another trial; no automatic new attempt is authorized
 by the checkpoint itself.
+
+### Offline phase correction pending review (no new physical episode)
+
+After the retained human-review run, tracking now accepts an explicit CLOSING
+handoff only after native arrival PASS and matching reset generation. The
+closure target is frozen at the attained world anchor instead of chasing the
+object. Pre-close and during-close motion faults are reported separately.
+The same 10mm translation and 0.10rad tilt safeguards remain active; this is
+not permission to accept a bottle pushed out of the grasp. Phase expiry is
+bounded and native telemetry freshness remains 0.20s.
+
+42 focused offline tests PASS, including frozen-anchor behavior, >10mm motion
+rejection in both phases, false-arrival and generation-mismatch rejection.
+This correction has not been physically validated; do not launch a new episode
+until the actual lower-pad placement at the saved review checkpoint is reviewed.

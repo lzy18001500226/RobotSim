@@ -996,6 +996,11 @@ try:
  # Retain the existing bilateral 0.08 rad execution threshold. Failed arm
  # tracking must never trigger closure just because the trajectory timer ended.
  if HAND_RIGHT is not None and n.arm_fresh() and preclose_error<=.08 and preclose_waist_error<=.05 and arrival["pass"]:
+  if TRACK_NATIVE_CIRCLE:
+   n.refresh_native();bottle=n.native_row['bodies']['test_cylinder'];rotation=bottle['rotation']
+   phase={'phase':'CLOSING','native_arrival_pass':bool(arrival['pass']),'target_world_m':arrival['target_world_m'],'bottle_center_world_m':bottle['position_m'],'bottle_axis_world':[rotation[2],rotation[5],rotation[8]],'generation':n.native_generation,'created_host_ns':time.monotonic_ns()}
+   with open('/workspace/evidence/native_tracking_phase.tmp','w') as stream:json.dump(phase,stream)
+   os.replace('/workspace/evidence/native_tracking_phase.tmp','/workspace/evidence/native_tracking_phase.json')
   n.closing_started=True
   n.send(goal,HAND_HOLD,'HAND_CLOSE_HOLD',HAND_RIGHT);closure_issued=True
  if RESTORE:

@@ -154,7 +154,10 @@ class NativeLaunchTests(TestCase):
         self.assertIn('mj_jac',code)
         self.assertNotIn('mj_forward',code)
         self.assertIn('LIVE_CIRCLE_IK_NOT_CONVERGED',code)
-        self.assertIn('BOTTLE_MOVED_BEFORE_CLOSURE',code)
+        self.assertIn('tracking_task(row, reference, phase)',code)
+        task=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='tracking_task')
+        self.assertIn('BOTTLE_MOVED_BEFORE_CLOSURE',ast.unparse(task))
+        self.assertIn('BOTTLE_MOVED_DURING_CLOSURE',ast.unparse(task))
 
 
     def test_native_feedback_cannot_refresh_from_stale_or_reset_generation(self):
