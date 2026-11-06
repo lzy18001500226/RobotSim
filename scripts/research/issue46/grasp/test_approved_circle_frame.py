@@ -27,6 +27,15 @@ class FrameTests(unittest.TestCase):
         e=self.ns['axis_grasp_error'](np.array([.01,0,0]),np.eye(3),np.zeros(3),np.zeros(3),np.array([1.,0,0]))
         self.assertAlmostEqual(np.linalg.norm(e[:3]),.01)
 
+    def test_small_task_frame_tilt_does_not_move_the_circle_center(self):
+        theta=.026;c=np.cos(theta);s=np.sin(theta)
+        local=np.array([c,0.,s])
+        # Build any proper rotation with R0*X along the bottle axis.
+        r0=np.array([[0.,1.,0.],[0.,0.,1.],[1.,0.,0.]])
+        r=r0@np.array([[c,0.,s],[0.,1.,0.],[-s,0.,c]])
+        circle=np.array([0.,0.,.132]);target=np.array([1.,2.,.8]);p=target-r@circle
+        np.testing.assert_allclose(self.ns['axis_grasp_error'](p,r,circle,target,np.array([0.,0.,1.]),local),0.,atol=1e-12)
+
     def test_closure_freezes_anchor_without_chasing_object(self):
         row={'generation':1,'bodies':{'test_cylinder':{'position_m':[1.,2.,.7],'rotation':np.eye(3).reshape(-1).tolist()}}}
         reference={'grasp_height_above_center_m':.1,'grasp_section_center_world_m':[1.,2.,.8]}
@@ -47,6 +56,20 @@ class FrameTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'INVALID_CLOSURE'):self.ns['tracking_task'](row,reference,phase)
         phase['native_arrival_pass']=True;phase['generation']=2
         with self.assertRaisesRegex(RuntimeError,'GENERATION'):self.ns['tracking_task'](row,reference,phase)
+
+    def test_lift_requires_contact_and_tracks_only_bounded_planned_vertical_motion(self):
+        row={'generation':1,'bodies':{'test_cylinder':{'position_m':[0.,0.,.73],'rotation':np.eye(3).reshape(-1).tolist()}}}
+        phase={'phase':'LIFTING','native_arrival_pass':True,'generation':1,'target_world_m':[0.,0.,.8],'bottle_center_world_m':[0.,0.,.7],'bottle_axis_world':[0.,0.,1.],'lift_offset_m':.03,'bilateral_contact_pass':True}
+        row['bodies']['R_omnipicker_base_link']={'position_m':[0.,0.,.03],'rotation':np.eye(3).reshape(-1).tolist()}
+        phase['initial_object_in_hand_m']=[0.,0.,.7]
+        target,axis=self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
+        np.testing.assert_allclose(target,[0.,0.,.83])
+        phase['bilateral_contact_pass']=False
+        with self.assertRaisesRegex(RuntimeError,'UNQUALIFIED'):self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
+        phase['bilateral_contact_pass']=True;phase['lift_offset_m']=.061
+        with self.assertRaisesRegex(RuntimeError,'UNBOUNDED'):self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
+        phase['lift_offset_m']=.03;row['bodies']['test_cylinder']['position_m'][2]=.7
+        with self.assertRaisesRegex(RuntimeError,'NOT_FOLLOWING'):self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
 
 
 

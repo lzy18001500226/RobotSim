@@ -9,6 +9,49 @@ import subprocess
 def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def evaluate_unsupported_lift(rows, *, initial_bottle_z_m, hold_start_ns, hold_end_ns):
+    """Independent measured lift gate; publishing/IK success is irrelevant.
+
+    Require a terminal continuous second >=50mm above the ungrasped height,
+    two force-bearing distal pads, no table/other support and <=10mm bottle
+    pose range. Timestamps are simulation time plus host capture continuity.
+    This evaluates native evidence only; it cannot command or write MjData.
+    """
+    import math
+    pads=('R_hand_narrow3_Link','R_hand_wide3_Link')
+    suffix=[];measurements=[];previous=None
+    for row in rows:
+        stamp=int(row['host_monotonic_ns'])
+        if not hold_start_ns<=stamp<=hold_end_ns:continue
+        xyz=row['bodies']['test_cylinder']['position_m']
+        forces={n:0. for n in pads};table=0.;forbidden=[];vertical=0.
+        for c in row.get('contacts',[]):
+            pair={c['body1'],c['body2']}
+            if 'test_cylinder' not in pair:continue
+            normal=max(0.,float(c['local_force_torque'][0]))
+            for name in pads:
+                if name in pair:forces[name]+=normal;vertical+=float(c.get('signed_bottle_world_z_force_n',0.))
+            if any(n in pair for n in ('raicom_table_table','raicom_table')):table+=normal
+            if normal>.1 and not pair.intersection(pads):forbidden.append(sorted(pair))
+        item={'host_ns':stamp,'sim_time_s':float(row['sim_time_s']),'xyz_m':xyz,'lift_m':xyz[2]-initial_bottle_z_m,'normal_force_n':forces,'table_force_n':table,'pad_vertical_force_n':vertical,'other_support':forbidden}
+        valid=all(math.isfinite(v) for v in xyz) and item['lift_m']>=.05 and all(v>=.1 for v in forces.values()) and table<=.1 and not forbidden
+        if previous is not None:
+            dh=(stamp-previous['host_ns'])*1e-9;ds=item['sim_time_s']-previous['sim_time_s']
+            if not 0.<dh<=.20 or not 0.<ds<=.10 or row['generation']!=previous['generation']:valid=False
+        item['generation']=row['generation'];measurements.append(item)
+        if not valid:suffix=[]
+        else:
+            suffix.append(item)
+            # Keep the final measured one-second window (with its boundary).
+            while len(suffix)>1 and item['sim_time_s']-suffix[1]['sim_time_s']>=1.:suffix.pop(0)
+        previous=item
+    span=suffix[-1]['sim_time_s']-suffix[0]['sim_time_s'] if len(suffix)>1 else 0.
+    pose_range=[max(r['xyz_m'][i] for r in suffix)-min(r['xyz_m'][i] for r in suffix) for i in range(3)] if suffix else None
+    fresh_end=bool(measurements and 0.<=(hold_end_ns-measurements[-1]['host_ns'])*1e-9<=.20)
+    passed=bool(fresh_end and len(suffix)>=25 and span>=1. and max(pose_range)<=.01)
+    return {'pass':passed,'classification':'MEASURED_50MM_ONE_SECOND_UNSUPPORTED_HOLD' if passed else 'NO_QUALIFIED_UNSUPPORTED_HOLD','sample_count':len(measurements),'terminal_hold_samples':len(suffix),'terminal_hold_sim_s':span,'minimum_lift_m':min((r['lift_m'] for r in suffix),default=None),'maximum_lift_m':max((r['lift_m'] for r in measurements),default=None),'terminal_pose_range_xyz_m':pose_range,'minimum_pad_normal_force_n':{n:min((r['normal_force_n'][n] for r in suffix),default=None) for n in pads},'max_table_force_n':max((r['table_force_n'] for r in suffix),default=None),'mean_pad_vertical_force_n':sum(r['pad_vertical_force_n'] for r in suffix)/len(suffix) if suffix else None,'fresh_final_sample':fresh_end,'tail':measurements[-5:]}
+
+
 def build(output, runtime_library):
     from scripts.agent import path_governance as pg
     output=Path(output);library=Path(runtime_library)
@@ -82,6 +125,9 @@ def planning_state_from_native(row, previous):
                 raise RuntimeError("NONFINITE_NATIVE_PLANNING_STATE:" + name)
             state[group][name] = value
     state["native_snapshot"] = {k:row[k] for k in ("host_monotonic_ns", "sim_time_s", "generation")}
+    bottle=row.get('bodies',{}).get('test_cylinder')
+    if bottle is not None:
+        state['object_pose_world']={'xyz_m':list(bottle['position_m']),'quaternion_wxyz':list(bottle['quaternion_wxyz'])}
     state["state_source"] = "SYNCHRONIZED_NATIVE_MJDATA_NOT_ROS_CACHE"
     return state
 

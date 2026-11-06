@@ -328,3 +328,89 @@ remain unchanged.
 ```powershell
 wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec bash scripts/research/issue46/grasp/run_truth_circle_review.sh --review-captured-run /home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T130347Z
 ```
+
+### Maintainer visual acceptance of attained posture (2026-11-06)
+
+The maintainer reviewed the recorded full-robot native arrival pose
+(sim=91.021s, centre error 4.245mm) from the 20261106T130347Z episode and
+confirmed the visual placement is acceptable to proceed with actual closure.
+This resolves the human-review checkpoint; it does not establish bilateral
+force-bearing grasp, full closure hold, lift, or hardware validity. The next
+bounded native episode may validate the already tested phase-aware closure
+path. Ordinary authorized parameter diagnostics retain their standing scope.
+
+### Physical closure and lift recovery (2026-11-07 local date)
+
+The five-stage autonomous scope is recorded in the owning
+[task workflow](../workflows/06_X2_AUTONOMY_TASK.md). Stage 1 remains the priority;
+later perception/localization capabilities cannot be inferred from it.
+
+The following actual native runs share the prefix
+`reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T` (UTC names).
+Every listed terminated container was positively confirmed absent.
+
+| Suffix | Actual decisive observation |
+| --- | --- |
+| `163312Z` | Full startup/opening/standing PASS; docking stopped outside 100mm tolerance. Arm/closure/lift NOT RUN. |
+| `163723Z` | Key remained -1, so Load key restored the ordinary start rather than captured stance. No grasp. |
+| `164807Z` | Native key-slider auto-load PASS; full opening and approach executed; 5.508mm arrival exceeded the unchanged 5mm gate. |
+| `165524Z` | Loading the almost-touching attained pose let initialization knock the bottle off the table. Replaced this episode-boundary input with the same capture's docked **pre-approach** pose. |
+| `171134Z` | Direct seven-joint error compensation demanded a shoulder-roll limit crossing. Replaced it with bounded measured Cartesian/axis correction, not a source-limit change. |
+| `171640Z` | 4.351mm actual arrival PASS, closure executed, but contact repeatedly rebounded. Root q oscillated approximately -0.376 to -0.577rad. |
+| `172653Z` | Separate right-claw kv=1.27 diagnostic: 4.513mm arrival and 1.50 simulated seconds of bilateral contact PASS; minimum pad normals 0.410/0.356N. No lift yet. |
+| `173643Z` | 39% static contact-probe command did not transfer load: 8mm commanded probe produced only 0.163mm bottle rise; table normal remained 1.335N. |
+| `174122Z` | Full closed target produced sufficient force but pushed the bottle beyond the existing 10mm closure-motion guard; aborted. |
+| `175103Z` | Force-guided closure was stable; a lift observer incorrectly charged pre-close movement against the new lift baseline. Retained failure; corrected stage baseline. |
+| `175855Z` | Actual hand rose 2.151mm during the one-second probe and was still moving. Bottle rose 0.385mm; table retained 1.064N. No load-transfer PASS. |
+| `180821Z` | Arrival refined to 0.942mm; bounded measured lift feedback ran. Actual hand rose 10.847mm but bottle rose only 1.094mm; measured hand-relative translation was 11.168mm. Genuine slip guard FAIL, not a publisher/IK success. |
+
+The current derived scene's canonical blue cylinder is **70mm diameter,
+300mm high, 0.200kg**, not a qualified 570g payload. Do not transfer a future
+PASS to another mass. The original source model, table, object mass/inertia,
+contact geometry, friction, condim and actuator force caps remain unchanged.
+
+The right-claw damping comparison changes kv from 0.05 to 1.27 only; native
+kp remains 2 and force range remains +/-2Nm. The local constrained-tangent
+inertia estimate is about 0.2027 kg m2, giving critical kv about 1.2735.
+The earlier static planning model has kp=0.5; that must not be mistaken for
+the actual runtime actuator. This is simulation control calibration, not
+hardware identification. Exact parameter deltas, all compiled-array checks,
+host/runtime parity and hashes are in each overlay result.
+
+Truth planning now uses the same native bottle/base/joint snapshot. XML default
+object coordinates cannot stand in for this episode's measured object pose.
+Physical lift is separately gated by a zero-step 13-sample collision/limit sweep,
+sustained actual pad contact, an 8mm clearance/load-transfer probe, then a 60mm
+bounded hand trajectory. Independent acceptance requires >=50mm **object** rise,
+>=1s continuous unsupported hold, no table/other support, and bilateral forces.
+Lift slip is relative to the measured hand transform, separately from servo
+tracking error. No object state is written during execution.
+
+At the failed 180821Z snapshot there are two active distal-pad contacts with
+condim=3. A Coulomb point-contact wrench check cannot balance gravity at that
+pose (gravity torque about their contact line: 0.01717Nm). This is a local
+snapshot diagnosis, not a proof that every grasp pose is impossible. Two bounded
+zero-step centre/opening solves did not produce a qualified alternate frame.
+The reviewed STL circle remains the nominal planning input, not a physical
+force-closure guarantee.
+
+Exact-engine 3.3.7 offline `multiccd` comparison added table contacts but no pad
+contacts; it was not promoted to a live change. The official
+[MuJoCo slip guidance](https://mujoco.readthedocs.io/en/3.3.7/modeling.html#preventing-slip)
+also identifies soft-friction drift and the numerical Noslip postsolver.
+A separately flagged `--noslip-solver-diagnostic` selects exactly two numerical
+postsolver iterations, with identical geometry, contact friction/condim and
+force limits. This is explicitly not vendor-default physics; the documentation
+notes that Noslip makes inverse dynamics ill-defined. Its actual physical
+qualification remains separate from implementation and static checks.
+
+Fixed-stance reproduction (no walking claim):
+
+```powershell
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec bash scripts/research/issue46/grasp/run_truth_circle_review.sh --initial-hands-fully-open --both-claws-zero-internal-friction --right-claw-damping 1.27 --noslip-solver-diagnostic --fixed-reviewed-checkpoint /home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T130347Z --grasp-height-above-center-m 0.10 --physical-lift-test
+```
+
+This remains a bounded diagnostic until measured lift and independent repetition
+pass. Full start-to-table execution and fresh RGB-D substitution are separate
+acceptance gates. All tooling remains research-only; no production promotion
+or model merge is authorized by these experiments.

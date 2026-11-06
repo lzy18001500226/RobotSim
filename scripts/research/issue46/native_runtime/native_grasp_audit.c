@@ -18,6 +18,7 @@ static int (*version_real)(void);
 static int (*id_real)(const mjModel*, int, const char*);
 static const char* (*name_real)(const mjModel*, int, int);
 static void (*force_real)(const mjModel*, const mjData*, int, mjtNum*);
+static void (*velocity_real)(const mjModel*, const mjData*, int, int, mjtNum*, int);
 static FILE* sink;
 static char latest_path[4096], latest_tmp[4104];
 static int count, generation;
@@ -33,9 +34,10 @@ static void init(void) {
   id_real=dlsym(RTLD_NEXT,"mj_name2id");
   name_real=dlsym(RTLD_NEXT,"mj_id2name");
   force_real=dlsym(RTLD_NEXT,"mj_contactForce");
+  velocity_real=dlsym(RTLD_NEXT,"mj_objectVelocity");
   if (!step_real) _exit(125);
   /* Fail measurement closed on ABI mismatch; never dereference mjData then. */
-  if (!version_real || version_real()!=mjVERSION_HEADER || !id_real || !name_real || !force_real) {
+  if (!version_real || version_real()!=mjVERSION_HEADER || !id_real || !name_real || !force_real || !velocity_real) {
     fprintf(stderr,"NATIVE_GRASP_AUDIT_ABI_OR_API_MISMATCH\n"); return;
   }
   const char* path=getenv("ROBOTSIM_NATIVE_AUDIT_OUT");
@@ -61,6 +63,7 @@ static void body(const mjModel* m,const mjData* d,const char* name) {
   fputs("{\"position_m\":",sink);array(d->xpos+3*b,3);
   fputs(",\"quaternion_wxyz\":",sink);array(d->xquat+4*b,4);
   fputs(",\"com_m\":",sink);array(d->xipos+3*b,3);
+  fprintf(sink,",\"mass_kg\":%.17g",(double)m->body_mass[b]);
   fputs(",\"rotation\":",sink);array(d->xmat+9*b,9);fputc('}',sink);
 }
 void mj_step(const mjModel* m,mjData* d) {
@@ -75,7 +78,8 @@ void mj_step(const mjModel* m,mjData* d) {
   sink=open_memstream(&buffer,&length);
   if(!sink){sink=logfile;return;}
   long long started=mono_ns();
-  fprintf(sink,"{\"host_monotonic_ns\":%lld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"bodies\":{",started,(double)d->time,generation,version_real(),(double)m->opt.timestep);
+  fprintf(sink,"{\"host_monotonic_ns\":%lld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"model_keyframe_count\":%d,",started,(double)d->time,generation,version_real(),(double)m->opt.timestep,m->nkey);
+  fprintf(sink,"\"solver_options\":{\"noslip_iterations\":%d,\"cone\":%d,\"impratio\":%.17g,\"iterations\":%d},\"bodies\":{",m->opt.noslip_iterations,m->opt.cone,(double)m->opt.impratio,m->opt.iterations);
   body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");
   fputs("},\"joints\":{",sink);
   int emitted_joint=0;
@@ -108,6 +112,16 @@ void mj_step(const mjModel* m,mjData* d) {
     fprintf(sink,"%s{\"body1\":\"%s\",\"body2\":\"%s\",\"geom1\":\"%s\",\"geom2\":\"%s\",\"distance_m\":%.17g,\"efc_address\":%d,\"position_m\":",emitted++?",":"",n1?n1:"",n2?n2:"",g1?g1:"",g2?g2:"",(double)c->dist,c->efc_address);
     array(c->pos,3);fputs(",\"contact_frame\":",sink);array(c->frame,9);
     fputs(",\"local_force_torque\":",sink);array(f,6);
+    fputs(",\"contact_friction\":",sink);array(c->friction,5);
+    mjtNum v1[6]={0},v2[6]={0},rel[3]={0},local[3]={0};
+    velocity_real(m,d,mjOBJ_BODY,b1,v1,0);velocity_real(m,d,mjOBJ_BODY,b2,v2,0);
+    for(int k=0;k<3;k++) {
+      int j=(k+1)%3,l=(k+2)%3;
+      rel[k]=v2[k+3]-v1[k+3]+v2[j]*(c->pos[l]-d->xipos[3*b2+l])-v2[l]*(c->pos[j]-d->xipos[3*b2+j])-v1[j]*(c->pos[l]-d->xipos[3*b1+l])+v1[l]*(c->pos[j]-d->xipos[3*b1+j]);
+    }
+    for(int k=0;k<3;k++) for(int j=0;j<3;j++) local[k]+=c->frame[3*k+j]*rel[j];
+    fputs(",\"relative_velocity_contact_m_s\":",sink);array(local,3);
+    fprintf(sink,",\"contact_dimension\":%d",c->dim);
     double support=0;
     if(b1==bottle || b2==bottle) for(int k=0;k<3;k++) support+=(b2==bottle?1:-1)*c->frame[k*3+2]*f[k];
     fprintf(sink,",\"signed_bottle_world_z_force_n\":%.17g}",support);

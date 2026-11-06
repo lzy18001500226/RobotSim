@@ -44,7 +44,7 @@ NATIVE_RESET_BUTTON_COLOR_TOLERANCE = 24
 # occupies the right half of the left UI panel (not the ``Key`` label at x=68).
 # With exactly one staged keyframe, its [0, 0] range makes this a deterministic
 # selection of index zero.  The later native-MjData check remains authoritative.
-NATIVE_KEY_SLIDER_ZERO_POINT = (185, 517)
+NATIVE_KEY_SLIDER_ZERO_POINT = (145, 517)
 NATIVE_LOAD_KEY_BUTTON_POINT = (68, 546)
 NATIVE_LOAD_KEY_BUTTON_PIXEL_POINTS = {
     "top": (68, 534),
@@ -1015,6 +1015,10 @@ class X11:
                 "target_window_id": window,
                 "mouse_button_events_sent": 0,
             }
+        activation=self.activate_window(window,timeout_s=1.0)
+        focus=self.focus_window_direct(window)
+        if focus.get("status")!="FOCUSED" or self._target_identity(expected_pid,expected_title,window) is None:
+            return {"status":"KEYFRAME_INDEX_INPUT_NOT_DISPATCHED","reason":"exact target focus not confirmed before slider selection","focus_verification":focus,"target_window_id":window,"mouse_button_events_sent":0}
         width, height = int(identity_before["width"]), int(identity_before["height"])
         local_x, local_y = NATIVE_KEY_SLIDER_ZERO_POINT
         if width <= local_x or height <= local_y:
@@ -1086,6 +1090,8 @@ class X11:
         return {
             "status": "KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED",
             "input_path": "MUJOCO_NATIVE_SIMULATION_KEY_SLIDER",
+            "focus_verification": focus,
+            "ewmh_activation": activation,
             "control_label": "Simulation / Key",
             "requested_keyframe_index": 0,
             "selection_authoritatively_observed": False,

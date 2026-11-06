@@ -24,14 +24,77 @@ def circle_target(object_center, orientation, circle_center):
     return np.asarray(object_center) - np.asarray(orientation) @ np.asarray(circle_center)
 
 
-def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_center, bottle_axis):
+def calibrate_contact_frame(capture_path, circle_review_path):
+    """Bounded zero-step contact-centre solve on unchanged compiled geometry.
+
+    Match both mesh/cylinder surfaces and place gravity's line in the plane of
+    the two contact points. This tests a grasp pose, not a mechanical change.
+    The original human-approved circle remains separately recorded.
+    """
+    from scripts.research.issue46.native_runtime.native_grasp_audit import apply_recorded_native_frame
+    from simulation.mujoco.models.agibot_x2.omnipicker_stl_kinematic import load_registered_trajectory
+    capture=Path(capture_path);record=json.loads((capture/'result.json').read_text())
+    overlay_path=Path(record['claw_control_overlay']['path'])
+    if hashlib.sha256(overlay_path.read_bytes()).hexdigest()!=record['claw_control_overlay']['sha256']:raise ValueError('calibration overlay hash mismatch')
+    scene=json.loads(overlay_path.read_text())['generated']['host_scene'];model=mujoco.MjModel.from_xml_path(scene['path'])
+    trace=json.loads((capture/'native_hal_pregrasp_trace.json').read_text())['trace']
+    close_start=min(x['host_monotonic_s'] for x in trace if x['stage']=='HAND_CLOSE_HOLD')
+    rows=[json.loads(x) for x in (capture/'native_physics.jsonl').read_text().splitlines()]
+    row=min(rows,key=lambda r:abs(r['host_monotonic_ns']*1e-9-(close_start-.05)))
+    data=mujoco.MjData(model);apply_recorded_native_frame(model,data,row);data.qvel[:]=0.
+    hand=ik.native.bid(model,'R_omnipicker_base_link');bottle=ik.native.bid(model,'test_cylinder')
+    hp=data.xpos[hand].copy();R=data.xmat[hand].reshape(3,3).copy();axis=data.xmat[bottle].reshape(3,3)[:,2].copy()
+    review=json.loads(Path(circle_review_path).read_text());approved=review['circle_review']['samples'][40]
+    bounds=[r['center_height_bounds_m'] for r in review['circle_review']['samples'][30:61]]
+    # A fixed-radius object's centre need not lie between the patch endpoints.
+    # That bound made the *variable-radius* review problem finite; it is not a
+    # physical collision rule. Expanded candidates still need a surface audit.
+    lo=np.array([.20,-.008,min(x[0] for x in bounds)-.02]);hi=np.array([.70,.008,max(x[1] for x in bounds)+.02])
+    trajectory=load_registered_trajectory(REPO/'simulation/mujoco/models/agibot_x2/omnipicker_stl_kinematic')
+    gids=[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,n) for n in ('R_hand_narrow3_Link__collision_0','R_hand_wide3_Link__collision_0','test_cylinder_collision')]
+    adr=int(model.jnt_qposadr[ik.native.jid(model,'test_cylinder_free')]);height=.1
+    def residual(x):
+        pose=trajectory.pose(float(x[0])*100.)
+        for n,q in pose.positions_rad.items():
+            n='R_claw_joint' if n=='right_claw_joint' else n
+            j=ik.native.jid(model,n);data.qpos[model.jnt_qposadr[j]]=q
+        data.qpos[adr:adr+3]=hp+R@np.array([0.,x[1],x[2]])-height*axis
+        mujoco.mj_kinematics(model,data)
+        witnesses=[np.zeros(6),np.zeros(6)]
+        distances=[mujoco.mj_geomDistance(model,data,g,gids[2],.1,w) for g,w in zip(gids[:2],witnesses)]
+        a,b=[w[3:] for w in witnesses];line=b-a;length=np.linalg.norm(line)
+        imbalance=float(np.dot(line/length,np.cross(data.qpos[adr:adr+3]-a,[0.,0.,1.]))) if length>1e-9 else .1
+        return np.array([distances[0]+.0001,distances[1]+.0001,imbalance])
+    def jac(x):
+        columns=[]
+        for i,h in enumerate((1e-4,1e-5,1e-5)):
+            a=x.copy();b=x.copy();a[i]+=h;b[i]-=h
+            columns.append((residual(a)-residual(b))/(2*h))
+        return np.array(columns).T
+    candidates=[]
+    for seed in ([.4,0.,approved['center_m'][2]],[.5,0.,.125]):
+        result=least_squares(residual,np.clip(seed,lo+1e-6,hi-1e-6),jac=jac,bounds=(lo,hi),x_scale=[.1,.005,.01],max_nfev=120,ftol=1e-10,xtol=1e-10,gtol=1e-10)
+        error=residual(result.x);mujoco.mj_forward(model,data)
+        pads,bad,table,robot_table=ik.contacts(model,data,bottle)
+        geometric=max(abs(error[:2]))<=.0002 and abs(error[2])<=1e-5 and not bad and not robot_table and set(pads)==ik.DISTALS
+        zlo,zhi=review['circle_review']['samples'][round(float(result.x[0])*100)]['center_height_bounds_m']
+        inside=zlo<=result.x[2]<=zhi
+        candidates.append({'opening_percent':float(result.x[0]*100),'center_m':[0.,float(result.x[1]),float(result.x[2])],'residual_m':error.tolist(),'evaluations':result.nfev,'pad_bodies':pads,'forbidden_object_bodies':bad,'robot_table_bodies':robot_table,'geometry_and_wrench_pass':bool(geometric),'within_original_fitting_center_domain':bool(inside),'surface_audit':'NOT_RUN','pass':False})
+    out=pg.create_unique_output_directory(Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-46'),prefix='compiled-contact-frame-calibration').native_path
+    result={'classification':'SIMULATION_ONLY_OFFLINE_CONTACT_FRAME_CALIBRATION_NOT_GRASP_PASS','mj_step_calls':0,'scene':scene,'capture':str(capture),'circle_review':str(circle_review_path),'approved_nominal_circle':{k:approved[k] for k in ('center_m','radius_m','diameter_mm')},'parameter_bounds':{'lower':lo.tolist(),'upper':hi.tolist()},'candidates':candidates,'model_geometry_modified':False}
+    pg.write_new_text(out/'result.json',json.dumps(result,indent=2)+'\n');pg.write_artifact_manifest(out)
+    print(json.dumps({'output':str(out),'candidates':candidates}),flush=True)
+
+
+def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_center, bottle_axis, local_bottle_axis=None):
     """Five independent task constraints: centre XYZ and directed axis tilt.
 
     Roll around the bottle axis is free. Use directed vector subtraction,
     rather than a cross product that also vanishes for an inverted axis.
     """
+    local=np.asarray([1.,0.,0.] if local_bottle_axis is None else local_bottle_axis)
     return np.r_[np.asarray(hand_position)+np.asarray(hand_rotation)@np.asarray(local_circle_center)-section_center,
-                 .1*(np.asarray(hand_rotation)[:,0]-np.asarray(bottle_axis))]
+                 .1*(np.asarray(hand_rotation)@local-np.asarray(bottle_axis))]
 
 
 def tracking_task(row, reference, phase=None):
@@ -41,14 +104,52 @@ def tracking_task(row, reference, phase=None):
     if phase is None:
         if np.linalg.norm(measured-np.array(reference['grasp_section_center_world_m']))>.01:raise RuntimeError('BOTTLE_MOVED_BEFORE_CLOSURE')
         return measured,B[:,2]
-    if phase.get('phase')!='CLOSING' or phase.get('native_arrival_pass') is not True:raise RuntimeError('INVALID_CLOSURE_PHASE_HANDOFF')
+    if phase.get('phase') not in ('CLOSING','LIFTING') or phase.get('native_arrival_pass') is not True:raise RuntimeError('INVALID_CLOSURE_PHASE_HANDOFF')
     if phase.get('generation')!=row['generation']:raise RuntimeError('CLOSURE_PHASE_GENERATION_MISMATCH')
     anchor=np.asarray(phase['target_world_m'],dtype=float);axis=np.asarray(phase['bottle_axis_world'],dtype=float);initial=np.asarray(phase['bottle_center_world_m'],dtype=float)
     if any(x.shape!=(3,) or not np.isfinite(x).all() for x in (anchor,axis,initial)) or abs(np.linalg.norm(axis)-1.)>.001:raise RuntimeError('INVALID_CLOSURE_ANCHOR')
-    if np.linalg.norm(centre-initial)>.01:raise RuntimeError('BOTTLE_MOVED_DURING_CLOSURE')
+    offset=np.zeros(3)
+    if phase['phase']=='LIFTING':
+        lift=float(phase.get('lift_offset_m',float('nan')))
+        if phase.get('bilateral_contact_pass') is not True or not np.isfinite(lift) or not 0.<=lift<=.060000001:raise RuntimeError('UNQUALIFIED_OR_UNBOUNDED_LIFT_PHASE')
+        offset[2]=lift
+        hand=row['bodies']['R_omnipicker_base_link'];H=np.asarray(hand['rotation']).reshape(3,3)
+        local=H.T@(centre-np.asarray(hand['position_m']))
+        baseline=np.asarray(phase['initial_object_in_hand_m'],dtype=float)
+        if baseline.shape!=(3,) or not np.isfinite(baseline).all():raise RuntimeError('INVALID_LIFT_SLIP_BASELINE')
+        # Real slip is measured relative to the actual hand, not its command.
+        # Servo tracking lag must remain distinguishable from object slippage.
+        if np.linalg.norm(local-baseline)>.01:raise RuntimeError('BOTTLE_NOT_FOLLOWING_BOUNDED_LIFT')
+    elif np.linalg.norm(centre-initial)>.01:raise RuntimeError('BOTTLE_MOVED_DURING_CLOSURE')
     if np.dot(B[:,2],axis)<np.cos(.10):raise RuntimeError('BOTTLE_TILTED_DURING_CLOSURE')
     # Hold the attained world target; never chase an object pushed by one pad.
-    return anchor,axis
+    return anchor+offset,axis
+
+
+def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=None):
+    """Thirteen zero-step, source-limited lift samples; no runtime pose writes."""
+    import copy
+    bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+    hand=ik.native.bid(model,'R_omnipicker_base_link');bottle=ik.native.bid(model,'test_cylinder')
+    free=ik.native.jid(model,'test_cylinder_free')
+    attachments=[i for i in range(model.neq) if model.eq_type[i] in (mujoco.mjtEq.mjEQ_CONNECT,mujoco.mjtEq.mjEQ_WELD) and bottle in (model.eq_obj1id[i],model.eq_obj2id[i])]
+    driven=[i for i in range(model.nu) if model.actuator_trntype[i] in (mujoco.mjtTrn.mjTRN_JOINT,mujoco.mjtTrn.mjTRN_JOINTINPARENT) and model.actuator_trnid[i,0]==free]
+    if model.jnt_type[free]!=mujoco.mjtJoint.mjJNT_FREE or model.body_gravcomp[bottle]!=0 or np.linalg.norm(model.opt.gravity)==0 or attachments or driven:raise ValueError('bottle is not an unassisted free body under gravity')
+    arm=np.array(seed[2:]);samples=[]
+    for dz in np.linspace(0.,.06,13):
+        frozen=copy.deepcopy(state);frozen['object_pose_world']['xyz_m'][2]+=float(dz)
+        data=mujoco.MjData(model);target=np.asarray(section)+[0.,0.,dz]
+        def residual(q):
+            ik.set_pose(model,data,frozen,np.r_[seed[:2],q],np.zeros(3),0.,opening,np.zeros(3))
+            return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,data.xmat[bottle].reshape(3,3)[:,2],local_bottle_axis)
+        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=50,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        arm=solved.x;e=residual(arm);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
+        passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
+        samples.append({'rise_m':float(dz),'position_error_m':float(np.linalg.norm(e[:3])),'axis_residual':float(np.linalg.norm(e[3:])),'forbidden_object_bodies':bad,'robot_table_bodies':robot_table,'right_arm_rad':arm.tolist(),'pass':bool(passed)})
+    mu=min(float(model.geom_friction[g,0]) for g in range(model.ngeom) if int(model.geom_bodyid[g]) in (bottle,ik.native.bid(model,'R_hand_narrow3_Link'),ik.native.bid(model,'R_hand_wide3_Link')))
+    mass=float(model.body_mass[bottle]);weight=mass*float(np.linalg.norm(model.opt.gravity))
+    if not mu>0 or not mass>0:raise ValueError('invalid known payload/friction for diagnostic force budget')
+    return {'pass':all(s['pass'] for s in samples),'samples':samples,'mj_step_calls':0,'height_m':.06,'duration_s':3.,'hold_s':1.5,'contact_command':opening/100.,'mass_kg':mass,'sliding_friction':mu,'required_normal_force_n':1.5*weight/(2*mu),'force_budget_is_simulation_assumption':True,'free_body_preflight':{'pass':True,'joint':'test_cylinder_free','gravity_m_s2':model.opt.gravity.tolist(),'gravcomp':0.,'object_actuator_count':len(driven),'attachment_count':len(attachments)}}
 
 
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
@@ -60,18 +161,18 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
         if j>=0:data.qpos[model.jnt_qposadr[j]]=float(item['q'])
     b=row['bodies']['test_cylinder'];bottle=ik.native.bid(model,'test_cylinder');adr=int(model.jnt_qposadr[ik.native.jid(model,'test_cylinder_free')]);data.qpos[adr:adr+3]=b['position_m'];data.qpos[adr+3:adr+7]=b['quaternion_wxyz']
-    centre=np.array(reference['circle']['center_m']);target,bottle_axis=tracking_task(row,reference,phase)
+    centre=np.array(reference['circle']['center_m']);target,bottle_axis=tracking_task(row,reference,phase);local_axis=np.asarray(reference.get('local_bottle_axis_in_hand',[1.,0.,0.]))
     ids=[ik.native.jid(model,n) for n in ik.ARM];qa=np.array([model.jnt_qposadr[j] for j in ids]);bounds=np.array([model.jnt_range[j] for j in ids]);hand=ik.native.bid(model,'R_omnipicker_base_link')
     def residual(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
-        return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,target,bottle_axis)
+        return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,target,bottle_axis,local_axis)
     dofs=np.array([model.jnt_dofadr[j] for j in ids])
     def jacobian(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
         R=data.xmat[hand].reshape(3,3);point=data.xpos[hand]+R@centre
         linear=np.zeros((3,model.nv));angular=np.zeros((3,model.nv))
         mujoco.mj_jac(model,data,linear,angular,point,hand)
-        return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R[:,0]).T])
+        return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R@local_axis).T])
     q=np.clip(seed,bounds[:,0]+.001,bounds[:,1]-.001)
     for iteration in range(20):
         error=residual(q)
@@ -86,12 +187,17 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         opt=least_squares(residual,q,jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=70,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         q=opt.x;error=residual(q)
     if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001:raise RuntimeError('LIVE_CIRCLE_IK_NOT_CONVERGED:'+json.dumps({'position_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'iterations':iteration+1,'q':q.tolist()}))
-    return q,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns']}
+    actual=np.array([row['joints'][n]['q'] for n in ik.ARM])
+    actual_error=residual(actual);J=jacobian(actual)
+    correction=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-actual_error)
+    return q,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns'],'actual_position_error_m':float(np.linalg.norm(actual_error[:3])),'actual_axis_residual':float(np.linalg.norm(actual_error[3:])),'cartesian_correction_rad':dict(zip(ik.ARM,correction.tolist()))}
 
 
 def track_native(reference_path, latest_path, output_path):
     import os,time
+    print(json.dumps({'tracker_initialization':'MODEL_LOADING','host_monotonic_ns':time.monotonic_ns()}),flush=True)
     reference=json.loads(Path(reference_path).read_text());model=mujoco.MjModel.from_xml_path(reference['scene']['path'])
+    print(json.dumps({'tracker_initialization':'MODEL_READY','host_monotonic_ns':time.monotonic_ns()}),flush=True)
     seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.;generation=None;trace=[]
     output_path=Path(output_path);stop=output_path.with_suffix('.stop')
     # Loading the offline model can temporarily contend with the native runtime.
@@ -111,7 +217,7 @@ def track_native(reference_path, latest_path, output_path):
             if generation is not None and row['generation']!=generation:raise RuntimeError('NATIVE_TRACKING_GENERATION_CHANGED')
             phase_path=output_path.with_name('native_tracking_phase.json')
             phase=json.loads(phase_path.read_text()) if phase_path.exists() else None
-            if phase is not None and not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=5.:raise RuntimeError('CLOSURE_PHASE_EXPIRED')
+            if phase is not None and not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=(9. if phase.get('phase')=='LIFTING' else 6.):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
             generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
@@ -132,7 +238,9 @@ def main():
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--standing-state", type=Path, required=True)
     parser.add_argument("--grasp-height-above-center-m",type=float,default=0.0)
+    parser.add_argument("--grasp-axis-tilt-rad",type=float,default=0.,help="bounded task-frame tilt, not a model/joint change; raw preclose hand-axis limit remains 0.03rad")
     parser.add_argument("--runtime-handoff",action="store_true")
+    parser.add_argument("--physical-lift-test",action="store_true")
     parser.add_argument("--approach-opening-percent",type=int,default=100)
     parser.add_argument("--free-bottle-axis-roll",action="store_true",help="constrain reviewed bottle axis and circle centre, letting IK choose axial roll")
     parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic"),default="historical-rgbd-replay",help="explicit target provenance; neither mode is fresh runtime RGB-D")
@@ -163,17 +271,29 @@ def main():
     object_center = np.array(perception["estimated_center_world_m"])
     if args.target_source == "truth-diagnostic":
         source_data=mujoco.MjData(model)
+        if 'object_pose_world' in state:
+            measured=state['object_pose_world'];j=ik.native.jid(model,'test_cylinder_free');adr=int(model.jnt_qposadr[j])
+            source_data.qpos[adr:adr+3]=measured['xyz_m'];source_data.qpos[adr+3:adr+7]=measured['quaternion_wxyz']
+        elif args.runtime_handoff:
+            raise ValueError('runtime truth requires the same native object snapshot as robot state')
         mujoco.mj_forward(model,source_data)
         object_center=source_data.xpos[ik.native.bid(model,"test_cylinder")].copy()
-        perception={"source":"MUJOCO_TRUTH_DIAGNOSTIC_ONLY","object_center_world_m":object_center.tolist(),"scene_sha256":candidate["scene"]["sha256"]}
+        bottle_axis=source_data.xmat[ik.native.bid(model,'test_cylinder')].reshape(3,3)[:,2].copy()
+        perception={"source":"NATIVE_EPISODE_TRUTH_DIAGNOSTIC_ONLY" if 'object_pose_world' in state else 'XML_INITIAL_TRUTH_DIAGNOSTIC_ONLY',"object_center_world_m":object_center.tolist(),"scene_sha256":candidate["scene"]["sha256"],"native_snapshot":state.get('native_snapshot')}
     else:
         perception={**perception,"source":"HISTORICAL_RGBD_REPLAY_NOT_CURRENT_EPISODE","fresh_capture":False}
-    # Canonical bottle half-height=150mm; the wide pad spans roughly +/-30mm
-    # along the bottle axis. A 100mm section offset retains >=20mm top margin.
-    # This is a task grasp-height choice, not a joint/model/safety-limit edit.
-    if not 0<=args.grasp_height_above_center_m<=.10:
+    # Grasp height is a task pose, not a physical/joint limit. Retain >=10mm
+    # centre-to-top margin; any pad overhang still needs the actual full 3-D
+    # contact, collision and lift screens below. No bottle geometry is edited.
+    cylinder_geom=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,'test_cylinder_collision')
+    half_height=float(model.geom_size[cylinder_geom,1])
+    if not 0<=args.grasp_height_above_center_m<=half_height-.01:
         raise ValueError("grasp section height must be within the canonical bottle body")
-    object_center[2]+=args.grasp_height_above_center_m
+    theta=args.grasp_axis_tilt_rad
+    if not np.isfinite(theta) or abs(theta)>.028:raise ValueError('task-frame tilt outside the original 0.03rad raw arrival envelope')
+    local_axis=np.array([np.cos(theta),0.,np.sin(theta)])
+    if args.target_source!='truth-diagnostic':bottle_axis=np.array([0.,0.,1.])
+    object_center+=args.grasp_height_above_center_m*bottle_axis
     # The canonical existing fixture is 70mm diameter. Match its circumference
     # with the nearest approved opening, then inspect adjacent closure commands.
     match = min(samples,key=lambda s:abs(s["diameter_mm"]-70))
@@ -185,9 +305,10 @@ def main():
     center = np.array(match["center_m"])
     # Bottle frame +Z is its upright axis. Set gripper +X exactly to it,
     # preserving the old reference roll as closely as possible.
-    x = np.array([0.,0.,1.])
+    x = bottle_axis.copy()
     y = ik.REFERENCE_HAND_ROTATION[:,1].copy(); y-=x*np.dot(x,y); y/=np.linalg.norm(y)
     rotation = np.column_stack([x,y,np.cross(x,y)])
+    rotation=rotation@np.array([[np.cos(theta),0.,np.sin(theta)],[0.,1.,0.],[-np.sin(theta),0.,np.cos(theta)]])
     ik.REFERENCE_HAND_ROTATION = rotation
     ik.REFERENCE_HAND_POSITION = -rotation @ center
     rows=[]
@@ -213,7 +334,7 @@ def main():
             desired=data.xmat[cylinder].reshape(3,3)@around@rotation
             target=circle_target(object_center,desired,center)
             if args.free_bottle_axis_roll:
-                return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,object_center,data.xmat[cylinder].reshape(3,3)[:,2])
+                return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,object_center,data.xmat[cylinder].reshape(3,3)[:,2],local_axis)
             return np.r_[data.xpos[hand]-target,.1*Rotation.from_matrix(desired@data.xmat[hand].reshape(3,3).T).as_rotvec()]
         for seed in (solved,old_q):
             opt=least_squares(residual,np.clip(seed[2:],bounds[:,0]+1e-5,bounds[:,1]-1e-5),bounds=(bounds[:,0]+1e-5,bounds[:,1]-1e-5),max_nfev=180,ftol=1e-10,xtol=1e-10,gtol=1e-10,diff_step=1e-5)
@@ -256,11 +377,17 @@ def main():
     record["root_legs_waist_frozen"]=args.waist_pitch_offset_rad==0
     record["root_and_legs_frozen"]=True
     record["fresh_runtime_rgbd_verified"]=False
+    record['local_bottle_axis_in_hand']=local_axis.tolist();record['grasp_axis_tilt_rad']=theta
+    if args.physical_lift_test and rows[0]['pass']:
+        lift_seed=np.array([rows[0]['q_rad'][n] for n in ik.ACTIVE])
+        record['lift_preflight']=screen_lift(model,state,lift_seed,max(command-1,0),center,object_center,local_axis)
+        if not record['lift_preflight']['pass']:record['gate']='FAIL'
     if args.runtime_handoff:
         best=rows[0];target_state=json.loads(json.dumps(state))
         target_state["arm_positions_rad"].update({n:best["q_rad"][n] for n in ik.ARM})
         target_state["waist_positions_rad"].update({n:best["q_rad"][n] for n in ik.ACTIVE[:2]})
         record.update({"classification":"SIMULATION_ONLY_RUNTIME_CAPTURED_STATIC_REPLAN","initial_state":target_state,"gates":{"DOCK_CAPTURE":"PASS" if state.get("motion_stability",{}).get("pass") is True else "FAIL",**best["gates"]}})
+        if args.physical_lift_test:record['gates']['LIFT_SWEEP']='PASS' if record.get('lift_preflight',{}).get('pass') else 'FAIL'
     pg.write_new_text(out/"result.json",json.dumps(record,indent=2)+"\n")
     pg.write_new_bytes(out/Path(__file__).name,Path(__file__).read_bytes())
     pg.write_artifact_manifest(out)

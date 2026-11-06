@@ -15,6 +15,7 @@ import json
 import math
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import time
@@ -600,7 +601,7 @@ gcc -std=c11 -O2 -Wall -Wextra -D_DEFAULT_SOURCE \"${include_dirs[@]}\" \\
 """
 
 
-def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, initial_hand_opening: float | None = None, open_hand_transit_park: bool = False) -> str:
+def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, initial_hand_opening: float | None = None, open_hand_transit_park: bool = False, initial_arm_target=None, initial_arm_effort=None) -> str:
     """Hold arms at the installed MC's neutral target before MC owns the legs.
 
     This is an explicitly simulation-only bootstrap for an arm-split MC
@@ -610,6 +611,8 @@ def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_wa
     if initial_hand_opening is not None and initial_hand_opening != 1.0:
         raise ValueError("startup hand opening must be exactly 1.0 or disabled")
     encoded = json.dumps({name: [float(kp), float(kd)] for name, (kp, kd) in gains.items()}, sort_keys=True)
+    encoded_target=json.dumps(initial_arm_target) if initial_arm_target is not None else "None"
+    encoded_effort=json.dumps(initial_arm_effort or {})
     return """#!/usr/bin/env python3
 import json, math, os, time, rclpy
 from rclpy.node import Node
@@ -618,6 +621,7 @@ from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, Mes
 ARM=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint','right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
 TARGET=(.4,0.,0.,-1.2,0.,0.,0.,.4,0.,0.,-1.2,0.,0.,0.)
 RELAY_WAIST=__RELAY_WAIST__; INITIAL_HAND_OPENING=__INITIAL_HAND_OPENING__; OPEN_HAND_TRANSIT_PARK=__OPEN_HAND_TRANSIT_PARK__
+INITIAL_ARM_TARGET=__INITIAL_ARM_TARGET__; INITIAL_ARM_EFFORT=__INITIAL_ARM_EFFORT__
 GAINS=__GAINS__; STOP='/workspace/evidence/stop_arm_bootstrap'
 class Hold(Node):
  def __init__(self):
@@ -638,9 +642,10 @@ class Hold(Node):
  def send(self):
   m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hybrid_arm_bootstrap';m.header.sequence=self.seq;self.seq+=1
   for name,target in zip(ARM,TARGET):
+   if INITIAL_ARM_TARGET is not None:target=float(INITIAL_ARM_TARGET[name])
    if OPEN_HAND_TRANSIT_PARK and name=='right_shoulder_pitch_joint':
     u=max(0.,min(1.,(time.monotonic()-self.started)/2.));target=.4+.4*(3*u*u-2*u*u*u)
-   x=JointCommand();x.name=name;x.position=target;x.velocity=0.;x.effort=0.;x.stiffness=GAINS[name][0];x.damping=GAINS[name][1];m.joints.append(x)
+   x=JointCommand();x.name=name;x.position=target;x.velocity=0.;x.effort=float(INITIAL_ARM_EFFORT.get(name,0.));x.stiffness=GAINS[name][0];x.damping=GAINS[name][1];m.joints.append(x)
   self.pub.publish(m)
   if self.hand_pub is not None:
    # Retain the delivered initialization handshake, then hold fully open.
@@ -664,7 +669,7 @@ try:
   while rclpy.ok() and time.monotonic()<next_tick:rclpy.spin_once(n,timeout_sec=.001)
  print(json.dumps({'stopped':os.path.exists(STOP),'ready':n.ready,'waist_relay_count':n.waist_relay_count,'subscription_count':n.pub.get_subscription_count()}),flush=True)
 finally:n.destroy_node();rclpy.shutdown()
-""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening)).replace("__OPEN_HAND_TRANSIT_PARK__", repr(open_hand_transit_park))
+""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening)).replace("__OPEN_HAND_TRANSIT_PARK__", repr(open_hand_transit_park)).replace("__INITIAL_ARM_TARGET__", encoded_target).replace("__INITIAL_ARM_EFFORT__", encoded_effort)
 
 
 def retarget_neutral_script() -> str:
@@ -843,6 +848,35 @@ finally:
 """.replace("__TARGET__", serialized).replace("__LEFT_TARGET__", serialized_left).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__ACTION__", serialized_action)
 
 
+def headless_x11_mounts(root, libs, xkb, *, interactive):
+    """A visible WSLg session must not depend on disposable headless files."""
+    if interactive:return []
+    for label,path in (("xvfb root",root),("xvfb libraries",libs),("XKB root",xkb)):
+        if path is None or not path.is_absolute() or not path.is_dir() or path.is_symlink():raise ValueError(label+" is missing or unsafe")
+    return ["--mount",f"type=bind,source={root},target=/opt/xvfb,readonly",
+            "--mount",f"type=bind,source={libs},target=/tmp/xvfb-libs,readonly",
+            "--mount",f"type=bind,source={root / 'usr/bin/xkbcomp'},target=/usr/bin/xkbcomp,readonly",
+            "--mount",f"type=bind,source={xkb},target=/usr/share/X11/xkb,readonly"]
+
+
+def decode_arm_execution_output(returncode, stdout):
+    """Preserve execution summary when an exception-context JSON follows it."""
+    decoded={}
+    for line in stdout.splitlines():
+        try:row=json.loads(line)
+        except ValueError:continue
+        if not isinstance(row,dict):continue
+        decoded.update(row)
+        if 'native_tcp_arrival_after_residual_feedforward' in row:
+            decoded['native_tcp_arrival']=row['native_tcp_arrival_after_residual_feedforward']
+        if 'native_tcp_arrival_after_refinement' in row:
+            decoded['native_tcp_arrival']=row['native_tcp_arrival_after_refinement']
+        if 'prelift_bilateral_contact' in row:decoded['physical_bilateral_contact']=row['prelift_bilateral_contact']
+    decoded['child_returncode']=returncode
+    if returncode:decoded['stdout_tail']=stdout[-1600:]
+    return decoded
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--table-overlay-result", required=True, type=Path)
@@ -851,13 +885,15 @@ def main() -> None:
     parser.add_argument("--claw-control-overlay-result-sha256")
     parser.add_argument("--reset-helper", required=True, type=Path)
     parser.add_argument("--reset-helper-sha256", required=True)
-    parser.add_argument("--xvfb-root", required=True, type=Path)
-    parser.add_argument("--xvfb-libs", required=True, type=Path)
-    parser.add_argument("--xkb-root", required=True, type=Path)
+    parser.add_argument("--xvfb-root", type=Path)
+    parser.add_argument("--xvfb-libs", type=Path)
+    parser.add_argument("--xkb-root", type=Path)
     parser.add_argument("--interactive-x11-display", help="use a user-visible WSLg X11 display and pause after failed claw response; requires the host X socket mounted explicitly")
     parser.add_argument("--open-hand-transit-park",action="store_true",help="source-limited right shoulder parked at 0.8rad to keep open hand away from bottle during walking")
     parser.add_argument("--native-circle-tracking",action="store_true",help="consume fresh source-limited native circle IK updates during arm execution")
+    parser.add_argument("--physical-lift-test",action="store_true",help="60mm/3s lift and 1.5s observation only after measured bilateral contact and static lift sweep")
     parser.add_argument("--native-dock-truth-feedback",action="store_true",help="SIMULATION_ONLY exact native pose feedback; not estimator/navigation qualification")
+    parser.add_argument("--fixed-reviewed-checkpoint",action="store_true",help="native keyframe episode initialization; no navigation qualification")
     parser.add_argument("--startup-opening-diagnostic", action="store_true", help="8s no-locomotion native opening observation, then mandatory teardown")
     parser.add_argument("--initial-hands-fully-open", action="store_true", help="hold both hands open from bootstrap; require actual native opening before walking")
     parser.add_argument("--pause-on-claw-failure", action="store_true", help="retain the simulator/container at the failed closure stage for manual inspection")
@@ -1014,9 +1050,7 @@ def main() -> None:
         raise ValueError("startup hand command requires exclusive arm/hand candidate path")
     table_result = require_hashed(args.table_overlay_result, args.table_overlay_result_sha256, label="table overlay result")
     reset_helper = require_hashed(args.reset_helper, args.reset_helper_sha256, label="native reset helper")
-    for label, path in (("xvfb root", args.xvfb_root), ("xvfb libraries", args.xvfb_libs), ("XKB root", args.xkb_root)):
-        if not path.is_absolute() or not path.is_dir() or path.is_symlink():
-            raise ValueError(f"{label} is missing or unsafe")
+    xvfb_mount_options=headless_x11_mounts(args.xvfb_root,args.xvfb_libs,args.xkb_root,interactive=bool(args.interactive_x11_display))
     overlay = json.loads(table_result.read_text(encoding="utf-8"))
     required = ("runtime_scene", "simulator_config", "robot_config")
     generated = overlay.get("generated", {})
@@ -1039,6 +1073,8 @@ def main() -> None:
         control_generated = claw_control_overlay.get("generated", {})
         for name in ("runtime_scene", "simulator_config"):
             inputs[name] = require_hashed(Path(str(control_generated.get(name, {}).get("path", ""))), str(control_generated.get(name, {}).get("sha256", "")), label=f"claw control {name}")
+    checkpoint=(claw_control_overlay or {}).get("reviewed_checkpoint") if args.fixed_reviewed_checkpoint else None
+    if args.fixed_reviewed_checkpoint and not isinstance(checkpoint,dict):raise ValueError("missing reviewed checkpoint provenance")
     bridge_source: Path | None = None
     bridge_revision: str | None = None
     if args.use_official_cmd_vel_bridge:
@@ -1084,7 +1120,7 @@ def main() -> None:
             if args.coordinated_circle_waist:
                 split=stl_hand_startup.build_coordinated_waist_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))
                 bootstrap_gains=stl_hand_startup.load_animation_player_arm_pd_parameters()
-                pg.write_new_text(output/"native_arm_bootstrap_hold.py",arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park))
+                pg.write_new_text(output/"native_arm_bootstrap_hold.py",arm_bootstrap_hold_script(bootstrap_gains,relay_waist=True,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
                 arm_bootstrap_enabled=True
             pg.write_new_text(arm_split_config,yaml.safe_dump(split,allow_unicode=True,sort_keys=False))
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
@@ -1092,14 +1128,14 @@ def main() -> None:
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
             pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
             arm_bootstrap_enabled = True
         elif args.disable_mc_arm_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_split.yaml"
             pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
             arm_bootstrap_enabled = True
         elif args.disable_mc_waist_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
@@ -1282,12 +1318,9 @@ def main() -> None:
             "--mount", f"type=bind,source={RUNTIME},target=/workspace/raicom2026,readonly",
             "--mount", f"type=bind,source={EVIDENCE_REPO},target=/workspace/robotsim,readonly",
             "--mount", f"type=bind,source={output},target=/workspace/evidence",
-            "--mount", f"type=bind,source={args.xvfb_root},target=/opt/xvfb,readonly",
-            "--mount", f"type=bind,source={args.xvfb_libs},target=/tmp/xvfb-libs,readonly",
-            "--mount", f"type=bind,source={args.xvfb_root / 'usr/bin/xkbcomp'},target=/usr/bin/xkbcomp,readonly",
-            "--mount", f"type=bind,source={args.xkb_root},target=/usr/share/X11/xkb,readonly",
+            *xvfb_mount_options,
             "--mount", f"type=bind,source={staged_dump},target=/workspace/raicom2026/{MC_DUMP}",
-            "-e", "DISPLAY=" + (args.interactive_x11_display or ":99"), "-e", "LD_LIBRARY_PATH=/tmp/xvfb-libs", "-e", "LIBGL_ALWAYS_SOFTWARE=1", "-e", "MESA_LOADER_DRIVER_OVERRIDE=llvmpipe",
+            "-e", "DISPLAY=" + (args.interactive_x11_display or ":99"), "-e", "LD_LIBRARY_PATH=" + ("" if args.interactive_x11_display else "/tmp/xvfb-libs"), "-e", "LIBGL_ALWAYS_SOFTWARE=1", "-e", "MESA_LOADER_DRIVER_OVERRIDE=llvmpipe",
             "-e", "HOME=/tmp", "-e", "ROS_DOMAIN_ID=77" if (args.run_vr_zero_probe or args.run_vr_right_controller_x_probe) else "ROS_DOMAIN_ID=20", "-e", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp", IMAGE, "sleep", "infinity",
         ]
         if args.interactive_x11_display:
@@ -1304,7 +1337,9 @@ def main() -> None:
         run(command, timeout_s=12.0)
         if not args.interactive_x11_display:
             run(["docker", "exec", "-d", container, "bash", "-lc", "/opt/xvfb/usr/bin/Xvfb :99 -screen 0 1706x1066x24 -ac -nolisten tcp > /workspace/evidence/xvfb.log 2>&1"], timeout_s=5.0)
-        run(["docker", "exec", container, "bash", "-lc", "sleep 0.4; test -S /tmp/.X11-unix/X99; cp /workspace/evidence/sim_seed/action_setting.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_setting.yaml; cp /workspace/evidence/sim_seed/action_ruler.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_ruler.yaml; cp /workspace/evidence/sim_seed/action_state.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_state.yaml"], timeout_s=5.0)
+        display_number=(args.interactive_x11_display or ":99").split(":")[-1].split(".")[0]
+        if not display_number.isdigit():raise ValueError("expected a local numeric X11 display")
+        run(["docker", "exec", container, "bash", "-lc", "test -S /tmp/.X11-unix/X" + display_number + " && cp /workspace/evidence/sim_seed/action_setting.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_setting.yaml; cp /workspace/evidence/sim_seed/action_ruler.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_ruler.yaml; cp /workspace/evidence/sim_seed/action_state.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_state.yaml"], timeout_s=5.0)
         sim_launch = "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
         if native_observer is not None:
             sim_launch = native_grasp_audit.launch_prefix() + sim_launch
@@ -1316,6 +1351,11 @@ def main() -> None:
         if native_observer is not None:
             wait_for(output / "native_physics.jsonl", '"host_monotonic_ns"', timeout_s=5.0)
             result["native_observer_readiness"] = native_grasp_audit.require_fresh_sample(output / "native_physics.jsonl")
+            current=json.loads((output/'native_latest.json').read_text());actual_solver=current.get('solver_options',{})
+            delta=(claw_control_overlay or {}).get('diagnostic_parameter_delta',{})
+            if delta.get('numerical_solver') and actual_solver.get('noslip_iterations')!=2:raise RuntimeError('NATIVE_NOSLIP_OPTION_NOT_APPLIED')
+            if delta.get('elliptic_solver') and (actual_solver.get('cone')!=1 or actual_solver.get('impratio')!=10.):raise RuntimeError('NATIVE_ELLIPTIC_OPTION_NOT_APPLIED')
+            result['native_solver_options']=actual_solver
             result["gates"]["NATIVE_STATE_OBSERVER"] = "PASS"
         bootstrap_environment = "source /opt/ros/humble/setup.bash; source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash; "
         if arm_bootstrap_enabled:
@@ -1343,13 +1383,37 @@ def main() -> None:
         if len(windows) != 1:
             raise RuntimeError(f"expected one verified MuJoCo window: {inspect.stdout}")
         window = windows[0]
-        reset = run(["docker", "exec", container, "bash", "-lc", "python3 /workspace/evidence/native_mujoco_reset.py send-reset --expected-pid " + str(pid) + " --expected-title " + repr(str(window["title"])) + " --window-id " + str(window["window_id"]) + " --before-png /workspace/evidence/mujoco_before_reset.png --after-png /workspace/evidence/mujoco_after_reset.png --dispatch-event-json /workspace/evidence/reset_dispatch_event.json"], timeout_s=12.0)
-        pg.write_new_text(output / "reset_dispatch.stdout", reset.stdout)
-        reset_data = json.loads(reset.stdout)
-        result["reset"] = reset_data
-        if reset_data.get("event", {}).get("status") != "KEY_DISPATCHED":
-            raise RuntimeError("native Reset was not dispatched")
-        result["gates"]["NATIVE_RESET"] = "PASS"
+        if args.fixed_reviewed_checkpoint:
+            identity=" --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])
+            capture_code="import sys;from pathlib import Path;sys.path.insert(0,'/workspace/evidence');import native_mujoco_reset as m;x=m.X11();assert x._target_identity("+str(pid)+","+repr(window['title'])+","+str(window['window_id'])+") is not None;x.capture_png("+str(window['window_id'])+",Path('/workspace/evidence/checkpoint_before_key.png'))"
+            run(["docker","exec",container,"bash","-lc","python3 -c "+shlex.quote(capture_code)],timeout_s=8.)
+            selection=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py select-key-zero"+identity+" --dispatch-event-json /workspace/evidence/keyframe_selection.json"],timeout_s=10.)
+            pg.write_new_text(output/'keyframe_selection.stdout',selection.stdout)
+            # MuJoCo 3.3.7 Simulation/Key already requests load_key when its
+            # slider changes (simulate.cc, SECT_SIMULATION case 5). Wait for
+            # that native effect before relocating the pointer or issuing a
+            # second input. XSync acknowledges X11, not renderer consumption.
+            result['reset']={'input':'NATIVE_KEY_SLIDER_AUTO_LOAD','dispatch':json.loads(selection.stdout),'load_key_button_sent':False}
+            init_deadline=time.monotonic()+2.;init_match=False
+            while time.monotonic()<init_deadline:
+                observed=json.loads((output/'native_latest.json').read_text());pelvis=observed['bodies']['pelvis'];wanted=checkpoint['initial_pelvis_pose']
+                error=math.dist(pelvis['position_m'],wanted['position_m']);dot=abs(sum(a*b for a,b in zip(pelvis['quaternion_wxyz'],wanted['quaternion_wxyz'])))
+                angle=2*math.acos(max(-1.,min(1.,dot)))
+                if observed['generation']>=1 and error<=.02 and angle<=.02:init_match=True;break
+                time.sleep(.02)
+            if not init_match:
+                run(["docker","exec",container,"bash","-lc","python3 -c "+shlex.quote(capture_code.replace('checkpoint_before_key.png','checkpoint_after_key.png'))],timeout_s=8.,check=False)
+                result['checkpoint_initialization_failure']={'actual_pelvis_pose':pelvis,'wanted':wanted,'position_error_m':error,'angle_error_rad':angle,'generation':observed['generation'],'native_keyframe_count':observed.get('model_keyframe_count')}
+                raise RuntimeError('NATIVE_KEYFRAME_INITIAL_POSE_UNCONFIRMED')
+            result['reviewed_checkpoint']=checkpoint;result['native_checkpoint_observation']={'position_error_m':error,'angle_error_rad':angle,'generation':observed['generation']};result['gates']['NATIVE_EPISODE_KEYFRAME_INIT']='PASS'
+        else:
+            reset = run(["docker", "exec", container, "bash", "-lc", "python3 /workspace/evidence/native_mujoco_reset.py send-reset --expected-pid " + str(pid) + " --expected-title " + repr(str(window["title"])) + " --window-id " + str(window["window_id"]) + " --before-png /workspace/evidence/mujoco_before_reset.png --after-png /workspace/evidence/mujoco_after_reset.png --dispatch-event-json /workspace/evidence/reset_dispatch_event.json"], timeout_s=12.0)
+            pg.write_new_text(output / "reset_dispatch.stdout", reset.stdout)
+            reset_data = json.loads(reset.stdout)
+            result["reset"] = reset_data
+            if reset_data.get("event", {}).get("status") != "KEY_DISPATCHED":
+                raise RuntimeError("native Reset was not dispatched")
+            result["gates"]["NATIVE_RESET"] = "PASS"
         state = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 6s ros2 topic echo --once /aima/hal/joint/leg/state"], timeout_s=8.0)
         pg.write_new_text(output / "post_reset_leg_state.yaml", state.stdout)
         count = state.stdout.count("- name:")
@@ -1540,7 +1604,7 @@ def main() -> None:
             pg.write_new_text(output / "retargeting_topic_info.stdout", retargeting_topic.stdout)
             result["retargeting_topic"] = {"topic": "/aima/mc/joint/retargeting", "returncode": retargeting_topic.returncode, "raw": retargeting_topic.stdout}
             result["gates"]["RETARGETING_TOPIC_DISCOVERY"] = "PASS" if retargeting_topic.returncode == 0 and "Type:" in retargeting_topic.stdout else "FAIL"
-        if args.use_official_cmd_vel_bridge:
+        if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
             bridge_log = output / "official_cmd_vel_bridge.stdout"
             lateral_parameter = "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30"
             bridge_command = (
@@ -1580,17 +1644,21 @@ def main() -> None:
             preset_result = json.loads(preset.stdout.strip().splitlines()[-1]) if preset.returncode == 0 else {"returncode": preset.returncode, "stdout_tail": preset.stdout[-1200:]}
             result["native_preset_motion"] = {"requested": args.preset_motion_id, "area": args.preset_motion_area, "result": preset_result}
             result["gates"]["NATIVE_PRESET_MOTION_SERVICE"] = "PASS" if preset.returncode == 0 and preset_result.get("pass") else "FAIL"
-        if args.dock_world_xy is not None:
-            dock = run(["docker", "exec", container, "bash", "-lc", environment + "timeout " + str(int(math.ceil(args.dock_timeout_s + 8.0))) + "s python3 /workspace/evidence/native_locomotion_dock.py"], timeout_s=float(args.dock_timeout_s + 12.0), check=False)
-            pg.write_new_text(output / "native_locomotion_dock.stdout", dock.stdout)
-            dock_result = json.loads(dock.stdout.strip().splitlines()[-1]) if dock.returncode == 0 else {"returncode": dock.returncode, "stdout_tail": dock.stdout[-1200:]}
-            result["native_locomotion_dock"] = {"transport": "official_cmd_vel_bridge" if args.use_official_cmd_vel_bridge else "direct_mc_velocity_legacy", "world_goal_xy_m": [float(args.dock_world_xy[0]), float(args.dock_world_xy[1])], "world_goal_yaw_rad": float(args.dock_yaw_rad), "dock_position_only": bool(args.dock_position_only), "refine_world_xy_m": None if args.refine_world_xy is None else [float(args.refine_world_xy[0]), float(args.refine_world_xy[1])], "refine_world_yaw_rad": args.refine_yaw_rad, "refine_position_only": bool(args.refine_position_only), "dock_position_tolerance_m": float(args.dock_position_tolerance_m), "refine_position_tolerance_m": float(args.refine_position_tolerance_m), "returncode": dock.returncode, "result": dock_result}
-            result["commands_not_sent"].remove("locomotion velocity")
-            result["gates"]["NATIVE_TABLE_DOCK_SOURCE_REGISTRATION"] = "PASS" if dock.returncode == 0 and isinstance(dock_result.get("source"), dict) else "FAIL"
-            dock_pass = dock.returncode == 0 and dock_result.get("pass") is True
-            result["gates"]["NATIVE_TABLE_DOCK_ARRIVAL"] = "PASS" if dock_pass else "FAIL"
-            result["gates"]["NATIVE_TABLE_DOCK_STOP_HOLD"] = "PASS" if dock_pass else "FAIL"
-            if not dock_pass:result["failure"]={"gate":"NATIVE_TABLE_DOCK_ARRIVAL_OR_STOP","detail":dock_result.get("failure"),"child_returncode":dock.returncode}
+        if args.dock_world_xy is not None or args.fixed_reviewed_checkpoint:
+            if args.fixed_reviewed_checkpoint:
+                dock_pass=True
+                result['fixed_stance_diagnostic']={'navigation':'NOT_RUN','source_registration':'NOT_RUN','velocity_publishers_created':0}
+            else:
+                dock = run(["docker", "exec", container, "bash", "-lc", environment + "timeout " + str(int(math.ceil(args.dock_timeout_s + 8.0))) + "s python3 /workspace/evidence/native_locomotion_dock.py"], timeout_s=float(args.dock_timeout_s + 12.0), check=False)
+                pg.write_new_text(output / "native_locomotion_dock.stdout", dock.stdout)
+                dock_result = json.loads(dock.stdout.strip().splitlines()[-1]) if dock.returncode == 0 else {"returncode": dock.returncode, "stdout_tail": dock.stdout[-1200:]}
+                result["native_locomotion_dock"] = {"transport": "official_cmd_vel_bridge" if args.use_official_cmd_vel_bridge else "direct_mc_velocity_legacy", "world_goal_xy_m": [float(args.dock_world_xy[0]), float(args.dock_world_xy[1])], "world_goal_yaw_rad": float(args.dock_yaw_rad), "dock_position_only": bool(args.dock_position_only), "refine_world_xy_m": None if args.refine_world_xy is None else [float(args.refine_world_xy[0]), float(args.refine_world_xy[1])], "refine_world_yaw_rad": args.refine_yaw_rad, "refine_position_only": bool(args.refine_position_only), "dock_position_tolerance_m": float(args.dock_position_tolerance_m), "refine_position_tolerance_m": float(args.refine_position_tolerance_m), "returncode": dock.returncode, "result": dock_result}
+                result["commands_not_sent"].remove("locomotion velocity")
+                result["gates"]["NATIVE_TABLE_DOCK_SOURCE_REGISTRATION"] = "PASS" if dock.returncode == 0 and isinstance(dock_result.get("source"), dict) else "FAIL"
+                dock_pass = dock.returncode == 0 and dock_result.get("pass") is True
+                result["gates"]["NATIVE_TABLE_DOCK_ARRIVAL"] = "PASS" if dock_pass else "FAIL"
+                result["gates"]["NATIVE_TABLE_DOCK_STOP_HOLD"] = "PASS" if dock_pass else "FAIL"
+                if not dock_pass:result["failure"]={"gate":"NATIVE_TABLE_DOCK_ARRIVAL_OR_STOP","detail":dock_result.get("failure"),"child_returncode":dock.returncode}
             if dock_pass:
                 dock_capture = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 8s python3 /workspace/evidence/native_arm_state_capture.py"], timeout_s=10.0, check=False)
                 pg.write_new_text(output / "native_dock_state_capture.stdout", dock_capture.stdout)
@@ -1598,7 +1666,7 @@ def main() -> None:
                 result["native_dock_state_capture"] = dock_state
                 required_groups = ("base_pose_world", "leg_positions_rad", "waist_positions_rad", "arm_positions_rad")
                 state_ok = dock_capture.returncode == 0 and all(isinstance(dock_state.get(group), dict) for group in required_groups) and dock_state.get("motion_stability", {}).get("pass") is True
-                result["gates"]["NATIVE_TABLE_DOCK_STATE_HANDOFF"] = "PASS" if state_ok else "FAIL"
+                result["gates"]["NATIVE_FIXED_STANCE_STATE_HANDOFF" if args.fixed_reviewed_checkpoint else "NATIVE_TABLE_DOCK_STATE_HANDOFF"] = "PASS" if state_ok else "FAIL"
                 if hal_arm_candidate_path is not None:
                     pg.write_new_text(output / "native_dock_state.json", json.dumps(dock_state, ensure_ascii=False, indent=2) + "\n")
                     replan = run([
@@ -1621,6 +1689,7 @@ def main() -> None:
                         replan_record = json.loads(replan_result_path.read_text(encoding="utf-8"))
                         required_replan = ("DOCK_CAPTURE", "RUNTIME_STATIC_IK", "LEFT_ARM_PARK_CLEAR", "OPEN_PREGRASP_CLEAR", "CLOSED_CONTACT_CLEAR")
                         if "circle" in replan_record:required_replan+=("APPROACH_SWEEP",)
+                        if args.physical_lift_test:required_replan+=("LIFT_SWEEP",)
                         replan_ok = replan_record.get("classification") == "SIMULATION_ONLY_RUNTIME_CAPTURED_STATIC_REPLAN" and all(replan_record.get("gates", {}).get(name) == "PASS" for name in required_replan)
                         result["hal_arm_runtime_replan"] = {"path": str(replan_result_path), "sha256": sha256(replan_result_path), "returncode": replan.returncode, "gates": replan_record.get("gates")}
                         result["gates"]["HAL_ARM_RUNTIME_REPLAN"] = "PASS" if replan_ok else "FAIL"
@@ -1651,7 +1720,7 @@ def main() -> None:
                             dock_arm_state = {**dock_state.get("arm_positions_rad",{}),**dock_state.get("waist_positions_rad",{})}
                             if not isinstance(dock_arm_state, dict):
                                 raise RuntimeError("native docking capture lacks a complete arm fallback state")
-                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=(float(replan_record.get("commands",{}).get("closure_probe",0))/100. if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"]} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.))
+                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.])} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
                 if hal_pregrasp_background:
@@ -1688,7 +1757,8 @@ def main() -> None:
             result["gates"]["HAL_ARM_PD_COMMAND_ROUNDTRIP"] = "PASS" if arm_probe.returncode == 0 and arm_probe_result.get("response_pass") else "FAIL"
             result["gates"]["HAL_ARM_PD_COMMAND_STAND_STABILITY"] = "PASS" if arm_probe.returncode == 0 and arm_probe_result.get("motion_stability", {}).get("pass") else "FAIL"
         if hal_arm_target_right is not None:
-            if result["gates"]["NATIVE_TABLE_DOCK_ARRIVAL"] != "PASS" or result["gates"]["NATIVE_TABLE_DOCK_STATE_HANDOFF"] != "PASS" or result["gates"]["HAL_ARM_RUNTIME_REPLAN"] != "PASS":
+            handoff_pass=(result["gates"].get("NATIVE_FIXED_STANCE_STATE_HANDOFF")=="PASS" if args.fixed_reviewed_checkpoint else result["gates"]["NATIVE_TABLE_DOCK_ARRIVAL"]=="PASS" and result["gates"]["NATIVE_TABLE_DOCK_STATE_HANDOFF"]=="PASS")
+            if not handoff_pass or result["gates"]["HAL_ARM_RUNTIME_REPLAN"] != "PASS":
                 raise RuntimeError("arm-only HAL pregrasp is gated on successful native docking, state handoff, and runtime static replan")
             if arm_bootstrap_enabled:
                 pg.write_new_text(arm_bootstrap_stop, json.dumps({"handoff": "native_hal_bilateral_arm_pregrasp"}) + "\n")
@@ -1696,9 +1766,10 @@ def main() -> None:
                 result["hybrid_arm_bootstrap_handoff"] = json.loads(bootstrap_stop_text.strip().splitlines()[-1])
                 if not result["hybrid_arm_bootstrap_handoff"].get("stopped"):
                     raise RuntimeError("hybrid arm bootstrap did not stop before the arm-only pregrasp")
-            arm_pregrasp = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 35s python3 /workspace/evidence/native_hal_bilateral_arm_pregrasp.py"], timeout_s=37.0, check=False)
+            child_budget=42 if args.physical_lift_test else 35
+            arm_pregrasp = run(["docker", "exec", container, "bash", "-lc", environment + f"timeout {child_budget}s python3 /workspace/evidence/native_hal_bilateral_arm_pregrasp.py"], timeout_s=child_budget+2., check=False)
             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.stdout", arm_pregrasp.stdout)
-            arm_pregrasp_result = json.loads(arm_pregrasp.stdout.strip().splitlines()[-1]) if arm_pregrasp.returncode == 0 else {"returncode": arm_pregrasp.returncode, "stdout_tail": arm_pregrasp.stdout[-1200:]}
+            arm_pregrasp_result = decode_arm_execution_output(arm_pregrasp.returncode,arm_pregrasp.stdout)
             result["native_hal_bilateral_arm_pregrasp"] = {"candidate": result.get("hal_arm_candidate"), "plan_mode": args.hal_arm_plan_mode, "target_right_arm_rad": hal_arm_target_right, "target_left_arm_rad": hal_arm_target_left, "returncode": arm_pregrasp.returncode, "result": arm_pregrasp_result}
             result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] = "PASS" if arm_pregrasp.returncode == 0 and arm_pregrasp_result.get("native_tcp_arrival", {}).get("pass") and arm_pregrasp_result.get("motion_stability", {}).get("pass") else "FAIL"
             if args.hal_right_hand_command is not None:
@@ -1712,8 +1783,24 @@ def main() -> None:
                         if "closure_issued" in observed:
                             closure_issued = observed["closure_issued"]
                 result["gates"]["HAL_RIGHT_HAND_CLOSE"] = ("NOT_RUN" if not closure_issued else "PASS" if arm_pregrasp_result.get("physical_bilateral_contact", {}).get("pass") else "FAIL")
-                if result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] != "PASS":
+                result['gates']['HAL_PHYSICAL_LIFT']='NOT_RUN'
+                if args.physical_lift_test:
+                    lift=arm_pregrasp_result.get('lift_execution',{})
+                    if lift.get('executed'):
+                        result['gates']['HAL_PHYSICAL_LIFT']='FAIL'
+                        if 'hold_end_ns' in lift:
+                            rows=[json.loads(line) for line in (output/'native_physics.jsonl').read_text().splitlines()]
+                            metrics=native_grasp_audit.evaluate_unsupported_lift(rows,initial_bottle_z_m=lift['initial_bottle_z_m'],hold_start_ns=lift['hold_start_ns'],hold_end_ns=lift['hold_end_ns'])
+                            result['physical_lift_evidence']=metrics
+                            result['gates']['HAL_PHYSICAL_LIFT']='PASS' if arm_pregrasp.returncode==0 and metrics['pass'] else 'FAIL'
+                if args.physical_lift_test and lift.get('executed') and result['gates']['HAL_PHYSICAL_LIFT']!='PASS':
+                    result['failure']={'gate':'HAL_PHYSICAL_LIFT','detail':result.get('physical_lift_evidence',lift),'execution_tail':arm_pregrasp.stdout[-1600:]}
+                elif result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] != "PASS":
                     result["failure"] = {"gate": "HAL_BILATERAL_ARM_PREGRASP", "child_returncode": arm_pregrasp.returncode, "closure_issued": bool(closure_issued), "detail": arm_pregrasp.stdout[-1200:] if arm_pregrasp.returncode else "Actual TCP arrival or standing stability did not qualify"}
+                elif result['gates']['HAL_RIGHT_HAND_CLOSE']=='FAIL':
+                    result['failure']={'gate':'HAL_RIGHT_HAND_CLOSE','detail':arm_pregrasp_result.get('physical_bilateral_contact')}
+                elif args.physical_lift_test and result['gates']['HAL_PHYSICAL_LIFT']!='PASS':
+                    result['failure']={'gate':'HAL_PHYSICAL_LIFT','detail':result.get('physical_lift_evidence',lift)}
                 if "hand command" in result["commands_not_sent"]:
                     result["commands_not_sent"].remove("hand command")
                 if args.pause_on_claw_failure and result["gates"]["HAL_RIGHT_HAND_CLOSE"] != "PASS":
@@ -1777,10 +1864,13 @@ def main() -> None:
         if result.get("failure") is not None:result.setdefault("secondary_failures",[]).append(observed_failure)
         else:result["failure"]=observed_failure
     finally:
+        if args.native_circle_tracking:
+            marker=output/'native_tracking_target.stop'
+            if not marker.exists():pg.write_new_text(marker,'stop before native runtime teardown\n')
         subprocess.run(["docker", "stop", "--time", "5", container], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
         subprocess.run(["docker", "rm", container], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
         absent=subprocess.run(["docker","inspect",container],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=5.,check=False)
-        result['cleanup']={'container':container,'inspect_returncode':absent.returncode,'confirmed_absent':absent.returncode==1 and 'No such object' in absent.stdout,'inspect_output':absent.stdout.strip()}
+        result['cleanup']={'container':container,'inspect_returncode':absent.returncode,'confirmed_absent':absent.returncode==1 and 'no such object' in absent.stdout.lower() and container.lower() in absent.stdout.lower(),'inspect_output':absent.stdout.strip()}
         pg.write_new_text(output / "result.json", json.dumps(result, ensure_ascii=False, indent=2) + "\n")
         pg.write_new_bytes(output / Path(__file__).name, Path(__file__).read_bytes())
         pg.write_artifact_manifest(output)

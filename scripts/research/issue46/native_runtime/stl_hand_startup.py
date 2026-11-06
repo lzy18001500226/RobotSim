@@ -714,6 +714,7 @@ def build_hal_bilateral_arm_plan_script(
     source_joint_limits: dict[str, list[float]] | None = None,
     enable_measured_correction: bool = False,
     enable_single_residual_feedforward: bool = False,
+    lift_contract: dict | None = None,
 ) -> str:
     """Build a bounded direct-HAL bilateral pregrasp -> restore trajectory.
 
@@ -740,6 +741,9 @@ def build_hal_bilateral_arm_plan_script(
         raise ValueError("hand-close hold must be bounded to 0.5..5 seconds")
     if initial_arm_state is not None and any(name not in initial_arm_state or not math.isfinite(float(initial_arm_state[name])) for name in arm_gains):
         raise ValueError("initial arm fallback must contain every finite bilateral arm joint")
+    if lift_contract is not None:
+        if restore or not track_native_circle or not use_native_joint_feedback or circle_contract is None or right_hand_command is None:raise ValueError('lift requires exclusive native tracked close-hold path')
+        if lift_contract.get('pass') is not True or (lift_contract.get('height_m'),lift_contract.get('duration_s'),lift_contract.get('hold_s'))!=(.06,3.,1.5):raise ValueError('lift preflight or bounded profile invalid')
     serialized_gains = json.dumps({name: [stiffness, damping] for name, (stiffness, damping) in arm_gains.items()}, sort_keys=True)
     return """#!/usr/bin/env python3
 import json, math, os, time, rclpy
@@ -752,7 +756,13 @@ from sensor_msgs.msg import Imu
 LEFT=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint')
 RIGHT=('right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
 CIRCLE_CONTRACT=__CIRCLE_CONTRACT__; TRACK_NATIVE_CIRCLE=__TRACK_NATIVE_CIRCLE__; USE_NATIVE_FEEDBACK=__USE_NATIVE_FEEDBACK__; USE_NATIVE_BIAS=__USE_NATIVE_BIAS__; SOURCE_LIMITS=__SOURCE_LIMITS__; ENABLE_CORRECTION=__ENABLE_CORRECTION__; ENABLE_RESIDUAL_FF=__ENABLE_RESIDUAL_FF__; HAND_OPEN=__HAND_OPEN__; WAIST=__WAIST_NAMES__; TARGET_WAIST=__WAIST_TARGET__; CONTROL=LEFT+RIGHT+WAIST
-TARGET_LEFT=__LEFT_TARGET__; TARGET_RIGHT=__RIGHT_TARGET__; GAINS=__GAINS__; DURATION=__DURATION__; HOLD=__HOLD__; RESTORE=__RESTORE__; HAND_RIGHT=__HAND_RIGHT__; HAND_HOLD=__HAND_HOLD__; INITIAL_FALLBACK=__INITIAL_FALLBACK__
+TARGET_LEFT=__LEFT_TARGET__; TARGET_RIGHT=__RIGHT_TARGET__; GAINS=__GAINS__; DURATION=__DURATION__; HOLD=__HOLD__; RESTORE=__RESTORE__; HAND_RIGHT=__HAND_RIGHT__; HAND_HOLD=__HAND_HOLD__; INITIAL_FALLBACK=__INITIAL_FALLBACK__; LIFT_CONTRACT=__LIFT_CONTRACT__
+def force_guided_close_step(command,lower,probe,normal,required,dt):
+ if not all(math.isfinite(v) for v in [command,lower,probe,required,dt]+list(normal.values())) or required<=0 or not 0<=lower<=probe<=1:raise RuntimeError('INVALID_GRIP_FORCE_FEEDBACK')
+ dt=min(.04,max(0.,dt))
+ if min(normal.values())<required:command-=.04*dt
+ elif min(normal.values())>1.5*required:command+=.02*dt
+ return max(lower,min(probe,command))
 def native_circle_arrival(contract):
  if contract is None:return {'pass':True,'classification':'LEGACY_NO_NATIVE_TCP_GATE'}
  path='/workspace/evidence/native_latest.json'
@@ -772,8 +782,10 @@ def native_circle_arrival(contract):
  tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
  target=[bottle['position_m'][i]+height*B[3*i+2] for i in range(3)]
  error=math.sqrt(sum((tcp[i]-target[i])**2 for i in range(3)))
- dot=max(-1.,min(1.,sum(R[3*i]*B[3*i+2] for i in range(3))));angle=math.acos(dot)
- return {'pass':error<=.005 and angle<=.03,'position_error_m':error,'axis_error_rad':angle,'tcp_world_m':tcp,'target_world_m':target,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
+ dot=max(-1.,min(1.,sum(R[3*i]*B[3*i+2] for i in range(3))));raw_angle=math.acos(dot)
+ local_axis=contract.get('local_bottle_axis_in_hand',[1.,0.,0.]);world_axis=[sum(R[3*i+j]*local_axis[j] for j in range(3)) for i in range(3)]
+ angle=math.acos(max(-1.,min(1.,sum(world_axis[i]*B[3*i+2] for i in range(3)))))
+ return {'pass':error<=.005 and angle<=.03 and raw_angle<=.03,'position_error_m':error,'axis_error_rad':angle,'raw_hand_axis_to_bottle_rad':raw_angle,'tcp_world_m':tcp,'target_world_m':target,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
 def native_bilateral_contact(close_start):
  path='/workspace/evidence/native_physics.jsonl'
  with open(path,'rb') as stream:
@@ -791,7 +803,10 @@ def native_bilateral_contact(close_start):
    if 'test_cylinder' not in pair:continue
    for name in forces:
     if name in pair:forces[name]+=max(0.,float(c['local_force_torque'][0]))
-  if all(v>=.1 for v in forces.values()):bilateral.append((int(row['host_monotonic_ns']),forces,row['sim_time_s']))
+  if all(v>=.1 for v in forces.values()):
+   if bilateral and (int(row['host_monotonic_ns'])-bilateral[-1][0])*1e-9>.10:bilateral=[]
+   bilateral.append((int(row['host_monotonic_ns']),forces,row['sim_time_s']))
+  else:bilateral=[]
  if len(bilateral)<5 or (bilateral[-1][0]-bilateral[0][0])*1e-9<.20 or any((b[0]-a[0])*1e-9>.10 for a,b in zip(bilateral,bilateral[1:])):return {'pass':False,'sample_count':len(bilateral),'minimum_force_n':{n:min((x[1][n] for x in bilateral),default=0.) for n in ('R_hand_narrow3_Link','R_hand_wide3_Link')},'classification':'NO_SUSTAINED_BILATERAL_PHYSICAL_CONTACT'}
  return {'pass':True,'sample_count':len(bilateral),'duration_s':(bilateral[-1][0]-bilateral[0][0])*1e-9,'minimum_force_n':{n:min(x[1][n] for x in bilateral) for n in ('R_hand_narrow3_Link','R_hand_wide3_Link')},'sim_time_range_s':[bilateral[0][2],bilateral[-1][2]],'classification':'SUSTAINED_BILATERAL_PHYSICAL_CONTACT'}
 class Plan(Node):
@@ -881,7 +896,11 @@ class Plan(Node):
   goal={n:float(r['right_target_rad'][n]) for n in RIGHT}
   if any(not math.isfinite(goal[n]) for n in RIGHT):raise RuntimeError('NONFINITE_NATIVE_CIRCLE_TARGET')
   self.endpoint=goal
+  self.tracking_metrics=r.get('metrics',{})
   return goal
+ def write_phase(self,phase):
+  with open('/workspace/evidence/native_tracking_phase.tmp','w') as stream:json.dump(phase,stream)
+  os.replace('/workspace/evidence/native_tracking_phase.tmp','/workspace/evidence/native_tracking_phase.json')
  def native_bias(self):
   if not USE_NATIVE_BIAS:return {}
   path='/workspace/evidence/native_latest.json'
@@ -901,8 +920,25 @@ class Plan(Node):
    if self.tilt and max(self.tilt)>math.radians(15):raise RuntimeError('PREGRASP_TILT_LIMIT')
    if len(self.odom)>1 and math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])>.05:raise RuntimeError('PREGRASP_BASE_DRIFT_LIMIT:'+json.dumps({'stage':stage,'start_xy':self.odom[0],'current_xy':self.odom[-1],'measured_drift_m':math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])}))
    self.refresh_native()
+   if stage in ('LIFT_PROBE','LIFT'):
+    u=min(1.,(time.monotonic()-start)/seconds);smooth=3*u*u-2*u*u*u
+    self.lift_phase['lift_offset_m']=.008*smooth if stage=='LIFT_PROBE' else .008+.052*smooth
+    self.write_phase(self.lift_phase)
+   if stage in ('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
+    forces={name:sum(max(0.,float(c['local_force_torque'][0])) for c in self.native_row.get('contacts',[]) if 'test_cylinder' in (c.get('body1'),c.get('body2')) and name in (c.get('body1'),c.get('body2'))) for name in ('R_hand_narrow3_Link','R_hand_wide3_Link')}
+    if min(forces.values())<.1:
+     self.lift_contact_lost_since=self.lift_contact_lost_since or time.monotonic()
+     if time.monotonic()-self.lift_contact_lost_since>.10:raise RuntimeError('BILATERAL_CONTACT_LOST_DURING_LIFT')
+    else:self.lift_contact_lost_since=None
    if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP'):
     endpoint=self.tracking_target();target=dict(target)
+    if stage in ('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
+     for name in RIGHT:
+      correction=float(self.tracking_metrics['cartesian_correction_rad'][name])
+      if not math.isfinite(correction):raise RuntimeError('NONFINITE_LIFT_TRACKING_CORRECTION')
+      limits=SOURCE_LIMITS[name]
+      command=endpoint[name]+self.ff_offset[name]+max(-.002,min(.002,.05*correction))
+      self.ff_offset[name]=max(limits[0]+.01,min(limits[1]-.01,command))-endpoint[name]
     for name in RIGHT:
      desired=endpoint[name]+self.ff_offset[name]
      if stage=='APPROACH':desired=self.approach_start[name]+self.approach_fraction*(desired-self.approach_start[name])
@@ -925,14 +961,24 @@ class Plan(Node):
     # Match the pinned vendor example: activate only the right claw and leave
     # the parked left hand in NONE mode.
     h=HandCommandArray();h.left_hand_type=HandType(value=0);h.right_hand_type=HandType(value=2)
-    x=HandCommand();x.name='right_claw_joint';x.position=float(hand_right);x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;h.right_hands.append(x)
+    commanded_hand=float(hand_right)
+    if LIFT_CONTRACT is not None and stage in ('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
+     now=time.monotonic();probe=float(LIFT_CONTRACT['contact_command'])
+     if stage=='HAND_CLOSE_HOLD' and now-start<=1.5:
+      u=min(1.,(now-start)/1.5);u=3*u*u-2*u*u*u
+      self.grip_command=HAND_OPEN+u*(probe-HAND_OPEN)
+     else:
+      normal={name:sum(max(0.,float(c['local_force_torque'][0])) for c in self.native_row.get('contacts',[]) if 'test_cylinder' in (c.get('body1'),c.get('body2')) and name in (c.get('body1'),c.get('body2'))) for name in ('R_hand_narrow3_Link','R_hand_wide3_Link')}
+      self.grip_command=force_guided_close_step(self.grip_command,float(hand_right),probe,normal,float(LIFT_CONTRACT['required_normal_force_n']),now-self.grip_tick)
+     commanded_hand=self.grip_command;self.grip_tick=now
+    x=HandCommand();x.name='right_claw_joint';x.position=commanded_hand;x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;h.right_hands.append(x)
     self.hand_pub.publish(h)
     if stage=='HAND_CLOSE_HOLD':self.close_publish_count+=1
    rclpy.spin_once(self,timeout_sec=.001)
    if self.last_trace_at is None or time.monotonic()-self.last_trace_at>=.05:
     err=max(abs(float(self.arm.get(name,float('nan')))-target[name]) for name in LEFT+RIGHT) if all(name in self.arm for name in LEFT+RIGHT) else float('inf')
     self.last_trace_at=time.monotonic()
-    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'arm_fresh':self.arm_fresh(),'feedback_source':'NATIVE_MJDATA' if USE_NATIVE_FEEDBACK else 'ROS_ARM_STATE','native_feedback_host_ns':self.native_receipt_ns,'ros_arm_state_rad':dict(self.ros_arm),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'arm_regression_discard_count':self.arm_regressions,'published_target_rad':dict(target),'max_arm_error_rad':err,'waist':{n:self.arm.get(n) for n in WAIST},'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
+    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'published_right_hand_command':commanded_hand if hand_right is not None else None,'arm_fresh':self.arm_fresh(),'feedback_source':'NATIVE_MJDATA' if USE_NATIVE_FEEDBACK else 'ROS_ARM_STATE','native_feedback_host_ns':self.native_receipt_ns,'ros_arm_state_rad':dict(self.ros_arm),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'arm_regression_discard_count':self.arm_regressions,'published_target_rad':dict(target),'max_arm_error_rad':err,'waist':{n:self.arm.get(n) for n in WAIST},'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
    # Drain feedback during the remainder of the 50Hz period. Sleeping here
    # starved callbacks from 1000Hz arm + 500Hz IMU/odom subscriptions.
    next_tick+=.02
@@ -976,7 +1022,7 @@ try:
  print(json.dumps({'native_tcp_arrival':arrival}),flush=True)
  correction_target=dict(goal); correction_issued=False; correction_error=None; correction_iterations=0
  residual_ff_issued=False
- if ENABLE_RESIDUAL_FF and CIRCLE_CONTRACT is not None and not arrival['pass'] and preclose_error<=.15:
+ if ENABLE_RESIDUAL_FF and not TRACK_NATIVE_CIRCLE and CIRCLE_CONTRACT is not None and not arrival['pass'] and preclose_error<=.15:
   ff_target=dict(goal)
   for name in RIGHT:
    candidate=goal[name]+(goal[name]-reached[name])
@@ -992,7 +1038,28 @@ try:
   preclose_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
   arrival=native_circle_arrival(CIRCLE_CONTRACT)
   print(json.dumps({'native_tcp_arrival_after_residual_feedforward':arrival,'residual_ff_issued':True}),flush=True)
- closure_issued=False
+ # Correct measured task-space error, not all seven joint errors (including
+ # unconstrained axial-roll redundancy). The latter demanded an unnecessary
+ # shoulder-roll limit crossing in 171134Z. Keep actual arrival fail-closed.
+ if TRACK_NATIVE_CIRCLE and ENABLE_RESIDUAL_FF and not arrival['pass'] and preclose_error<=.15:
+  for refinement in range(8):
+   n.refresh_native();endpoint=n.tracking_target()
+   for name in RIGHT:
+    correction=float(n.tracking_metrics['cartesian_correction_rad'][name])
+    if not math.isfinite(correction):raise RuntimeError('NONFINITE_CARTESIAN_CORRECTION')
+    limits=SOURCE_LIMITS[name]
+    command=endpoint[name]+n.ff_offset[name]+max(-.03,min(.03,correction))
+    command=max(limits[0]+.01,min(limits[1]-.01,command))
+    n.ff_offset[name]=command-endpoint[name]
+   residual_ff_issued=True
+   n.send(goal,.6,'PREGRASP_FEEDBACK_REFINEMENT',HAND_OPEN)
+   goal.update({name:n.endpoint[name]+n.ff_offset[name] for name in RIGHT})
+   reached={n_:float(n.arm[n_]) for n_ in CONTROL}
+   preclose_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
+   arrival=native_circle_arrival(CIRCLE_CONTRACT)
+   print(json.dumps({'native_tcp_arrival_after_refinement':arrival,'refinement':refinement+1}),flush=True)
+   if arrival['pass'] and arrival['position_error_m']<=.001 and arrival['axis_error_rad']<=.01:break
+ closure_issued=False;lift_execution={'requested':LIFT_CONTRACT is not None,'executed':False}
  # Retain the existing bilateral 0.08 rad execution threshold. Failed arm
  # tracking must never trigger closure just because the trajectory timer ended.
  if HAND_RIGHT is not None and n.arm_fresh() and preclose_error<=.08 and preclose_waist_error<=.05 and arrival["pass"]:
@@ -1002,7 +1069,43 @@ try:
    with open('/workspace/evidence/native_tracking_phase.tmp','w') as stream:json.dump(phase,stream)
    os.replace('/workspace/evidence/native_tracking_phase.tmp','/workspace/evidence/native_tracking_phase.json')
   n.closing_started=True
+  n.grip_command=HAND_OPEN;n.grip_tick=time.monotonic()
   n.send(goal,HAND_HOLD,'HAND_CLOSE_HOLD',HAND_RIGHT);closure_issued=True
+  if LIFT_CONTRACT is not None:
+   close_start=min(x['host_monotonic_s'] for x in n.trace if x['stage']=='HAND_CLOSE_HOLD')
+   contact=native_bilateral_contact(close_start)
+   print(json.dumps({'prelift_bilateral_contact':contact}),flush=True)
+   if not contact['pass']:raise RuntimeError('LIFT_GATED_NO_SUSTAINED_BILATERAL_CONTACT')
+   n.refresh_native();grasped_position=list(n.native_row['bodies']['test_cylinder']['position_m'])
+   # Slip is relative to the actual grasped pose at this stage boundary, not
+   # the ungrasped pre-close pose. The closure's independent 10mm gate already
+   # passed; retain its motion separately and keep the fixed hand anchor.
+   n.lift_phase={**phase,'phase':'LIFTING','bilateral_contact_pass':True,'created_host_ns':time.monotonic_ns(),'lift_offset_m':0.,'bottle_center_world_m':grasped_position,'preclose_bottle_center_world_m':phase['bottle_center_world_m']}
+   hand=n.native_row['bodies']['R_omnipicker_base_link'];H=hand['rotation'];delta=[grasped_position[i]-hand['position_m'][i] for i in range(3)]
+   n.lift_phase['initial_object_in_hand_m']=[sum(H[3*i+j]*delta[i] for i in range(3)) for j in range(3)]
+   n.lift_contact_lost_since=None;n.write_phase(n.lift_phase)
+   lift_execution={'requested':True,'executed':True,'initial_bottle_z_m':n.native_row['bodies']['test_cylinder']['position_m'][2],'lift_start_host_ns':time.monotonic_ns()}
+   print(json.dumps({'lift_execution':lift_execution}),flush=True)
+   n.send(goal,1.,'LIFT_PROBE',HAND_RIGHT);n.lift_phase['lift_offset_m']=.008;n.write_phase(n.lift_phase)
+   # Complete the physical probe through feedback rather than assuming the
+   # inner servo reached 8mm when the one-second ramp timer elapsed.
+   probe_deadline=time.monotonic()+2.
+   while time.monotonic()<probe_deadline:
+    n.send(goal,.04,'LIFT_PROBE_HOLD',HAND_RIGHT);n.refresh_native()
+    probe_rise=n.native_row['bodies']['test_cylinder']['position_m'][2]-lift_execution['initial_bottle_z_m']
+    table_force=sum(max(0.,float(c['local_force_torque'][0])) for c in n.native_row.get('contacts',[]) if 'test_cylinder' in (c.get('body1'),c.get('body2')) and 'raicom_table_table' in (c.get('body1'),c.get('body2')))
+    if probe_rise>=.005 and table_force<=.1:break
+   n.refresh_native()
+   probe_rise=n.native_row['bodies']['test_cylinder']['position_m'][2]-lift_execution['initial_bottle_z_m']
+   table_force=sum(max(0.,float(c['local_force_torque'][0])) for c in n.native_row.get('contacts',[]) if 'test_cylinder' in (c.get('body1'),c.get('body2')) and 'raicom_table_table' in (c.get('body1'),c.get('body2')))
+   print(json.dumps({'lift_probe':{'rise_m':probe_rise,'table_force_n':table_force}}),flush=True)
+   if probe_rise<.005 or table_force>.1:raise RuntimeError('LOAD_TRANSFER_PROBE_FAILED')
+   n.send(goal,3.,'LIFT',HAND_RIGHT)
+   n.lift_phase['lift_offset_m']=.06;n.write_phase(n.lift_phase)
+   lift_execution['hold_start_ns']=time.monotonic_ns()
+   n.send(goal,1.5,'LIFT_HOLD',HAND_RIGHT)
+   lift_execution['hold_end_ns']=time.monotonic_ns()
+   print(json.dumps({'lift_execution':lift_execution}),flush=True)
  if RESTORE:
   for i in range(steps):
    u=(i+1)/steps;u=3*u*u-2*u*u*u;n.send({name:goal[name]+u*(start[name]-goal[name]) for name in CONTROL},.02,'RESTORE',HAND_OPEN)
@@ -1010,7 +1113,8 @@ try:
   # existing 0.04-rad recovery gate to measure a settled state.
   n.send(start,1.0,'RESTORE_HOLD',HAND_OPEN);restored={n_:float(n.arm[n_]) for n_ in CONTROL};max_restore=max(abs(restored[n_]-start[n_]) for n_ in CONTROL)
  else:
-  n.send(goal,1.0,'PREGRASP_STABLE_HOLD',HAND_RIGHT if closure_issued else HAND_OPEN);restored={n_:float(n.arm[n_]) for n_ in CONTROL};max_restore=None
+  if not lift_execution['executed']:n.send(goal,1.0,'PREGRASP_STABLE_HOLD',HAND_RIGHT if closure_issued else HAND_OPEN)
+  restored={n_:float(n.arm[n_]) for n_ in CONTROL};max_restore=None
  max_goal=max(abs(reached[n_]-goal[n_]) for n_ in CONTROL)
  drift=math.hypot(n.odom[-1][0]-n.odom[0][0],n.odom[-1][1]-n.odom[0][1]) if len(n.odom)>=2 else None; stable=len(n.odom)>=100 and drift is not None and drift<=.05 and n.tilt and max(n.tilt)<=math.radians(15)
  # No installed native-MjData/HandState mapping is calibrated for this overlay.
@@ -1025,7 +1129,7 @@ finally:
  print(json.dumps({'execution_exception_context':True,'closure_started':n.closing_started,'closure_issued':n.close_publish_count>0,'close_publish_call_count':n.close_publish_count,'publication_is_not_mc_acknowledgement':True}),flush=True)
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
-""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
+""".replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
 
 
 def build_hal_bilateral_upperbody_plan_script(

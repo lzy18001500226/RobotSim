@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import subprocess
 import time
+import math
 
 REPO=Path(__file__).resolve().parents[4]
 sys.path.insert(0,str(REPO))
@@ -22,21 +23,28 @@ def main():
     p.add_argument("--baseline",type=Path,required=True)
     p.add_argument("--circle-review",type=Path,required=True)
     p.add_argument("--candidate",type=Path,required=True)
+    p.add_argument("--fixed-reviewed-checkpoint",type=Path,help="initialize native episode with reviewed ungrasped keyframe; no walking claimed")
     p.add_argument("--review-captured-run",type=Path)
     p.add_argument("--review-dry-run",action="store_true")
     p.add_argument("--execute-simulation",action="store_true")
     p.add_argument("--startup-opening-diagnostic",action="store_true")
     p.add_argument("--both-claws-zero-internal-friction",action="store_true")
     p.add_argument("--right-claw-zero-internal-friction",action="store_true")
+    p.add_argument("--right-claw-damping",type=float)
+    p.add_argument("--noslip-solver-diagnostic",action="store_true",help="separate SIMULATION_ONLY two-iteration numerical postsolver; no contact-material/geometry changes")
+    p.add_argument("--elliptic-grip-solver-diagnostic",action="store_true",help="Menagerie-style numerical elliptic cone/impratio=10, unchanged actual friction/condim/geometry")
+    p.add_argument("--physical-lift-test",action="store_true")
     p.add_argument("--open-hand-transit-park",action="store_true")
     p.add_argument("--initial-hands-fully-open",action="store_true")
     p.add_argument("--pause-for-human-review",action="store_true")
     p.add_argument("--native-physics-audit",action="store_true",help="read-only actual-engine pose/contact/force observer; ABI must match installed library")
     p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay"),default="truth-diagnostic",help="truth baseline or explicitly historical RGB-D replay; not fresh camera capture")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
+    p.add_argument("--grasp-axis-tilt-rad",type=float,default=0.)
     p.add_argument("--coordinated-waist-pitch-offset-rad",type=float,default=0.)
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
-    p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.80,-1.44))
+    p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.85,-1.44))
+    p.add_argument("--dock-position-tolerance-m",type=float,default=.10)
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
     args=p.parse_args()
@@ -78,7 +86,9 @@ def main():
             # state is MEASURED; adding that offset again invents a root pose.
             command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]
             command.extend(["--target-source",args.target_source,"--free-bottle-axis-roll"])
+            if args.physical_lift_test:command.append('--physical-lift-test')
             command[command.index("--grasp-height-above-center-m")+1]=str(args.grasp_height_above_center_m)
+            command.extend(['--grasp-axis-tilt-rad',str(args.grasp_axis_tilt_rad)])
             if args.coordinated_waist_pitch_offset_rad:
                 command.extend(["--waist-pitch-offset-rad",str(args.coordinated_waist_pitch_offset_rad)])
             kwargs["timeout_s"]=45.
@@ -91,9 +101,20 @@ def main():
             pg.write_new_text(evidence/'native_tracking_command.json',json.dumps(track_command)+'\n')
             log=(evidence/'native_tracking.stdout').open('x')
             tracking=subprocess.Popen(track_command,stdout=log,stderr=subprocess.STDOUT,cwd=REPO);log.close()
-            deadline=time.monotonic()+8.
-            while time.monotonic()<deadline and tracking.poll() is None and not tracking_output.exists():time.sleep(.02)
-            if not tracking_output.exists() or not json.loads(tracking_output.read_text()).get('pass'):raise RuntimeError('native circle tracker did not qualify')
+            readiness_started=time.monotonic();deadline=readiness_started+25.;ready=False;initial_position=None
+            while time.monotonic()<deadline and tracking.poll() is None:
+                native_grasp_audit.require_fresh_sample(evidence/'native_latest.json')
+                current=json.loads((evidence/'native_latest.json').read_text());body=current['bodies']['pelvis'];xyz=body['position_m'];R=body['rotation']
+                initial_position=initial_position or xyz[:2]
+                if not .5<=xyz[2]<=.82 or max(abs(math.asin(max(-1.,min(1.,-R[6])))),abs(math.atan2(R[7],R[8])))>math.radians(15) or math.dist(xyz[:2],initial_position)>.05:raise RuntimeError('UNSAFE_POSTURE_DURING_TRACKER_INITIALIZATION')
+                if tracking_output.exists():
+                    target=json.loads(tracking_output.read_text())
+                    if not target.get('pass'):raise RuntimeError('native circle tracker initialization failed:'+str(target))
+                    age=(time.monotonic_ns()-target['source_host_ns'])*1e-9
+                    if 0.<=age<=.20:ready=True;break
+                time.sleep(.02)
+            pg.write_new_text(evidence/'native_tracking_readiness.json',json.dumps({'ready':ready,'elapsed_s':time.monotonic()-readiness_started,'loading_budget_s':25.,'active_source_max_age_s':.20,'child_returncode':tracking.poll()},indent=2)+'\n')
+            if not ready:raise RuntimeError('native circle tracker did not qualify within bounded model-loading readiness')
         return result
     native.run=run
     table=Path(baseline["table_overlay"]["path"])
@@ -101,12 +122,21 @@ def main():
     if args.right_claw_zero_internal_friction and args.both_claws_zero_internal_friction:raise ValueError("select only one friction scope")
     if args.right_claw_zero_internal_friction or args.both_claws_zero_internal_friction:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import build
-        claw=build(claw,both_hands=args.both_claws_zero_internal_friction)
+        claw=build(claw,both_hands=args.both_claws_zero_internal_friction,right_damping=args.right_claw_damping,noslip_iterations=2 if args.noslip_solver_diagnostic else 0,elliptic_grip_solver=args.elliptic_grip_solver_diagnostic)
+    elif args.right_claw_damping is not None or args.noslip_solver_diagnostic or args.elliptic_grip_solver_diagnostic:raise ValueError('parameter/solver diagnostics require an explicit existing zero-internal-friction profile')
+    if args.fixed_reviewed_checkpoint:
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import add_reviewed_checkpoint
+        claw=add_reviewed_checkpoint(claw,args.fixed_reviewed_checkpoint)
     helper=REPO/"scripts/research/issue46/native_runtime/native_mujoco_reset.py"
     display=__import__("os").environ.get("DISPLAY")
     if not display:raise RuntimeError("DISPLAY is unset; run this command from the WSLg terminal")
     dock_xy=args.dock_world_xy or (0.74+args.base_offset_xyz_m[0],-1.44+args.base_offset_xyz_m[1])
-    argv=["native", "--table-overlay-result",str(table),"--table-overlay-result-sha256",native.sha256(table),"--claw-control-overlay-result",str(claw),"--claw-control-overlay-result-sha256",native.sha256(claw),"--reset-helper",str(helper),"--reset-helper-sha256",native.sha256(helper),"--xvfb-root","/tmp/robotsim-xvfb-pkg/root","--xvfb-libs","/tmp/robotsim-xvfb-pkg/libs","--xkb-root","/tmp/robotsim-xvfb-pkg/xkb","--interactive-x11-display",display,"--hal-arm-candidate",str(args.candidate),"--hal-arm-candidate-sha256",native.sha256(args.candidate),"--disable-mc-arm-publisher","--disable-mc-hand-publisher","--hal-arm-plan-mode","pregrasp-hold","--hal-right-hand-command","0.0","--hal-hand-close-hold-s","2","--dock-world-xy",str(dock_xy[0]),str(dock_xy[1]),"--dock-yaw-rad","-0.07591850724454846","--dock-position-only","--use-official-cmd-vel-bridge","--dock-timeout-s","30"]
+    argv=["native", "--table-overlay-result",str(table),"--table-overlay-result-sha256",native.sha256(table),"--claw-control-overlay-result",str(claw),"--claw-control-overlay-result-sha256",native.sha256(claw),"--reset-helper",str(helper),"--reset-helper-sha256",native.sha256(helper),"--interactive-x11-display",display,"--hal-arm-candidate",str(args.candidate),"--hal-arm-candidate-sha256",native.sha256(args.candidate),"--disable-mc-arm-publisher","--disable-mc-hand-publisher","--hal-arm-plan-mode","pregrasp-hold","--hal-right-hand-command","0.0","--hal-hand-close-hold-s","2","--dock-world-xy",str(dock_xy[0]),str(dock_xy[1]),"--dock-yaw-rad","-0.07591850724454846","--dock-position-only","--use-official-cmd-vel-bridge","--dock-timeout-s","30"]
+    if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
+    if args.physical_lift_test:
+        argv.append('--physical-lift-test')
+        argv[argv.index('--hal-hand-close-hold-s')+1]='5'
+    argv.extend(["--dock-position-tolerance-m",str(args.dock_position_tolerance_m)])
     argv.extend(["--arm-plan-duration-s",str(args.arm_plan_duration_s),"--arm-plan-hold-s",str(args.arm_plan_hold_s)])
     if args.target_source=="truth-diagnostic":argv.extend(["--native-dock-truth-feedback","--native-circle-tracking"])
     if args.startup_opening_diagnostic:argv.append("--startup-opening-diagnostic")
@@ -118,7 +148,7 @@ def main():
     sys.argv=argv
     try:native.main()
     finally:
-        if tracking_output is not None:tracking_output.with_suffix('.stop').write_text('stop')
+        if tracking_output is not None and not tracking_output.with_suffix('.stop').exists():tracking_output.with_suffix('.stop').write_text('stop')
         if tracking is not None:
             try:tracking.wait(timeout=3.)
             except subprocess.TimeoutExpired:tracking.terminate();tracking.wait(timeout=3.)

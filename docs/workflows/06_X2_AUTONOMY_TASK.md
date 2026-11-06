@@ -13,7 +13,34 @@ not authorize physics stepping, mechanical-model changes, or hardware motion.
   the target source. Truth may not silently cross an estimator acceptance
   boundary or be reported as LiDAR/depth-camera navigation or grasp success.
 
-## Current milestone and observed status (2026-11-06)
+## Current milestone and observed status (2026-11-07)
+
+The maintainer authorized sequential autonomous completion of this simulation
+Goal on 2026-11-07, with Stage 1 taking priority. Reuse this worktree, task state
+machine and evidence roots. Routine implementation, official-source research,
+offline tests and evidence-driven bounded simulations need no per-run approval.
+This does not authorize mechanical redesign, hardware or success overrides.
+
+1. **Truth-first physical grasp:** fixed table stance, actual open/approach,
+   measured circle/axis arrival, bilateral force-bearing closure, >=50mm free
+   bottle lift and >=1s unsupported hold. Independently reproduce before claiming
+   a working full start-to-table-to-grasp review command.
+2. **Reachable stance region:** evaluate nearby x/y/yaw and supported arm/waist
+   postures, collision margins and balance. Include 300mm and 150mm bottle-height
+   cases as separately identified scene inputs; do not promise every pose works.
+3. **RGB-D substitution:** use fresh calibrated bottle axis/diameter/section pose
+   in the same execution chain. Record estimator error against truth separately;
+   truth must not silently feed perception-qualified control.
+4. **Perception-driven stance adjustment:** at a known table with unknown bottle
+   location, observe, assess reachability, make only qualified bounded base
+   corrections, stop, reobserve and replan. Stale pre-move coordinates are invalid.
+5. **LiDAR substitution:** replace base-truth localization with the established
+   mapped LiDAR estimator, retain local RGB-D grasp feedback, and verify the
+   complete reproducible chain. Delivery/manipulation after lifting is out of scope.
+
+Keep each stage's physical result separate. No stage is currently qualified by
+this plan. Preserve existing geometry and force/posture/stop constraints; use
+the scoped parameter authorization below for ordinary gripper diagnostics.
 
 Current Stage 2 scope is fixed table stance -> approved lower concave-pad
 support-circle IK -> actual opening/approach/arrival -> closure -> >=50 mm
@@ -22,10 +49,10 @@ fresh RGB-D substitution remains separately required for perception acceptance.
 Stage 3 adds perception-driven base repositioning; do not expand into it before
 the fixed-stance grasp is qualified.
 
-Observed local standing/docking and static IK passes do not close Stage 2.
-The latest opening-first native episode failed actual full opening before
-walking. Earlier approach evidence also exposed a frozen/stale-base planning
-error. Grasp and lift remain unqualified. See the [measured findings](../research/issue46_truth_grasp_execution_findings.md)
+Observed local standing/docking and static IK passes do not close the grasp
+stage. Actual full opening and a 4.245mm native arrival were subsequently
+observed and the attained posture was visually accepted. Stable bilateral
+grasp and lift remain unqualified. See the [measured findings](../research/issue46_truth_grasp_execution_findings.md)
 for exact trace identities; do not promote a prior model's PASS to this setup.
 
 Use the [scoped parameter authorization](../engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging)
@@ -87,7 +114,8 @@ passing arm IK solve, or a completed short physics probe as a completed grasp.
    Verify actual opening before walking and again before approach; command
    publication or a fixed sleep is not opening confirmation. Preserve an
    already-open hand at the docking handoff rather than closing it to reactivate.
-   This desired startup path has not passed physical opening qualification.
+   Actual full opening has passed in the labeled zero-internal-friction overlay;
+   this is not vendor-default parameter or complete grasp acceptance.
 6. Only after the physical pregrasp remains stable and the actual hand is in
    the screened contact region may the gripper close.  Require sustained
    bilateral distal-pad contact before attempting lift.

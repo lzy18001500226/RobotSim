@@ -106,6 +106,26 @@ class NativeLaunchTests(TestCase):
         result=ET.fromstring(change_friction(xml,both_hands=True))
         self.assertEqual(len(result.findall('.//joint[@frictionloss="0"]')),12)
 
+    def test_damping_diagnostic_changes_only_right_velocity_bias_and_selected_loss(self):
+        import mujoco
+        import numpy as np
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import change_friction,JOINTS
+        xml='<mujoco><worldbody><body>'+''.join('<joint name="'+n+'" axis="0 0 1" frictionloss=".3"/>' for n in JOINTS)+'<geom size=".01"/></body></worldbody><actuator><position name="motor_R_claw_joint" joint="R_claw_joint" kp="2" kv=".05" forcelimited="true" forcerange="-2 2"/></actuator></mujoco>'
+        a=mujoco.MjModel.from_xml_string(xml);b=mujoco.MjModel.from_xml_string(change_friction(xml,right_damping=1.27,noslip_iterations=2,elliptic_grip_solver=True).decode())
+        self.assertAlmostEqual(-b.actuator_biasprm[0,2],1.27)
+        self.assertEqual(b.opt.noslip_iterations,2)
+        self.assertEqual(a.opt.noslip_iterations,0)
+        self.assertEqual(int(b.opt.cone),1);self.assertEqual(b.opt.impratio,10.)
+        for name in dir(a):
+            x=getattr(a,name);y=getattr(b,name)
+            if not isinstance(x,np.ndarray):continue
+            expected=x.copy()
+            if name=='actuator_biasprm':expected[0,2]=-1.27
+            if name=='dof_frictionloss':expected[:]=0.
+            np.testing.assert_array_equal(expected,y,err_msg=name)
+        with self.assertRaises(ValueError):change_friction(xml,right_damping=2.01)
+        with self.assertRaises(ValueError):change_friction(xml,noslip_iterations=3)
+
     def test_native_truth_dock_source_is_explicit_and_absolute(self):
         from scripts.research.issue46.native_runtime.test_dock_feedback import script
         source=script()
@@ -134,6 +154,37 @@ class NativeLaunchTests(TestCase):
         rows=[{'host_monotonic_ns':int(t*1e9),'sim_time_s':t,'contacts':contacts} for t in (1.,1.02,1.04,1.5,1.52)]
         with mock.patch('builtins.open',return_value=io.BytesIO(('\n'.join(json.dumps(r) for r in rows)+'\n').encode())):
             self.assertFalse(ns['native_bilateral_contact'](.5)['pass'])
+        rows.extend({'host_monotonic_ns':int(t*1e9),'sim_time_s':t,'contacts':contacts} for t in (1.54,1.58,1.62,1.66,1.7,1.74))
+        with mock.patch('builtins.open',return_value=io.BytesIO(('\n'.join(json.dumps(r) for r in rows)+'\n').encode())):
+            self.assertTrue(ns['native_bilateral_contact'](.5)['pass'])
+
+    def test_lift_stage_never_runs_without_static_and_measured_contact_gates(self):
+        code=generated()
+        self.assertIn('LIFT_CONTRACT=None',code)
+        self.assertLess(code.index('LIFT_GATED_NO_SUSTAINED_BILATERAL_CONTACT'),code.index("n.send(goal,3.,'LIFT'"))
+        self.assertIn('BILATERAL_CONTACT_LOST_DURING_LIFT',code)
+        self.assertIn("'bottle_center_world_m':grasped_position",code)
+        self.assertIn("'preclose_bottle_center_world_m':phase['bottle_center_world_m']",code)
+        self.assertIn("n.send(goal,1.5,'LIFT_HOLD'",code)
+        self.assertIn('probe_deadline=time.monotonic()+2.',code)
+        self.assertIn('if probe_rise>=.005 and table_force<=.1:break',code)
+        self.assertIn("if probe_rise<.005 or table_force>.1:raise RuntimeError('LOAD_TRANSFER_PROBE_FAILED')",code)
+        self.assertIn('max(-.002,min(.002,.05*correction))',code)
+        self.assertNotIn('qpos[',code)
+        self.assertIn('self.grip_command=HAND_OPEN+u*(probe-HAND_OPEN)',code)
+        self.assertIn("self.grip_command=force_guided_close_step",code)
+        source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
+        self.assertIn('0.0 if args.physical_lift_test else',source)
+        self.assertIn('and raw_angle<=.03',code)
+
+    def test_force_guided_closure_is_bounded_and_rejects_invalid_feedback(self):
+        tree=ast.parse(generated());fn=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=='force_guided_close_step')
+        ns={'math':math};exec(compile(ast.Module(body=[fn],type_ignores=[]),'force','exec'),ns);step=ns[fn.name]
+        self.assertAlmostEqual(step(.39,0.,.39,{'left':.4,'right':.4},1.4715,.02),.3892)
+        self.assertAlmostEqual(step(.3,0.,.39,{'left':1.6,'right':1.6},1.4715,.02),.3)
+        self.assertGreater(step(.3,0.,.39,{'left':5.,'right':5.},1.4715,.02),.3)
+        self.assertEqual(step(0.,0.,.39,{'left':0.,'right':0.},1.4715,3.),0.)
+        with self.assertRaisesRegex(RuntimeError,'INVALID'):step(.3,0.,.39,{'left':float('nan'),'right':1.},1.4715,.02)
 
 
     def test_tracking_readiness_does_not_relax_active_freshness(self):
@@ -171,6 +222,99 @@ class NativeLaunchTests(TestCase):
         fn=next(n for n in adapter.body if isinstance(n,ast.FunctionDef) and n.name=='main')
         review=next(n for n in fn.body if isinstance(n,ast.If) and ast.unparse(n.test)=='args.review_captured_run')
         self.assertIsInstance(review.body[-1],ast.Return)
+
+
+    def test_visible_wslg_x11_has_no_headless_tmp_dependency(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import headless_x11_mounts
+        self.assertEqual(headless_x11_mounts(None,None,None,interactive=True),[])
+        with self.assertRaises(ValueError):headless_x11_mounts(None,None,None,interactive=False)
+        adapter=Path(__file__).parents[1].joinpath('grasp/stl_approved_circle_native_trial.py').read_text()
+        self.assertNotIn('/tmp/robotsim-xvfb-pkg',adapter)
+
+
+    def test_execution_summary_survives_trailing_exception_context(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import decode_arm_execution_output
+        rows=[{'native_tcp_arrival':{'pass':True}},{'motion_stability':{'pass':True},'physical_bilateral_contact':{'pass':True},'closure_issued':True},{'execution_exception_context':True,'closure_issued':True,'close_publish_call_count':100}]
+        result=decode_arm_execution_output(0,'\n'.join(json.dumps(r) for r in rows))
+        self.assertTrue(result['native_tcp_arrival']['pass'])
+        self.assertTrue(result['physical_bilateral_contact']['pass'])
+        self.assertEqual(result['child_returncode'],0)
+        failure=decode_arm_execution_output(1,json.dumps(rows[-1])+'\nTraceback: interrupted')
+        self.assertTrue(failure['closure_issued']);self.assertEqual(failure['child_returncode'],1)
+        self.assertNotIn('physical_bilateral_contact',failure)
+
+
+    def test_fixed_checkpoint_does_not_qualify_navigation(self):
+        source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
+        self.assertIn('args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint',source)
+        self.assertIn("'navigation':'NOT_RUN'",source)
+        self.assertIn('NATIVE_KEYFRAME_INITIAL_POSE_UNCONFIRMED',source)
+        self.assertIn('NATIVE_FIXED_STANCE_STATE_HANDOFF',source)
+        compile(source,'native.py','exec')
+
+
+    def test_model_loading_budget_is_separate_from_active_feedback_age(self):
+        source=Path(__file__).parents[1].joinpath('grasp/stl_approved_circle_native_trial.py').read_text()
+        self.assertIn('readiness_started+25.',source)
+        self.assertIn('if 0.<=age<=.20:ready=True',source)
+        self.assertIn('UNSAFE_POSTURE_DURING_TRACKER_INITIALIZATION',source)
+        self.assertIn('require_fresh_sample',source)
+
+
+    def test_keyframe_selection_never_clicks_without_verified_focus(self):
+        source=ast.parse(Path(__file__).with_name('native_mujoco_reset.py').read_text())
+        cls=next(n for n in source.body if isinstance(n,ast.ClassDef) and n.name=='X11')
+        fn=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='select_native_keyframe_zero_once')
+        fn.returns=None
+        for arg in fn.args.args:arg.annotation=None
+        scope={};exec(compile(ast.Module(body=[fn],type_ignores=[]),'selection','exec'),scope)
+        node=NS(_target_identity=lambda *a:{'width':1706,'height':1066},activate_window=lambda *a,**k:{'status':'FOCUS_NOT_CONFIRMED'},focus_window_direct=lambda w:{'status':'FOCUS_NOT_CONFIRMED'})
+        result=scope[fn.name](node,123,28,'MuJoCo : x2t2.5')
+        self.assertEqual(result['mouse_button_events_sent'],0)
+        self.assertEqual(result['status'],'KEYFRAME_INDEX_INPUT_NOT_DISPATCHED')
+
+    def test_key_slider_consumption_precedes_any_second_input(self):
+        source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
+        block=source[source.index('        if args.fixed_reviewed_checkpoint:\n            identity='):source.index('        else:\n            reset = run(')]
+        self.assertIn('NATIVE_KEY_SLIDER_AUTO_LOAD',block)
+        self.assertNotIn('click-native-load-key',block)
+        self.assertIn('observed[\'generation\']>=1 and error<=.02 and angle<=.02',block)
+
+    def test_final_feedback_refinement_is_bounded_and_cannot_close_on_failed_arrival(self):
+        code=generated()
+        self.assertIn('for refinement in range(8):',code)
+        self.assertIn('max(-.03,min(.03,correction))',code)
+        self.assertIn('max(limits[0]+.01,min(limits[1]-.01,command))',code)
+        self.assertLess(code.index('PREGRASP_FEEDBACK_REFINEMENT'),code.index('n.closing_started=True'))
+        self.assertIn('preclose_error<=.08 and preclose_waist_error<=.05 and arrival["pass"]',code)
+
+    def test_fixed_stance_initialization_precedes_approach(self):
+        code=Path(__file__).with_name('claw_parameter_diagnostic.py').read_text()
+        self.assertIn("r['stage']=='HAND_OPEN_PREGRASP'",code)
+        self.assertNotIn("abs(r['sim_time_s']-91.021)",code)
+
+    def test_measured_object_pose_is_in_the_same_snapshot_as_robot(self):
+        row={'bodies':{'pelvis':{'position_m':[0.,0.,.65],'rotation':[1.,0.,0.,0.,1.,0.,0.,0.,1.]},'test_cylinder':{'position_m':[1.2,-1.4,.7],'quaternion_wxyz':[1.,0.,0.,0.]}},'joints':{},'host_monotonic_ns':10,'sim_time_s':2.,'generation':1}
+        state=audit.planning_state_from_native(row,{g:{} for g in ('arm_positions_rad','leg_positions_rad','waist_positions_rad')})
+        self.assertEqual(state['object_pose_world']['xyz_m'],[1.2,-1.4,.7])
+        row['bodies']['test_cylinder']['position_m'][0]=9.
+        self.assertEqual(state['object_pose_world']['xyz_m'][0],1.2)
+
+    def test_lift_acceptance_requires_actual_continuous_unsupported_hold(self):
+        contacts=[{'body1':'test_cylinder','body2':n,'local_force_torque':[4.,0.,0.,0.,0.,0.],'signed_bottle_world_z_force_n':3.} for n in ('R_hand_narrow3_Link','R_hand_wide3_Link')]
+        rows=[{'host_monotonic_ns':1000000000+i*20000000,'sim_time_s':1.+i*.02,'generation':1,'bodies':{'test_cylinder':{'position_m':[1.,2.,.76]}},'contacts':contacts} for i in range(76)]
+        def evaluate(r):return audit.evaluate_unsupported_lift(r,initial_bottle_z_m=.7,hold_start_ns=1000000000,hold_end_ns=2500000000)
+        self.assertTrue(evaluate(rows)['pass'])
+        self.assertFalse(evaluate(rows[:20])['pass'])
+        import copy
+        supported=copy.deepcopy(rows)
+        supported[-1]['contacts'].append({'body1':'test_cylinder','body2':'raicom_table_table','local_force_torque':[1.,0.,0.,0.,0.,0.]})
+        self.assertFalse(evaluate(supported)['pass'])
+        one_sided=copy.deepcopy(rows)
+        for r in one_sided:r['contacts']=r['contacts'][:1]
+        self.assertFalse(evaluate(one_sided)['pass'])
+        dropped=copy.deepcopy(rows);dropped[-1]['bodies']['test_cylinder']['position_m'][2]=.7
+        self.assertFalse(evaluate(dropped)['pass'])
 
 
     def test_native_feedback_cannot_refresh_from_stale_or_reset_generation(self):
