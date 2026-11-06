@@ -109,3 +109,24 @@ state, and pre-walk opening gate: 32 tests PASS. Container absence confirmed.
 
 Reproduce this specific opening-first diagnostic with the previous command
 plus `--initial-hands-fully-open`; do not present it as a successful grasp demo.
+
+## Saved opening trace: command, coupling, and endpoint budget
+
+`reviews/issue-46/startup-opening-linkage-analysis-20261106T105720Z/result.json`
+analyzes all 1025 native samples from the startup-opening run, without new
+physics. Native ctrl=1 confirms delivery to the simulator actuator, not just
+Python publish success. The maximum residual across five right-hand follower
+polynomials is 0.002225 rad. No hand/table or hand/bottle contact appears in
+the captured contact scope. Internal hand self-contacts are not captured by
+this observer, so their absence is not established.
+
+At q=-1 the same virtual-work estimate is 2.7774 Nm, above the unchanged
+2 Nm actuator force cap. Increasing kp alone cannot overcome that force cap.
+The last root velocity remains -0.009873 rad/s: this recording does not prove
+permanent stall or establish eventual full opening. Do not report that the
+hand can never open based on this short trace.
+
+The next mechanical/control review must address provenance and consistency
+of the inherited 0.3 Nm friction on every added scalar joint versus the
+experimental root actuator, rather than another arbitrary gain increase.
+Model parameters remain unchanged; full-open walking and grasp remain unqualified.
