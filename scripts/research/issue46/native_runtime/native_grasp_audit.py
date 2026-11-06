@@ -34,3 +34,51 @@ def build(output, runtime_library):
     record={'classification':'READ_ONLY_NATIVE_MJ_STEP_OBSERVER','engine_api_version':version,'runtime_library':str(library),'runtime_library_sha256':digest(library),'header_path':str(header),'header_sha256':headers,'source_sha256':digest(source),'binary_sha256':digest(target),'command':command,'writes_model_or_state':False,'scope':'post-mj_step snapshot; no extra mj_forward; timestamps and performance recorded; not grasp acceptance'}
     pg.write_new_text(output/'native_audit_provenance.json',json.dumps(record,indent=2)+'\n')
     return target
+
+
+def launch_prefix():
+    """Only the simulator process receives the read-only interposer."""
+    return "env LD_PRELOAD=/workspace/evidence/native_grasp_audit.so ROBOTSIM_NATIVE_AUDIT_OUT=/workspace/evidence/native_physics.jsonl "
+
+
+def require_fresh_sample(path, *, now_ns=None):
+    import time
+    import math
+    raw = Path(path).read_bytes()[-1048576:]
+    lines = raw.splitlines()
+    if not raw.endswith(b"\n"):
+        lines = lines[:-1]
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+            break
+        except (ValueError, UnicodeDecodeError):
+            continue
+    else:
+        raise RuntimeError("NATIVE_OBSERVER_NO_COMPLETE_SAMPLE")
+    age = ((time.monotonic_ns() if now_ns is None else now_ns) - row["host_monotonic_ns"]) * 1e-9
+    if not math.isfinite(age) or not 0.0 <= age <= 0.20:
+        raise RuntimeError("NATIVE_OBSERVER_STALE_SAMPLE")
+    if row.get("engine_version") != 337 or any(row.get("bodies", {}).get(n) is None for n in ("pelvis", "R_omnipicker_base_link", "test_cylinder")):
+        raise RuntimeError("NATIVE_OBSERVER_MISSING_REQUIRED_BODIES")
+    return {"pass": True, "age_s": age, "engine_version": row["engine_version"], "sim_time_s": row["sim_time_s"], "generation": row["generation"]}
+
+
+def planning_state_from_native(row, previous):
+    """One coherent actual-engine sample for offline planning; never writes runtime."""
+    import copy
+    import math
+    from scipy.spatial.transform import Rotation
+    state = copy.deepcopy(previous)
+    body = row["bodies"]["pelvis"]
+    q = Rotation.from_matrix([body["rotation"][i:i+3] for i in (0,3,6)]).as_quat()
+    state["base_pose_world"] = {"xyz_m": list(body["position_m"]), "quaternion_wxyz": [float(q[3]), *map(float,q[:3])]}
+    for group in ("arm_positions_rad", "leg_positions_rad", "waist_positions_rad"):
+        for name in state[group]:
+            value = float(row["joints"][name]["q"])
+            if not math.isfinite(value):
+                raise RuntimeError("NONFINITE_NATIVE_PLANNING_STATE:" + name)
+            state[group][name] = value
+    state["native_snapshot"] = {k:row[k] for k in ("host_monotonic_ns", "sim_time_s", "generation")}
+    state["state_source"] = "SYNCHRONIZED_NATIVE_MJDATA_NOT_ROS_CACHE"
+    return state

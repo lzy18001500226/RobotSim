@@ -33,24 +33,31 @@ def main():
     args=p.parse_args()
     if not args.execute_simulation:raise ValueError("explicit simulation execution flag required")
     baseline=json.loads((args.baseline/"result.json").read_text())
+    if not args.native_physics_audit:
+        raise ValueError("approved-circle execution requires --native-physics-audit")
     original=native.run
     if original(["docker","ps","-q"],timeout_s=5).stdout.strip():raise RuntimeError("conflicting container")
-    audit_output=None
     def run(command,**kwargs):
-        nonlocal audit_output
-        if args.native_physics_audit and command[:2]==['docker','run']:
-            from scripts.research.issue46.native_runtime.native_grasp_audit import build
-            mounts=[value for value in command if isinstance(value,str) and value.startswith('type=bind,source=') and ',target=/workspace/evidence' in value]
-            if len(mounts)!=1:raise RuntimeError('cannot identify one exact native observation evidence mount')
-            audit_output=Path(mounts[0].split(',source=',1)[1].split(',target=',1)[0])
-            library=Path('/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/sim_mujoco/lib/libmujoco.so.3.3.7')
-            build(audit_output,library)
-        if audit_output is not None and command[:2]==['docker','exec'] and isinstance(command[-1],str) and command[-1].startswith('bash /workspace/evidence/launch_sim.sh'):
-            command=list(command)
-            command[-1]='env LD_PRELOAD=/workspace/evidence/native_grasp_audit.so ROBOTSIM_NATIVE_AUDIT_OUT=/workspace/evidence/native_physics.jsonl '+command[-1]
-            pg.write_new_text(audit_output/'native_audit_launch.json',json.dumps({'command':command,'read_only':True},indent=2)+'\n')
+        # The native parent now builds, launches and checks its required observer.
+        # Keep one owner: a wrapper must not inject a second LD_PRELOAD launch.
         if any(str(v).endswith("/runtime_actual_grasp_replan.py") for v in command):
             state=command[command.index("--dock-state")+1]
+            # Preserve ROS capture; use one fresh native snapshot for all FK inputs.
+            from scripts.research.issue46.native_runtime import native_grasp_audit
+            state=Path(state)
+            physics=state.parent/"native_physics.jsonl"
+            native_grasp_audit.require_fresh_sample(physics)
+            with physics.open('rb') as stream:
+                stream.seek(0,2);stream.seek(max(0,stream.tell()-1048576));raw=stream.read()
+            lines=raw.splitlines()
+            if not raw.endswith(bytes([10])):lines=lines[:-1]
+            for line in reversed(lines):
+                try:row=json.loads(line);break
+                except (ValueError,UnicodeDecodeError):continue
+            synchronized=native_grasp_audit.planning_state_from_native(row,json.loads(state.read_text()))
+            state=state.parent/"native_synchronized_dock_state.json"
+            pg.write_new_text(state,json.dumps(synchronized,indent=2)+"\n")
+            state=str(state)
             # Navigation already applied the requested docking offset. The new
             # state is MEASURED; adding that offset again invents a root pose.
             command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]

@@ -996,6 +996,13 @@ def main() -> None:
         bridge_source = OFFICIAL_CMD_VEL_BRIDGE.resolve()
         bridge_revision = run(["git", "-C", str(bridge_source.parents[3]), "rev-parse", "HEAD"], timeout_s=5.0).stdout.strip()
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-xvfb-native-reset-stand").native_path
+    # Native arrival and gravity feedforward both require live exact-engine data.
+    # Build before container creation; every arm-candidate entry point owns this
+    # dependency, including direct human-review invocations.
+    native_observer = None
+    if args.hal_arm_candidate is not None:
+        from scripts.research.issue46.native_runtime import native_grasp_audit
+        native_observer = native_grasp_audit.build(output, RUNTIME / "sim_mujoco/lib/libmujoco.so.3.3.7")
     container = "robotsim-i46-xvfb-" + output.name[-15:].lower().replace("_", "-")
     result: dict[str, object] = {
         "schema": "robotsim.issue46.xvfb-native-reset-stand.v1",
@@ -1246,9 +1253,18 @@ def main() -> None:
         if not args.interactive_x11_display:
             run(["docker", "exec", "-d", container, "bash", "-lc", "/opt/xvfb/usr/bin/Xvfb :99 -screen 0 1706x1066x24 -ac -nolisten tcp > /workspace/evidence/xvfb.log 2>&1"], timeout_s=5.0)
         run(["docker", "exec", container, "bash", "-lc", "sleep 0.4; test -S /tmp/.X11-unix/X99; cp /workspace/evidence/sim_seed/action_setting.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_setting.yaml; cp /workspace/evidence/sim_seed/action_ruler.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_ruler.yaml; cp /workspace/evidence/sim_seed/action_state.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_state.yaml"], timeout_s=5.0)
-        run(["docker", "exec", "-d", container, "bash", "-lc", "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"], timeout_s=5.0)
+        sim_launch = "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
+        if native_observer is not None:
+            sim_launch = native_grasp_audit.launch_prefix() + sim_launch
+        sim_command = ["docker", "exec", "-d", container, "bash", "-lc", sim_launch]
+        pg.write_new_text(output / "native_sim_launch.json", json.dumps({"command": sim_command, "native_observer_required": native_observer is not None}, indent=2) + "\n")
+        run(sim_command, timeout_s=5.0)
         wait_for(output / "mujoco-console.log", "MujocoSimModule Started Succeeded", timeout_s=25.0)
         result["gates"]["SIMULATOR"] = "PASS"
+        if native_observer is not None:
+            wait_for(output / "native_physics.jsonl", '"host_monotonic_ns"', timeout_s=5.0)
+            result["native_observer_readiness"] = native_grasp_audit.require_fresh_sample(output / "native_physics.jsonl")
+            result["gates"]["NATIVE_STATE_OBSERVER"] = "PASS"
         bootstrap_environment = "source /opt/ros/humble/setup.bash; source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash; "
         if arm_bootstrap_enabled:
             run(["docker", "exec", "-d", container, "bash", "-lc", bootstrap_environment + "python3 /workspace/evidence/native_arm_bootstrap_hold.py > /workspace/evidence/native_arm_bootstrap_hold.stdout 2>&1"], timeout_s=5.0)
@@ -1535,7 +1551,7 @@ def main() -> None:
                             dock_arm_state = {**dock_state.get("arm_positions_rad",{}),**dock_state.get("waist_positions_rad",{})}
                             if not isinstance(dock_arm_state, dict):
                                 raise RuntimeError("native docking capture lacks a complete arm fallback state")
-                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=(float(replan_record.get("commands",{}).get("closure_probe",0))/100. if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"]} if "circle" in replan_record else None),use_native_bias_effort=True,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.))
+                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=(float(replan_record.get("commands",{}).get("closure_probe",0))/100. if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"]} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
                 if hal_pregrasp_background:
@@ -1586,10 +1602,21 @@ def main() -> None:
             result["native_hal_bilateral_arm_pregrasp"] = {"candidate": result.get("hal_arm_candidate"), "plan_mode": args.hal_arm_plan_mode, "target_right_arm_rad": hal_arm_target_right, "target_left_arm_rad": hal_arm_target_left, "returncode": arm_pregrasp.returncode, "result": arm_pregrasp_result}
             result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] = "PASS" if arm_pregrasp.returncode == 0 and arm_pregrasp_result.get("native_tcp_arrival", {}).get("pass") and arm_pregrasp_result.get("motion_stability", {}).get("pass") else "FAIL"
             if args.hal_right_hand_command is not None:
-                result["gates"]["HAL_RIGHT_HAND_CLOSE"] = "PASS" if arm_pregrasp.returncode == 0 and arm_pregrasp_result.get("closure_issued") and arm_pregrasp_result.get("physical_bilateral_contact", {}).get("pass") else "FAIL"
+                closure_issued = arm_pregrasp_result.get("closure_issued")
+                if closure_issued is None and arm_pregrasp.returncode == 0:
+                    for line in arm_pregrasp.stdout.splitlines():
+                        try:
+                            observed = json.loads(line)
+                        except ValueError:
+                            continue
+                        if "closure_issued" in observed:
+                            closure_issued = observed["closure_issued"]
+                result["gates"]["HAL_RIGHT_HAND_CLOSE"] = ("NOT_RUN" if not closure_issued else "PASS" if arm_pregrasp_result.get("physical_bilateral_contact", {}).get("pass") else "FAIL")
+                if result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] != "PASS":
+                    result["failure"] = {"gate": "HAL_BILATERAL_ARM_PREGRASP", "child_returncode": arm_pregrasp.returncode, "closure_issued": bool(closure_issued), "detail": arm_pregrasp.stdout[-1200:] if arm_pregrasp.returncode else "Actual TCP arrival or standing stability did not qualify"}
                 if "hand command" in result["commands_not_sent"]:
                     result["commands_not_sent"].remove("hand command")
-                if args.pause_on_claw_failure and result["gates"]["HAL_RIGHT_HAND_CLOSE"] == "FAIL":
+                if args.pause_on_claw_failure and result["gates"]["HAL_RIGHT_HAND_CLOSE"] != "PASS":
                     release = output / "continue_after_manual_review"
                     pause_reason = "ARM_CHILD_EXECUTION_ERROR" if arm_pregrasp.returncode != 0 else "HAND_MAPPING_OR_RESPONSE_UNQUALIFIED"
                     result["manual_review_pause"] = {"reason": pause_reason, "child_returncode": arm_pregrasp.returncode, "child_output_tail": arm_pregrasp.stdout[-2000:], "container": container, "display": args.interactive_x11_display, "release_file": str(release), "instructions": "Rotate the visible MuJoCo window; create the release file after review. This is not proof that closure occurred."}

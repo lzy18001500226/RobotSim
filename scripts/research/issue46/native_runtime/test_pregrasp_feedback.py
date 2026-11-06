@@ -23,10 +23,10 @@ class FeedbackTests(unittest.TestCase):
         cls=next(n for n in self.tree.body if isinstance(n,ast.ClassDef) and n.name=='Plan')
         cls.bases=[];cls.body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ('on_arm','arm_fresh')]
         self.clock=NS(now=1.)
-        self.ns={'time':NS(monotonic=lambda:self.clock.now),'math':math,'LEFT':('left',),'RIGHT':('right',),'CONTROL':('left','right')}
+        self.ns={'time':NS(monotonic=lambda:self.clock.now),'math':math,'LEFT':('left',),'RIGHT':('right',),'CONTROL':('left','right'),'USE_NATIVE_FEEDBACK':False}
         exec(compile(ast.Module(body=[cls],type_ignores=[]),'runtime','exec'),self.ns)
         self.ns['json']=json
-        self.n=self.ns['Plan']();self.n.arm={};self.n.arm_stamp={};self.n.arm_receipt={};self.n.arm_callbacks=0;self.n.arm_regressions=0;self.n.seq=0
+        self.n=self.ns['Plan']();self.n.ros_arm={};self.n.arm={};self.n.arm_stamp={};self.n.arm_receipt={};self.n.arm_callbacks=0;self.n.arm_regressions=0;self.n.seq=0
 
     def message(self,stamp,names=('left','right'),position=.1):
         return NS(header=NS(stamp=NS(sec=1,nanosec=stamp)),joints=[NS(name=n,position=position) for n in names])

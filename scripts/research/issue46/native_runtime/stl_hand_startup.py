@@ -709,6 +709,7 @@ def build_hal_bilateral_arm_plan_script(
     hand_open_command: float = .97,
     circle_contract: dict | None = None,
     use_native_bias_effort: bool = False,
+    use_native_joint_feedback: bool = False,
     source_joint_limits: dict[str, list[float]] | None = None,
     enable_measured_correction: bool = False,
     enable_single_residual_feedforward: bool = False,
@@ -716,10 +717,10 @@ def build_hal_bilateral_arm_plan_script(
     """Build a bounded direct-HAL bilateral pregrasp -> restore trajectory.
 
     This uses the delivered AnimationPlayer position gains and the existing
-    arm HAL topic.  It deliberately sends no additive effort: position and
-    stiffness tracking is the bounded validation here, while a hard-coded
-    effort pulse would be a different force experiment.  Legs, waist, source
-    geometry, the bottle and fingers remain under their normal controllers.
+    arm HAL topic. Optional additive effort comes only from fresh native
+    qfrc_bias, never an arbitrary force pulse. Native joint feedback is an
+    explicitly labeled simulation-only alternative to ROS source timestamps.
+    Source geometry, gains, limits and leg control remain unchanged.
     """
     if not math.isfinite(hand_open_command) or not 0. <= hand_open_command <= 1.:raise ValueError("opening outside source range")
     arm_gains = {name: values for name, values in gains.items() if name.startswith(("left_", "right_"))}
@@ -749,7 +750,7 @@ from sensor_msgs.msg import Imu
 
 LEFT=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint')
 RIGHT=('right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
-CIRCLE_CONTRACT=__CIRCLE_CONTRACT__; USE_NATIVE_BIAS=__USE_NATIVE_BIAS__; SOURCE_LIMITS=__SOURCE_LIMITS__; ENABLE_CORRECTION=__ENABLE_CORRECTION__; ENABLE_RESIDUAL_FF=__ENABLE_RESIDUAL_FF__; HAND_OPEN=__HAND_OPEN__; WAIST=__WAIST_NAMES__; TARGET_WAIST=__WAIST_TARGET__; CONTROL=LEFT+RIGHT+WAIST
+CIRCLE_CONTRACT=__CIRCLE_CONTRACT__; USE_NATIVE_FEEDBACK=__USE_NATIVE_FEEDBACK__; USE_NATIVE_BIAS=__USE_NATIVE_BIAS__; SOURCE_LIMITS=__SOURCE_LIMITS__; ENABLE_CORRECTION=__ENABLE_CORRECTION__; ENABLE_RESIDUAL_FF=__ENABLE_RESIDUAL_FF__; HAND_OPEN=__HAND_OPEN__; WAIST=__WAIST_NAMES__; TARGET_WAIST=__WAIST_TARGET__; CONTROL=LEFT+RIGHT+WAIST
 TARGET_LEFT=__LEFT_TARGET__; TARGET_RIGHT=__RIGHT_TARGET__; GAINS=__GAINS__; DURATION=__DURATION__; HOLD=__HOLD__; RESTORE=__RESTORE__; HAND_RIGHT=__HAND_RIGHT__; HAND_HOLD=__HAND_HOLD__; INITIAL_FALLBACK=__INITIAL_FALLBACK__
 def native_circle_arrival(contract):
  if contract is None:return {'pass':True,'classification':'LEGACY_NO_NATIVE_TCP_GATE'}
@@ -798,7 +799,7 @@ class Plan(Node):
   # The simulator may publish the two arm groups in separate messages.  Merge
   # named samples so a later partial packet cannot discard the already-read
   # opposite-arm state before the bounded plan begins.
-  self.odom_trace=[];self.arm_receipt={};self.arm_stamp={};self.arm_regressions=0;self.arm_callbacks=0;self.run_started=time.monotonic();self.last_trace_at=None
+  self.odom_trace=[];self.arm_receipt={};self.arm_stamp={};self.arm_regressions=0;self.arm_callbacks=0;self.run_started=time.monotonic();self.last_trace_at=None;self.native_row=None;self.native_receipt_ns=None;self.native_generation=None;self.native_sim_time=None;self.ros_arm={}
   self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',self.on_arm,q)
   self.waist_pub=None
   if WAIST:
@@ -820,16 +821,44 @@ class Plan(Node):
    if old is not None and stamp<old:
     fault={'gate':'REGRESSING_ARM_STATE','joint':item.name,'previous_source_stamp_ns':old,'received_source_stamp_ns':stamp,'regression_ns':old-stamp,'host_receipt_monotonic_s':now,'last_unique_receipt_monotonic_s':self.arm_receipt.get(item.name),'arm_callback_count':self.arm_callbacks,'control_sequence':self.seq}
     self.arm_regressions+=1
-    print(json.dumps({'arm_feedback_late_sample_discarded':fault,'regression_count':self.arm_regressions}),flush=True)
+    if self.arm_regressions<=2 or self.arm_regressions%500==0:print(json.dumps({'arm_feedback_late_sample_discarded':fault,'regression_count':self.arm_regressions}),flush=True)
     # DDS can deliver an older source-stamped frame after a newer one. Never
     # apply or refresh from it. Keep consuming only strictly increasing frames;
     # if those stop, arm_fresh() fails against the last unique receipt age.
-    if now-self.arm_receipt.get(item.name,0.)>.20:
+    if not USE_NATIVE_FEEDBACK and now-self.arm_receipt.get(item.name,0.)>.20:
      raise RuntimeError('STALE_ARM_FEEDBACK_AFTER_SOURCE_REGRESSION:'+json.dumps(fault))
     continue
    if stamp>0 and (old is None or stamp>old):
-    self.arm[item.name]=float(item.position);self.arm_receipt[item.name]=now;self.arm_stamp[item.name]=stamp
+    self.ros_arm[item.name]=float(item.position)
+    if not USE_NATIVE_FEEDBACK:self.arm[item.name]=float(item.position)
+    self.arm_receipt[item.name]=now;self.arm_stamp[item.name]=stamp
+ def refresh_native(self):
+  if not USE_NATIVE_FEEDBACK:return
+  path='/workspace/evidence/native_physics.jsonl'
+  with open(path,'rb') as f:
+   f.seek(0,2);f.seek(max(0,f.tell()-262144));raw=f.read()
+  lines=raw.splitlines()
+  if not raw.endswith(bytes([10])):lines=lines[:-1]
+  for line in reversed(lines):
+   try:row=json.loads(line);break
+   except (ValueError,UnicodeDecodeError):continue
+  else:raise RuntimeError('NO_COMPLETE_NATIVE_ARM_SAMPLE')
+  stamp=int(row['host_monotonic_ns']);age=(time.monotonic_ns()-stamp)*1e-9
+  if row.get('engine_version')!=337 or not 0.<=age<=.20:raise RuntimeError('STALE_OR_WRONG_ABI_NATIVE_ARM_SAMPLE')
+  if self.native_generation is not None and row['generation']!=self.native_generation:raise RuntimeError('UNEXPECTED_NATIVE_RESET_DURING_ARM_CONTROL')
+  if self.native_receipt_ns is not None and (stamp<self.native_receipt_ns or row['sim_time_s']<self.native_sim_time):raise RuntimeError('REGRESSING_NATIVE_ARM_SAMPLE')
+  values={}
+  for name in CONTROL:
+   j=row.get('joints',{}).get(name)
+   if j is None or not math.isfinite(float(j['q'])) or not math.isfinite(float(j['qvel'])):raise RuntimeError('MISSING_OR_INVALID_NATIVE_ARM_JOINT:'+name)
+   values[name]=float(j['q'])
+  for contact in row.get('contacts',[]):
+   pair={contact.get('body1'),contact.get('body2')}
+   if 'test_cylinder' in pair and not pair.issubset({'test_cylinder','raicom_table_table','R_hand_narrow3_Link','R_hand_wide3_Link'}) and float(contact['local_force_torque'][0])>.1:
+    raise RuntimeError('FORBIDDEN_NATIVE_BOTTLE_CONTACT:'+json.dumps(contact))
+  self.arm.update(values);self.native_row=row;self.native_receipt_ns=stamp;self.native_generation=row['generation'];self.native_sim_time=row['sim_time_s']
  def arm_fresh(self,max_age=.20):
+  if USE_NATIVE_FEEDBACK:return self.native_receipt_ns is not None and 0.<=(time.monotonic_ns()-self.native_receipt_ns)*1e-9<=max_age and all(n in self.arm for n in CONTROL)
   now=time.monotonic()
   return all(name in self.arm_receipt and now-self.arm_receipt[name]<=max_age for name in CONTROL)
  def on_hand(self,m):
@@ -857,8 +886,9 @@ class Plan(Node):
   while rclpy.ok() and time.monotonic()<end:
    if self.tilt and max(self.tilt)>math.radians(15):raise RuntimeError('PREGRASP_TILT_LIMIT')
    if len(self.odom)>1 and math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])>.05:raise RuntimeError('PREGRASP_BASE_DRIFT_LIMIT:'+json.dumps({'stage':stage,'start_xy':self.odom[0],'current_xy':self.odom[-1],'measured_drift_m':math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])}))
+   self.refresh_native()
    if not self.arm_fresh():raise RuntimeError('STALE_BILATERAL_ARM_FEEDBACK_DURING:'+stage)
-   bias=self.native_bias()
+   bias=({name:float(self.native_row['joints'][name]['bias_force']) for name in RIGHT} if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK else self.native_bias())
    if USE_NATIVE_BIAS and any(name not in bias for name in RIGHT):raise RuntimeError('INCOMPLETE_NATIVE_BIAS_SAMPLE')
    m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hal_bilateral_pregrasp';m.header.sequence=self.seq;self.seq+=1
    for name in LEFT+RIGHT:
@@ -879,7 +909,7 @@ class Plan(Node):
    if self.last_trace_at is None or time.monotonic()-self.last_trace_at>=.05:
     err=max(abs(float(self.arm.get(name,float('nan')))-target[name]) for name in LEFT+RIGHT) if all(name in self.arm for name in LEFT+RIGHT) else float('inf')
     self.last_trace_at=time.monotonic()
-    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'arm_fresh':self.arm_fresh(),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'arm_regression_discard_count':self.arm_regressions,'published_target_rad':dict(target),'max_arm_error_rad':err,'waist':{n:self.arm.get(n) for n in WAIST},'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
+    self.trace.append({'time_s':self.last_trace_at-self.run_started,'stage_elapsed_s':self.last_trace_at-start,'host_monotonic_s':self.last_trace_at,'stage':stage,'arm_fresh':self.arm_fresh(),'feedback_source':'NATIVE_MJDATA' if USE_NATIVE_FEEDBACK else 'ROS_ARM_STATE','native_feedback_host_ns':self.native_receipt_ns,'ros_arm_state_rad':dict(self.ros_arm),'arm_source_stamp_ns':dict(self.arm_stamp),'arm_unique_receipt_s':dict(self.arm_receipt),'arm_callback_count':self.arm_callbacks,'arm_regression_discard_count':self.arm_regressions,'published_target_rad':dict(target),'max_arm_error_rad':err,'waist':{n:self.arm.get(n) for n in WAIST},'right':{n:self.arm.get(n) for n in RIGHT},'left':{n:self.arm.get(n) for n in LEFT}})
    # Drain feedback during the remainder of the 50Hz period. Sleeping here
    # starved callbacks from 1000Hz arm + 500Hz IMU/odom subscriptions.
    next_tick+=.02
@@ -887,6 +917,7 @@ class Plan(Node):
 rclpy.init();n=Plan()
 try:
  n.spin(2.0)
+ n.refresh_native()
  if not n.arm_fresh():raise RuntimeError('STALE_OR_MISSING_BILATERAL_ARM_STATE')
  if WAIST and n.waist_pub.get_subscription_count()!=1:raise RuntimeError('WAIST_SUBSCRIBER_NOT_UNIQUE')
  if any(name not in n.arm and name not in INITIAL_FALLBACK for name in LEFT+RIGHT):raise RuntimeError('missing complete arm state and dock-state fallback')
@@ -901,10 +932,15 @@ try:
   # the arm approach with closed fingers can lodge a pad against the object
   # before the root position actuator has clearance to move.
   n.send(start,2.0,'HAND_OPEN_PREGRASP',HAND_OPEN)
+  n.refresh_native()
+  if USE_NATIVE_FEEDBACK:
+   actual_open=float(n.native_row['joints']['R_claw_joint']['q'])
+   print(json.dumps({'native_hand_open':{'command':HAND_OPEN,'expected_joint_rad':-HAND_OPEN,'actual_joint_rad':actual_open,'error_rad':abs(actual_open+HAND_OPEN)}}),flush=True)
+   if abs(actual_open+HAND_OPEN)>.03:raise RuntimeError('HAND_OPEN_NOT_REACHED; approach and closure NOT_RUN')
  steps=max(1,int(DURATION/.02))
  for i in range(steps):
   u=(i+1)/steps;u=3*u*u-2*u*u*u;n.send({name:start[name]+u*(goal[name]-start[name]) for name in CONTROL},.02,'APPROACH',HAND_OPEN)
- n.send(goal,HOLD,'PREGRASP_HOLD',HAND_OPEN);reached={n_:float(n.arm[n_]) for n_ in CONTROL}
+ n.send(goal,HOLD,'PREGRASP_HOLD',HAND_OPEN);n.refresh_native();reached={n_:float(n.arm[n_]) for n_ in CONTROL}
  preclose_error=max(abs(reached[name]-goal[name]) for name in LEFT+RIGHT)
  preclose_waist_error=max((abs(reached[name]-goal[name]) for name in WAIST),default=0.)
  arrival=native_circle_arrival(CIRCLE_CONTRACT)
@@ -951,7 +987,7 @@ try:
 finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
-""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
+""".replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
 
 
 def build_hal_bilateral_upperbody_plan_script(
