@@ -12,6 +12,54 @@ from scripts.agent import path_governance as pg
 JOINTS=('R_claw_joint','R_hand_wide1_joint','R_hand_narrow3_joint','R_hand_narrow_loop_joint','R_hand_wide3_joint','R_hand_wide_loop_joint')
 ROOT=Path('/home/lzy18001500226/projects/RobotSim')
 def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def reuse_source_pad_proxy(parent):
+    """Reuse existing hash-locked source-STL CoACD parts, two pad bodies only.
+
+    This is the previously requested, separate source-derived collision
+    comparison. It never regenerates meshes or promotes the variant. Physical
+    mass/joint/actuator/equality arrays and every visual/exclusion are checked.
+    """
+    parent=Path(parent);record=json.loads(parent.read_text());original_record=copy.deepcopy(record)
+    manifest=ROOT/'simulation/mujoco/models/agibot_x2/omnipicker_sim_functional_v0_1/collision_proxy_manifest.json'
+    if digest(manifest)!='7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a':raise ValueError('locked source proxy manifest differs')
+    spec=json.loads(manifest.read_text());parts_root=ROOT/'reviews/issue-46/omnipicker-collision-decomp-20261020T061939Z/collision_parts'
+    selected={Path(x['source_mesh']).stem:x for x in spec['mesh_decompositions'] if Path(x['source_mesh']).stem in ('narrow3_Link','wide3_Link')}
+    if len(selected)!=2 or spec['source_repo_commit']!='575cc6b988f976c23550e0db85aa1e5475d3652d':raise ValueError('proxy source pin mismatch')
+    files=[]
+    for item in selected.values():
+        source=ROOT/'reference/AgibotTech/agibot_x2_urdf'/item['source_mesh']
+        if digest(source)!=item['source_sha256']:raise ValueError('original source STL differs')
+        for part in item['parts']:
+            path=parts_root/part['filename']
+            if digest(path)!=part['sha256']:raise ValueError('source proxy part bytes differ:'+str(path))
+            files.append({'path':str(path),'sha256':part['sha256']})
+    out=pg.create_unique_output_directory(ROOT/'reviews/issue-46',prefix='native-source-pad-coacd-comparison').native_path
+    def fingerprint(root):
+        return (sorted((x.get('name') or '',tuple(sorted(x.attrib.items()))) for x in root.findall('.//geom') if x.get('contype')=='0' and x.get('conaffinity')=='0'),ET.tostring(root.find('contact')))
+    for label in ('host_scene','runtime_scene'):
+        source=Path(record['generated'][label]['path']);root=ET.fromstring(source.read_bytes());before=fingerprint(root);asset=root.find('asset')
+        for stem,item in selected.items():
+            body_name='R_hand_'+stem;body=root.find('.//body[@name="'+body_name+'"]')
+            geom=body.find('./geom[@name="'+body_name+'__collision_0"]') if body is not None else None
+            if geom is None:raise ValueError('raw source pad collider not unique:'+body_name)
+            index=list(body).index(geom);body.remove(geom)
+            for number,part in enumerate(item['parts']):
+                mesh_name='source_pad_coacd_'+part['name'];path=parts_root/part['filename']
+                if label=='runtime_scene':path=Path('/workspace/robotsim')/path.relative_to(ROOT)
+                ET.SubElement(asset,'mesh',name=mesh_name,file=str(path))
+                replacement=copy.deepcopy(geom);replacement.set('name',body_name+'__collision_coacd_'+str(number));replacement.set('mesh',mesh_name);body.insert(index+number,replacement)
+        if fingerprint(root)!=before:raise ValueError('source proxy comparison changed visual geometry or exclusions')
+        destination=out/source.name;pg.write_new_bytes(destination,ET.tostring(root,encoding='utf-8',xml_declaration=True));record['generated'][label]={'path':str(destination),'sha256':digest(destination)}
+    original=mujoco.MjModel.from_xml_path(original_record['generated']['host_scene']['path']);derived=mujoco.MjModel.from_xml_path(record['generated']['host_scene']['path'])
+    physical=('body_parentid','body_pos','body_quat','body_ipos','body_iquat','body_mass','body_inertia','body_gravcomp','body_jntadr','body_jntnum','jnt_type','jnt_qposadr','jnt_dofadr','jnt_bodyid','jnt_limited','jnt_range','jnt_pos','jnt_axis','jnt_stiffness','dof_bodyid','dof_jntid','dof_parentid','dof_Madr','dof_solref','dof_solimp','dof_frictionloss','dof_armature','dof_damping','eq_type','eq_obj1id','eq_obj2id','eq_data','eq_solref','eq_solimp','eq_active0','actuator_trntype','actuator_trnid','actuator_gear','actuator_ctrlrange','actuator_forcerange','actuator_gainprm','actuator_biasprm','actuator_dynprm','qpos0')
+    for field in physical:
+        if not np.array_equal(getattr(original,field),getattr(derived,field),equal_nan=True):raise ValueError('proxy comparison changed physical array:'+field)
+    cfg=yaml.safe_load(Path(original_record['generated']['simulator_config']['path']).read_text());cfg['MujocoSimModule']['simulation_model']='/workspace/evidence/'+Path(record['generated']['runtime_scene']['path']).name
+    destination=out/'simulator_stl_native_hand_table_control.yaml';pg.write_new_text(destination,yaml.safe_dump(cfg,sort_keys=False));record['generated']['simulator_config']={'path':str(destination),'sha256':digest(destination)}
+    record['source_pad_collision_comparison']={'classification':'SIMULATION_ONLY_SOURCE_STL_COACD_COMPARISON_NOT_VENDOR_COLLISION','manifest':str(manifest),'manifest_sha256':digest(manifest),'parent':str(parent),'parent_sha256':digest(parent),'scope':['R_hand_narrow3_Link','R_hand_wide3_Link'],'part_count':len(files),'locked_parts':files,'physical_arrays_unchanged':list(physical),'visuals_and_contact_exclusions_unchanged':True,'original_condim_friction_and_force_caps_unchanged':True,'historical_trials_are_not_current_grasp_acceptance':True}
+    pg.write_new_text(out/'result.json',json.dumps(record,indent=2)+'\n');pg.write_artifact_manifest(out);return out/'result.json'
 def change_friction(xml, *, both_hands=False, right_damping=None, noslip_iterations=0, elliptic_grip_solver=False):
     root=ET.fromstring(xml)
     names=JOINTS+tuple("L_"+n[2:] for n in JOINTS) if both_hands else JOINTS

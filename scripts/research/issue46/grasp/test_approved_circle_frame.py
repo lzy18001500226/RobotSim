@@ -61,7 +61,7 @@ class FrameTests(unittest.TestCase):
         row={'generation':1,'bodies':{'test_cylinder':{'position_m':[0.,0.,.73],'rotation':np.eye(3).reshape(-1).tolist()}}}
         phase={'phase':'LIFTING','native_arrival_pass':True,'generation':1,'target_world_m':[0.,0.,.8],'bottle_center_world_m':[0.,0.,.7],'bottle_axis_world':[0.,0.,1.],'lift_offset_m':.03,'bilateral_contact_pass':True}
         row['bodies']['R_omnipicker_base_link']={'position_m':[0.,0.,.03],'rotation':np.eye(3).reshape(-1).tolist()}
-        phase['initial_object_in_hand_m']=[0.,0.,.7]
+        phase['initial_object_in_hand_m']=[0.,0.,.8];phase['slip_reference']='GRASP_SECTION'
         target,axis=self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
         np.testing.assert_allclose(target,[0.,0.,.83])
         phase['bilateral_contact_pass']=False
@@ -70,6 +70,15 @@ class FrameTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'UNBOUNDED'):self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
         phase['lift_offset_m']=.03;row['bodies']['test_cylinder']['position_m'][2]=.7
         with self.assertRaisesRegex(RuntimeError,'NOT_FOLLOWING'):self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
+
+    def test_rotation_about_grasp_section_is_not_com_slip_but_tilt_remains_guarded(self):
+        phase={'phase':'LIFTING','native_arrival_pass':True,'generation':1,'target_world_m':[0.,0.,.8],'bottle_center_world_m':[0.,0.,.7],'bottle_axis_world':[0.,0.,1.],'lift_offset_m':.03,'bilateral_contact_pass':True,'initial_object_in_hand_m':[0.,0.,.8],'slip_reference':'GRASP_SECTION'}
+        for theta in (.06,.11):
+            c=np.cos(theta);s=np.sin(theta);R=np.array([[c,0.,s],[0.,1.,0.],[-s,0.,c]])
+            row={'generation':1,'bodies':{'test_cylinder':{'position_m':(np.array([0.,0.,.83])-.1*R[:,2]).tolist(),'rotation':R.reshape(-1).tolist()},'R_omnipicker_base_link':{'position_m':[0.,0.,.03],'rotation':np.eye(3).reshape(-1).tolist()}}}
+            if theta<.1:self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
+            else:
+                with self.assertRaisesRegex(RuntimeError,'TILTED'):self.ns['tracking_task'](row,{'grasp_height_above_center_m':.1},phase)
 
 
 

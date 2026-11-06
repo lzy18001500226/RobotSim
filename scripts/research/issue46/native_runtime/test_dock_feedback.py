@@ -58,5 +58,25 @@ class DockFeedbackTests(unittest.TestCase):
         self.assertIn('FINAL_ODOMETRY_FRESHNESS',self.code);self.assertIn('n.spin(.019)',self.code)
         self.assertNotIn('time.sleep(.019)',self.code)
 
+    def test_measured_stop_predictor_uses_velocity_and_stops_at_crossing(self):
+        tree=ast.parse(self.code);fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='measured_stop_prediction')
+        ns={'math':math};exec(compile(ast.Module(body=[fn],type_ignores=[]),'stop','exec'),ns);predict=ns[fn.name]
+        history=[(i*.02,.50+.5*i*.02,0.) for i in range(18)]
+        result=predict(history,(.85,0.),(0.,0.),.43)
+        self.assertTrue(result['stop']);self.assertAlmostEqual(result['measured_velocity_wall_m_s'][0],.5)
+        self.assertIsNone(predict(history[:2],(.85,0.),(0.,0.),.43))
+        crossed=[(t,x+.30,.08) for t,x,y in history]
+        self.assertTrue(predict(crossed,(.85,0.),(0.,0.),.43)['crossed'])
+
+    def test_postdock_observer_has_no_action_or_velocity_command_path(self):
+        from scripts.research.issue46.native_runtime.stl_hand_startup import build_stand_client_script
+        code=build_stand_client_script(observe_only=True);compile(code,'readonly','exec')
+        self.assertNotIn('node.create_client(SetMcAction',code)
+        self.assertNotIn('SetMcAction.Request()',code)
+        self.assertNotIn('create_publisher',code)
+        self.assertIn('node.create_client(GetMcAction',code)
+        self.assertIn('READ_ONLY_NO_ACTION_REQUEST',code)
+        self.assertIn('time.monotonic() + 2.5',code)
+
 
 if __name__=='__main__':unittest.main()

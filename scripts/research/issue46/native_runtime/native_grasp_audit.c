@@ -23,6 +23,7 @@ static FILE* sink;
 static char latest_path[4096], latest_tmp[4104];
 static int count, generation;
 static double previous = -1, next_time = -1;
+static long long last_step_end_ns,max_call_gap_ns,max_step_duration_ns,last_io_ns,max_io_ns;
 
 static long long mono_ns(void) {
   struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
@@ -68,7 +69,12 @@ static void body(const mjModel* m,const mjData* d,const char* name) {
 }
 void mj_step(const mjModel* m,mjData* d) {
   pthread_once(&once,init);
+  long long begin=mono_ns();
+  if(last_step_end_ns && begin-last_step_end_ns>max_call_gap_ns)max_call_gap_ns=begin-last_step_end_ns;
   step_real(m,d);
+  long long physics_end=mono_ns();
+  if(physics_end-begin>max_step_duration_ns)max_step_duration_ns=physics_end-begin;
+  last_step_end_ns=physics_end;
   if (!sink || count>=12000) return;
   if (d->time<previous) {generation++;next_time=-1;}
   previous=d->time;
@@ -126,12 +132,16 @@ void mj_step(const mjModel* m,mjData* d) {
     if(b1==bottle || b2==bottle) for(int k=0;k<3;k++) support+=(b2==bottle?1:-1)*c->frame[k*3+2]*f[k];
     fprintf(sink,",\"signed_bottle_world_z_force_n\":%.17g}",support);
   }
-  fprintf(sink,"],\"observer_work_ns\":%lld}\n",mono_ns()-started);
+  fprintf(sink,"],\"observer_work_ns\":%lld,\"timing\":{\"max_between_step_calls_ns\":%lld,\"max_physics_step_ns\":%lld,\"previous_observer_io_ns\":%lld,\"max_observer_io_ns\":%lld}}\n",mono_ns()-started,max_call_gap_ns,max_step_duration_ns,last_io_ns,max_io_ns);
+  max_call_gap_ns=0;max_step_duration_ns=0;
   fclose(sink);sink=logfile;
+  long long io_started=mono_ns();
   fwrite(buffer,1,length,sink);fflush(sink);
   if(*latest_path){
     FILE* latest=fopen(latest_tmp,"w");
     if(latest){fwrite(buffer,1,length,latest);fclose(latest);rename(latest_tmp,latest_path);}
   }
   free(buffer);
+  last_io_ns=mono_ns()-io_started;if(last_io_ns>max_io_ns)max_io_ns=last_io_ns;
+  last_step_end_ns=mono_ns();
 }

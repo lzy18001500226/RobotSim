@@ -410,7 +410,80 @@ Fixed-stance reproduction (no walking claim):
 wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec bash scripts/research/issue46/grasp/run_truth_circle_review.sh --initial-hands-fully-open --both-claws-zero-internal-friction --right-claw-damping 1.27 --noslip-solver-diagnostic --fixed-reviewed-checkpoint /home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T130347Z --grasp-height-above-center-m 0.10 --physical-lift-test
 ```
 
-This remains a bounded diagnostic until measured lift and independent repetition
-pass. Full start-to-table execution and fresh RGB-D substitution are separate
+That Noslip-only configuration failed and is not the working reproduction.
+Full start-to-table execution and fresh RGB-D substitution are separate
 acceptance gates. All tooling remains research-only; no production promotion
 or model merge is authorized by these experiments.
+
+## First measured full-flow lift (2026-11-07)
+
+The source-preserving whole-mesh collision baseline failed. At the same approved
+40% circle pose (radius 35.07825mm), its convexified narrow/wide distal meshes
+intrude 2.38859/2.38696mm into the circle. Source/native mesh vertices agree to
+3.4e-16m. See `native-contact-envelope-audit-20261106T194437Z/result.json` and
+its `source_vs_convex.png`, plus `native-pad-collision-mesh-parity-20261106T194717Z`.
+This is an envelope diagnosis, not an excuse to suppress collision contacts.
+
+The separately named `--source-pad-coacd-comparison` reuses exactly 12 narrow3
+and 10 wide3 parts from the existing locked `collision_proxy_manifest.json`
+(SHA256 `7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a`).
+Every original STL and part hash is verified. Only those two collision geoms
+are replaced in a generated variant. Visuals, joints, inertias, force limits,
+contact friction/condim, exclusions, table and object are unchanged. The old
+CoACD approximation has a 3mm metric target and part-count cap; it is not exact
+vendor geometry. Measured circle intrusion falls to 0.50940/0.56011mm.
+
+| Actual native 3.3.7 run | Fixed-stance 203002Z | Full START-to-table 210324Z |
+| --- | ---: | ---: |
+| Reset / standing / approach / closure | PASS | PASS |
+| Walk / final dock error | NOT RUN | PASS / 0.010602m |
+| Minimum bottle rise in accepted hold | 0.058488m | 0.055597m |
+| Native hold samples / span | 51 / 1.000s | 51 / 1.000s |
+| Minimum narrow / wide normal force | 1.67154 / 1.65129N | 1.75457 / 1.73661N |
+| Mean upward pad force / object weight | 1.96162 / 1.962N | 1.96182 / 1.962N |
+| Table / other support | zero | zero |
+| Container positively absent after teardown | YES | YES |
+
+Both outputs are under canonical `reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T...`.
+The 0.2kg free bottle has no actuator, weld, attachment, support trick or active
+object-pose write. Force-guided closure remains within the original +/-2Nm
+actuator cap. The right claw uses kp=2 unchanged, kv=1.27; both claws use zero
+internal joint friction. The passing solver selects elliptic cone/impratio=10,
+Noslip=0. These are explicit simulation assumptions, not a vendor baseline PASS.
+
+All 51 accepted full-flow frames were independently mapped back to original
+source triangles in `native-lift-pad-region-audit-20261106T211301Z/result.json`:
+two contacts per frame, both within the human-approved lower concave arcs,
+off-region force zero, maximum contact-to-source-surface distance 0.38714mm.
+This does not establish four-point contact or indefinite carrying stability.
+
+The intervening fixed-stance confirmation 203535Z stopped before closure after
+a >0.20s native-observer freshness gap. No failed freshness gate was relaxed.
+The successful full-flow run retained native wall/step/I/O timing measurements.
+
+Independent full-flow repeat `20261106T212727Z` passed every executed gate:
+51 terminal samples over 1.000s, minimum rise 57.09596mm, minimum pad normals
+1.67934/1.65946N, mean upward force 1.96142N, table force zero, final position
+range 2.348/1.774/2.365mm and positively confirmed container removal. This
+qualifies repeatability for this explicit truth/proxy profile, not other
+stances, bottle heights, fresh perception or hardware.
+
+Reproduce the actual full flow (Linux arguments are passed directly by WSL,
+avoiding nested PowerShell/Bash command substitution):
+
+```powershell
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 MUJOCO_GL=glfw bash scripts/research/issue46/grasp/run_truth_circle_review.sh --source-pad-coacd-comparison --initial-hands-fully-open --both-claws-zero-internal-friction --right-claw-damping 1.27 --elliptic-grip-solver-diagnostic --dock-world-xy 0.85 -1.49 --dock-braking-delay-s 0.4130254699850907 --grasp-height-above-center-m 0.10 --physical-lift-test --pause-for-human-review
+```
+
+The optional review flag pauses native physics only after the lift result has
+been measured, leaving camera/window controls interactive for up to 15 minutes.
+Review time cannot count toward the hold. Ctrl+C triggers container cleanup.
+Recorded full-flow review needs no new Docker/ROS/physics:
+
+```powershell
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 MUJOCO_GL=glfw bash scripts/research/issue46/grasp/run_truth_circle_review.sh --review-captured-run /home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T210324Z --review-full-flow
+```
+
+Replay stops at the qualified controlled terminal frame; key 4 separately shows
+the preserved post-control cleanup tail. Renderer 3.3.6/native 3.3.7 body pose
+parity is 0.00188mm. Replay is labelled NO PHYSICS and is not a new validation.

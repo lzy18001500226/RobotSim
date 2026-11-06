@@ -38,8 +38,8 @@ This does not authorize mechanical redesign, hardware or success overrides.
    mapped LiDAR estimator, retain local RGB-D grasp feedback, and verify the
    complete reproducible chain. Delivery/manipulation after lifting is out of scope.
 
-Keep each stage's physical result separate. No stage is currently qualified by
-this plan. Preserve existing geometry and force/posture/stop constraints; use
+Keep each stage's physical result separate. A plan does not qualify a stage.
+Preserve existing geometry and force/posture/stop constraints; use
 the scoped parameter authorization below for ordinary gripper diagnostics.
 
 Current Stage 2 scope is fixed table stance -> approved lower concave-pad
@@ -49,10 +49,17 @@ fresh RGB-D substitution remains separately required for perception acceptance.
 Stage 3 adds perception-driven base repositioning; do not expand into it before
 the fixed-stance grasp is qualified.
 
-Observed local standing/docking and static IK passes do not close the grasp
-stage. Actual full opening and a 4.245mm native arrival were subsequently
-observed and the attained posture was visually accepted. Stable bilateral
-grasp and lift remain unqualified. See the [measured findings](../research/issue46_truth_grasp_execution_findings.md)
+Stage 1 now has one measured full START-to-table-to-lift PASS (native run
+`20261106T210324Z`): final dock error 10.6mm, minimum bottle rise 55.60mm over
+51 samples spanning 1.000s, zero table support, and bilateral lower-concave-pad
+contact. An independent fixed-stance run also passed (58.49mm minimum rise).
+This uses the explicitly selected **SIMULATION_ONLY source-derived CoACD pad
+comparison**, zero internal joint friction, right-claw kv=1.27, and elliptic
+cone/impratio=10. It does not qualify the untouched whole-mesh collision
+baseline, manufacturer-default physics, perception, or the subsequent stages.
+Independent full-flow repetition `20261106T212727Z` also passed (57.10mm minimum
+rise, 51 unique samples over 1.000s, no table support, cleanup confirmed).
+See the [measured findings](../research/issue46_truth_grasp_execution_findings.md)
 for exact trace identities; do not promote a prior model's PASS to this setup.
 
 Use the [scoped parameter authorization](../engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging)
@@ -70,8 +77,9 @@ RESET -> STAND -> NAVIGATE_TO_INTERACTION -> RECEIVE_REQUEST
 ```
 
 This is the intended end-to-end lifecycle, not a statement that all stages run
-successfully today. The current grasp implementation has no qualified lift
-executor or delivery result. Every transition is fail-closed. A failed localization, stale frame transform,
+successfully today. The research lift executor has the narrowly qualified
+simulation result above; delivery remains unimplemented/unqualified. Every
+transition is fail-closed. A failed localization, stale frame transform,
 unreachable grasp, unsupported object, contact failure, or stability failure
 returns a reasoned failure state rather than moving to the next stage.
 

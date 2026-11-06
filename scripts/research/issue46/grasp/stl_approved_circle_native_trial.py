@@ -26,6 +26,7 @@ def main():
     p.add_argument("--fixed-reviewed-checkpoint",type=Path,help="initialize native episode with reviewed ungrasped keyframe; no walking claimed")
     p.add_argument("--review-captured-run",type=Path)
     p.add_argument("--review-dry-run",action="store_true")
+    p.add_argument("--review-full-flow",action="store_true",help="play captured post-Reset physics from START, stopping at the qualified controlled terminal frame")
     p.add_argument("--execute-simulation",action="store_true")
     p.add_argument("--startup-opening-diagnostic",action="store_true")
     p.add_argument("--both-claws-zero-internal-friction",action="store_true")
@@ -34,6 +35,7 @@ def main():
     p.add_argument("--noslip-solver-diagnostic",action="store_true",help="separate SIMULATION_ONLY two-iteration numerical postsolver; no contact-material/geometry changes")
     p.add_argument("--elliptic-grip-solver-diagnostic",action="store_true",help="Menagerie-style numerical elliptic cone/impratio=10, unchanged actual friction/condim/geometry")
     p.add_argument("--physical-lift-test",action="store_true")
+    p.add_argument("--source-pad-coacd-comparison",action="store_true",help="reuse the existing hash-locked source-STL proxy pieces for only the two right distal pads; separate SIMULATION_ONLY physics")
     p.add_argument("--open-hand-transit-park",action="store_true")
     p.add_argument("--initial-hands-fully-open",action="store_true")
     p.add_argument("--pause-for-human-review",action="store_true")
@@ -41,18 +43,22 @@ def main():
     p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay"),default="truth-diagnostic",help="truth baseline or explicitly historical RGB-D replay; not fresh camera capture")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--grasp-axis-tilt-rad",type=float,default=0.)
+    p.add_argument("--grasp-axis-calibration",type=Path)
+    p.add_argument("--use-measured-load-frame",action="store_true")
     p.add_argument("--coordinated-waist-pitch-offset-rad",type=float,default=0.)
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.85,-1.44))
     p.add_argument("--dock-position-tolerance-m",type=float,default=.10)
+    p.add_argument("--dock-braking-delay-s",type=float)
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
     args=p.parse_args()
     if args.review_captured_run:
         from scripts.research.issue46.native_runtime.native_grasp_audit import review_native_capture
-        review_native_capture(args.review_captured_run,dry_run=args.review_dry_run)
+        review_native_capture(args.review_captured_run,dry_run=args.review_dry_run,full_flow=args.review_full_flow)
         return
     if not args.execute_simulation:raise ValueError("explicit simulation execution flag required")
+    if args.use_measured_load_frame and (args.grasp_axis_calibration is None or not args.elliptic_grip_solver_diagnostic):raise ValueError('measured load frame requires its evidence and matched numerical profile')
     baseline=json.loads((args.baseline/"result.json").read_text())
     if not args.native_physics_audit:
         raise ValueError("approved-circle execution requires --native-physics-audit")
@@ -89,6 +95,8 @@ def main():
             if args.physical_lift_test:command.append('--physical-lift-test')
             command[command.index("--grasp-height-above-center-m")+1]=str(args.grasp_height_above_center_m)
             command.extend(['--grasp-axis-tilt-rad',str(args.grasp_axis_tilt_rad)])
+            if args.grasp_axis_calibration:command.extend(['--grasp-axis-calibration',str(args.grasp_axis_calibration)])
+            if args.use_measured_load_frame:command.append('--use-measured-load-frame')
             if args.coordinated_waist_pitch_offset_rad:
                 command.extend(["--waist-pitch-offset-rad",str(args.coordinated_waist_pitch_offset_rad)])
             kwargs["timeout_s"]=45.
@@ -119,6 +127,9 @@ def main():
     native.run=run
     table=Path(baseline["table_overlay"]["path"])
     claw=Path(baseline["claw_control_overlay"]["path"])
+    if args.source_pad_coacd_comparison:
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import reuse_source_pad_proxy
+        claw=reuse_source_pad_proxy(claw)
     if args.right_claw_zero_internal_friction and args.both_claws_zero_internal_friction:raise ValueError("select only one friction scope")
     if args.right_claw_zero_internal_friction or args.both_claws_zero_internal_friction:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import build
@@ -127,6 +138,14 @@ def main():
     if args.fixed_reviewed_checkpoint:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import add_reviewed_checkpoint
         claw=add_reviewed_checkpoint(claw,args.fixed_reviewed_checkpoint)
+    if args.source_pad_coacd_comparison:
+        # The static collider must match the actual selected runtime variant;
+        # retain the original candidate and source scene as immutable inputs.
+        original_candidate=args.candidate;candidate=json.loads(original_candidate.read_text())
+        candidate['scene']=dict(json.loads(claw.read_text())['generated']['host_scene'])
+        candidate['source_pad_collision_comparison']={'source_candidate':str(original_candidate),'source_candidate_sha256':native.sha256(original_candidate),'overlay':str(claw),'overlay_sha256':native.sha256(claw),'classification':'SIMULATION_ONLY_SOURCE_DERIVED_COLLISION_COMPARISON'}
+        candidate_dir=pg.create_unique_output_directory(Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-46'),prefix='source-pad-coacd-ik-input').native_path
+        pg.write_new_text(candidate_dir/'candidate.json',json.dumps(candidate,indent=2)+'\n');pg.write_artifact_manifest(candidate_dir);args.candidate=candidate_dir/'candidate.json'
     helper=REPO/"scripts/research/issue46/native_runtime/native_mujoco_reset.py"
     display=__import__("os").environ.get("DISPLAY")
     if not display:raise RuntimeError("DISPLAY is unset; run this command from the WSLg terminal")
@@ -137,6 +156,9 @@ def main():
         argv.append('--physical-lift-test')
         argv[argv.index('--hal-hand-close-hold-s')+1]='5'
     argv.extend(["--dock-position-tolerance-m",str(args.dock_position_tolerance_m)])
+    if args.dock_braking_delay_s is not None:
+        if not .0<args.dock_braking_delay_s<=1. or args.target_source!='truth-diagnostic':raise ValueError('measured braking profile requires bounded delay and native feedback')
+        argv.extend(['--dock-braking-delay-s',str(args.dock_braking_delay_s)])
     argv.extend(["--arm-plan-duration-s",str(args.arm_plan_duration_s),"--arm-plan-hold-s",str(args.arm_plan_hold_s)])
     if args.target_source=="truth-diagnostic":argv.extend(["--native-dock-truth-feedback","--native-circle-tracking"])
     if args.startup_opening_diagnostic:argv.append("--startup-opening-diagnostic")

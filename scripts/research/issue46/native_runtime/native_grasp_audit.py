@@ -9,6 +9,61 @@ import subprocess
 def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def load_axis_hypothesis(captures):
+    """Task-frame calibration from momentary real load, never a grasp PASS."""
+    import math
+    import numpy as np
+    from scripts.agent import path_governance as pg
+    observations=[]
+    for capture in map(Path,captures):
+        source=capture/'native_tracking_target.failure-input.json';row=json.loads(source.read_text())
+        hand=row['bodies']['R_omnipicker_base_link'];bottle=row['bodies']['test_cylinder']
+        forces={n:0. for n in ('R_hand_narrow3_Link','R_hand_wide3_Link')};table=0.;vertical=0.
+        for c in row['contacts']:
+            pair={c['body1'],c['body2']}
+            if 'test_cylinder' not in pair:continue
+            if 'raicom_table_table' in pair:table+=max(0.,c['local_force_torque'][0])
+            for n in forces:
+                if n in pair:forces[n]+=max(0.,c['local_force_torque'][0]);vertical+=c['signed_bottle_world_z_force_n']
+        if table>.1 or min(forces.values())<.1 or vertical<.8*bottle['mass_kg']*9.81:raise ValueError('axis hypothesis needs actual unsupported bilateral load')
+        axis=np.asarray(hand['rotation']).reshape(3,3).T@np.asarray(bottle['rotation']).reshape(3,3)[:,2]
+        plan_ref=json.loads((capture/'result.json').read_text())['hal_arm_runtime_replan']
+        plan_path=Path(plan_ref['path'])
+        if digest(plan_path)!=plan_ref['sha256']:raise ValueError('axis calibration plan source hash mismatch')
+        plan=json.loads(plan_path.read_text());height=float(plan['grasp_height_above_center_m'])
+        centre=np.asarray(hand['rotation']).reshape(3,3).T@(np.asarray(bottle['position_m'])+height*np.asarray(bottle['rotation']).reshape(3,3)[:,2]-np.asarray(hand['position_m']))
+        angle=math.atan2(axis[2],axis[0])
+        if axis[0]<0 or abs(axis[1])>.02 or not 0.<angle<.18:raise ValueError('load axis is outside bounded local pitch hypothesis')
+        observations.append({'capture':str(capture),'source_sha256':digest(source),'native_sim_time_s':row['sim_time_s'],'local_axis':axis.tolist(),'tilt_rad':angle,'section_center_hand_m':centre.tolist(),'nominal_circle_center_m':plan['circle']['center_m'],'grasp_height_above_center_m':height,'pad_normal_n':forces,'pad_vertical_n':vertical,'table_force_n':table,'momentary_load_not_stable_hold':True})
+    if len(observations)<2 or max(o['tilt_rad'] for o in observations)-min(o['tilt_rad'] for o in observations)>.02:raise ValueError('independent load-axis observations disagree')
+    out=pg.create_unique_output_directory(Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-46'),prefix='measured-grasp-axis-hypothesis').native_path
+    result={'classification':'SIMULATION_ONLY_MEASURED_LOAD_AXIS_HYPOTHESIS_NOT_GRASP_PASS','tilt_rad':float(np.mean([o['tilt_rad'] for o in observations])),'observations':observations,'geometry_or_physical_parameter_changes':False,'purpose':'calibrate functional cylinder axis relative to mesh hand axis; verify in a new bounded physical trial'}
+    mean_axis=np.mean([o['local_axis'] for o in observations],axis=0);mean_axis/=np.linalg.norm(mean_axis)
+    mean_centre=np.mean([o['section_center_hand_m'] for o in observations],axis=0);nominal=np.asarray(observations[0]['nominal_circle_center_m'])
+    if np.linalg.norm(mean_centre-nominal)>.005 or max(np.linalg.norm(np.asarray(o['section_center_hand_m'])-mean_centre) for o in observations)>.002:raise ValueError('measured TCP shift is outside the original 5mm arrival envelope or independent agreement')
+    result.update({'local_bottle_axis_in_hand':mean_axis.tolist(),'section_center_hand_m':mean_centre.tolist(),'nominal_circle_center_m':nominal.tolist(),'tcp_shift_m':float(np.linalg.norm(mean_centre-nominal)),'nominal_arrival_tolerance_m':.005})
+    pg.write_new_text(out/'result.json',json.dumps(result,indent=2)+'\n');pg.write_artifact_manifest(out)
+    return out/'result.json'
+
+
+def keyframe_initialization_evidence(path, wanted, *, generation, after_ns):
+    """Verify the actual reset-generation boundary, not a later settled pose.
+
+    No state is written. Current freshness/upright standing is a separate gate;
+    accepting this event never asserts that later physical motion is safe.
+    """
+    import math
+    raw=Path(path).read_bytes()[-8*1048576:];matched=[]
+    for line in raw.splitlines():
+        try:row=json.loads(line)
+        except (ValueError,UnicodeDecodeError):continue
+        if row.get('generation')!=generation or row.get('engine_version')!=337 or not 0.<=row.get('sim_time_s',1.)<=.05 or row['host_monotonic_ns']<after_ns:continue
+        pose=row['bodies']['pelvis'];error=math.dist(pose['position_m'],wanted['position_m'])
+        dot=abs(sum(a*b for a,b in zip(pose['quaternion_wxyz'],wanted['quaternion_wxyz'])));angle=2*math.acos(max(-1.,min(1.,dot)))
+        matched.append({'pass':error<=.02 and angle<=.02,'position_error_m':error,'angle_error_rad':angle,'generation':generation,'source_host_ns':row['host_monotonic_ns'],'source_sim_time_s':row['sim_time_s'],'classification':'OBSERVED_NATIVE_KEYFRAME_GENERATION_BOUNDARY_NOT_STANDING_QUALIFICATION'})
+    return min(matched,key=lambda x:x['source_sim_time_s']) if matched else {'pass':False,'classification':'NO_QUALIFIED_RESET_BOUNDARY_SAMPLE'}
+
+
 def evaluate_unsupported_lift(rows, *, initial_bottle_z_m, hold_start_ns, hold_end_ns):
     """Independent measured lift gate; publishing/IK success is irrelevant.
 
@@ -175,7 +230,7 @@ def apply_recorded_native_frame(model, data, row):
     mujoco.mj_forward(model,data)
 
 
-def review_native_capture(run, *, dry_run=False):
+def review_native_capture(run, *, dry_run=False, full_flow=False):
     import math,time
     import mujoco
     import numpy as np
@@ -196,7 +251,10 @@ def review_native_capture(run, *, dry_run=False):
     close=[r['host_monotonic_s'] for r in trace if r['stage']=='HAND_CLOSE_HOLD']
     if not close:raise ValueError('capture has no executed close phase')
     close_ns=min(close)*1e9
-    stages=[min(range(len(rows)),key=lambda i:abs(rows[i]['host_monotonic_ns']-t)) for t in (close_ns-5e7,close_ns+5e8,rows[-1]['host_monotonic_ns'])]
+    lift=record.get('native_hal_bilateral_arm_pregrasp',{}).get('result',{}).get('lift_execution',{})
+    qualified=record.get('gates',{}).get('HAL_PHYSICAL_LIFT')=='PASS'
+    terminal_ns=lift.get('hold_end_ns',rows[-1]['host_monotonic_ns']) if qualified else rows[-1]['host_monotonic_ns']
+    stages=[min(range(len(rows)),key=lambda i:abs(rows[i]['host_monotonic_ns']-t)) for t in (close_ns-5e7,close_ns+5e8,terminal_ns,rows[-1]['host_monotonic_ns'])]
     pose_errors=[]
     for i in stages:
         apply_recorded_native_frame(model,data,rows[i])
@@ -204,13 +262,14 @@ def review_native_capture(run, *, dry_run=False):
             bid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,body)
             pose_errors.append(float(np.linalg.norm(data.xpos[bid]-np.asarray(rows[i]['bodies'][body]['position_m']))))
     if max(pose_errors)>.005:raise ValueError('recorded/rendered body pose mismatch exceeds 5mm')
-    summary={'classification':'RECORDED_NATIVE_PHYSICS_VISUAL_REVIEW_ONLY','mj_step_calls':0,'docker_or_ros_commands':0,'frames':len(rows),'max_recorded_render_pose_error_m':max(pose_errors),'stage_sim_times':[rows[i]['sim_time_s'] for i in stages],'source_engine_version':rows[-1]['engine_version'],'review_engine_version':mujoco.mj_version(),'scene_sha256':scene['sha256'],'controls':'1=arrival; 2=closing; 3=final; arrows=frame; space=recorded playback; mouse=rotate/pan/zoom','limitation':'Recorded actual poses; displayed forces are not recomputed physical evidence; no new rollout.'}
+    summary={'classification':'RECORDED_NATIVE_PHYSICS_VISUAL_REVIEW_ONLY','mj_step_calls':0,'docker_or_ros_commands':0,'frames':len(rows),'max_recorded_render_pose_error_m':max(pose_errors),'stage_sim_times':[rows[i]['sim_time_s'] for i in stages],'source_engine_version':rows[-1]['engine_version'],'review_engine_version':mujoco.mj_version(),'scene_sha256':scene['sha256'],'source_physical_lift_gate':record.get('gates',{}).get('HAL_PHYSICAL_LIFT'),'post_control_tail_frames':len(rows)-stages[2]-1 if qualified else 0,'controls':'0=start; 1=arrival; 2=closing; 3=controlled terminal; 4=post-control tail; arrows=frame; space=recorded playback; mouse=rotate/pan/zoom','limitation':'Recorded actual poses; displayed forces are not recomputed physical evidence; no new rollout. Cleanup tail remains accessible separately.'}
     print(json.dumps(summary,ensure_ascii=False,indent=2),flush=True)
     if dry_run:return summary
     from mujoco import viewer
-    state={'index':stages[0],'play':False}
+    state={'index':0 if full_flow else stages[0],'play':bool(full_flow),'limit':stages[2]}
     def key(code):
-        if code in (49,50,51):state['index']=stages[code-49];state['play']=False
+        if code==48:state['index']=0;state['play']=False;state['limit']=stages[2]
+        elif code in (49,50,51,52):state['index']=stages[code-49];state['play']=False;state['limit']=stages[2] if code!=52 else len(rows)-1
         elif code==262:state['index']=min(len(rows)-1,state['index']+1);state['play']=False
         elif code==263:state['index']=max(0,state['index']-1);state['play']=False
         elif code==32:state['play']=not state['play']
@@ -229,7 +288,9 @@ def review_native_capture(run, *, dry_run=False):
                     points=[]
                     for angle in (2*math.pi*j/64,2*math.pi*(j+1)/64):points.append(actual+R@np.array([0.,radius*math.cos(angle),radius*math.sin(angle)]))
                     geom=window.user_scn.geoms[window.user_scn.ngeom];mujoco.mjv_initGeom(geom,mujoco.mjtGeom.mjGEOM_CAPSULE,np.zeros(3),np.zeros(3),np.eye(3).reshape(-1),np.array([1.,.8,0.,1.],dtype=np.float32));mujoco.mjv_connector(geom,mujoco.mjtGeom.mjGEOM_CAPSULE,.0006,points[0],points[1]);window.user_scn.ngeom+=1
-            window.set_texts([(None,mujoco.mjtGridPos.mjGRID_TOPLEFT,'RECORDED REVIEW / NO PHYSICS','1 arrival | 2 closing | 3 final | arrows frames | space replay'),(None,mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,'YELLOW circle / MAGENTA bottle section',f"sim={row['sim_time_s']:.3f}s  centre_error={np.linalg.norm(actual-target)*1000:.2f}mm")])
+            window.set_texts([(None,mujoco.mjtGridPos.mjGRID_TOPLEFT,'RECORDED REVIEW / NO PHYSICS','0 START | 1 arrival | 2 closing | 3 terminal | 4 cleanup tail | SPACE replay'),(None,mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,'YELLOW nominal circle / MAGENTA bottle section',f"sim={row['sim_time_s']:.3f}s  centre_error={np.linalg.norm(actual-target)*1000:.2f}mm  source_lift={summary['source_physical_lift_gate']}")])
             window.sync();time.sleep(.02)
-            if state['play']:state['index']=min(len(rows)-1,state['index']+1)
+            if state['play']:
+                if state['index']<state['limit']:state['index']+=1
+                else:state['play']=False
     return summary

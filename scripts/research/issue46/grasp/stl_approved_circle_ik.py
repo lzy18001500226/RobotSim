@@ -114,7 +114,9 @@ def tracking_task(row, reference, phase=None):
         if phase.get('bilateral_contact_pass') is not True or not np.isfinite(lift) or not 0.<=lift<=.060000001:raise RuntimeError('UNQUALIFIED_OR_UNBOUNDED_LIFT_PHASE')
         offset[2]=lift
         hand=row['bodies']['R_omnipicker_base_link'];H=np.asarray(hand['rotation']).reshape(3,3)
-        local=H.T@(centre-np.asarray(hand['position_m']))
+        if phase.get('slip_reference')!='GRASP_SECTION':raise RuntimeError('INVALID_LIFT_SLIP_REFERENCE')
+        section=centre+reference['grasp_height_above_center_m']*B[:,2]
+        local=H.T@(section-np.asarray(hand['position_m']))
         baseline=np.asarray(phase['initial_object_in_hand_m'],dtype=float)
         if baseline.shape!=(3,) or not np.isfinite(baseline).all():raise RuntimeError('INVALID_LIFT_SLIP_BASELINE')
         # Real slip is measured relative to the actual hand, not its command.
@@ -161,7 +163,7 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
         if j>=0:data.qpos[model.jnt_qposadr[j]]=float(item['q'])
     b=row['bodies']['test_cylinder'];bottle=ik.native.bid(model,'test_cylinder');adr=int(model.jnt_qposadr[ik.native.jid(model,'test_cylinder_free')]);data.qpos[adr:adr+3]=b['position_m'];data.qpos[adr+3:adr+7]=b['quaternion_wxyz']
-    centre=np.array(reference['circle']['center_m']);target,bottle_axis=tracking_task(row,reference,phase);local_axis=np.asarray(reference.get('local_bottle_axis_in_hand',[1.,0.,0.]))
+    centre=np.array(reference.get('execution_grasp_frame',{}).get('center_m',reference['circle']['center_m']));target,bottle_axis=tracking_task(row,reference,phase);local_axis=np.asarray(reference.get('local_bottle_axis_in_hand',[1.,0.,0.]))
     ids=[ik.native.jid(model,n) for n in ik.ARM];qa=np.array([model.jnt_qposadr[j] for j in ids]);bounds=np.array([model.jnt_range[j] for j in ids]);hand=ik.native.bid(model,'R_omnipicker_base_link')
     def residual(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
@@ -238,7 +240,9 @@ def main():
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--standing-state", type=Path, required=True)
     parser.add_argument("--grasp-height-above-center-m",type=float,default=0.0)
-    parser.add_argument("--grasp-axis-tilt-rad",type=float,default=0.,help="bounded task-frame tilt, not a model/joint change; raw preclose hand-axis limit remains 0.03rad")
+    parser.add_argument("--grasp-axis-tilt-rad",type=float,default=0.,help="measured functional-axis correction; 0.03rad orientation residual remains relative to the planned grasp frame")
+    parser.add_argument("--grasp-axis-calibration",type=Path,help="measured load-axis hypothesis required for a nontrivial task-frame correction")
+    parser.add_argument("--use-measured-load-frame",action="store_true",help="apply measured <=5mm TCP correction without altering the approved nominal circle")
     parser.add_argument("--runtime-handoff",action="store_true")
     parser.add_argument("--physical-lift-test",action="store_true")
     parser.add_argument("--approach-opening-percent",type=int,default=100)
@@ -289,9 +293,19 @@ def main():
     half_height=float(model.geom_size[cylinder_geom,1])
     if not 0<=args.grasp_height_above_center_m<=half_height-.01:
         raise ValueError("grasp section height must be within the canonical bottle body")
-    theta=args.grasp_axis_tilt_rad
-    if not np.isfinite(theta) or abs(theta)>.028:raise ValueError('task-frame tilt outside the original 0.03rad raw arrival envelope')
+    theta=args.grasp_axis_tilt_rad;axis_calibration=None
+    if not np.isfinite(theta) or abs(theta)>.18:raise ValueError('task-frame tilt outside bounded measured calibration envelope')
+    if abs(theta)>.028:
+        if args.grasp_axis_calibration is None:raise ValueError('nontrivial grasp-frame correction requires independent measured load evidence')
+        axis_calibration=json.loads(args.grasp_axis_calibration.read_text())
+        if axis_calibration.get('classification')!='SIMULATION_ONLY_MEASURED_LOAD_AXIS_HYPOTHESIS_NOT_GRASP_PASS' or abs(theta-axis_calibration['tilt_rad'])>.001:raise ValueError('task-frame correction does not match measured load hypothesis')
+        observations=axis_calibration.get('observations',[])
+        if len(observations)<2:raise ValueError('independent load-axis source evidence missing')
+        for observation in observations:
+            source=Path(observation['capture'])/'native_tracking_target.failure-input.json'
+            if hashlib.sha256(source.read_bytes()).hexdigest()!=observation['source_sha256']:raise ValueError('load-axis source evidence hash mismatch')
     local_axis=np.array([np.cos(theta),0.,np.sin(theta)])
+    if axis_calibration is not None:local_axis=np.asarray(axis_calibration.get('local_bottle_axis_in_hand',local_axis),dtype=float)
     if args.target_source!='truth-diagnostic':bottle_axis=np.array([0.,0.,1.])
     object_center+=args.grasp_height_above_center_m*bottle_axis
     # The canonical existing fixture is 70mm diameter. Match its circumference
@@ -302,13 +316,17 @@ def main():
     if not command+5<=open_command<=100:raise ValueError("approach opening must exceed bottle-match opening by at least 5 percent")
     if match["status"] != "FOUR_BANDS_NEAR_0_5MM":
         raise ValueError("canonical diameter has no qualified support distribution")
-    center = np.array(match["center_m"])
+    center = np.array(match["center_m"]);nominal_center=center.copy()
+    if args.use_measured_load_frame:
+        if axis_calibration is None:raise ValueError('measured TCP requires the verified load-axis hypothesis')
+        center=np.asarray(axis_calibration['section_center_hand_m'])
+        if center.shape!=(3,) or not np.isfinite(center).all() or np.linalg.norm(center-nominal_center)>.005:raise ValueError('TCP correction exceeds original arrival tolerance')
     # Bottle frame +Z is its upright axis. Set gripper +X exactly to it,
     # preserving the old reference roll as closely as possible.
     x = bottle_axis.copy()
     y = ik.REFERENCE_HAND_ROTATION[:,1].copy(); y-=x*np.dot(x,y); y/=np.linalg.norm(y)
     rotation = np.column_stack([x,y,np.cross(x,y)])
-    rotation=rotation@np.array([[np.cos(theta),0.,np.sin(theta)],[0.,1.,0.],[-np.sin(theta),0.,np.cos(theta)]])
+    rotation=rotation@Rotation.align_vectors([[1.,0.,0.]],[local_axis])[0].as_matrix()
     ik.REFERENCE_HAND_ROTATION = rotation
     ik.REFERENCE_HAND_POSITION = -rotation @ center
     rows=[]
@@ -378,6 +396,8 @@ def main():
     record["root_and_legs_frozen"]=True
     record["fresh_runtime_rgbd_verified"]=False
     record['local_bottle_axis_in_hand']=local_axis.tolist();record['grasp_axis_tilt_rad']=theta
+    if args.use_measured_load_frame:record['execution_grasp_frame']={'center_m':center.tolist(),'nominal_circle_center_m':nominal_center.tolist(),'local_bottle_axis_in_hand':local_axis.tolist(),'classification':'MEASURED_LOAD_FRAME_HYPOTHESIS_NOT_MODEL_CHANGE'}
+    if axis_calibration is not None:record['axis_calibration']={'path':str(args.grasp_axis_calibration),'sha256':hashlib.sha256(args.grasp_axis_calibration.read_bytes()).hexdigest(),'record':axis_calibration}
     if args.physical_lift_test and rows[0]['pass']:
         lift_seed=np.array([rows[0]['q_rad'][n] for n in ik.ACTIVE])
         record['lift_preflight']=screen_lift(model,state,lift_seed,max(command-1,0),center,object_center,local_axis)

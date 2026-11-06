@@ -233,9 +233,9 @@ def build_coordinated_waist_relay_config(source: dict[str, object]) -> dict[str,
     return result
 
 
-def build_stand_client_script() -> str:
+def build_stand_client_script(*, observe_only: bool = False) -> str:
     """Minimal equivalent of the delivered ``set_mc_action SD`` example."""
-    return """#!/usr/bin/env python3
+    code = """#!/usr/bin/env python3
 import json
 import math
 import time
@@ -297,10 +297,10 @@ try:
         get_result = call(node, get_client, get_request)
         sample = {'mode_name': get_result.info.action_desc, 'mode_status': int(get_result.info.status.value)}
         samples.append(sample)
-        if sample['mode_name'] == 'STAND_DEFAULT':
+        if sample['mode_name'] == 'STAND_DEFAULT' and sample['mode_status'] == 100:
             break
         time.sleep(0.3)
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + 2.5
     while rclpy.ok() and time.monotonic() < deadline:
         rclpy.spin_once(node, timeout_sec=0.02)
     if len(odom_samples) >= 2:
@@ -315,6 +315,12 @@ finally:
     node.destroy_node()
     rclpy.shutdown()
 """
+    if observe_only:
+        start=code.index('    set_client = node.create_client(')
+        end=code.index('    get_client = node.create_client(')
+        code=code[:start]+code[end:]
+        code=code.replace('int(set_result.response.status.value)','None').replace('set_result.response.message',"'READ_ONLY_NO_ACTION_REQUEST'")
+    return code
 
 
 def build_upperbody_split_client_script() -> str:
@@ -782,10 +788,14 @@ def native_circle_arrival(contract):
  tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
  target=[bottle['position_m'][i]+height*B[3*i+2] for i in range(3)]
  error=math.sqrt(sum((tcp[i]-target[i])**2 for i in range(3)))
+ nominal=contract.get('nominal_circle_center_local_m',c)
+ nominal_tcp=[hand['position_m'][i]+sum(R[3*i+j]*nominal[j] for j in range(3)) for i in range(3)]
+ nominal_error=math.sqrt(sum((nominal_tcp[i]-target[i])**2 for i in range(3)))
  dot=max(-1.,min(1.,sum(R[3*i]*B[3*i+2] for i in range(3))));raw_angle=math.acos(dot)
  local_axis=contract.get('local_bottle_axis_in_hand',[1.,0.,0.]);world_axis=[sum(R[3*i+j]*local_axis[j] for j in range(3)) for i in range(3)]
  angle=math.acos(max(-1.,min(1.,sum(world_axis[i]*B[3*i+2] for i in range(3)))))
- return {'pass':error<=.005 and angle<=.03 and raw_angle<=.03,'position_error_m':error,'axis_error_rad':angle,'raw_hand_axis_to_bottle_rad':raw_angle,'tcp_world_m':tcp,'target_world_m':target,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
+ expected_raw=math.acos(max(-1.,min(1.,local_axis[0])))
+ return {'pass':error<=.005 and nominal_error<=.005 and angle<=.03 and abs(raw_angle-expected_raw)<=.03,'position_error_m':error,'nominal_circle_error_m':nominal_error,'axis_error_rad':angle,'raw_hand_axis_to_bottle_rad':raw_angle,'planned_mesh_axis_offset_rad':expected_raw,'tcp_world_m':tcp,'target_world_m':target,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
 def native_bilateral_contact(close_start):
  path='/workspace/evidence/native_physics.jsonl'
  with open(path,'rb') as stream:
@@ -892,7 +902,7 @@ class Plan(Node):
   with open('/workspace/evidence/native_tracking_target.json') as f:r=json.load(f)
   if not r.get('pass'):raise RuntimeError('NATIVE_CIRCLE_TRACKER_FAILED:'+str(r))
   age=(time.monotonic_ns()-int(r['source_host_ns']))*1e-9
-  if not 0<=age<=.20 or r['generation']!=self.native_generation:raise RuntimeError('STALE_NATIVE_CIRCLE_TRACKING_TARGET')
+  if not 0<=age<=.20 or r['generation']!=self.native_generation:raise RuntimeError('STALE_NATIVE_CIRCLE_TRACKING_TARGET:'+json.dumps({'source_age_s':age,'target_created_age_s':(time.monotonic_ns()-int(r['created_host_ns']))*1e-9,'target_generation':r['generation'],'native_generation':self.native_generation,'native_sample_age_s':(time.monotonic_ns()-self.native_receipt_ns)*1e-9}))
   goal={n:float(r['right_target_rad'][n]) for n in RIGHT}
   if any(not math.isfinite(goal[n]) for n in RIGHT):raise RuntimeError('NONFINITE_NATIVE_CIRCLE_TARGET')
   self.endpoint=goal
@@ -1081,8 +1091,9 @@ try:
    # the ungrasped pre-close pose. The closure's independent 10mm gate already
    # passed; retain its motion separately and keep the fixed hand anchor.
    n.lift_phase={**phase,'phase':'LIFTING','bilateral_contact_pass':True,'created_host_ns':time.monotonic_ns(),'lift_offset_m':0.,'bottle_center_world_m':grasped_position,'preclose_bottle_center_world_m':phase['bottle_center_world_m']}
-   hand=n.native_row['bodies']['R_omnipicker_base_link'];H=hand['rotation'];delta=[grasped_position[i]-hand['position_m'][i] for i in range(3)]
+   hand=n.native_row['bodies']['R_omnipicker_base_link'];H=hand['rotation'];B=n.native_row['bodies']['test_cylinder']['rotation'];height=CIRCLE_CONTRACT['height_above_center_m'];delta=[grasped_position[i]+height*B[3*i+2]-hand['position_m'][i] for i in range(3)]
    n.lift_phase['initial_object_in_hand_m']=[sum(H[3*i+j]*delta[i] for i in range(3)) for j in range(3)]
+   n.lift_phase['slip_reference']='GRASP_SECTION'
    n.lift_contact_lost_since=None;n.write_phase(n.lift_phase)
    lift_execution={'requested':True,'executed':True,'initial_bottle_z_m':n.native_row['bodies']['test_cylinder']['position_m'][2],'lift_start_host_ns':time.monotonic_ns()}
    print(json.dumps({'lift_execution':lift_execution}),flush=True)

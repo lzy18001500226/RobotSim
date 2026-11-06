@@ -11,6 +11,19 @@ from scripts.research.issue46.native_runtime import native_grasp_audit as audit
 from scripts.research.issue46.native_runtime.test_pregrasp_feedback import generated
 
 class NativeLaunchTests(TestCase):
+    def test_manual_terminal_review_is_opt_in_and_after_lift_evaluation(self):
+        source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
+        branch=next(n for n in ast.walk(ast.parse(source)) if isinstance(n,ast.If) and 'args.pause_on_claw_failure and' in ast.unparse(n.test) and 'result' in ast.unparse(n.test))
+        condition=compile(ast.Expression(branch.test),'review','eval')
+        result={'gates':{'HAL_RIGHT_HAND_CLOSE':'PASS','HAL_PHYSICAL_LIFT':'PASS'}}
+        self.assertFalse(eval(condition,{'args':NS(pause_on_claw_failure=False,physical_lift_test=True),'result':result}))
+        self.assertTrue(eval(condition,{'args':NS(pause_on_claw_failure=True,physical_lift_test=True),'result':result}))
+        self.assertFalse(eval(condition,{'args':NS(pause_on_claw_failure=True,physical_lift_test=False),'result':result}))
+        result['gates']['HAL_RIGHT_HAND_CLOSE']='FAIL'
+        self.assertTrue(eval(condition,{'args':NS(pause_on_claw_failure=True,physical_lift_test=False),'result':result}))
+        self.assertLess(source.index('metrics=native_grasp_audit.evaluate_unsupported_lift'),source.index('before_pause=json.loads'))
+        self.assertIn('PHYSICAL_LIFT_PASS_REVIEW',source)
+
     def test_required_parent_launch_and_single_observer_owner(self):
         parent=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
         adapter=Path(__file__).parents[1].joinpath('grasp/stl_approved_circle_native_trial.py').read_text()
@@ -175,7 +188,7 @@ class NativeLaunchTests(TestCase):
         self.assertIn("self.grip_command=force_guided_close_step",code)
         source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
         self.assertIn('0.0 if args.physical_lift_test else',source)
-        self.assertIn('and raw_angle<=.03',code)
+        self.assertIn('and abs(raw_angle-expected_raw)<=.03',code)
 
     def test_force_guided_closure_is_bounded_and_rejects_invalid_feedback(self):
         tree=ast.parse(generated());fn=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=='force_guided_close_step')
@@ -185,6 +198,32 @@ class NativeLaunchTests(TestCase):
         self.assertGreater(step(.3,0.,.39,{'left':5.,'right':5.},1.4715,.02),.3)
         self.assertEqual(step(0.,0.,.39,{'left':0.,'right':0.},1.4715,3.),0.)
         with self.assertRaisesRegex(RuntimeError,'INVALID'):step(.3,0.,.39,{'left':float('nan'),'right':1.},1.4715,.02)
+
+    def test_reused_source_proxy_is_hash_locked_and_limited_to_two_pad_bodies(self):
+        source=Path(__file__).with_name('claw_parameter_diagnostic.py').read_text();tree=ast.parse(source)
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='reuse_source_pad_proxy')
+        code=ast.unparse(fn)
+        self.assertIn("('narrow3_Link', 'wide3_Link')",code)
+        self.assertIn('7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a',code)
+        self.assertIn("digest(path) != part['sha256']",code)
+        self.assertIn('proxy comparison changed physical array',code)
+        self.assertIn('visual geometry or exclusions',code)
+        self.assertNotIn('run_coacd',code)
+
+    def test_proxy_scene_identity_requires_exact_ancestry_and_unchanged_targets(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import candidate_scene_matches_overlay,sha256
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);scene=root/'proxy.xml';scene.write_text('<mujoco/>');control=root/'overlay.json';control.write_text('{}')
+            original={'scene':{'path':'original.xml','sha256':'original-scene'},'target':[1.,2.,3.],'gates':{'static':'PASS'}}
+            source=root/'original.json';source.write_text(json.dumps(original));world={'generated':{'host_scene':{'sha256':'original-scene'}}}
+            generated={'path':str(scene),'sha256':sha256(scene)}
+            overlay={'generated':{'host_scene':generated},'source_pad_collision_comparison':{'manifest_sha256':'7f4c5fe6db54a21aacddec58681d5207dfbe5e638ff1884bf1ee9c6ad5b31a3a','scope':['R_hand_narrow3_Link','R_hand_wide3_Link']}}
+            candidate={**original,'scene':generated,'source_pad_collision_comparison':{'source_candidate':str(source),'source_candidate_sha256':sha256(source),'overlay':str(control),'overlay_sha256':sha256(control)}}
+            self.assertTrue(candidate_scene_matches_overlay(candidate,world,overlay,control))
+            candidate['target']=[9.,9.,9.]
+            self.assertFalse(candidate_scene_matches_overlay(candidate,world,overlay,control))
+            candidate['target']=original['target'];overlay['source_pad_collision_comparison']['scope'].append('right_wrist_roll_link')
+            self.assertFalse(candidate_scene_matches_overlay(candidate,world,overlay,control))
 
 
     def test_tracking_readiness_does_not_relax_active_freshness(self):
@@ -278,7 +317,17 @@ class NativeLaunchTests(TestCase):
         block=source[source.index('        if args.fixed_reviewed_checkpoint:\n            identity='):source.index('        else:\n            reset = run(')]
         self.assertIn('NATIVE_KEY_SLIDER_AUTO_LOAD',block)
         self.assertNotIn('click-native-load-key',block)
-        self.assertIn('observed[\'generation\']>=1 and error<=.02 and angle<=.02',block)
+        self.assertIn("observed['generation']==before_key['generation']+1 and boundary['pass']",block)
+
+    def test_reset_boundary_is_distinct_from_later_pose_and_never_accepts_unchanged_generation(self):
+        wanted={'position_m':[.85,-1.49,.65],'quaternion_wxyz':[1.,0.,0.,0.]}
+        rows=[{'host_monotonic_ns':1000000000,'sim_time_s':.001,'generation':1,'engine_version':337,'bodies':{'pelvis':wanted}},{'host_monotonic_ns':2000000000,'sim_time_s':1.,'generation':1,'engine_version':337,'bodies':{'pelvis':{'position_m':[.88,-1.52,.65],'quaternion_wxyz':[1.,0.,0.,0.]}}}]
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)/'raw.jsonl';p.write_text('\n'.join(json.dumps(r) for r in rows)+'\n')
+            result=audit.keyframe_initialization_evidence(p,wanted,generation=1,after_ns=900000000)
+            self.assertTrue(result['pass']);self.assertEqual(result['source_sim_time_s'],.001)
+            self.assertFalse(audit.keyframe_initialization_evidence(p,wanted,generation=2,after_ns=900000000)['pass'])
+            self.assertFalse(audit.keyframe_initialization_evidence(p,wanted,generation=1,after_ns=1100000000)['pass'])
 
     def test_final_feedback_refinement_is_bounded_and_cannot_close_on_failed_arrival(self):
         code=generated()
