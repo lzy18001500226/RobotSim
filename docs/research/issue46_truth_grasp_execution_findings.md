@@ -2,6 +2,14 @@
 
 Status: incomplete physics qualification; no grasp or lift PASS. Model and source assets unchanged.
 
+**Authorization update, 2026-11-06:** the maintainer subsequently authorized
+bounded gripper gain and joint-internal friction/damping diagnostics that
+preserve the reviewed STL assembly and kinematics. See the owning
+[model-integrity authorization](../engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging).
+The pending-approval statements below describe historical checkpoints and no
+longer block the specified friction comparison. No experiment result is implied
+by authorization; record the actual next run separately.
+
 ## Actual experiment
 
 `reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261106T070115Z/`
