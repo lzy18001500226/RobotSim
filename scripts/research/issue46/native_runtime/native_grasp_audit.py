@@ -82,3 +82,24 @@ def planning_state_from_native(row, previous):
     state["native_snapshot"] = {k:row[k] for k in ("host_monotonic_ns", "sim_time_s", "generation")}
     state["state_source"] = "SYNCHRONIZED_NATIVE_MJDATA_NOT_ROS_CACHE"
     return state
+
+
+def coupled_opening_budget(model, root_joint, actuator, q):
+    """Quasi-static estimate, not proof of solver or hardware feasibility."""
+    import mujoco
+    import math
+    if not math.isfinite(q):
+        raise ValueError("nonfinite root position")
+    terms=[{"joint": mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_JOINT,root_joint), "derivative": 1., "frictionloss_nm": float(model.dof_frictionloss[model.jnt_dofadr[root_joint]])}]
+    for i in range(model.neq):
+        if model.eq_type[i] != mujoco.mjtEq.mjEQ_JOINT or model.eq_obj2id[i] != root_joint:
+            continue
+        j=int(model.eq_obj1id[i])
+        derivative=sum(k*float(model.eq_data[i,k])*q**(k-1) for k in range(1,5))
+        terms.append({"joint":mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_JOINT,j),"derivative":derivative,"frictionloss_nm":float(model.dof_frictionloss[model.jnt_dofadr[j]])})
+    resistance=sum(abs(t["derivative"])*t["frictionloss_nm"] for t in terms)
+    kp=float(model.actuator_gainprm[actuator,0]);gear=float(model.actuator_gear[actuator,0])
+    if kp<=0 or gear!=-1 or abs(float(model.actuator_biasprm[actuator,1])+kp)>1e-9:
+        raise ValueError("budget requires the recorded gear=-1 position servo")
+    command=-q+resistance/kp
+    return {"q_rad":q,"estimated_coupled_coulomb_nm":resistance,"terms":terms,"kp":kp,"opening_command_to_balance_coulomb_estimate":command,"command_upper_bound":float(model.actuator_ctrlrange[actuator,1]),"estimate_within_command_range":command<=float(model.actuator_ctrlrange[actuator,1]),"classification":"QUASISTATIC_ESTIMATE_NOT_PHYSICS_ACCEPTANCE"}

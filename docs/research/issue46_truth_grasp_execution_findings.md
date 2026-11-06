@@ -54,6 +54,16 @@ this report. No friction, gain, force limit, geometry, topology or vendor policy
 has been changed. Review the physical parameter provenance and approve an exact
 separate actuator/friction delta before pursuing a modified-model grasp.
 
+The earlier verbal suggestion kp=2 -> 10 alone is **not a validated repair**.
+At q=-0.5, estimated balance command is 0.5 + 1.823/kp: about 1.411
+with kp=2 (outside [0,1]) and 0.682 with kp=10. Merely increasing kp while
+continuing to send command=0.5 still leaves Coulomb tracking error. At q=0,
+estimated coupled resistance is 2.012 Nm, slightly above the unchanged 2 Nm
+force cap. These estimates make an isolated controller/parameter review
+necessary; they do not justify increasing force or silently reducing friction.
+No kp change, feedforward-control trial, or new physics episode is approved
+by an automatic Goal continuation. Keep the proposed gain change unimplemented.
+
 Primary semantics: [MuJoCo 3.3.7 position actuator](https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#actuator-position)
 and [constraint/friction model](https://mujoco.readthedocs.io/en/3.3.7/computation/index.html).
 

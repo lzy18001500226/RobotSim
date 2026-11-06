@@ -51,6 +51,16 @@ class NativeLaunchTests(TestCase):
         with self.assertRaises(KeyError):audit.planning_state_from_native(row,old)
 
 
+    def test_coupled_budget_respects_negative_transmission_and_command_bound(self):
+        import mujoco
+        xml='<mujoco><worldbody><body><joint name="root" frictionloss="0.3"/><geom size=".01"/><body><joint name="follower" frictionloss="0.3"/><geom size=".01"/></body></body></worldbody><equality><joint joint1="follower" joint2="root" polycoef="0 -2 0 0 0"/></equality><actuator><position joint="root" gear="-1" kp="2" ctrllimited="true" ctrlrange="0 1"/></actuator></mujoco>'
+        m=mujoco.MjModel.from_xml_string(xml)
+        budget=audit.coupled_opening_budget(m,0,0,-.6)
+        self.assertAlmostEqual(budget['estimated_coupled_coulomb_nm'],.9)
+        self.assertAlmostEqual(budget['opening_command_to_balance_coulomb_estimate'],1.05)
+        self.assertFalse(budget['estimate_within_command_range'])
+
+
     def test_native_feedback_cannot_refresh_from_stale_or_reset_generation(self):
         code=generated();tree=ast.parse(code)
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Plan')
