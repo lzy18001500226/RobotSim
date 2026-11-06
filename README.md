@@ -46,6 +46,19 @@ The goal is to provide a reusable simulation and system-integration framework fo
 
 ## Current status
 
-RobotSim is currently in early platform bring-up.
+As of 2026-11-06, X2 research has progressed into real MuJoCo/MC standing,
+bounded locomotion, table-approach and manipulation integration. These are
+experiment-specific capabilities, not a blanket qualification of navigation,
+perception, manipulation or hardware deployment. Unity remains the intended
+high-fidelity frontend; its planned role is not evidence of completed integration.
 
-The current focus is validating the development environment and the MuJoCo, Unity, and ROS 2 integration architecture before implementing higher-level robot tasks.
+The active Issue #46 milestone is fixed-stance bottle grasping with the reviewed
+`X2-OmniPicker-STL` lower concave-pad support circle. Standing/docking and static
+IK have passing local evidence; actual jaw opening and pose tracking still block
+a qualified bilateral grasp/lift. No >=50 mm lift plus >=1 s unsupported hold
+has passed in this current setup.
+
+Read the [X2 task workflow](docs/workflows/06_X2_AUTONOMY_TASK.md) for task-stage
+scope and the [measured grasp findings](docs/research/issue46_truth_grasp_execution_findings.md)
+for exact evidence and limitations. The [project plan](docs/00_PROJECT_PLAN.md)
+P0–P7 labels are platform workstreams, not the user's X2 task Stage 2/3 labels.

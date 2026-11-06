@@ -8,8 +8,30 @@ not authorize physics stepping, mechanical-model changes, or hardware motion.
 - Robot/gripper selection: `X2-OmniPicker-STL` through the registry loader.
 - World source: one scene adapter for the selected map, with explicit map,
   LiDAR, RGB-D, table, interaction-zone, and delivery-zone frames.
-- Ground truth: allowed only for offline evaluation and estimator comparison;
-  never as a navigation, docking, or grasp-control input.
+- Ground truth: permitted in explicitly labeled SIMULATION_ONLY debugging and
+  the maintainer-authorized Stage 2 truth-first grasp/stance validation. Record
+  the target source. Truth may not silently cross an estimator acceptance
+  boundary or be reported as LiDAR/depth-camera navigation or grasp success.
+
+## Current milestone and observed status (2026-11-06)
+
+Current Stage 2 scope is fixed table stance -> approved lower concave-pad
+support-circle IK -> actual opening/approach/arrival -> closure -> >=50 mm
+object rise -> >=1 s unsupported hold. Use truth first to isolate execution;
+fresh RGB-D substitution remains separately required for perception acceptance.
+Stage 3 adds perception-driven base repositioning; do not expand into it before
+the fixed-stance grasp is qualified.
+
+Observed local standing/docking and static IK passes do not close Stage 2.
+The latest opening-first native episode failed actual full opening before
+walking. Earlier approach evidence also exposed a frozen/stale-base planning
+error. Grasp and lift remain unqualified. See the [measured findings](../research/issue46_truth_grasp_execution_findings.md)
+for exact trace identities; do not promote a prior model's PASS to this setup.
+
+Use the [scoped parameter authorization](../engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging)
+for existing gripper gain/joint-resistance diagnostics; ordinary permitted
+parameter debugging does not require another approval. Model identity,
+geometry, topology, contact and force-limit changes retain their review gates.
 
 ## Task state machine
 
@@ -20,7 +42,9 @@ RESET -> STAND -> NAVIGATE_TO_INTERACTION -> RECEIVE_REQUEST
       -> NAVIGATE_TO_DELIVERY -> PLACE -> REPORT_COMPLETE
 ```
 
-Every transition is fail-closed. A failed localization, stale frame transform,
+This is the intended end-to-end lifecycle, not a statement that all stages run
+successfully today. The current grasp implementation has no qualified lift
+executor or delivery result. Every transition is fail-closed. A failed localization, stale frame transform,
 unreachable grasp, unsupported object, contact failure, or stability failure
 returns a reasoned failure state rather than moving to the next stage.
 
@@ -58,10 +82,16 @@ passing arm IK solve, or a completed short physics probe as a completed grasp.
 4. Start physics from a stable table-preplaced standing state.  First hold the
    stance, then ramp the upper body to pregrasp.  Record actual hand-to-object
    error; a static target is not sufficient.
-5. Only after the physical pregrasp remains stable and the actual hand is in
+5. When selecting the opening-first startup path, command open during
+   initialization and retain it through walking under exclusive hand ownership.
+   Verify actual opening before walking and again before approach; command
+   publication or a fixed sleep is not opening confirmation. Preserve an
+   already-open hand at the docking handoff rather than closing it to reactivate.
+   This desired startup path has not passed physical opening qualification.
+6. Only after the physical pregrasp remains stable and the actual hand is in
    the screened contact region may the gripper close.  Require sustained
    bilateral distal-pad contact before attempting lift.
-6. Lift in order: a small clearance probe, then a 50 mm lift and hold.  A
+7. Lift in order: a small clearance probe, then a 50 mm lift and hold.  A
    grasp PASS requires table-support transfer, opposing pad contact, object
    COM rise of at least 50 mm, and stable hold.  No weld, object qpos write,
    hidden support, or collision exclusion may substitute for those checks.
@@ -81,7 +111,9 @@ Failure handling remains local to the failed stage:
 Each failed candidate must preserve its result and select the next local
 candidate.  The workstream stops for human review only at a visual posture
 choice, a source/model change, a true physical grasp result, or when the
-remaining failure is outside the documented controls and evidence.
+remaining failure is outside the documented controls and evidence. Apply the
+explicit parameter authorization above before treating ordinary simulation
+control tuning as an unapproved mechanical change.
 
 ## Workstream split
 
@@ -90,7 +122,9 @@ remaining failure is outside the documented controls and evidence.
    recorded with each run; their truth pose is not available to the planner.
 2. **RGB-D docking and manipulation** consumes the navigation stop result and
    estimated object pose, then chooses a reachable stance and arm plan. It
-   cannot read object truth after the estimator boundary.
+   cannot read object truth after the estimator boundary in perception-qualified
+   operation. The labeled Stage 2 truth diagnostic is a separate mode; it must
+   never claim fresh RGB-D acceptance.
 3. **Task execution** is the sole owner of state transitions and retries.
 
 The workstreams may investigate independently, but maintained code integrates
