@@ -208,7 +208,7 @@ def coupled_opening_budget(model, root_joint, actuator, q):
     return {"q_rad":q,"estimated_coupled_coulomb_nm":resistance,"terms":terms,"kp":kp,"opening_command_to_balance_coulomb_estimate":command,"command_upper_bound":float(model.actuator_ctrlrange[actuator,1]),"estimate_within_command_range":command<=float(model.actuator_ctrlrange[actuator,1]),"classification":"QUASISTATIC_ESTIMATE_NOT_PHYSICS_ACCEPTANCE"}
 
 
-def apply_recorded_native_frame(model, data, row):
+def apply_recorded_native_frame(model, data, row, *, visual_kinematics_only=False):
     """Review data only: restore captured configuration, never step physics."""
     import mujoco
     import numpy as np
@@ -227,7 +227,9 @@ def apply_recorded_native_frame(model, data, row):
         data.qpos[qadr:qadr+7]=[*pose['position_m'],*pose['quaternion_wxyz']]
     if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():raise ValueError('nonfinite captured frame')
     data.time=float(row['sim_time_s'])
-    mujoco.mj_forward(model,data)
+    if visual_kinematics_only:
+        mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data);mujoco.mj_camlight(model,data)
+    else:mujoco.mj_forward(model,data)
 
 
 def review_native_capture(run, *, dry_run=False, full_flow=False):

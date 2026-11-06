@@ -1,0 +1,115 @@
+"""Sensor-contract and fitting regressions, no simulator/ROS rollout."""
+import ast
+import math
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+
+import mujoco
+import numpy as np
+from scripts.research.issue46.perception.native_rgbd_grasp import estimate,qualify_estimate
+from scripts.research.issue46.grasp.stl_approved_circle_ik import circle_task_jacobian,axis_grasp_error
+from scripts.research.issue46.native_runtime.test_pregrasp_feedback import generated
+
+def synthetic_cylinder(radius):
+    w,h=320,240;f=210.;K={'fx':f,'fy':f,'cx':(w-1)/2,'cy':(h-1)/2}
+    a=.65;T=np.eye(4);T[:3,:3]=np.array([[0.,-math.sin(a),math.cos(a)],[-1.,0.,0.],[0.,-math.cos(a),-math.sin(a)]]);T[:3,3]=[0,0,.95]
+    y,x=np.indices((h,w));rays=np.stack(((x-K['cx'])/f,(y-K['cy'])/f,np.ones_like(x)),axis=-1)@T[:3,:3].T
+    origin=T[:3,3];center=np.array([.5,.015,.7]);delta=origin[:2]-center[:2]
+    A=np.sum(rays[:,:,:2]**2,axis=-1);B=2*np.sum(rays[:,:,:2]*delta,axis=-1);C=np.sum(delta**2)-radius**2;D=B*B-4*A*C
+    side=np.where(D>=0,(-B-np.sqrt(np.maximum(0,D)))/(2*A),np.inf);zs=origin[2]+side*rays[:,:,2]
+    side=np.where((side>0)&(zs>=.55)&(zs<=.85),side,np.inf)
+    cap=(.85-origin[2])/rays[:,:,2];capxy=origin[:2]+cap[:,:,None]*rays[:,:,:2]
+    cap=np.where((cap>0)&(np.linalg.norm(capxy-center[:2],axis=-1)<=radius),cap,np.inf)
+    depth=np.minimum(side,cap);rgb=np.zeros((h,w,3),dtype=np.uint8);rgb[np.isfinite(depth)]=[20,70,220]
+    return rgb,depth,K,T,center
+
+class SensorTests(unittest.TestCase):
+    def test_compiled_cache_requires_exact_source_engine_and_binary(self):
+        import json,hashlib
+        from scripts.research.issue46.perception import native_rgbd_grasp as sensor
+        def digest(path):return hashlib.sha256(path.read_bytes()).hexdigest()
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);scene=root/'scene.xml';scene.write_text('<mujoco/>');binary=root/'m.mjb';binary.write_bytes(b'fixture')
+            record={'source_sha256':digest(scene),'engine':mujoco.mj_version(),'sensor_source_sha256':digest(Path(sensor.__file__)),'binary':str(binary),'binary_sha256':digest(binary)}
+            p=root/'cache.json';p.write_text(json.dumps(record))
+            with mock.patch.object(sensor.mujoco.MjModel,'from_binary_path',return_value='verified'):
+                self.assertEqual(sensor.load_cached_model(scene,p),'verified')
+                binary.write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError,'mismatch'):sensor.load_cached_model(scene,p)
+
+    def test_renderer_warmup_cannot_be_published_as_fresh_feedback(self):
+        import json
+        from types import SimpleNamespace as NS
+        from scripts.research.issue46.perception import native_rgbd_grasp as sensor
+        clock=NS(now=1.);calls=[]
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);output=root/'sensor';scene=root/'scene.xml';scene.write_text('<mujoco/>')
+            latest=mock.Mock();latest.read_text.side_effect=lambda:json.dumps({'host_monotonic_ns':int(clock.now*1e9),'generation':1})
+            renderer=mock.Mock()
+            def render(*args):
+                calls.append(args[-1]['host_monotonic_ns']);clock.now+=.30 if len(calls)==1 else .02
+                return np.zeros((3,3,3),np.uint8),np.ones((3,3)),{},np.eye(4)
+            def infer(*args):
+                (output/'stop').write_text('test stop after one qualified frame')
+                return {'center_xy_world_m':[.5,0.],'top_world_z_m':.85,'axis_world':[0.,0.,1.],'diameter_m':.07},np.ones((3,3),bool)
+            with mock.patch.object(sensor,'render_backend_info',return_value={'renderer':'test-context'}),mock.patch.object(sensor.pg,'write_new_text',side_effect=lambda path,text:path.write_text(text)),mock.patch.object(sensor,'build_sensor',return_value=(None,None,renderer,0)),mock.patch.object(sensor,'render',side_effect=render),mock.patch.object(sensor,'estimate',side_effect=infer),mock.patch.object(sensor.time,'monotonic',side_effect=lambda:clock.now),mock.patch.object(sensor.time,'monotonic_ns',side_effect=lambda:int(clock.now*1e9)),mock.patch.object(sensor.time,'sleep',side_effect=lambda dt:setattr(clock,'now',clock.now+dt)):
+                sensor.stream(scene,latest,output,half_height_m=.15)
+            record=json.loads((output/'latest.json').read_text())
+            self.assertNotEqual(record['source_host_ns'],calls[0]);self.assertEqual(record['source_host_ns'],calls[1]);self.assertTrue(record['pass'])
+            self.assertEqual(len(json.loads((output/'trace.json').read_text())),1)
+            renderer.close.assert_called_once()
+
+    def test_variable_radius_is_measured_from_depth(self):
+        for radius in (.025,.035):
+            rgb,depth,K,T,center=synthetic_cylinder(radius)
+            result,_=estimate(rgb,depth,K,T)
+            np.testing.assert_allclose(result['center_xy_world_m'],center[:2],atol=.0002)
+            self.assertAlmostEqual(result['radius_m'],radius,delta=.0002)
+            self.assertAlmostEqual(result['top_world_z_m'],.85,delta=.0002)
+
+    def test_foreground_depth_at_blue_silhouette_cannot_pull_circle_onto_hand(self):
+        from scipy.ndimage import binary_erosion
+        rgb,depth,K,T,center=synthetic_cylinder(.035);mask=rgb[:,:,2]>0
+        boundary=mask&~binary_erosion(mask);depth[boundary]*=.75
+        result,_=estimate(rgb,depth,K,T)
+        np.testing.assert_allclose(result['center_xy_world_m'],center[:2],atol=.0003)
+        self.assertAlmostEqual(result['radius_m'],.035,delta=.0003)
+        self.assertGreater(result['excluded_boundary_pixels'],0)
+
+    def test_duplicate_records_cannot_refresh_sensor_source_age(self):
+        record={'pass':True,'generation':2,'source_host_ns':1000000000,'estimated_center_world_m':[.5,0,.7],'axis_world':[0.,0.,1.],'diameter_m':.07,'object_truth_used_by_estimator':False}
+        self.assertEqual(qualify_estimate(record,generation=2,now_ns=1100000000)['position_m'],[.5,0.,.7])
+        record['created_host_ns']=1300000000
+        with self.assertRaisesRegex(RuntimeError,'STALE'):qualify_estimate(record,generation=2,now_ns=1300000000)
+        with self.assertRaisesRegex(RuntimeError,'GENERATION'):qualify_estimate(record,generation=3,now_ns=1100000000)
+        record['object_truth_used_by_estimator']=True
+        with self.assertRaisesRegex(RuntimeError,'PROVENANCE'):qualify_estimate(record,generation=2,now_ns=1100000000)
+
+    def test_generated_arrival_uses_estimate_and_rejects_missing_or_stale_data(self):
+        code=generated();function=next(n for n in ast.parse(code).body if isinstance(n,ast.FunctionDef) and n.name=='native_circle_arrival')
+        import io,json
+        row={'host_monotonic_ns':1000000000,'generation':1,'sim_time_s':1.,'bodies':{'R_omnipicker_base_link':{'position_m':[0.,0.,0.],'rotation':np.eye(3).reshape(-1).tolist()},'test_cylinder':{'position_m':[100.,0.,0.],'rotation':np.eye(3).reshape(-1).tolist()}}}
+        sensor={'pass':True,'generation':1,'source_host_ns':1000000000,'estimated_center_world_m':[0.,0.,0.],'axis_world':[0.,0.,1.],'object_truth_used_by_estimator':False}
+        row['bodies']['R_omnipicker_base_link']['rotation']=[0.,1.,0.,0.,0.,1.,1.,0.,0.]
+        ns={'math':math,'json':json,'time':mock.Mock(monotonic_ns=lambda:1100000000)};exec(compile(ast.Module(body=[function],type_ignores=[]),'arrival','exec'),ns)
+        contract={'circle_center_local_m':[0.,0.,0.],'height_above_center_m':0.,'perception_latest':'rgbd'}
+        def opened(path,*args,**kwargs):return io.BytesIO((json.dumps(row)+'\n').encode()) if path.endswith('native_latest.json') else io.StringIO(json.dumps(sensor))
+        with mock.patch('builtins.open',side_effect=opened):
+            result=ns['native_circle_arrival'](contract);self.assertTrue(result['pass']);self.assertEqual(result['target_source'],'FRESH_SIMULATED_HEAD_RGBD')
+            sensor['source_host_ns']=0
+            with self.assertRaisesRegex(RuntimeError,'RGBD_ARRIVAL'):ns['native_circle_arrival'](contract)
+
+    def test_circle_analytic_jacobian_matches_central_difference(self):
+        model=mujoco.MjModel.from_xml_string('<mujoco><worldbody><body><joint axis="0 1 0"/><geom size=".1"/><body pos=".2 0 .1"><joint axis="0 0 1"/><geom size=".02"/></body></body></worldbody></mujoco>')
+        data=mujoco.MjData(model);center=np.array([0.,.02,.13]);axis=np.array([1.,0.,0.]);q=np.array([.3,-.4])
+        def residual(q):
+            data.qpos[:]=q;mujoco.mj_forward(model,data)
+            return axis_grasp_error(data.xpos[2],data.xmat[2].reshape(3,3),center,np.zeros(3),axis)
+        residual(q);J=circle_task_jacobian(model,data,2,center,axis,np.arange(2));numeric=[]
+        for k in range(2):
+            delta=np.eye(2)[k]*1e-6;numeric.append((residual(q+delta)-residual(q-delta))/(2e-6))
+        np.testing.assert_allclose(J,np.array(numeric).T,atol=1e-8)
+
+if __name__=='__main__':unittest.main()

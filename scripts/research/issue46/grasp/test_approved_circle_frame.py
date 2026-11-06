@@ -23,6 +23,13 @@ class FrameTests(unittest.TestCase):
         r=np.diag([-1.,1.,-1.]);e=self.ns['axis_grasp_error'](np.zeros(3),r,np.zeros(3),np.zeros(3),np.array([1.,0.,0.]))
         self.assertAlmostEqual(np.linalg.norm(e[3:]),.2)
 
+    def test_explicit_opposite_cylinder_axis_is_a_separate_valid_pose_branch(self):
+        rotation=np.diag([-1.,1.,-1.]);center=np.array([0.,.002,.132]);target=np.array([1.,2.,.7])
+        hand=target-rotation@center
+        e=self.ns['axis_grasp_error'](hand,rotation,center,target,np.array([1.,0.,0.]),np.array([-1.,0.,0.]))
+        np.testing.assert_allclose(e,0.,atol=1e-12)
+        self.assertAlmostEqual(np.linalg.norm(self.ns['axis_grasp_error'](hand,rotation,center,target,np.array([1.,0.,0.]))[3:]),.2)
+
     def test_ten_mm_tracking_error_is_not_hidden(self):
         e=self.ns['axis_grasp_error'](np.array([.01,0,0]),np.eye(3),np.zeros(3),np.zeros(3),np.array([1.,0,0]))
         self.assertAlmostEqual(np.linalg.norm(e[:3]),.01)

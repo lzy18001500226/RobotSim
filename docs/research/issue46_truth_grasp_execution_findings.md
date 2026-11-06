@@ -487,3 +487,97 @@ wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integ
 Replay stops at the qualified controlled terminal frame; key 4 separately shows
 the preserved post-control cleanup tail. Renderer 3.3.6/native 3.3.7 body pose
 parity is 0.00188mm. Replay is labelled NO PHYSICS and is not a new validation.
+
+## Bounded stance and RGB-D continuation
+
+`approved-circle-bounded-stance-region-20261106T214002Z` tests seven specified
+nearby x/y/yaw samples for each of the separately identified 300/150mm bottle
+heights. These are static samples, not a continuously or dynamically qualified
+region. With the initial numerical lift screen, six 300mm samples passed.
+The 150mm straight-waist candidates hit the unchanged right shoulder-roll
+upper limit 0.061rad and wrist-pitch lower limit -0.558rad, leaving 9--17mm
+position and 0.21--0.27rad axis errors. Supported waist/posture investigation
+is still required; the 300mm PASS does not qualify the smaller height.
+
+The first +20mm-x physical attempt 214927Z stopped before arm execution:
+open/closed pose and approach sweep passed, but two finite-difference lift
+samples exceeded the unchanged 0.001 axis-residual gate. The exact MuJoCo
+point/axis Jacobian matches a central-difference regression and resolves that
+saved pose without changing tolerances: maximum residuals 0.322mm and 0.000765.
+The corrected physical trial 220213Z then passed: measured initial root
+(0.895066,-1.527933,0.650242)m, minimum lift 56.986mm, 51 frames/1.000s,
+minimum normals 1.66424/1.64508N, upward force 1.96138N, no table support,
+cleanup confirmed. This is a fixed-stance offset test, not a navigation claim.
+
+The fresh RGB-D adapter is a **calibrated virtual sensor** at the source head
+mount position with an explicitly chosen fixed 0.65rad downward optical view.
+It does not point at an object truth pose, move the head in the live model,
+use a truth mask, or claim manufacturer optical calibration. RGB/depth use the
+same recorded/live native configuration and camera transform. The estimator
+reuses the task-blue 4-connected component rule, measures variable radius from
+side depth, and detects a horizontal top band. It assumes an upright blue
+cylinder and an explicit 300/150mm height prior. It is not generic 6D object
+recognition or a hardware depth-noise qualification.
+
+Saved-pose preflight 214510Z gave 0.333mm XY, 0.315mm diameter and 0.338mm top
+errors at 640x480. At 320x240, `rgbd-visual-fk-resolution-preflight-20261106T221954Z`
+gave 0.654/0.361/0.651mm respectively. Visual-only FK produced exactly the
+same RGB and depth as full `mj_forward` for that pose, avoiding an unnecessary
+second contact solve. Sensor rendering disables aesthetic shadows/reflections;
+native physics and the human-view scene are unchanged.
+
+Early live RGB-D attempts stopped before the arm moved. 220648Z exposed a
+first-frame render initialization deadline; warmup is now excluded from control
+feedback. 221452Z/222304Z exposed the isolated IK environment's missing Pillow
+through an unnecessarily heavy contract import. The data validator now imports
+without image dependencies in the exact uv IK environment. Subsequent saved-pose
+and live traces exposed periodic render stalls; native physics continued with
+fresh 20ms samples. Never infer that an MC failure caused a host sensor stall.
+
+Offline co-load benchmarks (no simulator/controller/motion) reproduced these
+stalls with a static saved pose, including after the IK child exited. Limiting
+BLAS threads or disabling cyclic GC did not remove them. Default WSLg renderer
+was D3D12 Intel Iris Xe: maxima 0.55s. Explicit D3D12 RTX 4060 selection produced
+100 frames with maximum render/fit 0.1204s and no >0.15s frames in
+`rgbd-offline-coload-benchmark-20261106T225230Z`. This supports a renderer-path
+diagnosis, not a claim of every driver-internal cause. Use the documented
+[WSLg GPU selection](https://github.com/microsoft/wslg/wiki/GPU-selection-in-WSLg)
+only in the sensor process; verify the actual GL renderer string. No driver,
+system-wide GPU setting, controller or safety deadline is changed.
+
+The host model/camera cache is compiled before native stepping and binds source
+XML, camera code, MJB and exact 3.3.6 engine hashes. Body/joint/geom/contact/
+actuator/equality/initial-state arrays are compared before caching. The native
+3.3.7 simulator still loads the original selected XML. Active pose and image
+freshness remain 0.20s, with generation matching and no duplicate age refresh.
+At verified arrival the perception target freezes; contact/proprioceptive
+feedback owns closure/lift, with independent truth used only for safety/audit.
+Fresh live RGB-D grasp acceptance remains separate from these offline results.
+
+The RTX-selected live trial `20261106T225655Z` passed static RGB-D IK and began
+actual arm approach. Its 418 qualified images span about 33.7s; the actual
+renderer was D3D12 NVIDIA GeForce RTX 4060 Laptop GPU. Before closure, one
+foreground/silhouette depth contamination made the algebraic circle initialize
+at the 80mm radius bound, with 4.10mm residual. The image-fit gate stopped the
+arm and sent no close command; cleanup was confirmed. Native bottle tilt was
+only 0.00011--0.00026rad in the surrounding eight frames, so a falling bottle
+does not explain this fit error.
+
+`rgbd-failed-approach-frame-replay-20261106T230344Z` reproduces five bad frames
+from those native poses without new physics and retains RGB/depth/calibration.
+One-pixel RGB-mask boundary exclusion plus 32 bounded deterministic circle
+hypotheses and >=80% current-depth inliers resolves all five in
+`rgbd-occlusion-robust-fit-replay-20261106T230658Z`: XY errors 0.638--0.655mm,
+radius approximately 34.82mm, inlier fraction 1.0. This is confidence filtering
+of sensor pixels, not a change to a gripper contact surface or physics. The
+old residual/angular-support gates remain. The regression corrupts silhouette
+depth while preserving blue RGB and verifies that the fitted centre cannot
+jump onto a foreground hand. A new live test is still required.
+
+For the 150mm case, +0.12/+0.24rad waist-pitch screens and a separately tested
+closer/shoulder-aligned stance did not qualify; the explicit opposite cylindrical
+axis branch also failed its source-limit/clearance checks. No such failed
+candidate was sent to the physical controller. These local bounded failures
+are not proof of global IK impossibility. In particular, the existing 1.1rad
+arm-transition excursion bound and the source wrist/shoulder limits remain;
+unproven larger-arm or lower-body motions are not silently enabled.

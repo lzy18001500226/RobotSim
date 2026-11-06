@@ -134,7 +134,7 @@ def build(parent, *, both_hands=False, right_damping=None, noslip_iterations=0, 
     return out/'result.json'
 
 
-def add_reviewed_checkpoint(parent, capture):
+def add_reviewed_checkpoint(parent, capture, *, base_offset_xy=(0.,0.)):
     """Add only a native episode-boundary keyframe from the reviewed real pose."""
     from scripts.research.issue46.native_runtime.native_grasp_audit import apply_recorded_native_frame
     parent=Path(parent);capture=Path(capture);record=json.loads(parent.read_text())
@@ -145,7 +145,15 @@ def add_reviewed_checkpoint(parent, capture):
     # a real bottle knock-over in 165524Z. Never hide that failed trial.
     opening=next(r for r in trace if r['stage']=='HAND_OPEN_PREGRASP')
     row=min((r for r in rows if r['generation']==max(x['generation'] for x in rows)),key=lambda r:abs(r['host_monotonic_ns']*1e-9-opening['host_monotonic_s']))
+    offset=np.asarray(base_offset_xy,dtype=float)
+    if offset.shape!=(2,) or not np.isfinite(offset).all() or np.max(np.abs(offset))>.02000001:raise ValueError('checkpoint offset outside screened 20mm neighbourhood')
+    row=copy.deepcopy(row)
+    row['bodies']['pelvis']['position_m'][:2]=(np.asarray(row['bodies']['pelvis']['position_m'][:2])+offset).tolist()
     model=mujoco.MjModel.from_xml_path(record['generated']['host_scene']['path']);data=mujoco.MjData(model);apply_recorded_native_frame(model,data,row)
+    if np.any(offset):
+        from scripts.research.issue46.native_runtime.standing_side_grasp_static_search import contacts,native
+        pads,bad,table,robot_table=contacts(model,data,native.bid(model,'test_cylinder'))
+        if pads or bad or robot_table or not table:raise ValueError('offset episode initialization contact preflight failed')
     command=opening['published_target_rad']
     out=pg.create_unique_output_directory(ROOT/'reviews/issue-46',prefix='reviewed-native-checkpoint').native_path
     for key in ('host_scene','runtime_scene'):
@@ -166,4 +174,6 @@ def add_reviewed_checkpoint(parent, capture):
     cfg=yaml.safe_load(Path(json.loads(parent.read_text())['generated']['simulator_config']['path']).read_text());cfg['MujocoSimModule']['simulation_model']='/workspace/evidence/'+Path(record['generated']['runtime_scene']['path']).name
     dest=out/'simulator_stl_native_hand_table_control.yaml';pg.write_new_text(dest,yaml.safe_dump(cfg,sort_keys=False));record['generated']['simulator_config']={'path':str(dest),'sha256':digest(dest)}
     record['reviewed_checkpoint']={'classification':'SIMULATION_ONLY_FIXED_STANCE_NO_NAVIGATION','source_run':str(capture),'source_sim_time_s':row['sim_time_s'],'source_generation':row['generation'],'native_capture_sha256':digest(capture/'native_physics.jsonl'),'initial_arm_command_rad':command,'initial_arm_effort_nm':{n:float(row['joints'][n]['bias_force']) if n.startswith('right_') else 0. for n in command},'initial_pelvis_pose':row['bodies']['pelvis'],'initial_bottle_pose':row['bodies']['test_cylinder'],'keyframe_index':0,'equivalent_keyframe_indices':[0,1],'zero_episode_initial_velocities':True,'physical_arrays_unchanged':checked,'initial_state_is_not_grasp_success':True}
+    record['reviewed_checkpoint']['episode_boundary_base_offset_xy_m']=offset.tolist()
+    record['reviewed_checkpoint']['offset_is_not_navigation_or_region_qualification']=True
     pg.write_new_text(out/'result.json',json.dumps(record,indent=2)+'\n');pg.write_artifact_manifest(out);return out/'result.json'

@@ -784,6 +784,14 @@ def native_circle_arrival(contract):
  row=records[0];age=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9
  if not 0.<=age<=.20:raise RuntimeError('STALE_NATIVE_TCP_POSE')
  hand=row['bodies']['R_omnipicker_base_link'];bottle=row['bodies']['test_cylinder']
+ target_source='NATIVE_TRUTH_DIAGNOSTIC'
+ if contract.get('perception_latest'):
+  with open(contract['perception_latest']) as f:observed=json.load(f)
+  sensor_age=(time.monotonic_ns()-observed['source_host_ns'])*1e-9
+  if observed.get('pass') is not True or observed.get('generation')!=row['generation'] or not 0.<=sensor_age<=.20 or observed.get('object_truth_used_by_estimator') is not False:raise RuntimeError('RGBD_ARRIVAL_UNQUALIFIED')
+  position=observed['estimated_center_world_m'];axis=observed['axis_world']
+  if len(position)!=3 or not all(math.isfinite(v) for v in position) or axis!=[0.,0.,1.]:raise RuntimeError('INVALID_RGBD_ARRIVAL_POSE')
+  bottle={'position_m':position,'rotation':[1.,0.,0.,0.,1.,0.,0.,0.,1.]};target_source='FRESH_SIMULATED_HEAD_RGBD'
  R=hand['rotation'];B=bottle['rotation'];c=contract['circle_center_local_m'];height=contract['height_above_center_m']
  tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
  target=[bottle['position_m'][i]+height*B[3*i+2] for i in range(3)]
@@ -795,7 +803,7 @@ def native_circle_arrival(contract):
  local_axis=contract.get('local_bottle_axis_in_hand',[1.,0.,0.]);world_axis=[sum(R[3*i+j]*local_axis[j] for j in range(3)) for i in range(3)]
  angle=math.acos(max(-1.,min(1.,sum(world_axis[i]*B[3*i+2] for i in range(3)))))
  expected_raw=math.acos(max(-1.,min(1.,local_axis[0])))
- return {'pass':error<=.005 and nominal_error<=.005 and angle<=.03 and abs(raw_angle-expected_raw)<=.03,'position_error_m':error,'nominal_circle_error_m':nominal_error,'axis_error_rad':angle,'raw_hand_axis_to_bottle_rad':raw_angle,'planned_mesh_axis_offset_rad':expected_raw,'tcp_world_m':tcp,'target_world_m':target,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
+ return {'pass':error<=.005 and nominal_error<=.005 and angle<=.03 and abs(raw_angle-expected_raw)<=.03,'position_error_m':error,'nominal_circle_error_m':nominal_error,'axis_error_rad':angle,'raw_hand_axis_to_bottle_rad':raw_angle,'planned_mesh_axis_offset_rad':expected_raw,'tcp_world_m':tcp,'target_world_m':target,'bottle_center_world_m':bottle['position_m'],'bottle_axis_world':[B[2],B[5],B[8]],'target_source':target_source,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
 def native_bilateral_contact(close_start):
  path='/workspace/evidence/native_physics.jsonl'
  with open(path,'rb') as stream:
@@ -1075,7 +1083,7 @@ try:
  if HAND_RIGHT is not None and n.arm_fresh() and preclose_error<=.08 and preclose_waist_error<=.05 and arrival["pass"]:
   if TRACK_NATIVE_CIRCLE:
    n.refresh_native();bottle=n.native_row['bodies']['test_cylinder'];rotation=bottle['rotation']
-   phase={'phase':'CLOSING','native_arrival_pass':bool(arrival['pass']),'target_world_m':arrival['target_world_m'],'bottle_center_world_m':bottle['position_m'],'bottle_axis_world':[rotation[2],rotation[5],rotation[8]],'generation':n.native_generation,'created_host_ns':time.monotonic_ns()}
+   phase={'phase':'CLOSING','native_arrival_pass':bool(arrival['pass']),'target_world_m':arrival['target_world_m'],'bottle_center_world_m':arrival.get('bottle_center_world_m',bottle['position_m']),'bottle_axis_world':arrival.get('bottle_axis_world',[rotation[2],rotation[5],rotation[8]]),'target_source':arrival.get('target_source'),'generation':n.native_generation,'created_host_ns':time.monotonic_ns()}
    with open('/workspace/evidence/native_tracking_phase.tmp','w') as stream:json.dump(phase,stream)
    os.replace('/workspace/evidence/native_tracking_phase.tmp','/workspace/evidence/native_tracking_phase.json')
   n.closing_started=True

@@ -86,7 +86,7 @@ void mj_step(const mjModel* m,mjData* d) {
   long long started=mono_ns();
   fprintf(sink,"{\"host_monotonic_ns\":%lld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"model_keyframe_count\":%d,",started,(double)d->time,generation,version_real(),(double)m->opt.timestep,m->nkey);
   fprintf(sink,"\"solver_options\":{\"noslip_iterations\":%d,\"cone\":%d,\"impratio\":%.17g,\"iterations\":%d},\"bodies\":{",m->opt.noslip_iterations,m->opt.cone,(double)m->opt.impratio,m->opt.iterations);
-  body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");
+  body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");fputc(',',sink);body(m,d,"head_pitch_link");
   fputs("},\"joints\":{",sink);
   int emitted_joint=0;
   for (int j=0;j<m->njnt;j++) {

@@ -24,6 +24,13 @@ def circle_target(object_center, orientation, circle_center):
     return np.asarray(object_center) - np.asarray(orientation) @ np.asarray(circle_center)
 
 
+def circle_task_jacobian(model,data,hand,center,local_axis,dofs):
+    rotation=data.xmat[hand].reshape(3,3);point=data.xpos[hand]+rotation@center
+    linear=np.zeros((3,model.nv));angular=np.zeros((3,model.nv))
+    mujoco.mj_jac(model,data,linear,angular,point,hand)
+    return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,rotation@local_axis).T])
+
+
 def calibrate_contact_frame(capture_path, circle_review_path):
     """Bounded zero-step contact-centre solve on unchanged compiled geometry.
 
@@ -144,7 +151,11 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
         def residual(q):
             ik.set_pose(model,data,frozen,np.r_[seed[:2],q],np.zeros(3),0.,opening,np.zeros(3))
             return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,data.xmat[bottle].reshape(3,3)[:,2],local_bottle_axis)
-        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=50,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
+        def jacobian(q):
+            residual(q)
+            return circle_task_jacobian(model,data,hand,np.asarray(center),np.asarray([1.,0.,0.] if local_bottle_axis is None else local_bottle_axis),dofs)
+        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=70,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         arm=solved.x;e=residual(arm);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
         passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
         samples.append({'rise_m':float(dz),'position_error_m':float(np.linalg.norm(e[:3])),'axis_residual':float(np.linalg.norm(e[3:])),'forbidden_object_bodies':bad,'robot_table_bodies':robot_table,'right_arm_rad':arm.tolist(),'pass':bool(passed)})
@@ -198,7 +209,13 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
 def track_native(reference_path, latest_path, output_path):
     import os,time
     print(json.dumps({'tracker_initialization':'MODEL_LOADING','host_monotonic_ns':time.monotonic_ns()}),flush=True)
-    reference=json.loads(Path(reference_path).read_text());model=mujoco.MjModel.from_xml_path(reference['scene']['path'])
+    reference=json.loads(Path(reference_path).read_text())
+    if reference.get('host_model_cache'):
+        from scripts.research.issue46.perception.native_rgbd_grasp import load_cached_model
+        cache=reference['host_model_cache']
+        if hashlib.sha256(Path(cache['path']).read_bytes()).hexdigest()!=cache['sha256']:raise ValueError('tracking cache reference changed')
+        model=load_cached_model(reference['scene']['path'],cache['path'])
+    else:model=mujoco.MjModel.from_xml_path(reference['scene']['path'])
     print(json.dumps({'tracker_initialization':'MODEL_READY','host_monotonic_ns':time.monotonic_ns()}),flush=True)
     seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.;generation=None;trace=[]
     output_path=Path(output_path);stop=output_path.with_suffix('.stop')
@@ -219,6 +236,10 @@ def track_native(reference_path, latest_path, output_path):
             if generation is not None and row['generation']!=generation:raise RuntimeError('NATIVE_TRACKING_GENERATION_CHANGED')
             phase_path=output_path.with_name('native_tracking_phase.json')
             phase=json.loads(phase_path.read_text()) if phase_path.exists() else None
+            if reference.get('target_source')=='fresh-rgbd' and phase is None:
+                from scripts.research.issue46.perception.native_rgbd_grasp import qualify_estimate
+                estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
+                row['bodies']['test_cylinder']=qualify_estimate(estimate,generation=row['generation'])
             if phase is not None and not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=(9. if phase.get('phase')=='LIFTING' else 6.):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
             generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
             now=time.monotonic_ns()
@@ -239,15 +260,17 @@ def main():
     parser.add_argument("--circle-review", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--standing-state", type=Path, required=True)
+    parser.add_argument("--host-model-cache",type=Path)
     parser.add_argument("--grasp-height-above-center-m",type=float,default=0.0)
     parser.add_argument("--grasp-axis-tilt-rad",type=float,default=0.,help="measured functional-axis correction; 0.03rad orientation residual remains relative to the planned grasp frame")
+    parser.add_argument("--inverted-bottle-axis",action="store_true",help="explicit opposite axial branch of the same cylindrical grasp, unchanged source geometry and limits")
     parser.add_argument("--grasp-axis-calibration",type=Path,help="measured load-axis hypothesis required for a nontrivial task-frame correction")
     parser.add_argument("--use-measured-load-frame",action="store_true",help="apply measured <=5mm TCP correction without altering the approved nominal circle")
     parser.add_argument("--runtime-handoff",action="store_true")
     parser.add_argument("--physical-lift-test",action="store_true")
     parser.add_argument("--approach-opening-percent",type=int,default=100)
     parser.add_argument("--free-bottle-axis-roll",action="store_true",help="constrain reviewed bottle axis and circle centre, letting IK choose axial roll")
-    parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic"),default="historical-rgbd-replay",help="explicit target provenance; neither mode is fresh runtime RGB-D")
+    parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic","fresh-rgbd"),default="historical-rgbd-replay",help="explicit target provenance")
     parser.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     parser.add_argument("--waist-pitch-offset-rad",type=float,default=0.,help="offline source-limited forward-bend candidate; nonzero requires a separately supported waist control handoff")
     args = parser.parse_args()
@@ -264,7 +287,10 @@ def main():
     source = Path(candidate["scene"]["path"])
     if hashlib.sha256(source.read_bytes()).hexdigest() != candidate["scene"]["sha256"]:
         raise ValueError("source scene hash mismatch")
-    model = mujoco.MjModel.from_xml_path(str(source))
+    if args.host_model_cache:
+        from scripts.research.issue46.perception.native_rgbd_grasp import load_cached_model
+        model=load_cached_model(source,args.host_model_cache)
+    else:model = mujoco.MjModel.from_xml_path(str(source))
     q = np.array([state["waist_positions_rad"][n] for n in ("waist_yaw_joint","waist_pitch_joint")]+[state["arm_positions_rad"][n] for n in ik.ARM])
     approach_start=q.copy()
     if not np.isfinite(args.waist_pitch_offset_rad):raise ValueError("waist offset must be finite")
@@ -273,7 +299,12 @@ def main():
     if not limits[0]+1e-3<=q[1]<=limits[1]-1e-3:raise ValueError("planned waist pitch violates unchanged source joint limits")
     perception = candidate["perception"]
     object_center = np.array(perception["estimated_center_world_m"])
-    if args.target_source == "truth-diagnostic":
+    if args.target_source in ("truth-diagnostic","fresh-rgbd"):
+        if args.target_source=='fresh-rgbd':
+            from scripts.research.issue46.perception.native_rgbd_grasp import qualify_estimate
+            latest=Path(state['perception']['latest_path']);estimated=json.loads(latest.read_text())
+            pose=qualify_estimate(estimated,generation=state['native_snapshot']['generation'])
+            state['object_pose_world']={'xyz_m':pose['position_m'],'quaternion_wxyz':pose['quaternion_wxyz']}
         source_data=mujoco.MjData(model)
         if 'object_pose_world' in state:
             measured=state['object_pose_world'];j=ik.native.jid(model,'test_cylinder_free');adr=int(model.jnt_qposadr[j])
@@ -283,7 +314,7 @@ def main():
         mujoco.mj_forward(model,source_data)
         object_center=source_data.xpos[ik.native.bid(model,"test_cylinder")].copy()
         bottle_axis=source_data.xmat[ik.native.bid(model,'test_cylinder')].reshape(3,3)[:,2].copy()
-        perception={"source":"NATIVE_EPISODE_TRUTH_DIAGNOSTIC_ONLY" if 'object_pose_world' in state else 'XML_INITIAL_TRUTH_DIAGNOSTIC_ONLY',"object_center_world_m":object_center.tolist(),"scene_sha256":candidate["scene"]["sha256"],"native_snapshot":state.get('native_snapshot')}
+        perception=({**state['perception'],'observation_at_plan':estimated,'object_truth_used':False} if args.target_source=='fresh-rgbd' else {"source":"NATIVE_EPISODE_TRUTH_DIAGNOSTIC_ONLY" if 'object_pose_world' in state else 'XML_INITIAL_TRUTH_DIAGNOSTIC_ONLY',"object_center_world_m":object_center.tolist(),"scene_sha256":candidate["scene"]["sha256"],"native_snapshot":state.get('native_snapshot')})
     else:
         perception={**perception,"source":"HISTORICAL_RGBD_REPLAY_NOT_CURRENT_EPISODE","fresh_capture":False}
     # Grasp height is a task pose, not a physical/joint limit. Retain >=10mm
@@ -294,6 +325,7 @@ def main():
     if not 0<=args.grasp_height_above_center_m<=half_height-.01:
         raise ValueError("grasp section height must be within the canonical bottle body")
     theta=args.grasp_axis_tilt_rad;axis_calibration=None
+    if args.inverted_bottle_axis and (theta!=0. or args.grasp_axis_calibration or args.use_measured_load_frame):raise ValueError('opposite axial branch must remain separate from measured tilt/TCP hypotheses')
     if not np.isfinite(theta) or abs(theta)>.18:raise ValueError('task-frame tilt outside bounded measured calibration envelope')
     if abs(theta)>.028:
         if args.grasp_axis_calibration is None:raise ValueError('nontrivial grasp-frame correction requires independent measured load evidence')
@@ -304,13 +336,14 @@ def main():
         for observation in observations:
             source=Path(observation['capture'])/'native_tracking_target.failure-input.json'
             if hashlib.sha256(source.read_bytes()).hexdigest()!=observation['source_sha256']:raise ValueError('load-axis source evidence hash mismatch')
-    local_axis=np.array([np.cos(theta),0.,np.sin(theta)])
+    local_axis=np.array([-1.,0.,0.] if args.inverted_bottle_axis else [np.cos(theta),0.,np.sin(theta)])
     if axis_calibration is not None:local_axis=np.asarray(axis_calibration.get('local_bottle_axis_in_hand',local_axis),dtype=float)
-    if args.target_source!='truth-diagnostic':bottle_axis=np.array([0.,0.,1.])
+    if args.target_source=='historical-rgbd-replay':bottle_axis=np.array([0.,0.,1.])
     object_center+=args.grasp_height_above_center_m*bottle_axis
     # The canonical existing fixture is 70mm diameter. Match its circumference
     # with the nearest approved opening, then inspect adjacent closure commands.
-    match = min(samples,key=lambda s:abs(s["diameter_mm"]-70))
+    requested_diameter_mm=float(estimated['diameter_m']*1000) if args.target_source=='fresh-rgbd' else 70.
+    match = min(samples,key=lambda s:abs(s["diameter_mm"]-requested_diameter_mm))
     command = match["opening_percent"]
     open_command=args.approach_opening_percent
     if not command+5<=open_command<=100:raise ValueError("approach opening must exceed bottle-match opening by at least 5 percent")
@@ -394,8 +427,10 @@ def main():
     record["waist_actuation_required"]=args.waist_pitch_offset_rad!=0
     record["root_legs_waist_frozen"]=args.waist_pitch_offset_rad==0
     record["root_and_legs_frozen"]=True
-    record["fresh_runtime_rgbd_verified"]=False
+    record["fresh_runtime_rgbd_verified"]=args.target_source=='fresh-rgbd'
+    if args.host_model_cache:record['host_model_cache']={'path':str(args.host_model_cache),'sha256':hashlib.sha256(args.host_model_cache.read_bytes()).hexdigest()}
     record['local_bottle_axis_in_hand']=local_axis.tolist();record['grasp_axis_tilt_rad']=theta
+    record['explicit_axial_branch']='HAND_MINUS_X' if args.inverted_bottle_axis else 'HAND_PLUS_X'
     if args.use_measured_load_frame:record['execution_grasp_frame']={'center_m':center.tolist(),'nominal_circle_center_m':nominal_center.tolist(),'local_bottle_axis_in_hand':local_axis.tolist(),'classification':'MEASURED_LOAD_FRAME_HYPOTHESIS_NOT_MODEL_CHANGE'}
     if axis_calibration is not None:record['axis_calibration']={'path':str(args.grasp_axis_calibration),'sha256':hashlib.sha256(args.grasp_axis_calibration.read_bytes()).hexdigest(),'record':axis_calibration}
     if args.physical_lift_test and rows[0]['pass']:
