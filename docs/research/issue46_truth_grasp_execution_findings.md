@@ -861,3 +861,5 @@ Run81报告文字称转向降到0.12，但原始velocity_command_trace有223条�
 https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#option
 
 完成隔离后，等待真实MotionControlModule Started Succeeded再进行6s无物理ROS图检查，公开arm/hand各恰好1个HAL owner，MC只在两个私有inactive话题各注册1个endpoint，速度publisher为0；无action/无physics，audit归档后容器确认删除。证据fetch-chair-inactive-channels-ready-graph-20261107T201903Z。因此不会通过“接受多个公开publisher”来绕过控制权问题。
+
+202941Z NoSlip2物理运行完成RGB-D抓取、抬升、收臂并写出carry_ready，但8s保载观察函数把require_fresh_sample返回的验证metadata当成含source stamp的记录，因host_monotonic_ns字段缺失在任何行走前中止。不是掉瓶或MC错误，数值诊断的长持握效果仍未完成。给验证metadata增加真实原始host_monotonic_ns（不改年龄阈值或状态），并让完整父交接分支测试直接读取真实JSON/真实freshness函数，避免mock掩盖API形状错误。原失败与容器删除证据保留。

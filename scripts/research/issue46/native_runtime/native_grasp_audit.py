@@ -175,7 +175,7 @@ def require_fresh_sample(path, *, now_ns=None):
         raise RuntimeError("NATIVE_OBSERVER_STALE_SAMPLE")
     if row.get("engine_version") != 337 or any(row.get("bodies", {}).get(n) is None for n in ("pelvis", "R_omnipicker_base_link", "test_cylinder")):
         raise RuntimeError("NATIVE_OBSERVER_MISSING_REQUIRED_BODIES")
-    return {"pass": True, "age_s": age, "engine_version": row["engine_version"], "sim_time_s": row["sim_time_s"], "generation": row["generation"], "process_pid":row.get("process_pid")}
+    return {"pass": True, "age_s": age, "engine_version": row["engine_version"], "host_monotonic_ns":row["host_monotonic_ns"], "sim_time_s": row["sim_time_s"], "generation": row["generation"], "process_pid":row.get("process_pid")}
 
 
 def await_native_startup_ready(path, *, timeout_s=4.):

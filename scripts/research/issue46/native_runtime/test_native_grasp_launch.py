@@ -56,6 +56,7 @@ class NativeLaunchTests(TestCase):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)/'native.jsonl';p.write_text(json.dumps(row)+'\n'+ '{"partial":')
             self.assertTrue(audit.require_fresh_sample(p,now_ns=1100000000)['pass'])
+            self.assertEqual(audit.require_fresh_sample(p,now_ns=1100000000)['host_monotonic_ns'],1000000000)
             with self.assertRaisesRegex(RuntimeError,'STALE'):audit.require_fresh_sample(p,now_ns=1300000000)
             row['bodies']['pelvis']=None;p.write_text(json.dumps(row)+'\n')
             with self.assertRaisesRegex(RuntimeError,'BODIES'):audit.require_fresh_sample(p,now_ns=1100000000)
