@@ -471,6 +471,16 @@ class NativeArmRelayTests(TestCase):
         msg=NS(header=NS(stamp=NS(sec=1,nanosec=5)),joints=[NS(name=name,position=.2,velocity=.1,effort=.3,stiffness=50.,damping=3.) for name in arm])
         return n,msg,sent,clock
 
+    def test_native_source_preserves_parent_ready_result_contract(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import arm_bootstrap_hold_script
+        code=arm_bootstrap_hold_script({},relay_arms=True)
+        tree=ast.parse(code)
+        dictionaries=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="dict" and any(k.arg=="ready" for k in n.keywords)]
+        self.assertEqual(len(dictionaries),1)
+        fields={k.arg for k in dictionaries[0].keywords}
+        self.assertTrue({"ready","subscription_count","arm_positions_rad","transport_only"}<=fields)
+        self.assertNotIn("TARGET=(.4",code)
+
     def test_active_relay_forwards_the_original_message_and_rejects_duplicates(self):
         n,msg,sent,clock=self.relay_method()
         n.on_mc_arm(msg)

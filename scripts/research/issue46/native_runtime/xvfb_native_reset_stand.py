@@ -753,7 +753,7 @@ try:
  while rclpy.ok() and time.monotonic()<end and not STOP.exists():
   n.send();rclpy.spin_once(n,timeout_sec=.001)
   if not ready and all(name in n.state for name in ARM) and n.pub.get_subscription_count()==1:
-   ready=True;print(json.dumps(dict(ready=True,transport_only=True,native_source_controls_arms=True,arm_positions_rad=n.state)),flush=True)
+   ready=True;print(json.dumps(dict(ready=True,subscription_count=n.pub.get_subscription_count(),transport_only=True,native_source_controls_arms=True,arm_positions_rad=n.state)),flush=True)
   next_tick+=.01
   while rclpy.ok() and time.monotonic()<next_tick:rclpy.spin_once(n,timeout_sec=.001)
  print(json.dumps(dict(stopped=STOP.exists(),relay_count=n.arm_relay_count,positive_gain_command_count=n.positive_count)),flush=True)
