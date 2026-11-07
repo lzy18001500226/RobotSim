@@ -56,7 +56,11 @@ def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=No
         if not math.isfinite(j["qvel"]) or abs(j["qvel"]) > speed or j.get("max_abs_qvel_since_previous_sample",abs(j["qvel"]))>speed:
             return "SOURCE_JOINT_SPEED:" + name
     if robot_bodies:
-        for contact in row.get("contacts",[]):
+        if (row.get("contact_capture_scope")!="ALL_COMPILED_GEOM_CONTACTS" or
+                not isinstance(row.get("contacts"),list) or
+                len(row["contacts"])!=row.get("active_contact_count")):
+            return "INCOMPLETE_NATIVE_CONTACT_CAPTURE"
+        for contact in row["contacts"]:
             if contact["efc_address"]<0 or contact["distance_m"]>=-.001 or contact["local_force_torque"][0]<=.1:continue
             a,b=contact["body1"],contact["body2"];ra,rb=a in robot_bodies,b in robot_bodies
             if ra and rb:return "ACTIVE_ROBOT_SELF_COLLISION:"+a+":"+b

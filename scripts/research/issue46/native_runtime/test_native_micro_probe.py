@@ -99,7 +99,11 @@ class MicroTests(unittest.TestCase):
     def test_source_native_arm_motion_keeps_active_collision_guard(self):
         p=dict(z=.65,roll=0.,pitch=0.,vx=0.,vy=0.)
         bodies=["left_wrist_roll_link","left_ankle_roll_link","right_ankle_roll_link"]
-        def row(a,b,address=0):return dict(joints={},contacts=[dict(body1=a,body2=b,efc_address=address,distance_m=-.002,local_force_torque=[1.])])
+        def row(a,b,address=0):return dict(joints={},active_contact_count=1,contact_capture_scope="ALL_COMPILED_GEOM_CONTACTS",contacts=[dict(body1=a,body2=b,efc_address=address,distance_m=-.002,local_force_torque=[1.])])
+        missing=row("world","left_ankle_roll_link");missing.pop("contact_capture_scope")
+        self.assertEqual(micro.physical_fault(missing,p,{},robot_bodies=bodies),"INCOMPLETE_NATIVE_CONTACT_CAPTURE")
+        missing=row("world","left_ankle_roll_link");missing["active_contact_count"]=2
+        self.assertEqual(micro.physical_fault(missing,p,{},robot_bodies=bodies),"INCOMPLETE_NATIVE_CONTACT_CAPTURE")
         self.assertIsNone(micro.physical_fault(row("world","left_ankle_roll_link"),p,{},robot_bodies=bodies))
         self.assertIsNone(micro.physical_fault(row("left_wrist_roll_link","right_ankle_roll_link",-1),p,{},robot_bodies=bodies))
         self.assertTrue(micro.physical_fault(row("left_wrist_roll_link","right_ankle_roll_link"),p,{},robot_bodies=bodies).startswith("ACTIVE_ROBOT_SELF_COLLISION"))

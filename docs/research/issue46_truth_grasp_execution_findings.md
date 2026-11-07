@@ -807,3 +807,22 @@ Run81报告文字称转向降到0.12，但原始velocity_command_trace有223条�
 123648Z恢复pyramidal/1后仍未到目标，在启动约4.353s（已发零并请求STAND）发生yaw=-0.120073rad而中止，不能把全局求解设置单独认定为根因。原生非地面受力接触未见机器人自碰撞，只有瓶-桌支撑。源/当前IMU站点imu_0及安装变换也一致。旧Run81前2s实际forward约+93mm，而121732Z在同样0.14输入的前2s约-13mm；0.5..1.9s新MC髋俯仰目标范围约0.02..0.03rad，旧记录约0.14..0.19rad，不能当缓存未更新或简单符号翻转。
 
 下一项只读诊断复用旧Issue80 McRLDebug记录器及其已构建ROS覆盖层，不执行旧运动脚本。MC消息introspection库仍为935d4226...，字段为header/obs_vec/action_vec；只提取原快照函数，原记录器源码不改。真实Humble无物理构造确认仅一个RL debug订阅、0个action client、0个速度publisher（只有标准parameter_events），实际schema匹配。证据 reviewed-mc-rl-debug-humble-smoke-20261107T130324Z。显式 --capture-mc-rl-debug 要求当前唯一真实MC publisher身份与实际类型包到达后才允许该诊断运动；向量索引只依匹配配置解释。Micro另补原始IMU、ROS odom及leg command header，零/非单位IMU四元数拒绝，不能以新鲜但零填充的消息通过。
+
+
+132410Z修复debug图发现等待后，实际唯一MC发布者mc_ros2_node158已确认，采集到SD的85/14和LD的111/29向量。匹配配置的command槽0..2在0.14/0/0.075外部输入时观测为约0.126/0/0.1125，零命令后为0；不据此猜测内部缩放字段语义。它支持“非零/零已进入策略命令槽”，仍不是显式MC收件ACK或物理运动/停止证明。IMU、ROS odom与native yaw同时对照一致，四元数有效，不能盲目翻转坐标符号。
+
+该数据还显示显著的全身执行差异：当前外部保持器把肘部维持约-1.14rad，旧成功行走约-0.36rad；旧肩yaw约±0.6..0.7而当前接近0。135741Z仅恢复到私有观察话题的MC arm publisher（没有改变实际arm控制），得到557帧SDK输出，其中447帧正增益：SD为0/0，LD后出现原厂50/3等目标。旧“在SD先等MC双臂正增益再允许非零”的原型前提不成立，不能把这个失败认作缺少MC能力或厂家机械资料。
+
+原生arm中继随后按真实SDK状态修正：以原厂策略default_dof_pos的14轴参考姿态及已有bootstrap增益保持SD上肢；LD有效正增益输出原样转发；回到inactive时以已有源控制保持测得姿态。没有改MC/ONNX、机器人、增益/力上限，也没有qpos写入。源参考姿态21点静态过渡无新增自穿，COM到支撑凸包最小57.85mm，最小源关节位置余量0.261rad（source-mc-reference-arm-posture-static-20261107T135951Z）；仅静态资格，非动态成功。初次纯inactive透明转发暴露腕部被动下垂与源限位拒绝，不能删除物理限位来通过。
+
+新增模式继续检查实际全29轴源速度/位置、真Root速度与姿态，并检查活跃受力自碰撞/非足地面接触。零SD增益只计source transport，不计主动控制；LD时必须同时观测到实际原厂正增益源。无物理Humble已执行实际SDK初始化/张开消息构造、保持参考姿态构造和退出验证，真实机器人发布次数0（source-reference-idle-native-ld-humble-smoke-20261107T150902Z）。当前正在进行一次不同控制交接条件的有界物理验证，尚不宣布四方向或整条Goal通过。
+
+### 原生上肢接管实测与观测覆盖修正（2026-11-07 15:57 UTC）
+
+151039Z在运动前因旧消费者必需的last_unique_source_receipt_s字段遗漏退出；修复后以真实Humble producer/consumer夹具核对，未放宽0.20s新鲜度。152107Z实际LD正增益上肢接管成功，但0.14输入在首个非零后0.424857s出现native根平移速度0.251271m/s，按原0.20门中止。153630Z单独对比既有最低0.12输入，仍在0.315094s出现0.228874m/s，13次非零后即零速并终止；未达3cm、不允许rearm，两个容器均确认删除。不能声称上肢接管已经解决行走或完整Goal。
+
+发现旧C observer的contacts数组只输出瓶/桌相关接触，虽然active_contact_count是全模型总数。之前“没有其他机器人受力接触”的表述因此不足以证明全模型无自碰撞；新micro接触guard此前缺少完整捕获的前提。本次修正只读采集：输出全部已编译接触、显式ALL_COMPILED_GEOM_CONTACTS及全部actuator ctrl/force和每轴qfrc_actuator/constraint/passive/applied。微调入口必须捕获scope正确且记录条数等于ncon，否则运动拒绝。未改变碰撞过滤或物理状态。
+
+用实际3.3.7缓存绑定对153630Z五个保存的qpos做零步静态重建，完整接触均为单一raicom_floor与脚、瓶与桌，无重叠地板或机器人自接触；首次速度超限时右脚最大几何进入约4.313mm。它仅是静态几何证据，缺少当时ctrl/freejoint速度，不能从重算力推断真实冲量因果。证据native337-abort-all-contact-static-audit-20261107T154453Z。下一项应比对真实MC腿目标与实际native力矩/接触变化，不能继续盲调速度。
+
+新只读C observer严格编译通过；3.3.7独立小型合成夹具实测两motor ctrl=.25/.10，qfrc_actuator=.35且全接触记录完整（native337-force-contact-observer-window-fixture-20261107T155710Z），未启动X2/MC。最初单步夹具取到了mj_loadXML内部模型校验产生的首帧，修正为检查同一受控数据后续0.021s帧；失败和解释均保留，非ABI不匹配。138项聚焦测试通过。时钟服务重新确认active/enabled；没有继续停止或更改配置。

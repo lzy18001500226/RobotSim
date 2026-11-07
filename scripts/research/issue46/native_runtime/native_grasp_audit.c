@@ -161,7 +161,7 @@ void mj_step(const mjModel* m,mjData* d) {
   for (int j=0;j<m->njnt;j++) {
     const char* joint_name=name_real(m,mjOBJ_JOINT,j);
     if(!joint_name || m->jnt_type[j]==mjJNT_FREE || m->jnt_type[j]==mjJNT_BALL)continue;
-    fprintf(sink,"%s\"%s\":{\"q\":%.17g,\"qvel\":%.17g,\"bias_force\":%.17g,\"max_abs_qvel_since_previous_sample\":%.17g}",emitted_joint++?",":"",joint_name,(double)d->qpos[m->jnt_qposadr[j]],(double)d->qvel[m->jnt_dofadr[j]],(double)d->qfrc_bias[m->jnt_dofadr[j]],(double)peak_qvel[j]);
+    fprintf(sink,"%s\"%s\":{\"q\":%.17g,\"qvel\":%.17g,\"bias_force\":%.17g,\"max_abs_qvel_since_previous_sample\":%.17g,\"qfrc_actuator\":%.17g,\"qfrc_constraint\":%.17g,\"qfrc_passive\":%.17g,\"qfrc_applied\":%.17g}",emitted_joint++?",":"",joint_name,(double)d->qpos[m->jnt_qposadr[j]],(double)d->qvel[m->jnt_dofadr[j]],(double)d->qfrc_bias[m->jnt_dofadr[j]],(double)peak_qvel[j],(double)d->qfrc_actuator[m->jnt_dofadr[j]],(double)d->qfrc_constraint[m->jnt_dofadr[j]],(double)d->qfrc_passive[m->jnt_dofadr[j]],(double)d->qfrc_applied[m->jnt_dofadr[j]]);
   }
   memset(peak_qvel,0,sizeof(peak_qvel));
   fprintf(sink,"},\"joint_velocity_window_start_sim_time_s\":%.17g,\"claw_actuators\":{",qvel_window_start);
@@ -172,15 +172,18 @@ void mj_step(const mjModel* m,mjData* d) {
     if(a<0)fputs("null",sink);
     else fprintf(sink,"{\"ctrl\":%.17g,\"force\":%.17g}",(double)d->ctrl[a],(double)d->actuator_force[a]);
   }
-  fprintf(sink,"},\"active_contact_count\":%d,\"contacts\":[",d->ncon);
+  fputs("},\"actuators\":{",sink);
+  for(int a=0;a<m->nu;a++) {
+    const char* actuator_name=name_real(m,mjOBJ_ACTUATOR,a);
+    fprintf(sink,"%s\"%s\":{\"ctrl\":%.17g,\"force\":%.17g,\"transmission_type\":%d,\"transmission_id\":%d}",a?",":"",actuator_name?actuator_name:"",(double)d->ctrl[a],(double)d->actuator_force[a],m->actuator_trntype[a],m->actuator_trnid[2*a]);
+  }
+  fprintf(sink,"},\"active_contact_count\":%d,\"contact_capture_scope\":\"ALL_COMPILED_GEOM_CONTACTS\",\"contacts\":[",d->ncon);
   int bottle=id_real(m,mjOBJ_BODY,"test_cylinder");
-  int table=id_real(m,mjOBJ_BODY,"raicom_table_table"),emitted=0;
-  if(table<0)table=id_real(m,mjOBJ_BODY,"raicom_table");
+  int emitted=0;
   for(int i=0;i<d->ncon;i++) {
     const mjContact* c=d->contact+i;
     if(c->geom1<0 || c->geom2<0) continue;
     int b1=m->geom_bodyid[c->geom1],b2=m->geom_bodyid[c->geom2];
-    if(b1!=bottle && b2!=bottle && b1!=table && b2!=table) continue;
     const char* n1=name_real(m,mjOBJ_BODY,b1);const char* n2=name_real(m,mjOBJ_BODY,b2);
     const char* g1=name_real(m,mjOBJ_GEOM,c->geom1);const char* g2=name_real(m,mjOBJ_GEOM,c->geom2);
     /* Never let anonymous strings produce malformed JSON. Source identifiers
