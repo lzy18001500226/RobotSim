@@ -30,8 +30,27 @@ class CarryNavigationTests(unittest.TestCase):
         ns=dict(environment='source /opt/ros/humble/setup.bash; ',setup='/workspace/debug/setup.bash',shlex=shlex,expected_debug_node='mc_ros2_node158',args=SimpleNamespace(carry_timeout_s=90.,carry_goal_world_xy=[-.45,1.]))
         exec(compile(ast.Module(body=[statement],type_ignores=[]),'real_debug_command','exec'),ns)
         parts=shlex.split(ns['debug_command'])
-        self.assertEqual(parts[parts.index('--max-duration-s')+1],'170.0')
+        self.assertEqual(parts[parts.index('--max-duration-s')+1],'90')
         self.assertNotIn('str(args',ns['debug_command'])
+
+    def test_pinned_debug_collectors_real_argument_validator_accepts_carry_capture(self):
+        import argparse,contextlib,io,sys
+        from unittest import mock
+        source=Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-80/foundationwalk-final-left-right-turns-run65-20261022T073901Z/issue80_mc_rl_debug_capture.py')
+        tree=ast.parse(source.read_text());main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='main')
+        prefix=[]
+        for node in main.body:
+            if isinstance(node,ast.Expr) and ast.unparse(node)=='rclpy.init()':break
+            prefix.append(node)
+        self.assertTrue(prefix)
+        args=['collector','--output','/unused','--ready-marker','/unused2','--summary','/unused3','--max-duration-s','90']
+        with mock.patch.object(sys,'argv',args):
+            ns=dict(argparse=argparse,__doc__='validation only')
+            exec(compile(ast.Module(body=prefix,type_ignores=[]),'real_collector_argument_validation','exec'),ns)
+            self.assertEqual(ns['args'].max_duration_s,90.)
+        args[-1]='170'
+        with mock.patch.object(sys,'argv',args),contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+            exec(compile(ast.Module(body=prefix,type_ignores=[]),'real_collector_argument_validation','exec'),dict(argparse=argparse,__doc__='validation only'))
 
     def test_invalid_goals_and_deadlines_are_not_executable(self):
         for goal,seconds in (([2.,0.],90.),([float("nan"),0.],90.),([0.,0.],91.)):

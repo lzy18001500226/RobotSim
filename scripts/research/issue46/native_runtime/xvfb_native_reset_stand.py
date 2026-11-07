@@ -2134,7 +2134,7 @@ def main() -> None:
             expected_debug_node="mc_ros2_node"+next(iter(mc_pids))
             setup_host=Path(result["mc_rl_debug_capture"]["overlay_setup"])
             setup="/workspace/robotsim/"+str(setup_host.relative_to(EVIDENCE_REPO))
-            debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s "+str(args.carry_timeout_s+80 if args.carry_goal_world_xy is not None else 45)+" > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
+            debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s "+str(90 if args.carry_goal_world_xy is not None else 45)+" > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
             run(["docker","exec","-d",container,"bash","-lc",debug_command],timeout_s=5.)
             wait_for(output/"mc_rl_debug_ready.json",'"status"',timeout_s=8.)
             debug_ready=json.loads((output/"mc_rl_debug_ready.json").read_text())
