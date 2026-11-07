@@ -1814,7 +1814,13 @@ def main() -> None:
                 reset_deadline=time.monotonic()+1.
                 while time.monotonic()<reset_deadline:
                     reset_after=json.loads((output/"native_latest.json").read_text())
-                    if native_grasp_audit.native_reset_generation_effect(reset_before,reset_after):
+                    if args.micro_base_probe and args.native_reset_input=="button":
+                        effect=native_grasp_audit.native_reset_dispatch_evidence(output/"native_physics.jsonl",reset_data,expected_pid=pid)
+                        if effect["pass"]:
+                            fresh=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+                            if fresh["generation"]==effect["after_generation"]:
+                                result["native_reset_effect"]=effect;break
+                    elif native_grasp_audit.native_reset_generation_effect(reset_before,reset_after):
                         result["native_reset_effect"]={"before_sim_time_s":reset_before["sim_time_s"],"after_sim_time_s":reset_after["sim_time_s"],"before_generation":reset_before["generation"],"after_generation":reset_after["generation"]};break
                     time.sleep(.01)
                 else:raise RuntimeError("NATIVE_RESET_EFFECT_UNCONFIRMED")

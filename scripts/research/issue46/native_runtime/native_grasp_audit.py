@@ -342,3 +342,39 @@ def native_reset_generation_effect(before,after):
             and after["host_monotonic_ns"]>before["host_monotonic_ns"]
             and after["generation"]==before["generation"]+1
             and 0.<=after["sim_time_s"]<before["sim_time_s"])
+
+def native_reset_dispatch_evidence(path, dispatch, *, expected_pid):
+    """Prove one reset at this dispatch using native history, not an old sample."""
+    event=dispatch.get("event",{})
+    receipt=event.get("native_ui_receipt",{})
+    press=receipt.get("event",{})
+    stamp=event.get("dispatch_monotonic_ns")
+    if (event.get("status")!="RESET_BUTTON_CLICKED" or
+            event.get("mouse_button_events_sent")!=2 or
+            receipt.get("status")!="NATIVE_UI_PRESS_CONFIRMED" or
+            press.get("pid")!=expected_pid or press.get("returned_item")!="Reset" or
+            press.get("event_type")!=2 or not isinstance(stamp,int) or
+            not stamp<=press.get("host_ns",0)<=stamp+750000000):
+        return {"pass":False,"reason":"RESET_NATIVE_PRESS_UNQUALIFIED"}
+    rows=[]
+    for line in Path(path).read_bytes()[-8*1048576:].splitlines():
+        try:row=json.loads(line)
+        except (ValueError,UnicodeDecodeError):continue
+        if row.get("process_pid")==expected_pid and row.get("engine_version")==337:
+            rows.append(row)
+    before=[r for r in rows if r["host_monotonic_ns"]<=stamp]
+    if not before:return {"pass":False,"reason":"NO_NATIVE_PREDISPATCH_SAMPLE"}
+    before=max(before,key=lambda r:r["host_monotonic_ns"])
+    if stamp-before["host_monotonic_ns"]>200000000:
+        return {"pass":False,"reason":"STALE_NATIVE_PREDISPATCH_SAMPLE"}
+    after=[r for r in rows if r["host_monotonic_ns"]>stamp]
+    if any(r["generation"] not in (before["generation"],before["generation"]+1) for r in after):
+        return {"pass":False,"reason":"UNEXPECTED_MULTIPLE_RESET_GENERATIONS"}
+    boundary=[r for r in after if r["generation"]==before["generation"]+1 and 0.<=r["sim_time_s"]<=.05 and r["host_monotonic_ns"]>=press["host_ns"]-20000000]
+    if not boundary:return {"pass":False,"reason":"NO_POSTDISPATCH_RESET_BOUNDARY"}
+    first=min(boundary,key=lambda r:r["host_monotonic_ns"])
+    return {"pass":True,"classification":"NATIVE_DISPATCH_BOUND_RESET_GENERATION",
+            "before_generation":before["generation"],"after_generation":first["generation"],
+            "before_sim_time_s":before["sim_time_s"],"after_sim_time_s":first["sim_time_s"],
+            "dispatch_monotonic_ns":stamp,"boundary_host_ns":first["host_monotonic_ns"],
+            "dispatch_to_boundary_s":(first["host_monotonic_ns"]-stamp)*1e-9}

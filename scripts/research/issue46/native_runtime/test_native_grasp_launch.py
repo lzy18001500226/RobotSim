@@ -714,4 +714,36 @@ class GainCaptureReadinessTests(TestCase):
             self.replay(.1,freeze_stamps=True)
 
 
+
+class ResetDispatchHistoryTests(TestCase):
+    def evaluate(self, rows, *, event_change=None, partial=False):
+        import tempfile,json
+        event={"status":"RESET_BUTTON_CLICKED","mouse_button_events_sent":2,
+               "dispatch_monotonic_ns":1000000000,
+               "native_ui_receipt":{"status":"NATIVE_UI_PRESS_CONFIRMED","event":{
+                   "pid":7,"returned_item":"Reset","event_type":2,"host_ns":1050000000}}}
+        if event_change:event.update(event_change)
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/"trace.jsonl"
+            p.write_text("".join(json.dumps(r)+"\n" for r in rows)+('{"incomplete":' if partial else ""))
+            return audit.native_reset_dispatch_evidence(p,{"event":event},expected_pid=7)
+    @staticmethod
+    def row(t,g,sim,pid=7):
+        return dict(host_monotonic_ns=t,process_pid=pid,engine_version=337,generation=g,sim_time_s=sim)
+    def test_short_prereset_clock_and_later_readback_are_valid(self):
+        rows=[self.row(990000000,1,.001),self.row(1060000000,2,.001),self.row(1150000000,2,.1)]
+        self.assertTrue(self.evaluate(rows,partial=True)["pass"])
+    def test_duplicate_time_without_generation_reset_is_not_reset(self):
+        self.assertFalse(self.evaluate([self.row(990000000,1,.001),self.row(1060000000,1,.001)])["pass"])
+    def test_predispatch_reset_does_not_count(self):
+        self.assertFalse(self.evaluate([self.row(900000000,0,5.),self.row(990000000,1,.001),self.row(1060000000,1,.06)])["pass"])
+    def test_multiple_resets_fail_closed(self):
+        r=self.evaluate([self.row(990000000,1,.1),self.row(1060000000,2,.001),self.row(1100000000,3,.001)])
+        self.assertEqual(r["reason"],"UNEXPECTED_MULTIPLE_RESET_GENERATIONS")
+    def test_stale_or_wrong_identity_baseline_fails(self):
+        for rows in ([self.row(700000000,1,2.),self.row(1060000000,2,.001)],[self.row(990000000,1,.1,pid=9),self.row(1060000000,2,.001)]):
+            self.assertFalse(self.evaluate(rows)["pass"])
+    def test_unconfirmed_press_fails(self):
+        self.assertFalse(self.evaluate([self.row(990000000,1,.1),self.row(1060000000,2,.001)],event_change={"mouse_button_events_sent":0})["pass"])
+
 if __name__=='__main__':main()
