@@ -1095,6 +1095,7 @@ def main() -> None:
     parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
     parser.add_argument("--micro-command-speed",type=float,default=.2)
     parser.add_argument("--micro-heading-hold",action="store_true")
+    parser.add_argument("--reviewed-foundationwalk-profile",action="store_true")
     parser.add_argument("--lateral-probe-mps", type=float, help="one bounded lateral cmd_vel probe in body-frame m/s; requires the official bridge")
     parser.add_argument("--lateral-probe-duration-s", type=float, default=0.60, help="duration for --lateral-probe-mps; no hand or arm command is sent")
     parser.add_argument("--inspect-vr-topic", action="store_true", help="read-only discovery of the delivered VR teleoperation topic type; does not change the MC action")
@@ -1544,6 +1545,14 @@ def main() -> None:
             "-e", "DISPLAY=" + (args.interactive_x11_display or ":99"), "-e", "LD_LIBRARY_PATH=" + ("" if args.interactive_x11_display else "/tmp/xvfb-libs"), "-e", "LIBGL_ALWAYS_SOFTWARE=1", "-e", "MESA_LOADER_DRIVER_OVERRIDE=llvmpipe",
             "-e", "HOME=/tmp", "-e", "ROS_DOMAIN_ID=77" if (args.run_vr_zero_probe or args.run_vr_right_controller_x_probe) else "ROS_DOMAIN_ID=20", "-e", "RMW_IMPLEMENTATION=rmw_fastrtps_cpp", IMAGE, "sleep", "infinity",
         ]
+        if args.reviewed_foundationwalk_profile:
+            source_profile,profile_record=stl_hand_startup.reviewed_foundationwalk_profile(RUNTIME)
+            staged_profile=output/"foundationwalk_reused_issue80.yaml"
+            pg.write_new_bytes(staged_profile,source_profile.read_bytes())
+            command[command.index(IMAGE):command.index(IMAGE)]=[
+                "--mount",f"type=bind,source={staged_profile},target=/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml,readonly"]
+            result["foundationwalk_reviewed_profile"]={**profile_record,"staged_path":str(staged_profile)}
+
         if args.interactive_x11_display:
             x_socket = Path("/tmp/.X11-unix")
             if not x_socket.is_dir() or not any(x_socket.glob("X*")):
@@ -1564,6 +1573,12 @@ def main() -> None:
 
         pg.write_new_text(output / "docker_command.json", json.dumps(command, indent=2) + "\n")
         run(command, timeout_s=12.0)
+        if args.reviewed_foundationwalk_profile:
+            mounted=run(["docker","exec",container,"sha256sum","/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml"],timeout_s=5.)
+            pg.write_new_text(output/"foundationwalk_mounted_sha256.stdout",mounted.stdout)
+            if mounted.stdout.split()[0]!=profile_record["overlay_sha256"]:
+                raise RuntimeError("REVIEWED_FOUNDATIONWALK_MOUNT_NOT_CONFIRMED")
+            result["foundationwalk_reviewed_profile"]["actual_container_sha256"]=mounted.stdout.split()[0]
         if not args.interactive_x11_display:
             run(["docker", "exec", "-d", container, "bash", "-lc", "/opt/xvfb/usr/bin/Xvfb :99 -screen 0 1706x1066x24 -ac -nolisten tcp > /workspace/evidence/xvfb.log 2>&1"], timeout_s=5.0)
         display_number=(args.interactive_x11_display or ":99").split(":")[-1].split(".")[0]

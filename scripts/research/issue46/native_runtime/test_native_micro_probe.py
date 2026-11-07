@@ -379,4 +379,21 @@ class SteadyBridgeTests(unittest.TestCase):
         self.assertEqual(sent[1].header.stamp,"REAL_BACKWARD_WALL_STAMP")
 
 
+class ReviewedFoundationWalkProfileTests(unittest.TestCase):
+    def test_exact_prior_overlay_and_runtime_identity_are_reused(self):
+        from scripts.research.issue46.native_runtime.stl_hand_startup import reviewed_foundationwalk_profile
+        runtime=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026")
+        path,record=reviewed_foundationwalk_profile(runtime)
+        self.assertEqual(record["overlay_sha256"],"6eb712872248c1c377b27c1bb58fdd5b44bdd4262e0271e779d0040ee82964e2")
+        self.assertEqual(len(record["changed_values"]),3)
+        self.assertFalse(record["fresh_parameter_tuning"])
+        self.assertTrue(record["mc_binary_onnx_gains_and_joint_limits_unchanged"])
+        self.assertTrue(path.is_file())
+
+    def test_wrong_runtime_never_selects_a_different_profile(self):
+        from scripts.research.issue46.native_runtime.stl_hand_startup import reviewed_foundationwalk_profile
+        with self.assertRaises(FileNotFoundError):
+            reviewed_foundationwalk_profile(Path("/nonexistent/runtime"))
+
+
 if __name__=="__main__":unittest.main()

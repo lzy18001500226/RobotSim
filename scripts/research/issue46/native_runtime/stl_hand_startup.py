@@ -1846,3 +1846,45 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def reviewed_foundationwalk_profile(runtime):
+    """Select the already reviewed Issue80 overlay; never tune or edit a source."""
+    import hashlib,json,copy,yaml
+    from pathlib import Path
+    def sha(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    base=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-80/foundationwalk-final-left-right-turns-run65-20261022T073901Z")
+    manifest=base/"foundationwalk_config_overlay_manifest.json"
+    if sha(manifest)!="ae6e6fe56905efddf9dd5796d805f01bec6b15f5831549c14fadd4302789b1c1":
+        raise ValueError("reviewed FoundationWalk manifest differs")
+    record=json.loads(manifest.read_text())
+    original=Path(runtime)/"mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml"
+    overlay=base/"foundationwalk_knee019_minrun010.yaml"
+    if sha(original)!=record["source_sha256"] or sha(overlay)!=record["overlay_sha256"]:
+        raise ValueError("frozen FoundationWalk source/overlay hash mismatch")
+    source=yaml.safe_load(original.read_text());selected=yaml.safe_load(overlay.read_text())
+    expected=copy.deepcopy(source)
+    for i,name in ((9,"left_knee_joint"),(10,"right_knee_joint")):
+        if source["BaseConfig"]["action_seq"][i]!=name or source["BaseConfig"]["action_scale"][i]!=.25:
+            raise ValueError("FoundationWalk source action mapping mismatch")
+        expected["BaseConfig"]["action_scale"][i]=.19
+    if source["FoundationWalkConfig"]["foundationwalk"]["min_run_velx"]!=.5:
+        raise ValueError("FoundationWalk source floor mismatch")
+    expected["FoundationWalkConfig"]["foundationwalk"]["min_run_velx"]=.1
+    if selected!=expected:raise ValueError("unexpected reviewed FoundationWalk delta")
+    paths=dict(
+        foundationwalk_onnx="mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl_models/foundationwalk_v1.onnx",
+        foundationwalk_runner="mc/lib/libmc_runner_rl_foundationwalk.so",
+        robot_model="mc/bin/mc_param/src/robot/lx2501_3_t2d5/robot_model.yaml")
+    verified={}
+    for key,rel in paths.items():
+        actual=sha(Path(runtime)/rel)
+        if actual!=record["verified_runtime_input_sha256"][key]:
+            raise ValueError("reviewed FoundationWalk runtime identity differs:"+key)
+        verified[key]=actual
+    return overlay,dict(classification="SIMULATION_ONLY_REUSED_ISSUE80_DIAGNOSTIC_NOT_VENDOR_DEFAULT",
+        reviewed_manifest=str(manifest),reviewed_manifest_sha256=sha(manifest),
+        source_path=str(original),source_sha256=sha(original),overlay_sha256=sha(overlay),
+        changed_values=record["changed_values"],verified_unchanged_runtime=verified,
+        fresh_parameter_tuning=False,mc_binary_onnx_gains_and_joint_limits_unchanged=True,
+        historical_success_is_not_current_robot_qualification=True)
