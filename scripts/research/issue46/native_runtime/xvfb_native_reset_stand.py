@@ -682,17 +682,22 @@ gcc -std=c11 -O2 -Wall -Wextra -D_DEFAULT_SOURCE \"${include_dirs[@]}\" \\
 """
 
 
-def native_arm_passthrough_script(arm_limits,initial_hand_opening):
+def native_arm_passthrough_script(arm_limits,initial_hand_opening,gains):
     """Source transport only. Inactive SD commands are valid, not active-gain readiness."""
     from scripts.research.issue46.native_runtime.native_base_micro_probe import observed_clock_step
     import inspect
     clock_source=inspect.getsource(observed_clock_step)
+    cfg=yaml.safe_load((RUNTIME/"mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml").read_text())
+    reference={name:float(value) for name,value in zip(cfg["BaseConfig"]["action_seq"],cfg["ACConfig"]["robot"]["default_dof_pos"]) if name in arm_limits}
+    if set(reference)!=set(arm_limits) or set(gains)!=set(arm_limits):
+        raise ValueError("source reference and existing bootstrap gain groups differ")
     code=r"""import json,math,os,time,rclpy
 from pathlib import Path
 from rclpy.node import Node
 from rclpy.qos import QoSProfile,ReliabilityPolicy,DurabilityPolicy
-from aimdk_msgs.msg import JointCommandArray,JointStateArray,HandCommandArray,HandCommand,HandType,MessageHeader
+from aimdk_msgs.msg import JointCommand,JointCommandArray,JointStateArray,HandCommandArray,HandCommand,HandType,MessageHeader
 ARM_LIMITS=__LIMITS__;ARM=tuple(ARM_LIMITS)
+REFERENCE=__REFERENCE__;HOLD_GAINS=__GAINS__
 OPEN=__OPEN__
 STOP=Path('/workspace/evidence/stop_arm_bootstrap')
 MARKER=Path('/workspace/evidence/enable_native_arm_relay')
@@ -703,7 +708,7 @@ class NativeArm(Node):
   q=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT)
   self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q)
   self.state={};self.arm_source_stamp=0;self.arm_receipt=None
-  self.arm_relay_count=0;self.positive_count=0;self.last_gain_positive=False
+  self.arm_relay_count=0;self.positive_count=0;self.last_gain_positive=False;self.hold_target=dict(REFERENCE)
   self.owner_verified=False;self.last_owner_check=0.;self.clock_offset=None;self.started=time.monotonic()
   self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',lambda m:self.state.update({j.name:float(j.position) for j in m.joints}),q)
   self.create_subscription(JointCommandArray,'/robotsim/issue46/mc/arm/command',self.on_mc_arm,q)
@@ -727,18 +732,32 @@ class NativeArm(Node):
   for j in m.joints:
    if not all(math.isfinite(float(getattr(j,k))) for k in ('position','velocity','effort','stiffness','damping')):raise RuntimeError('NONFINITE_NATIVE_ARM_SOURCE')
    lo,hi,v=ARM_LIMITS[j.name]
-   if not lo-.001<=j.position<=hi+.001 or abs(j.velocity)>v or j.stiffness<0 or j.damping<0:raise RuntimeError('INVALID_NATIVE_ARM_SOURCE_LIMIT:'+j.name)
+   if j.stiffness<0 or j.damping<0:raise RuntimeError('INVALID_NATIVE_ARM_SOURCE_GAIN:'+j.name)
+   if (j.stiffness>0. or j.damping>0. or j.effort!=0.) and (not lo-.001<=j.position<=hi+.001 or abs(j.velocity)>v):raise RuntimeError('INVALID_NATIVE_ARM_SOURCE_LIMIT:'+j.name)
   self.verify_owner()
   if not self.owner_verified:return
   self.arm_source_stamp=stamp;self.arm_receipt=time.monotonic()
-  self.last_gain_positive=all(j.stiffness>0. and j.damping>0. for j in m.joints)
-  self.pub.publish(m)
-  self.arm_relay_count+=1;self.positive_count+=int(self.last_gain_positive)
+  active=all(j.stiffness>0. and j.damping>0. for j in m.joints)
+  inactive=all(j.stiffness==0. and j.damping==0. and j.effort==0. for j in m.joints)
+  if not active and not inactive:raise RuntimeError('UNSUPPORTED_NATIVE_ARM_CONTROL_MODE')
+  if not active and self.last_gain_positive:
+   self.hold_target={name:float(self.state[name]) for name in ARM}
+   if any(not ARM_LIMITS[n][0]-.001<=q<=ARM_LIMITS[n][1]+.001 for n,q in self.hold_target.items()):raise RuntimeError('UNSAFE_NATIVE_ARM_IDLE_HOLD_POSE')
+  self.last_gain_positive=active
+  if active:
+   self.pub.publish(m)
+   self.arm_relay_count+=1;self.positive_count+=1
  def send(self):
   self.verify_owner()
   now=time.monotonic()
-  healthy=self.owner_verified and self.arm_receipt is not None and 0.<=now-self.arm_receipt<=.20 and self.arm_relay_count>0
-  health=dict(mode='TRANSPARENT_NATIVE_MC_ARM_SOURCE',healthy=healthy,host_monotonic_ns=time.monotonic_ns(),relay_count=self.arm_relay_count,positive_gain_command_count=self.positive_count,last_gain_positive=self.last_gain_positive,source_stamp_ns=self.arm_source_stamp,inactive_SD_is_not_active_gain_readiness=True)
+  if not self.last_gain_positive:
+   m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='source_reference_arm_idle_hold'
+   for name in ARM:
+    j=JointCommand();j.name=name;j.position=self.hold_target[name];j.velocity=0.;j.effort=0.;j.stiffness=float(HOLD_GAINS[name][0]);j.damping=float(HOLD_GAINS[name][1]);m.joints.append(j)
+   self.pub.publish(m)
+  error=max((abs(self.state[n]-self.hold_target[n]) for n in ARM if n in self.state),default=1.e9)
+  healthy=self.owner_verified and self.arm_receipt is not None and 0.<=now-self.arm_receipt<=.20 and (self.last_gain_positive or len(self.state)==14 and error<=.12)
+  health=dict(mode='SOURCE_REFERENCE_IDLE_HOLD_THEN_NATIVE_LD',healthy=healthy,host_monotonic_ns=time.monotonic_ns(),relay_count=self.arm_relay_count,positive_gain_command_count=self.positive_count,last_gain_positive=self.last_gain_positive,source_stamp_ns=self.arm_source_stamp,inactive_SD_is_not_active_gain_readiness=True,idle_hold_error_rad=error,idle_hold_targets_rad=self.hold_target)
   path=Path('/workspace/evidence/native_arm_relay_heartbeat.json')
   tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(health)+'\n');os.replace(tmp,path)
   if self.hand_pub is not None:
@@ -759,7 +778,7 @@ try:
  print(json.dumps(dict(stopped=STOP.exists(),relay_count=n.arm_relay_count,positive_gain_command_count=n.positive_count)),flush=True)
 finally:n.destroy_node();rclpy.shutdown()
 """
-    return code.replace("__LIMITS__",repr(arm_limits)).replace("__OPEN__",repr(initial_hand_opening)).replace("__CLOCK_HELPER__",clock_source)
+    return code.replace("__LIMITS__",repr(arm_limits)).replace("__REFERENCE__",repr(reference)).replace("__GAINS__",repr(gains)).replace("__OPEN__",repr(initial_hand_opening)).replace("__CLOCK_HELPER__",clock_source)
 
 
 def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, relay_arms: bool = False, initial_hand_opening: float | None = None, open_hand_transit_park: bool = False, initial_arm_target=None, initial_arm_effort=None) -> str:
@@ -777,7 +796,7 @@ def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_wa
         if len(arm_limits)!=14:raise ValueError("native source arm limit group differs")
         if relay_waist or initial_arm_target is not None or open_hand_transit_park:
             raise ValueError("transparent native arm source cannot take external posture/waist targets")
-        return native_arm_passthrough_script(arm_limits,initial_hand_opening)
+        return native_arm_passthrough_script(arm_limits,initial_hand_opening,gains)
     if initial_hand_opening is not None and initial_hand_opening != 1.0:
         raise ValueError("startup hand opening must be exactly 1.0 or disabled")
     encoded = json.dumps({name: [float(kp), float(kd)] for name, (kp, kd) in gains.items()}, sort_keys=True)
@@ -1991,7 +2010,7 @@ def main() -> None:
                     if health.get("healthy") and 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20:break
                 time.sleep(.02)
             else:raise RuntimeError("NATIVE_ARM_SOURCE_TRANSPORT_NOT_READY")
-            result["native_arm_policy_relay"]={"mode":"TRANSPARENT_SOURCE_NO_FOLDED_ARM_OVERRIDE","transport":health,"inactive_SD_is_not_active_gain_readiness":True,"gains_or_policy_files_changed":False}
+            result["native_arm_policy_relay"]={"mode":"SOURCE_REFERENCE_IDLE_HOLD_AND_NATIVE_ACTIVE_OUTPUT","transport":health,"inactive_SD_is_not_active_gain_readiness":True,"gains_or_policy_files_changed":False}
             result["gates"]["NATIVE_ARM_POLICY_RELAY_TRANSPORT"]="PASS"
 
         if args.inspect_vr_topic:

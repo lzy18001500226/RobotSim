@@ -456,7 +456,7 @@ class NativeArmRelayTests(TestCase):
     def relay_method(self):
         from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import arm_bootstrap_hold_script
         from scripts.research.issue46.native_runtime.native_base_micro_probe import observed_clock_step
-        source=ast.parse(arm_bootstrap_hold_script({},relay_arms=True))
+        source=ast.parse(arm_bootstrap_hold_script(__import__("scripts.research.issue46.native_runtime.stl_hand_startup",fromlist=["load_animation_player_arm_pd_parameters"]).load_animation_player_arm_pd_parameters(),relay_arms=True))
         hold=next(n for n in source.body if isinstance(n,ast.ClassDef))
         method=next(n for n in hold.body if isinstance(n,ast.FunctionDef) and n.name=="on_mc_arm")
         hold.bases=[];hold.body=[method]
@@ -467,13 +467,14 @@ class NativeArmRelayTests(TestCase):
         exec(compile(ast.Module(body=[hold],type_ignores=[]),"relay","exec"),ns)
         n=ns[hold.name]();n.clock_offset=None;n.arm_source_stamp=0;n.arm_receipt=None
         n.arm_relay_count=0;n.positive_count=0;n.owner_verified=True;n.verify_owner=lambda:None
+        n.last_gain_positive=False;n.state={name:.25 for name in arm};n.hold_target={name:.2 for name in arm}
         n.pub=NS(publish=sent.append)
         msg=NS(header=NS(stamp=NS(sec=1,nanosec=5)),joints=[NS(name=name,position=.2,velocity=.1,effort=.3,stiffness=50.,damping=3.) for name in arm])
         return n,msg,sent,clock
 
     def test_native_source_preserves_parent_ready_result_contract(self):
         from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import arm_bootstrap_hold_script
-        code=arm_bootstrap_hold_script({},relay_arms=True)
+        code=arm_bootstrap_hold_script(__import__("scripts.research.issue46.native_runtime.stl_hand_startup",fromlist=["load_animation_player_arm_pd_parameters"]).load_animation_player_arm_pd_parameters(),relay_arms=True)
         tree=ast.parse(code)
         dictionaries=[n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="dict" and any(k.arg=="ready" for k in n.keywords)]
         self.assertEqual(len(dictionaries),1)
@@ -490,9 +491,10 @@ class NativeArmRelayTests(TestCase):
 
     def test_inactive_stand_commands_are_valid_but_never_count_as_active_gains(self):
         n,msg,sent,clock=self.relay_method()
-        for j in msg.joints:j.stiffness=j.damping=0.
+        for j in msg.joints:j.stiffness=j.damping=j.effort=0.
         n.on_mc_arm(msg)
-        self.assertIs(sent[0],msg);self.assertEqual(n.positive_count,0);self.assertFalse(n.last_gain_positive)
+        self.assertEqual(sent,[]);self.assertEqual(n.positive_count,0);self.assertFalse(n.last_gain_positive)
+        self.assertEqual(n.arm_receipt,10.)
 
     def test_unknown_owner_and_invalid_source_targets_cannot_actuate(self):
         n,msg,sent,clock=self.relay_method();n.owner_verified=False;n.on_mc_arm(msg)
