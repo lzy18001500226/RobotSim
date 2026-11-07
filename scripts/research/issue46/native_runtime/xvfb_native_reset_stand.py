@@ -1291,6 +1291,7 @@ def main() -> None:
     parser.add_argument("--use-official-cmd-vel-bridge", action="store_true", help="route through the pinned RAICOM cmd_vel_bridge instead of publishing the MC velocity type directly")
     parser.add_argument("--carry-goal-world-xy",type=float,nargs=2)
     parser.add_argument("--carry-timeout-s",type=float,default=90.)
+    parser.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0),default=1.5)
     parser.add_argument("--carry-sdk-minimum-turn",action="store_true")
     parser.add_argument("--carry-native-action-smoothing",action="store_true")
     parser.add_argument("--carry-native-step-mode",action="store_true")
@@ -2328,7 +2329,9 @@ def main() -> None:
                                 limits,provenance=native_leg_safety_contract(include_upper_body=True)
                                 replan_record['lift_preflight']['retract_preflight']['source_motion_limits']=limits
                                 result['retract_motion_limit_provenance']=provenance
-                                if args.carry_goal_world_xy is not None:replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+50.
+                                if args.carry_goal_world_xy is not None:
+                                    replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+50.
+                                    replan_record['lift_preflight']['retract_preflight']['carry_grip_force_margin']=args.carry_grip_force_margin
                             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")

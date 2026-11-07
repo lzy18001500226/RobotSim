@@ -1291,6 +1291,8 @@ def carry_abort_last_command_hold(n, carry_error):
 def _with_carry_lease(script, retract):
     """Keep the proven HAL grip/arm owner alive; it never publishes velocity."""
     lease=float(retract["carry_lease_s"])
+    margin=float(retract.get("carry_grip_force_margin",1.5))
+    if margin not in (1.5,3.):raise ValueError("unsupported explicit carry force margin")
     if not math.isfinite(lease) or not 5.<=lease<=200.:raise ValueError("carry lease outside bounded 5..200s")
     def replace(old,new,count=1):
         nonlocal script
@@ -1324,6 +1326,7 @@ def _with_carry_lease(script, retract):
     needle="   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')\n if RESTORE:"
     replace(needle,
 """   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')
+   LIFT_CONTRACT['required_normal_force_n']*=float(LIFT_CONTRACT['retract_preflight'].get('carry_grip_force_margin',1.5))/1.5
    carry_target=dict(n.last_published_arm_target)
    hand=n.native_row['bodies']['R_omnipicker_base_link'];base=n.native_row['bodies']['pelvis'];R=hand['rotation'];c=CIRCLE_CONTRACT['circle_center_local_m']
    tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
@@ -1333,7 +1336,7 @@ def _with_carry_lease(script, retract):
    try:
     n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)
     n.pre_carry_odom=list(n.odom);n.pre_carry_tilt=list(n.tilt)
-    ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'start_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}
+    ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'carry_required_normal_force_n':LIFT_CONTRACT['required_normal_force_n'],'root_actuator_torque_cap_nm_unchanged':2.,'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'start_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}
     with open('/workspace/evidence/carry_ready.tmp','w') as f:json.dump(ready,f)
     os.replace('/workspace/evidence/carry_ready.tmp','/workspace/evidence/carry_ready.json')
     carry_until=time.monotonic()+float(ready['lease_s'])

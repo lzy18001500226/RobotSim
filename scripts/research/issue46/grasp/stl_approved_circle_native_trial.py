@@ -58,6 +58,7 @@ def main():
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--carry-goal-world-xy",type=float,nargs=2,help="explicit known-map delivery goal after physical grasp/retract")
     p.add_argument("--carry-timeout-s",type=float,default=90.)
+    p.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0),default=1.5)
     p.add_argument("--carry-native-step-mode",action="store_true",help="explicit source-pinned native LOCOMOTION_STEP alternative; no policy/config/gain edits")
     p.add_argument("--carry-native-action-smoothing",action="store_true",help="separate native ActionSelector SD/LD 500ms transition diagnostic; no runner/gain/policy edits")
     p.add_argument("--carry-sdk-minimum-turn",action="store_true",help="explicit .10 rad/s SDK-minimum turn diagnostic; physical root/joint caps unchanged")
@@ -247,7 +248,7 @@ def main():
     if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
     if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires a carry goal')
     if args.carry_goal_world_xy is not None:
-        argv.extend(['--carry-goal-world-xy',*map(str,args.carry_goal_world_xy),'--carry-timeout-s',str(args.carry_timeout_s)])
+        argv.extend(['--carry-goal-world-xy',*map(str,args.carry_goal_world_xy),'--carry-timeout-s',str(args.carry_timeout_s),'--carry-grip-force-margin',str(args.carry_grip_force_margin)])
         if args.carry_sdk_minimum_turn:argv.append('--carry-sdk-minimum-turn')
         if args.carry_native_action_smoothing:argv.append('--carry-native-action-smoothing')
         if args.carry_native_step_mode:argv.append('--carry-native-step-mode')
