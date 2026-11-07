@@ -122,4 +122,34 @@ class FrameTests(unittest.TestCase):
 
 
 
+    def test_retract_target_preserves_grasp_and_does_not_chase_object(self):
+        R=np.eye(3).reshape(-1).tolist()
+        row={"generation":1,"bodies":{"test_cylinder":{"position_m":[-.1,-.1,.76],"rotation":R},
+             "R_omnipicker_base_link":{"position_m":[-.1,-.1,.86],"rotation":R}}}
+        phase={"phase":"RETRACTING","native_arrival_pass":True,"generation":1,
+               "target_world_m":[0.,0.,.8],"bottle_center_world_m":[0.,0.,.7],
+               "bottle_axis_world":[0.,0.,1.],"lift_offset_m":.06,
+               "bilateral_contact_pass":True,"slip_reference":"GRASP_SECTION",
+               "initial_object_in_hand_m":[0.,0.,0.],"retract_offset_world_m":[-.1,-.1,0.]}
+        target,axis=self.ns["tracking_task"](row,{"grasp_height_above_center_m":.1},phase)
+        np.testing.assert_allclose(target,[-.1,-.1,.86])
+        np.testing.assert_allclose(axis,[0.,0.,1.])
+        row["bodies"]["test_cylinder"]["position_m"][0]+=.02
+        with self.assertRaisesRegex(RuntimeError,"NOT_FOLLOWING"):
+            self.ns["tracking_task"](row,{"grasp_height_above_center_m":.1},phase)
+
+    def test_retract_rejects_out_of_bounds_translation(self):
+        R=np.eye(3).reshape(-1).tolist()
+        row={"generation":1,"bodies":{"test_cylinder":{"position_m":[0.,0.,.76],"rotation":R},
+             "R_omnipicker_base_link":{"position_m":[0.,0.,.86],"rotation":R}}}
+        phase={"phase":"RETRACTING","native_arrival_pass":True,"generation":1,
+               "target_world_m":[0.,0.,.8],"bottle_center_world_m":[0.,0.,.7],
+               "bottle_axis_world":[0.,0.,1.],"lift_offset_m":.06,
+               "bilateral_contact_pass":True,"slip_reference":"GRASP_SECTION",
+               "initial_object_in_hand_m":[0.,0.,0.]}
+        for offset in ([.251,0.,0.],[0.,0.,.051],[float("nan"),0.,0.]):
+            phase["retract_offset_world_m"]=offset
+            with self.assertRaisesRegex(RuntimeError,"UNQUALIFIED_RETRACT"):
+                self.ns["tracking_task"](row,{"grasp_height_above_center_m":.1},phase)
+
 if __name__=='__main__':unittest.main()

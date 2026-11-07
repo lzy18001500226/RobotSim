@@ -832,3 +832,11 @@ Run81报告文字称转向降到0.12，但原始velocity_command_trace有223条�
 桌与椅坐标可用已知地图真值；先完成RGB-D取瓶、持物到椅区并停稳。椅座面实测网格高度约0.328215m，整个椅单mesh凸包在中心表面0.536048m，差208mm；未改变场景，不把空气支撑计放置成功。fetch-delivery-chair-geometry-20261107T173112Z保存了准确几何。
 
 161319Z的Reset确已送达，事件后68.342ms出现sim=.001/gen2；dispatch前最近真实样本为gen1。新确认根据同PID、337、dispatch前0.20s内的最近原生样本、真实Reset控件press及恰好两个按钮事件，要求事件后恰好+1代次、<=.05s的重置边界，并独立要求当前新鲜同代次状态。不会补点、放宽身份/新鲜度或写位姿。完整保存trace重放PASS；原键盘与固定站位已通过入口不变。最初tail8MB重放遗漏更早事件，改为流式读取dispatch附近窗口，保留先前失败；该读取不改变控制时钟。
+
+### 抬升后的真实收臂准备
+
+增加显式 --post-lift-retract-world-m 诊断，沿用现有包持圆IK、tracker和原力反馈闭合。默认抓取脚本不启用此阶段。新阶段必须先通过原50mm/1sim秒无支撑承力门，再以4s三次平滑曲线执行<=250mm平移，随后1.5s保持并再次评估相同物理门；对象相对手的滑移、姿态、接触、29轴源位置/速度及root0.20m/s限制均保留。仅该显式阶段增加6s有界child预算，不改旧入口。无object pose活跃写入或夹持约束。
+
+现有真实抬升末端的-150mm世界X/-150mm世界Y路径，13点静态IK和瓶/桌碰撞筛查通过（fetch-chair-postlift-retract-static-20261107T175409Z）；实际CLI前后调用链亦通过APPROACH/LIFT/POST_LIFT_RETRACT_SWEEP（fetch-chair-retract-cli-preflight-20261107T181259Z）。这些不是动态收臂或持物行走PASS。
+
+174412Z新Reset收件与边界确认通过，但bridge图尚未看到publisher时启动检查超时，非零命令0；容器确认删除。父流程原先在ADD响应打印时即把bridge视为启动，现在等待其真实started日志，仍由子流程独立证明唯一图/QoS/新鲜实际输出和源/模式。ADD任务完成仍未确认，不能把state=0当完成。

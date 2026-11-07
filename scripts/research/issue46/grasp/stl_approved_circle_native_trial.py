@@ -56,6 +56,7 @@ def main():
     p.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace")
     p.add_argument("--native-render-adapter",help="explicit process-only GPU selection for the native simulator, with actual GL identity verification")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
+    p.add_argument("--post-lift-retract-world-m",type=float,nargs=3,help="bounded <=250mm post-lift retreat with unchanged physical load gate")
     p.add_argument("--grasp-axis-tilt-rad",type=float,default=0.)
     p.add_argument("--inverted-bottle-axis",action="store_true")
     p.add_argument("--grasp-axis-calibration",type=Path)
@@ -77,6 +78,10 @@ def main():
     if not args.execute_simulation:raise ValueError("explicit simulation execution flag required")
     if any(not math.isfinite(v) or abs(v)>.02000001 for v in args.checkpoint_base_offset_xy_m) or any(args.checkpoint_base_offset_xy_m) and not args.fixed_reviewed_checkpoint:raise ValueError('stance offset requires a fixed reviewed episode and <=20mm bounds')
     if args.use_measured_load_frame and (args.grasp_axis_calibration is None or not args.elliptic_grip_solver_diagnostic):raise ValueError('measured load frame requires its evidence and matched numerical profile')
+    if args.post_lift_retract_world_m is not None:
+        v=args.post_lift_retract_world_m
+        if not args.physical_lift_test or any(not math.isfinite(x) for x in v) or math.sqrt(sum(x*x for x in v))>.25 or not -.02<=v[2]<=.05:
+            raise ValueError('bounded retract requires physical lift and <=250mm translation')
     baseline=json.loads((args.baseline/"result.json").read_text())
     if not args.native_physics_audit:
         raise ValueError("approved-circle execution requires --native-physics-audit")
@@ -139,6 +144,7 @@ def main():
             command.extend(["--target-source",args.target_source,"--free-bottle-axis-roll"])
             if host_model_cache:command.extend(['--host-model-cache',str(host_model_cache)])
             if args.physical_lift_test:command.append('--physical-lift-test')
+            if args.post_lift_retract_world_m is not None:command.extend(['--post-lift-retract-world-m',*map(str,args.post_lift_retract_world_m)])
             command[command.index("--grasp-height-above-center-m")+1]=str(args.grasp_height_above_center_m)
             command.extend(['--grasp-axis-tilt-rad',str(args.grasp_axis_tilt_rad)])
             if args.inverted_bottle_axis:command.append('--inverted-bottle-axis')

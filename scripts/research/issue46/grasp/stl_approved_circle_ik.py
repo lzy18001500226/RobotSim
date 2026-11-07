@@ -150,15 +150,20 @@ def tracking_task(row, reference, phase=None):
     if phase is None:
         if np.linalg.norm(measured-np.array(reference['grasp_section_center_world_m']))>.01:raise RuntimeError('BOTTLE_MOVED_BEFORE_CLOSURE')
         return measured,B[:,2]
-    if phase.get('phase') not in ('ARRIVAL_HOLD','CLOSING','LIFTING') or phase.get('native_arrival_pass') is not True:raise RuntimeError('INVALID_CLOSURE_PHASE_HANDOFF')
+    if phase.get('phase') not in ('ARRIVAL_HOLD','CLOSING','LIFTING','RETRACTING') or phase.get('native_arrival_pass') is not True:raise RuntimeError('INVALID_CLOSURE_PHASE_HANDOFF')
     if phase.get('generation')!=row['generation']:raise RuntimeError('CLOSURE_PHASE_GENERATION_MISMATCH')
     anchor=np.asarray(phase['target_world_m'],dtype=float);axis=np.asarray(phase['bottle_axis_world'],dtype=float);initial=np.asarray(phase['bottle_center_world_m'],dtype=float)
     if any(x.shape!=(3,) or not np.isfinite(x).all() for x in (anchor,axis,initial)) or abs(np.linalg.norm(axis)-1.)>.001:raise RuntimeError('INVALID_CLOSURE_ANCHOR')
     offset=np.zeros(3)
-    if phase['phase']=='LIFTING':
+    if phase['phase'] in ('LIFTING','RETRACTING'):
         lift=float(phase.get('lift_offset_m',float('nan')))
         if phase.get('bilateral_contact_pass') is not True or not np.isfinite(lift) or not 0.<=lift<=.060000001:raise RuntimeError('UNQUALIFIED_OR_UNBOUNDED_LIFT_PHASE')
         offset[2]=lift
+        if phase['phase']=='RETRACTING':
+            retreat=np.asarray(phase.get('retract_offset_world_m'),dtype=float)
+            if retreat.shape!=(3,) or not np.isfinite(retreat).all() or np.linalg.norm(retreat)>.250000001 or not -.02<=retreat[2]<=.05:
+                raise RuntimeError('UNQUALIFIED_RETRACT_PHASE')
+            offset+=retreat
         hand=row['bodies']['R_omnipicker_base_link'];H=np.asarray(hand['rotation']).reshape(3,3)
         if phase.get('slip_reference')!='GRASP_SECTION':raise RuntimeError('INVALID_LIFT_SLIP_REFERENCE')
         section=centre+reference['grasp_height_above_center_m']*B[:,2]
@@ -202,6 +207,36 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
     mass=float(model.body_mass[bottle]);weight=mass*float(np.linalg.norm(model.opt.gravity))
     if not mu>0 or not mass>0:raise ValueError('invalid known payload/friction for diagnostic force budget')
     return {'pass':all(s['pass'] for s in samples),'samples':samples,'mj_step_calls':0,'height_m':.06,'duration_s':3.,'hold_s':1.5,'contact_command':opening/100.,'mass_kg':mass,'sliding_friction':mu,'required_normal_force_n':1.5*weight/(2*mu),'force_budget_is_simulation_assumption':True,'free_body_preflight':{'pass':True,'joint':'test_cylinder_free','gravity_m_s2':model.opt.gravity.tolist(),'gravcomp':0.,'object_actuator_count':len(driven),'attachment_count':len(attachments)}}
+
+
+
+def screen_retract(model, state, seed, opening, center, section, offset_world, local_bottle_axis=None):
+    """Reuse the source arm IK for a <=250mm post-lift retreat, zero physics steps."""
+    import copy
+    offset=np.asarray(offset_world,dtype=float)
+    if offset.shape!=(3,) or not np.isfinite(offset).all() or np.linalg.norm(offset)>.250000001 or not -.02<=offset[2]<=.05:
+        raise ValueError("post-lift retract outside bounded translation")
+    bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+    hand=ik.native.bid(model,"R_omnipicker_base_link");bottle=ik.native.bid(model,"test_cylinder")
+    axis=Rotation.from_quat(np.asarray(state["object_pose_world"]["quaternion_wxyz"])[[1,2,3,0]]).as_matrix()[:,2]
+    arm=np.array(seed[2:]);samples=[]
+    dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
+    local=np.asarray([1.,0.,0.] if local_bottle_axis is None else local_bottle_axis)
+    for fraction in np.linspace(0.,1.,13):
+        delta=float(fraction)*offset
+        frozen=copy.deepcopy(state);frozen["object_pose_world"]["xyz_m"]=(np.asarray(state["object_pose_world"]["xyz_m"])+delta).tolist()
+        data=mujoco.MjData(model);target=np.asarray(section)+delta
+        def residual(q):
+            ik.set_pose(model,data,frozen,np.r_[seed[:2],q],np.zeros(3),0.,opening,np.zeros(3))
+            return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,axis,local)
+        def jacobian(q):
+            residual(q)
+            return circle_task_jacobian(model,data,hand,np.asarray(center),local,dofs)
+        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=90,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        arm=solved.x;e=residual(arm);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
+        passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
+        samples.append(dict(fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),pass_result=bool(passed)))
+    return dict(pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
 
 
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
@@ -317,6 +352,7 @@ def main():
     parser.add_argument("--use-measured-load-frame",action="store_true",help="apply measured <=5mm TCP correction without altering the approved nominal circle")
     parser.add_argument("--runtime-handoff",action="store_true")
     parser.add_argument("--physical-lift-test",action="store_true")
+    parser.add_argument("--post-lift-retract-world-m",type=float,nargs=3)
     parser.add_argument("--approach-opening-percent",type=int,default=100)
     parser.add_argument("--free-bottle-axis-roll",action="store_true",help="constrain reviewed bottle axis and circle centre, letting IK choose axial roll")
     parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic","fresh-rgbd","fresh-rgbd-snapshot"),default="historical-rgbd-replay",help="explicit target provenance and continuous/snapshot temporal contract")
@@ -509,12 +545,22 @@ def main():
         lift_seed=np.array([rows[0]['q_rad'][n] for n in ik.ACTIVE])
         record['lift_preflight']=screen_lift(model,state,lift_seed,max(command-1,0),center,object_center,local_axis)
         if not record['lift_preflight']['pass']:record['gate']='FAIL'
+        if args.post_lift_retract_world_m is not None and record['lift_preflight']['pass']:
+            import copy
+            lifted=copy.deepcopy(state)
+            lifted['object_pose_world']['xyz_m']=(np.asarray(state['object_pose_world']['xyz_m'])+[0.,0.,.06]).tolist()
+            retract_seed=np.r_[lift_seed[:2],record['lift_preflight']['samples'][-1]['right_arm_rad']]
+            retreat=screen_retract(model,lifted,retract_seed,max(command-1,0),center,object_center+[0.,0.,.06],args.post_lift_retract_world_m,local_axis)
+            record['lift_preflight']['retract_preflight']=retreat
+            if not retreat['pass_result']:record['gate']='FAIL'
+
     if args.runtime_handoff:
         best=rows[0];target_state=json.loads(json.dumps(state))
         target_state["arm_positions_rad"].update({n:best["q_rad"][n] for n in ik.ARM})
         target_state["waist_positions_rad"].update({n:best["q_rad"][n] for n in ik.ACTIVE[:2]})
         record.update({"classification":"SIMULATION_ONLY_RUNTIME_CAPTURED_STATIC_REPLAN","initial_state":target_state,"gates":{"DOCK_CAPTURE":"PASS" if state.get("motion_stability",{}).get("pass") is True else "FAIL",**best["gates"]}})
         if args.physical_lift_test:record['gates']['LIFT_SWEEP']='PASS' if record.get('lift_preflight',{}).get('pass') else 'FAIL'
+        if args.post_lift_retract_world_m is not None:record['gates']['POST_LIFT_RETRACT_SWEEP']='PASS' if record.get('lift_preflight',{}).get('retract_preflight',{}).get('pass_result') else 'FAIL'
     pg.write_new_text(out/"result.json",json.dumps(record,indent=2)+"\n")
     pg.write_new_bytes(out/Path(__file__).name,Path(__file__).read_bytes())
     pg.write_artifact_manifest(out)

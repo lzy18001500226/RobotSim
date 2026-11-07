@@ -764,7 +764,7 @@ def build_hal_bilateral_arm_plan_script(
         if restore or not track_native_circle or not use_native_joint_feedback or circle_contract is None or right_hand_command is None:raise ValueError('lift requires exclusive native tracked close-hold path')
         if lift_contract.get('pass') is not True or (lift_contract.get('height_m'),lift_contract.get('duration_s'),lift_contract.get('hold_s'))!=(.06,3.,1.5):raise ValueError('lift preflight or bounded profile invalid')
     serialized_gains = json.dumps({name: [stiffness, damping] for name, (stiffness, damping) in arm_gains.items()}, sort_keys=True)
-    return """#!/usr/bin/env python3
+    script = """#!/usr/bin/env python3
 import json, math, os, time, rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -1186,6 +1186,59 @@ finally:
  with open('/workspace/evidence/native_hal_pregrasp_trace.json','w') as stream:json.dump({'trace':n.trace,'odom_trace':n.odom_trace,'last_controlled_state_rad':n.arm,'last_unique_source_stamps':n.arm_stamp},stream)
  n.destroy_node();rclpy.shutdown()
 """.replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
+    if lift_contract and lift_contract.get('retract_preflight'):
+        return _with_postlift_retract(script, lift_contract)
+    return script
+
+
+def _with_postlift_retract(script, lift_contract):
+    """Extend only an explicitly screened lift; the default script is unchanged."""
+    if not lift_contract or not lift_contract.get("retract_preflight"):
+        return script
+    import inspect
+    from scripts.research.issue46.native_runtime.native_grasp_audit import evaluate_unsupported_lift
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault
+    retract=lift_contract["retract_preflight"];v=retract.get("offset_world_m",[])
+    if retract.get("pass_result") is not True or len(v)!=3 or any(not math.isfinite(float(x)) for x in v) or math.sqrt(sum(float(x)**2 for x in v))>.25 or not -.02<=v[2]<=.05 or (retract.get("duration_s"),retract.get("hold_s"))!=(4.,1.5):
+        raise ValueError("retract preflight or bounded profile invalid")
+    limits=retract.get('source_motion_limits',{})
+    if len(limits)!=29 or any(len(v)!=3 or not all(math.isfinite(float(x)) for x in v) or not v[0]<v[1] or v[2]<=0 for v in limits.values()):raise ValueError('retract needs all29 pinned source motion limits')
+    def replace(old,new,count=1):
+        nonlocal script
+        if script.count(old)!=count:raise ValueError("retract script extension anchor changed:"+old[:50])
+        script=script.replace(old,new)
+    replace("class Plan(Node):",inspect.getsource(evaluate_unsupported_lift)+"\n"+inspect.getsource(native_pose)+"\n"+inspect.getsource(physical_fault)+"\nclass Plan(Node):")
+    replace("self.closing_started=False;self.close_publish_count=0","self.closing_started=False;self.close_publish_count=0;self.native_lift_rows=[]")
+    replace("  values={}\n","  fault=physical_fault(row,native_pose(row),LIFT_CONTRACT['retract_preflight']['source_motion_limits'])\n  if fault:raise RuntimeError('POST_LIFT_SOURCE_SAFETY:'+fault)\n  values={}\n")
+    replace("  self.arm.update(values);self.native_row=row;","  if not self.native_lift_rows or stamp>self.native_lift_rows[-1]['host_monotonic_ns']:self.native_lift_rows=(self.native_lift_rows+[row])[-140:]\n  self.arm.update(values);self.native_row=row;")
+    replace("   if stage in ('LIFT_PROBE','LIFT'):\n",
+"""   if stage=='RETRACT':
+    u=min(1.,(time.monotonic()-start)/seconds);smooth=3*u*u-2*u*u*u
+    self.lift_phase['retract_offset_world_m']=[smooth*float(x) for x in LIFT_CONTRACT['retract_preflight']['offset_world_m']]
+    self.write_phase(self.lift_phase)
+   if stage in ('LIFT_PROBE','LIFT'):
+""")
+    replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')",count=2)
+    replace("('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD')","('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')")
+    replace("   print(json.dumps({'lift_execution':lift_execution}),flush=True)\n if RESTORE:",
+"""   print(json.dumps({'lift_execution':lift_execution}),flush=True)
+   accepted=evaluate_unsupported_lift(n.native_lift_rows,initial_bottle_z_m=lift_execution['initial_bottle_z_m'],hold_start_ns=lift_execution['hold_start_ns'],hold_end_ns=lift_execution['hold_end_ns'])
+   print(json.dumps({'pre_retract_physical_lift':accepted}),flush=True)
+   if not accepted['pass']:raise RuntimeError('RETRACT_GATED_UNQUALIFIED_PHYSICAL_LIFT')
+   retract_execution={'requested':True,'executed':True,'start_host_ns':time.monotonic_ns()}
+   n.lift_phase['phase']='RETRACTING';n.lift_phase['retract_offset_world_m']=[0.,0.,0.];n.write_phase(n.lift_phase)
+   n.send(goal,4.,'RETRACT',HAND_RIGHT)
+   n.lift_phase['retract_offset_world_m']=LIFT_CONTRACT['retract_preflight']['offset_world_m'];n.write_phase(n.lift_phase)
+   retract_execution['hold_start_ns']=time.monotonic_ns()
+   n.send(goal,1.5,'RETRACT_HOLD',HAND_RIGHT)
+   retract_execution['hold_end_ns']=time.monotonic_ns()
+   accepted=evaluate_unsupported_lift(n.native_lift_rows,initial_bottle_z_m=lift_execution['initial_bottle_z_m'],hold_start_ns=retract_execution['hold_start_ns'],hold_end_ns=retract_execution['hold_end_ns'])
+   retract_execution['physical_hold']=accepted;retract_execution['pass']=accepted['pass']
+   print(json.dumps({'post_lift_retract':retract_execution}),flush=True)
+   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')
+ if RESTORE:""")
+    compile(script,"post_lift_retract_generated","exec")
+    return script
 
 
 def build_hal_bilateral_upperbody_plan_script(

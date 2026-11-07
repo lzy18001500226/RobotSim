@@ -746,4 +746,30 @@ class ResetDispatchHistoryTests(TestCase):
     def test_unconfirmed_press_fails(self):
         self.assertFalse(self.evaluate([self.row(990000000,1,.1),self.row(1060000000,2,.001)],event_change={"mouse_button_events_sent":0})["pass"])
 
+class PostLiftRetractTests(TestCase):
+    def generated_retract(self, change=None):
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        names=[side+"_"+suffix+"_joint" for side in ("left","right") for suffix in ("shoulder_pitch","shoulder_roll","shoulder_yaw","elbow","wrist_yaw","wrist_pitch","wrist_roll")]
+        leg=[side+"_"+suffix+"_joint" for side in ("left","right") for suffix in ("hip_pitch","hip_roll","hip_yaw","knee","ankle_pitch","ankle_roll")]
+        limits={n:[-2.,2.,5.] for n in names+leg+["waist_yaw_joint","waist_pitch_joint","waist_roll_joint"]}
+        retract=dict(pass_result=True,offset_world_m=[-.15,-.15,0.],duration_s=4.,hold_s=1.5,source_motion_limits=limits)
+        if change:retract.update(change)
+        lift={"pass":True,"height_m":.06,"duration_s":3.,"hold_s":1.5,"retract_preflight":retract}
+        return h.build_hal_bilateral_arm_plan_script({n:(30.,1.) for n in names},[0.]*7,[0.]*7,duration_s=6.,hold_s=1.,restore=False,right_hand_command=0.,hand_hold_s=2.,circle_contract={"dummy":True},track_native_circle=True,use_native_joint_feedback=True,lift_contract=lift)
+    def test_actual_generated_retract_compiles_and_retains_force_and_source_guards(self):
+        code=self.generated_retract();compile(code,"generated_retract","exec")
+        tree=ast.parse(code)
+        functions={n.name:n for n in tree.body if isinstance(n,ast.FunctionDef)}
+        self.assertIn("evaluate_unsupported_lift",functions)
+        self.assertIn("physical_fault",functions)
+        self.assertIn("source_motion_limits",code)
+        self.assertLess(code.index("RETRACT_GATED_UNQUALIFIED_PHYSICAL_LIFT"),code.index("n.lift_phase['phase']='RETRACTING'"))
+        self.assertIn("'RETRACT','RETRACT_HOLD'",code)
+        self.assertIn("RETRACT_PHYSICAL_HOLD_UNQUALIFIED",code)
+    def test_bad_retract_cannot_generate_runtime(self):
+        for change in (dict(pass_result=False),dict(offset_world_m=[-.3,0.,0.]),dict(duration_s=8.),dict(source_motion_limits={})):
+            with self.assertRaises(ValueError):self.generated_retract(change)
+    def test_default_grasp_does_not_enable_retract(self):
+        self.assertNotIn("RETRACT_GATED",generated())
+
 if __name__=='__main__':main()

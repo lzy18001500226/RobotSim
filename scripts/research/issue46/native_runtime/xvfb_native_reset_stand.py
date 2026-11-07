@@ -1217,6 +1217,7 @@ def main() -> None:
     parser.add_argument("--preset-motion-id", type=int, help="one built-in animation-player motion ID used only to verify the delivered native upper-body service")
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
+    replan_record={}
 
     if args.verified_native_mouse_controls and not (args.fixed_reviewed_checkpoint and args.interactive_x11_display and args.pause_on_claw_failure):
         raise ValueError("verified mouse controls are scoped to the visible fixed-stance human-review entry")
@@ -2064,9 +2065,11 @@ def main() -> None:
                 + "> /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"
             )
             run(["docker", "exec", "-d", container, "bash", "-lc", bridge_command], timeout_s=5.0)
-            bridge_text = wait_for(bridge_log, "Input source registration response", timeout_s=10.0)
+            bridge_text = wait_for(bridge_log, "cmd_vel_bridge started.", timeout_s=10.0)
             if "state=0" not in bridge_text:
                 raise RuntimeError("official cmd_vel bridge did not register its MC source")
+            result['official_cmd_vel_bridge']['startup_observed']=True
+            result['official_cmd_vel_bridge']['registration_task_completion']='UNCONFIRMED; live source/mode gates remain mandatory'
             result["gates"]["OFFICIAL_CMD_VEL_BRIDGE"] = "PASS"
         if args.micro_base_probe:
             micro=run(["docker","exec",container,"bash","-lc",environment+"timeout 30s python3 /workspace/evidence/native_micro_probe.py"],timeout_s=33.,check=False)
@@ -2157,6 +2160,7 @@ def main() -> None:
                         required_replan = ("DOCK_CAPTURE", "RUNTIME_STATIC_IK", "LEFT_ARM_PARK_CLEAR", "OPEN_PREGRASP_CLEAR", "CLOSED_CONTACT_CLEAR")
                         if "circle" in replan_record:required_replan+=("APPROACH_SWEEP",)
                         if args.physical_lift_test:required_replan+=("LIFT_SWEEP",)
+                        if replan_record.get('lift_preflight',{}).get('retract_preflight'):required_replan+=("POST_LIFT_RETRACT_SWEEP",)
                         replan_ok = replan_record.get("classification") == "SIMULATION_ONLY_RUNTIME_CAPTURED_STATIC_REPLAN" and all(replan_record.get("gates", {}).get(name) == "PASS" for name in required_replan)
                         result["hal_arm_runtime_replan"] = {"path": str(replan_result_path), "sha256": sha256(replan_result_path), "returncode": replan.returncode, "gates": replan_record.get("gates")}
                         result["gates"]["HAL_ARM_RUNTIME_REPLAN"] = "PASS" if replan_ok else "FAIL"
@@ -2187,6 +2191,10 @@ def main() -> None:
                             dock_arm_state = {**dock_state.get("arm_positions_rad",{}),**dock_state.get("waist_positions_rad",{})}
                             if not isinstance(dock_arm_state, dict):
                                 raise RuntimeError("native docking capture lacks a complete arm fallback state")
+                            if replan_record.get('lift_preflight',{}).get('retract_preflight'):
+                                limits,provenance=native_leg_safety_contract(include_upper_body=True)
+                                replan_record['lift_preflight']['retract_preflight']['source_motion_limits']=limits
+                                result['retract_motion_limit_provenance']=provenance
                             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
@@ -2234,9 +2242,12 @@ def main() -> None:
                 if not result["hybrid_arm_bootstrap_handoff"].get("stopped"):
                     raise RuntimeError("hybrid arm bootstrap did not stop before the arm-only pregrasp")
             child_budget=42 if args.physical_lift_test else 35
+            if replan_record.get('lift_preflight',{}).get('retract_preflight',{}).get('pass_result') is True:child_budget+=6
             arm_pregrasp = run(["docker", "exec", container, "bash", "-lc", environment + f"timeout {child_budget}s python3 /workspace/evidence/native_hal_bilateral_arm_pregrasp.py"], timeout_s=child_budget+2., check=False)
             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.stdout", arm_pregrasp.stdout)
             arm_pregrasp_result = decode_arm_execution_output(arm_pregrasp.returncode,arm_pregrasp.stdout)
+            if replan_record.get('lift_preflight',{}).get('retract_preflight'):
+                result['gates']['POST_LIFT_RETRACT']='PASS' if arm_pregrasp_result.get('post_lift_retract',{}).get('pass') is True else 'FAIL'
             result["native_hal_bilateral_arm_pregrasp"] = {"candidate": result.get("hal_arm_candidate"), "plan_mode": args.hal_arm_plan_mode, "target_right_arm_rad": hal_arm_target_right, "target_left_arm_rad": hal_arm_target_left, "returncode": arm_pregrasp.returncode, "result": arm_pregrasp_result}
             result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] = "PASS" if arm_pregrasp.returncode == 0 and arm_pregrasp_result.get("native_tcp_arrival", {}).get("pass") and arm_pregrasp_result.get("motion_stability", {}).get("pass") else "FAIL"
             if args.hal_right_hand_command is not None:
