@@ -13,7 +13,27 @@ not authorize physics stepping, mechanical-model changes, or hardware motion.
   the target source. Truth may not silently cross an estimator acceptance
   boundary or be reported as LiDAR/depth-camera navigation or grasp success.
 
-## Current milestone and observed status (2026-11-07)
+## Current delivery Goal (2026-11-08)
+
+Reuse the existing runner and task interfaces:
+START -> known table -> RGB-D bottle observation -> reachable grasp or bounded
+necessary stance correction -> actual lift -> collision-screened carry posture
+-> held-object locomotion to the known chair area -> measured stable stop.
+Chair/table coordinates may use pre-mapped scene truth. Chair-seat placement
+requires supported reachability and real seat support; holding at the chair
+area is a separate result. Do not invent a squat, support or attachment.
+Do not require all four precision micro directions before a qualified route.
+After the truth-base chain passes, qualify LiDAR pose substitution and port the
+verified runtime to existing C++/ROS owners. Reserve a voice task-goal interface.
+No new framework/worktree, robot mechanics or vendor binary/policy edits.
+
+Native-337 zero-step geometry found chair body raicom_table_chair at (0,1.5,0),
+seat z about 0.328215m, but whole-mesh convex collision top at center 0.536048m.
+Do not mistake the 208mm hull gap for successful seat support or a robot
+crouching limitation. Source scene and robot remain unchanged.
+Evidence: reviews/issue-46/fetch-delivery-chair-geometry-20261107T173112Z/.
+
+## Historical five-stage Goal and observed status (2026-11-07)
 
 The maintainer authorized sequential autonomous completion of this simulation
 Goal on 2026-11-07, with Stage 1 taking priority. Reuse this worktree, task state

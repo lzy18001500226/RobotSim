@@ -357,11 +357,13 @@ def native_reset_dispatch_evidence(path, dispatch, *, expected_pid):
             not stamp<=press.get("host_ns",0)<=stamp+750000000):
         return {"pass":False,"reason":"RESET_NATIVE_PRESS_UNQUALIFIED"}
     rows=[]
-    for line in Path(path).read_bytes()[-8*1048576:].splitlines():
-        try:row=json.loads(line)
-        except (ValueError,UnicodeDecodeError):continue
-        if row.get("process_pid")==expected_pid and row.get("engine_version")==337:
-            rows.append(row)
+    with Path(path).open("rb") as stream:
+        for line in stream:
+            try:row=json.loads(line)
+            except (ValueError,UnicodeDecodeError):continue
+            if row.get("process_pid")==expected_pid and row.get("engine_version")==337:
+                if row["host_monotonic_ns"]>stamp+1000000000:break
+                rows.append(row)
     before=[r for r in rows if r["host_monotonic_ns"]<=stamp]
     if not before:return {"pass":False,"reason":"NO_NATIVE_PREDISPATCH_SAMPLE"}
     before=max(before,key=lambda r:r["host_monotonic_ns"])
