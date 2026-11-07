@@ -49,7 +49,14 @@ fresh RGB-D substitution remains separately required for perception acceptance.
 Stage 3 adds perception-driven base repositioning; do not expand into it before
 the fixed-stance grasp is qualified.
 
-Stage 1 now has one measured full START-to-table-to-lift PASS (native run
+The physical grasp/lift observations below remain valid, but the new native
+source-speed audit changes the **full-chain qualification**: previous runs did
+not enforce native leg speed continuously while walking. Recorded walking
+peaks exceed the installed 11.936 rad/s knee bound. Updated runs fail closed
+on native body/leg speed; the strengthened START-to-table chain is not yet
+qualified. Do not present historical grasp PASS as passing this new audit.
+
+Stage 1 has one historical measured full START-to-table-to-lift PASS (native run
 `20261106T210324Z`): final dock error 10.6mm, minimum bottle rise 55.60mm over
 51 samples spanning 1.000s, zero table support, and bilateral lower-concave-pad
 contact. An independent fixed-stance run also passed (58.49mm minimum rise).
@@ -73,6 +80,13 @@ the approved lower arcs. Assumptions remain upright blue cylinder, known
 height prior and the explicit source-derived collision/control profile above.
 Base truth and independent truth safety/audit are still used; LiDAR substitution
 and perception-driven base adjustment are not qualified by these results.
+
+The 150mm height variant now has source-waist-roll **geometric** candidates
+(050007Z): approach/lift/contact and static support screens pass, with >=39.66mm
+COM support margin. This uses an existing DOF, no mechanical change. Actual
+waist handoff, dynamic balance and short-bottle grasp remain unqualified.
+The 0.12m/s, 1s left micro-step (035847Z) passed measured stopping but has coupled
+forward motion; general forward/back/left/right correction is not yet qualified.
 
 Use the [scoped parameter authorization](../engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging)
 for existing gripper gain/joint-resistance diagnostics; ordinary permitted
@@ -119,9 +133,13 @@ passing arm IK solve, or a completed short physics probe as a completed grasp.
    the table.
 2. Search the robot base pose, base yaw, object position on the supported
    table area, knee bend, waist yaw/pitch, and wrist/arm pose.  The ordinary
-   posture constraint is waist roll within 2 degrees of the stable standing
-   state.  Prefer straight posture, then knee bend or forward waist pitch;
-   reject a side-bent waist as a grasp workaround.
+   default remains waist roll within 2 degrees for the qualified 300mm baseline.
+   The current maintainer Goal explicitly includes supported bending/side-body
+   posture for shorter bottles: separately labeled posture candidates may use
+   the existing source waist-roll DOF within its original limits. Require
+   collision, support/balance, smooth approach and actual controller handoff
+   qualification; do not mistake the ordinary preference for a hardware limit.
+   Do not add joints, alter axes/limits or execute an unqualified posture.
 3. Screen every candidate with `mj_forward` before stepping: complete hand
    pose, bilateral distal-pad contact at the requested close command, no
    non-pad object intersection, no robot-table collision, finite source joint
@@ -147,7 +165,7 @@ passing arm IK solve, or a completed short physics probe as a completed grasp.
 Failure handling remains local to the failed stage:
 
 - Static-screen failure: adjust only base stance, supported object placement,
-  knee/forward-pitch posture, or arm/wrist approach pose.
+  source-supported knee/waist posture, or arm/wrist approach pose.
 - Standing or pregrasp failure: correct the initial state or the smooth
   transition before issuing a close command.
 - Hand-to-object error or missing bilateral contact: search the screened
@@ -157,9 +175,11 @@ Failure handling remains local to the failed stage:
   and object COM before trying the next bounded candidate.
 
 Each failed candidate must preserve its result and select the next local
-candidate.  The workstream stops for human review only at a visual posture
-choice, a source/model change, a true physical grasp result, or when the
-remaining failure is outside the documented controls and evidence. Apply the
+candidate. Under the current sequential autonomous Goal, a recorded grasp
+success proceeds to the already authorized next stage; it is not a routine
+permission stop. Stop for an actual required visual decision, an unapproved
+source/model change, or a failure outside supported controls after completing
+independent useful work. Apply the
 explicit parameter authorization above before treating ordinary simulation
 control tuning as an unapproved mechanical change.
 

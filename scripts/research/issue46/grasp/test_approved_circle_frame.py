@@ -22,6 +22,19 @@ class FrameTests(unittest.TestCase):
             self.assertIn("full-source diagnostic is offline only",r.stdout)
             self.assertNotIn("FileNotFoundError",r.stdout)
 
+    def test_source_waist_roll_diagnostic_has_no_dynamic_execution_path(self):
+        import subprocess,sys
+        tool=Path(__file__).with_name("approved_circle_stance_region.py")
+        tree=ast.parse(tool.read_text())
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="source_roll_diagnostic")
+        calls=[n.func.attr for n in ast.walk(fn) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute)]
+        self.assertNotIn("mj_step",calls)
+        self.assertNotIn("create_publisher",calls)
+        r=subprocess.run([sys.executable,str(tool),"--source-roll-diagnostic","/nonexistent","--execute-simulation"],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+        self.assertEqual(r.returncode,2)
+        self.assertIn("unrecognized arguments",r.stdout)
+        self.assertNotIn("FileNotFoundError",r.stdout)
+
     def test_axial_roll_is_free_but_centre_offset_rotates(self):
         c=np.array([0.,.002,.132]);p=np.array([1.3,-1.65,.8]);axis=np.array([0.,0.,1.])
         for theta in (0.,.8,-.8,2.):

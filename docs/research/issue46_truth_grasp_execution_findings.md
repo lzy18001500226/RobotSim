@@ -710,3 +710,15 @@ a misleading stale-control error. Review time never counts toward lift hold.
 完整较低线速度流程 040934Z 在到桌前之前安全中止，不能算抓取失败：输入 forward 0.12 / 初始 yaw -0.159021，后续小 yaw 被官方桥提升到最小 0.1；约启动 0.591 s 时实际 pelvis 原点速度 0.220098 m/s，COM 0.220532 m/s，超过 0.20。两种速度定义都越界，不能归因于原点/质心的语义差异。没有执行机械臂、闭合或抬升。
 
 后续外部输入配置使用原已验证的更小 angular cap 0.075 rad/s，并同步约束 bridge 的 min/max angular，避免低值请求被抬高。MC 策略、增益和物理限值不变。物理故障保留首次 source timestamp，不让后续零命令观察覆盖首个原因。
+
+
+### 150 mm 矮瓶：现有腰侧倾自由度的有界几何修正
+
+此前 source-upper 搜索冻结了既有 waist_roll_joint，并非制造商关节缺失。依照当前 Goal 对弯腰/侧身的要求，复用同一 IK，增加这一现有源坐标，仍冻结 root/legs。没有改 joint、axis、限位、网格、MC 或碰撞筛选。三种有限种子均得到合格终点。首个目标 waist yaw/pitch/roll = (0.034768, 0.286095, 0.161869) rad。
+
+证据 150mm-existing-waist-roll-diagnostic-20261107T050007Z：三个种子都通过 21 点张开接近扫掠、13 点60mm抬升几何扫掠、双侧 pad 接触、桌面/非pad阻挡及相对 baseline 的新增活跃自碰撞检查。沿扫掠的静态 COM 到原始双足接触凸包最小余量为39.66–40.80mm。几何中心残差约2e-9m、轴残差约1e-8rad只是求解精度，绝不代表感知或真实执行精度。
+
+这仍是 ZERO_STEP，不是动态平衡、物理抓取或 MC 腰部接管 PASS。现有两度普通姿态偏好不能当作源机械限位；300mm已验证姿态保持原样，短瓶候选单独标记。接下来的受支持腰部接管和动态验证必须保留全部原安全门。
+
+复现（只进行静态诊断）：
+env OPENBLAS_NUM_THREADS=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46/grasp/approved_circle_stance_region.py --source-roll-diagnostic /home/lzy18001500226/projects/RobotSim/reviews/issue-46/approved-circle-standing-ik-20261107T020355Z/result.json
