@@ -759,3 +759,20 @@ Xlib手册明确InputFocus控制键盘事件（None时丢弃键盘事件）：ht
 点击返回不等于Reset/Pause成功：仍要求native generation+1、episode初始位姿匹配、后续新鲜站立，以及Pause后真实模拟时钟冻结。缺失像素、遮挡、身份变化、已按按键、移动中的窗口全部拒绝发送鼠标按钮事件。无焦点单元测试仅在完整鼠标证据齐全时允许两个按钮事件，默认键盘路径继续拒绝无焦点。
 
 081450Z重新执行实际RGB-D物理抓取：Key鼠标协议2个按钮事件/0键盘事件，native generation到1，STAND物理观察PASS；闭合/抬升门PASS，最小抬升57.610348mm/最后1sim秒。原生Pause鼠标协议及实际冻结检查PASS。没有再次重启图形服务，没有运行行走或矮瓶。审核窗口保留，完整进程收尾/清理在用户关闭或等待期限后单列；不能提前宣称cleanup完成。五阶段长Goal仍暂停。
+
+
+### 083200Z初始化未加载与实际原生UI收件确认
+
+用户083200Z复现中，纯鼠标校验通过、2个按钮事件已提交，但前后截图的Key均为-1，native generation始终0，根位置仍在START，最终高度约0.0825m。不是初始化成功后再跌倒，也没有进入IK、闭合或抬升。该失败容器已确认不存在。此前仅检查XTEST/XSync，未证明应用收到对应控件点击；具体WSLg丢失/重定向原因仍未锁定。失败发生在第二屏、成功记录在第一屏只是相关性，不能据此断言多屏就是根因。
+
+现有只读native observer额外记录真实mjui_event的PID、单调时间、坐标、返回控件、section/item；原函数仍恰好调用一次，未写model/data/control，也未改厂家二进制。原生337源码支持Key变更直接pending.load_key，不应再补点Load key造成第二次Reset：
+https://raw.githubusercontent.com/google-deepmind/mujoco/3.3.7/simulate/simulate.cc 。
+
+显式可见审核路径改为单次按下→最多0.75s等待真实应用Key控件press收件→finally单次松开。没有任意固定按住时长、重复点击、键盘输入或放宽身份/像素/坐标检查；超时或异常也松开。收件只证明原生UI处理，仍必须独立通过generation+1、初始位姿及新鲜站立检查。Pause同样取得真实单选控件收件，再独立确认模拟时钟冻结。默认其他Reset/键盘路径保持原协议。
+
+离线110项测试通过，含错误PID/控件/坐标、旧记录、空/半写日志、超时释放、异常释放、禁止第二次点击；337严格编译与Python/bash/diff检查通过。证据：
+reviews/issue-46/native-ui-receipt-correction-offline-20261107T091007Z/ 。
+
+091358Z真实原生物理复核：PID30的Key控件(section2/item5)在提交后77.871ms返回，native generation到1；窗口即使XInputFocus=0也通过独立纯鼠标收件证明，0个键盘事件。站立、张开、RGB-D重新估计、手臂到位、闭合、抬升均PASS。最后51帧/1.000sim秒最低抬升58.050957mm，双垫最小法向1.640800/1.659285N，桌面力0，平均向上1.961917N。Pause控件原生收件和实际时钟冻结80.961s均通过，保留交互审核窗口。该运行只证明当前30cm/.200kg桌前固定站位的SIMULATION_ONLY源派生碰撞/控制配置，不包含从START行走或整个长Goal。
+
+审核窗口有明确900s上限；超过时间自动清理应记录为review timeout，与已完成的抓取物理PASS分开。085313Z先前收件观测运行已完成抓取，随后900s审核到期并确认容器删除；没有假称其审核关闭属于新的抓取失败。当前091358Z审核尚未结束时不提前声称cleanup完成。长Goal保持暂停。
