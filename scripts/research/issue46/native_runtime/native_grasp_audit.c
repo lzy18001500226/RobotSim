@@ -23,6 +23,8 @@ static FILE* sink;
 static char latest_path[4096], latest_tmp[4104];
 static int count, generation;
 static double previous = -1, next_time = -1;
+static mjtNum peak_qvel[4096];
+static double qvel_window_start;
 static long long last_step_end_ns,max_call_gap_ns,max_step_duration_ns,last_io_ns,max_io_ns;
 
 static long long mono_ns(void) {
@@ -110,7 +112,13 @@ void mj_step(const mjModel* m,mjData* d) {
   if(physics_end-begin>max_step_duration_ns)max_step_duration_ns=physics_end-begin;
   last_step_end_ns=physics_end;
   if (!sink || count>=12000) return;
-  if (d->time<previous) {generation++;next_time=-1;}
+  if (d->time<previous) {generation++;next_time=-1;memset(peak_qvel,0,sizeof(peak_qvel));qvel_window_start=d->time;}
+  if(m->njnt>4096){fprintf(stderr,"NATIVE_AUDIT_JOINT_WINDOW_CAPACITY\n");return;}
+  for(int j=0;j<m->njnt;j++) {
+    if(m->jnt_type[j]==mjJNT_FREE || m->jnt_type[j]==mjJNT_BALL)continue;
+    mjtNum v=d->qvel[m->jnt_dofadr[j]];if(v<0)v=-v;
+    if(v>peak_qvel[j])peak_qvel[j]=v;
+  }
   previous=d->time;
   if (d->time+1e-10<next_time) return;
   next_time=d->time+.02;count++;
@@ -126,9 +134,11 @@ void mj_step(const mjModel* m,mjData* d) {
   for (int j=0;j<m->njnt;j++) {
     const char* joint_name=name_real(m,mjOBJ_JOINT,j);
     if(!joint_name || m->jnt_type[j]==mjJNT_FREE || m->jnt_type[j]==mjJNT_BALL)continue;
-    fprintf(sink,"%s\"%s\":{\"q\":%.17g,\"qvel\":%.17g,\"bias_force\":%.17g}",emitted_joint++?",":"",joint_name,(double)d->qpos[m->jnt_qposadr[j]],(double)d->qvel[m->jnt_dofadr[j]],(double)d->qfrc_bias[m->jnt_dofadr[j]]);
+    fprintf(sink,"%s\"%s\":{\"q\":%.17g,\"qvel\":%.17g,\"bias_force\":%.17g,\"max_abs_qvel_since_previous_sample\":%.17g}",emitted_joint++?",":"",joint_name,(double)d->qpos[m->jnt_qposadr[j]],(double)d->qvel[m->jnt_dofadr[j]],(double)d->qfrc_bias[m->jnt_dofadr[j]],(double)peak_qvel[j]);
   }
-  fputs("},\"claw_actuators\":{",sink);
+  memset(peak_qvel,0,sizeof(peak_qvel));
+  fprintf(sink,"},\"joint_velocity_window_start_sim_time_s\":%.17g,\"claw_actuators\":{",qvel_window_start);
+  qvel_window_start=d->time;
   const char* acts[]={"motor_L_claw_joint","motor_R_claw_joint"};
   for(int i=0;i<2;i++) {
     int a=id_real(m,mjOBJ_ACTUATOR,acts[i]);fprintf(sink,"%s\"%s\":",i?",":"",acts[i]);

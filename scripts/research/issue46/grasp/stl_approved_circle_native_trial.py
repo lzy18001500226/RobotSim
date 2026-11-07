@@ -57,6 +57,7 @@ def main():
     p.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     p.add_argument("--dock-world-xy",type=float,nargs=2,default=(.85,-1.44))
     p.add_argument("--dock-position-tolerance-m",type=float,default=.10)
+    p.add_argument("--dock-command-speed-cap",type=float)
     p.add_argument("--dock-braking-delay-s",type=float)
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
@@ -210,6 +211,7 @@ def main():
         start=argv.index("--dock-world-xy")
         argv=argv[:start]+["--use-official-cmd-vel-bridge","--micro-base-probe",args.micro_base_probe,"--micro-probe-duration-s",str(args.micro_probe_duration_s),"--micro-command-speed",str(args.micro_command_speed)]
     if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
+    if args.dock_command_speed_cap is not None:argv.extend(["--dock-command-speed-cap",str(args.dock_command_speed_cap)])
     argv.extend(["--native-reset-input",args.native_reset_input])
     if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
     if args.physical_lift_test:

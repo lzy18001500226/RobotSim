@@ -67,6 +67,11 @@ class MicroTests(unittest.TestCase):
         r=dict(joints=dict(knee=dict(q=.1,qvel=1.01)))
         self.assertEqual(micro.physical_fault(r,p,dict(knee=(-1,1,1))),"SOURCE_JOINT_SPEED:knee")
 
+    def test_inter_sample_joint_velocity_peak_is_not_hidden_by_current_low_speed(self):
+        p=dict(z=.65,roll=0.,pitch=0.,vx=0.,vy=0.)
+        r=dict(joints=dict(knee=dict(q=.1,qvel=.01,max_abs_qvel_since_previous_sample=1.01)))
+        self.assertEqual(micro.physical_fault(r,p,dict(knee=(-1,1,1))),"SOURCE_JOINT_SPEED:knee")
+
     def test_unchanged_composite_contract(self):
         self.assertTrue(stop.evaluate_stop_window(rows(),baseline_body_status=1)["pass"])
         r=rows();r[-1]["mc_leg_command"]["joints"][1]["position"]=.02001

@@ -53,7 +53,7 @@ def physical_fault(row, pose, limits, start=None, direction=None):
         j = row["joints"][name]
         if not lo-.001 <= j["q"] <= hi+.001:
             return "JOINT_LIMIT:" + name
-        if not math.isfinite(j["qvel"]) or abs(j["qvel"]) > speed:
+        if not math.isfinite(j["qvel"]) or abs(j["qvel"]) > speed or j.get("max_abs_qvel_since_previous_sample",abs(j["qvel"]))>speed:
             return "SOURCE_JOINT_SPEED:" + name
     if start is not None:
         dx, dy = pose["x"]-start["x"], pose["y"]-start["y"]
@@ -73,7 +73,7 @@ def build_script(direction, duration_s, joint_limits, *, command_speed=.2):
         raise ValueError("unknown body-frame micro direction")
     if not .4 <= duration_s <= 1.:
         raise ValueError("micro pulse must be .4..1 seconds")
-    if not math.isfinite(command_speed) or not .12<=command_speed<=.2:raise ValueError("micro input outside previously validated .12..20 envelope")
+    if not math.isfinite(command_speed) or not .12<=command_speed<=.2:raise ValueError("micro input outside previously validated .12..0.20 envelope")
     from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import locomotion_dock_script
     base = locomotion_dock_script(world_start_xy=[-1.5, -1.5],
         world_start_yaw_rad=0., dock_world_xy=[-1.5, -1.5],

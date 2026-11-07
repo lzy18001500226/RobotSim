@@ -221,6 +221,24 @@ finally:
 """
 
 
+def native_leg_safety_contract():
+    """Read-only intersection of pinned leg URDF and installed MC model limits."""
+    import xml.etree.ElementTree as ET
+    source=REPO/"reference/AgibotTech/agibot_x2_urdf"
+    revision=run(["git","-C",str(source),"rev-parse","HEAD"],timeout_s=5.).stdout.strip()
+    if revision!="575cc6b988f976c23550e0db85aa1e5475d3652d":raise ValueError("pinned X2 source revision")
+    urdfs=list(source.rglob("X2-Ultra_omnipicker.urdf"))
+    if len(urdfs)!=1:raise ValueError("unique official OmniPicker source required")
+    joints={j.get("name"):j.find("limit") for j in ET.parse(urdfs[0]).getroot().findall("joint") if j.find("limit") is not None}
+    native_path=RUNTIME/"mc/bin/mc_param/src/robot/lx2501_3_t2d5/robot_model.yaml"
+    installed={item["name"]:item["limits"] for group in yaml.safe_load(native_path.read_text())["joints"] for item in group[1]}
+    limits={}
+    for side in ("left","right"):
+        for suffix in ("hip_pitch","hip_roll","hip_yaw","knee","ankle_pitch","ankle_roll"):
+            name=side+"_"+suffix+"_joint";a,b=joints[name],installed[name]
+            limits[name]=[max(float(a.get("lower")),b["lower_position"]),min(float(a.get("upper")),b["upper_position"]),min(float(a.get("velocity")),b["max_velocity"])]
+    return limits,{"urdf":str(urdfs[0]),"sha256":sha256(urdfs[0]),"revision":revision,"installed_mc_robot_model":str(native_path),"installed_mc_robot_model_sha256":sha256(native_path),"bounds":limits,"policy":"intersection, never raise any pinned or native bound"}
+
 def locomotion_dock_script(
     *,
     world_start_xy: list[float],
@@ -237,6 +255,8 @@ def locomotion_dock_script(
     use_cmd_vel_bridge: bool = False,
     native_pose_feedback: bool = False,
     braking_delay_s: float | None = None,
+    native_leg_limits: dict | None = None,
+    command_speed_cap: float | None = None,
 ) -> str:
     """Build one bounded, odometry-closed official velocity-control route.
 
@@ -261,8 +281,13 @@ def locomotion_dock_script(
             "use_cmd_vel_bridge": use_cmd_vel_bridge,
             "native_pose_feedback": native_pose_feedback,
             "braking_delay_s": braking_delay_s,
+            "native_leg_limits":native_leg_limits,
+            "command_speed_cap":command_speed_cap,
         }
     )
+    import inspect
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault
+    safety_source=inspect.getsource(native_pose)+"\n"+inspect.getsource(physical_fault)
     return """#!/usr/bin/env python3
 import json
 import math
@@ -308,6 +333,8 @@ def call(n,c,req):
  while rclpy.ok() and not f.done() and time.monotonic()<end:rclpy.spin_once(n,timeout_sec=.01)
  if not f.done() or f.result() is None:raise RuntimeError('service timeout')
  return f.result()
+
+__SAFETY_SOURCE__
 
 class Dock(Node):
  def __init__(self):
@@ -389,6 +416,9 @@ class Dock(Node):
   if self.odom_stamp is not None and stamp<=self.odom_stamp:return
   if hasattr(self,'native_generation') and row['generation']!=self.native_generation:self.feedback_fault={'gate':'NATIVE_DOCK_RESET_GENERATION_CHANGED'};return
   p=row['bodies']['pelvis'];q=p['quaternion_wxyz'];R=p['rotation'];x,y,z=p['position_m']
+  if PLAN.get('native_leg_limits'):
+   fault=physical_fault(row,native_pose(row),PLAN['native_leg_limits'])
+   if fault:self.feedback_fault={'gate':fault,'native_row_source_ns':stamp};return
   if not all(math.isfinite(v) for v in [x,y,z,*q]):self.feedback_fault={'gate':'NONFINITE_NATIVE_DOCK_POSE'};return
   self.native_generation=row['generation'];self.odom_stamp=stamp;self.odom_last_unique_receipt=stamp*1e-9
   self.pose=(x,y,z,math.atan2(R[3],R[0]),stamp*1e-9);self.quat=q
@@ -488,6 +518,7 @@ try:
      goal_index+=1;goal_name,gx,gy,gyaw,position_only=goals[goal_index];stable_since=None;phase='REFINE_ALIGN';continue
     break
   if phase!='HOLD':stable_since=None
+  if PLAN.get('command_speed_cap') is not None:fwd=max(-PLAN['command_speed_cap'],min(PLAN['command_speed_cap'],fwd))
   n.publish(fwd,lat,ang)
   now=time.monotonic()
   if last_sample_at is None or now-last_sample_at>=.10:
@@ -514,7 +545,7 @@ finally:
  n.zero_hold(.5)
  if registered:n.disable()
  n.destroy_node();rclpy.shutdown()
-""".replace("__PLAN__", payload)
+""".replace("__PLAN__", payload).replace("__SAFETY_SOURCE__",safety_source)
 
 
 def lateral_probe_script(lateral_mps: float, duration_s: float) -> str:
@@ -936,6 +967,7 @@ def main() -> None:
     parser.add_argument("--native-circle-tracking",action="store_true",help="consume fresh source-limited native circle IK updates during arm execution")
     parser.add_argument("--physical-lift-test",action="store_true",help="60mm/3s lift and 1.5s observation only after measured bilateral contact and static lift sweep")
     parser.add_argument("--native-dock-truth-feedback",action="store_true",help="SIMULATION_ONLY exact native pose feedback; not estimator/navigation qualification")
+    parser.add_argument("--dock-command-speed-cap",type=float,help="explicit smaller external bridge speed cap; MC/policy/model unchanged")
     parser.add_argument("--dock-braking-delay-s",type=float,help="explicit measured stop-tail predictor; final actual position/stop criteria remain unchanged")
     parser.add_argument("--fixed-reviewed-checkpoint",action="store_true",help="native keyframe episode initialization; no navigation qualification")
     parser.add_argument("--startup-opening-diagnostic", action="store_true", help="8s no-locomotion native opening observation, then mandatory teardown")
@@ -987,6 +1019,9 @@ def main() -> None:
     parser.add_argument("--preset-motion-id", type=int, help="one built-in animation-player motion ID used only to verify the delivered native upper-body service")
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
+
+    if args.dock_command_speed_cap is not None and (args.dock_world_xy is None or not args.native_dock_truth_feedback or not .12<=args.dock_command_speed_cap<=.20):
+        raise ValueError("bounded dock cap requires native feedback and .12..0.20 m/s")
 
     if args.micro_base_probe:
         if args.dock_world_xy is not None or args.fixed_reviewed_checkpoint or args.lateral_probe_mps is not None or args.physical_lift_test or args.pause_on_claw_failure:
@@ -1261,33 +1296,17 @@ def main() -> None:
                     use_cmd_vel_bridge=bool(args.use_official_cmd_vel_bridge),
                     native_pose_feedback=bool(args.native_dock_truth_feedback),
                     braking_delay_s=args.dock_braking_delay_s,
+                    native_leg_limits=native_leg_safety_contract()[0] if args.native_dock_truth_feedback else None,
+                    command_speed_cap=args.dock_command_speed_cap,
                 ),
             )
         if args.micro_base_probe:
-            import xml.etree.ElementTree as ET
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
-            import mujoco
-            source=REPO/"reference/AgibotTech/agibot_x2_urdf"
-            revision=run(["git","-C",str(source),"rev-parse","HEAD"],timeout_s=5.).stdout.strip()
-            if revision!="575cc6b988f976c23550e0db85aa1e5475d3652d":raise ValueError("pinned X2 source revision")
-            urdfs=list(source.rglob("X2-Ultra_omnipicker.urdf"))
-            if len(urdfs)!=1:raise ValueError("unique official OmniPicker source required")
-            roots=ET.parse(urdfs[0]).getroot()
-            velocity={j.get("name"):float(j.find("limit").get("velocity")) for j in roots.findall("joint") if j.find("limit") is not None and j.find("limit").get("velocity") is not None}
-            runtime_model=RUNTIME/"mc/bin/mc_param/src/robot/lx2501_3_t2d5/robot_model.yaml"
-            vendor_limits={item["name"]:item["limits"] for group in yaml.safe_load(runtime_model.read_text())["joints"] for item in group[1]}
-            host_scene=Path((claw_control_overlay or overlay)["generated"]["host_scene"]["path"])
-            model=mujoco.MjModel.from_xml_path(str(host_scene))
-            names=tuple(side+"_"+suffix+"_joint" for side in ("left","right") for suffix in ("hip_pitch","hip_roll","hip_yaw","knee","ankle_pitch","ankle_roll"))
-            limits={}
-            for name in names:
-                j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
-                if j<0 or name not in velocity or not model.jnt_limited[j]:raise ValueError("missing source joint bound:"+name)
-                limits[name]=[*map(float,model.jnt_range[j]),min(velocity[name],vendor_limits[name]["max_velocity"])]
+            limits,provenance=native_leg_safety_contract()
             pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed))
             pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
-            result["micro_source_joint_limits"]={"urdf":str(urdfs[0]),"sha256":sha256(urdfs[0]),"revision":revision,"bounds":limits,"installed_mc_robot_model":str(runtime_model),"installed_mc_robot_model_sha256":sha256(runtime_model),"velocity_policy":"minimum of pinned URDF and installed native MC model; no limit raised"}
+            result["micro_source_joint_limits"]=provenance
         if args.lateral_probe_mps is not None:
             pg.write_new_text(
                 output / "native_lateral_probe.py",
@@ -1721,7 +1740,7 @@ def main() -> None:
             result["gates"]["RETARGETING_TOPIC_DISCOVERY"] = "PASS" if retargeting_topic.returncode == 0 and "Type:" in retargeting_topic.stdout else "FAIL"
         if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
             bridge_log = output / "official_cmd_vel_bridge.stdout"
-            lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:="+str(args.micro_command_speed)+" -p min_lateral_velocity:="+str(args.micro_command_speed) if args.micro_base_probe else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
+            lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:="+str(args.micro_command_speed)+" -p min_lateral_velocity:="+str(args.micro_command_speed) if args.micro_base_probe else " -p min_forward_velocity:="+str(args.dock_command_speed_cap) if args.dock_command_speed_cap is not None else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
             bridge_command = (
                 environment
                 + "exec python3 /workspace/robotsim/reference/AgiBot-Community/raicom2026-agibot-X2/"
