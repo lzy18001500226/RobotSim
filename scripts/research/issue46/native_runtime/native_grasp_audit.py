@@ -138,7 +138,7 @@ def launch_prefix(renderer_adapter=None):
     """Only the simulator process receives the read-only interposer."""
     import shlex
     selected='' if renderer_adapter is None else 'MESA_D3D12_DEFAULT_ADAPTER_NAME='+shlex.quote(str(renderer_adapter))+' LIBGL_ALWAYS_SOFTWARE=0 MESA_LOADER_DRIVER_OVERRIDE=d3d12 LD_LIBRARY_PATH=/usr/lib/wsl/lib '
-    return "env "+selected+"LD_PRELOAD=/workspace/evidence/native_grasp_audit.so ROBOTSIM_NATIVE_AUDIT_OUT=/workspace/evidence/native_physics.jsonl ROBOTSIM_NATIVE_GRAPHICS_OUT=/workspace/evidence/native_graphics.json "
+    return "env "+selected+"LD_PRELOAD=/workspace/evidence/native_grasp_audit.so ROBOTSIM_NATIVE_AUDIT_OUT=/workspace/evidence/native_physics.jsonl ROBOTSIM_NATIVE_GRAPHICS_OUT=/workspace/evidence/native_graphics.json ROBOTSIM_NATIVE_UI_OUT=/workspace/evidence/native_ui_events.jsonl "
 
 def graphics_mount_options(adapter,display):
     if adapter is None:return []
