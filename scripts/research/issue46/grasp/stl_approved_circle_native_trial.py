@@ -45,6 +45,7 @@ def main():
     p.add_argument("--native-physics-audit",action="store_true",help="read-only actual-engine pose/contact/force observer; ABI must match installed library")
     p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay","fresh-rgbd","fresh-rgbd-snapshot"),default="truth-diagnostic",help="explicit provenance; snapshot mode reobserves before a bounded stationary-target execution")
     p.add_argument("--rgbd-render-adapter",help="explicit WSLg/Mesa sensor-process GPU selection, e.g. NVIDIA; actual renderer identity must agree")
+    p.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace")
     p.add_argument("--native-render-adapter",help="explicit process-only GPU selection for the native simulator, with actual GL identity verification")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--grasp-axis-tilt-rad",type=float,default=0.)
@@ -208,6 +209,7 @@ def main():
         start=argv.index("--dock-world-xy")
         argv=argv[:start]+["--use-official-cmd-vel-bridge","--micro-base-probe",args.micro_base_probe,"--micro-probe-duration-s",str(args.micro_probe_duration_s)]
     if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
+    argv.extend(["--native-reset-input",args.native_reset_input])
     if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
     if args.physical_lift_test:
         argv.append('--physical-lift-test')

@@ -930,6 +930,7 @@ def main() -> None:
     parser.add_argument("--xvfb-libs", type=Path)
     parser.add_argument("--xkb-root", type=Path)
     parser.add_argument("--interactive-x11-display", help="use a user-visible WSLg X11 display and pause after failed claw response; requires the host X socket mounted explicitly")
+    parser.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace",help="one verified native Reset input, without fallback/retry")
     parser.add_argument("--native-render-adapter",help="process-scoped WSLg GPU selection; verified against the actual native GL context before MC startup")
     parser.add_argument("--open-hand-transit-park",action="store_true",help="source-limited right shoulder parked at 0.8rad to keep open hand away from bottle during walking")
     parser.add_argument("--native-circle-tracking",action="store_true",help="consume fresh source-limited native circle IK updates during arm execution")
@@ -1507,12 +1508,23 @@ def main() -> None:
                 raise RuntimeError('NATIVE_KEYFRAME_INITIAL_POSE_UNCONFIRMED')
             result['reviewed_checkpoint']=checkpoint;result['native_checkpoint_observation']={**boundary,'current_position_error_m':error,'current_angle_error_rad':angle};result['gates']['NATIVE_EPISODE_KEYFRAME_INIT']='PASS'
         else:
-            reset = run(["docker", "exec", container, "bash", "-lc", "python3 /workspace/evidence/native_mujoco_reset.py send-reset --expected-pid " + str(pid) + " --expected-title " + repr(str(window["title"])) + " --window-id " + str(window["window_id"]) + " --before-png /workspace/evidence/mujoco_before_reset.png --after-png /workspace/evidence/mujoco_after_reset.png --dispatch-event-json /workspace/evidence/reset_dispatch_event.json"], timeout_s=12.0)
+            reset_before=json.loads((output/"native_latest.json").read_text()) if native_observer else None
+            reset_command="click-native-reset" if args.native_reset_input=="button" else "send-reset"
+            captures="" if args.native_reset_input=="button" else " --before-png /workspace/evidence/mujoco_before_reset.png --after-png /workspace/evidence/mujoco_after_reset.png"
+            reset = run(["docker", "exec", container, "bash", "-lc", "python3 /workspace/evidence/native_mujoco_reset.py "+reset_command+" --expected-pid " + str(pid) + " --expected-title " + repr(str(window["title"])) + " --window-id " + str(window["window_id"]) + captures+" --dispatch-event-json /workspace/evidence/reset_dispatch_event.json"], timeout_s=12.0)
             pg.write_new_text(output / "reset_dispatch.stdout", reset.stdout)
             reset_data = json.loads(reset.stdout)
             result["reset"] = reset_data
-            if reset_data.get("event", {}).get("status") != "KEY_DISPATCHED":
+            if reset_data.get("event", {}).get("status") != ("RESET_BUTTON_CLICKED" if args.native_reset_input=="button" else "KEY_DISPATCHED"):
                 raise RuntimeError("native Reset was not dispatched")
+            if native_observer:
+                reset_deadline=time.monotonic()+1.
+                while time.monotonic()<reset_deadline:
+                    reset_after=json.loads((output/"native_latest.json").read_text())
+                    if native_grasp_audit.native_reset_generation_effect(reset_before,reset_after):
+                        result["native_reset_effect"]={"before_sim_time_s":reset_before["sim_time_s"],"after_sim_time_s":reset_after["sim_time_s"],"before_generation":reset_before["generation"],"after_generation":reset_after["generation"]};break
+                    time.sleep(.01)
+                else:raise RuntimeError("NATIVE_RESET_EFFECT_UNCONFIRMED")
             result["gates"]["NATIVE_RESET"] = "PASS"
         state = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 6s ros2 topic echo --once /aima/hal/joint/leg/state"], timeout_s=8.0)
         pg.write_new_text(output / "post_reset_leg_state.yaml", state.stdout)

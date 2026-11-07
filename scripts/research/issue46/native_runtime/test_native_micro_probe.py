@@ -97,6 +97,14 @@ class MicroTests(unittest.TestCase):
             with self.assertRaises(ValueError):micro.build_script("left",bad,{})
         with self.assertRaises(ValueError):micro.build_script("up",.6,{})
 
+    def test_native_reset_requires_a_new_generation_and_same_actual_process(self):
+        from scripts.research.issue46.native_runtime.native_grasp_audit import native_reset_generation_effect
+        before=dict(engine_version=337,process_pid=30,host_monotonic_ns=10,generation=0,sim_time_s=10.)
+        after=dict(before,host_monotonic_ns=20,generation=1,sim_time_s=.02)
+        self.assertTrue(native_reset_generation_effect(before,after))
+        for change in (dict(generation=0),dict(process_pid=31),dict(sim_time_s=11.),dict(host_monotonic_ns=10)):
+            self.assertFalse(native_reset_generation_effect(before,dict(after,**change)))
+
     def test_real_parent_argument_path_allows_only_isolated_micro_exception(self):
         from unittest.mock import patch
         from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent

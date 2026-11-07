@@ -310,3 +310,12 @@ def review_native_capture(run, *, dry_run=False, full_flow=False):
                 if state['index']<state['limit']:state['index']+=1
                 else:state['play']=False
     return summary
+
+
+def native_reset_generation_effect(before,after):
+    """Actual native Reset discontinuity, distinct from input submission."""
+    return (before.get("engine_version")==after.get("engine_version")==337
+            and before.get("process_pid")==after.get("process_pid") and before.get("process_pid") is not None
+            and after["host_monotonic_ns"]>before["host_monotonic_ns"]
+            and after["generation"]==before["generation"]+1
+            and 0.<=after["sim_time_s"]<before["sim_time_s"])

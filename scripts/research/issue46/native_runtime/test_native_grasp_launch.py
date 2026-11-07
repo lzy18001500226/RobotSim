@@ -332,7 +332,7 @@ class NativeLaunchTests(TestCase):
 
     def test_key_slider_consumption_precedes_any_second_input(self):
         source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
-        block=source[source.index('        if args.fixed_reviewed_checkpoint:\n            identity='):source.index('        else:\n            reset = run(')]
+        block=source[source.index('        if args.fixed_reviewed_checkpoint:\n            identity='):source.index('        else:\n            reset_before=')]
         self.assertIn('NATIVE_KEY_SLIDER_AUTO_LOAD',block)
         self.assertNotIn('click-native-load-key',block)
         self.assertIn("observed['generation']==before_key['generation']+1 and boundary['pass']",block)
