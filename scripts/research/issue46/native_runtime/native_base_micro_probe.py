@@ -482,9 +482,9 @@ def run_probe(smoke_only=False):
                     result["trigger_elapsed_s"]=time.monotonic()-began
                     break
             angular=heading_hold_command(row["pose"]["yaw"],start["yaw"]) if MICRO.get("heading_hold") else 0.
+            # Run81/82 raw command traces retain .14 even with nonzero
+            # steering. Their prose description of an arc downgrade disagrees.
             command_velocity=velocity
-            if MICRO["direction"]=="forward" and v==.14 and angular!=0.:
-                command_velocity=(.12,0.)  # exact Run81 straight/arc input envelope
             n.publish(*command_velocity,angular);time.sleep(max(0.,tick+.02-time.monotonic()))
         # Initiate zero BEFORE any blocking readback or post-pulse inspection.
         n.deadline_zero();n.stop_started=True

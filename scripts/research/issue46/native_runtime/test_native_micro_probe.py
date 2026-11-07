@@ -81,7 +81,7 @@ class MicroTests(unittest.TestCase):
         self.assertIn("'target_distance_m': 0.03",code)
         self.assertIn('result["goal_triggered_stop"]=True',code)
         code14=micro.build_script("forward",2.,{},command_speed=.14,heading_hold=True,target_distance_m=.03)
-        self.assertIn("command_velocity=(.12,0.)",code14)
+        self.assertNotIn("command_velocity=(.12,0.)",code14)
         with self.assertRaises(ValueError):micro.build_script("left",2.,{},command_speed=.14,target_distance_m=.03)
         for kwargs in (dict(duration_s=2.01,target_distance_m=.03),dict(duration_s=2.,target_distance_m=.03,command_speed=.2),dict(duration_s=2.)):
             with self.assertRaises(ValueError):micro.build_script("forward",joint_limits={},**kwargs)
