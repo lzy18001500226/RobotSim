@@ -13,9 +13,26 @@ class CarryNavigationTests(unittest.TestCase):
         self.assertIn("run_carry_navigation", {n.name for n in tree.body if isinstance(n,ast.FunctionDef)})
         self.assertIn("PointGoalController",code)
         self.assertIn("max_forward_mps=.12",code)
-        self.assertIn("max_angular_rps=.075",code)
+        self.assertIn('max_angular_rps=cfg.get("angular_command_cap",.075)',code)
         self.assertIn("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED",code)
         self.assertTrue(code.endswith("run_probe()"+chr(10)))
+    def test_sdk_turn_profile_is_explicit_and_retains_physical_speed_limit(self):
+        code=m.build_carry_route_script([-.45,1.],{},['pelvis'],carry_pid=19,angular_command_cap=.1)
+        self.assertIn("'angular_command_cap': 0.1",code)
+        self.assertIn('> .20',code)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,angular_command_cap=.3)
+    def test_real_debug_command_duration_is_interpolated_not_literal_code(self):
+        import shlex
+        from types import SimpleNamespace
+        parent=Path(__file__).with_name('xvfb_native_reset_stand.py')
+        tree=ast.parse(parent.read_text())
+        statement=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='debug_command' for t in n.targets))
+        ns=dict(environment='source /opt/ros/humble/setup.bash; ',setup='/workspace/debug/setup.bash',shlex=shlex,expected_debug_node='mc_ros2_node158',args=SimpleNamespace(carry_timeout_s=90.,carry_goal_world_xy=[-.45,1.]))
+        exec(compile(ast.Module(body=[statement],type_ignores=[]),'real_debug_command','exec'),ns)
+        parts=shlex.split(ns['debug_command'])
+        self.assertEqual(parts[parts.index('--max-duration-s')+1],'170.0')
+        self.assertNotIn('str(args',ns['debug_command'])
+
     def test_invalid_goals_and_deadlines_are_not_executable(self):
         for goal,seconds in (([2.,0.],90.),([float("nan"),0.],90.),([0.,0.],91.)):
             with self.assertRaises(ValueError):m.build_carry_route_script(goal,{},[],carry_pid=19,timeout_s=seconds)
@@ -127,7 +144,7 @@ class CarryParentIntegrationTests(unittest.TestCase):
             (out/"carry_heartbeat.json").write_text(json.dumps(dict(pid=19,host_monotonic_ns=now)))
             (out/"native_tracking_carry_handoff.json").write_text(json.dumps(dict(classification="BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY",physical_hold_pass=True,generation=1)))
             (out/"native_micro_stop_contract.py").write_text("# fixture")
-            args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.)
+            args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.,carry_sdk_minimum_turn=False)
             plan={"lift_preflight":{"retract_preflight":{"pass_result":True,"robot_bodies":["pelvis"],"source_motion_limits":{},"carry_lease_s":30.}}}
             result={"gates":{"OFFICIAL_CMD_VEL_BRIDGE":"PASS"},"commands_not_sent":["locomotion velocity"]}
             calls=[]

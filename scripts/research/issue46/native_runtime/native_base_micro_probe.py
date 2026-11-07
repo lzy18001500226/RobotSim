@@ -652,13 +652,14 @@ def run_probe(smoke_only=False):
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90.):
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
+    if angular_command_cap not in (.075,.10):raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -687,7 +688,7 @@ def run_carry_navigation(n,contract):
         result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         start=n.sample()["pose"];result["start_pose"]=start
         goal=cfg["goal_xy_m"];bearing=math.atan2(goal[1]-start["y"],goal[0]-start["x"])
-        controller=PointGoalController(ControllerConfig(xy_tolerance_m=.15,yaw_tolerance_rad=.12,max_forward_mps=.12,max_angular_rps=.075,k_angular=.8,goal_timeout_s=cfg["timeout_s"]))
+        controller=PointGoalController(ControllerConfig(xy_tolerance_m=.15,yaw_tolerance_rad=.12,max_forward_mps=.12,max_angular_rps=cfg.get("angular_command_cap",.075),k_angular=.8,goal_timeout_s=cfg["timeout_s"]))
         target=Goal2D(*goal,bearing,"native_scene_world")
         began=time.monotonic();until=began+cfg["timeout_s"];last_graph=began;acquired=False;activation_started=began;progress_state=None;progress_best=None;progress_at=began
         with n.lock:n.moving=True

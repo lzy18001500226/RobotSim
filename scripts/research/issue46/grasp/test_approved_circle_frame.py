@@ -9,7 +9,7 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh')]
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity')]
         cls.ns={'np':np};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
     def test_carry_target_follows_base_xy_yaw_but_not_pelvis_sway_or_object_truth(self):
@@ -33,6 +33,11 @@ class FrameTests(unittest.TestCase):
         row['bodies']['test_cylinder']['position_m'][0]+=.007
         with self.assertRaisesRegex(RuntimeError,'SLIPPED'):self.ns['tracking_task'](row,reference,phase)
 
+    def test_carry_velocity_feedforward_uses_unique_source_time_and_source_limits(self):
+        calculate=self.ns['bounded_tracking_velocity']
+        np.testing.assert_allclose(calculate([0.,0.],[.02,-.1],.02,[2.,3.]),[1.,-3.])
+        for dt in (0.,-.02,.21,float('nan')):
+            with self.assertRaisesRegex(RuntimeError,'CLOCK'):calculate([0.],[.01],dt,[2.])
     def test_full_source_posture_cannot_be_executed_or_silently_enabled(self):
         import subprocess,sys
         planner=Path(__file__).with_name("stl_approved_circle_ik.py")

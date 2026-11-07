@@ -867,3 +867,28 @@ https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#option
 203849Z在动作前POST_LIFT_RETRACT_SWEEP拒绝，最后点位置0.254mm、加权轴残差0.001312，无碰撞；没有闭爪或行走。仅将离线收臂求解预算90->200并记录nfev/status/optimality，门槛和源关节界不变。同一保存状态复核找到通过解（endpoint位置2.79e-11m/轴残差9.99e-11；37次endpoint评估），见fetch-chair-retract-solver-saved-state-check-20261107T204558Z。该结果证明可行解存在，不把它等同动态执行或放宽残差。
 
 205142Z实际通过8.0模拟秒CARRY静态保载及公开唯一publisher/QoS图；移动前原复合停稳PASS（实际采样1.916940s/85帧，nominal2s、保留原min1.90s）。随后PointGoalController在首个运动循环返回stale_state，非零发布0。原因可定位到now=tick在pump/sample之前取值，而原生样本可能在这期间推进，造成合法新样本“received time > now”。改为在获取样本后读取真实单调时间传给控制器，不重打源时间戳、不放宽0.20s；加入pump延迟后仍应合格的实际控制流程回归。NoSlip2的8秒保载通过单列，仍不是搬运/真机PASS。容器已删除。
+
+
+### 2026-11-07 携带转向的独立失败与最小修正
+
+- 205948Z：八秒真实静态夹持通过；开始角速度 0.075 rad/s 后
+  +0.348 s 瓶轴倾斜首先超过 0.10 rad，此时相对虎口滑移 2.94 mm、
+  根部速度 0.121 m/s。旧携带分支冻结关节；退出后失去夹爪发布者。
+- 213524Z：携带已改为现有 IK 的机身航向坐标位置、世界竖直轴任务。
+  仍在 +0.33 s 因 pelvis/left_hip_roll_link 接触穿入超过 1 mm
+  停止，记录法向力约 604 N；瓶子倾斜是后续独立失败。
+  不以静态 IK 或先前空手行走证明持瓶转向成功。
+- 修正包括携带目标的源时间差分关节速度前馈；原分支一律发送
+  velocity=0 不适合跟踪随机身摆动变化的目标。前馈限定在源关节速度内。
+  异常先撤销携带健康标记，让底盘置零，再最多五秒重复最后合法夹持命令；
+  不计算新异常恢复姿态，不把最后命令发布视为物理停止。
+- 原 .075 rad/s 仍是默认诊断。另一个显式
+  --carry-sdk-minimum-turn 仅采用 pinned raicom2026-agibot-X2
+  mc_locomotion_velocity.py 给出的最小非零角速度 0.10 rad/s；
+  它是不同的仿真输入配置，根部 .20 m/s、所有源关节/接触/姿态门不变。
+  该例及参数中的 cmd_threshold 不能单独证明控制器内部行为，
+  故后续使用版本匹配的只读 McRLDebug 观测，不继续猜阈值。
+- NoSlip2 是现有显式数值诊断，作用于整个接触求解；
+  不能把其静态抗漂移效果视作行走已兼容或真实摩擦认证。
+  MuJoCo 3.3.7 的 option/noslip_iterations 文档将其定义为主求解后的
+  摩擦方向后处理：https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#option

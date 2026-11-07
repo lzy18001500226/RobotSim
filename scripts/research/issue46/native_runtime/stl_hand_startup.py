@@ -1280,6 +1280,8 @@ def _with_carry_lease(script, retract):
     replace("stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP')","stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','CARRY_ABORT_HOLD')")
     replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')",count=2)
     replace("('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')")
+    replace("  self.tracking_metrics=r.get('metrics',{})","  self.tracking_metrics=r.get('metrics',{});self.tracking_velocity=r.get('right_velocity_rad_s',{})")
+    replace("x.velocity=0.;x.effort=float(bias.get(name,0.))","x.velocity=float(self.tracking_velocity.get(name,0.)) if stage=='CARRY_HOLD' and name in RIGHT else 0.;x.effort=float(bias.get(name,0.))")
     replace("   self.pub.publish(m)\n","   self.pub.publish(m);self.last_arm_message=m;self.last_published_arm_target={name:float(target[name]) for name in LEFT+RIGHT}\n")
     replace("    self.hand_pub.publish(h)\n    if stage==\'HAND_CLOSE_HOLD\':self.close_publish_count+=1\n",
 """    self.hand_pub.publish(h);self.last_hand_message=h
@@ -1304,7 +1306,7 @@ def _with_carry_lease(script, retract):
    hand=n.native_row['bodies']['R_omnipicker_base_link'];base=n.native_row['bodies']['pelvis'];R=hand['rotation'];c=CIRCLE_CONTRACT['circle_center_local_m']
    tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
    yaw=math.atan2(base['rotation'][3],base['rotation'][0]);dx=tcp[0]-base['position_m'][0];dy=tcp[1]-base['position_m'][1]
-   n.lift_phase.update(phase='CARRY_HOLD',created_host_ns=time.monotonic_ns(),post_retract_physical_hold_pass=True,carry_lease_s=LIFT_CONTRACT['retract_preflight']['carry_lease_s'],carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2])
+   n.lift_phase.update(phase='CARRY_HOLD',created_host_ns=time.monotonic_ns(),post_retract_physical_hold_pass=True,carry_lease_s=LIFT_CONTRACT['retract_preflight']['carry_lease_s'],carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_source_speed_rad_s=[LIFT_CONTRACT['retract_preflight']['source_motion_limits'][name][2] for name in RIGHT])
    n.write_phase(n.lift_phase)
    try:
     n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)

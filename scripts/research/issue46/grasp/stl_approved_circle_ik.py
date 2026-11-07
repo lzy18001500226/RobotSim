@@ -315,6 +315,14 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     return q,{'position_error_m':float(np.linalg.norm(error[:3])),'axis_residual':float(np.linalg.norm(error[3:])),'source_host_ns':row['host_monotonic_ns'],'actual_position_error_m':float(np.linalg.norm(actual_error[:3])),'actual_axis_residual':float(np.linalg.norm(actual_error[3:])),'cartesian_correction_rad':dict(zip(ik.ARM,correction.tolist()))}
 
 
+def bounded_tracking_velocity(previous, target, dt, speed_limits):
+    if not np.isfinite(dt) or not .001<=dt<=.20:raise RuntimeError('CARRY_TARGET_VELOCITY_CLOCK')
+    velocity=(np.asarray(target)-np.asarray(previous))/dt
+    bounds=np.asarray(speed_limits)
+    if velocity.shape!=bounds.shape or not np.isfinite(velocity).all() or not np.isfinite(bounds).all() or np.any(bounds<=0):raise RuntimeError('CARRY_TARGET_VELOCITY_INVALID')
+    return np.clip(velocity,-bounds,bounds)
+
+
 def track_native(reference_path, latest_path, output_path):
     import os,time
     print(json.dumps({'tracker_initialization':'MODEL_LOADING','host_monotonic_ns':time.monotonic_ns()}),flush=True)
@@ -326,7 +334,7 @@ def track_native(reference_path, latest_path, output_path):
         model=load_cached_model(reference['scene']['path'],cache['path'])
     else:model=mujoco.MjModel.from_xml_path(reference['scene']['path'])
     print(json.dumps({'tracker_initialization':'MODEL_READY','host_monotonic_ns':time.monotonic_ns()}),flush=True)
-    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.;generation=None;trace=[]
+    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.;generation=None;trace=[];previous_carry=None;carry_velocity=np.zeros(7)
     output_path=Path(output_path);stop=output_path.with_suffix('.stop')
     # Loading the offline model can temporarily contend with the native runtime.
     # Before producing any executable target, await a genuinely fresh sample.
@@ -362,13 +370,18 @@ def track_native(reference_path, latest_path, output_path):
             if phase is not None and not tracking_phase_is_fresh(phase,time.monotonic_ns()):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
             generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
             if phase is not None and phase.get('phase')=='CARRY_HOLD':
+                if previous_carry is not None and row['host_monotonic_ns']>previous_carry[0]:
+                    carry_velocity=bounded_tracking_velocity(previous_carry[1],seed,(row['host_monotonic_ns']-previous_carry[0])*1e-9,phase['carry_source_speed_rad_s'])
+                previous_carry=(row['host_monotonic_ns'],seed.copy())
+            else:previous_carry=None;carry_velocity=np.zeros(7)
+            if phase is not None and phase.get('phase')=='CARRY_HOLD':
                 if not output_path.with_name('native_tracking_carry_handoff.json').exists():
                     handoff={'classification':'BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY','generation':row['generation'],'source_host_ns':row['host_monotonic_ns'],'physical_hold_pass':True}
                     output_path.with_name('native_tracking_carry_handoff.json').write_text(json.dumps(handoff))
                 deadline=phase['created_host_ns']*1e-9+float(phase['carry_lease_s'])
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
-            record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'phase':phase.get('phase') if phase else None,'metrics':metrics}
+            record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'phase':phase.get('phase') if phase else None,'right_velocity_rad_s':dict(zip(ik.ARM,carry_velocity.tolist())),'metrics':metrics}
             temp=output_path.with_suffix('.tmp');temp.write_text(json.dumps(record));os.replace(temp,output_path);trace.append(record)
             period=.02 if phase is not None and phase.get('phase')=='CARRY_HOLD' else .1
             time.sleep(max(0,period-(time.monotonic()-tick)))

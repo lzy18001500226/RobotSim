@@ -1183,9 +1183,9 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         raise RuntimeError("CARRY_HANDOFF_UNQUALIFIED")
     result["carry_ready"]=ready
     result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
-    result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.075,'root_cap_m_s':.20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
+    result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.10 if args.carry_sdk_minimum_turn else .075,'root_cap_m_s':.20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
     limits=retract["source_motion_limits"]
-    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s))
+    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075))
     controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
     pg.write_new_bytes(output/"point_goal_controller.py",controller.read_bytes())
     if not (output/"native_micro_stop_contract.py").exists():
@@ -1196,7 +1196,8 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     if result["gates"].get("OFFICIAL_CMD_VEL_BRIDGE")!="PASS":
         source=REPO/"reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py"
         if not (output/"steady_cmd_vel_bridge.py").exists():pg.write_new_text(output/"steady_cmd_vel_bridge.py",micro.build_steady_bridge_source(source.read_text()))
-        bridge_command=(environment+"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.12 -p max_forward_velocity:=0.12 -p min_angular_velocity:=0.075 -p max_angular_velocity:=0.075 > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1")
+        carry_angular=.10 if args.carry_sdk_minimum_turn else .075
+        bridge_command=(environment+f"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.12 -p max_forward_velocity:=0.12 -p min_angular_velocity:={carry_angular} -p max_angular_velocity:={carry_angular} > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1")
         run(["docker","exec","-d",container,"bash","-lc",bridge_command],timeout_s=5.)
         wait_for(bridge,"cmd_vel_bridge started.",timeout_s=10.)
         result["gates"]["OFFICIAL_CMD_VEL_BRIDGE"]="PASS"
@@ -1290,6 +1291,7 @@ def main() -> None:
     parser.add_argument("--use-official-cmd-vel-bridge", action="store_true", help="route through the pinned RAICOM cmd_vel_bridge instead of publishing the MC velocity type directly")
     parser.add_argument("--carry-goal-world-xy",type=float,nargs=2)
     parser.add_argument("--carry-timeout-s",type=float,default=90.)
+    parser.add_argument("--carry-sdk-minimum-turn",action="store_true")
     parser.add_argument("--micro-base-probe", choices=("forward","backward","left","right"), help="one native body-frame micro pulse and strict composite stop; no arm approach")
     parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
     parser.add_argument("--micro-command-speed",type=float,default=.2)
@@ -1328,7 +1330,8 @@ def main() -> None:
 
     if args.observe_native_arm_policy and (not args.micro_base_probe or not args.capture_mc_rl_debug or args.native_arm_policy_relay or not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher):
         raise ValueError("arm policy observation requires isolated debug capture, no actuator relay")
-    if args.capture_mc_rl_debug and not args.micro_base_probe:
+    if args.carry_sdk_minimum_turn and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires carry route')
+    if args.capture_mc_rl_debug and not (args.micro_base_probe or args.carry_goal_world_xy is not None):
         raise ValueError("MC debug capture is scoped to isolated micro diagnostics")
     if args.micro_heading_hold and (not args.micro_base_probe or args.dock_angular_speed_cap!=.075):
         raise ValueError("micro heading hold requires isolated probe and matching .075 bridge angular cap")
@@ -2131,7 +2134,7 @@ def main() -> None:
             expected_debug_node="mc_ros2_node"+next(iter(mc_pids))
             setup_host=Path(result["mc_rl_debug_capture"]["overlay_setup"])
             setup="/workspace/robotsim/"+str(setup_host.relative_to(EVIDENCE_REPO))
-            debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s 45 > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
+            debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s "+str(args.carry_timeout_s+80 if args.carry_goal_world_xy is not None else 45)+" > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
             run(["docker","exec","-d",container,"bash","-lc",debug_command],timeout_s=5.)
             wait_for(output/"mc_rl_debug_ready.json",'"status"',timeout_s=8.)
             debug_ready=json.loads((output/"mc_rl_debug_ready.json").read_text())
