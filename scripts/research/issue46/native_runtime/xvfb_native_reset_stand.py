@@ -926,6 +926,7 @@ def main() -> None:
     parser.add_argument("--xvfb-libs", type=Path)
     parser.add_argument("--xkb-root", type=Path)
     parser.add_argument("--interactive-x11-display", help="use a user-visible WSLg X11 display and pause after failed claw response; requires the host X socket mounted explicitly")
+    parser.add_argument("--native-render-adapter",help="process-scoped WSLg GPU selection; verified against the actual native GL context before MC startup")
     parser.add_argument("--open-hand-transit-park",action="store_true",help="source-limited right shoulder parked at 0.8rad to keep open hand away from bottle during walking")
     parser.add_argument("--native-circle-tracking",action="store_true",help="consume fresh source-limited native circle IK updates during arm execution")
     parser.add_argument("--physical-lift-test",action="store_true",help="60mm/3s lift and 1.5s observation only after measured bilateral contact and static lift sweep")
@@ -1372,6 +1373,10 @@ def main() -> None:
             if not x_socket.is_dir() or not any(x_socket.glob("X*")):
                 raise RuntimeError("visible X11 socket is unavailable; refusing hidden Xvfb fallback")
             command[command.index(IMAGE):command.index(IMAGE)] = ["--mount", f"type=bind,source={x_socket},target=/tmp/.X11-unix"]
+        graphics_options=native_grasp_audit.graphics_mount_options(args.native_render_adapter,args.interactive_x11_display)
+        if graphics_options:
+            command[command.index(IMAGE):command.index(IMAGE)]=graphics_options
+            result['native_graphics_runtime']={'requested_adapter':args.native_render_adapter,'device':'/dev/dxg','driver_libraries':'/usr/lib/wsl (read-only)','native_process_only_environment':True,'headless_software_default_unchanged':True}
         if args.run_vr_zero_probe or args.run_vr_right_controller_x_probe:
             command[command.index(IMAGE):command.index(IMAGE)] = ["-e", "X2_SIM_ONLY=1", "-e", "ROS_LOCALHOST_ONLY=1"]
         if arm_split_config is not None:
@@ -1386,7 +1391,7 @@ def main() -> None:
         run(["docker", "exec", container, "bash", "-lc", "test -S /tmp/.X11-unix/X" + display_number + " && cp /workspace/evidence/sim_seed/action_setting.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_setting.yaml; cp /workspace/evidence/sim_seed/action_ruler.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_ruler.yaml; cp /workspace/evidence/sim_seed/action_state.yaml /workspace/raicom2026/" + MC_GENERATED + "/action_state.yaml"], timeout_s=5.0)
         sim_launch = "bash /workspace/evidence/launch_sim.sh > /workspace/evidence/mujoco-console.log 2>&1"
         if native_observer is not None:
-            sim_launch = native_grasp_audit.launch_prefix() + sim_launch
+            sim_launch = native_grasp_audit.launch_prefix(args.native_render_adapter) + sim_launch
         sim_command = ["docker", "exec", "-d", container, "bash", "-lc", sim_launch]
         pg.write_new_text(output / "native_sim_launch.json", json.dumps({"command": sim_command, "native_observer_required": native_observer is not None}, indent=2) + "\n")
         run(sim_command, timeout_s=5.0)
@@ -1401,6 +1406,10 @@ def main() -> None:
             if delta.get('elliptic_solver') and (actual_solver.get('cone')!=1 or actual_solver.get('impratio')!=10.):raise RuntimeError('NATIVE_ELLIPTIC_OPTION_NOT_APPLIED')
             result['native_solver_options']=actual_solver
             result["gates"]["NATIVE_STATE_OBSERVER"] = "PASS"
+            if args.native_render_adapter:
+                wait_for(output/'native_graphics.json','"renderer"',timeout_s=3.)
+                result['native_graphics']=native_grasp_audit.require_graphics_adapter(output/'native_graphics.json',args.native_render_adapter,expected_pid=current.get('process_pid'))
+                result['gates']['NATIVE_RENDER_ADAPTER']='PASS'
         bootstrap_environment = "source /opt/ros/humble/setup.bash; source /workspace/raicom2026/aimdk_msgs_ws/install/setup.bash; "
         if arm_bootstrap_enabled:
             run(["docker", "exec", "-d", container, "bash", "-lc", bootstrap_environment + "python3 /workspace/evidence/native_arm_bootstrap_hold.py > /workspace/evidence/native_arm_bootstrap_hold.stdout 2>&1"], timeout_s=5.0)

@@ -11,6 +11,24 @@ from scripts.research.issue46.native_runtime import native_grasp_audit as audit
 from scripts.research.issue46.native_runtime.test_pregrasp_feedback import generated
 
 class NativeLaunchTests(TestCase):
+    def test_native_graphics_identity_requires_the_actual_physics_pid_and_selected_adapter(self):
+        import shlex
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'gl.json';record={'classification':'READ_ONLY_ACTUAL_NATIVE_GL_CONTEXT','pid':9,'renderer':'D3D12 (NVIDIA GeForce RTX 4060 Laptop GPU)'};path.write_text(json.dumps(record))
+            self.assertEqual(audit.require_graphics_adapter(path,'NVIDIA',expected_pid=9)['pid'],9)
+            with self.assertRaisesRegex(RuntimeError,'NOT_CONFIRMED'):audit.require_graphics_adapter(path,'NVIDIA',expected_pid=10)
+            with self.assertRaisesRegex(RuntimeError,'NOT_CONFIRMED'):audit.require_graphics_adapter(path,'Intel',expected_pid=9)
+        value="GPU name; echo injected"
+        self.assertIn('MESA_D3D12_DEFAULT_ADAPTER_NAME='+value,shlex.split(audit.launch_prefix(value)))
+        self.assertIn('LIBGL_ALWAYS_SOFTWARE=0',shlex.split(audit.launch_prefix('NVIDIA')))
+        self.assertNotIn('MESA_LOADER_DRIVER_OVERRIDE=d3d12',shlex.split(audit.launch_prefix()))
+        self.assertEqual(audit.graphics_mount_options(None,None),[])
+        with self.assertRaises(ValueError):audit.graphics_mount_options('NVIDIA',None)
+        with mock.patch.object(audit.Path,'exists',return_value=True):
+            options=audit.graphics_mount_options('NVIDIA',':0')
+        self.assertIn('/dev/dxg',options);self.assertIn('type=bind,source=/usr/lib/wsl,target=/usr/lib/wsl,readonly',options)
+        self.assertNotIn('--privileged',options)
+
     def test_manual_terminal_review_is_opt_in_and_after_lift_evaluation(self):
         source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text()
         branch=next(n for n in ast.walk(ast.parse(source)) if isinstance(n,ast.If) and 'args.pause_on_claw_failure and' in ast.unparse(n.test) and 'result' in ast.unparse(n.test))

@@ -639,7 +639,7 @@ Full RGB-D reproduction, with native physics paused only after the measured
 result for multi-angle human review:
 
 ```powershell
-wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 MUJOCO_GL=glfw bash scripts/research/issue46/grasp/run_truth_circle_review.sh --source-pad-coacd-comparison --initial-hands-fully-open --both-claws-zero-internal-friction --right-claw-damping 1.27 --elliptic-grip-solver-diagnostic --target-source fresh-rgbd-snapshot --rgbd-render-adapter NVIDIA --dock-world-xy 0.85 -1.49 --dock-braking-delay-s 0.4130254699850907 --grasp-height-above-center-m 0.10 --physical-lift-test --pause-for-human-review
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 MUJOCO_GL=glfw bash scripts/research/issue46/grasp/run_truth_circle_review.sh --source-pad-coacd-comparison --initial-hands-fully-open --both-claws-zero-internal-friction --right-claw-damping 1.27 --elliptic-grip-solver-diagnostic --target-source fresh-rgbd-snapshot --rgbd-render-adapter NVIDIA --native-render-adapter NVIDIA --dock-world-xy 0.85 -1.49 --dock-braking-delay-s 0.4130254699850907 --grasp-height-above-center-m 0.10 --physical-lift-test --pause-for-human-review
 ```
 
 Recorded full-flow review uses the same wrapper with
@@ -650,3 +650,39 @@ camera rotation. Source-region audit reproduction (zero physics):
 ```bash
 /home/lzy18001500226/.local/bin/uv run --offline --with mujoco==3.3.7 --with numpy==2.2.6 --with scipy==1.15.3 --with trimesh==4.7.4 python3 scripts/research/issue46/native_runtime/native_lift_contact_region_audit.py --capture /home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261107T000115Z
 ```
+
+### Native-window graphics repair and independent review-path confirmation
+
+Repeat 002336Z stopped before walking after a real 4.598s native sample gap:
+`mj_step` calls were separated by 4.578s while individual physics steps were
+below 0.73ms. This was not classified as a physical standing/grasp failure.
+The actual native GL context then proved the old container was using llvmpipe;
+the harness explicitly forced `LIBGL_ALWAYS_SOFTWARE=1` and a llvmpipe loader.
+An adapter-name request alone could not enable hardware rendering.
+
+`wslg-native-gpu-no-physics-smoke-20261107T004910Z` verified RTX4060 inside the
+same unprivileged image without MuJoCo, MC, ROS or any motion: only `/dev/dxg`,
+the existing X socket and read-only `/usr/lib/wsl` driver libraries were added.
+There was no installation, privileged container, host network/IPC, global GPU
+setting or host modification. Cleanup was positively verified.
+
+The optional `--native-render-adapter NVIDIA` keeps the old headless software
+path unchanged and selects hardware only for the native simulator process.
+The observer reads `glGetString` after the genuine `mjr_makeContext`, calls
+the original function exactly once, and never writes model/control/GL state.
+The actual GL PID must match the native physics PID and renderer name before
+MC startup. Environment-variable presence is not accepted as device proof.
+
+Independent full RGB-D repeat 005238Z passed with the actual native context
+`D3D12 (NVIDIA GeForce RTX 4060 Laptop GPU)`: dock error 30.639mm, minimum lift
+56.599mm over 51 frames/1.000s, minimum normals 1.63915/1.62595N, upward force
+1.96217N, no table support. The maximum observed post-Reset active frame gap
+was 0.11144s over 4332 frames, retaining the 0.20s gate. This is an observed
+run, not a hard real-time guarantee.
+
+The native review pause also passed: physics stopped at sim86.861s, its actual
+PID30 matched the visible 1706x1066 window and GL context, and camera/window
+inspection remained available. The agent released this **automated pause
+self-test**, not a human approval; container removal was confirmed. Tracking
+stops before review-only pause so a deliberately frozen clock cannot create
+a misleading stale-control error. Review time never counts toward lift hold.

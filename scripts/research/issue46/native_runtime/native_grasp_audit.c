@@ -67,6 +67,35 @@ static void body(const mjModel* m,const mjData* d,const char* name) {
   fprintf(sink,",\"mass_kg\":%.17g",(double)m->body_mass[b]);
   fputs(",\"rotation\":",sink);array(d->xmat+9*b,9);fputc('}',sink);
 }
+static void json_string(FILE* file,const unsigned char* value) {
+  if(!value){fputs("null",file);return;}
+  fputc('"',file);
+  for(const unsigned char* p=value;*p;p++) {
+    if(*p=='"'||*p=='\\')fputc('\\',file);
+    if(*p<32)fprintf(file,"\\u%04x",*p);else fputc(*p,file);
+  }
+  fputc('"',file);
+}
+void mjr_makeContext(const mjModel* m,mjrContext* context,int fontscale) {
+  /* The genuine render thread owns a current GL context here. Observe only:
+   * no extra rendering/stepping and no model, control or GL-state writes. */
+  void (*real_context)(const mjModel*,mjrContext*,int)=dlsym(RTLD_NEXT,"mjr_makeContext");
+  if(!real_context)_exit(125);
+  real_context(m,context,fontscale);
+  const char* path=getenv("ROBOTSIM_NATIVE_GRAPHICS_OUT");
+  if(!path||!*path)return;
+  const unsigned char* (*get_string)(unsigned int)=dlsym(RTLD_DEFAULT,"glGetString");
+  if(!get_string) {
+    typedef void (*GenericGlProc)(void);
+    GenericGlProc (*get_proc)(const char*)=dlsym(RTLD_DEFAULT,"glfwGetProcAddress");
+    if(get_proc)get_string=(const unsigned char* (*)(unsigned int))get_proc("glGetString");
+  }
+  FILE* file=fopen(path,"wx");if(!file)return;
+  fprintf(file,"{\"classification\":\"READ_ONLY_ACTUAL_NATIVE_GL_CONTEXT\",\"pid\":%ld,\"vendor\":",(long)getpid());
+  json_string(file,get_string?get_string(0x1F00):NULL);fputs(",\"renderer\":",file);
+  json_string(file,get_string?get_string(0x1F01):NULL);fputs(",\"version\":",file);
+  json_string(file,get_string?get_string(0x1F02):NULL);fputs("}\n",file);fclose(file);
+}
 void mj_step(const mjModel* m,mjData* d) {
   pthread_once(&once,init);
   long long begin=mono_ns();
@@ -84,7 +113,7 @@ void mj_step(const mjModel* m,mjData* d) {
   sink=open_memstream(&buffer,&length);
   if(!sink){sink=logfile;return;}
   long long started=mono_ns();
-  fprintf(sink,"{\"host_monotonic_ns\":%lld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"model_keyframe_count\":%d,",started,(double)d->time,generation,version_real(),(double)m->opt.timestep,m->nkey);
+  fprintf(sink,"{\"host_monotonic_ns\":%lld,\"process_pid\":%ld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"model_keyframe_count\":%d,",started,(long)getpid(),(double)d->time,generation,version_real(),(double)m->opt.timestep,m->nkey);
   fprintf(sink,"\"solver_options\":{\"noslip_iterations\":%d,\"cone\":%d,\"impratio\":%.17g,\"iterations\":%d},\"bodies\":{",m->opt.noslip_iterations,m->opt.cone,(double)m->opt.impratio,m->opt.iterations);
   body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");fputc(',',sink);body(m,d,"head_pitch_link");
   fputs("},\"joints\":{",sink);

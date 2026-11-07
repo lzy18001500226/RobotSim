@@ -134,9 +134,23 @@ def build(output, runtime_library):
     return target
 
 
-def launch_prefix():
+def launch_prefix(renderer_adapter=None):
     """Only the simulator process receives the read-only interposer."""
-    return "env LD_PRELOAD=/workspace/evidence/native_grasp_audit.so ROBOTSIM_NATIVE_AUDIT_OUT=/workspace/evidence/native_physics.jsonl "
+    import shlex
+    selected='' if renderer_adapter is None else 'MESA_D3D12_DEFAULT_ADAPTER_NAME='+shlex.quote(str(renderer_adapter))+' LIBGL_ALWAYS_SOFTWARE=0 MESA_LOADER_DRIVER_OVERRIDE=d3d12 LD_LIBRARY_PATH=/usr/lib/wsl/lib '
+    return "env "+selected+"LD_PRELOAD=/workspace/evidence/native_grasp_audit.so ROBOTSIM_NATIVE_AUDIT_OUT=/workspace/evidence/native_physics.jsonl ROBOTSIM_NATIVE_GRAPHICS_OUT=/workspace/evidence/native_graphics.json "
+
+def graphics_mount_options(adapter,display):
+    if adapter is None:return []
+    if not display:raise ValueError('hardware renderer requires the explicit WSLg display')
+    for path in ('/dev/dxg','/usr/lib/wsl/lib/libd3d12.so','/usr/lib/wsl/lib/libdxcore.so'):
+        if not Path(path).exists():raise RuntimeError('missing WSLg graphics prerequisite:'+path)
+    return ['--device','/dev/dxg','--mount','type=bind,source=/usr/lib/wsl,target=/usr/lib/wsl,readonly']
+
+def require_graphics_adapter(path,adapter, *, expected_pid):
+    record=json.loads(Path(path).read_text())
+    if record.get('classification')!='READ_ONLY_ACTUAL_NATIVE_GL_CONTEXT' or not isinstance(expected_pid,int) or expected_pid<=0 or record.get('pid')!=expected_pid or not isinstance(record.get('renderer'),str) or not adapter or adapter.casefold() not in record['renderer'].casefold():raise RuntimeError('ACTUAL_NATIVE_RENDER_ADAPTER_NOT_CONFIRMED:'+str(record))
+    return record
 
 
 def require_fresh_sample(path, *, now_ns=None):
