@@ -1096,6 +1096,7 @@ def main() -> None:
     parser.add_argument("--micro-command-speed",type=float,default=.2)
     parser.add_argument("--micro-heading-hold",action="store_true")
     parser.add_argument("--micro-target-distance-m",type=float)
+    parser.add_argument("--observe-native-arm-policy",action="store_true")
     parser.add_argument("--capture-mc-rl-debug",action="store_true")
     parser.add_argument("--reviewed-foundationwalk-profile",action="store_true")
     parser.add_argument("--lateral-probe-mps", type=float, help="one bounded lateral cmd_vel probe in body-frame m/s; requires the official bridge")
@@ -1124,6 +1125,8 @@ def main() -> None:
     if args.dock_command_speed_cap is not None and (args.dock_world_xy is None or not args.native_dock_truth_feedback or not .12<=args.dock_command_speed_cap<=.20):
         raise ValueError("bounded dock cap requires native feedback and .12..0.20 m/s")
 
+    if args.observe_native_arm_policy and (not args.micro_base_probe or not args.capture_mc_rl_debug or args.native_arm_policy_relay or not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher):
+        raise ValueError("arm policy observation requires isolated debug capture, no actuator relay")
     if args.capture_mc_rl_debug and not args.micro_base_probe:
         raise ValueError("MC debug capture is scoped to isolated micro diagnostics")
     if args.micro_heading_hold and (not args.micro_base_probe or args.dock_angular_speed_cap!=.075):
@@ -1336,7 +1339,7 @@ def main() -> None:
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
-            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))) if args.native_arm_policy_relay else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))), allow_unicode=True, sort_keys=False))
+            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))) if (args.native_arm_policy_relay or args.observe_native_arm_policy) else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
             pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,relay_arms=args.native_arm_policy_relay,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
             arm_bootstrap_enabled = True
@@ -1420,7 +1423,7 @@ def main() -> None:
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
             limits,provenance=native_leg_safety_contract(include_upper_body=args.native_arm_policy_relay)
-            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay,heading_hold=args.micro_heading_hold,target_distance_m=args.micro_target_distance_m))
+            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay,heading_hold=args.micro_heading_hold,target_distance_m=args.micro_target_distance_m,observe_native_arm_policy=args.observe_native_arm_policy))
             bridge_runtime=output/"steady_cmd_vel_bridge.py"
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_steady_bridge_source
             pg.write_new_text(bridge_runtime,build_steady_bridge_source(bridge_source.read_text()))
@@ -1580,7 +1583,8 @@ def main() -> None:
         if arm_split_config is not None:
             command[command.index(IMAGE):command.index(IMAGE)] = ["--mount", f"type=bind,source={arm_split_config},target=/workspace/raicom2026/{stl_hand_startup.MC_SIM_CONFIG_RELATIVE},readonly"]
             result["mc_command_split_overlay"] = {"path": str(arm_split_config), "sha256": sha256(arm_split_config), "disabled_publishers": (["arm_joint_command", "hand_joint_command"] if args.coordinated_circle_waist else ["arm_joint_command", "waist_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher else ["arm_joint_command", "hand_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_hand_publisher else ["arm_joint_command" if args.disable_mc_arm_publisher else "waist_joint_command"])}
-            if args.native_arm_policy_relay:
+            if args.native_arm_policy_relay or args.observe_native_arm_policy:
+                result["mc_command_split_overlay"]["observe_only"]=bool(args.observe_native_arm_policy)
                 result["mc_command_split_overlay"]["disabled_publishers"]=["hand_joint_command"]
                 result["mc_command_split_overlay"]["redirected_publishers"]={"arm_joint_command":"/robotsim/issue46/mc/arm/command"}
 

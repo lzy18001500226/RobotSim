@@ -155,7 +155,7 @@ def micro_displacement(pose,start,direction):
     return forward,lateral,progress,cross
 
 
-def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False,heading_hold=False,target_distance_m=None):
+def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False,heading_hold=False,target_distance_m=None,observe_native_arm_policy=False):
     if direction not in ("forward", "backward", "left", "right"):
         raise ValueError("unknown body-frame micro direction")
     maximum=1. if target_distance_m is None else 2.
@@ -173,7 +173,7 @@ def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native
         refine_position_tolerance_m=.15, timeout_s=30.,
         use_cmd_vel_bridge=True, native_pose_feedback=True,native_arm_relay=native_arm_relay)
     base = base.split("rclpy.init();n=Dock();registered=False")[0]
-    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed, heading_hold=bool(heading_hold),target_distance_m=target_distance_m)
+    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed, heading_hold=bool(heading_hold),target_distance_m=target_distance_m,observe_native_arm_policy=bool(observe_native_arm_policy))
     return base + "\n" + Path(__file__).read_text().replace("from __future__ import annotations","") + "\nMICRO=" + repr(plan) + "\nrun_probe()\n"
 
 
@@ -201,6 +201,10 @@ def run_probe(smoke_only=False):
             self.moving = False
             self.command_log = []
             self.bridge_commands=[]
+            self.arm_policy_trace=[]
+            self.arm_policy_last_log=0.
+            if MICRO.get("observe_native_arm_policy"):
+                self.create_subscription(JointCommandArray,"/robotsim/issue46/mc/arm/command",self.on_arm_policy,QOS)
             self.feedback_executor = None
             self.feedback_thread = None
             self.feedback_executor_error = None
@@ -246,6 +250,15 @@ def run_probe(smoke_only=False):
                     diag["duplicates" if stamp==previous[0] else "regressions"]+=1
                 if advancing_stamp(self.unique,name,stamp,now):
                     self.messages[name]=raw(m)
+
+        def on_arm_policy(self,m):
+            now=time.monotonic()
+            if now-self.arm_policy_last_log<.02:return
+            if len(m.joints)!=14 or {j.name for j in m.joints}!=set(ARM):
+                raise RuntimeError("INVALID_OBSERVED_MC_ARM_GROUP")
+            self.arm_policy_last_log=now
+            self.arm_policy_trace.append(dict(received_monotonic_s=now,raw=raw(m),
+                classification="READ_ONLY_PRIVATE_MC_ARM_OUTPUT_NOT_APPLIED"))
 
         def on_odom(self,m):
             super().on_odom(m)
@@ -422,6 +435,14 @@ def run_probe(smoke_only=False):
                 raise RuntimeError("BRIDGE_QOS")
             if subs[0].qos_profile.durability!=DurabilityPolicy.VOLATILE or subs[0].qos_profile.reliability not in (ReliabilityPolicy.BEST_EFFORT,ReliabilityPolicy.RELIABLE):
                 raise RuntimeError("MC_SUBSCRIBER_QOS")
+            if MICRO.get("observe_native_arm_policy"):
+                arm_pubs=self.get_publishers_info_by_topic("/robotsim/issue46/mc/arm/command")
+                if not arm_pubs or any(p.node_name=="_NODE_NAME_UNKNOWN_" for p in arm_pubs):
+                    raise RuntimeError("GRAPH_DISCOVERY_PENDING")
+                if len(arm_pubs)!=1 or arm_pubs[0].node_name!=mcsubs[0].node_name or arm_pubs[0].node_namespace!="/" or arm_pubs[0].topic_type!="aimdk_msgs/msg/JointCommandArray":
+                    raise RuntimeError("MC_ARM_POLICY_PRODUCER_NOT_VERIFIED")
+                if not self.arm_policy_trace or time.monotonic()-self.arm_policy_trace[-1]["received_monotonic_s"]>.20:
+                    raise RuntimeError("GRAPH_DISCOVERY_PENDING")
             self.events.append(dict(event="UNIQUE_PROVENANCE_GRAPH",t=time.monotonic(),mc=candidates[0],
                                     publisher=pubs[0].node_name,subscriber=subs[0].node_name,
                                     configured_history_depth="KEEP_LAST/10; FastDDS graph history may be UNKNOWN/0"))
@@ -579,6 +600,7 @@ def run_probe(smoke_only=False):
             result["pass_result"] = False
         result["source_receipt_diagnostics"] = n.receipt_diagnostics
         result["source_clock_generations"] = n.source_epoch
+        result["mc_arm_policy_trace"] = n.arm_policy_trace
         result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace,
                       nonzero_started=motion_started,watchdog_limitation="IN_PROCESS_TIMER_PLUS_BRIDGE_STALE_INPUT_WATCHDOG",
                       stop_contract_revision=contract.__doc__)

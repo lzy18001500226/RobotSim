@@ -200,6 +200,23 @@ class MicroTests(unittest.TestCase):
         self.assertEqual(sent,[(.2,0.,0.),(0.,0.,0.),(0.,0.,0.)])
         self.assertFalse(n.moving)
 
+    def test_arm_policy_observation_never_publishes_or_relays(self):
+        tree=ast.parse(Path(micro.__file__).read_text())
+        run=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=="run_probe")
+        cls=next(x for x in run.body if isinstance(x,ast.ClassDef))
+        method=next(x for x in cls.body if isinstance(x,ast.FunctionDef) and x.name=="on_arm_policy")
+        calls=[n.func.attr for n in ast.walk(method) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute)]
+        self.assertNotIn("publish",calls)
+        cls.bases=[];cls.body=[method]
+        names=tuple("joint"+str(i) for i in range(14))
+        ns=dict(time=NS(monotonic=lambda:10.),ARM=names,raw=lambda m:dict(joints=[j.name for j in m.joints]))
+        exec(compile(ast.Module(body=[cls],type_ignores=[]),"arm-observer","exec"),ns)
+        n=ns["Micro"]();n.arm_policy_last_log=0.;n.arm_policy_trace=[]
+        m=NS(joints=[NS(name=x) for x in names]);n.on_arm_policy(m)
+        self.assertEqual(len(n.arm_policy_trace),1)
+        self.assertEqual(n.arm_policy_trace[0]["classification"],"READ_ONLY_PRIVATE_MC_ARM_OUTPUT_NOT_APPLIED")
+        n.on_arm_policy(m);self.assertEqual(len(n.arm_policy_trace),1)
+
     def test_discovery_wait_requires_positive_graph_and_real_bridge_output(self):
         n,sent,clock=self.runtime_methods();n.moving=False;n.bridge_commands=[]
         n.pump=lambda:None
@@ -440,7 +457,7 @@ class McDebugReuseTests(unittest.TestCase):
         cls.bases=[];cls.body=[m for m in cls.body if isinstance(m,ast.FunctionDef) and m.name=="wait_ready"]
         clock=NS(t=0.);calls=[]
         ns=dict(time=NS(monotonic=lambda:clock.t),rclpy=NS(ok=lambda:True,spin_once=lambda *a,**k:setattr(clock,"t",clock.t+.05)),
-                _EXPECTED_MC_NODE="mc_ros2_node152",MC_RL_DEBUG_TYPE="aimdk_msgs/msg/McRLDebug",Any=object)
+                _EXPECTED_MC_NODE="mc_ros2_node152",_OBSERVE_MC_ARM=False,MC_RL_DEBUG_TYPE="aimdk_msgs/msg/McRLDebug",Any=object)
         exec(compile(ast.Module(body=[cls],type_ignores=[]),"ready","exec"),ns)
         unknown=dict(topic_type="aimdk_msgs/msg/McRLDebug",node_name="_NODE_NAME_UNKNOWN_",node_namespace="_NODE_NAMESPACE_UNKNOWN_")
         valid=dict(unknown,node_name="mc_ros2_node152",node_namespace="/")
