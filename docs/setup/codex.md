@@ -25,6 +25,18 @@ git status --short --branch
 
 Confirm the root and branch are the intended ones, and preserve any existing changes.
 
+## Skill selection
+
+Skills are discovered by the Codex host; `AGENTS.md` does not need an inventory of installed packages. An enabled Skill is available for selection, not evidence that its workflow or tools ran.
+
+- Honor an explicit Skill request after reading its instructions. For implicit selection, match the task to its description and respect host invocation policy. User-invoked workflows start when the user requests them.
+- Choose one primary workflow for the task. Select focused helpers for a concrete need, such as a cheap regression test or a requested code review, rather than stacking complete engineering modes. Use the package-qualified name when multiple installed Skills have the same name.
+- Execute a clear request directly. Resolve facts by inspecting the repository; ask only for decisions or missing information needed to proceed. Use an interview workflow when requested, rather than turning every implementation into a fresh requirements interview.
+- Repository contracts and the user's scope govern every selected workflow, including model changes, evidence, external writes, and closeout. Installation does not authorize a workflow's merge, cleanup, or notification steps.
+- Check tool and platform requirements before running a Skill. A Cursor/Claude-specific tool name, model, or subagent definition does not establish Codex compatibility. Use available equivalents only when they preserve the workflow's requirements; otherwise report the missing capability. Distinguish Skill discovery, workflow execution, and verified behavior.
+
+Keep installation versions and machine-specific paths in local configuration or installation records, not in repository instructions. See the [official Skills guide](https://learn.chatgpt.com/docs/build-skills) for discovery and invocation controls.
+
 ## Project-local Codex hooks
 
 `.codex/hooks.json` contains an optional `PreToolUse` guard for plainly destructive Git commands and obvious attempts to stage or write credential files, plus local `UserPromptSubmit`, `Interrupt`, and `Stop` lifecycle handlers. The guard is a last-line check, not a substitute for reviewing a command or protecting secrets. The repository remains usable when hooks are disabled.
@@ -122,6 +134,10 @@ Do not send per-tool, per-test, per-commit, or progress notifications. Messages 
 
 ## Durable task closeout
 
+This workflow applies to assigned RobotSim implementation, experiment, research, review, and audit tasks. Ordinary questions, explanations, and user-level tool or Skill installation use a normal response; being in a RobotSim chat does not by itself require a branch, commit, PR, or notification.
+
+For tasks that own repository changes, complete the commit/push/publication gate below. For tasks without repository changes, preserve the requested evidence and relevant Issue/PR record, using existing repository references where applicable. Do not create empty commits or invent passing gate results. This distinction does not waive notifier validation or allow `completed` when required publication is blocked.
+
 For local experiment artifacts, follow the [evidence path governance](evidence-path-governance.md).
 The closeout envelope may carry one `local_artifacts` descriptor, preferably
 the run's `artifact_paths.json`. The handler verifies the descriptor and every
@@ -132,7 +148,7 @@ Every task kind uses one canonical `robotsim.task-closeout.v1` event: implementa
 
 ### Mandatory publication gate
 
-Do not report a task as done after implementation/tests alone. Before any terminal closeout, review and commit all intended task-owned changes, preserve unrelated data, push the task branch, and verify that the push remote has exactly the local HEAD SHA. Then update the corresponding PR or Issue with the structured closeout. Record the status, branch, local and remote SHA, canonical GitHub URL, exact reproduction command, validation result, durable evidence/output reference, and remaining limitations/blockers. If any prerequisite or the GitHub update fails, report `CLOSEOUT BLOCKED`, not `DONE`.
+For a task with repository changes, do not report it as done after implementation/tests alone. Before terminal closeout, review and commit all intended task-owned changes, preserve unrelated data, push the task branch, and verify that the push remote has exactly the local HEAD SHA. Then update the corresponding PR or Issue with the structured closeout. Record the status, branch, local and remote SHA, canonical GitHub URL, exact reproduction command, validation result, durable evidence/output reference, and remaining limitations/blockers. If any prerequisite or the GitHub update fails, report `CLOSEOUT BLOCKED`, not `DONE`.
 
 Run the deterministic local gate from the RobotSim checkout; use the task Issue in `task_id` and include `--pr-number` when a PR exists:
 
