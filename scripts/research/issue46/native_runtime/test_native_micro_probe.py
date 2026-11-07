@@ -83,6 +83,21 @@ class MicroTests(unittest.TestCase):
             with self.assertRaises(ValueError):micro.build_script("left",bad,{})
         with self.assertRaises(ValueError):micro.build_script("up",.6,{})
 
+    def test_real_parent_argument_path_allows_only_isolated_micro_exception(self):
+        from unittest.mock import patch
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent
+        import sys
+        args=["parent","--table-overlay-result","/nonexistent","--table-overlay-result-sha256","0"*64,
+              "--reset-helper","/nonexistent","--reset-helper-sha256","0"*64,
+              "--hal-arm-candidate","/nonexistent","--hal-arm-candidate-sha256","0"*64,
+              "--disable-mc-arm-publisher","--disable-mc-hand-publisher",
+              "--hal-right-hand-command","0","--hal-arm-plan-mode","pregrasp-hold",
+              "--initial-hands-fully-open","--native-dock-truth-feedback","--use-official-cmd-vel-bridge"]
+        with patch.object(sys,"argv",args+["--micro-base-probe","left"]),patch.object(parent,"require_hashed",side_effect=RuntimeError("REACHED_INPUT_HASH_GATE")):
+            with self.assertRaisesRegex(RuntimeError,"REACHED_INPUT_HASH_GATE"):parent.main()
+        with patch.object(sys,"argv",args):
+            with self.assertRaisesRegex(ValueError,"requires a measured native table-docking"):parent.main()
+
     def runtime_methods(self):
         tree=ast.parse(Path(micro.__file__).read_text())
         run=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="run_probe")

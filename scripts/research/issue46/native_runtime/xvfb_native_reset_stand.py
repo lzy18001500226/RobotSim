@@ -1026,7 +1026,7 @@ def main() -> None:
         raise ValueError("coordinated circle waist requires exclusive arm/waist/hand publishers")
     if args.hal_arm_candidate is not None and args.disable_mc_waist_publisher and not args.coordinated_circle_waist:
         raise ValueError("the arm-only HAL candidate leaves waist ownership with MC")
-    if args.hal_arm_candidate is not None and args.dock_world_xy is None:
+    if args.hal_arm_candidate is not None and args.dock_world_xy is None and not args.micro_base_probe:
         raise ValueError("the arm-only HAL candidate requires a measured native table-docking route")
     if args.hal_right_hand_command is not None and args.hal_arm_candidate is None:
         raise ValueError("a right-hand command requires the bounded arm-only candidate path")
