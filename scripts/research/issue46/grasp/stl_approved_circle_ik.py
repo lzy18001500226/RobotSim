@@ -393,6 +393,27 @@ def track_native(reference_path, latest_path, output_path):
         output_path.with_suffix('.trace.json').write_text(json.dumps(trace))
 
 
+def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,local_axis,retract_offset=None):
+    import copy
+    for candidate_row in rows:
+        candidate_row['grasp_only_pass']=candidate_row['pass']
+        if not candidate_row['pass']:continue
+        lift_seed=np.array([candidate_row['q_rad'][n] for n in ik.ACTIVE])
+        task_lift=screen_lift(model,state,lift_seed,opening,center,object_center,local_axis)
+        candidate_row['lift_preflight']=task_lift
+        candidate_row['gates']['LIFT_SWEEP']='PASS' if task_lift['pass'] else 'FAIL'
+        candidate_row['pass']=bool(task_lift['pass'])
+        if retract_offset is not None and task_lift['pass']:
+            lifted=copy.deepcopy(state)
+            lifted['object_pose_world']['xyz_m']=(np.asarray(state['object_pose_world']['xyz_m'])+[0.,0.,.06]).tolist()
+            retract_seed=np.r_[lift_seed[:2],task_lift['samples'][-1]['right_arm_rad']]
+            retreat=screen_retract(model,lifted,retract_seed,opening,center,object_center+[0.,0.,.06],retract_offset,local_axis)
+            task_lift['retract_preflight']=retreat
+            candidate_row['gates']['POST_LIFT_RETRACT_SWEEP']='PASS' if retreat['pass_result'] else 'FAIL'
+            candidate_row['pass']=bool(retreat['pass_result'])
+
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--circle-review", type=Path, required=True)
@@ -575,8 +596,11 @@ def main():
             if pads or bad or robot_table:sweep.append({"fraction":float(fraction),"pads":pads,"forbidden_object":bad,"robot_table":robot_table})
         row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(open_command)]["forbidden_object_bodies"] and not checked[str(open_command)]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if not sweep else "FAIL"}
         rows.append({"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
-    # Among truly passing candidates, prefer source-limit margin rather than
-    # nanometre differences in numerical convergence residuals.
+    # Arrival alone is insufficient: qualify the whole already requested
+    # lift/retract on each existing grasp branch before selecting its winner.
+    if args.physical_lift_test:
+        qualify_grasp_motion_branches(rows,model,state,max(command-1,0),center,object_center,local_axis,args.post_lift_retract_world_m)
+    # Prefer joint margin only among complete task-feasible candidates.
     rows.sort(key=lambda r:(not r["pass"],-r["metrics"]["minimum_joint_margin_rad"] if r["pass"] else r["metrics"]["hand_position_error_m"],r["metrics"]["hand_position_error_m"]))
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path
     record={"classification":"SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK","mj_step_calls":0,"grasp_section_center_world_m":object_center.tolist(),"grasp_height_above_center_m":args.grasp_height_above_center_m,"circle_review":str(args.circle_review),"circle_review_sha256":hashlib.sha256(args.circle_review.read_bytes()).hexdigest(),"circle":match,"standing_state":str(args.standing_state),"scene":candidate["scene"],"perception":perception,"root_legs_waist_frozen":True,"commands":{"open":open_command,"match":command,"closure_probe":max(command-1,0)},"rows":rows,"gate":"PASS" if rows[0]["pass"] else "FAIL","dynamics":"NOT_RUN"}
@@ -595,18 +619,8 @@ def main():
     record['explicit_axial_branch']='HAND_MINUS_X' if args.inverted_bottle_axis else 'HAND_PLUS_X'
     if args.use_measured_load_frame:record['execution_grasp_frame']={'center_m':center.tolist(),'nominal_circle_center_m':nominal_center.tolist(),'local_bottle_axis_in_hand':local_axis.tolist(),'classification':'MEASURED_LOAD_FRAME_HYPOTHESIS_NOT_MODEL_CHANGE'}
     if axis_calibration is not None:record['axis_calibration']={'path':str(args.grasp_axis_calibration),'sha256':hashlib.sha256(args.grasp_axis_calibration.read_bytes()).hexdigest(),'record':axis_calibration}
-    if args.physical_lift_test and rows[0]['pass']:
-        lift_seed=np.array([rows[0]['q_rad'][n] for n in ik.ACTIVE])
-        record['lift_preflight']=screen_lift(model,state,lift_seed,max(command-1,0),center,object_center,local_axis)
-        if not record['lift_preflight']['pass']:record['gate']='FAIL'
-        if args.post_lift_retract_world_m is not None and record['lift_preflight']['pass']:
-            import copy
-            lifted=copy.deepcopy(state)
-            lifted['object_pose_world']['xyz_m']=(np.asarray(state['object_pose_world']['xyz_m'])+[0.,0.,.06]).tolist()
-            retract_seed=np.r_[lift_seed[:2],record['lift_preflight']['samples'][-1]['right_arm_rad']]
-            retreat=screen_retract(model,lifted,retract_seed,max(command-1,0),center,object_center+[0.,0.,.06],args.post_lift_retract_world_m,local_axis)
-            record['lift_preflight']['retract_preflight']=retreat
-            if not retreat['pass_result']:record['gate']='FAIL'
+    if args.physical_lift_test and rows[0].get('lift_preflight'):
+        record['lift_preflight']=rows[0]['lift_preflight']
 
     if args.runtime_handoff:
         best=rows[0];target_state=json.loads(json.dumps(state))

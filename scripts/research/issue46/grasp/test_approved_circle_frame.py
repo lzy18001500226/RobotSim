@@ -9,7 +9,7 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity')]
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches')]
         cls.ns={'np':np};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
     def test_carry_target_follows_base_xy_yaw_but_not_pelvis_sway_or_object_truth(self):
@@ -38,6 +38,20 @@ class FrameTests(unittest.TestCase):
         np.testing.assert_allclose(calculate([0.,0.],[.02,-.1],.02,[2.,3.]),[1.,-3.])
         for dt in (0.,-.02,.21,float('nan')):
             with self.assertRaisesRegex(RuntimeError,'CLOCK'):calculate([0.],[.01],dt,[2.])
+    def test_whole_task_rejects_lift_infeasible_grasp_without_discarding_other_branch(self):
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        rows=[dict(pass_result=True,pass_=True,q_rad=dict(q=.6),gates={}),dict(pass_result=True,pass_=True,q_rad=dict(q=.2),gates={})]
+        for row in rows:row['pass']=row.pop('pass_')
+        def lift(model,state,q,*args):return dict(pass_=float(q[0])<.3)
+        def checked(model,state,q,*args):
+            result=lift(model,state,q,*args);result['pass']=result.pop('pass_');return result
+        with mock.patch.dict(self.ns,dict(ik=NS(ACTIVE=['q']),screen_lift=checked)):
+            self.ns['qualify_grasp_motion_branches'](rows,None,{},39,np.zeros(3),np.zeros(3),np.array([1.,0.,0.]))
+        self.assertTrue(all(r['grasp_only_pass'] for r in rows))
+        self.assertFalse(rows[0]['pass']);self.assertEqual(rows[0]['gates']['LIFT_SWEEP'],'FAIL')
+        self.assertTrue(rows[1]['pass']);self.assertEqual(rows[1]['gates']['LIFT_SWEEP'],'PASS')
+
     def test_full_source_posture_cannot_be_executed_or_silently_enabled(self):
         import subprocess,sys
         planner=Path(__file__).with_name("stl_approved_circle_ik.py")
