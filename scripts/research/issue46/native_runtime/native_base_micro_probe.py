@@ -111,6 +111,10 @@ def run_probe(smoke_only=False):
             self.moving = False
             self.command_log = []
             self.bridge_commands=[]
+            self.feedback_executor = None
+            self.feedback_thread = None
+            self.feedback_executor_error = None
+            self.receipt_diagnostics = {}
             self.create_subscription(McLocomotionVelocity,"/aima/mc/locomotion/velocity",lambda m:self.bridge_commands.append({"t":time.monotonic(),"raw":raw(m),"evidence":"DDS_OBSERVED_BRIDGE_OUTPUT_NOT_MC_RECEIPT_ACK"}),QOS)
             self.create_subscription(McCommonState, "/aima/mc/common/state",
                                      lambda m: self.store("common", m), QOS)
@@ -120,7 +124,16 @@ def run_probe(smoke_only=False):
 
         def store(self, name, m):
             stamp = int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec)
-            if advancing_stamp(self.unique, name, stamp, time.monotonic()):
+            now = time.monotonic()
+            diag = self.receipt_diagnostics.setdefault(name, dict(callbacks=0, duplicates=0,
+                regressions=0, last_callback_monotonic_s=None, last_received_stamp_ns=None))
+            previous = self.unique.get(name)
+            diag["callbacks"] += 1
+            diag["last_callback_monotonic_s"] = now
+            diag["last_received_stamp_ns"] = stamp
+            if previous and stamp <= previous[0]:
+                diag["duplicates" if stamp == previous[0] else "regressions"] += 1
+            if advancing_stamp(self.unique, name, stamp, now):
                 self.messages[name] = raw(m)
 
         def on_leg(self, m):
@@ -145,8 +158,37 @@ def run_probe(smoke_only=False):
             self.publish()
             self.events.append(dict(event="DEADLINE_ZERO_ATTEMPT", t=time.monotonic()))
 
+        def start_feedback(self):
+            # This one executor exclusively owns callbacks for the probe node.
+            # A 4ms/20ms polling slice can leave DDS/service work unprocessed
+            # during the controller's zero/transition phase. Do not relax age
+            # checks or change source-stamp qualification to hide that backlog.
+            from rclpy.executors import SingleThreadedExecutor
+            self.feedback_executor = SingleThreadedExecutor()
+            self.feedback_executor.add_node(self)
+            def spin():
+                try:
+                    self.feedback_executor.spin()
+                except Exception as exc:
+                    self.feedback_executor_error = repr(exc)
+            self.feedback_thread = threading.Thread(target=spin,
+                name="micro-feedback-executor", daemon=True)
+            self.feedback_thread.start()
+
+        def stop_feedback(self):
+            if self.feedback_executor is not None:
+                self.feedback_executor.shutdown(timeout_sec=1.)
+            if self.feedback_thread is not None:
+                self.feedback_thread.join(timeout=1.)
+                if self.feedback_thread.is_alive():
+                    raise RuntimeError("FEEDBACK_EXECUTOR_SHUTDOWN_UNCONFIRMED")
+            self.feedback_executor = None
+
         def pump(self):
-            drain_ready_callbacks(self,rclpy)
+            if getattr(self, "feedback_executor", None) is None:
+                drain_ready_callbacks(self,rclpy)
+            elif self.feedback_executor_error is not None or not self.feedback_thread.is_alive():
+                raise RuntimeError("FEEDBACK_EXECUTOR_FAILURE:"+str(self.feedback_executor_error))
             self.refresh_native_pose()
             self.latest_row=json.loads(Path("/workspace/evidence/native_latest.json").read_text())
             now=time.monotonic()
@@ -305,10 +347,15 @@ def run_probe(smoke_only=False):
         direction=MICRO["direction"],duration_s=MICRO["duration_s"],zero_receipt_ack="UNAVAILABLE",
         rearm_permitted=False,pass_result=False)
     if smoke_only:
-        print(json.dumps({"constructed":True,"publisher_topics":[p.topic_name for p in n.publishers],"subscription_topics":[s.topic_name for s in n.subscriptions],"client_services":[c.srv_name for c in n.clients],"motion_publish_calls":len(n.command_log)}),flush=True)
+        n.start_feedback()
+        time.sleep(.05)
+        healthy = n.feedback_thread.is_alive() and n.feedback_executor_error is None
+        n.stop_feedback()
+        print(json.dumps({"constructed":True,"publisher_topics":[p.topic_name for p in n.publishers],"subscription_topics":[s.topic_name for s in n.subscriptions],"client_services":[c.srv_name for c in n.clients],"motion_publish_calls":len(n.command_log),"dedicated_feedback_executor_healthy":healthy,"feedback_executor_stopped":not n.feedback_thread.is_alive()}),flush=True)
         n.destroy_node();rclpy.shutdown();return
     watchdog=None;baseline=None;motion_started=False
     try:
+        n.start_feedback()
         deadline=time.monotonic()+3.
         while time.monotonic()<deadline:
             n.publish();n.pump()
@@ -365,6 +412,11 @@ def run_probe(smoke_only=False):
             try:n.pump()
             except Exception as e:n.events.append(dict(event="CLEANUP_OBSERVE_ERROR",detail=str(e)))
             time.sleep(.015)
+        try:n.stop_feedback()
+        except Exception as exc:
+            result["feedback_cleanup_failure"] = str(exc)
+            result["pass_result"] = False
+        result["source_receipt_diagnostics"] = n.receipt_diagnostics
         result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace,
                       nonzero_started=motion_started,watchdog_limitation="IN_PROCESS_TIMER_PLUS_BRIDGE_STALE_INPUT_WATCHDOG",
                       stop_contract_revision=contract.__doc__)

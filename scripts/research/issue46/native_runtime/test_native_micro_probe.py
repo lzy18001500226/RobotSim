@@ -205,4 +205,66 @@ class MicroTests(unittest.TestCase):
         self.assertEqual(len(n.trace),1)
 
 
+class ContinuousFeedbackTests(unittest.TestCase):
+    def methods(self, names, **values):
+        tree=ast.parse(Path(micro.__file__).read_text())
+        run=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="run_probe")
+        cls=next(n for n in run.body if isinstance(n,ast.ClassDef))
+        cls.bases=[];cls.body=[m for m in cls.body if isinstance(m,ast.FunctionDef) and m.name in names]
+        ns=dict(threading=threading,time=__import__("time"),raw=lambda x:x,
+                advancing_stamp=micro.advancing_stamp,json=json,**values)
+        exec(compile(ast.Module(body=[cls],type_ignores=[]),"micro-executor","exec"),ns)
+        return ns["Micro"]()
+
+    def test_feedback_is_processed_during_foreground_wait_and_stops_cleanly(self):
+        from unittest.mock import patch
+        import sys,types,time
+        stopped=threading.Event();calls=[]
+        class Executor:
+            def add_node(self,n):calls.append("add")
+            def spin(self):
+                while not stopped.wait(.001):calls.append("callback")
+            def shutdown(self,timeout_sec):calls.append("shutdown");stopped.set()
+        module=types.ModuleType("rclpy.executors");module.SingleThreadedExecutor=Executor
+        n=self.methods(("start_feedback","stop_feedback"))
+        n.feedback_executor=None;n.feedback_thread=None;n.feedback_executor_error=None
+        with patch.dict(sys.modules,{"rclpy.executors":module}):
+            n.start_feedback();time.sleep(.04);n.stop_feedback()
+        self.assertGreater(calls.count("callback"),10)
+        self.assertEqual(calls.count("add"),1);self.assertEqual(calls.count("shutdown"),1)
+        self.assertFalse(n.feedback_thread.is_alive())
+
+    def test_callback_exception_is_reported_and_never_hidden(self):
+        from unittest.mock import patch
+        import sys,types,time
+        class Executor:
+            def add_node(self,n):pass
+            def spin(self):raise RuntimeError("callback failed")
+            def shutdown(self,timeout_sec):pass
+        module=types.ModuleType("rclpy.executors");module.SingleThreadedExecutor=Executor
+        n=self.methods(("start_feedback","stop_feedback"))
+        n.feedback_executor=None;n.feedback_thread=None;n.feedback_executor_error=None
+        with patch.dict(sys.modules,{"rclpy.executors":module}):
+            n.start_feedback();n.feedback_thread.join(1.);n.stop_feedback()
+        self.assertIn("callback failed",n.feedback_executor_error)
+
+    def test_duplicate_and_regression_callbacks_are_counted_but_do_not_refresh(self):
+        n=self.methods(("store",))
+        n.unique={};n.messages={};n.receipt_diagnostics={}
+        def msg(stamp):return NS(header=NS(stamp=NS(sec=1,nanosec=stamp)))
+        n.store("common",msg(10));before=n.unique["common"]
+        n.store("common",msg(10));n.store("common",msg(9))
+        self.assertEqual(n.unique["common"],before)
+        d=n.receipt_diagnostics["common"]
+        self.assertEqual((d["callbacks"],d["duplicates"],d["regressions"]),(3,1,1))
+        n.store("common",msg(11));self.assertGreater(n.unique["common"][0],before[0])
+
+    def test_stale_native_feedback_still_fails_with_continuous_executor(self):
+        n=self.methods(("sample",))
+        n.latest_row=dict(host_monotonic_ns=1)
+        n.feedback_fault=None
+        with self.assertRaisesRegex(RuntimeError,"NATIVE_FEEDBACK_STALE"):
+            n.sample()
+
+
 if __name__=="__main__":unittest.main()
