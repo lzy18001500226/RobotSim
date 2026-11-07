@@ -33,6 +33,30 @@ Do not mistake the 208mm hull gap for successful seat support or a robot
 crouching limitation. Source scene and robot remain unchanged.
 Evidence: reviews/issue-46/fetch-delivery-chair-geometry-20261107T173112Z/.
 
+### Explicit bounded carry integration
+
+The carry adapter reuses PointGoalController, the existing native ROS transport,
+and the unchanged composite stop evaluator. Its explicit diagnostic profile is
+SIMULATION_ONLY_FETCH_CARRY_ROUTE: task motion deadline <=90s, input forward
+<=0.12m/s, angular <=0.075rad/s, native root <=0.20m/s, original 29-axis source
+bounds, telemetry age <=0.20s, goal-base tolerance 0.15m, >=1.05s zero publishing
+before STAND and full original composite stop. Only actual intended distal-pad
+bottle contacts are allowed. A separate grip owner continues HAL arm/hand
+control; Cartesian tracking hands off to its measured joint hold after the
+physical lift/retract gates. No force or object attachment is introduced.
+
+The current chair-area test goal is base-world (-0.45,1.0), derived from the
+known chair at (0,1.5), not the chair CAD center itself. This point-goal task is
+not an old micro pulse or straight/curved-reference tracking qualification.
+Raw cross-track diagnostics remain visible; room workspace and actual contact
+guards apply. Default micro and reference-path thresholds are unchanged.
+
+Only a proven host-clock epoch fault can enter bounded zero/confirmed-STAND/
+complete-stop recovery before a new command; maximum four, no task-deadline
+reset. Physical faults, protection, stale state and publisher conflicts cannot
+rearm. A full recorded native trace audit independently checks limits so
+consumer-skipped samples cannot silently pass.
+
 ## Historical five-stage Goal and observed status (2026-11-07)
 
 The maintainer authorized sequential autonomous completion of this simulation

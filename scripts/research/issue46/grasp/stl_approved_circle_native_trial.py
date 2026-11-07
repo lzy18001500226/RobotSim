@@ -56,6 +56,8 @@ def main():
     p.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace")
     p.add_argument("--native-render-adapter",help="explicit process-only GPU selection for the native simulator, with actual GL identity verification")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
+    p.add_argument("--carry-goal-world-xy",type=float,nargs=2,help="explicit known-map delivery goal after physical grasp/retract")
+    p.add_argument("--carry-timeout-s",type=float,default=90.)
     p.add_argument("--post-lift-retract-world-m",type=float,nargs=3,help="bounded <=250mm post-lift retreat with unchanged physical load gate")
     p.add_argument("--grasp-axis-tilt-rad",type=float,default=0.)
     p.add_argument("--inverted-bottle-axis",action="store_true")
@@ -82,6 +84,8 @@ def main():
         v=args.post_lift_retract_world_m
         if not args.physical_lift_test or any(not math.isfinite(x) for x in v) or math.sqrt(sum(x*x for x in v))>.25 or not -.02<=v[2]<=.05:
             raise ValueError('bounded retract requires physical lift and <=250mm translation')
+    if args.carry_goal_world_xy is not None and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.post_lift_retract_world_m is None or args.coordinated_waist_pitch_offset_rad or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in args.carry_goal_world_xy)):
+        raise ValueError('carry needs screened arm-only physical lift/retract and bounded room goal/deadline')
     baseline=json.loads((args.baseline/"result.json").read_text())
     if not args.native_physics_audit:
         raise ValueError("approved-circle execution requires --native-physics-audit")
@@ -237,6 +241,8 @@ def main():
     if args.verified_native_mouse_controls:argv.append("--verified-native-mouse-controls")
     argv.extend(["--native-reset-input",args.native_reset_input])
     if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
+    if args.carry_goal_world_xy is not None:
+        argv.extend(['--carry-goal-world-xy',*map(str,args.carry_goal_world_xy),'--carry-timeout-s',str(args.carry_timeout_s)])
     if args.physical_lift_test:
         argv.append('--physical-lift-test')
         argv[argv.index('--hal-hand-close-hold-s')+1]='5'

@@ -389,3 +389,24 @@ def read_complete_native_rows(path):
             if not line.endswith(bytes([10])):break
             rows.append(json.loads(line))
     return rows
+
+def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns):
+    """Independent whole recorded carry audit, including skipped callback frames."""
+    import math
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault
+    window=[r for r in rows if start_ns<=r["host_monotonic_ns"]<=end_ns]
+    if len(window)<2:return {"pass":False,"failure":"INSUFFICIENT_CARRY_NATIVE_EVIDENCE"}
+    generation=window[0]["generation"];previous=None;max_root=0.;max_ratio=(0.,"")
+    allowed=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")]
+    for row in window:
+        if row.get("engine_version")!=337 or row["generation"]!=generation:return {"pass":False,"failure":"CARRY_NATIVE_GENERATION_CHANGED"}
+        if previous is not None and not 0<(row["host_monotonic_ns"]-previous["host_monotonic_ns"])*1e-9<=.20:return {"pass":False,"failure":"CARRY_NATIVE_GAP"}
+        pose=native_pose(row)
+        fault=physical_fault(row,pose,limits,robot_bodies=robot_bodies,allowed_contact_pairs=allowed)
+        if fault:return {"pass":False,"failure":fault,"source_host_ns":row["host_monotonic_ns"],"source_sim_time_s":row["sim_time_s"]}
+        max_root=max(max_root,math.hypot(pose["vx"],pose["vy"]))
+        for name,bounds in limits.items():
+            j=row["joints"][name];ratio=max(abs(j["qvel"]),j.get("max_abs_qvel_since_previous_sample",0.))/bounds[2]
+            max_ratio=max(max_ratio,(ratio,name))
+        previous=row
+    return {"pass":True,"classification":"INDEPENDENT_RECORDED_NATIVE_CARRY_MOTION_AUDIT","sample_count":len(window),"host_span_s":(window[-1]["host_monotonic_ns"]-window[0]["host_monotonic_ns"])*1e-9,"max_recorded_root_speed_m_s":max_root,"max_joint_speed_limit_ratio":max_ratio[0],"worst_joint":max_ratio[1]}

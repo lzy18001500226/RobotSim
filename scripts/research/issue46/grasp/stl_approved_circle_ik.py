@@ -248,7 +248,9 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
         arm=solved.x;e=residual(arm);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
         passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
         samples.append(dict(fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),pass_result=bool(passed)))
-    return dict(pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
+    root=ik.native.bid(model,"pelvis")
+    robot_bodies=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,b) for b in range(model.nbody) if model.body_rootid[b]==root]
+    return dict(robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
 
 
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
@@ -336,6 +338,11 @@ def track_native(reference_path, latest_path, output_path):
                     if not 0.<=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('STALE_NATIVE_AFTER_INITIAL_IMAGE_READINESS')
                 else:estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
                 row['bodies']['test_cylinder']=qualify_estimate(estimate,generation=row['generation'])
+            if phase is not None and phase.get('phase')=='CARRY_HOLD':
+                if phase.get('post_retract_physical_hold_pass') is not True or phase.get('generation')!=row['generation'] or not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=.20:raise RuntimeError('UNQUALIFIED_CARRY_TRACKER_HANDOFF')
+                handoff={'classification':'CARTESIAN_TO_MEASURED_JOINT_HOLD','generation':row['generation'],'source_host_ns':row['host_monotonic_ns'],'physical_hold_pass':True}
+                output_path.with_name('native_tracking_carry_handoff.json').write_text(json.dumps(handoff))
+                return
             if phase is not None and not tracking_phase_is_fresh(phase,time.monotonic_ns()):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
             generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
             now=time.monotonic_ns()

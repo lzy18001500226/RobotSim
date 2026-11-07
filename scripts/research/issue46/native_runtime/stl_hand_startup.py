@@ -1237,7 +1237,59 @@ def _with_postlift_retract(script, lift_contract):
    print(json.dumps({'post_lift_retract':retract_execution}),flush=True)
    if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')
  if RESTORE:""")
+    if retract.get("carry_lease_s") is not None:script=_with_carry_lease(script,retract)
     compile(script,"post_lift_retract_generated","exec")
+    return script
+
+
+
+def _with_carry_lease(script, retract):
+    """Keep the proven HAL grip/arm owner alive; it never publishes velocity."""
+    lease=float(retract["carry_lease_s"])
+    if not math.isfinite(lease) or not 5.<=lease<=200.:raise ValueError("carry lease outside bounded 5..200s")
+    def replace(old,new,count=1):
+        nonlocal script
+        if script.count(old)!=count:raise ValueError("carry extension anchor changed:"+old[:50])
+        script=script.replace(old,new)
+    replace("   if len(self.odom)>1 and math.hypot(","   if stage!='CARRY_HOLD' and len(self.odom)>1 and math.hypot(")
+    replace("stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP')","stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','CARRY_HOLD')")
+    replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')",count=2)
+    replace("('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')")
+    replace("   self.pub.publish(m)\n","   self.pub.publish(m);self.last_published_arm_target={name:float(target[name]) for name in LEFT+RIGHT}\n")
+    replace("    self.hand_pub.publish(h)\n",
+"""    self.hand_pub.publish(h)
+   if stage=='CARRY_HOLD':
+    hand=self.native_row['bodies']['R_omnipicker_base_link'];obj=self.native_row['bodies']['test_cylinder'];H=hand['rotation'];B=obj['rotation']
+    delta=[obj['position_m'][i]+CIRCLE_CONTRACT['height_above_center_m']*B[3*i+2]-hand['position_m'][i] for i in range(3)]
+    local=[sum(H[3*i+j]*delta[i] for i in range(3)) for j in range(3)]
+    slip=math.sqrt(sum((a-b)**2 for a,b in zip(local,self.lift_phase['initial_object_in_hand_m'])))
+    if slip>.01 or B[8]<math.cos(.10) or obj['position_m'][2]<.25:raise RuntimeError('CARRY_OBJECT_POSE_OR_SLIP')
+    heartbeat={'mode':'MEASURED_LOAD_BEARING_CARRY_HOLD','healthy':True,'pid':os.getpid(),'node_name':self.get_name(),'host_monotonic_ns':time.monotonic_ns(),'native_source_host_ns':self.native_receipt_ns,'generation':self.native_generation,'object_in_hand_error_m':slip,'bottle_world_xyz_m':obj['position_m'],'publication_is_not_mc_acknowledgement':True}
+    with open('/workspace/evidence/carry_heartbeat.tmp','w') as f:json.dump(heartbeat,f)
+    os.replace('/workspace/evidence/carry_heartbeat.tmp','/workspace/evidence/carry_heartbeat.json')
+""")
+    needle="   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')\n if RESTORE:"
+    replace(needle,
+"""   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')
+   carry_target=dict(n.last_published_arm_target)
+   n.lift_phase.update(phase='CARRY_HOLD',created_host_ns=time.monotonic_ns(),post_retract_physical_hold_pass=True)
+   n.write_phase(n.lift_phase)
+   n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)
+   n.pre_carry_odom=list(n.odom);n.pre_carry_tilt=list(n.tilt)
+   ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m']}
+   with open('/workspace/evidence/carry_ready.tmp','w') as f:json.dump(ready,f)
+   os.replace('/workspace/evidence/carry_ready.tmp','/workspace/evidence/carry_ready.json')
+   carry_until=time.monotonic()+float(ready['lease_s'])
+   while not os.path.exists('/workspace/evidence/carry_release') and time.monotonic()<carry_until:
+    n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)
+   if not os.path.exists('/workspace/evidence/carry_release'):raise RuntimeError('CARRY_LEASE_EXPIRED')
+   n.send(carry_target,1.5,'CARRY_HOLD',HAND_RIGHT)
+   print(json.dumps({'carry_execution':{'pass':True,'released_by_parent':True,'generation':n.native_generation,'final_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'final_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}}),flush=True)
+ if RESTORE:""")
+    final_line=next(line for line in script.splitlines() if line.startswith(" drift=math.hypot("))
+    replace(final_line," standing_odom=getattr(n,'pre_carry_odom',n.odom);standing_tilt=getattr(n,'pre_carry_tilt',n.tilt)\n"+final_line.replace("n.odom","standing_odom").replace("n.tilt","standing_tilt"))
+    replace("'motion_stability':{'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None,'pass':stable}","'motion_stability':{'scope':'STANDING_BEFORE_CARRY','sample_count':len(standing_odom),'planar_drift_m':drift,'max_tilt_rad':max(standing_tilt) if standing_tilt else None,'pass':stable}")
+    compile(script,"carry_lease_generated","exec")
     return script
 
 

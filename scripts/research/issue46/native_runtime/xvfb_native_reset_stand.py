@@ -1139,6 +1139,69 @@ class MicroProbeComplete(Exception):
     """End only the isolated probe; mandatory finally still tears down."""
 
 
+
+def execute_grasp_with_carry(container, environment, output, args, replan_record, result, child_budget):
+    """Run the existing grip owner and navigation adapter with a measured handoff."""
+    import subprocess
+    from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
+    retract=replan_record.get("lift_preflight",{}).get("retract_preflight",{})
+    if not retract.get("pass_result") or not retract.get("robot_bodies"):raise RuntimeError("CARRY_STATIC_PREFLIGHT_MISSING")
+    owner_log=output/"native_carry_owner.stdout";exit_path=output/"native_carry_owner.exit"
+    lease=float(retract["carry_lease_s"]);budget=child_budget+int(math.ceil(lease))
+    command=(environment+f"timeout {budget}s python3 /workspace/evidence/native_hal_bilateral_arm_pregrasp.py > /workspace/evidence/native_carry_owner.stdout 2>&1; status=$?; printf '%s' \"$status\" > /workspace/evidence/native_carry_owner.exit")
+    run(["docker","exec","-d",container,"bash","-lc",command],timeout_s=5.)
+    ready_path=output/"carry_ready.json";deadline=time.monotonic()+child_budget
+    def owner_result():
+        return subprocess.CompletedProcess(["native_carry_owner"],int(exit_path.read_text()) if exit_path.exists() else 1,owner_log.read_text(errors="replace") if owner_log.exists() else "")
+    while time.monotonic()<deadline and not ready_path.exists():
+        if exit_path.exists():return owner_result()
+        native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+        time.sleep(.05)
+    if not ready_path.exists():raise RuntimeError("CARRY_READY_TIMEOUT")
+    ready=json.loads(ready_path.read_text());heartbeat=json.loads((output/"carry_heartbeat.json").read_text());current=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+    if ready.get("schema")!="robotsim.x2.carry-ready.v1" or ready.get("physical_lift_pass") is not True or ready.get("post_lift_retract_pass") is not True or ready.get("generation")!=current["generation"] or heartbeat.get("pid")!=ready.get("pid") or not 0.<=(time.monotonic_ns()-heartbeat["host_monotonic_ns"])*1e-9<=.20:
+        raise RuntimeError("CARRY_HANDOFF_UNQUALIFIED")
+    result["carry_ready"]=ready
+    result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.075,'root_cap_m_s':.20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
+    limits=retract["source_motion_limits"]
+    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s))
+    controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
+    pg.write_new_bytes(output/"point_goal_controller.py",controller.read_bytes())
+    if not (output/"native_micro_stop_contract.py").exists():
+        from scripts.research.issue46.native_runtime import native_micro_stop_contract
+        pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
+    result["carry_controller_source"]={"path":str(controller),"sha256":sha256(controller),"classification":"REUSED_EXISTING_POINT_GOAL_CONTROLLER"}
+    bridge=output/"official_cmd_vel_bridge.stdout"
+    if result["gates"].get("OFFICIAL_CMD_VEL_BRIDGE")!="PASS":
+        source=REPO/"reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py"
+        if not (output/"steady_cmd_vel_bridge.py").exists():pg.write_new_text(output/"steady_cmd_vel_bridge.py",micro.build_steady_bridge_source(source.read_text()))
+        bridge_command=(environment+"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.12 -p max_forward_velocity:=0.12 -p min_angular_velocity:=0.075 -p max_angular_velocity:=0.075 > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1")
+        run(["docker","exec","-d",container,"bash","-lc",bridge_command],timeout_s=5.)
+        wait_for(bridge,"cmd_vel_bridge started.",timeout_s=10.)
+        result["gates"]["OFFICIAL_CMD_VEL_BRIDGE"]="PASS"
+    handoff_deadline=time.monotonic()+2.
+    while not (output/"native_tracking_carry_handoff.json").exists() and time.monotonic()<handoff_deadline:time.sleep(.02)
+    if not (output/"native_tracking_carry_handoff.json").exists():raise RuntimeError("CARRY_TRACKER_RELEASE_UNCONFIRMED")
+    route=run(["docker","exec",container,"bash","-lc",environment+f"timeout {int(args.carry_timeout_s+30)}s python3 /workspace/evidence/native_carry_route.py"],timeout_s=args.carry_timeout_s+32.,check=False)
+    pg.write_new_text(output/"native_carry_route.stdout",route.stdout)
+    nav_path=output/"native_carry_route_result.json"
+    nav=json.loads(nav_path.read_text()) if nav_path.exists() else {"pass_result":False,"failure":"CARRY_ROUTE_NO_RESULT","stdout_tail":route.stdout[-1600:]}
+    result["carry_navigation"]={k:v for k,v in nav.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}
+    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.read_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
+    result["carry_native_motion_audit"]=recorded
+    if not recorded["pass"]:
+        nav["pass_result"]=False;nav["failure"]="RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure"))
+        result["carry_navigation"]["pass_result"]=False;result["carry_navigation"]["failure"]=nav["failure"]
+    result["gates"]["CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"]="PASS" if nav.get("pass_result") else "FAIL"
+    if any(any(float(c.get(k,0)) for k in ("forward","lateral","angular")) for c in nav.get("command_log",[])):
+        if "locomotion velocity" in result["commands_not_sent"]:result["commands_not_sent"].remove("locomotion velocity")
+    pg.write_new_text(output/"carry_release","NAVIGATION_CONTROLLER_FINISHED; PHYSICAL_PASS_REMAINS_SEPARATE\n")
+    deadline=time.monotonic()+5.
+    while not exit_path.exists() and time.monotonic()<deadline:time.sleep(.05)
+    if not exit_path.exists():raise RuntimeError("CARRY_OWNER_TERMINATION_UNCONFIRMED")
+    return owner_result()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--table-overlay-result", required=True, type=Path)
@@ -1199,6 +1262,8 @@ def main() -> None:
     parser.add_argument("--dock-position-tolerance-m", type=float, default=0.18, help="primary table-dock acceptance radius; use a smaller value only for manipulation alignment")
     parser.add_argument("--dock-timeout-s", type=float, default=30.0, help="bounded route deadline; used only with --dock-world-xy")
     parser.add_argument("--use-official-cmd-vel-bridge", action="store_true", help="route through the pinned RAICOM cmd_vel_bridge instead of publishing the MC velocity type directly")
+    parser.add_argument("--carry-goal-world-xy",type=float,nargs=2)
+    parser.add_argument("--carry-timeout-s",type=float,default=90.)
     parser.add_argument("--micro-base-probe", choices=("forward","backward","left","right"), help="one native body-frame micro pulse and strict composite stop; no arm approach")
     parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
     parser.add_argument("--micro-command-speed",type=float,default=.2)
@@ -1218,6 +1283,7 @@ def main() -> None:
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
     replan_record={}
+    if args.carry_goal_world_xy is not None and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.coordinated_circle_waist or args.micro_base_probe or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in args.carry_goal_world_xy)):raise ValueError('bounded arm-only carry route required')
 
     if args.verified_native_mouse_controls and not (args.fixed_reviewed_checkpoint and args.interactive_x11_display and args.pause_on_claw_failure):
         raise ValueError("verified mouse controls are scoped to the visible fixed-stance human-review entry")
@@ -2195,6 +2261,7 @@ def main() -> None:
                                 limits,provenance=native_leg_safety_contract(include_upper_body=True)
                                 replan_record['lift_preflight']['retract_preflight']['source_motion_limits']=limits
                                 result['retract_motion_limit_provenance']=provenance
+                                if args.carry_goal_world_xy is not None:replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+50.
                             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
@@ -2243,7 +2310,10 @@ def main() -> None:
                     raise RuntimeError("hybrid arm bootstrap did not stop before the arm-only pregrasp")
             child_budget=42 if args.physical_lift_test else 35
             if replan_record.get('lift_preflight',{}).get('retract_preflight',{}).get('pass_result') is True:child_budget+=6
-            arm_pregrasp = run(["docker", "exec", container, "bash", "-lc", environment + f"timeout {child_budget}s python3 /workspace/evidence/native_hal_bilateral_arm_pregrasp.py"], timeout_s=child_budget+2., check=False)
+            if args.carry_goal_world_xy is not None:
+                arm_pregrasp=execute_grasp_with_carry(container,environment,output,args,replan_record,result,child_budget)
+            else:
+                arm_pregrasp = run(["docker", "exec", container, "bash", "-lc", environment + f"timeout {child_budget}s python3 /workspace/evidence/native_hal_bilateral_arm_pregrasp.py"], timeout_s=child_budget+2., check=False)
             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.stdout", arm_pregrasp.stdout)
             arm_pregrasp_result = decode_arm_execution_output(arm_pregrasp.returncode,arm_pregrasp.stdout)
             if replan_record.get('lift_preflight',{}).get('retract_preflight'):
@@ -2283,6 +2353,10 @@ def main() -> None:
                     result['failure']={'gate':'HAL_PHYSICAL_LIFT','detail':result.get('physical_lift_evidence',lift)}
                 if "hand command" in result["commands_not_sent"]:
                     result["commands_not_sent"].remove("hand command")
+                if args.carry_goal_world_xy is not None and result.get("carry_navigation",{}).get("pass_result") is not True:
+                    result["failure"]={"gate":"CARRY_NAVIGATION","detail":result.get("carry_navigation",{})}
+                if args.carry_goal_world_xy is not None:
+                    result["gates"]["CHAIR_SEAT_PLACEMENT"]="NOT_RUN"
                 if args.pause_on_claw_failure and (result["gates"]["HAL_RIGHT_HAND_CLOSE"] != "PASS" or args.physical_lift_test):
                     if args.native_circle_tracking and not (output/'native_tracking_target.stop').exists():pg.write_new_text(output/'native_tracking_target.stop','controlled execution ended before review-only physics pause\n')
                     # Freeze physical stepping through the verified native UI,

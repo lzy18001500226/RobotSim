@@ -57,6 +57,9 @@ concave-pad support circle. Actual H300/D70/.200kg fixed-stance truth and fresh
 RGB-D grasps have passed bilateral load transfer, >=50 mm lift and >=1 s
 unsupported hold in the explicitly labeled SIMULATION_ONLY source-derived
 collision/control profile. The native interactive review entry is available.
+A bounded post-lift retract has also passed actual native physics; held-object
+navigation to the known chair area is an integration diagnostic, not yet a
+qualified full fetch/delivery task.
 The strengthened START-to-table chain is still unqualified: subsequent
 per-physics-step source joint-speed checks found violations in historical
 walking traces. Four-direction stance correction, dynamic short-bottle

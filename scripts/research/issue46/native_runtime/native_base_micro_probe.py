@@ -44,7 +44,7 @@ def native_pose(row):
                 frame_id="native_scene_world", child_frame_id="pelvis_origin")
 
 
-def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None):
+def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None):
     if pose["z"] < .45 or math.hypot(pose["roll"], pose["pitch"]) > math.radians(15):
         return "POSTURE"
     if math.hypot(pose["vx"], pose["vy"]) > .20:
@@ -55,6 +55,9 @@ def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=No
             return "JOINT_LIMIT:" + name
         if not math.isfinite(j["qvel"]) or abs(j["qvel"]) > speed or j.get("max_abs_qvel_since_previous_sample",abs(j["qvel"]))>speed:
             return "SOURCE_JOINT_SPEED:" + name
+    allowed={frozenset(p) for p in (allowed_contact_pairs or [])}
+    approved={frozenset(('test_cylinder',p)) for p in ('R_hand_narrow3_Link','R_hand_wide3_Link')}
+    if not allowed.issubset(approved):raise ValueError('only intended distal-pad bottle contact may be allowed')
     if robot_bodies:
         if (row.get("contact_capture_scope")!="ALL_COMPILED_GEOM_CONTACTS" or
                 not isinstance(row.get("contacts"),list) or
@@ -63,6 +66,7 @@ def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=No
         for contact in row["contacts"]:
             if contact["efc_address"]<0 or contact["distance_m"]>=-.001 or contact["local_force_torque"][0]<=.1:continue
             a,b=contact["body1"],contact["body2"];ra,rb=a in robot_bodies,b in robot_bodies
+            if frozenset((a,b)) in allowed:continue
             if ra and rb:return "ACTIVE_ROBOT_SELF_COLLISION:"+a+":"+b
             if ra or rb:
                 robot,other=(a,b) if ra else (b,a)
@@ -210,6 +214,7 @@ def run_probe(smoke_only=False):
             self.trace = []
             self.latest_row = None
             self.stop_started = False
+            self.graph_startup_timeout_s=MICRO.get("graph_startup_timeout_s",2.)
             self.lock = threading.Lock()
             self.moving = False
             self.command_log = []
@@ -373,8 +378,12 @@ def run_probe(smoke_only=False):
                       for name in ("common","imu","leg_state","leg_command")}
                 if any(age>.20 for age in ages.values()):
                     raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:"+str(ages))
+                if MICRO.get("carry"):
+                    health=json.loads(Path("/workspace/evidence/carry_heartbeat.json").read_text())
+                    if health.get("mode")!="MEASURED_LOAD_BEARING_CARRY_HOLD" or health.get("healthy") is not True or health.get("pid")!=MICRO["carry"]["pid"] or health.get("generation")!=r["generation"] or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-health["native_source_host_ns"])*1e-9<=.20:
+                        raise RuntimeError("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED")
                 p=native_pose(r)
-                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"))
+                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"))
                 if fault: raise RuntimeError(fault)
                 imu=self.messages["imu"]
                 q=imu["orientation"]
@@ -460,12 +469,20 @@ def run_probe(smoke_only=False):
                     raise RuntimeError("MC_ARM_POLICY_PRODUCER_NOT_VERIFIED")
                 if not self.arm_policy_trace or time.monotonic()-self.arm_policy_trace[-1]["received_monotonic_s"]>.20:
                     raise RuntimeError("GRAPH_DISCOVERY_PENDING")
+            if MICRO.get("carry"):
+                pid=MICRO["carry"]["pid"]
+                argv=Path("/proc",str(pid),"cmdline").read_bytes().split(bytes([0]))
+                if b"/workspace/evidence/native_hal_bilateral_arm_pregrasp.py" not in argv:raise RuntimeError("CARRY_PROCESS_IDENTITY")
+                for topic,typ in (("/aima/hal/joint/arm/command","aimdk_msgs/msg/JointCommandArray"),("/aima/hal/joint/hand/command","aimdk_msgs/msg/HandCommandArray")):
+                    owners=self.get_publishers_info_by_topic(topic)
+                    if not owners or any(x.node_name=="_NODE_NAME_UNKNOWN_" for x in owners):raise RuntimeError("GRAPH_DISCOVERY_PENDING")
+                    if len(owners)!=1 or owners[0].node_name!="robotsim_hal_bilateral_pregrasp" or owners[0].node_namespace!="/" or owners[0].topic_type!=typ:raise RuntimeError("CARRY_PUBLISHER_NOT_UNIQUE")
             self.events.append(dict(event="UNIQUE_PROVENANCE_GRAPH",t=time.monotonic(),mc=candidates[0],
                                     publisher=pubs[0].node_name,subscriber=subs[0].node_name,
                                     configured_history_depth="KEEP_LAST/10; FastDDS graph history may be UNKNOWN/0"))
 
         def await_graph(self):
-            deadline=time.monotonic()+2.
+            deadline=time.monotonic()+getattr(self,"graph_startup_timeout_s",2.)
             while time.monotonic()<deadline:
                 self.publish();self.pump()
                 try:self.graph()
@@ -530,6 +547,8 @@ def run_probe(smoke_only=False):
         n.stop_feedback()
         print(json.dumps({"constructed":True,"publisher_topics":[p.topic_name for p in n.publishers],"subscription_topics":[s.topic_name for s in n.subscriptions],"client_services":[c.srv_name for c in n.clients],"motion_publish_calls":len(n.command_log),"dedicated_feedback_executor_healthy":healthy,"feedback_executor_stopped":not n.feedback_thread.is_alive()}),flush=True)
         n.destroy_node();rclpy.shutdown();return
+    if MICRO.get("carry"):
+        return run_carry_navigation(n,contract)
     watchdog=None;baseline=None;motion_started=False
     try:
         n.start_feedback()
@@ -625,3 +644,125 @@ def run_probe(smoke_only=False):
         Path("/workspace/evidence/native_micro_probe_result.json").write_text(json.dumps(result,indent=2)+"\n")
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)
+
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90.):
+    """Reuse Micro transport/stop guards and the existing point-goal controller."""
+    if len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
+        raise ValueError("invalid bounded carry route")
+    script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
+    script=script.rsplit("\nrun_probe()",1)[0]
+    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s),graph_startup_timeout_s=5.,
+                 allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
+    return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
+
+
+
+def recoverable_carry_clock_fault(fault, error, recovery_count):
+    return (str(error).startswith("NATIVE_FEEDBACK_INVALID:") and
+            isinstance(fault,dict) and fault.get("gate")=="CLOCK_STEP_DURING_MOTION" and
+            0<=recovery_count<4)
+
+
+def run_carry_navigation(n,contract):
+    """One bounded measured-pose task, with zero/qualified-stop clock recovery."""
+    import threading
+    from point_goal_controller import PointGoalController,ControllerConfig,Pose2D,Goal2D,NavState
+    cfg=MICRO["carry"];result=dict(classification="SIMULATION_ONLY_FETCH_CARRY_ROUTE",pass_result=False,
+        goal_xy_m=cfg["goal_xy_m"],zero_receipt_ack="UNAVAILABLE",clock_recoveries=[],route_samples=[])
+    watchdog=None;began=None;baseline=None
+    try:
+        n.start_feedback();until=time.monotonic()+5.
+        while time.monotonic()<until:
+            n.publish();n.pump()
+            if all(k in n.messages for k in ("common","imu","leg_state","leg_command")) and "get_mode" in n.readbacks:break
+            time.sleep(.01)
+        n.await_graph();baseline=n.sample()["body_status"]
+        result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
+        start=n.sample()["pose"];result["start_pose"]=start
+        goal=cfg["goal_xy_m"];bearing=math.atan2(goal[1]-start["y"],goal[0]-start["x"])
+        controller=PointGoalController(ControllerConfig(xy_tolerance_m=.15,yaw_tolerance_rad=.12,max_forward_mps=.12,max_angular_rps=.075,k_angular=.8,goal_timeout_s=cfg["timeout_s"]))
+        target=Goal2D(*goal,bearing,"native_scene_world")
+        began=time.monotonic();until=began+cfg["timeout_s"];last_graph=began;acquired=False;activation_started=began;progress_state=None;progress_best=None;progress_at=began
+        with n.lock:n.moving=True
+        watchdog=threading.Timer(cfg["timeout_s"],n.deadline_zero);watchdog.daemon=True;watchdog.start()
+        while time.monotonic()<until:
+            tick=time.monotonic()
+            if not n.moving and (n.feedback_fault or {}).get("gate")!="CLOCK_STEP_DURING_MOTION":break
+            try:
+                n.pump();row=n.sample()
+            except RuntimeError as exc:
+                fault=n.feedback_fault or {}
+                # Only a qualified source-clock epoch fault is recoverable.
+                if not recoverable_carry_clock_fault(fault,exc,len(result["clock_recoveries"])):raise
+                n.deadline_zero();n.stop_started=True
+                if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
+                n.feedback_fault=None
+                n.observe(1.05,baseline=baseline);n.stand_once()
+                stopped=n.observe(8.,baseline=baseline,require_stop=True)
+                result["clock_recoveries"].append(dict(fault=fault,stop=stopped,t=time.monotonic()))
+                controller.reset();n.await_graph()
+                n.stop_started=False
+                with n.lock:n.moving=True
+                activation_started=time.monotonic();continue
+            if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
+            p=row["pose"]
+            if not -1.65<=p["x"]<=1.65 or not -1.75<=p["y"]<=1.75:raise RuntimeError("CARRY_ROOM_WORKSPACE")
+            output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=tick)
+            if output.state in (NavState.ALIGN,NavState.DRIVE,NavState.FINAL_ALIGN):
+                metric=output.distance_m if output.state==NavState.DRIVE else abs(output.yaw_error_rad)
+                threshold=.01 if output.state==NavState.DRIVE else .02
+                if progress_state!=output.state or progress_best is None or metric<progress_best-threshold:
+                    progress_state=output.state;progress_best=metric;progress_at=tick
+                elif tick-progress_at>3.:
+                    raise RuntimeError("CARRY_COMMAND_WITHOUT_MEASURED_PROGRESS")
+                # This is the existing point-goal controller, not a qualified
+                # straight/curved-reference tracking run. Keep path error visible.
+                dx,dy=goal[0]-start["x"],goal[1]-start["y"];length=math.hypot(dx,dy)
+                cross=abs(dx*(p["y"]-start["y"])-dy*(p["x"]-start["x"]))/length
+                result["max_cross_track_to_direct_segment_m"]=max(result.get("max_cross_track_to_direct_segment_m",0.),cross)
+                if output.state==NavState.ALIGN and abs(output.yaw_error_rad)>abs((bearing-start["yaw"]+math.pi)%(2*math.pi)-math.pi)+.10:
+                    raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
+                forward=.12 if output.linear_x>0 else 0.
+                angular=output.angular_z
+                bounds=row["raw_common"]["speed_status"]
+                if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
+                if row["common_mode_status_value"]==300:raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
+                handshake=(row["common_mode_desc"]=="LOCOMOTION_DEFAULT" and row["get_mode_desc"]=="LOCOMOTION_DEFAULT" and row["get_mode_header_code"]==0 and row["state_age_s"]["get_mode"]<=.20 and row["common_source"]["name"]=="robotsim_official_cmd_vel")
+                acquired=acquired or handshake
+                if tick-activation_started>.75 and not handshake:raise RuntimeError("CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED")
+                n.publish(forward,0.,angular)
+            elif output.state==NavState.SETTLING:n.publish()
+            elif output.state==NavState.ARRIVED:
+                result["goal_triggered_stop"]=True;break
+            else:raise RuntimeError("CARRY_CONTROLLER_"+output.state.value)
+            result["route_samples"].append(dict(t=tick,state=output.state.value,pose=p,distance_m=output.distance_m,yaw_error_rad=output.yaw_error_rad,linear=n.command_log[-1]["forward"],angular=n.command_log[-1]["angular"],controller_linear=output.linear_x,controller_angular=output.angular_z))
+            n.trace.append(row)
+            if tick-last_graph>=1.:n.graph();last_graph=tick
+            time.sleep(max(0.,tick+.02-time.monotonic()))
+        n.deadline_zero();n.stop_started=True
+        if watchdog:watchdog.cancel()
+        n.observe(1.05,baseline=baseline);n.stand_once()
+        result["post_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
+        end=n.sample()["pose"];result["end_pose"]=end
+        result["final_distance_m"]=math.hypot(goal[0]-end["x"],goal[1]-end["y"])
+        result["measured_distance_m"]=math.hypot(end["x"]-start["x"],end["y"]-start["y"])
+        result["source_and_ld_observed"]=acquired
+        result["pass_result"]=bool(result.get("goal_triggered_stop") and acquired and result["post_stop_composite"]["pass"] and result["final_distance_m"]<=.15 and result["measured_distance_m"]>.005)
+        result["failure"]=None if result["pass_result"] else "CARRY_GOAL_OR_STOP_NOT_QUALIFIED"
+    except Exception as exc:
+        n.deadline_zero();result["failure"]=str(exc);result["abort_native_sample"]=n.latest_row
+    finally:
+        n.deadline_zero()
+        if watchdog:watchdog.cancel()
+        end=time.monotonic()+1.05
+        while time.monotonic()<end:
+            n.publish()
+            try:n.pump()
+            except Exception:pass
+            time.sleep(.015)
+        try:n.stop_feedback()
+        except Exception as exc:result["feedback_cleanup_failure"]=str(exc);result["pass_result"]=False
+        result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace)
+        Path("/workspace/evidence/native_carry_route_result.json").write_text(json.dumps(result,indent=2)+"\n")
+        n.destroy_node();rclpy.shutdown()
+        print(json.dumps({k:v for k,v in result.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}),flush=True)

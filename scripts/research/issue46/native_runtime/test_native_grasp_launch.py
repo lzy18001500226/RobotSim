@@ -769,6 +769,17 @@ class PostLiftRetractTests(TestCase):
     def test_bad_retract_cannot_generate_runtime(self):
         for change in (dict(pass_result=False),dict(offset_world_m=[-.3,0.,0.]),dict(duration_s=8.),dict(source_motion_limits={})):
             with self.assertRaises(ValueError):self.generated_retract(change)
+    def test_carry_lease_uses_joint_hold_and_keeps_velocity_out_of_grip_owner(self):
+        code=self.generated_retract(dict(carry_lease_s=115.))
+        compile(code,"carry_lease","exec")
+        self.assertIn("MEASURED_LOAD_BEARING_CARRY_HOLD",code)
+        self.assertIn("STANDING_BEFORE_CARRY",code)
+        self.assertIn("carry_ready.json",code)
+        self.assertIn("CARRY_LEASE_EXPIRED",code)
+        self.assertNotIn("create_publisher(Twist",code)
+        self.assertNotIn("McLocomotionVelocity",code)
+        for bad in (0.,201.,float("inf")):
+            with self.assertRaises(ValueError):self.generated_retract(dict(carry_lease_s=bad))
     def test_default_grasp_does_not_enable_retract(self):
         self.assertNotIn("RETRACT_GATED",generated())
 

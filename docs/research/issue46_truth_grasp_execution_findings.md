@@ -842,3 +842,13 @@ Run81报告文字称转向降到0.12，但原始velocity_command_trace有223条�
 174412Z新Reset收件与边界确认通过，但bridge图尚未看到publisher时启动检查超时，非零命令0；容器确认删除。父流程原先在ADD响应打印时即把bridge视为启动，现在等待其真实started日志，仍由子流程独立证明唯一图/QoS/新鲜实际输出和源/模式。ADD任务完成仍未确认，不能把state=0当完成。
 
 181830Z真实RGB-D抓取仍完成50mm/1sim秒无支撑保持（最低57.696mm，双垫最小1.671/1.661N，桌力0），收臂刚开始约4.6mm指令时出现CLOSURE_PHASE_EXPIRED，非掉瓶/IK失败。原因是RETRACTING继承了LIFTING起始时间，却落入6s阶段期限。修正为独立且仍为6s的RETRACTING阶段，只能在新鲜物理抬升门通过后的0.20s内建立；每帧更新目标不刷新该起点。未延长旧阶段或状态新鲜度。另将“抬升已完成”和“后续收臂失败”独立分类，保持总体失败；完整行JSON仍严格校验，只忽略正在写入的末尾半行。实际容器已清理，未进入行走。
+
+### 持物到椅区交接实现与预检
+
+182833Z实际收臂PASS：位移(-148.435,-148.774,-2.137)mm；随后51帧/1sim秒最低抬升54.181mm、双垫最小1.613/1.588N、桌力0。收臂阶段所有源29轴速度未超限，最大比率0.04350；native容器已确认删除。此后才实现CARRY_HOLD，不会把该运行说成持物行走。
+
+新显式carry-goal-world-xy入口复用同一HAL手臂/夹爪所有者，固定最后实际发布的承力关节目标并继续力反馈，不读瓶真值来追逐移动目标、不写qpos。仅新搬运阶段不再用“全程base漂移<=50mm”误判合法导航；原站立段仍单独按相同阈值验收，全部轨迹保留。世界导航复用现有PointGoalController以及Micro的身份/QoS、独立反馈executor、零命令、STAND与原复合stop gate。只有已夹持的两个末端pad/test_cylinder对允许接触，其他碰撞和源29轴限制不变。
+
+新SIMULATION_ONLY_FETCH_CARRY_ROUTE显式上限90s任务运动、forward0.12、angular0.075、root0.20、状态年龄0.20、到椅区基座误差0.15m。该全房间点目标不是旧0.18m micro或已资格的50mm参考线跟踪，原微调/曲线分支不改；新路线记录实际对直线偏差并持续核对房间边界、真实碰撞、模式/源与握持。无实测位移/角度改善3s即停止，不盲等90s。仅显式source-clock epoch异常允许先零速、请求并确认STAND、完整原复合停稳通过后，以新鲜反馈重新规划；最多4次且不重置总deadline。真实物理/保护/遥测异常不重试。默认旧micro仍遇活动时钟跳变即失败。
+
+真实Humble无物理smoke已完成两个实际ROS节点构造/销毁，握持owner为0client/0velocity pub；导航为既有4client、1个cmd_vel publisher、实际发布0次，executor退出确认。没有启动MC/physics，证据fetch-chair-carry-humble-no-physics-smoke-20261107T191709Z。模拟控制流回归验证目标触发zero-before-STAND/stop、物理fault不重武装、时钟异常必须停稳、deadline不被重武装。完整真实取送尚未运行。
