@@ -12,6 +12,16 @@ class FrameTests(unittest.TestCase):
         functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task')]
         cls.ns={'np':np};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
+    def test_full_source_posture_cannot_be_executed_or_silently_enabled(self):
+        import subprocess,sys
+        planner=Path(__file__).with_name("stl_approved_circle_ik.py")
+        required=["--circle-review","/nonexistent","--candidate","/nonexistent","--standing-state","/nonexistent"]
+        for extra in ([],["--optimize-waist-posture","--runtime-handoff"]):
+            r=subprocess.run([sys.executable,str(planner),*required,"--full-source-posture-diagnostic",*extra],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+            self.assertNotEqual(r.returncode,0)
+            self.assertIn("full-source diagnostic is offline only",r.stdout)
+            self.assertNotIn("FileNotFoundError",r.stdout)
+
     def test_axial_roll_is_free_but_centre_offset_rotates(self):
         c=np.array([0.,.002,.132]);p=np.array([1.3,-1.65,.8]);axis=np.array([0.,0.,1.])
         for theta in (0.,.8,-.8,2.):

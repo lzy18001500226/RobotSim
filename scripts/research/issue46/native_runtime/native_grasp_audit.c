@@ -65,7 +65,12 @@ static void body(const mjModel* m,const mjData* d,const char* name) {
   fputs(",\"quaternion_wxyz\":",sink);array(d->xquat+4*b,4);
   fputs(",\"com_m\":",sink);array(d->xipos+3*b,3);
   fprintf(sink,",\"mass_kg\":%.17g",(double)m->body_mass[b]);
-  fputs(",\"rotation\":",sink);array(d->xmat+9*b,9);fputc('}',sink);
+  fputs(",\"rotation\":",sink);array(d->xmat+9*b,9);
+  /* XBODY is the body origin, BODY would return inertial-COM velocity.
+   * World-aligned, angular first, then linear. Read-only public API. */
+  mjtNum v[6]={0};velocity_real(m,d,mjOBJ_XBODY,b,v,0);
+  fputs(",\"origin_velocity_world_angular_linear\":",sink);array(v,6);
+  fputc('}',sink);
 }
 static void json_string(FILE* file,const unsigned char* value) {
   if(!value){fputs("null",file);return;}

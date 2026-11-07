@@ -30,6 +30,45 @@ def circle_task_jacobian(model,data,hand,center,local_axis,dofs):
     mujoco.mj_jac(model,data,linear,angular,point,hand)
     return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,rotation@local_axis).T])
 
+def solve_bounded_upper_posture(model,state,start,center,section,axis,local_axis,opening,old_seed, *, full_source_diagnostic=False):
+    """Coupled existing waist-yaw/pitch + arm IK, frozen root/legs/waist-roll.
+
+    Pose bounds are tighter than source limits. The arm excursion and all
+    final collision/lift gates are retained; this does not command the robot.
+    """
+    source=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ACTIVE])
+    excursion=np.array([.25,.18]+[1.1]*7)
+    lower=np.maximum(source[:,0]+.011,start-excursion);upper=np.minimum(source[:,1]-.011,start+excursion)
+    if full_source_diagnostic:lower=source[:,0]+.011;upper=source[:,1]-.011
+    hand=ik.native.bid(model,'R_omnipicker_base_link');data=mujoco.MjData(model)
+    dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ACTIVE]);weight=np.array([1e-5,1e-5]+[1e-6]*7)
+    def residual(q):
+        ik.set_pose(model,data,state,q,np.zeros(3),0.,opening,np.zeros(3))
+        error=axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,section,axis,local_axis)
+        return np.r_[error,weight*(q-start)]
+    def jacobian(q):
+        residual(q)
+        return np.vstack([circle_task_jacobian(model,data,hand,center,local_axis,dofs),np.diag(weight)])
+    biased=old_seed.copy();biased[:2]=start[:2]+[.20,.12]
+    seeds=[start,biased]
+    if full_source_diagnostic:
+        for fraction in (.15,.85):
+            seed=biased.copy()
+            for name in ('waist_yaw_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_wrist_roll_joint'):
+                i=ik.ACTIVE.index(name);seed[i]=lower[i]+fraction*(upper[i]-lower[i])
+            seeds.append(seed)
+    rows=[]
+    for seed in seeds:
+        result=least_squares(residual,np.clip(seed,lower+1e-5,upper-1e-5),jac=jacobian,bounds=(lower,upper),max_nfev=200,ftol=1e-10,xtol=1e-10,gtol=1e-10)
+        error=residual(result.x)[:6];angle=float(2*np.arcsin(np.clip(np.linalg.norm(error[3:])/.2,0,1)))
+        rows.append({'q':result.x.tolist(),'position_error_m':float(np.linalg.norm(error[:3])),'axis_error_rad':angle,'evaluations':result.nfev,'source_margin_rad':float(np.min(np.minimum(result.x-source[:,0],source[:,1]-result.x)))})
+    def preference(row):
+        passed=row['position_error_m']<=1e-4 and row['axis_error_rad']<=1e-3
+        movement=float(np.linalg.norm((np.asarray(row['q'])-start)/(source[:,1]-source[:,0])))
+        return (not passed,movement if passed else row['position_error_m']+.1*row['axis_error_rad'])
+    rows.sort(key=preference)
+    return np.array(rows[0]['q']),{'classification':'FULL_SOURCE_STATIC_DIAGNOSTIC_NOT_EXECUTABLE' if full_source_diagnostic else 'BOUNDED_SOURCE_UPPER_POSTURE_IK_ONLY','root_and_legs_frozen':True,'waist_roll_frozen':True,'waist_yaw_excursion_rad':None if full_source_diagnostic else .25,'waist_pitch_excursion_rad':None if full_source_diagnostic else .18,'arm_excursion_rad':None if full_source_diagnostic else 1.1,'minimum_planned_source_margin_rad':.011,'source_bounds_rad':source.tolist(),'rows':rows,'dynamics':'NOT_RUN'}
+
 
 def calibrate_contact_frame(capture_path, circle_review_path):
     """Bounded zero-step contact-centre solve on unchanged compiled geometry.
@@ -283,7 +322,11 @@ def main():
     parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic","fresh-rgbd","fresh-rgbd-snapshot"),default="historical-rgbd-replay",help="explicit target provenance and continuous/snapshot temporal contract")
     parser.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     parser.add_argument("--waist-pitch-offset-rad",type=float,default=0.,help="offline source-limited forward-bend candidate; nonzero requires a separately supported waist control handoff")
+    parser.add_argument("--waist-yaw-offset-rad",type=float,default=0.,help="bounded <=0.25rad torso-side posture; source limits and collision sweep remain mandatory")
+    parser.add_argument("--optimize-waist-posture",action="store_true",help="coupled source-bounded waist yaw/pitch and arm solve; requires coordinated physical handoff if executed")
+    parser.add_argument("--full-source-posture-diagnostic",action="store_true",help="offline only: distinguish the solver trust region from actual source joint limits; no runtime handoff")
     args = parser.parse_args()
+    if args.full_source_posture_diagnostic and (not args.optimize_waist_posture or args.runtime_handoff):raise ValueError('full-source diagnostic is offline only and requires the coupled posture solver')
     scene = json.loads(args.circle_review.read_text())
     candidate = json.loads(args.candidate.read_text())
     state = json.loads(args.standing_state.read_text())
@@ -304,9 +347,13 @@ def main():
     q = np.array([state["waist_positions_rad"][n] for n in ("waist_yaw_joint","waist_pitch_joint")]+[state["arm_positions_rad"][n] for n in ik.ARM])
     approach_start=q.copy()
     if not np.isfinite(args.waist_pitch_offset_rad):raise ValueError("waist offset must be finite")
+    if not np.isfinite(args.waist_yaw_offset_rad) or abs(args.waist_yaw_offset_rad)>.25:raise ValueError('waist yaw outside bounded posture diagnostic')
+    q[0]+=args.waist_yaw_offset_rad
     q[1]+=args.waist_pitch_offset_rad
-    limits=model.jnt_range[ik.native.jid(model,"waist_pitch_joint")]
-    if not limits[0]+1e-3<=q[1]<=limits[1]-1e-3:raise ValueError("planned waist pitch violates unchanged source joint limits")
+    for index,name in enumerate(('waist_yaw_joint','waist_pitch_joint')):
+        limits=model.jnt_range[ik.native.jid(model,name)]
+        if not limits[0]+1e-3<=q[index]<=limits[1]-1e-3:raise ValueError('planned waist pose violates unchanged source joint limits:'+name)
+    waist_changed=bool(args.waist_pitch_offset_rad or args.waist_yaw_offset_rad or args.optimize_waist_posture)
     perception = candidate["perception"]
     object_center = np.array(perception["estimated_center_world_m"])
     if args.target_source in ("truth-diagnostic","fresh-rgbd","fresh-rgbd-snapshot"):
@@ -376,9 +423,23 @@ def main():
     # arm. Test three rolls about the bottle axis without moving the base.
     old_q=np.array([candidate["search"]["candidate"]["upper_q_rad"][n] for n in ik.ACTIVE])
     old_q[:2]=q[:2]
-    for azimuth in (float(candidate["search"]["candidate"]["grasp_azimuth_rad"]),float(candidate["search"]["candidate"]["grasp_azimuth_rad"])-0.8,float(candidate["search"]["candidate"]["grasp_azimuth_rad"])+0.8):
+    upper_posture=None
+    if args.optimize_waist_posture:
+        if args.waist_yaw_offset_rad or args.waist_pitch_offset_rad or not args.free_bottle_axis_roll:raise ValueError('coupled posture solve requires free axial roll and no separate waist offsets')
+        q,upper_posture=solve_bounded_upper_posture(model,state,approach_start,center,object_center,bottle_axis,local_axis,command,old_q,full_source_diagnostic=args.full_source_posture_diagnostic);old_q=q.copy()
+    azimuths=(float(candidate["search"]["candidate"]["grasp_azimuth_rad"]),) if args.optimize_waist_posture else (float(candidate["search"]["candidate"]["grasp_azimuth_rad"]),float(candidate["search"]["candidate"]["grasp_azimuth_rad"])-0.8,float(candidate["search"]["candidate"]["grasp_azimuth_rad"])+0.8)
+    for azimuth in azimuths:
         attempts=[ik.solve(model,state,np.zeros(3),0.,command,seed.copy(),np.zeros(3),azimuth,np.zeros(3),0.,0.,None,object_center) for seed in (q,old_q)]
         solved,metrics=min(attempts,key=lambda item:item[1]["hand_position_error_m"]+item[1]["hand_orientation_error_rad"]*.1)
+        if upper_posture is not None:
+            # A full-rotation seed solve must not discard a better directed-axis
+            # solution of the actual five-constraint task.
+            check=mujoco.MjData(model);ik.set_pose(model,check,state,q,np.zeros(3),0.,command,np.zeros(3))
+            bid=ik.native.bid(model,'R_omnipicker_base_link');error=axis_grasp_error(check.xpos[bid],check.xmat[bid].reshape(3,3),center,object_center,bottle_axis,local_axis)
+            angle=float(2*np.arcsin(np.clip(np.linalg.norm(error[3:])/.2,0,1)))
+            if np.linalg.norm(error[:3])+.1*angle < metrics['hand_position_error_m']+.1*metrics['hand_orientation_error_rad']:
+                solved=q.copy();bounds_source=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+                metrics={**metrics,'solver':'coupled_source_upper_directed_axis','hand_position_error_m':float(np.linalg.norm(error[:3])),'hand_orientation_error_rad':angle,'minimum_joint_margin_rad':float(np.min(np.minimum(q[2:]-bounds_source[:,0],bounds_source[:,1]-q[2:])))}
         # Independently verify a stuck Jacobian solution using bounded nonlinear
         # least squares and the full SO(3) rotation error (no 180deg ambiguity).
         data=mujoco.MjData(model)
@@ -411,7 +472,7 @@ def main():
             checked[str(opening)]={"pad_bodies":pads,"forbidden_object_bodies":bad,"robot_table_bodies":robot_table,"table_support":table}
         final_check=checked[str(command)]
         metrics.update({"pad_bodies":final_check["pad_bodies"],"nonpad_cylinder_bodies":final_check["forbidden_object_bodies"],"robot_table_bodies":final_check["robot_table_bodies"],"table_support":final_check["table_support"]})
-        metrics["mc_owned_waist_fixed"]=args.waist_pitch_offset_rad==0
+        metrics["mc_owned_waist_fixed"]=not waist_changed
         position_ok=metrics["hand_position_error_m"]<=1e-4 and metrics["hand_orientation_error_rad"]<=1e-3 and metrics["minimum_joint_margin_rad"]>=1e-3
         clear=all(not c["forbidden_object_bodies"] and not c["robot_table_bodies"] for c in checked.values())
         open_clear=not checked[str(open_command)]["pad_bodies"]
@@ -433,8 +494,10 @@ def main():
     record["target_source"]=args.target_source
     record["free_bottle_axis_roll"]=args.free_bottle_axis_roll
     record["waist_pitch_offset_rad"]=args.waist_pitch_offset_rad
-    record["waist_actuation_required"]=args.waist_pitch_offset_rad!=0
-    record["root_legs_waist_frozen"]=args.waist_pitch_offset_rad==0
+    record["waist_yaw_offset_rad"]=args.waist_yaw_offset_rad
+    record["waist_actuation_required"]=waist_changed
+    if upper_posture is not None:record['bounded_upper_posture_solve']=upper_posture
+    record["root_legs_waist_frozen"]=not waist_changed
     record["root_and_legs_frozen"]=True
     record["fresh_runtime_rgbd_verified"]=args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot')
     if args.host_model_cache:record['host_model_cache']={'path':str(args.host_model_cache),'sha256':hashlib.sha256(args.host_model_cache.read_bytes()).hexdigest()}

@@ -914,6 +914,10 @@ def decode_arm_execution_output(returncode, stdout):
     return decoded
 
 
+class MicroProbeComplete(Exception):
+    """End only the isolated probe; mandatory finally still tears down."""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--table-overlay-result", required=True, type=Path)
@@ -969,6 +973,8 @@ def main() -> None:
     parser.add_argument("--dock-position-tolerance-m", type=float, default=0.18, help="primary table-dock acceptance radius; use a smaller value only for manipulation alignment")
     parser.add_argument("--dock-timeout-s", type=float, default=30.0, help="bounded route deadline; used only with --dock-world-xy")
     parser.add_argument("--use-official-cmd-vel-bridge", action="store_true", help="route through the pinned RAICOM cmd_vel_bridge instead of publishing the MC velocity type directly")
+    parser.add_argument("--micro-base-probe", choices=("forward","backward","left","right"), help="one native body-frame micro pulse and strict composite stop; no arm approach")
+    parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
     parser.add_argument("--lateral-probe-mps", type=float, help="one bounded lateral cmd_vel probe in body-frame m/s; requires the official bridge")
     parser.add_argument("--lateral-probe-duration-s", type=float, default=0.60, help="duration for --lateral-probe-mps; no hand or arm command is sent")
     parser.add_argument("--inspect-vr-topic", action="store_true", help="read-only discovery of the delivered VR teleoperation topic type; does not change the MC action")
@@ -979,6 +985,14 @@ def main() -> None:
     parser.add_argument("--preset-motion-id", type=int, help="one built-in animation-player motion ID used only to verify the delivered native upper-body service")
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
+
+    if args.micro_base_probe:
+        if args.dock_world_xy is not None or args.fixed_reviewed_checkpoint or args.lateral_probe_mps is not None or args.physical_lift_test or args.pause_on_claw_failure:
+            raise ValueError("micro capability probe is isolated from dock, checkpoint and grasp")
+        if not args.use_official_cmd_vel_bridge or not args.native_dock_truth_feedback or not args.initial_hands_fully_open or not .4<=args.micro_probe_duration_s<=1.:
+            raise ValueError("micro probe requires official bridge, native feedback, open hands and .4..1s")
+        from scripts.research.issue46.native_runtime.native_micro_stop_contract import verify_mc_fsm_runtime_contract
+        verify_mc_fsm_runtime_contract(RUNTIME/"mc/lib")
 
     if args.dock_braking_delay_s is not None and (not 0.<args.dock_braking_delay_s<=1. or not args.native_dock_truth_feedback or not args.dock_position_only):
         raise ValueError('measured braking requires a bounded native position-only diagnostic')
@@ -1070,7 +1084,7 @@ def main() -> None:
             raise ValueError("lateral probe duration must lie in 0.40..1.0 seconds")
         if args.dock_world_xy is not None:
             raise ValueError("run either one table-docking route or one isolated lateral probe, not both")
-    if args.use_official_cmd_vel_bridge and args.dock_world_xy is None and args.lateral_probe_mps is None:
+    if args.use_official_cmd_vel_bridge and args.dock_world_xy is None and args.lateral_probe_mps is None and not args.micro_base_probe:
         raise ValueError("the official cmd_vel bridge requires a bounded table docking route or lateral probe")
     if args.lateral_probe_mps is not None and not args.use_official_cmd_vel_bridge:
         raise ValueError("the lateral probe requires the pinned official cmd_vel bridge")
@@ -1124,7 +1138,12 @@ def main() -> None:
             raise ValueError("pinned official cmd_vel bridge is unavailable")
         bridge_source = OFFICIAL_CMD_VEL_BRIDGE.resolve()
         bridge_revision = run(["git", "-C", str(bridge_source.parents[3]), "rev-parse", "HEAD"], timeout_s=5.0).stdout.strip()
+        if args.micro_base_probe and (bridge_revision!="a97761820b398b6cab12b632ce9f313c394eeb7e" or sha256(bridge_source)!="9996c19790ef3de720c4d0f9fa2a8a75949f95a2d5800db50cfd3c7587562cc5"):
+            raise ValueError("micro bridge provenance changed")
+
     output = pg.create_unique_output_directory(EVIDENCE_REPO / "reviews/issue-46", prefix="raicom-stl-xvfb-native-reset-stand").native_path
+    import uuid
+    pg.write_new_text(output/"invocation.json",json.dumps({"attempt_id":str(uuid.uuid4()),"worktree":str(REPO.resolve()),"head":run(["git","rev-parse","HEAD"],timeout_s=3.).stdout.strip(),"argv":sys.argv,"task_owned_worktree_may_include_reviewed_uncommitted_changes":True},indent=2)+"\n")
     # Native arrival and gravity feedforward both require live exact-engine data.
     # Build before container creation; every arm-candidate entry point owns this
     # dependency, including direct human-review invocations.
@@ -1242,6 +1261,29 @@ def main() -> None:
                     braking_delay_s=args.dock_braking_delay_s,
                 ),
             )
+        if args.micro_base_probe:
+            import xml.etree.ElementTree as ET
+            from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
+            from scripts.research.issue46.native_runtime import native_micro_stop_contract
+            import mujoco
+            source=REPO/"reference/AgibotTech/agibot_x2_urdf"
+            revision=run(["git","-C",str(source),"rev-parse","HEAD"],timeout_s=5.).stdout.strip()
+            if revision!="575cc6b988f976c23550e0db85aa1e5475d3652d":raise ValueError("pinned X2 source revision")
+            urdfs=list(source.rglob("X2-Ultra_omnipicker.urdf"))
+            if len(urdfs)!=1:raise ValueError("unique official OmniPicker source required")
+            roots=ET.parse(urdfs[0]).getroot()
+            velocity={j.get("name"):float(j.find("limit").get("velocity")) for j in roots.findall("joint") if j.find("limit") is not None and j.find("limit").get("velocity") is not None}
+            host_scene=Path((claw_control_overlay or overlay)["generated"]["host_scene"]["path"])
+            model=mujoco.MjModel.from_xml_path(str(host_scene))
+            names=tuple(side+"_"+suffix+"_joint" for side in ("left","right") for suffix in ("hip_pitch","hip_roll","hip_yaw","knee","ankle_pitch","ankle_roll"))
+            limits={}
+            for name in names:
+                j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
+                if j<0 or name not in velocity or not model.jnt_limited[j]:raise ValueError("missing source joint bound:"+name)
+                limits[name]=[*map(float,model.jnt_range[j]),velocity[name]]
+            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits))
+            pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
+            result["micro_source_joint_limits"]={"urdf":str(urdfs[0]),"sha256":sha256(urdfs[0]),"revision":revision,"bounds":limits}
         if args.lateral_probe_mps is not None:
             pg.write_new_text(
                 output / "native_lateral_probe.py",
@@ -1664,7 +1706,7 @@ def main() -> None:
             result["gates"]["RETARGETING_TOPIC_DISCOVERY"] = "PASS" if retargeting_topic.returncode == 0 and "Type:" in retargeting_topic.stdout else "FAIL"
         if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
             bridge_log = output / "official_cmd_vel_bridge.stdout"
-            lateral_parameter = "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30"
+            lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20" if args.micro_base_probe else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
             bridge_command = (
                 environment
                 + "exec python3 /workspace/robotsim/reference/AgiBot-Community/raicom2026-agibot-X2/"
@@ -1679,6 +1721,18 @@ def main() -> None:
             if "state=0" not in bridge_text:
                 raise RuntimeError("official cmd_vel bridge did not register its MC source")
             result["gates"]["OFFICIAL_CMD_VEL_BRIDGE"] = "PASS"
+        if args.micro_base_probe:
+            micro=run(["docker","exec",container,"bash","-lc",environment+"timeout 30s python3 /workspace/evidence/native_micro_probe.py"],timeout_s=33.,check=False)
+            pg.write_new_text(output/"native_micro_probe.stdout",micro.stdout)
+            path=output/"native_micro_probe_result.json"
+            micro_result=json.loads(path.read_text()) if path.is_file() else {"failure":"CHILD_NO_RESULT","stdout_tail":micro.stdout[-1600:]}
+            result["native_micro_probe"]={"returncode":micro.returncode,"result":{k:v for k,v in micro_result.items() if k not in ("trace","command_log","bridge_commands")}}
+            result["gates"]["NATIVE_MICRO_PRESTOP"]="PASS" if micro_result.get("pre_motion_composite",{}).get("pass") else "FAIL"
+            result["gates"]["NATIVE_MICRO_SIGNED_DISPLACEMENT"]="PASS" if micro.returncode==0 and micro_result.get("pass_result") else "FAIL"
+            result["gates"]["NATIVE_MICRO_COMPOSITE_STOP"]="PASS" if micro_result.get("post_stop_composite",{}).get("pass") else "FAIL"
+            if micro_result.get("nonzero_started") and "locomotion velocity" in result["commands_not_sent"]:result["commands_not_sent"].remove("locomotion velocity")
+            if micro.returncode or not micro_result.get("pass_result"):result["failure"]={"gate":"NATIVE_MICRO_PROBE","detail":micro_result.get("failure")}
+            raise MicroProbeComplete()
         if args.lateral_probe_mps is not None:
             lateral = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/native_lateral_probe.py"], timeout_s=14.0, check=False)
             pg.write_new_text(output / "native_lateral_probe.stdout", lateral.stdout)
@@ -1926,6 +1980,8 @@ def main() -> None:
             result["gates"]["URS_ARM_PLAN_RESTORE"] = "PASS" if urs_plan.returncode == 0 and urs_result.get("max_restore_error_rad", float("inf")) <= 0.04 else "FAIL"
             if "arm trajectory" in result["commands_not_sent"]:
                 result["commands_not_sent"].remove("arm trajectory")
+    except MicroProbeComplete:
+        pass
     except Exception as exc:
         observed_failure={"type": type(exc).__name__, "message": str(exc)}
         if result.get("failure") is not None:result.setdefault("secondary_failures",[]).append(observed_failure)

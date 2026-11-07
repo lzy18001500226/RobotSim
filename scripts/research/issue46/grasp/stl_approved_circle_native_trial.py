@@ -35,6 +35,8 @@ def main():
     p.add_argument("--right-claw-damping",type=float)
     p.add_argument("--noslip-solver-diagnostic",action="store_true",help="separate SIMULATION_ONLY two-iteration numerical postsolver; no contact-material/geometry changes")
     p.add_argument("--elliptic-grip-solver-diagnostic",action="store_true",help="Menagerie-style numerical elliptic cone/impratio=10, unchanged actual friction/condim/geometry")
+    p.add_argument("--micro-base-probe",choices=("forward","backward","left","right"))
+    p.add_argument("--micro-probe-duration-s",type=float,default=.6)
     p.add_argument("--physical-lift-test",action="store_true")
     p.add_argument("--source-pad-coacd-comparison",action="store_true",help="reuse the existing hash-locked source-STL proxy pieces for only the two right distal pads; separate SIMULATION_ONLY physics")
     p.add_argument("--open-hand-transit-park",action="store_true")
@@ -200,6 +202,11 @@ def main():
     if not display:raise RuntimeError("DISPLAY is unset; run this command from the WSLg terminal")
     dock_xy=args.dock_world_xy or (0.74+args.base_offset_xyz_m[0],-1.44+args.base_offset_xyz_m[1])
     argv=["native", "--table-overlay-result",str(table),"--table-overlay-result-sha256",native.sha256(table),"--claw-control-overlay-result",str(claw),"--claw-control-overlay-result-sha256",native.sha256(claw),"--reset-helper",str(helper),"--reset-helper-sha256",native.sha256(helper),"--interactive-x11-display",display,"--hal-arm-candidate",str(args.candidate),"--hal-arm-candidate-sha256",native.sha256(args.candidate),"--disable-mc-arm-publisher","--disable-mc-hand-publisher","--hal-arm-plan-mode","pregrasp-hold","--hal-right-hand-command","0.0","--hal-hand-close-hold-s","2","--dock-world-xy",str(dock_xy[0]),str(dock_xy[1]),"--dock-yaw-rad","-0.07591850724454846","--dock-position-only","--use-official-cmd-vel-bridge","--dock-timeout-s","30"]
+    if args.micro_base_probe:
+        if args.target_source!="truth-diagnostic" or args.physical_lift_test or args.pause_for_human_review or args.fixed_reviewed_checkpoint or not args.initial_hands_fully_open:
+            raise ValueError("isolated micro capability diagnostic cannot execute grasp")
+        start=argv.index("--dock-world-xy")
+        argv=argv[:start]+["--use-official-cmd-vel-bridge","--micro-base-probe",args.micro_base_probe,"--micro-probe-duration-s",str(args.micro_probe_duration_s)]
     if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
     if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
     if args.physical_lift_test:
