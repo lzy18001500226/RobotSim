@@ -68,7 +68,17 @@ def physical_fault(row, pose, limits, start=None, direction=None):
     return None
 
 
-def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False):
+def heading_hold_command(current_yaw, initial_yaw):
+    """Existing Dock .8 heading feedback, within the qualified .075 rad/s cap."""
+    if not all(math.isfinite(x) for x in (current_yaw, initial_yaw)):
+        raise ValueError("invalid heading feedback")
+    error=(initial_yaw-current_yaw+math.pi)%(2*math.pi)-math.pi
+    # The delivered bridge raises tiny nonzero angular inputs to its minimum.
+    # Use an explicit 0.02rad hold deadband rather than chattering near zero.
+    return 0. if abs(error)<=.02 else max(-.075,min(.075,.8*error))
+
+
+def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False,heading_hold=False):
     if direction not in ("forward", "backward", "left", "right"):
         raise ValueError("unknown body-frame micro direction")
     if not .4 <= duration_s <= 1.:
@@ -83,7 +93,7 @@ def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native
         refine_position_tolerance_m=.15, timeout_s=30.,
         use_cmd_vel_bridge=True, native_pose_feedback=True,native_arm_relay=native_arm_relay)
     base = base.split("rclpy.init();n=Dock();registered=False")[0]
-    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed)
+    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed, heading_hold=bool(heading_hold))
     return base + "\n" + Path(__file__).read_text().replace("from __future__ import annotations","") + "\nMICRO=" + repr(plan) + "\nrun_probe()\n"
 
 
@@ -344,7 +354,7 @@ def run_probe(smoke_only=False):
 
     contract.verify_mc_fsm_runtime_contract("/workspace/raicom2026/mc/lib")
     rclpy.init();n=Micro();result=dict(classification="SIMULATION_ONLY_NATIVE_MICRO_CAPABILITY",
-        direction=MICRO["direction"],duration_s=MICRO["duration_s"],zero_receipt_ack="UNAVAILABLE",
+        direction=MICRO["direction"],duration_s=MICRO["duration_s"],heading_hold=MICRO.get("heading_hold",False),zero_receipt_ack="UNAVAILABLE",
         rearm_permitted=False,pass_result=False)
     if smoke_only:
         n.start_feedback()
@@ -371,6 +381,8 @@ def run_probe(smoke_only=False):
         bounds=n.messages["common"]["speed_status"]
         requested={"forward":velocity[0],"lateral":velocity[1],"angular":0.}
         if any(not bounds[k+"_bounds"]["min_value"]<=value<=bounds[k+"_bounds"]["max_value"] for k,value in requested.items()):raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
+        if MICRO.get("heading_hold") and not (bounds["angular_bounds"]["min_value"]<=-.075 and bounds["angular_bounds"]["max_value"]>=.075):
+            raise RuntimeError("MC_REPORTED_HEADING_INPUT_BOUNDS")
         result["command_input_speed_m_s"]=v
         result["mc_reported_speed_bounds"]=bounds
         with n.lock:n.moving=True
@@ -380,7 +392,8 @@ def run_probe(smoke_only=False):
         while time.monotonic()-began<MICRO["duration_s"] and n.moving:
             tick=time.monotonic();n.pump();row=n.sample(start);n.trace.append(row)
             if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
-            n.publish(*velocity);time.sleep(max(0.,tick+.02-time.monotonic()))
+            angular=heading_hold_command(row["pose"]["yaw"],start["yaw"]) if MICRO.get("heading_hold") else 0.
+            n.publish(*velocity,angular);time.sleep(max(0.,tick+.02-time.monotonic()))
         # Initiate zero BEFORE any blocking readback or post-pulse inspection.
         n.deadline_zero();n.stop_started=True
         if watchdog:watchdog.cancel()

@@ -1094,6 +1094,7 @@ def main() -> None:
     parser.add_argument("--micro-base-probe", choices=("forward","backward","left","right"), help="one native body-frame micro pulse and strict composite stop; no arm approach")
     parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
     parser.add_argument("--micro-command-speed",type=float,default=.2)
+    parser.add_argument("--micro-heading-hold",action="store_true")
     parser.add_argument("--lateral-probe-mps", type=float, help="one bounded lateral cmd_vel probe in body-frame m/s; requires the official bridge")
     parser.add_argument("--lateral-probe-duration-s", type=float, default=0.60, help="duration for --lateral-probe-mps; no hand or arm command is sent")
     parser.add_argument("--inspect-vr-topic", action="store_true", help="read-only discovery of the delivered VR teleoperation topic type; does not change the MC action")
@@ -1117,6 +1118,8 @@ def main() -> None:
     if args.dock_command_speed_cap is not None and (args.dock_world_xy is None or not args.native_dock_truth_feedback or not .12<=args.dock_command_speed_cap<=.20):
         raise ValueError("bounded dock cap requires native feedback and .12..0.20 m/s")
 
+    if args.micro_heading_hold and (not args.micro_base_probe or args.dock_angular_speed_cap!=.075):
+        raise ValueError("micro heading hold requires isolated probe and matching .075 bridge angular cap")
     if args.micro_base_probe:
         if args.dock_world_xy is not None or args.fixed_reviewed_checkpoint or args.lateral_probe_mps is not None or args.physical_lift_test or args.pause_on_claw_failure:
             raise ValueError("micro capability probe is isolated from dock, checkpoint and grasp")
@@ -1400,7 +1403,7 @@ def main() -> None:
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
             limits,provenance=native_leg_safety_contract(include_upper_body=args.native_arm_policy_relay)
-            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay))
+            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay,heading_hold=args.micro_heading_hold))
             pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
             result["micro_source_joint_limits"]=provenance
         if args.lateral_probe_mps is not None:

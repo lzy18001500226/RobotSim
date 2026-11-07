@@ -54,6 +54,18 @@ class MicroTests(unittest.TestCase):
         del r["bodies"]["pelvis"]["origin_velocity_world_angular_linear"]
         with self.assertRaises(KeyError):micro.native_pose(r)
 
+    def test_heading_feedback_opposes_measured_drift_and_preserves_caps(self):
+        self.assertEqual(micro.heading_hold_command(-.12,0.),.075)
+        self.assertEqual(micro.heading_hold_command(.12,0.),-.075)
+        self.assertEqual(micro.heading_hold_command(.01,0.),0.)
+        self.assertAlmostEqual(micro.heading_hold_command(math.pi-.03,-math.pi+.03),.048)
+        for x in (float("nan"),float("inf")):
+            with self.assertRaises(ValueError):micro.heading_hold_command(x,0.)
+        code=micro.build_script("left",1.,{},command_speed=.12,heading_hold=True)
+        compile(code,"heading-probe","exec")
+        self.assertIn("'heading_hold': True",code)
+        self.assertIn('n.publish(*velocity,angular)',code)
+
     def test_micro_directions_preserve_cross_track_guard(self):
         pose=dict(x=0.,y=.051,z=.65,roll=0.,pitch=0.,yaw=0.,vx=0.,vy=0.)
         root=dict(x=0.,y=0.,yaw=0.)
