@@ -41,7 +41,7 @@ class FrameTests(unittest.TestCase):
     def test_whole_task_rejects_lift_infeasible_grasp_without_discarding_other_branch(self):
         from types import SimpleNamespace as NS
         from unittest import mock
-        rows=[dict(pass_result=True,pass_=True,q_rad=dict(q=.6),gates={}),dict(pass_result=True,pass_=True,q_rad=dict(q=.2),gates={})]
+        rows=[dict(pass_result=True,pass_=True,q_rad=dict(q=.6),gates={}),dict(pass_result=True,pass_=True,q_rad=dict(q=.2),gates={}),dict(pass_result=True,pass_=True,q_rad=dict(q=.1),gates={})]
         for row in rows:row['pass']=row.pop('pass_')
         def lift(model,state,q,*args):return dict(pass_=float(q[0])<.3)
         def checked(model,state,q,*args):
@@ -51,6 +51,7 @@ class FrameTests(unittest.TestCase):
         self.assertTrue(all(r['grasp_only_pass'] for r in rows))
         self.assertFalse(rows[0]['pass']);self.assertEqual(rows[0]['gates']['LIFT_SWEEP'],'FAIL')
         self.assertTrue(rows[1]['pass']);self.assertEqual(rows[1]['gates']['LIFT_SWEEP'],'PASS')
+        self.assertFalse(rows[2]['pass']);self.assertEqual(rows[2]['motion_qualification'],'NOT_EVALUATED')
 
     def test_full_source_posture_cannot_be_executed_or_silently_enabled(self):
         import subprocess,sys

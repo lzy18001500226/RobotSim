@@ -225,15 +225,17 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
     for dz in np.linspace(0.,.06,13):
         frozen=copy.deepcopy(state);frozen['object_pose_world']['xyz_m'][2]+=float(dz)
         data=mujoco.MjData(model);target=np.asarray(section)+[0.,0.,dz]
+        ik.set_pose(model,data,frozen,np.r_[seed[:2],arm],np.zeros(3),0.,opening,np.zeros(3))
+        qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
         def residual(q):
-            ik.set_pose(model,data,frozen,np.r_[seed[:2],q],np.zeros(3),0.,opening,np.zeros(3))
+            data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
             return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,data.xmat[bottle].reshape(3,3)[:,2],local_bottle_axis)
         dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
         def jacobian(q):
             residual(q)
             return circle_task_jacobian(model,data,hand,np.asarray(center),np.asarray([1.,0.,0.] if local_bottle_axis is None else local_bottle_axis),dofs)
         solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=70,ftol=1e-9,xtol=1e-9,gtol=1e-9)
-        arm=solved.x;e=residual(arm);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
+        arm=solved.x;e=residual(arm);mujoco.mj_forward(model,data);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
         passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
         samples.append({'rise_m':float(dz),'position_error_m':float(np.linalg.norm(e[:3])),'axis_residual':float(np.linalg.norm(e[3:])),'forbidden_object_bodies':bad,'robot_table_bodies':robot_table,'right_arm_rad':arm.tolist(),'pass':bool(passed)})
     mu=min(float(model.geom_friction[g,0]) for g in range(model.ngeom) if int(model.geom_bodyid[g]) in (bottle,ik.native.bid(model,'R_hand_narrow3_Link'),ik.native.bid(model,'R_hand_wide3_Link')))
@@ -259,14 +261,16 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
         delta=float(fraction)*offset
         frozen=copy.deepcopy(state);frozen["object_pose_world"]["xyz_m"]=(np.asarray(state["object_pose_world"]["xyz_m"])+delta).tolist()
         data=mujoco.MjData(model);target=np.asarray(section)+delta
+        ik.set_pose(model,data,frozen,np.r_[seed[:2],arm],np.zeros(3),0.,opening,np.zeros(3))
+        qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
         def residual(q):
-            ik.set_pose(model,data,frozen,np.r_[seed[:2],q],np.zeros(3),0.,opening,np.zeros(3))
+            data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
             return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,axis,local)
         def jacobian(q):
             residual(q)
             return circle_task_jacobian(model,data,hand,np.asarray(center),local,dofs)
         solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=200,ftol=1e-9,xtol=1e-9,gtol=1e-9)
-        arm=solved.x;e=residual(arm);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
+        arm=solved.x;e=residual(arm);mujoco.mj_forward(model,data);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
         passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
         samples.append(dict(fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),solver_evaluations=solved.nfev,solver_status=solved.status,solver_optimality=float(solved.optimality),pass_result=bool(passed)))
     root=ik.native.bid(model,"pelvis")
@@ -395,9 +399,11 @@ def track_native(reference_path, latest_path, output_path):
 
 def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,local_axis,retract_offset=None):
     import copy
+    for row in rows:
+        row['grasp_only_pass']=row['pass'];row['pass']=False
+        row['motion_qualification']='NOT_EVALUATED'
     for candidate_row in rows:
-        candidate_row['grasp_only_pass']=candidate_row['pass']
-        if not candidate_row['pass']:continue
+        if not candidate_row['grasp_only_pass']:continue
         lift_seed=np.array([candidate_row['q_rad'][n] for n in ik.ACTIVE])
         task_lift=screen_lift(model,state,lift_seed,opening,center,object_center,local_axis)
         candidate_row['lift_preflight']=task_lift
@@ -411,6 +417,9 @@ def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,
             task_lift['retract_preflight']=retreat
             candidate_row['gates']['POST_LIFT_RETRACT_SWEEP']='PASS' if retreat['pass_result'] else 'FAIL'
             candidate_row['pass']=bool(retreat['pass_result'])
+
+        candidate_row['motion_qualification']='PASS' if candidate_row['pass'] else 'FAIL'
+        if candidate_row['pass']:break
 
 
 
