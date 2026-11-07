@@ -86,9 +86,6 @@ static void json_string(FILE* file,const unsigned char* value) {
 
 /* Observe native input receipt as well as XTEST submission. No model/control
  * writes: each genuine callback and mjui_event is called exactly once. */
-typedef void (*UiMouseCallback)(void*,int,int,int);
-static struct {void* window;UiMouseCallback callback;} ui_mouse[8];
-static int ui_mouse_count;
 static pthread_mutex_t ui_log_mutex=PTHREAD_MUTEX_INITIALIZER;
 static FILE* ui_log;
 static FILE* ui_begin(void) {
@@ -99,36 +96,6 @@ static FILE* ui_begin(void) {
 static void ui_end(void) {
   if(ui_log)fflush(ui_log);
   pthread_mutex_unlock(&ui_log_mutex);
-}
-static void observed_mouse_callback(void* window,int button,int action,int mods) {
-  UiMouseCallback original=NULL;
-  for(int i=0;i<ui_mouse_count;i++)if(ui_mouse[i].window==window)original=ui_mouse[i].callback;
-  double x=0,y=0;int w=0,h=0,fw=0,fh=0;
-  void (*cursor)(void*,double*,double*)=dlsym(RTLD_NEXT,"glfwGetCursorPos");
-  void (*size)(void*,int*,int*)=dlsym(RTLD_NEXT,"glfwGetWindowSize");
-  void (*fbsize)(void*,int*,int*)=dlsym(RTLD_NEXT,"glfwGetFramebufferSize");
-  if(cursor)cursor(window,&x,&y);
-  if(size)size(window,&w,&h);
-  if(fbsize)fbsize(window,&fw,&fh);
-  FILE* f=ui_begin();
-  if(f)fprintf(f,"{\"kind\":\"native_glfw_mouse\",\"pid\":%ld,\"host_ns\":%lld,\"button\":%d,\"action\":%d,\"mods\":%d,\"cursor_xy\":[%.17g,%.17g],\"window_wh\":[%d,%d],\"framebuffer_wh\":[%d,%d]}\n",(long)getpid(),mono_ns(),button,action,mods,x,y,w,h,fw,fh);
-  ui_end();
-  if(original)original(window,button,action,mods);
-}
-UiMouseCallback glfwSetMouseButtonCallback(void* window,UiMouseCallback callback) {
-  UiMouseCallback (*real_set)(void*,UiMouseCallback)=dlsym(RTLD_NEXT,"glfwSetMouseButtonCallback");
-  if(!real_set)_exit(125);
-  int slot=-1;
-  for(int i=0;i<ui_mouse_count;i++)if(ui_mouse[i].window==window)slot=i;
-  if(slot<0&&ui_mouse_count<8){slot=ui_mouse_count++;ui_mouse[slot].window=window;ui_mouse[slot].callback=NULL;}
-  if(slot<0)return real_set(window,callback);
-  UiMouseCallback previous=ui_mouse[slot].callback;
-  ui_mouse[slot].callback=callback;
-  UiMouseCallback actual_previous=real_set(window,callback?observed_mouse_callback:NULL);
-  FILE* f=ui_begin();
-  if(f)fprintf(f,"{\"kind\":\"native_glfw_callback_registered\",\"pid\":%ld,\"host_ns\":%lld}\n",(long)getpid(),mono_ns());
-  ui_end();
-  return actual_previous==observed_mouse_callback?previous:actual_previous;
 }
 mjuiItem* mjui_event(mjUI* ui,mjuiState* state,const mjrContext* context) {
   mjuiItem* (*real_event)(mjUI*,mjuiState*,const mjrContext*)=dlsym(RTLD_NEXT,"mjui_event");

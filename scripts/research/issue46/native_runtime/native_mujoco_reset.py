@@ -93,6 +93,53 @@ def native_pause_signature_matches(pixels):
     return sides and all(_ui_color_near(pixels[k],green) for k in ("border_top","border_left"))
 
 
+def native_ui_receipt_matches(row, *, expected_pid, after_ns, item_name,
+                              section_id, item_id, xy):
+    """MuJoCo UI receipt is independent of XTEST's server-side return code."""
+    return (
+        isinstance(row, dict) and row.get("kind") == "native_mjui_event"
+        and row.get("pid") == expected_pid
+        and isinstance(row.get("host_ns"), int)
+        and row["host_ns"] > after_ns
+        and row.get("event_type") == 2  # mjEVENT_PRESS in the exact 3.3.7 header
+        and row.get("returned_item") == item_name
+        and row.get("section_id") == section_id
+        and row.get("item_id") == item_id
+        and isinstance(row.get("xy"), list) and len(row["xy"]) == 2
+        and all(isinstance(v, (int, float)) and abs(v-e) <= 2
+                for v, e in zip(row["xy"], xy))
+    )
+
+
+def wait_for_native_ui_receipt(path, *, expected_pid, after_ns, item_name,
+                               section_id, item_id, xy, timeout_s=.75):
+    """Wait for the actual application's single press; never issue another click."""
+    deadline = time.monotonic() + timeout_s
+    last = None
+    while True:
+        try:
+            lines = Path(path).read_bytes()[-65536:].splitlines()
+        except OSError:
+            lines = []
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except (ValueError, UnicodeError):
+                continue
+            if native_ui_receipt_matches(row, expected_pid=expected_pid,
+                    after_ns=after_ns, item_name=item_name,
+                    section_id=section_id, item_id=item_id, xy=xy):
+                return {"status": "NATIVE_UI_PRESS_CONFIRMED", "event": row}
+            if (isinstance(row, dict) and row.get("pid") == expected_pid
+                    and isinstance(row.get("host_ns"), int)
+                    and row["host_ns"] > after_ns and last is None):
+                last = row
+        if time.monotonic() >= deadline:
+            return {"status": "NATIVE_UI_PRESS_UNCONFIRMED", "last_event": last,
+                    "timeout_s": timeout_s}
+        time.sleep(.01)
+
+
 class XClientMessageData(ctypes.Union):
     _fields_ = [
         ("b", ctypes.c_char * 20),
@@ -825,6 +872,8 @@ class X11:
         dispatched_classification: str = "NATIVE_RESET_BUTTON_INPUT_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_ROS_TRACE",
         signature_validator=None,
         require_pointer_ancestry: bool = False,
+        native_ui_events: Path | None = None,
+        expected_ui_item: tuple[str, int, int] | None = None,
     ) -> dict[str, Any]:
         """Click one calibrated native MuJoCo Simulation control in a verified viewer.
 
@@ -979,11 +1028,34 @@ class X11:
                 return {"status":"RESET_NOT_DELIVERED","reason":"target moved before mouse dispatch","mouse_button_events_sent":0,"key_events_sent":0}
         dispatch_utc = datetime.now(timezone.utc).isoformat()
         dispatch_monotonic_ns = time.monotonic_ns()
+        # Keep the press down until the *application* has handled it, rather
+        # than queuing press/release together and trusting XSync (server only).
+        # Always release once, including receipt timeout/exception; never retry.
+        receipt = None
         press_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 1, CURRENT_TIME))
-        release_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 0, CURRENT_TIME))
-        self.lib.XFlush(self.display)
-        self.lib.XSync(self.display, 0)
-        time.sleep(0.05)
+        try:
+            self.lib.XFlush(self.display)
+            self.lib.XSync(self.display, 0)
+            if native_ui_events is not None and expected_ui_item is not None:
+                name, section, item = expected_ui_item
+                receipt = wait_for_native_ui_receipt(native_ui_events,
+                    expected_pid=expected_pid, after_ns=dispatch_monotonic_ns,
+                    item_name=name, section_id=section, item_id=item,
+                    xy=(local_x, height-local_y))
+        finally:
+            release_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 0, CURRENT_TIME))
+            self.lib.XFlush(self.display)
+            self.lib.XSync(self.display, 0)
+        if receipt is not None and receipt["status"] != "NATIVE_UI_PRESS_CONFIRMED":
+            return {"status": "NATIVE_UI_PRESS_UNCONFIRMED",
+                    "reason": "native application did not confirm the expected control; no retry",
+                    "control_label": control_label, "target_window_id": window,
+                    "expected_pid": expected_pid, "dispatch_monotonic_ns": dispatch_monotonic_ns,
+                    "pointer_verification": pointer_record, "native_ui_receipt": receipt,
+                    "xtest_button_press_return": press_return,
+                    "xtest_button_release_return": release_return,
+                    "mouse_button_events_sent": int(bool(press_return))+int(bool(release_return)),
+                    "key_events_sent": 0}
         if not press_return or not release_return:
             return {
                 "status": "RESET_NOT_DELIVERED",
@@ -1024,6 +1096,7 @@ class X11:
             "mouse_button_events_sent": 2,
             "key_events_sent": 0,
             "classification": dispatched_classification,
+            "native_ui_receipt": receipt,
         }
 
     def click_native_load_key_button_once(
@@ -1044,14 +1117,15 @@ class X11:
             dispatched_classification="NATIVE_LOAD_KEY_BUTTON_INPUT_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_NATIVE_TRACE",
         )
 
-    def click_native_pause_once(self,window,expected_pid,expected_title):
+    def click_native_pause_once(self,window,expected_pid,expected_title,native_ui_events=None):
         """Select Pause radio (idempotent); no Space/key or focus assumption."""
         return self.click_native_reset_button_once(window,expected_pid=expected_pid,expected_title=expected_title,
             control_label="Pause",button_point=NATIVE_PAUSE_BUTTON_POINT,
             pixel_points=NATIVE_PAUSE_PIXEL_POINTS,
             dispatched_status="NATIVE_PAUSE_MOUSE_DISPATCHED",
             dispatched_classification="NATIVE_PAUSE_SELECTION_EFFECT_REQUIRES_FROZEN_SIM_CLOCK",
-            signature_validator=native_pause_signature_matches,require_pointer_ancestry=True)
+            signature_validator=native_pause_signature_matches,require_pointer_ancestry=True,
+            native_ui_events=native_ui_events,expected_ui_item=("",2,0))
 
     def select_native_keyframe_zero_once(
         self,
@@ -1059,6 +1133,7 @@ class X11:
         expected_pid: int,
         expected_title: str,
         verified_pointer_only: bool = False,
+        native_ui_events: Path | None = None,
     ) -> dict[str, Any]:
         """Select keyframe index zero through the native Simulation/Key slider.
 
@@ -1080,7 +1155,8 @@ class X11:
                 pixel_points=NATIVE_KEY_SLIDER_PIXEL_POINTS,
                 dispatched_status="KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED",
                 dispatched_classification="VERIFIED_NATIVE_MOUSE_ONLY_KEY_SELECTION_EFFECT_REQUIRES_NATIVE_TRACE",
-                signature_validator=native_key_slider_signature_matches,require_pointer_ancestry=True)
+                signature_validator=native_key_slider_signature_matches,require_pointer_ancestry=True,
+                native_ui_events=native_ui_events,expected_ui_item=("Key",2,5))
             event.update({"input_path":"MUJOCO_NATIVE_SIMULATION_KEY_SLIDER_POINTER_ONLY","requested_keyframe_index":0,"keyboard_focus_before":focus_before,"keyboard_focus_observed":self._input_focus(),"keyboard_events_sent":0,"selection_authoritatively_observed":False})
             return event
         activation=self.activate_window(window,timeout_s=1.0)
@@ -1357,11 +1433,13 @@ def main() -> int:
     pause_parser.add_argument("--dispatch-event-json", type=Path, required=True)
     mouse_pause=sub.add_parser("click-native-pause",help="select verified native Pause radio without keyboard input")
     mouse_pause.add_argument("--expected-pid",type=int,required=True)
+    mouse_pause.add_argument("--native-ui-events",type=Path)
     mouse_pause.add_argument("--expected-title",required=True)
     mouse_pause.add_argument("--window-id",type=int,required=True)
     mouse_pause.add_argument("--dispatch-event-json",type=Path,required=True)
     key_zero_parser = sub.add_parser("select-key-zero", help="select native MuJoCo keyframe index zero once")
     key_zero_parser.add_argument("--verified-pointer-only",action="store_true",help="no keyboard events; exact UI pixels, pointer ancestry, geometry and native effect required")
+    key_zero_parser.add_argument("--native-ui-events",type=Path)
     key_zero_parser.add_argument("--expected-pid", type=int, required=True)
     key_zero_parser.add_argument("--expected-title", required=True)
     key_zero_parser.add_argument("--window-id", type=int, required=True)
@@ -1434,7 +1512,7 @@ def main() -> int:
             print(json.dumps(event_record, indent=2))
             return 0 if event.get("status") == "RESET_BUTTON_CLICKED" else 2
         if args.command == "click-native-pause":
-            event=x11.click_native_pause_once(args.window_id,args.expected_pid,args.expected_title)
+            event=x11.click_native_pause_once(args.window_id,args.expected_pid,args.expected_title,native_ui_events=args.native_ui_events)
             record={"schema":"robotsim.native-pause-mouse.v1","window":window,"event":event}
             with args.dispatch_event_json.open("x",encoding="utf-8") as f:json.dump(record,f,indent=2)
             print(json.dumps(record,indent=2))
@@ -1465,6 +1543,7 @@ def main() -> int:
                 expected_pid=args.expected_pid,
                 expected_title=args.expected_title,
                 verified_pointer_only=args.verified_pointer_only,
+                native_ui_events=args.native_ui_events,
             )
             event_record = {
                 "schema": "robotsim.issue80.keyframe-selection-event.v1",

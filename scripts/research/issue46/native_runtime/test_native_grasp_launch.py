@@ -493,6 +493,68 @@ class VerifiedPointerControlsTests(TestCase):
         self.assertFalse(ui.native_pause_signature_matches(dict(run,left_interior=(102,153,102))))
 
 
+class NativeUiReceiptTests(TestCase):
+    node = VerifiedPointerControlsTests.node
+    def test_release_waits_for_the_actual_key_press_without_a_second_click(self):
+        from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
+        n, calls = self.node()
+        def acknowledged(*args, **kwargs):
+            self.assertEqual(calls, [(1, 1)])
+            self.assertEqual(kwargs["expected_pid"], 28)
+            self.assertEqual(kwargs["xy"], (145, 557))
+            self.assertEqual(kwargs["item_name"], "Key")
+            return {"status": "NATIVE_UI_PRESS_CONFIRMED"}
+        with mock.patch.object(ui, "wait_for_native_ui_receipt", side_effect=acknowledged):
+            event = n.select_native_keyframe_zero_once(123, 28, "MuJoCo : x2t2.5",
+                verified_pointer_only=True, native_ui_events=Path("/verified/receipt"))
+        self.assertEqual(calls, [(1, 1), (1, 0)])
+        self.assertEqual(event["native_ui_receipt"]["status"], "NATIVE_UI_PRESS_CONFIRMED")
+        self.assertFalse(event["selection_authoritatively_observed"])
+
+    def test_receipt_timeout_releases_and_fails_closed_without_retry(self):
+        from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
+        n, calls = self.node()
+        with mock.patch.object(ui, "wait_for_native_ui_receipt",
+                return_value={"status": "NATIVE_UI_PRESS_UNCONFIRMED"}):
+            event = n.select_native_keyframe_zero_once(123, 28, "MuJoCo : x2t2.5",
+                verified_pointer_only=True, native_ui_events=Path("/verified/receipt"))
+        self.assertEqual(calls, [(1, 1), (1, 0)])
+        self.assertEqual(event["status"], "NATIVE_UI_PRESS_UNCONFIRMED")
+
+    def test_exception_still_releases_mouse(self):
+        from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
+        n, calls = self.node()
+        with mock.patch.object(ui, "wait_for_native_ui_receipt", side_effect=RuntimeError("reader")):
+            with self.assertRaisesRegex(RuntimeError, "reader"):
+                n.select_native_keyframe_zero_once(123, 28, "MuJoCo : x2t2.5",
+                    verified_pointer_only=True, native_ui_events=Path("/verified/receipt"))
+        self.assertEqual(calls, [(1, 1), (1, 0)])
+
+    def test_native_receipt_requires_pid_time_control_and_real_coordinates(self):
+        from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
+        row=dict(kind="native_mjui_event",pid=28,host_ns=101,event_type=2,
+            returned_item="Key",section_id=2,item_id=5,xy=[145,549])
+        kw=dict(expected_pid=28,after_ns=100,item_name="Key",section_id=2,item_id=5,xy=(145,549))
+        self.assertTrue(ui.native_ui_receipt_matches(row, **kw))
+        for change in (dict(pid=29),dict(host_ns=100),dict(event_type=3),
+                dict(returned_item="Reset"),dict(section_id=1),dict(item_id=6),
+                dict(xy=[3358,713]),dict(xy=[145,517])):
+            self.assertFalse(ui.native_ui_receipt_matches(dict(row,**change),**kw))
+        self.assertFalse(ui.native_ui_receipt_matches([],**kw))
+
+    def test_missing_and_partial_receipts_never_count_as_application_receipt(self):
+        from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
+        kw=dict(expected_pid=28,after_ns=100,item_name="Key",section_id=2,item_id=5,xy=(145,549),timeout_s=0)
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/"events"
+            self.assertEqual(ui.wait_for_native_ui_receipt(path,**kw)["status"],"NATIVE_UI_PRESS_UNCONFIRMED")
+            path.write_text('{"kind":')
+            self.assertEqual(ui.wait_for_native_ui_receipt(path,**kw)["status"],"NATIVE_UI_PRESS_UNCONFIRMED")
+            path.write_text(json.dumps(dict(kind="native_mjui_event",pid=28,host_ns=101,event_type=2,
+                returned_item="Key",section_id=2,item_id=5,xy=[145,549]))+'\n')
+            self.assertEqual(ui.wait_for_native_ui_receipt(path,**kw)["status"],"NATIVE_UI_PRESS_CONFIRMED")
+
+
 class WslgForegroundTests(TestCase):
     def test_foreground_is_verified_and_never_submits_keyboard_or_mouse(self):
         from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent
