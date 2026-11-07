@@ -258,6 +258,7 @@ def locomotion_dock_script(
     native_leg_limits: dict | None = None,
     command_speed_cap: float | None = None,
     angular_speed_cap: float | None = None,
+    native_arm_relay: bool = False,
 ) -> str:
     """Build one bounded, odometry-closed official velocity-control route.
 
@@ -285,6 +286,7 @@ def locomotion_dock_script(
             "native_leg_limits":native_leg_limits,
             "command_speed_cap":command_speed_cap,
             "angular_speed_cap":angular_speed_cap,
+            "native_arm_relay":native_arm_relay,
         }
     )
     import inspect
@@ -414,6 +416,11 @@ class Dock(Node):
    except (ValueError,UnicodeDecodeError):continue
   else:self.feedback_fault={'gate':'NO_NATIVE_DOCK_POSE'};return
   stamp=int(row['host_monotonic_ns']);now=time.monotonic();age=now-stamp*1e-9
+  if PLAN.get('native_arm_relay'):
+   try:
+    with open('/workspace/evidence/native_arm_relay_heartbeat.json') as f:health=json.load(f)
+    if not 0.<=now-health['host_monotonic_ns']*1e-9<=.20 or not 0.<=now-health['last_unique_source_receipt_s']<=.20:raise ValueError('stale heartbeat/source')
+   except (OSError,ValueError,KeyError) as exc:self.feedback_fault=self.feedback_fault or {'gate':'ARM_POLICY_RELAY_UNAVAILABLE','detail':str(exc)};return
   if not 0.<=age<=.20 or row.get('engine_version')!=337:self.feedback_fault={'gate':'STALE_NATIVE_DOCK_POSE'};return
   if self.odom_stamp is not None and stamp<=self.odom_stamp:return
   if hasattr(self,'native_generation') and row['generation']!=self.native_generation:self.feedback_fault={'gate':'NATIVE_DOCK_RESET_GENERATION_CHANGED'};return
@@ -688,7 +695,7 @@ def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_wa
 import json, math, os, time, rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader, HandCommand, HandCommandArray, HandType
+from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader, HandCommand, HandCommandArray, HandType, McCommonState
 ARM=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint','right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
 TARGET=(.4,0.,0.,-1.2,0.,0.,0.,.4,0.,0.,-1.2,0.,0.,0.)
 RELAY_ARMS=__RELAY_ARMS__; RELAY_WAIST=__RELAY_WAIST__; INITIAL_HAND_OPENING=__INITIAL_HAND_OPENING__; OPEN_HAND_TRANSIT_PARK=__OPEN_HAND_TRANSIT_PARK__
@@ -700,12 +707,19 @@ class Hold(Node):
   self.started=time.monotonic();self.hand_pub=None
   if INITIAL_HAND_OPENING is not None:
    self.hand_pub=self.create_publisher(HandCommandArray,'/aima/hal/joint/hand/command',QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.TRANSIENT_LOCAL))
-  self.arm_msg=None;self.arm_source_stamp=0;self.arm_receipt=None;self.arm_relay_count=0;self.arm_relay_started=None;self.arm_handoff_start=None
+  self.arm_msg=None;self.arm_source_stamp=0;self.arm_receipt=None;self.arm_relay_count=0;self.arm_relay_started=None;self.arm_handoff_start=None;self.arm_last_metadata_time=0.
+  self.common_value=None;self.common_stamp=0;self.common_receipt=None
+  if RELAY_ARMS:self.create_subscription(McCommonState,'/aima/mc/common/state',self.on_common,q)
   if RELAY_ARMS:self.create_subscription(JointCommandArray,'/robotsim/issue46/mc/arm/command',self.on_mc_arm,q)
   self.waist_pub=None
   if RELAY_WAIST:
    self.waist_pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/waist/command',q)
    self.create_subscription(JointCommandArray,'/robotsim/issue46/mc/waist/command',self.on_waist,q)
+ def on_common(self,m):
+  stamp=int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec)
+  if stamp<=self.common_stamp:return
+  self.common_stamp=stamp;self.common_receipt=time.monotonic()
+  self.common_value=(str(m.action_info.action_desc),int(m.action_info.status.value),int(m.fsm_state.current_state),int(m.body_status.value))
  def on_mc_arm(self,m):
   if len(m.joints)!=14 or {j.name for j in m.joints}!=set(ARM):raise RuntimeError('INVALID_MC_ARM_GROUP')
   if any(not all(math.isfinite(float(getattr(j,f))) for f in ('position','velocity','effort','stiffness','damping')) for j in m.joints):raise RuntimeError('NONFINITE_MC_ARM_COMMAND')
@@ -715,6 +729,10 @@ class Hold(Node):
   first='/workspace/evidence/native_arm_relay_initial.json'
   if not os.path.exists(first):
    with open(first,'x') as f:json.dump({'source_stamp_ns':stamp,'joints':{j.name:{k:float(getattr(j,k)) for k in ('position','velocity','effort','stiffness','damping')} for j in m.joints}},f)
+  if all(j.stiffness>0. and j.damping>0. for j in m.joints) and time.monotonic()-self.arm_last_metadata_time>=.02:
+   path='/workspace/evidence/native_arm_relay_source_latest.json'
+   with open(path+'.tmp','w') as f:json.dump({'source_stamp_ns':stamp,'receipt_host_ns':time.monotonic_ns(),'joints':{j.name:{k:float(getattr(j,k)) for k in ('position','velocity','effort','stiffness','damping')} for j in m.joints}},f)
+   os.replace(path+'.tmp',path);self.arm_last_metadata_time=time.monotonic()
   if self.arm_relay_started is not None and time.monotonic()-self.arm_relay_started>=2.:
    self.pub.publish(m);self.arm_relay_count+=1
  def on_waist(self,m):
@@ -731,11 +749,20 @@ class Hold(Node):
     u=max(0.,min(1.,(time.monotonic()-self.started)/2.));target=.4+.4*(3*u*u-2*u*u*u)
    x=JointCommand();x.name=name;x.position=target;x.velocity=0.;x.effort=float(INITIAL_ARM_EFFORT.get(name,0.));x.stiffness=GAINS[name][0];x.damping=GAINS[name][1];m.joints.append(x)
   if RELAY_ARMS and os.path.exists('/workspace/evidence/enable_native_arm_relay'):
+   if self.arm_relay_started is None or time.monotonic()-self.arm_relay_started<2.:
+    if self.common_receipt is None or time.monotonic()-self.common_receipt>.20 or self.common_value!=('STAND_DEFAULT',100,4,1):raise RuntimeError('UNQUALIFIED_MC_STAND_ARM_HANDOFF')
    if self.arm_msg is None or time.monotonic()-self.arm_receipt>.20:raise RuntimeError('STALE_MC_ARM_RELAY')
    if self.arm_relay_started is None:
-    if any(name not in self.state for name in ARM):raise RuntimeError('MISSING_HANDOFF_ARM_STATE')
-    self.arm_handoff_start=dict(self.state);self.arm_relay_started=time.monotonic()
-    if max(abs(j.position-self.state[j.name]) for j in self.arm_msg.joints)>1.1:raise RuntimeError('SOURCE_ARM_HANDOFF_EXCURSION')
+    marker=json.load(open('/workspace/evidence/enable_native_arm_relay'))
+    pubs=self.get_publishers_info_by_topic('/robotsim/issue46/mc/arm/command')
+    public=self.get_publishers_info_by_topic('/aima/hal/joint/arm/command')
+    identity=(len(pubs)==1 and pubs[0].node_name==marker['expected_mc_node'] and pubs[0].node_namespace=='/' and len(public)==1 and public[0].node_name==self.get_name())
+    if not identity:raise RuntimeError('NATIVE_ARM_RELAY_OWNER_NOT_VERIFIED')
+    if any(j.stiffness<=0. or j.damping<=0. for j in self.arm_msg.joints):raise RuntimeError('INACTIVE_MC_ARM_GAINS')
+    row=json.load(open('/workspace/evidence/native_latest.json'))
+    if row['generation']!=marker['native_generation'] or row['engine_version']!=337 or not 0.<=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('STALE_NATIVE_ARM_HANDOFF')
+    self.arm_handoff_start={name:float(row['joints'][name]['q']) for name in ARM};self.arm_relay_started=time.monotonic()
+    if max(abs(j.position-self.arm_handoff_start[j.name]) for j in self.arm_msg.joints)>1.1:raise RuntimeError('SOURCE_ARM_HANDOFF_EXCURSION')
    elapsed=time.monotonic()-self.arm_relay_started
    if elapsed<2.:
     u=max(0.,min(1.,elapsed/2.));u=3*u*u-2*u*u*u
@@ -756,6 +783,10 @@ class Hold(Node):
    for side,items in (('left',h.left_hands),('right',h.right_hands)):
     x=HandCommand();x.name=side+'_claw_joint';x.position=command;x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;items.append(x)
    self.hand_pub.publish(h)
+  if RELAY_ARMS and self.arm_relay_started is not None:
+   path='/workspace/evidence/native_arm_relay_heartbeat.json'
+   with open(path+'.tmp','w') as f:json.dump({'host_monotonic_ns':time.monotonic_ns(),'last_unique_source_receipt_s':self.arm_receipt,'source_stamp_ns':self.arm_source_stamp,'relay_count':self.arm_relay_count},f)
+   os.replace(path+'.tmp',path)
   if self.waist_last_receipt is not None and time.monotonic()-self.waist_last_receipt>.20:raise RuntimeError('STALE_MC_WAIST_RELAY')
 rclpy.init();n=Hold()
 try:
@@ -997,6 +1028,7 @@ def main() -> None:
     parser.add_argument("--interactive-x11-display", help="use a user-visible WSLg X11 display and pause after failed claw response; requires the host X socket mounted explicitly")
     parser.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace",help="one verified native Reset input, without fallback/retry")
     parser.add_argument("--native-render-adapter",help="process-scoped WSLg GPU selection; verified against the actual native GL context before MC startup")
+    parser.add_argument("--native-arm-policy-relay",action="store_true",help="preserve actual MC arm commands during standing/navigation; exclusive bounded grasp handoff afterward")
     parser.add_argument("--open-hand-transit-park",action="store_true",help="source-limited right shoulder parked at 0.8rad to keep open hand away from bottle during walking")
     parser.add_argument("--native-circle-tracking",action="store_true",help="consume fresh source-limited native circle IK updates during arm execution")
     parser.add_argument("--physical-lift-test",action="store_true",help="60mm/3s lift and 1.5s observation only after measured bilateral contact and static lift sweep")
@@ -1055,6 +1087,11 @@ def main() -> None:
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
 
+    if args.native_arm_policy_relay:
+        from scripts.research.issue46.native_runtime.native_micro_stop_contract import verify_mc_fsm_runtime_contract
+        verify_mc_fsm_runtime_contract(RUNTIME/"mc/lib")
+    if args.native_arm_policy_relay and (not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher or args.hal_arm_candidate is None or args.fixed_reviewed_checkpoint or args.open_hand_transit_park or args.coordinated_circle_waist):
+        raise ValueError("native arm relay requires the unparked arm/hand split path; no fixed checkpoint or waist posture candidate")
     if args.dock_angular_speed_cap is not None and (args.dock_command_speed_cap is None or not 0.<args.dock_angular_speed_cap<=.075):
         raise ValueError("angular cap requires bounded dock speed and <=.075 rad/s")
     if args.dock_command_speed_cap is not None and (args.dock_world_xy is None or not args.native_dock_truth_feedback or not .12<=args.dock_command_speed_cap<=.20):
@@ -1262,9 +1299,9 @@ def main() -> None:
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
-            pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
+            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))) if args.native_arm_policy_relay else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
-            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
+            pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,relay_arms=args.native_arm_policy_relay,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
             arm_bootstrap_enabled = True
         elif args.disable_mc_arm_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
@@ -1336,13 +1373,14 @@ def main() -> None:
                     native_leg_limits=native_leg_safety_contract()[0] if args.native_dock_truth_feedback else None,
                     command_speed_cap=args.dock_command_speed_cap,
                     angular_speed_cap=args.dock_angular_speed_cap,
+                    native_arm_relay=args.native_arm_policy_relay,
                 ),
             )
         if args.micro_base_probe:
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
             limits,provenance=native_leg_safety_contract()
-            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed))
+            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay))
             pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
             result["micro_source_joint_limits"]=provenance
         if args.lateral_probe_mps is not None:
@@ -1485,6 +1523,10 @@ def main() -> None:
         if arm_split_config is not None:
             command[command.index(IMAGE):command.index(IMAGE)] = ["--mount", f"type=bind,source={arm_split_config},target=/workspace/raicom2026/{stl_hand_startup.MC_SIM_CONFIG_RELATIVE},readonly"]
             result["mc_command_split_overlay"] = {"path": str(arm_split_config), "sha256": sha256(arm_split_config), "disabled_publishers": (["arm_joint_command", "hand_joint_command"] if args.coordinated_circle_waist else ["arm_joint_command", "waist_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher else ["arm_joint_command", "hand_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_hand_publisher else ["arm_joint_command" if args.disable_mc_arm_publisher else "waist_joint_command"])}
+            if args.native_arm_policy_relay:
+                result["mc_command_split_overlay"]["disabled_publishers"]=["hand_joint_command"]
+                result["mc_command_split_overlay"]["redirected_publishers"]={"arm_joint_command":"/robotsim/issue46/mc/arm/command"}
+
         pg.write_new_text(output / "docker_command.json", json.dumps(command, indent=2) + "\n")
         run(command, timeout_s=12.0)
         if not args.interactive_x11_display:
@@ -1766,6 +1808,76 @@ def main() -> None:
             restore_result = json.loads(restore.stdout.strip().splitlines()[-1]) if restore.returncode == 0 else {"returncode": restore.returncode, "stdout_tail": restore.stdout[-1200:]}
             result["native_retarget_restore"] = {"returncode": restore.returncode, "result": restore_result}
             result["gates"]["RETARGET_NEUTRAL_RESTORE"] = "PASS" if restore.returncode == 0 and restore_result.get("mode_name") == "STAND_DEFAULT" else "FAIL"
+        if args.native_arm_policy_relay:
+            arm_relay_source=output/"native_arm_relay_source_latest.json"
+            wait_for(arm_relay_source,'"source_stamp_ns"',timeout_s=3.)
+            from scripts.research.issue46.native_runtime.native_grasp_audit import apply_recorded_native_frame
+            from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault
+            import mujoco,numpy as np,re
+            scene=Path((claw_control_overlay or overlay)["generated"]["host_scene"]["path"])
+            model=mujoco.MjModel.from_xml_path(str(scene));data=mujoco.MjData(model)
+            source_packet=json.loads(arm_relay_source.read_text());native_frame=json.loads((output/"native_latest.json").read_text())
+            if not 0.<=(time.monotonic_ns()-source_packet["receipt_host_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-native_frame["host_monotonic_ns"])*1e-9<=.20:raise RuntimeError("NATIVE_ARM_HANDOFF_INPUT_STALE")
+            apply_recorded_native_frame(model,data,native_frame)
+            start_qpos=data.qpos.copy();targets=source_packet["joints"]
+            if len(targets)!=14:raise RuntimeError("MC_ARM_HANDOFF_INCOMPLETE")
+            goal=start_qpos.copy()
+            for name,item in targets.items():
+                joint=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
+                if joint<0 or not model.jnt_limited[joint] or not model.jnt_range[joint,0]<=item["position"]<=model.jnt_range[joint,1] or item["stiffness"]<=0 or item["damping"]<=0:raise RuntimeError("MC_ARM_TARGET_OUTSIDE_SOURCE:"+name)
+                addr=model.jnt_qposadr[joint];goal[addr]=item["position"]
+                if abs(goal[addr]-start_qpos[addr])>1.1:raise RuntimeError("MC_ARM_HANDOFF_EXCURSION:"+name)
+            from scripts.research.issue46.native_runtime.standing_side_grasp_static_search import contacts,native as static_native
+            from scipy.spatial import ConvexHull
+            feet=[]
+            for co in data.contact:
+                bodies=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,int(model.geom_bodyid[g])) for g in (co.geom1,co.geom2)]
+                if any(model.geom_type[g]==mujoco.mjtGeom.mjGEOM_PLANE for g in (co.geom1,co.geom2)) and any(n in ("left_ankle_roll_link","right_ankle_roll_link") for n in bodies):feet.append(co.pos[:2].copy())
+            hull=ConvexHull(np.unique(np.asarray(feet),axis=0));root=model.body_rootid[static_native.bid(model,"pelvis")];robot=model.body_rootid==root
+            def active_self_pairs():
+                pairs={}
+                for co in data.contact:
+                    b1,b2=int(model.geom_bodyid[co.geom1]),int(model.geom_bodyid[co.geom2])
+                    if co.efc_address<0 or co.dist>=-.001 or model.body_rootid[b1]!=root or model.body_rootid[b2]!=root:continue
+                    pair=tuple(sorted((int(co.geom1),int(co.geom2))));pairs[pair]=min(float(co.dist),pairs.get(pair,0.))
+                return pairs
+            baseline_self=active_self_pairs()
+            clear=[];com_margins=[]
+            for u in np.linspace(0,1,21):
+                data.qpos[:]=start_qpos+float(u)*(goal-start_qpos);mujoco.mj_forward(model,data)
+                pads,bad,table,touch=contacts(model,data,static_native.bid(model,"test_cylinder"))
+                if pads or bad or touch:raise RuntimeError("MC_ARM_HANDOFF_COLLISION:"+str((float(u),pads,bad,touch)))
+                for pair,depth in active_self_pairs().items():
+                    if depth<baseline_self.get(pair,-.001)-.0005:raise RuntimeError("MC_ARM_HANDOFF_NEW_SELF_PENETRATION:"+str((pair,depth)))
+                com=(data.xipos[robot]*model.body_mass[robot,None]).sum(axis=0)/model.body_mass[robot].sum()
+                margin=float(-np.max(hull.equations[:,:2]@com[:2]+hull.equations[:,2]))
+                if margin<0.:raise RuntimeError("MC_ARM_HANDOFF_STATIC_COM_OUTSIDE_SUPPORT")
+                com_margins.append(margin);clear.append(float(u))
+            log=(output/"mc-console.log").read_text(errors="replace")
+            pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",log))
+            if len(pids)!=1:raise RuntimeError("MC_ARM_RELAY_PROCESS_IDENTITY")
+            marker={"expected_mc_node":"mc_ros2_node"+pids.pop(),"native_generation":native_frame["generation"],"target_source_stamp_ns":source_packet["source_stamp_ns"],"source_fields":targets,"collision_clear_fractions":clear,"minimum_static_com_margin_m":min(com_margins),"physical_model_changed":False}
+            pg.write_new_text(output/"native_arm_handoff_preflight.json",json.dumps(marker,indent=2)+"\n")
+            pg.write_new_text(output/"enable_native_arm_relay",json.dumps(marker)+"\n")
+            end=time.monotonic()+4.;limits,_=native_leg_safety_contract();ready=False
+            while time.monotonic()<end:
+                bootstrap_tail=arm_bootstrap_stdout.read_text()[-1800:]
+                if "Traceback" in bootstrap_tail:raise RuntimeError("NATIVE_ARM_RELAY_CHILD_FAILURE:"+bootstrap_tail)
+                frame=json.loads((output/"native_latest.json").read_text())
+                if not 0.<=(time.monotonic_ns()-frame["host_monotonic_ns"])*1e-9<=.20:raise RuntimeError("STALE_NATIVE_DURING_ARM_HANDOFF")
+                fault=physical_fault(frame,native_pose(frame),limits)
+                if fault:raise RuntimeError("ARM_POLICY_HANDOFF:"+fault)
+                ready_path=output/"native_arm_relay_ready.json"
+                if ready_path.exists() and json.loads(ready_path.read_text()).get("ready"):
+                    current_source=json.loads(arm_relay_source.read_text())
+                    if not 0.<=(time.monotonic_ns()-current_source["receipt_host_ns"])*1e-9<=.20:raise RuntimeError("STALE_MC_ARM_READINESS")
+                    error=max(abs(frame["joints"][name]["q"]-item["position"]) for name,item in current_source["joints"].items())
+                    if error<=.04:ready=True;break
+                time.sleep(.02)
+            if not ready:raise RuntimeError("NATIVE_ARM_POLICY_RELAY_NOT_READY")
+            result["native_arm_policy_relay"]={"handoff_preflight":str(output/"native_arm_handoff_preflight.json"),"ready":json.loads(ready_path.read_text()),"gain_or_policy_file_changes":False}
+            result["gates"]["NATIVE_ARM_POLICY_RELAY"]="PASS"
+
         if args.inspect_vr_topic:
             vr_topic = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 5s ros2 topic info /aima/teleop_bridge/vr_data --verbose"], timeout_s=7.0, check=False)
             pg.write_new_text(output / "vr_teleop_topic_info.stdout", vr_topic.stdout)

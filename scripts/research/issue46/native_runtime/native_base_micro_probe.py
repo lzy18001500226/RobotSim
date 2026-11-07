@@ -68,7 +68,7 @@ def physical_fault(row, pose, limits, start=None, direction=None):
     return None
 
 
-def build_script(direction, duration_s, joint_limits, *, command_speed=.2):
+def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False):
     if direction not in ("forward", "backward", "left", "right"):
         raise ValueError("unknown body-frame micro direction")
     if not .4 <= duration_s <= 1.:
@@ -81,7 +81,7 @@ def build_script(direction, duration_s, joint_limits, *, command_speed=.2):
         refine_world_xy=None, refine_world_yaw_rad=None,
         refine_position_only=False, dock_position_tolerance_m=.10,
         refine_position_tolerance_m=.15, timeout_s=30.,
-        use_cmd_vel_bridge=True, native_pose_feedback=True)
+        use_cmd_vel_bridge=True, native_pose_feedback=True,native_arm_relay=native_arm_relay)
     base = base.split("rclpy.init();n=Dock();registered=False")[0]
     plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed)
     return base + "\n" + Path(__file__).read_text().replace("from __future__ import annotations","") + "\nMICRO=" + repr(plan) + "\nrun_probe()\n"

@@ -428,9 +428,9 @@ class NativeArmRelayTests(TestCase):
         method=next(n for n in hold.body if isinstance(n,ast.FunctionDef) and n.name=="on_mc_arm")
         hold.bases=[];hold.body=[method]
         arm=tuple("joint"+str(i) for i in range(14));clock=NS(now=10.)
-        ns=dict(ARM=arm,math=math,time=NS(monotonic=lambda:clock.now),os=NS(path=NS(exists=lambda path:True)),json=json)
+        ns=dict(ARM=arm,math=math,time=NS(monotonic=lambda:clock.now,monotonic_ns=lambda:int(clock.now*1e9)),os=NS(path=NS(exists=lambda path:True),replace=lambda a,b:None),json=json,open=lambda *a,**k:io.StringIO())
         exec(compile(ast.Module(body=[hold],type_ignores=[]),"relay","exec"),ns)
-        n=ns["Hold"]();n.arm_source_stamp=0;n.arm_receipt=None;n.arm_relay_started=7.;n.arm_relay_count=0;sent=[];n.pub=NS(publish=sent.append)
+        n=ns["Hold"]();n.arm_source_stamp=0;n.arm_receipt=None;n.arm_last_metadata_time=0.;n.arm_relay_started=7.;n.arm_relay_count=0;sent=[];n.pub=NS(publish=sent.append)
         msg=NS(header=NS(stamp=NS(sec=1,nanosec=5)),joints=[NS(name=name,position=.2,velocity=.1,effort=.3,stiffness=50.,damping=3.) for name in arm])
         n.on_mc_arm(msg);self.assertIs(sent[0],msg);self.assertEqual(n.arm_relay_count,1)
         clock.now=10.3;n.on_mc_arm(msg)
