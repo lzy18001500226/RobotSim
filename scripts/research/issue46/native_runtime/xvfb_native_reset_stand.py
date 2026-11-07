@@ -1185,7 +1185,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
     result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.10 if args.carry_sdk_minimum_turn else .075,'root_cap_m_s':.20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
     limits=retract["source_motion_limits"]
-    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075))
+    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing))
     controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
     pg.write_new_bytes(output/"point_goal_controller.py",controller.read_bytes())
     if not (output/"native_micro_stop_contract.py").exists():
@@ -1292,6 +1292,7 @@ def main() -> None:
     parser.add_argument("--carry-goal-world-xy",type=float,nargs=2)
     parser.add_argument("--carry-timeout-s",type=float,default=90.)
     parser.add_argument("--carry-sdk-minimum-turn",action="store_true")
+    parser.add_argument("--carry-native-action-smoothing",action="store_true")
     parser.add_argument("--micro-base-probe", choices=("forward","backward","left","right"), help="one native body-frame micro pulse and strict composite stop; no arm approach")
     parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
     parser.add_argument("--micro-command-speed",type=float,default=.2)
@@ -1330,7 +1331,7 @@ def main() -> None:
 
     if args.observe_native_arm_policy and (not args.micro_base_probe or not args.capture_mc_rl_debug or args.native_arm_policy_relay or not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher):
         raise ValueError("arm policy observation requires isolated debug capture, no actuator relay")
-    if args.carry_sdk_minimum_turn and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires carry route')
+    if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing) and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires carry route')
     if args.capture_mc_rl_debug and not (args.micro_base_probe or args.carry_goal_world_xy is not None):
         raise ValueError("MC debug capture is scoped to isolated micro diagnostics")
     if args.micro_heading_hold and (not args.micro_base_probe or args.dock_angular_speed_cap!=.075):
@@ -1560,6 +1561,18 @@ def main() -> None:
             pg.write_new_text(arm_split_config, yaml.safe_dump(stl_hand_startup.build_waist_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))), allow_unicode=True, sort_keys=False))
         staged_seed = output / "sim_seed"
         shutil.copytree(RUNTIME / MC_GENERATED, staged_seed)
+        if args.carry_native_action_smoothing:
+            action_library=RUNTIME/'mc/lib/libmc_manager_action.so'
+            action_source=RUNTIME/'mc/bin/mc_param/src/robot/lx2501_3_t2d5/action_setting.yaml'
+            if sha256(action_library)!='f7442dade26144b484883f85a2f7a4eb88a705f9a7f54c6f63a6062d5e55899c' or sha256(action_source)!='60e4b37a2d185515efb63192a67f9cb425558da3f4caabd432aa62bb23f05479':
+                raise RuntimeError('NATIVE_ACTION_SMOOTHING_BUILD_MISMATCH')
+            derived_setting=output/'action_setting_carry_transition.yaml'
+            pg.write_new_text(derived_setting,yaml.safe_dump(stl_hand_startup.build_native_carry_transition_setting(yaml.safe_load(action_source.read_text())),sort_keys=False))
+            seed_path=staged_seed/'action_setting.yaml'
+            seed_cfg=stl_hand_startup.build_native_carry_transition_setting(yaml.safe_load(seed_path.read_text()))
+            seed_path.write_text(yaml.safe_dump(seed_cfg,sort_keys=False))
+            result['carry_native_action_smoothing']={'classification':'SIMULATION_ONLY_NATIVE_ACTIONSELECTOR_RULE_DIAGNOSTIC_NOT_VENDOR_DEFAULT','source':str(action_source),'source_sha256':sha256(action_source),'action_library_sha256':sha256(action_library),'derived':str(derived_setting),'derived_sha256':sha256(derived_setting),'sim_seed_sha256':sha256(seed_path),'added_rules':seed_cfg['smooth_transitions'][-2:],'unchanged':['runners','gains','ONNX','model','joint limits','source files'],'runtime_rule_count_verified':False}
+
         pg.write_new_bytes(output / "native_mujoco_reset.py", reset_helper.read_bytes())
         pg.write_new_text(output / "native_prearm.py", prearm_script())
         pg.write_new_text(output / "native_stand_sample.py", stl_hand_startup.build_stand_client_script())
@@ -1778,6 +1791,10 @@ def main() -> None:
             command[command.index(IMAGE):command.index(IMAGE)]=[
                 "--mount",f"type=bind,source={staged_profile},target=/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml,readonly"]
             result["foundationwalk_reviewed_profile"]={**profile_record,"staged_path":str(staged_profile)}
+
+        if args.carry_native_action_smoothing:
+            command[command.index(IMAGE):command.index(IMAGE)]=[
+                '--mount',f'type=bind,source={derived_setting},target=/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/action_setting.yaml,readonly']
 
         if args.interactive_x11_display:
             x_socket = Path("/tmp/.X11-unix")
@@ -2127,6 +2144,15 @@ def main() -> None:
             pg.write_new_text(output / "retargeting_topic_info.stdout", retargeting_topic.stdout)
             result["retargeting_topic"] = {"topic": "/aima/mc/joint/retargeting", "returncode": retargeting_topic.returncode, "raw": retargeting_topic.stdout}
             result["gates"]["RETARGETING_TOPIC_DISCOVERY"] = "PASS" if retargeting_topic.returncode == 0 and "Type:" in retargeting_topic.stdout else "FAIL"
+        if args.carry_native_action_smoothing:
+            import re
+            counts=set(re.findall(r'ActionSelector:.*?smooth_rules=(\d+)',(output/'mc-console.log').read_text(errors='replace')))
+            if counts!={'4'}:raise RuntimeError('NATIVE_ACTION_SMOOTHING_RULES_NOT_LOADED:'+str(sorted(counts)))
+            generated=run(['docker','exec',container,'cat','/workspace/raicom2026/'+MC_GENERATED+'/action_setting.yaml'],timeout_s=5.)
+            pg.write_new_text(output/'action_setting_consumed.yaml',generated.stdout)
+            actual=yaml.safe_load(generated.stdout)
+            if actual.get('smooth_transitions')!=seed_cfg['smooth_transitions']:raise RuntimeError('NATIVE_ACTION_SMOOTHING_CONFIG_MISMATCH')
+            result['carry_native_action_smoothing']['runtime_rule_count_verified']=True
         if args.capture_mc_rl_debug:
             import re
             mc_pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",(output/"mc-console.log").read_text(errors="replace")))

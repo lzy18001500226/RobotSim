@@ -130,6 +130,25 @@ exec ./em_run_wsl2.sh
 """
 
 
+def build_native_carry_transition_setting(source):
+    """Use the installed ActionSelector's existing 500ms smoothing schema.
+
+    Only these two action-pair rules change. Controller runners, gains, policy
+    files, constraints and source assets remain untouched.
+    """
+    import copy
+    expected=[dict(from_= 'STAND_DEFAULT',to='WHOLE_BODY_TELEOP',duration_ms=500),
+              dict(from_='WHOLE_BODY_TELEOP',to='STAND_DEFAULT',duration_ms=500)]
+    expected=[{('from' if k=='from_' else k):v for k,v in row.items()} for row in expected]
+    if source.get('smooth_transitions')!=expected or not {'STAND_DEFAULT','LOCOMOTION_DEFAULT'}.issubset(source.get('transition_actions',{})):
+        raise ValueError('unsupported native transition-setting schema')
+    result=copy.deepcopy(source)
+    result['smooth_transitions']+= [
+        {'from':'STAND_DEFAULT','to':'LOCOMOTION_DEFAULT','duration_ms':500},
+        {'from':'LOCOMOTION_DEFAULT','to':'STAND_DEFAULT','duration_ms':500}]
+    return result
+
+
 def build_arm_split_mc_config(source: dict[str, object]) -> dict[str, object]:
     """Disable only MC's arm HAL publisher in an evidence-local config copy."""
     import copy

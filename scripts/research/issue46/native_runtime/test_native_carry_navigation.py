@@ -163,7 +163,7 @@ class CarryParentIntegrationTests(unittest.TestCase):
             (out/"carry_heartbeat.json").write_text(json.dumps(dict(pid=19,host_monotonic_ns=now)))
             (out/"native_tracking_carry_handoff.json").write_text(json.dumps(dict(classification="BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY",physical_hold_pass=True,generation=1)))
             (out/"native_micro_stop_contract.py").write_text("# fixture")
-            args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.,carry_sdk_minimum_turn=False)
+            args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.,carry_sdk_minimum_turn=False,carry_native_action_smoothing=False)
             plan={"lift_preflight":{"retract_preflight":{"pass_result":True,"robot_bodies":["pelvis"],"source_motion_limits":{},"carry_lease_s":30.}}}
             result={"gates":{"OFFICIAL_CMD_VEL_BRIDGE":"PASS"},"commands_not_sent":["locomotion velocity"]}
             calls=[]
@@ -182,6 +182,22 @@ class CarryParentIntegrationTests(unittest.TestCase):
             self.assertTrue((out/"point_goal_controller.py").is_file())
             self.assertEqual(len(calls),2)
             self.assertNotIn("locomotion velocity",result["commands_not_sent"])
+
+class NativeActionSmoothingTests(unittest.TestCase):
+    def test_only_two_native_action_pair_rules_are_added(self):
+        import copy,yaml
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        base=Path('/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5')
+        for path in (base/'action_setting.yaml',base/'sim/action_setting.yaml'):
+            source=yaml.safe_load(path.read_text());original=copy.deepcopy(source)
+            result=h.build_native_carry_transition_setting(source)
+            self.assertEqual(source,original)
+            self.assertEqual(result['smooth_transitions'][:2],source['smooth_transitions'])
+            self.assertEqual(result['smooth_transitions'][2:],[dict(zip(('from','to','duration_ms'),('STAND_DEFAULT','LOCOMOTION_DEFAULT',500))),dict(zip(('from','to','duration_ms'),('LOCOMOTION_DEFAULT','STAND_DEFAULT',500)))])
+            del result['smooth_transitions'];del original['smooth_transitions']
+            self.assertEqual(result,original)
+        with self.assertRaises(ValueError):h.build_native_carry_transition_setting({})
+
 
 class DisabledPublisherIsolationTests(unittest.TestCase):
     def test_only_carry_isolates_two_disabled_native_endpoints(self):
