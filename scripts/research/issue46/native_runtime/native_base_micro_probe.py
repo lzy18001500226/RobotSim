@@ -209,7 +209,11 @@ def run_probe(smoke_only=False):
             pubs=self.get_publishers_info_by_topic("/aima/mc/locomotion/velocity")
             subs=self.get_subscriptions_info_by_topic("/aima/mc/locomotion/velocity")
             rawpubs=self.get_publishers_info_by_topic("/cmd_vel")
-            if len(pubs)!=1 or pubs[0].node_name!="cmd_vel_bridge" or len(subs)!=2 or len(rawpubs)!=1 or rawpubs[0].node_name!=self.get_name():
+            if len(pubs)>1 or len(subs)>2 or len(rawpubs)>1:
+                raise RuntimeError("CONFLICTING_VELOCITY_GRAPH")
+            if not pubs or len(subs)<2 or not rawpubs:
+                raise RuntimeError("GRAPH_DISCOVERY_PENDING")
+            if pubs[0].node_name!="cmd_vel_bridge" or rawpubs[0].node_name!=self.get_name():
                 raise RuntimeError("VELOCITY_GRAPH_NOT_UNIQUE:"+str(([p.node_name for p in pubs],[s.node_name for s in subs],[p.node_name for p in rawpubs])))
             # Exact configured-name + process PID contract from reviewed Issue80.
             candidates=[]
@@ -217,7 +221,7 @@ def run_probe(smoke_only=False):
                 if d.name.isdigit():
                     try:
                         exe=os.readlink(d/"exe")
-                        cmd=(d/"cmdline").read_bytes().replace(b"\\0",b" ").decode()
+                        cmd=(d/"cmdline").read_bytes().replace(bytes([0]),b" ").decode()
                     except (OSError,UnicodeError):continue
                     if Path(exe).name=="aima-mc-app-main":
                         candidates.append((int(d.name),exe,cmd))
@@ -230,6 +234,8 @@ def run_probe(smoke_only=False):
             subs=mcsubs
             if subs[0].node_namespace!="/" or pubs[0].node_namespace!="/":
                 raise RuntimeError("MC_SUBSCRIBER_PROCESS_IDENTITY")
+            if "--cfg_file_path=/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml" not in candidates[0][2]:
+                raise RuntimeError("MC_CONFIG_ARGV")
             if candidates[0][1]!="/workspace/raicom2026/mc/bin/aima-mc-app-main":
                 raise RuntimeError("MC_EXECUTABLE_PATH")
             if pubs[0].topic_type!="aimdk_msgs/msg/McLocomotionVelocity" or subs[0].topic_type!=pubs[0].topic_type:
@@ -241,6 +247,19 @@ def run_probe(smoke_only=False):
             self.events.append(dict(event="UNIQUE_PROVENANCE_GRAPH",t=time.monotonic(),mc=candidates[0],
                                     publisher=pubs[0].node_name,subscriber=subs[0].node_name,
                                     configured_history_depth="KEEP_LAST/10; FastDDS graph history may be UNKNOWN/0"))
+
+        def await_graph(self):
+            deadline=time.monotonic()+2.
+            while time.monotonic()<deadline:
+                self.publish();self.pump()
+                try:self.graph()
+                except RuntimeError as exc:
+                    if str(exc)!="GRAPH_DISCOVERY_PENDING":raise
+                else:
+                    if self.bridge_commands and time.monotonic()-self.bridge_commands[-1]["t"]<=.20:
+                        return
+                time.sleep(.01)
+            raise RuntimeError("POSITIVE_BRIDGE_GRAPH_AND_FRESH_OUTPUT_NOT_OBSERVED")
 
         def observe(self, seconds, start=None, baseline=None, require_stop=False):
             until=time.monotonic()+seconds;last=None;rows=[];qualified=None
@@ -291,11 +310,11 @@ def run_probe(smoke_only=False):
             n.publish();n.pump()
             if all(k in n.messages for k in ("common","imu","leg_state","leg_command")) and "get_mode" in n.readbacks:
                 break
-        n.graph();n.observe(.12);n.graph()
+        n.await_graph();n.observe(.12);n.graph()
         baseline=n.sample()["body_status"]
         result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         start=n.sample()["pose"];result["start_pose"]=start
-        n.graph()
+        n.await_graph()
         velocity={"forward":(.2,0.),"backward":(-.2,0.),"left":(0.,.2),"right":(0.,-.2)}[MICRO["direction"]]
         with n.lock:n.moving=True
         began=time.monotonic();motion_started=True
@@ -324,7 +343,7 @@ def run_probe(smoke_only=False):
         result["pass_result"]=result["post_stop_composite"]["pass"] and progress>=.005 and acquired
         result["failure"]=None if result["pass_result"] else "NO_VERIFIED_SIGNED_MICRO_MOVEMENT_OR_HANDSHAKE"
     except Exception as exc:
-        n.deadline_zero();result["failure"]=str(exc)
+        n.deadline_zero();result["failure"]=str(exc);result["available_state_topics"]=list(n.messages);result["last_unique_receipts"]=n.unique
     finally:
         # Failed readback never suppresses zeros. Native bridge also has an
         # independent 0.20s stale-input timeout. Timer is same-process only.

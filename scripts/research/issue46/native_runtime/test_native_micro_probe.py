@@ -124,7 +124,7 @@ class MicroTests(unittest.TestCase):
         tree=ast.parse(Path(micro.__file__).read_text())
         run=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="run_probe")
         cls=next(n for n in run.body if isinstance(n,ast.ClassDef))
-        cls.body=[m for m in cls.body if isinstance(m,ast.FunctionDef) and m.name in ("publish","deadline_zero","observe")]
+        cls.body=[m for m in cls.body if isinstance(m,ast.FunctionDef) and m.name in ("publish","deadline_zero","observe","await_graph")]
         sent=[]
         class Base:
             def publish(self,*v):sent.append(v)
@@ -141,6 +141,22 @@ class MicroTests(unittest.TestCase):
         n.publish(.2,0.,0.)  # late loop callback cannot re-enable motion
         self.assertEqual(sent,[(.2,0.,0.),(0.,0.,0.),(0.,0.,0.)])
         self.assertFalse(n.moving)
+
+    def test_discovery_wait_requires_positive_graph_and_real_bridge_output(self):
+        n,sent,clock=self.runtime_methods();n.moving=False;n.bridge_commands=[]
+        n.pump=lambda:None
+        def graph():
+            if clock.t<1.05:raise RuntimeError("GRAPH_DISCOVERY_PENDING")
+            n.bridge_commands.append(dict(t=clock.t))
+        n.graph=graph;n.await_graph()
+        self.assertGreaterEqual(clock.t,1.05)
+        self.assertTrue(all(v==(0.,0.,0.) for v in sent))
+        n.bridge_commands=[];n.graph=lambda:None
+        with self.assertRaisesRegex(RuntimeError,"POSITIVE_BRIDGE_GRAPH"):n.await_graph()
+        def conflicting():raise RuntimeError("CONFLICTING_VELOCITY_GRAPH")
+        n.graph=conflicting;before=clock.t
+        with self.assertRaisesRegex(RuntimeError,"CONFLICTING"):n.await_graph()
+        self.assertEqual(clock.t,before)
 
     def test_zero_observer_keeps_publishing_while_readback_not_ready(self):
         n,sent,clock=self.runtime_methods();n.moving=False
