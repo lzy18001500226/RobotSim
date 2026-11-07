@@ -704,7 +704,7 @@ class NativeArm(Node):
   self.pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/arm/command',q)
   self.state={};self.arm_source_stamp=0;self.arm_receipt=None
   self.arm_relay_count=0;self.positive_count=0;self.last_gain_positive=False
-  self.owner_verified=False;self.last_owner_check=0.;self.clock_offset=None
+  self.owner_verified=False;self.last_owner_check=0.;self.clock_offset=None;self.started=time.monotonic()
   self.create_subscription(JointStateArray,'/aima/hal/joint/arm/state',lambda m:self.state.update({j.name:float(j.position) for j in m.joints}),q)
   self.create_subscription(JointCommandArray,'/robotsim/issue46/mc/arm/command',self.on_mc_arm,q)
   self.hand_pub=self.create_publisher(HandCommandArray,'/aima/hal/joint/hand/command',QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.TRANSIENT_LOCAL)) if OPEN is not None else None
@@ -742,10 +742,11 @@ class NativeArm(Node):
   path=Path('/workspace/evidence/native_arm_relay_heartbeat.json')
   tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(health)+'\n');os.replace(tmp,path)
   if self.hand_pub is not None:
-   m=HandCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg()
-   for name in ('left','right'):
-    c=HandCommand();c.name=name;c.type=HandType();c.type.value=2;c.position=[OPEN];c.velocity=[0.];c.effort=[0.];m.hands.append(c)
-   self.hand_pub.publish(m)
+   command=0.0 if time.monotonic()-self.started<.8 else OPEN
+   h=HandCommandArray();h.left_hand_type=HandType(value=2);h.right_hand_type=HandType(value=2)
+   for side,items in (('left',h.left_hands),('right',h.right_hands)):
+    c=HandCommand();c.name=side+'_claw_joint';c.position=command;c.velocity=1.;c.acceleration=1.;c.deceleration=1.;c.effort=1.;items.append(c)
+   self.hand_pub.publish(h)
 rclpy.init();n=NativeArm();ready=False
 try:
  end=time.monotonic()+90.;next_tick=time.monotonic()
@@ -769,6 +770,8 @@ def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_wa
     A marker gives the caller an orderly hand-off to the bounded arm probe.
     """
     if relay_arms:
+        if initial_hand_opening is not None and initial_hand_opening!=1.0:
+            raise ValueError("startup hand opening must be exactly 1.0 or disabled")
         limits,_=native_leg_safety_contract(include_upper_body=True)
         arm_limits={n:v for n,v in limits.items() if any(k in n for k in ("shoulder","elbow","wrist"))}
         if len(arm_limits)!=14:raise ValueError("native source arm limit group differs")
