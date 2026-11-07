@@ -1601,7 +1601,7 @@ def main() -> None:
         result["gates"]["SIMULATOR"] = "PASS"
         if native_observer is not None:
             wait_for(output / "native_physics.jsonl", '"host_monotonic_ns"', timeout_s=5.0)
-            result["native_observer_readiness"] = native_grasp_audit.require_fresh_sample(output / "native_physics.jsonl")
+            result["native_observer_readiness"] = native_grasp_audit.await_native_startup_ready(output / "native_physics.jsonl")
             current=json.loads((output/'native_latest.json').read_text());actual_solver=current.get('solver_options',{})
             delta=(claw_control_overlay or {}).get('diagnostic_parameter_delta',{})
             if delta.get('numerical_solver') and actual_solver.get('noslip_iterations')!=2:raise RuntimeError('NATIVE_NOSLIP_OPTION_NOT_APPLIED')

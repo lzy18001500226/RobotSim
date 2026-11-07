@@ -175,7 +175,30 @@ def require_fresh_sample(path, *, now_ns=None):
         raise RuntimeError("NATIVE_OBSERVER_STALE_SAMPLE")
     if row.get("engine_version") != 337 or any(row.get("bodies", {}).get(n) is None for n in ("pelvis", "R_omnipicker_base_link", "test_cylinder")):
         raise RuntimeError("NATIVE_OBSERVER_MISSING_REQUIRED_BODIES")
-    return {"pass": True, "age_s": age, "engine_version": row["engine_version"], "sim_time_s": row["sim_time_s"], "generation": row["generation"]}
+    return {"pass": True, "age_s": age, "engine_version": row["engine_version"], "sim_time_s": row["sim_time_s"], "generation": row["generation"], "process_pid":row.get("process_pid")}
+
+
+def await_native_startup_ready(path, *, timeout_s=4.):
+    """Before MC only: require two advancing fresh frames, never relax age."""
+    import time
+    began=time.monotonic();previous=None;last_error=None
+    while time.monotonic()-began<timeout_s:
+        try:current=require_fresh_sample(path)
+        except (FileNotFoundError,RuntimeError) as exc:
+            if isinstance(exc,RuntimeError) and str(exc) not in ("NATIVE_OBSERVER_STALE_SAMPLE","NATIVE_OBSERVER_NO_COMPLETE_SAMPLE"):
+                raise
+            previous=None;last_error=str(exc)
+        else:
+            if current.get("process_pid") is None:
+                raise RuntimeError("NATIVE_OBSERVER_STARTUP_PID_MISSING")
+            if previous is not None:
+                if (current["process_pid"],current["generation"])!=(previous["process_pid"],previous["generation"]):
+                    raise RuntimeError("NATIVE_OBSERVER_STARTUP_IDENTITY_OR_GENERATION_CHANGED")
+                if current["sim_time_s"]>previous["sim_time_s"]:
+                    return {**current,"startup_wait_s":time.monotonic()-began,"advancing_fresh_samples":2}
+            previous=current
+        time.sleep(.02)
+    raise RuntimeError("NATIVE_OBSERVER_STARTUP_NOT_READY:"+str(last_error))
 
 
 def planning_state_from_native(row, previous):

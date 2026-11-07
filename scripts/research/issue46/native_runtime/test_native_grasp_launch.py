@@ -403,6 +403,38 @@ class NativeLaunchTests(TestCase):
         with self.assertRaisesRegex(RuntimeError,'RESET'):refresh()
         self.assertEqual(n.native_generation,1)
 
+class NativeStartupReadinessTests(TestCase):
+    def test_stale_discovery_needs_two_later_advancing_fresh_samples(self):
+        clock=NS(t=0.)
+        row=dict(pass_result=True,age_s=.01,engine_version=337,sim_time_s=1.,generation=0,process_pid=30)
+        with mock.patch.object(audit,"require_fresh_sample",side_effect=[RuntimeError("NATIVE_OBSERVER_STALE_SAMPLE"),row,dict(row,sim_time_s=1.02)]),mock.patch("time.monotonic",lambda:clock.t),mock.patch("time.sleep",lambda dt:setattr(clock,"t",clock.t+dt)):
+            result=audit.await_native_startup_ready(Path("/input"),timeout_s=.1)
+        self.assertEqual(result["advancing_fresh_samples"],2)
+        self.assertAlmostEqual(result["startup_wait_s"],.04)
+
+    def test_missing_bodies_never_turn_into_a_longer_startup_wait(self):
+        with mock.patch.object(audit,"require_fresh_sample",side_effect=RuntimeError("NATIVE_OBSERVER_MISSING_REQUIRED_BODIES")) as check:
+            with self.assertRaisesRegex(RuntimeError,"MISSING_REQUIRED_BODIES"):
+                audit.await_native_startup_ready(Path("/input"))
+        self.assertEqual(check.call_count,1)
+
+    def test_stale_or_frozen_startup_cannot_pass(self):
+        clock=NS(t=0.)
+        row=dict(age_s=.01,engine_version=337,sim_time_s=1.,generation=0,process_pid=30)
+        for response in (row,RuntimeError("NATIVE_OBSERVER_STALE_SAMPLE")):
+            clock.t=0.
+            with mock.patch.object(audit,"require_fresh_sample",side_effect=(response if isinstance(response,Exception) else None),return_value=row),mock.patch("time.monotonic",lambda:clock.t),mock.patch("time.sleep",lambda dt:setattr(clock,"t",clock.t+dt)):
+                with self.assertRaisesRegex(RuntimeError,"STARTUP_NOT_READY"):
+                    audit.await_native_startup_ready(Path("/input"),timeout_s=.1)
+
+    def test_generation_or_pid_change_invalidates_startup(self):
+        row=dict(age_s=.01,engine_version=337,sim_time_s=1.,generation=0,process_pid=30)
+        for changed in (dict(row,sim_time_s=1.02,generation=1),dict(row,sim_time_s=1.02,process_pid=31)):
+            with mock.patch.object(audit,"require_fresh_sample",side_effect=[row,changed]):
+                with self.assertRaisesRegex(RuntimeError,"IDENTITY_OR_GENERATION_CHANGED"):
+                    audit.await_native_startup_ready(Path("/input"))
+
+
 class NativeArmRelayTests(TestCase):
     def test_config_only_restores_and_redirects_the_original_arm_transport(self):
         import copy
