@@ -1259,6 +1259,9 @@ def _with_carry_lease(script, retract):
     replace("    self.hand_pub.publish(h)\n",
 """    self.hand_pub.publish(h)
    if stage=='CARRY_HOLD':
+    for c in self.native_row.get('contacts',[]):
+     pair={c.get('body1'),c.get('body2')}
+     if 'test_cylinder' in pair and not pair.intersection({'R_hand_narrow3_Link','R_hand_wide3_Link'}) and float(c['local_force_torque'][0])>.1:raise RuntimeError('CARRY_OBJECT_EXTERNAL_SUPPORT')
     hand=self.native_row['bodies']['R_omnipicker_base_link'];obj=self.native_row['bodies']['test_cylinder'];H=hand['rotation'];B=obj['rotation']
     delta=[obj['position_m'][i]+CIRCLE_CONTRACT['height_above_center_m']*B[3*i+2]-hand['position_m'][i] for i in range(3)]
     local=[sum(H[3*i+j]*delta[i] for i in range(3)) for j in range(3)]
@@ -1276,7 +1279,7 @@ def _with_carry_lease(script, retract):
    n.write_phase(n.lift_phase)
    n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)
    n.pre_carry_odom=list(n.odom);n.pre_carry_tilt=list(n.tilt)
-   ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m']}
+   ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'start_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}
    with open('/workspace/evidence/carry_ready.tmp','w') as f:json.dump(ready,f)
    os.replace('/workspace/evidence/carry_ready.tmp','/workspace/evidence/carry_ready.json')
    carry_until=time.monotonic()+float(ready['lease_s'])
@@ -1284,7 +1287,7 @@ def _with_carry_lease(script, retract):
     n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)
    if not os.path.exists('/workspace/evidence/carry_release'):raise RuntimeError('CARRY_LEASE_EXPIRED')
    n.send(carry_target,1.5,'CARRY_HOLD',HAND_RIGHT)
-   print(json.dumps({'carry_execution':{'pass':True,'released_by_parent':True,'generation':n.native_generation,'final_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'final_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}}),flush=True)
+   print(json.dumps({'carry_execution':{'pass':True,'classification':'GRIP_HOLD_AND_RELEASE_NOT_ROUTE_ACCEPTANCE','released_by_parent':True,'generation':n.native_generation,'final_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'final_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m'],'measured_base_displacement_m':math.dist(n.native_row['bodies']['pelvis']['position_m'],ready['start_base_world_xyz_m']),'measured_bottle_displacement_m':math.dist(n.native_row['bodies']['test_cylinder']['position_m'],ready['start_bottle_world_xyz_m'])}}),flush=True)
  if RESTORE:""")
     final_line=next(line for line in script.splitlines() if line.startswith(" drift=math.hypot("))
     replace(final_line," standing_odom=getattr(n,'pre_carry_odom',n.odom);standing_tilt=getattr(n,'pre_carry_tilt',n.tilt)\n"+final_line.replace("n.odom","standing_odom").replace("n.tilt","standing_tilt"))

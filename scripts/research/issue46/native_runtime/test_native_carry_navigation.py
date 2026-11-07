@@ -108,4 +108,37 @@ class CarryRouteControlFlowTests(unittest.TestCase):
         self.assertFalse(result["pass_result"])
         self.assertFalse(any(x["forward"] or x["angular"] for x in n.command_log))
 
+class CarryParentIntegrationTests(unittest.TestCase):
+    def test_complete_parent_handoff_branch_without_docker_or_physics(self):
+        import json,tempfile,subprocess,time
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent,native_grasp_audit as audit
+        with tempfile.TemporaryDirectory() as folder:
+            out=Path(folder);now=time.monotonic_ns()
+            ready=dict(schema="robotsim.x2.carry-ready.v1",pid=19,physical_lift_pass=True,post_lift_retract_pass=True,generation=1,host_monotonic_ns=now)
+            (out/"carry_ready.json").write_text(json.dumps(ready))
+            (out/"carry_heartbeat.json").write_text(json.dumps(dict(pid=19,host_monotonic_ns=now)))
+            (out/"native_tracking_carry_handoff.json").write_text(json.dumps(dict(classification="CARTESIAN_TO_MEASURED_JOINT_HOLD",physical_hold_pass=True,generation=1)))
+            (out/"native_micro_stop_contract.py").write_text("# fixture")
+            args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.)
+            plan={"lift_preflight":{"retract_preflight":{"pass_result":True,"robot_bodies":["pelvis"],"source_motion_limits":{},"carry_lease_s":30.}}}
+            result={"gates":{"OFFICIAL_CMD_VEL_BRIDGE":"PASS"},"commands_not_sent":["locomotion velocity"]}
+            calls=[]
+            def run(cmd,**kwargs):
+                calls.append(cmd)
+                (out/"native_carry_owner.stdout").write_text('{"carry_execution":{"pass":true}}')
+                if any("native_carry_route.py" in str(x) for x in cmd):
+                    (out/"native_carry_route_result.json").write_text(json.dumps(dict(pass_result=True,command_log=[dict(forward=.12,lateral=0.,angular=0.)])))
+                    (out/"native_carry_owner.exit").write_text("0")
+                return subprocess.CompletedProcess(cmd,0,"")
+            with mock.patch.object(parent.pg,"write_new_text",side_effect=lambda p,t:p.write_text(t)),mock.patch.object(parent.pg,"write_new_bytes",side_effect=lambda p,t:p.write_bytes(t)),mock.patch.object(parent,"run",run),mock.patch.object(audit,"require_fresh_sample",return_value={"generation":1}),mock.patch.object(audit,"read_complete_native_rows",return_value=[]),mock.patch.object(audit,"evaluate_carry_motion",return_value={"pass":True,"fixture_only":True}):
+                completed=parent.execute_grasp_with_carry("fixture", "",out,args,plan,result,48)
+            self.assertEqual(completed.returncode,0)
+            self.assertEqual(result["gates"]["CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"],"PASS")
+            self.assertTrue((out/"carry_release").exists())
+            self.assertTrue((out/"point_goal_controller.py").is_file())
+            self.assertEqual(len(calls),2)
+            self.assertNotIn("locomotion velocity",result["commands_not_sent"])
+
 if __name__=="__main__":unittest.main()

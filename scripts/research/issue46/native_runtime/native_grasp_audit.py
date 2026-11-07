@@ -401,6 +401,10 @@ def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns):
     for row in window:
         if row.get("engine_version")!=337 or row["generation"]!=generation:return {"pass":False,"failure":"CARRY_NATIVE_GENERATION_CHANGED"}
         if previous is not None and not 0<(row["host_monotonic_ns"]-previous["host_monotonic_ns"])*1e-9<=.20:return {"pass":False,"failure":"CARRY_NATIVE_GAP"}
+        for c in row.get("contacts",[]):
+            pair={c.get("body1"),c.get("body2")}
+            if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
+                return {"pass":False,"failure":"CARRY_OBJECT_EXTERNAL_SUPPORT","source_host_ns":row["host_monotonic_ns"]}
         pose=native_pose(row)
         fault=physical_fault(row,pose,limits,robot_bodies=robot_bodies,allowed_contact_pairs=allowed)
         if fault:return {"pass":False,"failure":fault,"source_host_ns":row["host_monotonic_ns"],"source_sim_time_s":row["sim_time_s"]}

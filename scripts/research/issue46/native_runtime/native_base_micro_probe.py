@@ -382,6 +382,11 @@ def run_probe(smoke_only=False):
                     health=json.loads(Path("/workspace/evidence/carry_heartbeat.json").read_text())
                     if health.get("mode")!="MEASURED_LOAD_BEARING_CARRY_HOLD" or health.get("healthy") is not True or health.get("pid")!=MICRO["carry"]["pid"] or health.get("generation")!=r["generation"] or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-health["native_source_host_ns"])*1e-9<=.20:
                         raise RuntimeError("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED")
+                if MICRO.get("carry"):
+                    for c in r.get("contacts",[]):
+                        pair={c.get("body1"),c.get("body2")}
+                        if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
+                            raise RuntimeError("CARRY_OBJECT_EXTERNAL_SUPPORT")
                 p=native_pose(r)
                 fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"))
                 if fault: raise RuntimeError(fault)

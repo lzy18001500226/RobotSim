@@ -1143,6 +1143,7 @@ class MicroProbeComplete(Exception):
 def execute_grasp_with_carry(container, environment, output, args, replan_record, result, child_budget):
     """Run the existing grip owner and navigation adapter with a measured handoff."""
     import subprocess
+    from scripts.research.issue46.native_runtime import native_grasp_audit
     from scripts.research.issue46.native_runtime import native_base_micro_probe as micro
     retract=replan_record.get("lift_preflight",{}).get("retract_preflight",{})
     if not retract.get("pass_result") or not retract.get("robot_bodies"):raise RuntimeError("CARRY_STATIC_PREFLIGHT_MISSING")
@@ -1182,6 +1183,10 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     handoff_deadline=time.monotonic()+2.
     while not (output/"native_tracking_carry_handoff.json").exists() and time.monotonic()<handoff_deadline:time.sleep(.02)
     if not (output/"native_tracking_carry_handoff.json").exists():raise RuntimeError("CARRY_TRACKER_RELEASE_UNCONFIRMED")
+    handoff=json.loads((output/"native_tracking_carry_handoff.json").read_text())
+    if handoff.get("classification")!="CARTESIAN_TO_MEASURED_JOINT_HOLD" or handoff.get("physical_hold_pass") is not True or handoff.get("generation")!=ready["generation"]:
+        raise RuntimeError("CARRY_TRACKER_RELEASE_INVALID")
+
     route=run(["docker","exec",container,"bash","-lc",environment+f"timeout {int(args.carry_timeout_s+30)}s python3 /workspace/evidence/native_carry_route.py"],timeout_s=args.carry_timeout_s+32.,check=False)
     pg.write_new_text(output/"native_carry_route.stdout",route.stdout)
     nav_path=output/"native_carry_route_result.json"
@@ -2316,6 +2321,8 @@ def main() -> None:
                 arm_pregrasp = run(["docker", "exec", container, "bash", "-lc", environment + f"timeout {child_budget}s python3 /workspace/evidence/native_hal_bilateral_arm_pregrasp.py"], timeout_s=child_budget+2., check=False)
             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.stdout", arm_pregrasp.stdout)
             arm_pregrasp_result = decode_arm_execution_output(arm_pregrasp.returncode,arm_pregrasp.stdout)
+            if args.carry_goal_world_xy is not None:
+                result["gates"]["CARRY_TO_CHAIR"]="PASS" if arm_pregrasp_result.get("carry_execution",{}).get("pass") is True and result.get("carry_navigation",{}).get("pass_result") is True and result.get("carry_native_motion_audit",{}).get("pass") is True else "FAIL"
             if replan_record.get('lift_preflight',{}).get('retract_preflight'):
                 result['gates']['POST_LIFT_RETRACT']='PASS' if arm_pregrasp_result.get('post_lift_retract',{}).get('pass') is True else 'FAIL'
             result["native_hal_bilateral_arm_pregrasp"] = {"candidate": result.get("hal_arm_candidate"), "plan_mode": args.hal_arm_plan_mode, "target_right_arm_rad": hal_arm_target_right, "target_left_arm_rad": hal_arm_target_left, "returncode": arm_pregrasp.returncode, "result": arm_pregrasp_result}
