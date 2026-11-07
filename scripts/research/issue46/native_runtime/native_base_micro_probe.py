@@ -215,6 +215,8 @@ def run_probe(smoke_only=False):
                 raise RuntimeError("CONFLICTING_VELOCITY_GRAPH")
             if not pubs or len(subs)<2 or not rawpubs:
                 raise RuntimeError("GRAPH_DISCOVERY_PENDING")
+            if any(q.node_name in ("_NODE_NAME_UNKNOWN_","") or q.node_namespace=="_NODE_NAMESPACE_UNKNOWN_" for q in [*pubs,*subs,*rawpubs]):
+                raise RuntimeError("GRAPH_DISCOVERY_PENDING")
             if pubs[0].node_name!="cmd_vel_bridge" or rawpubs[0].node_name!=self.get_name():
                 raise RuntimeError("VELOCITY_GRAPH_NOT_UNIQUE:"+str(([p.node_name for p in pubs],[s.node_name for s in subs],[p.node_name for p in rawpubs])))
             # Exact configured-name + process PID contract from reviewed Issue80.
