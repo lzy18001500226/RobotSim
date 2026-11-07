@@ -1956,9 +1956,13 @@ def main() -> None:
             result["retargeting_topic"] = {"topic": "/aima/mc/joint/retargeting", "returncode": retargeting_topic.returncode, "raw": retargeting_topic.stdout}
             result["gates"]["RETARGETING_TOPIC_DISCOVERY"] = "PASS" if retargeting_topic.returncode == 0 and "Type:" in retargeting_topic.stdout else "FAIL"
         if args.capture_mc_rl_debug:
+            import re
+            mc_pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",(output/"mc-console.log").read_text(errors="replace")))
+            if len(mc_pids)!=1:raise RuntimeError("MC_RL_DEBUG_PROCESS_IDENTITY_NOT_UNIQUE")
+            expected_debug_node="mc_ros2_node"+next(iter(mc_pids))
             setup_host=Path(result["mc_rl_debug_capture"]["overlay_setup"])
             setup="/workspace/robotsim/"+str(setup_host.relative_to(EVIDENCE_REPO))
-            debug_command=environment+"source "+shlex.quote(setup)+"; python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s 45 > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
+            debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s 45 > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
             run(["docker","exec","-d",container,"bash","-lc",debug_command],timeout_s=5.)
             wait_for(output/"mc_rl_debug_ready.json",'"status"',timeout_s=8.)
             debug_ready=json.loads((output/"mc_rl_debug_ready.json").read_text())

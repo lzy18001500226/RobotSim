@@ -428,6 +428,30 @@ class McDebugReuseTests(unittest.TestCase):
             self.assertEqual([x.name for x in helper.body if isinstance(x,ast.FunctionDef)],["mc_rl_debug_snapshot"])
             compile(capture,"collector","exec");compile(helper,"snapshot","exec")
 
+    def test_unknown_debug_graph_metadata_waits_for_exact_identity(self):
+        import tempfile
+        from unittest.mock import patch
+        from scripts.agent import path_governance as pg
+        runtime=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026")
+        with tempfile.TemporaryDirectory() as folder,patch.object(pg,"write_new_bytes",side_effect=lambda p,b:Path(p).write_bytes(b)),patch.object(pg,"write_new_text",side_effect=lambda p,t:Path(p).write_text(t)):
+            micro.prepare_reviewed_rl_debug_capture(Path(folder),runtime)
+            tree=ast.parse((Path(folder)/"issue80_mc_rl_debug_capture.py").read_text())
+        cls=next(x for x in tree.body if isinstance(x,ast.ClassDef))
+        cls.bases=[];cls.body=[m for m in cls.body if isinstance(m,ast.FunctionDef) and m.name=="wait_ready"]
+        clock=NS(t=0.);calls=[]
+        ns=dict(time=NS(monotonic=lambda:clock.t),rclpy=NS(ok=lambda:True,spin_once=lambda *a,**k:setattr(clock,"t",clock.t+.05)),
+                _EXPECTED_MC_NODE="mc_ros2_node152",MC_RL_DEBUG_TYPE="aimdk_msgs/msg/McRLDebug",Any=object)
+        exec(compile(ast.Module(body=[cls],type_ignores=[]),"ready","exec"),ns)
+        unknown=dict(topic_type="aimdk_msgs/msg/McRLDebug",node_name="_NODE_NAME_UNKNOWN_",node_namespace="_NODE_NAMESPACE_UNKNOWN_")
+        valid=dict(unknown,node_name="mc_ros2_node152",node_namespace="/")
+        for eventual,passed in ((valid,True),(dict(valid,node_name="mc_ros2_node999"),False)):
+            clock.t=0.;n=ns[cls.name]();n.ready_timeout_s=.2;n.ready_status="WAITING"
+            n._debug_topic_publishers=lambda:[unknown if clock.t<.1 else eventual]
+            n._write_ready_marker=lambda:dict(status=n.ready_status)
+            result=n.wait_ready()
+            self.assertEqual(result["status"]=="READY",passed)
+            self.assertGreaterEqual(clock.t,.1)
+
     def sample_node(self):
         n=ContinuousFeedbackTests().methods(("sample",),math=math,native_pose=micro.native_pose,
                 physical_fault=micro.physical_fault,MICRO=dict(joint_limits={},direction="forward"),

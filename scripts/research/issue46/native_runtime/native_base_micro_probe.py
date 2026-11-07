@@ -88,10 +88,18 @@ def prepare_reviewed_rl_debug_capture(output,runtime):
     text=original.read_text();tree=ast.parse(text)
     helper=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="mc_rl_debug_snapshot")
     stub="from __future__ import annotations\nimport math\nfrom typing import Any, Mapping\n"+ast.get_source_segment(text,helper)+"\n"
-    pg.write_new_bytes(Path(output)/capture.name,capture.read_bytes())
+    capture_text=capture.read_text()
+    old_ready="if len(records) == 1 and len(matching) == 1:"
+    new_ready='if len(records) == 1 and len(matching) == 1 and matching[0]["node_name"] == _EXPECTED_MC_NODE and matching[0]["node_namespace"] == "/":'
+    if capture_text.count(old_ready)!=1:raise ValueError("reviewed debug readiness pattern differs")
+    capture_text=capture_text.replace("from pathlib import Path","from pathlib import Path\nimport os\n_EXPECTED_MC_NODE=os.environ.get('ROBOTSIM_MC_DEBUG_EXPECTED_NODE')",1).replace(old_ready,new_ready,1)
+    capture_text=capture_text.replace('"depth": int(qos.depth),','"depth": int(qos.depth), "endpoint_gid": list(endpoint.endpoint_gid),',1)
+    pg.write_new_text(Path(output)/capture.name,capture_text)
     pg.write_new_text(Path(output)/original.name,stub)
     return dict(classification="REUSED_READ_ONLY_ISSUE80_MC_RL_DEBUG_CAPTURE",
         source_collector=str(capture),source_collector_sha256=sha(capture),
+        staged_collector_sha256=hashlib.sha256(capture_text.encode()).hexdigest(),
+        readiness_only_delta="wait for exact MC PID-bound node identity, not initial FastDDS UNKNOWN metadata",
         source_snapshot_helper=str(original),source_snapshot_helper_sha256=sha(original),
         extracted_helper_sha256=hashlib.sha256(stub.encode()).hexdigest(),
         overlay_setup=str(setup),mc_introspection_sha256=sha(library),
