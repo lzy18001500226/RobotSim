@@ -244,10 +244,10 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
         def jacobian(q):
             residual(q)
             return circle_task_jacobian(model,data,hand,np.asarray(center),local,dofs)
-        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=90,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=200,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         arm=solved.x;e=residual(arm);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
         passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
-        samples.append(dict(fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),pass_result=bool(passed)))
+        samples.append(dict(fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),solver_evaluations=solved.nfev,solver_status=solved.status,solver_optimality=float(solved.optimality),pass_result=bool(passed)))
     root=ik.native.bid(model,"pelvis")
     robot_bodies=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,b) for b in range(model.nbody) if model.body_rootid[b]==root]
     return dict(robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
