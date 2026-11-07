@@ -714,7 +714,8 @@ def run_carry_navigation(n,contract):
             if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
             p=row["pose"]
             if not -1.65<=p["x"]<=1.65 or not -1.75<=p["y"]<=1.75:raise RuntimeError("CARRY_ROOM_WORKSPACE")
-            output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=tick)
+            control_now=time.monotonic()
+            output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=control_now)
             if output.state in (NavState.ALIGN,NavState.DRIVE,NavState.FINAL_ALIGN):
                 metric=output.distance_m if output.state==NavState.DRIVE else abs(output.yaw_error_rad)
                 threshold=.01 if output.state==NavState.DRIVE else .02
@@ -741,7 +742,9 @@ def run_carry_navigation(n,contract):
             elif output.state==NavState.SETTLING:n.publish()
             elif output.state==NavState.ARRIVED:
                 result["goal_triggered_stop"]=True;break
-            else:raise RuntimeError("CARRY_CONTROLLER_"+output.state.value)
+            else:
+                result["controller_rejection"]={"state":output.state.value,"reason":output.reason,"control_now_s":control_now,"native_source_s":row["sample_monotonic_s"]}
+                raise RuntimeError("CARRY_CONTROLLER_"+output.state.value+":"+output.reason)
             result["route_samples"].append(dict(t=tick,state=output.state.value,pose=p,distance_m=output.distance_m,yaw_error_rad=output.yaw_error_rad,linear=n.command_log[-1]["forward"],angular=n.command_log[-1]["angular"],controller_linear=output.linear_x,controller_angular=output.angular_z))
             n.trace.append(row)
             if tick-last_graph>=1.:n.graph();last_graph=tick

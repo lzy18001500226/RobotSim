@@ -865,3 +865,5 @@ https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#option
 202941Z NoSlip2物理运行完成RGB-D抓取、抬升、收臂并写出carry_ready，但8s保载观察函数把require_fresh_sample返回的验证metadata当成含source stamp的记录，因host_monotonic_ns字段缺失在任何行走前中止。不是掉瓶或MC错误，数值诊断的长持握效果仍未完成。给验证metadata增加真实原始host_monotonic_ns（不改年龄阈值或状态），并让完整父交接分支测试直接读取真实JSON/真实freshness函数，避免mock掩盖API形状错误。原失败与容器删除证据保留。
 
 203849Z在动作前POST_LIFT_RETRACT_SWEEP拒绝，最后点位置0.254mm、加权轴残差0.001312，无碰撞；没有闭爪或行走。仅将离线收臂求解预算90->200并记录nfev/status/optimality，门槛和源关节界不变。同一保存状态复核找到通过解（endpoint位置2.79e-11m/轴残差9.99e-11；37次endpoint评估），见fetch-chair-retract-solver-saved-state-check-20261107T204558Z。该结果证明可行解存在，不把它等同动态执行或放宽残差。
+
+205142Z实际通过8.0模拟秒CARRY静态保载及公开唯一publisher/QoS图；移动前原复合停稳PASS（实际采样1.916940s/85帧，nominal2s、保留原min1.90s）。随后PointGoalController在首个运动循环返回stale_state，非零发布0。原因可定位到now=tick在pump/sample之前取值，而原生样本可能在这期间推进，造成合法新样本“received time > now”。改为在获取样本后读取真实单调时间传给控制器，不重打源时间戳、不放宽0.20s；加入pump延迟后仍应合格的实际控制流程回归。NoSlip2的8秒保载通过单列，仍不是搬运/真机PASS。容器已删除。

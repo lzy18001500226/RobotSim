@@ -36,7 +36,7 @@ class CarryNavigationTests(unittest.TestCase):
         pose["vx"]=.201
         self.assertEqual(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"},allowed_contact_pairs=[["R_hand_narrow3_Link","test_cylinder"]]),"PLANAR_SPEED")
 class CarryRouteControlFlowTests(unittest.TestCase):
-    def run_route(self, fault=None, immediate_watchdog=False):
+    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0.):
         import contextlib,io,json,sys,threading
         from types import SimpleNamespace
         from unittest import mock
@@ -50,7 +50,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
             def start_feedback(self):pass
             def stop_feedback(self):pass
             def destroy_node(self):pass
-            def pump(self):pass
+            def pump(self):clock.t+=pump_delay_s
             def graph(self):pass
             def await_graph(self):pass
             def publish(self,f=0.,l=0.,a=0.):
@@ -91,6 +91,10 @@ class CarryRouteControlFlowTests(unittest.TestCase):
         first_stand=next(i for i,x in enumerate(n.events) if x["event"]=="STAND")
         self.assertTrue(any(x["event"]=="ZERO" for x in n.events[:first_stand]))
         self.assertTrue(any(x["event"]=="OBSERVE" and x.get("require_stop") for x in n.events[first_stand+1:]))
+    def test_pose_sample_newer_than_loop_start_is_still_fresh(self):
+        result,n=self.run_route(pump_delay_s=.003)
+        self.assertTrue(result["pass_result"])
+        self.assertNotIn("controller_rejection",result)
     def test_physical_fault_never_rearms(self):
         result,n=self.run_route("PLANAR_SPEED")
         self.assertFalse(result["pass_result"])
