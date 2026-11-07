@@ -26,6 +26,39 @@ def synthetic_cylinder(radius):
     return rgb,depth,K,T,center
 
 class SensorTests(unittest.TestCase):
+    def test_snapshot_requires_fresh_independent_reobservation_and_expires(self):
+        import copy
+        from scripts.research.issue46.perception.native_rgbd_grasp import make_stationary_snapshot,qualify_stationary_snapshot
+        first={'pass':True,'generation':1,'source_host_ns':1000000000,'created_host_ns':1050000000,'estimated_center_world_m':[.5,0.,.7],'axis_world':[0.,0.,1.],'diameter_m':.07,'object_truth_used_by_estimator':False}
+        second={**first,'source_host_ns':2000000000,'created_host_ns':2050000000}
+        snapshot=make_stationary_snapshot(first,second,generation=1,now_ns=2100000000)
+        self.assertEqual(qualify_stationary_snapshot(snapshot,generation=1,now_ns=3000000000)['position_m'],first['estimated_center_world_m'])
+        self.assertEqual(snapshot['original_observation']['source_host_ns'],1000000000)
+        with self.assertRaisesRegex(RuntimeError,'DEADLINE'):qualify_stationary_snapshot(snapshot,generation=1,now_ns=48000000000)
+        with self.assertRaisesRegex(RuntimeError,'CONTRACT'):qualify_stationary_snapshot(snapshot,generation=2,now_ns=3000000000)
+        changed=copy.deepcopy(snapshot);changed['estimated_center_world_m'][0]+=.001
+        with self.assertRaisesRegex(RuntimeError,'CHANGED'):qualify_stationary_snapshot(changed,generation=1,now_ns=3000000000)
+        with self.assertRaisesRegex(RuntimeError,'INDEPENDENT'):make_stationary_snapshot(first,first,generation=1,now_ns=1100000000)
+        second['estimated_center_world_m']=[.51,0.,.7]
+        with self.assertRaisesRegex(RuntimeError,'NOT_STATIONARY'):make_stationary_snapshot(first,second,generation=1,now_ns=2100000000)
+
+    def test_only_initial_readiness_can_await_a_new_image_without_refreshing_old_stamp(self):
+        import json
+        from types import SimpleNamespace as NS
+        from scripts.research.issue46.perception import native_rgbd_grasp as sensor
+        clock=NS(now=2.)
+        record={'pass':True,'generation':1,'source_host_ns':1000000000,'estimated_center_world_m':[.5,0.,.7],'axis_world':[0.,0.,1.],'diameter_m':.07,'object_truth_used_by_estimator':False}
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'latest.json';p.write_text(json.dumps(record))
+            def new_frame(dt):
+                clock.now+=dt;record['source_host_ns']=int(clock.now*1e9);p.write_text(json.dumps(record))
+            with mock.patch.object(sensor.time,'monotonic',side_effect=lambda:clock.now),mock.patch.object(sensor.time,'monotonic_ns',side_effect=lambda:int(clock.now*1e9)),mock.patch.object(sensor.time,'sleep',side_effect=new_frame) as sleep:
+                with self.assertRaisesRegex(RuntimeError,'STALE'):sensor.qualify_estimate(record,generation=1)
+                observed,_=sensor.await_initial_estimate(p,generation=1)
+                self.assertGreater(observed['source_host_ns'],1000000000);sleep.assert_called_once()
+                record['pass']=False;p.write_text(json.dumps(record))
+                with self.assertRaisesRegex(RuntimeError,'NOT_QUALIFIED'):sensor.await_initial_estimate(p,generation=1)
+
     def test_compiled_cache_requires_exact_source_engine_and_binary(self):
         import json,hashlib
         from scripts.research.issue46.perception import native_rgbd_grasp as sensor
@@ -93,13 +126,34 @@ class SensorTests(unittest.TestCase):
         row={'host_monotonic_ns':1000000000,'generation':1,'sim_time_s':1.,'bodies':{'R_omnipicker_base_link':{'position_m':[0.,0.,0.],'rotation':np.eye(3).reshape(-1).tolist()},'test_cylinder':{'position_m':[100.,0.,0.],'rotation':np.eye(3).reshape(-1).tolist()}}}
         sensor={'pass':True,'generation':1,'source_host_ns':1000000000,'estimated_center_world_m':[0.,0.,0.],'axis_world':[0.,0.,1.],'object_truth_used_by_estimator':False}
         row['bodies']['R_omnipicker_base_link']['rotation']=[0.,1.,0.,0.,0.,1.,1.,0.,0.]
-        ns={'math':math,'json':json,'time':mock.Mock(monotonic_ns=lambda:1100000000)};exec(compile(ast.Module(body=[function],type_ignores=[]),'arrival','exec'),ns)
+        ns={'math':math,'json':json,'os':mock.Mock(),'time':mock.Mock(monotonic_ns=lambda:1100000000)};ns['os'].path.exists.return_value=False;exec(compile(ast.Module(body=[function],type_ignores=[]),'arrival','exec'),ns)
         contract={'circle_center_local_m':[0.,0.,0.],'height_above_center_m':0.,'perception_latest':'rgbd'}
         def opened(path,*args,**kwargs):return io.BytesIO((json.dumps(row)+'\n').encode()) if path.endswith('native_latest.json') else io.StringIO(json.dumps(sensor))
         with mock.patch('builtins.open',side_effect=opened):
             result=ns['native_circle_arrival'](contract);self.assertTrue(result['pass']);self.assertEqual(result['target_source'],'FRESH_SIMULATED_HEAD_RGBD')
             sensor['source_host_ns']=0
             with self.assertRaisesRegex(RuntimeError,'RGBD_ARRIVAL'):ns['native_circle_arrival'](contract)
+        # A previously measured arrival may freeze its image target. This is
+        # explicit bounded proprioceptive continuation, not a refreshed image.
+        lock={'phase':'ARRIVAL_HOLD','native_arrival_pass':True,'target_source':'RGBD_FROZEN_AT_VERIFIED_ARRIVAL','created_host_ns':1100000000,'image_source_host_ns':1000000000,'generation':1,'bottle_center_world_m':[0.,0.,0.],'bottle_axis_world':[0.,0.,1.]}
+        row['host_monotonic_ns']=2000000000;ns['time'].monotonic_ns=lambda:2100000000;ns['os'].path.exists.return_value=True
+        def frozen_open(path,*args,**kwargs):return io.BytesIO((json.dumps(row)+'\n').encode()) if path.endswith('native_latest.json') else io.StringIO(json.dumps(lock if path.endswith('native_tracking_phase.json') else sensor))
+        with mock.patch('builtins.open',side_effect=frozen_open):
+            result=ns['native_circle_arrival'](contract);self.assertTrue(result['pass']);self.assertEqual(result['image_source_host_ns'],1000000000);self.assertEqual(result['target_source'],'RGBD_FROZEN_AT_VERIFIED_ARRIVAL')
+            row['host_monotonic_ns']=15000000000;ns['time'].monotonic_ns=lambda:15100000000
+            with self.assertRaisesRegex(RuntimeError,'EXPIRED'):ns['native_circle_arrival'](contract)
+        from scripts.research.issue46.perception.native_rgbd_grasp import make_stationary_snapshot
+        first={'pass':True,'generation':1,'source_host_ns':1000000000,'created_host_ns':1050000000,'estimated_center_world_m':[0.,0.,0.],'axis_world':[0.,0.,1.],'diameter_m':.07,'object_truth_used_by_estimator':False}
+        second={**first,'source_host_ns':2000000000,'created_host_ns':2050000000}
+        snapshot=make_stationary_snapshot(first,second,generation=1,now_ns=2100000000)
+        contract={'circle_center_local_m':[0.,0.,0.],'height_above_center_m':0.,'perception_snapshot':'snapshot'}
+        row['host_monotonic_ns']=3000000000;ns['time'].monotonic_ns=lambda:3100000000
+        def snapshot_open(path,*args,**kwargs):return io.BytesIO((json.dumps(row)+'\n').encode()) if path.endswith('native_latest.json') else io.StringIO(json.dumps(snapshot))
+        with mock.patch('builtins.open',side_effect=snapshot_open):
+            result=ns['native_circle_arrival'](contract);self.assertTrue(result['pass']);self.assertEqual(result['target_source'],'RGBD_BOUNDED_STATIONARY_OBJECT_SNAPSHOT')
+            self.assertEqual(result['image_source_host_ns'],1000000000)
+            row['host_monotonic_ns']=48000000000;ns['time'].monotonic_ns=lambda:48100000000
+            with self.assertRaisesRegex(RuntimeError,'EXPIRED'):ns['native_circle_arrival'](contract)
 
     def test_circle_analytic_jacobian_matches_central_difference(self):
         model=mujoco.MjModel.from_xml_string('<mujoco><worldbody><body><joint axis="0 1 0"/><geom size=".1"/><body pos=".2 0 .1"><joint axis="0 0 1"/><geom size=".02"/></body></body></worldbody></mujoco>')

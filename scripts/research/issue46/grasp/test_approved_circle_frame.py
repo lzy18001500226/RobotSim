@@ -64,6 +64,16 @@ class FrameTests(unittest.TestCase):
         phase['native_arrival_pass']=True;phase['generation']=2
         with self.assertRaisesRegex(RuntimeError,'GENERATION'):self.ns['tracking_task'](row,reference,phase)
 
+    def test_arrival_hold_freezes_verified_vision_target_without_authorizing_closure(self):
+        row={'generation':1,'bodies':{'test_cylinder':{'position_m':[.002,0.,.7],'rotation':np.eye(3).reshape(-1).tolist()}}}
+        reference={'grasp_height_above_center_m':.1}
+        phase={'phase':'ARRIVAL_HOLD','native_arrival_pass':True,'generation':1,'target_world_m':[0.,0.,.8],'bottle_center_world_m':[0.,0.,.7],'bottle_axis_world':[0.,0.,1.]}
+        target,axis=self.ns['tracking_task'](row,reference,phase)
+        np.testing.assert_allclose(target,[0.,0.,.8])
+        self.assertNotIn('bilateral_contact_pass',phase)
+        row['bodies']['test_cylinder']['position_m'][0]=.02
+        with self.assertRaisesRegex(RuntimeError,'MOVED_DURING_CLOSURE'):self.ns['tracking_task'](row,reference,phase)
+
     def test_lift_requires_contact_and_tracks_only_bounded_planned_vertical_motion(self):
         row={'generation':1,'bodies':{'test_cylinder':{'position_m':[0.,0.,.73],'rotation':np.eye(3).reshape(-1).tolist()}}}
         phase={'phase':'LIFTING','native_arrival_pass':True,'generation':1,'target_world_m':[0.,0.,.8],'bottle_center_world_m':[0.,0.,.7],'bottle_axis_world':[0.,0.,1.],'lift_offset_m':.03,'bilateral_contact_pass':True}

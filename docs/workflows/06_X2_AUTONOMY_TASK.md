@@ -62,6 +62,18 @@ rise, 51 unique samples over 1.000s, no table support, cleanup confirmed).
 See the [measured findings](../research/issue46_truth_grasp_execution_findings.md)
 for exact trace identities; do not promote a prior model's PASS to this setup.
 
+Canonical RGB-D substitution now has a fixed-stance physical PASS
+(`20261106T234215Z`, 57.82mm minimum rise) and a full START-to-table physical
+PASS (`20261107T000115Z`, 57.52mm minimum rise). The full run uses a fresh
+calibrated virtual head RGB-D observation, independent pre-execution
+reobservation (0.093mm target difference), and an explicitly bounded stationary
+object snapshot. It is not continuous visibility through the grasping hand.
+Both achieved 51 samples/1.000s unsupported hold; all audited forces fall on
+the approved lower arcs. Assumptions remain upright blue cylinder, known
+height prior and the explicit source-derived collision/control profile above.
+Base truth and independent truth safety/audit are still used; LiDAR substitution
+and perception-driven base adjustment are not qualified by these results.
+
 Use the [scoped parameter authorization](../engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging)
 for existing gripper gain/joint-resistance diagnostics; ordinary permitted
 parameter debugging does not require another approval. Model identity,

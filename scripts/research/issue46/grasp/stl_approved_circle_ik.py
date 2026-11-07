@@ -111,7 +111,7 @@ def tracking_task(row, reference, phase=None):
     if phase is None:
         if np.linalg.norm(measured-np.array(reference['grasp_section_center_world_m']))>.01:raise RuntimeError('BOTTLE_MOVED_BEFORE_CLOSURE')
         return measured,B[:,2]
-    if phase.get('phase') not in ('CLOSING','LIFTING') or phase.get('native_arrival_pass') is not True:raise RuntimeError('INVALID_CLOSURE_PHASE_HANDOFF')
+    if phase.get('phase') not in ('ARRIVAL_HOLD','CLOSING','LIFTING') or phase.get('native_arrival_pass') is not True:raise RuntimeError('INVALID_CLOSURE_PHASE_HANDOFF')
     if phase.get('generation')!=row['generation']:raise RuntimeError('CLOSURE_PHASE_GENERATION_MISMATCH')
     anchor=np.asarray(phase['target_world_m'],dtype=float);axis=np.asarray(phase['bottle_axis_world'],dtype=float);initial=np.asarray(phase['bottle_center_world_m'],dtype=float)
     if any(x.shape!=(3,) or not np.isfinite(x).all() for x in (anchor,axis,initial)) or abs(np.linalg.norm(axis)-1.)>.001:raise RuntimeError('INVALID_CLOSURE_ANCHOR')
@@ -236,11 +236,21 @@ def track_native(reference_path, latest_path, output_path):
             if generation is not None and row['generation']!=generation:raise RuntimeError('NATIVE_TRACKING_GENERATION_CHANGED')
             phase_path=output_path.with_name('native_tracking_phase.json')
             phase=json.loads(phase_path.read_text()) if phase_path.exists() else None
+            if reference.get('target_source')=='fresh-rgbd-snapshot' and phase is None:
+                from scripts.research.issue46.perception.native_rgbd_grasp import qualify_stationary_snapshot
+                snapshot_ref=reference['perception']['snapshot'];snapshot_path=Path(snapshot_ref['path'])
+                if hashlib.sha256(snapshot_path.read_bytes()).hexdigest()!=snapshot_ref['sha256']:raise RuntimeError('RGBD_SNAPSHOT_REFERENCE_CHANGED')
+                row['bodies']['test_cylinder']=qualify_stationary_snapshot(json.loads(snapshot_path.read_text()),generation=row['generation'])
             if reference.get('target_source')=='fresh-rgbd' and phase is None:
                 from scripts.research.issue46.perception.native_rgbd_grasp import qualify_estimate
-                estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
+                if not trace:
+                    from scripts.research.issue46.perception.native_rgbd_grasp import await_initial_estimate
+                    estimate,_=await_initial_estimate(reference['perception']['latest_path'],generation=row['generation'])
+                    row=json.loads(Path(latest_path).read_text())
+                    if not 0.<=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('STALE_NATIVE_AFTER_INITIAL_IMAGE_READINESS')
+                else:estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
                 row['bodies']['test_cylinder']=qualify_estimate(estimate,generation=row['generation'])
-            if phase is not None and not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=(9. if phase.get('phase')=='LIFTING' else 6.):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
+            if phase is not None and not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=(12. if phase.get('phase')=='ARRIVAL_HOLD' else 9. if phase.get('phase')=='LIFTING' else 6.):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
             generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
@@ -270,7 +280,7 @@ def main():
     parser.add_argument("--physical-lift-test",action="store_true")
     parser.add_argument("--approach-opening-percent",type=int,default=100)
     parser.add_argument("--free-bottle-axis-roll",action="store_true",help="constrain reviewed bottle axis and circle centre, letting IK choose axial roll")
-    parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic","fresh-rgbd"),default="historical-rgbd-replay",help="explicit target provenance")
+    parser.add_argument("--target-source",choices=("historical-rgbd-replay","truth-diagnostic","fresh-rgbd","fresh-rgbd-snapshot"),default="historical-rgbd-replay",help="explicit target provenance and continuous/snapshot temporal contract")
     parser.add_argument("--base-offset-xyz-m",type=float,nargs=3,default=(0.,0.,0.))
     parser.add_argument("--waist-pitch-offset-rad",type=float,default=0.,help="offline source-limited forward-bend candidate; nonzero requires a separately supported waist control handoff")
     args = parser.parse_args()
@@ -299,11 +309,10 @@ def main():
     if not limits[0]+1e-3<=q[1]<=limits[1]-1e-3:raise ValueError("planned waist pitch violates unchanged source joint limits")
     perception = candidate["perception"]
     object_center = np.array(perception["estimated_center_world_m"])
-    if args.target_source in ("truth-diagnostic","fresh-rgbd"):
-        if args.target_source=='fresh-rgbd':
-            from scripts.research.issue46.perception.native_rgbd_grasp import qualify_estimate
-            latest=Path(state['perception']['latest_path']);estimated=json.loads(latest.read_text())
-            pose=qualify_estimate(estimated,generation=state['native_snapshot']['generation'])
+    if args.target_source in ("truth-diagnostic","fresh-rgbd","fresh-rgbd-snapshot"):
+        if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot'):
+            from scripts.research.issue46.perception.native_rgbd_grasp import await_initial_estimate
+            latest=Path(state['perception']['latest_path']);estimated,pose=await_initial_estimate(latest,generation=state['native_snapshot']['generation'])
             state['object_pose_world']={'xyz_m':pose['position_m'],'quaternion_wxyz':pose['quaternion_wxyz']}
         source_data=mujoco.MjData(model)
         if 'object_pose_world' in state:
@@ -314,7 +323,7 @@ def main():
         mujoco.mj_forward(model,source_data)
         object_center=source_data.xpos[ik.native.bid(model,"test_cylinder")].copy()
         bottle_axis=source_data.xmat[ik.native.bid(model,'test_cylinder')].reshape(3,3)[:,2].copy()
-        perception=({**state['perception'],'observation_at_plan':estimated,'object_truth_used':False} if args.target_source=='fresh-rgbd' else {"source":"NATIVE_EPISODE_TRUTH_DIAGNOSTIC_ONLY" if 'object_pose_world' in state else 'XML_INITIAL_TRUTH_DIAGNOSTIC_ONLY',"object_center_world_m":object_center.tolist(),"scene_sha256":candidate["scene"]["sha256"],"native_snapshot":state.get('native_snapshot')})
+        perception=({**state['perception'],'observation_at_plan':estimated,'object_truth_used':False,'temporal_contract':'SNAPSHOT_REVERIFY_BEFORE_EXECUTION' if args.target_source=='fresh-rgbd-snapshot' else 'CONTINUOUS_UNTIL_VERIFIED_ARRIVAL'} if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot') else {"source":"NATIVE_EPISODE_TRUTH_DIAGNOSTIC_ONLY" if 'object_pose_world' in state else 'XML_INITIAL_TRUTH_DIAGNOSTIC_ONLY',"object_center_world_m":object_center.tolist(),"scene_sha256":candidate["scene"]["sha256"],"native_snapshot":state.get('native_snapshot')})
     else:
         perception={**perception,"source":"HISTORICAL_RGBD_REPLAY_NOT_CURRENT_EPISODE","fresh_capture":False}
     # Grasp height is a task pose, not a physical/joint limit. Retain >=10mm
@@ -342,7 +351,7 @@ def main():
     object_center+=args.grasp_height_above_center_m*bottle_axis
     # The canonical existing fixture is 70mm diameter. Match its circumference
     # with the nearest approved opening, then inspect adjacent closure commands.
-    requested_diameter_mm=float(estimated['diameter_m']*1000) if args.target_source=='fresh-rgbd' else 70.
+    requested_diameter_mm=float(estimated['diameter_m']*1000) if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot') else 70.
     match = min(samples,key=lambda s:abs(s["diameter_mm"]-requested_diameter_mm))
     command = match["opening_percent"]
     open_command=args.approach_opening_percent
@@ -427,7 +436,7 @@ def main():
     record["waist_actuation_required"]=args.waist_pitch_offset_rad!=0
     record["root_legs_waist_frozen"]=args.waist_pitch_offset_rad==0
     record["root_and_legs_frozen"]=True
-    record["fresh_runtime_rgbd_verified"]=args.target_source=='fresh-rgbd'
+    record["fresh_runtime_rgbd_verified"]=args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot')
     if args.host_model_cache:record['host_model_cache']={'path':str(args.host_model_cache),'sha256':hashlib.sha256(args.host_model_cache.read_bytes()).hexdigest()}
     record['local_bottle_axis_in_hand']=local_axis.tolist();record['grasp_axis_tilt_rad']=theta
     record['explicit_axial_branch']='HAND_MINUS_X' if args.inverted_bottle_axis else 'HAND_PLUS_X'

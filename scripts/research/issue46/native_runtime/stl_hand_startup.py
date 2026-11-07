@@ -784,14 +784,32 @@ def native_circle_arrival(contract):
  row=records[0];age=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9
  if not 0.<=age<=.20:raise RuntimeError('STALE_NATIVE_TCP_POSE')
  hand=row['bodies']['R_omnipicker_base_link'];bottle=row['bodies']['test_cylinder']
- target_source='NATIVE_TRUTH_DIAGNOSTIC'
+ target_source='NATIVE_TRUTH_DIAGNOSTIC';image_source_ns=None
+ if contract.get('perception_snapshot'):
+  with open(contract['perception_snapshot']) as f:snapshot=json.load(f)
+  frozen=snapshot['frozen_at_host_ns'];original=snapshot['original_observation'];verification=snapshot['pre_execution_verification']
+  if snapshot.get('schema')!='robotsim.issue46.stationary-rgbd-grasp-snapshot.v1' or snapshot.get('generation')!=row['generation'] or snapshot.get('valid_for_s')!=45. or snapshot.get('expected_object_stationary') is not True or not 0.<=(time.monotonic_ns()-frozen)*1e-9<=45.:raise RuntimeError('INVALID_OR_EXPIRED_RGBD_SNAPSHOT')
+  if any(v.get('pass') is not True or v.get('generation')!=row['generation'] or v.get('object_truth_used_by_estimator') is not False for v in (original,verification)) or not 0.<=(frozen-verification['source_host_ns'])*1e-9<=.20 or verification['source_host_ns']<=original['source_host_ns']:raise RuntimeError('RGBD_SNAPSHOT_ACQUISITION_UNQUALIFIED')
+  position=snapshot['estimated_center_world_m'];axis=snapshot['axis_world'];image_source_ns=original['source_host_ns']
+  if position!=original['estimated_center_world_m'] or axis!=[0.,0.,1.] or not all(math.isfinite(v) for v in position) or math.sqrt(sum((a-b)**2 for a,b in zip(position,verification['estimated_center_world_m'])))>.002 or abs(original['diameter_m']-verification['diameter_m'])>.002:raise RuntimeError('RGBD_SNAPSHOT_TARGET_CHANGED')
+  bottle={'position_m':position,'rotation':[1.,0.,0.,0.,1.,0.,0.,0.,1.]};target_source='RGBD_BOUNDED_STATIONARY_OBJECT_SNAPSHOT'
  if contract.get('perception_latest'):
-  with open(contract['perception_latest']) as f:observed=json.load(f)
-  sensor_age=(time.monotonic_ns()-observed['source_host_ns'])*1e-9
-  if observed.get('pass') is not True or observed.get('generation')!=row['generation'] or not 0.<=sensor_age<=.20 or observed.get('object_truth_used_by_estimator') is not False:raise RuntimeError('RGBD_ARRIVAL_UNQUALIFIED')
-  position=observed['estimated_center_world_m'];axis=observed['axis_world']
+  lock=None
+  phase_path='/workspace/evidence/native_tracking_phase.json'
+  if os.path.exists(phase_path):
+   with open(phase_path) as f:lock=json.load(f)
+  if lock and lock.get('phase')=='ARRIVAL_HOLD':
+   age_lock=(time.monotonic_ns()-lock['created_host_ns'])*1e-9
+   image_source_ns=lock['image_source_host_ns']
+   if lock.get('native_arrival_pass') is not True or lock.get('target_source')!='RGBD_FROZEN_AT_VERIFIED_ARRIVAL' or lock.get('generation')!=row['generation'] or not 0.<=age_lock<=12. or not 0.<=(lock['created_host_ns']-image_source_ns)*1e-9<=.20:raise RuntimeError('INVALID_OR_EXPIRED_RGBD_ARRIVAL_LOCK')
+   position=lock['bottle_center_world_m'];axis=lock['bottle_axis_world'];target_source='RGBD_FROZEN_AT_VERIFIED_ARRIVAL'
+  else:
+   with open(contract['perception_latest']) as f:observed=json.load(f)
+   sensor_age=(time.monotonic_ns()-observed['source_host_ns'])*1e-9
+   if observed.get('pass') is not True or observed.get('generation')!=row['generation'] or not 0.<=sensor_age<=.20 or observed.get('object_truth_used_by_estimator') is not False:raise RuntimeError('RGBD_ARRIVAL_UNQUALIFIED')
+   position=observed['estimated_center_world_m'];axis=observed['axis_world'];image_source_ns=observed['source_host_ns'];target_source='FRESH_SIMULATED_HEAD_RGBD'
   if len(position)!=3 or not all(math.isfinite(v) for v in position) or axis!=[0.,0.,1.]:raise RuntimeError('INVALID_RGBD_ARRIVAL_POSE')
-  bottle={'position_m':position,'rotation':[1.,0.,0.,0.,1.,0.,0.,0.,1.]};target_source='FRESH_SIMULATED_HEAD_RGBD'
+  bottle={'position_m':position,'rotation':[1.,0.,0.,0.,1.,0.,0.,0.,1.]}
  R=hand['rotation'];B=bottle['rotation'];c=contract['circle_center_local_m'];height=contract['height_above_center_m']
  tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
  target=[bottle['position_m'][i]+height*B[3*i+2] for i in range(3)]
@@ -803,7 +821,7 @@ def native_circle_arrival(contract):
  local_axis=contract.get('local_bottle_axis_in_hand',[1.,0.,0.]);world_axis=[sum(R[3*i+j]*local_axis[j] for j in range(3)) for i in range(3)]
  angle=math.acos(max(-1.,min(1.,sum(world_axis[i]*B[3*i+2] for i in range(3)))))
  expected_raw=math.acos(max(-1.,min(1.,local_axis[0])))
- return {'pass':error<=.005 and nominal_error<=.005 and angle<=.03 and abs(raw_angle-expected_raw)<=.03,'position_error_m':error,'nominal_circle_error_m':nominal_error,'axis_error_rad':angle,'raw_hand_axis_to_bottle_rad':raw_angle,'planned_mesh_axis_offset_rad':expected_raw,'tcp_world_m':tcp,'target_world_m':target,'bottle_center_world_m':bottle['position_m'],'bottle_axis_world':[B[2],B[5],B[8]],'target_source':target_source,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
+ return {'pass':error<=.005 and nominal_error<=.005 and angle<=.03 and abs(raw_angle-expected_raw)<=.03,'position_error_m':error,'nominal_circle_error_m':nominal_error,'axis_error_rad':angle,'raw_hand_axis_to_bottle_rad':raw_angle,'planned_mesh_axis_offset_rad':expected_raw,'tcp_world_m':tcp,'target_world_m':target,'bottle_center_world_m':bottle['position_m'],'bottle_axis_world':[B[2],B[5],B[8]],'target_source':target_source,'image_source_host_ns':image_source_ns,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
 def native_bilateral_contact(close_start):
  path='/workspace/evidence/native_physics.jsonl'
  with open(path,'rb') as stream:
@@ -938,6 +956,12 @@ class Plan(Node):
    if self.tilt and max(self.tilt)>math.radians(15):raise RuntimeError('PREGRASP_TILT_LIMIT')
    if len(self.odom)>1 and math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])>.05:raise RuntimeError('PREGRASP_BASE_DRIFT_LIMIT:'+json.dumps({'stage':stage,'start_xy':self.odom[0],'current_xy':self.odom[-1],'measured_drift_m':math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])}))
    self.refresh_native()
+   if CIRCLE_CONTRACT and CIRCLE_CONTRACT.get('perception_latest') and not self.closing_started and self.approach_fraction>=1. and not os.path.exists('/workspace/evidence/native_tracking_phase.json'):
+    observed_arrival=native_circle_arrival(CIRCLE_CONTRACT)
+    if observed_arrival['pass']:
+     lock={'phase':'ARRIVAL_HOLD','native_arrival_pass':True,'target_world_m':observed_arrival['target_world_m'],'bottle_center_world_m':observed_arrival['bottle_center_world_m'],'bottle_axis_world':observed_arrival['bottle_axis_world'],'target_source':'RGBD_FROZEN_AT_VERIFIED_ARRIVAL','image_source_host_ns':observed_arrival['image_source_host_ns'],'generation':self.native_generation,'created_host_ns':time.monotonic_ns(),'first_measured_arrival':observed_arrival}
+     if not 0.<=(lock['created_host_ns']-lock['image_source_host_ns'])*1e-9<=.20:raise RuntimeError('RGBD_LOCK_SOURCE_EXPIRED_BEFORE_HANDOFF')
+     self.write_phase(lock);print(json.dumps({'rgbd_target_locked_after_actual_arrival':lock}),flush=True)
    if stage in ('LIFT_PROBE','LIFT'):
     u=min(1.,(time.monotonic()-start)/seconds);smooth=3*u*u-2*u*u*u
     self.lift_phase['lift_offset_m']=.008*smooth if stage=='LIFT_PROBE' else .008+.052*smooth

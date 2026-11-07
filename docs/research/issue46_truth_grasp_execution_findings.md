@@ -581,3 +581,72 @@ candidate was sent to the physical controller. These local bounded failures
 are not proof of global IK impossibility. In particular, the existing 1.1rad
 arm-transition excursion bound and the source wrist/shoulder limits remain;
 unproven larger-arm or lower-body motions are not silently enabled.
+
+## Canonical fresh RGB-D physical acceptance
+
+The continuous-vision fixed-stance run `20261106T234215Z` passed after target
+handoff at the first actual qualified arrival: position error 3.583mm and axis
+error 0.01307rad. This freezes the RGB-D estimate for bounded proprioceptive
+refinement, not automatic closure. The original 5mm/0.03rad arrival, joint,
+posture, contact and lift gates remain. There were 571 qualified images,
+maximum processing age 0.1578s, and one delayed image discarded without
+refreshing its stamp. Native feedback remains limited to 0.20s. The actual
+lift minimum was 57.820mm over 51 samples/1.000s, with minimum normals
+1.65199/1.63090N, upward force 1.96175N and no table support.
+
+Full continuous-vision run `20261106T234557Z` stopped before closure when the
+hand occluded the bottle earlier from its different attained docking pose.
+It is preserved as FAIL/NOT RUN for closure/lift. Perception cannot see through
+the hand; confidence failure is not converted into a successful estimate.
+
+The distinct `fresh-rgbd-snapshot` mode uses a freshly qualified planning image,
+then a second independently stamped image before arm execution. Position and
+diameter must agree within 2mm. The bounded world target is explicitly static,
+expires after 45s, and invalidates on Reset generation change or altered data.
+It never reports the old image as a new live frame. Encoder/base feedback,
+actual TCP arrival, object-motion/fall/contact guards, closing force and free-body
+lift acceptance remain unchanged. This reuses the staged object-pose/IK/approach
+idea in the official [MTC pick example](https://moveit.picknik.ai/main/doc/tutorials/pick_and_place_with_moveit_task_constructor/pick_and_place_with_moveit_task_constructor.html);
+its planning-scene attachment and broad collision allowances are **not** copied
+into MuJoCo physics. No new navigation framework or vendor change is introduced.
+
+Full snapshot run `20261107T000115Z` passed START -> actual walking -> table
+stop -> RGB-D -> circle IK -> measured arrival -> bilateral closure -> lift:
+
+| Measurement | Actual native result |
+| --- | ---: |
+| Start / dock XY | (-1.490295,-1.509751) / (0.903756,-1.525896)m |
+| Nominal dock target error | 64.640mm (unchanged 100mm gate) |
+| Fresh reobservation difference | 0.09262mm |
+| RGB-D estimated diameter | 69.731mm |
+| Minimum accepted lift / hold | 57.521mm / 51 frames, 1.000s |
+| Minimum narrow / wide pad normal | 1.67184 / 1.65989N |
+| Mean upward pad force | 1.96187N (object weight 1.962N) |
+| Table support / cleanup | zero / container positively absent |
+
+The current sensor assumes a known cylinder height and an upright axis; this
+is not generic unknown-height/6D recognition or hardware camera calibration.
+The 64.6mm dock error did not prevent this actual grasp because IK replanned
+from the attained base state. It does not establish every intervening stance.
+
+Exact-engine source-face audits `native-lift-pad-region-audit-20261107T000651Z`
+and its `-01` sibling passed all 51 held frames for the fixed/full RGB-D runs.
+Maximum proxy-point-to-source-surface distances were 0.417/0.740mm; region-outside
+force was zero. The full run had 3--4 proxy solver contacts per frame; this
+does not prove four independent physical contact bands or real contact area.
+
+Full RGB-D reproduction, with native physics paused only after the measured
+result for multi-angle human review:
+
+```powershell
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 MUJOCO_GL=glfw bash scripts/research/issue46/grasp/run_truth_circle_review.sh --source-pad-coacd-comparison --initial-hands-fully-open --both-claws-zero-internal-friction --right-claw-damping 1.27 --elliptic-grip-solver-diagnostic --target-source fresh-rgbd-snapshot --rgbd-render-adapter NVIDIA --dock-world-xy 0.85 -1.49 --dock-braking-delay-s 0.4130254699850907 --grasp-height-above-center-m 0.10 --physical-lift-test --pause-for-human-review
+```
+
+Recorded full-flow review uses the same wrapper with
+`--review-captured-run /home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261107T000115Z --review-full-flow`.
+It replays actual recorded states, does not rerun physics, and permits free
+camera rotation. Source-region audit reproduction (zero physics):
+
+```bash
+/home/lzy18001500226/.local/bin/uv run --offline --with mujoco==3.3.7 --with numpy==2.2.6 --with scipy==1.15.3 --with trimesh==4.7.4 python3 scripts/research/issue46/native_runtime/native_lift_contact_region_audit.py --capture /home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261107T000115Z
+```

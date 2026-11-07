@@ -41,7 +41,7 @@ def main():
     p.add_argument("--initial-hands-fully-open",action="store_true")
     p.add_argument("--pause-for-human-review",action="store_true")
     p.add_argument("--native-physics-audit",action="store_true",help="read-only actual-engine pose/contact/force observer; ABI must match installed library")
-    p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay","fresh-rgbd"),default="truth-diagnostic",help="explicit target provenance; fresh-rgbd uses the calibrated virtual head sensor")
+    p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay","fresh-rgbd","fresh-rgbd-snapshot"),default="truth-diagnostic",help="explicit provenance; snapshot mode reobserves before a bounded stationary-target execution")
     p.add_argument("--rgbd-render-adapter",help="explicit WSLg/Mesa sensor-process GPU selection, e.g. NVIDIA; actual renderer identity must agree")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--grasp-axis-tilt-rad",type=float,default=0.)
@@ -92,8 +92,8 @@ def main():
                 try:row=json.loads(line);break
                 except (ValueError,UnicodeDecodeError):continue
             synchronized=native_grasp_audit.planning_state_from_native(row,json.loads(state.read_text()))
-            if args.target_source=='fresh-rgbd':
-                from scripts.research.issue46.perception.native_rgbd_grasp import qualify_estimate
+            if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot'):
+                from scripts.research.issue46.perception.native_rgbd_grasp import await_initial_estimate
                 perception_output=state.parent/'fresh_rgbd'
                 scene=json.loads(args.candidate.read_text())['scene']['path']
                 sensor_command=['/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python',str(REPO/'scripts/research/issue46/perception/native_rgbd_grasp.py'),'--stream-scene',scene,'--native-latest',str(state.parent/'native_latest.json'),'--output-dir',str(perception_output)]
@@ -111,7 +111,7 @@ def main():
                     if latest.exists():
                         observation=json.loads(latest.read_text())
                         if observation.get('pass') is not True:raise RuntimeError('RGBD_SENSOR_NOT_QUALIFIED:'+str(observation))
-                        pose=qualify_estimate(observation,generation=row['generation']);break
+                        observation,pose=await_initial_estimate(latest,generation=row['generation']);break
                     time.sleep(.02)
                 else:raise RuntimeError('RGBD_SENSOR_READINESS_TIMEOUT')
                 synchronized['object_pose_world']={'xyz_m':pose['position_m'],'quaternion_wxyz':pose['quaternion_wxyz']}
@@ -137,6 +137,18 @@ def main():
         if any(str(v).endswith('/stl_approved_circle_ik.py') for v in command) and '--runtime-handoff' in command and result.returncode==0 and json.loads(result.stdout.strip().splitlines()[-1]).get('gate')=='PASS':
             reference=Path(json.loads(result.stdout.strip().splitlines()[-1])['output_wsl'])/'result.json'
             evidence=Path(command[command.index('--standing-state')+1]).parent
+            if args.target_source=='fresh-rgbd-snapshot':
+                from scripts.research.issue46.perception.native_rgbd_grasp import await_initial_estimate,make_stationary_snapshot
+                plan=json.loads(reference.read_text());planned=plan['perception']['observation_at_plan']
+                verification,_=await_initial_estimate(perception_output/'latest.json',generation=planned['generation'],after_source_ns=planned['source_host_ns'])
+                snapshot=make_stationary_snapshot(planned,verification,generation=planned['generation'])
+                snapshot_path=evidence/'rgbd_grasp_snapshot.json';pg.write_new_text(snapshot_path,json.dumps(snapshot,indent=2)+'\n')
+                plan['static_replan_source']={'path':str(reference),'sha256':native.sha256(reference)}
+                plan['perception']['snapshot']={'path':str(snapshot_path),'sha256':native.sha256(snapshot_path)}
+                reference=evidence/'rgbd_snapshot_tracking_reference.json';pg.write_new_text(reference,json.dumps(plan,indent=2)+'\n')
+                pg.write_new_text(perception_output/'stop','snapshot acquired and reverified before arm execution\n')
+                perception_process.wait(timeout=3.)
+                if perception_process.returncode:raise RuntimeError('RGBD_SNAPSHOT_SENSOR_TEARDOWN_FAILED')
             tracking_output=evidence/'native_tracking_target.json'
             track_command=['/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python',str(Path(__file__).with_name('stl_approved_circle_ik.py')),'--track-native',str(reference),str(evidence/'native_latest.json'),str(tracking_output)]
             pg.write_new_text(evidence/'native_tracking_command.json',json.dumps(track_command)+'\n')
@@ -179,7 +191,7 @@ def main():
         candidate['source_pad_collision_comparison']={'source_candidate':str(original_candidate),'source_candidate_sha256':native.sha256(original_candidate),'overlay':str(claw),'overlay_sha256':native.sha256(claw),'classification':'SIMULATION_ONLY_SOURCE_DERIVED_COLLISION_COMPARISON'}
         candidate_dir=pg.create_unique_output_directory(Path('/home/lzy18001500226/projects/RobotSim/reviews/issue-46'),prefix='source-pad-coacd-ik-input').native_path
         pg.write_new_text(candidate_dir/'candidate.json',json.dumps(candidate,indent=2)+'\n');pg.write_artifact_manifest(candidate_dir);args.candidate=candidate_dir/'candidate.json'
-    if args.target_source=='fresh-rgbd':
+    if args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot'):
         from scripts.research.issue46.perception.native_rgbd_grasp import prepare_host_cache
         host_model_cache=prepare_host_cache(Path(json.loads(args.candidate.read_text())['scene']['path']))
     helper=REPO/"scripts/research/issue46/native_runtime/native_mujoco_reset.py"
@@ -193,10 +205,10 @@ def main():
         argv[argv.index('--hal-hand-close-hold-s')+1]='5'
     argv.extend(["--dock-position-tolerance-m",str(args.dock_position_tolerance_m)])
     if args.dock_braking_delay_s is not None:
-        if not .0<args.dock_braking_delay_s<=1. or args.target_source not in ('truth-diagnostic','fresh-rgbd'):raise ValueError('measured braking profile requires bounded delay and native feedback')
+        if not .0<args.dock_braking_delay_s<=1. or args.target_source not in ('truth-diagnostic','fresh-rgbd','fresh-rgbd-snapshot'):raise ValueError('measured braking profile requires bounded delay and native feedback')
         argv.extend(['--dock-braking-delay-s',str(args.dock_braking_delay_s)])
     argv.extend(["--arm-plan-duration-s",str(args.arm_plan_duration_s),"--arm-plan-hold-s",str(args.arm_plan_hold_s)])
-    if args.target_source in ("truth-diagnostic","fresh-rgbd"):argv.extend(["--native-dock-truth-feedback","--native-circle-tracking"])
+    if args.target_source in ("truth-diagnostic","fresh-rgbd","fresh-rgbd-snapshot"):argv.extend(["--native-dock-truth-feedback","--native-circle-tracking"])
     if args.startup_opening_diagnostic:argv.append("--startup-opening-diagnostic")
     if args.initial_hands_fully_open:argv.append("--initial-hands-fully-open")
     if args.open_hand_transit_park:argv.append("--open-hand-transit-park")
