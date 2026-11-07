@@ -1204,7 +1204,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     while not (output/"native_tracking_carry_handoff.json").exists() and time.monotonic()<handoff_deadline:time.sleep(.02)
     if not (output/"native_tracking_carry_handoff.json").exists():raise RuntimeError("CARRY_TRACKER_RELEASE_UNCONFIRMED")
     handoff=json.loads((output/"native_tracking_carry_handoff.json").read_text())
-    if handoff.get("classification")!="CARTESIAN_TO_MEASURED_JOINT_HOLD" or handoff.get("physical_hold_pass") is not True or handoff.get("generation")!=ready["generation"]:
+    if handoff.get("classification")!="BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY" or handoff.get("physical_hold_pass") is not True or handoff.get("generation")!=ready["generation"]:
         raise RuntimeError("CARRY_TRACKER_RELEASE_INVALID")
 
     route=run(["docker","exec",container,"bash","-lc",environment+f"timeout {int(args.carry_timeout_s+30)}s python3 /workspace/evidence/native_carry_route.py"],timeout_s=args.carry_timeout_s+32.,check=False)
@@ -1215,7 +1215,8 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.read_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
     result["carry_native_motion_audit"]=recorded
     if not recorded["pass"]:
-        nav["pass_result"]=False;nav["failure"]="RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure"))
+        nav["pass_result"]=False;nav.setdefault("failure","RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure")))
+        result["carry_navigation"]["recorded_native_failure"]=recorded.get("failure")
         result["carry_navigation"]["pass_result"]=False;result["carry_navigation"]["failure"]=nav["failure"]
     result["gates"]["CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"]="PASS" if nav.get("pass_result") else "FAIL"
     if any(any(float(c.get(k,0)) for k in ("forward","lateral","angular")) for c in nav.get("command_log",[])):

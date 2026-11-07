@@ -125,7 +125,7 @@ class CarryParentIntegrationTests(unittest.TestCase):
             (out/"native_latest.json").write_text(json.dumps(native)+chr(10))
             (out/"carry_ready.json").write_text(json.dumps(ready))
             (out/"carry_heartbeat.json").write_text(json.dumps(dict(pid=19,host_monotonic_ns=now)))
-            (out/"native_tracking_carry_handoff.json").write_text(json.dumps(dict(classification="CARTESIAN_TO_MEASURED_JOINT_HOLD",physical_hold_pass=True,generation=1)))
+            (out/"native_tracking_carry_handoff.json").write_text(json.dumps(dict(classification="BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY",physical_hold_pass=True,generation=1)))
             (out/"native_micro_stop_contract.py").write_text("# fixture")
             args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.)
             plan={"lift_preflight":{"retract_preflight":{"pass_result":True,"robot_bodies":["pelvis"],"source_motion_limits":{},"carry_lease_s":30.}}}

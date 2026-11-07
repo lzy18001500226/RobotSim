@@ -12,6 +12,27 @@ class FrameTests(unittest.TestCase):
         functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh')]
         cls.ns={'np':np};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
+    def test_carry_target_follows_base_xy_yaw_but_not_pelvis_sway_or_object_truth(self):
+        from scipy.spatial.transform import Rotation
+        reference=dict(grasp_height_above_center_m=.1)
+        phase=dict(phase='CARRY_HOLD',native_arrival_pass=True,post_retract_physical_hold_pass=True,generation=1,carry_heading_xy_m=[.3,-.2],carry_world_z_m=.85,initial_object_in_hand_m=[0.,0.,.1],slip_reference='GRASP_SECTION',created_host_ns=100,carry_lease_s=100.)
+        row=dict(generation=1,bodies={
+            'pelvis':dict(position_m=[2.,3.,.65],rotation=Rotation.from_euler('xyz',[.07,-.06,.5]).as_matrix().ravel().tolist()),
+            'R_omnipicker_base_link':dict(position_m=[1.,1.,.75],rotation=np.eye(3).ravel().tolist()),
+            'test_cylinder':dict(position_m=[1.,1.,.75],rotation=np.eye(3).ravel().tolist())})
+        point,axis=self.ns['tracking_task'](row,reference,phase)
+        expected=np.array([2.,3.])+np.array([[np.cos(.5),-np.sin(.5)],[np.sin(.5),np.cos(.5)]])@np.array([.3,-.2])
+        np.testing.assert_allclose(point,np.r_[expected,.85],atol=1e-12)
+        np.testing.assert_array_equal(axis,[0.,0.,1.])
+        # Change the independently checked object pose while preserving hand
+        # relation: the target does not chase the object.
+        row['bodies']['test_cylinder']['position_m'][0]+=.004
+        np.testing.assert_allclose(self.ns['tracking_task'](row,reference,phase)[0],point)
+        self.assertTrue(self.ns['tracking_phase_is_fresh'](phase,100+99000000000))
+        self.assertFalse(self.ns['tracking_phase_is_fresh'](phase,100+101000000000))
+        row['bodies']['test_cylinder']['position_m'][0]+=.007
+        with self.assertRaisesRegex(RuntimeError,'SLIPPED'):self.ns['tracking_task'](row,reference,phase)
+
     def test_full_source_posture_cannot_be_executed_or_silently_enabled(self):
         import subprocess,sys
         planner=Path(__file__).with_name("stl_approved_circle_ik.py")

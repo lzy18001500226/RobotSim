@@ -782,7 +782,31 @@ class PostLiftRetractTests(TestCase):
     def test_bad_retract_cannot_generate_runtime(self):
         for change in (dict(pass_result=False),dict(offset_world_m=[-.3,0.,0.]),dict(duration_s=8.),dict(source_motion_limits={})):
             with self.assertRaises(ValueError):self.generated_retract(change)
-    def test_carry_lease_uses_joint_hold_and_keeps_velocity_out_of_grip_owner(self):
+    def test_carry_abort_preserves_last_commands_but_revokes_navigation_health(self):
+        import json,os,time
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        clock=NS(t=10.);published=[];files=[];heartbeat=[]
+        node=NS(native_generation=1,last_arm_message=NS(header=NS()),last_hand_message=object(),seq=0,
+                get_clock=lambda:NS(now=lambda:NS(to_msg=lambda:None)),
+                pub=NS(publish=lambda msg:published.append('arm')),
+                hand_pub=NS(publish=lambda msg:published.append('hand')),
+                spin=lambda dt:setattr(clock,'t',clock.t+dt))
+        class File:
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def write(self,text):heartbeat.append(text)
+            def read(self):return json.dumps(dict(generation=1,host_monotonic_ns=int(clock.t*1e9)))
+        g=h.carry_abort_last_command_hold.__globals__
+        with mock.patch.dict(g,dict(json=json,os=os,time=time,rclpy=NS(ok=lambda:True))),mock.patch('builtins.open',return_value=File()),mock.patch.object(os.path,'exists',return_value=False),mock.patch.object(os,'replace'),mock.patch.object(time,'monotonic',lambda:clock.t),mock.patch.object(time,'monotonic_ns',lambda:int(clock.t*1e9)):
+            h.carry_abort_last_command_hold(node,RuntimeError('BOTTLE_TILTED'))
+        self.assertGreaterEqual(len(published),400)
+        self.assertLessEqual(len(published),502)
+        self.assertFalse(json.loads(''.join(heartbeat))['healthy'])
+        self.assertTrue(all(x in ('arm','hand') for x in published))
+
+    def test_carry_lease_keeps_body_relative_ik_and_velocity_out_of_grip_owner(self):
         code=self.generated_retract(dict(carry_lease_s=115.))
         compile(code,"carry_lease","exec")
         self.assertIn("MEASURED_LOAD_BEARING_CARRY_HOLD",code)

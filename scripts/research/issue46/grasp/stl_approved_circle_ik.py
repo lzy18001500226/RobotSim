@@ -146,6 +146,10 @@ def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_
 
 def tracking_phase_is_fresh(phase, now_ns):
     limits={"ARRIVAL_HOLD":12.,"CLOSING":6.,"LIFTING":9.,"RETRACTING":6.}
+    if phase.get("phase")=="CARRY_HOLD":
+        lease=phase.get("carry_lease_s")
+        if not isinstance(lease,(int,float)) or not np.isfinite(lease) or not 5.<=lease<=200. or phase.get("post_retract_physical_hold_pass") is not True:return False
+        limits["CARRY_HOLD"]=float(lease)
     stage=phase.get("phase");created=phase.get("created_host_ns")
     if stage not in limits or not isinstance(created,int) or not 0.<=(now_ns-created)*1e-9<=limits[stage]:return False
     if stage=="RETRACTING":
@@ -161,6 +165,23 @@ def tracking_task(row, reference, phase=None):
     if phase is None:
         if np.linalg.norm(measured-np.array(reference['grasp_section_center_world_m']))>.01:raise RuntimeError('BOTTLE_MOVED_BEFORE_CLOSURE')
         return measured,B[:,2]
+    if phase.get('phase')=='CARRY_HOLD':
+        if phase.get('native_arrival_pass') is not True or phase.get('post_retract_physical_hold_pass') is not True or phase.get('generation')!=row['generation']:
+            raise RuntimeError('UNQUALIFIED_BODY_RELATIVE_CARRY')
+        offset=np.asarray(phase.get('carry_heading_xy_m'),dtype=float);height=float(phase.get('carry_world_z_m',float('nan')))
+        if offset.shape!=(2,) or not np.isfinite(offset).all() or np.linalg.norm(offset)>.8 or not np.isfinite(height) or not .25<=height<=1.4:
+            raise RuntimeError('INVALID_CARRY_TASK_FRAME')
+        hand=row['bodies']['R_omnipicker_base_link'];H=np.asarray(hand['rotation']).reshape(3,3)
+        baseline=np.asarray(phase['initial_object_in_hand_m'],dtype=float)
+        if phase.get('slip_reference')!='GRASP_SECTION' or baseline.shape!=(3,) or not np.isfinite(baseline).all():raise RuntimeError('INVALID_CARRY_SLIP_REFERENCE')
+        if np.linalg.norm(H.T@(measured-np.asarray(hand['position_m']))-baseline)>.01:raise RuntimeError('BOTTLE_SLIPPED_DURING_CARRY')
+        if B[2,2]<np.cos(.10):raise RuntimeError('BOTTLE_TILTED_DURING_CARRY')
+        base=row['bodies']['pelvis'];R=np.asarray(base['rotation']).reshape(3,3);yaw=np.arctan2(R[1,0],R[0,0])
+        c,s=np.cos(yaw),np.sin(yaw)
+        xy=np.asarray(base['position_m'][:2])+np.array([[c,-s],[s,c]])@offset
+        # Follow translation/yaw, reject pelvis roll/pitch sway. Object truth
+        # only checks slip/tilt; it never defines the commanded carry target.
+        return np.r_[xy,height],np.array([0.,0.,1.])
     if phase.get('phase') not in ('ARRIVAL_HOLD','CLOSING','LIFTING','RETRACTING') or phase.get('native_arrival_pass') is not True:raise RuntimeError('INVALID_CLOSURE_PHASE_HANDOFF')
     if phase.get('generation')!=row['generation']:raise RuntimeError('CLOSURE_PHASE_GENERATION_MISMATCH')
     anchor=np.asarray(phase['target_world_m'],dtype=float);axis=np.asarray(phase['bottle_axis_world'],dtype=float);initial=np.asarray(phase['bottle_center_world_m'],dtype=float)
@@ -338,18 +359,19 @@ def track_native(reference_path, latest_path, output_path):
                     if not 0.<=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('STALE_NATIVE_AFTER_INITIAL_IMAGE_READINESS')
                 else:estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
                 row['bodies']['test_cylinder']=qualify_estimate(estimate,generation=row['generation'])
-            if phase is not None and phase.get('phase')=='CARRY_HOLD':
-                if phase.get('post_retract_physical_hold_pass') is not True or phase.get('generation')!=row['generation'] or not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=.20:raise RuntimeError('UNQUALIFIED_CARRY_TRACKER_HANDOFF')
-                handoff={'classification':'CARTESIAN_TO_MEASURED_JOINT_HOLD','generation':row['generation'],'source_host_ns':row['host_monotonic_ns'],'physical_hold_pass':True}
-                output_path.with_name('native_tracking_carry_handoff.json').write_text(json.dumps(handoff))
-                return
             if phase is not None and not tracking_phase_is_fresh(phase,time.monotonic_ns()):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
             generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
+            if phase is not None and phase.get('phase')=='CARRY_HOLD':
+                if not output_path.with_name('native_tracking_carry_handoff.json').exists():
+                    handoff={'classification':'BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY','generation':row['generation'],'source_host_ns':row['host_monotonic_ns'],'physical_hold_pass':True}
+                    output_path.with_name('native_tracking_carry_handoff.json').write_text(json.dumps(handoff))
+                deadline=phase['created_host_ns']*1e-9+float(phase['carry_lease_s'])
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
-            record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'metrics':metrics}
+            record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'phase':phase.get('phase') if phase else None,'metrics':metrics}
             temp=output_path.with_suffix('.tmp');temp.write_text(json.dumps(record));os.replace(temp,output_path);trace.append(record)
-            time.sleep(max(0,.1-(time.monotonic()-tick)))
+            period=.02 if phase is not None and phase.get('phase')=='CARRY_HOLD' else .1
+            time.sleep(max(0,period-(time.monotonic()-tick)))
     except Exception as exc:
         output_path.with_suffix('.failure-input.json').write_text(json.dumps(row))
         record={'pass':False,'failure':str(exc),'created_host_ns':time.monotonic_ns()};temp=output_path.with_suffix('.tmp');temp.write_text(json.dumps(record));os.replace(temp,output_path)
