@@ -748,3 +748,14 @@ wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integ
 用户随后明确回复“都可操作”，只记为外框与相机操作人工PASS，不推断为抓取视觉或整个长Goal审批。长Goal保持暂停。
 
 本次输入状态不一致已实测，但最初为何漏掉松开事件尚未锁定；跨屏/切换/退出拖动仅为待证假设。不要宣称永久解决WSLg，也不要把此前COPY MODE共享内存问题与每次输入故障混成一个确定原因。
+
+
+### 075407Z复现失败：将纯鼠标原生控制与键盘焦点协议分开
+
+用户复现中 pointer preflight PASS、Windows foreground PASS，但 select-key-zero 被 XGetInputFocus=0 在发送任何鼠标事件前拒绝。容器已清理；不是IK、夹爪闭合或抬升失败。前一版只修Windows前台激活，不足以解决此路径，不能要求用户反复重跑。
+
+Xlib手册明确InputFocus控制键盘事件（None时丢弃键盘事件）：https://raw.githubusercontent.com/mirror/libX11/master/man/XSetInputFocus.man 。现有Key初始化实际只点原生滑块，不需要任何按键。保留原默认焦点必需路径以及Backspace/Space协议；仅在显式可见固定站位审核入口采用独立 verified-pointer-only 协议。它要求PID/XID/title/viewability、Key/相邻按钮像素指纹、指针精确坐标、root-child属于目标窗口祖先、无已按鼠标或操作修饰键、最终窗口几何/真实root位置不变。无键盘事件。Pause改点原生Pause单选项，非Space切换，也验证对应radio像素。未更改机器人、安全门或直接写活跃qpos。
+
+点击返回不等于Reset/Pause成功：仍要求native generation+1、episode初始位姿匹配、后续新鲜站立，以及Pause后真实模拟时钟冻结。缺失像素、遮挡、身份变化、已按按键、移动中的窗口全部拒绝发送鼠标按钮事件。无焦点单元测试仅在完整鼠标证据齐全时允许两个按钮事件，默认键盘路径继续拒绝无焦点。
+
+081450Z重新执行实际RGB-D物理抓取：Key鼠标协议2个按钮事件/0键盘事件，native generation到1，STAND物理观察PASS；闭合/抬升门PASS，最小抬升57.610348mm/最后1sim秒。原生Pause鼠标协议及实际冻结检查PASS。没有再次重启图形服务，没有运行行走或矮瓶。审核窗口保留，完整进程收尾/清理在用户关闭或等待期限后单列；不能提前宣称cleanup完成。五阶段长Goal仍暂停。

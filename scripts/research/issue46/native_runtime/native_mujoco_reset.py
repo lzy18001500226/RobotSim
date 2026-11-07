@@ -1074,13 +1074,14 @@ class X11:
                 "mouse_button_events_sent": 0,
             }
         if verified_pointer_only:
+            focus_before=self._input_focus()
             event=self.click_native_reset_button_once(window,expected_pid=expected_pid,expected_title=expected_title,
                 control_label="Key",button_point=NATIVE_KEY_SLIDER_ZERO_POINT,
                 pixel_points=NATIVE_KEY_SLIDER_PIXEL_POINTS,
                 dispatched_status="KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED",
                 dispatched_classification="VERIFIED_NATIVE_MOUSE_ONLY_KEY_SELECTION_EFFECT_REQUIRES_NATIVE_TRACE",
                 signature_validator=native_key_slider_signature_matches,require_pointer_ancestry=True)
-            event.update({"input_path":"MUJOCO_NATIVE_SIMULATION_KEY_SLIDER_POINTER_ONLY","requested_keyframe_index":0,"keyboard_focus_observed":self._input_focus(),"keyboard_events_sent":0,"selection_authoritatively_observed":False})
+            event.update({"input_path":"MUJOCO_NATIVE_SIMULATION_KEY_SLIDER_POINTER_ONLY","requested_keyframe_index":0,"keyboard_focus_before":focus_before,"keyboard_focus_observed":self._input_focus(),"keyboard_events_sent":0,"selection_authoritatively_observed":False})
             return event
         activation=self.activate_window(window,timeout_s=1.0)
         focus=self.focus_window_direct(window)
