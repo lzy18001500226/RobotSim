@@ -511,6 +511,24 @@ class NativeUiReceiptTests(TestCase):
         self.assertEqual(event["native_ui_receipt"]["status"], "NATIVE_UI_PRESS_CONFIRMED")
         self.assertFalse(event["selection_authoritatively_observed"])
 
+    def test_reset_uses_the_same_actual_native_receipt_contract(self):
+        from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
+        n,calls=self.node()
+        n.native_reset_button_pixels=lambda w:{k:((26,26,26) if k=="center" else (153,102,102)) for k in ui.NATIVE_RESET_BUTTON_PIXEL_POINTS}
+        def pointer(display,window,root,child,rx,ry,wx,wy,bits):
+            wx._obj.value=68;wy._obj.value=456;rx._obj.value=168;ry._obj.value=656;bits._obj.value=16
+            return 1
+        n.lib.XQueryPointer=pointer
+        def acknowledge(*args,**kw):
+            self.assertEqual(calls,[(1,1)])
+            self.assertEqual((kw["item_name"],kw["section_id"],kw["item_id"],kw["xy"]),("Reset",2,1,(68,618)))
+            return {"status":"NATIVE_UI_PRESS_CONFIRMED"}
+        with mock.patch.object(ui,"wait_for_native_ui_receipt",side_effect=acknowledge):
+            event=n.click_native_reset_button_once(123,28,"MuJoCo : x2t2.5",
+                require_pointer_ancestry=True,native_ui_events=Path("/verified/ui"),expected_ui_item=("Reset",2,1))
+        self.assertEqual(event["status"],"RESET_BUTTON_CLICKED")
+        self.assertEqual(calls,[(1,1),(1,0)])
+
     def test_receipt_timeout_releases_and_fails_closed_without_retry(self):
         from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
         n, calls = self.node()

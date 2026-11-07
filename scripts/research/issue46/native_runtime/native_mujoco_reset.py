@@ -1422,6 +1422,7 @@ def main() -> int:
         "click-native-reset",
         help="click the calibrated MuJoCo Simulation/Reset control in one verified window",
     )
+    native_reset_parser.add_argument("--native-ui-events",type=Path)
     native_reset_parser.add_argument("--expected-pid", type=int, required=True)
     native_reset_parser.add_argument("--expected-title", required=True)
     native_reset_parser.add_argument("--window-id", type=int, required=True)
@@ -1490,6 +1491,9 @@ def main() -> int:
                 args.window_id,
                 expected_pid=args.expected_pid,
                 expected_title=args.expected_title,
+                require_pointer_ancestry=args.native_ui_events is not None,
+                native_ui_events=args.native_ui_events,
+                expected_ui_item=("Reset",2,1) if args.native_ui_events is not None else None,
             )
             event_record = {
                 "schema": "robotsim.issue80.reset-dispatch-event.v1",

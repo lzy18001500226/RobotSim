@@ -1616,7 +1616,7 @@ def main() -> None:
         if len(windows) != 1:
             raise RuntimeError(f"expected one verified MuJoCo window: {inspect.stdout}")
         window = windows[0]
-        if args.interactive_x11_display and args.pause_on_claw_failure:
+        if args.interactive_x11_display and (args.pause_on_claw_failure or args.micro_base_probe):
             result["windows_foreground_before_episode"]=activate_wslg_native_window(window,output,label="windows_foreground_before_episode")
         if args.fixed_reviewed_checkpoint:
             identity=" --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])
@@ -1649,6 +1649,8 @@ def main() -> None:
         else:
             reset_before=json.loads((output/"native_latest.json").read_text()) if native_observer else None
             reset_command="click-native-reset" if args.native_reset_input=="button" else "send-reset"
+            if args.micro_base_probe and args.native_reset_input=="button":
+                reset_command+=" --native-ui-events /workspace/evidence/native_ui_events.jsonl"
             captures="" if args.native_reset_input=="button" else " --before-png /workspace/evidence/mujoco_before_reset.png --after-png /workspace/evidence/mujoco_after_reset.png"
             reset = run(["docker", "exec", container, "bash", "-lc", "python3 /workspace/evidence/native_mujoco_reset.py "+reset_command+" --expected-pid " + str(pid) + " --expected-title " + repr(str(window["title"])) + " --window-id " + str(window["window_id"]) + captures+" --dispatch-event-json /workspace/evidence/reset_dispatch_event.json"], timeout_s=12.0)
             pg.write_new_text(output / "reset_dispatch.stdout", reset.stdout)
