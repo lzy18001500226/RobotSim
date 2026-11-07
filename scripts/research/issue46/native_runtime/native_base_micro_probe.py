@@ -361,7 +361,9 @@ def run_probe(smoke_only=False):
                     if not self.moving and now-self.epoch_changed_at<=.20:
                         raise RuntimeError("CLOCK_GENERATION_PENDING")
                     raise RuntimeError("CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING")
-                if r is None or now-r["host_monotonic_ns"]*1e-9>.20 or self.feedback_fault:
+                if self.feedback_fault:
+                    raise RuntimeError("NATIVE_FEEDBACK_INVALID:"+json.dumps(self.feedback_fault))
+                if r is None or now-r["host_monotonic_ns"]*1e-9>.20:
                     raise RuntimeError("NATIVE_FEEDBACK_STALE_OR_INVALID")
                 ages={name:now-self.unique.get(name,(0,0))[1]
                       for name in ("common","imu","leg_state","leg_command")}

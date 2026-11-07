@@ -422,7 +422,7 @@ class Dock(Node):
   if PLAN.get('native_arm_relay'):
    try:
     with open('/workspace/evidence/native_arm_relay_heartbeat.json') as f:health=json.load(f)
-    if not 0.<=now-health['host_monotonic_ns']*1e-9<=.20 or not 0.<=now-health['last_unique_source_receipt_s']<=.20:raise ValueError('stale heartbeat/source')
+    if not health.get('healthy') or not 0.<=now-health['host_monotonic_ns']*1e-9<=.20 or not 0.<=now-health['last_unique_source_receipt_s']<=.20:raise ValueError('unhealthy/stale heartbeat/source')
    except (OSError,ValueError,KeyError) as exc:self.feedback_fault=self.feedback_fault or {'gate':'ARM_POLICY_RELAY_UNAVAILABLE','detail':str(exc)};return
   if not 0.<=age<=.20 or row.get('engine_version')!=337:self.feedback_fault={'gate':'STALE_NATIVE_DOCK_POSE'};return
   if self.odom_stamp is not None and stamp<=self.odom_stamp:return
@@ -757,7 +757,7 @@ class NativeArm(Node):
    self.pub.publish(m)
   error=max((abs(self.state[n]-self.hold_target[n]) for n in ARM if n in self.state),default=1.e9)
   healthy=self.owner_verified and self.arm_receipt is not None and 0.<=now-self.arm_receipt<=.20 and (self.last_gain_positive or len(self.state)==14 and error<=.12)
-  health=dict(mode='SOURCE_REFERENCE_IDLE_HOLD_THEN_NATIVE_LD',healthy=healthy,host_monotonic_ns=time.monotonic_ns(),relay_count=self.arm_relay_count,positive_gain_command_count=self.positive_count,last_gain_positive=self.last_gain_positive,source_stamp_ns=self.arm_source_stamp,inactive_SD_is_not_active_gain_readiness=True,idle_hold_error_rad=error,idle_hold_targets_rad=self.hold_target)
+  health=dict(mode='SOURCE_REFERENCE_IDLE_HOLD_THEN_NATIVE_LD',healthy=healthy,host_monotonic_ns=time.monotonic_ns(),relay_count=self.arm_relay_count,positive_gain_command_count=self.positive_count,last_gain_positive=self.last_gain_positive,source_stamp_ns=self.arm_source_stamp,last_unique_source_receipt_s=self.arm_receipt,inactive_SD_is_not_active_gain_readiness=True,idle_hold_error_rad=error,idle_hold_targets_rad=self.hold_target)
   path=Path('/workspace/evidence/native_arm_relay_heartbeat.json')
   tmp=path.with_suffix('.tmp');tmp.write_text(json.dumps(health)+'\n');os.replace(tmp,path)
   if self.hand_pub is not None:
