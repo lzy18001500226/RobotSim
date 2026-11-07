@@ -21,6 +21,14 @@ def advancing_stamp(store, name, stamp, now):
     return True
 
 
+def drain_ready_callbacks(node, rclpy_module, *, budget_s=.004, max_callbacks=128):
+    """Drain queued state callbacks within a bounded CPU slice, without sleeping."""
+    began=time.monotonic();count=0
+    while count<max_callbacks and time.monotonic()-began<budget_s:
+        rclpy_module.spin_once(node,timeout_sec=0.)
+        count+=1
+    return count
+
 def native_pose(row):
     body = row["bodies"]["pelvis"]
     x, y, z = body["position_m"]
@@ -137,7 +145,7 @@ def run_probe(smoke_only=False):
             self.events.append(dict(event="DEADLINE_ZERO_ATTEMPT", t=time.monotonic()))
 
         def pump(self):
-            rclpy.spin_once(self, timeout_sec=.001)
+            drain_ready_callbacks(self,rclpy)
             self.refresh_native_pose()
             self.latest_row=json.loads(Path("/workspace/evidence/native_latest.json").read_text())
             now=time.monotonic()

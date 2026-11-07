@@ -1728,8 +1728,8 @@ def main() -> None:
             micro_result=json.loads(path.read_text()) if path.is_file() else {"failure":"CHILD_NO_RESULT","stdout_tail":micro.stdout[-1600:]}
             result["native_micro_probe"]={"returncode":micro.returncode,"result":{k:v for k,v in micro_result.items() if k not in ("trace","command_log","bridge_commands")}}
             result["gates"]["NATIVE_MICRO_PRESTOP"]="PASS" if micro_result.get("pre_motion_composite",{}).get("pass") else "FAIL"
-            result["gates"]["NATIVE_MICRO_SIGNED_DISPLACEMENT"]="PASS" if micro.returncode==0 and micro_result.get("pass_result") else "FAIL"
-            result["gates"]["NATIVE_MICRO_COMPOSITE_STOP"]="PASS" if micro_result.get("post_stop_composite",{}).get("pass") else "FAIL"
+            result["gates"]["NATIVE_MICRO_SIGNED_DISPLACEMENT"]="NOT_RUN" if not micro_result.get("nonzero_started") else "PASS" if micro.returncode==0 and micro_result.get("pass_result") else "FAIL"
+            result["gates"]["NATIVE_MICRO_COMPOSITE_STOP"]="NOT_RUN" if not micro_result.get("nonzero_started") else "PASS" if micro_result.get("post_stop_composite",{}).get("pass") else "FAIL"
             if micro_result.get("nonzero_started") and "locomotion velocity" in result["commands_not_sent"]:result["commands_not_sent"].remove("locomotion velocity")
             if micro.returncode or not micro_result.get("pass_result"):result["failure"]={"gate":"NATIVE_MICRO_PROBE","detail":micro_result.get("failure")}
             raise MicroProbeComplete()

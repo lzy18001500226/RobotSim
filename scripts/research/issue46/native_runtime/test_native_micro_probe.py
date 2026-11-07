@@ -33,6 +33,20 @@ class MicroTests(unittest.TestCase):
         self.assertFalse(micro.advancing_stamp(store,"odom",99,1.5))
         self.assertTrue(micro.advancing_stamp(store,"odom",101,1.6))
 
+    def test_ready_callbacks_drain_more_than_one_without_unbounded_loop(self):
+        from unittest.mock import patch
+        clock=NS(t=0.);calls=[]
+        def spin(node,timeout_sec):
+            calls.append(timeout_sec);clock.t+=.0001
+        with patch.object(micro.time,"monotonic",lambda:clock.t):
+            count=micro.drain_ready_callbacks(None,NS(spin_once=spin),budget_s=.004)
+        self.assertGreater(count,30);self.assertLessEqual(clock.t,.0041)
+        self.assertTrue(all(t==0. for t in calls))
+        calls.clear()
+        with patch.object(micro.time,"monotonic",lambda:0.):
+            count=micro.drain_ready_callbacks(None,NS(spin_once=lambda *a,**k:calls.append(0)),max_callbacks=5)
+        self.assertEqual(count,5)
+
     def test_native_velocity_is_explicit_body_origin_world(self):
         r=dict(bodies=dict(pelvis=dict(position_m=[0,0,.65],rotation=[1,0,0,0,1,0,0,0,1],
                     origin_velocity_world_angular_linear=[0,0,.1,.02,.03,0.])))
