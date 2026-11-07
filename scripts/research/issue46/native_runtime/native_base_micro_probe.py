@@ -108,11 +108,23 @@ def heading_hold_command(current_yaw, initial_yaw):
     return 0. if abs(error)<=.02 else max(-.075,min(.075,.8*error))
 
 
-def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False,heading_hold=False):
+def micro_displacement(pose,start,direction):
+    dx,dy=pose["x"]-start["x"],pose["y"]-start["y"]
+    c,s=math.cos(start["yaw"]),math.sin(start["yaw"])
+    forward,lateral=c*dx+s*dy,-s*dx+c*dy
+    progress={"forward":forward,"backward":-forward,"left":lateral,"right":-lateral}[direction]
+    cross=lateral if direction in ("forward","backward") else forward
+    return forward,lateral,progress,cross
+
+
+def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False,heading_hold=False,target_distance_m=None):
     if direction not in ("forward", "backward", "left", "right"):
         raise ValueError("unknown body-frame micro direction")
-    if not .4 <= duration_s <= 1.:
-        raise ValueError("micro pulse must be .4..1 seconds")
+    maximum=1. if target_distance_m is None else 2.
+    if target_distance_m is not None and (not math.isfinite(target_distance_m) or not .02<=target_distance_m<=.05 or command_speed!=.12):
+        raise ValueError("targeted micro cycle diagnostic requires .02..05m and the .12m/s profile")
+    if not .4 <= duration_s <= maximum:
+        raise ValueError("micro pulse outside its explicit .4..1s or targeted <=2s profile")
     if not math.isfinite(command_speed) or not .12<=command_speed<=.2:raise ValueError("micro input outside previously validated .12..0.20 envelope")
     from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import locomotion_dock_script
     base = locomotion_dock_script(world_start_xy=[-1.5, -1.5],
@@ -123,7 +135,7 @@ def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native
         refine_position_tolerance_m=.15, timeout_s=30.,
         use_cmd_vel_bridge=True, native_pose_feedback=True,native_arm_relay=native_arm_relay)
     base = base.split("rclpy.init();n=Dock();registered=False")[0]
-    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed, heading_hold=bool(heading_hold))
+    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed, heading_hold=bool(heading_hold),target_distance_m=target_distance_m)
     return base + "\n" + Path(__file__).read_text().replace("from __future__ import annotations","") + "\nMICRO=" + repr(plan) + "\nrun_probe()\n"
 
 
@@ -421,7 +433,7 @@ def run_probe(smoke_only=False):
                 raise RuntimeError("STAND_REQUEST_REJECTED_OR_TIMEOUT")
 
     contract.verify_mc_fsm_runtime_contract("/workspace/raicom2026/mc/lib")
-    rclpy.init();n=Micro();result=dict(classification="SIMULATION_ONLY_NATIVE_MICRO_CAPABILITY",
+    rclpy.init();n=Micro();result=dict(classification="SIMULATION_ONLY_TARGETED_MICRO_CYCLE_DIAGNOSTIC" if MICRO.get("target_distance_m") is not None else "SIMULATION_ONLY_NATIVE_MICRO_CAPABILITY",
         direction=MICRO["direction"],duration_s=MICRO["duration_s"],heading_hold=MICRO.get("heading_hold",False),zero_receipt_ack="UNAVAILABLE",
         rearm_permitted=False,pass_result=False)
     if smoke_only:
@@ -454,12 +466,21 @@ def run_probe(smoke_only=False):
         result["command_input_speed_m_s"]=v
         result["mc_reported_speed_bounds"]=bounds
         with n.lock:n.moving=True
+        result["target_distance_m"]=MICRO.get("target_distance_m")
+        result["goal_triggered_stop"]=False
         began=time.monotonic();motion_started=True
         n.events.append(dict(event="NONZERO_BEGIN",t=began))
         watchdog=threading.Timer(MICRO["duration_s"],n.deadline_zero);watchdog.daemon=True;watchdog.start()
         while time.monotonic()-began<MICRO["duration_s"] and n.moving:
             tick=time.monotonic();n.pump();row=n.sample(start);n.trace.append(row)
             if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
+            if MICRO.get("target_distance_m") is not None:
+                _,_,progress,_=micro_displacement(row["pose"],start,MICRO["direction"])
+                if progress>=MICRO["target_distance_m"]:
+                    result["goal_triggered_stop"]=True
+                    result["trigger_progress_m"]=progress
+                    result["trigger_elapsed_s"]=time.monotonic()-began
+                    break
             angular=heading_hold_command(row["pose"]["yaw"],start["yaw"]) if MICRO.get("heading_hold") else 0.
             n.publish(*velocity,angular);time.sleep(max(0.,tick+.02-time.monotonic()))
         # Initiate zero BEFORE any blocking readback or post-pulse inspection.
@@ -469,17 +490,23 @@ def run_probe(smoke_only=False):
         n.stand_once()
         result["post_stop_composite"]=n.observe(8.,start=start,baseline=baseline,require_stop=True)
         end=n.sample(start)["pose"];result["end_pose"]=end
-        dx,dy=end["x"]-start["x"],end["y"]-start["y"]
-        c,s=math.cos(start["yaw"]),math.sin(start["yaw"])
-        forward,lateral=c*dx+s*dy,-s*dx+c*dy
-        progress={"forward":forward,"backward":-forward,"left":lateral,"right":-lateral}[MICRO["direction"]]
+        forward,lateral,progress,cross=micro_displacement(end,start,MICRO["direction"])
+        result["signed_axis_progress_m"]=progress
+        result["cross_axis_displacement_m"]=cross
         result.update(body_forward_m=forward,body_lateral_m=lateral,
                       yaw_change_rad=(end["yaw"]-start["yaw"]+math.pi)%(2*math.pi)-math.pi)
         acquired=any(r["common_source"]["name"]=="robotsim_official_cmd_vel" and
                      r["common_mode_desc"]=="LOCOMOTION_DEFAULT" for r in n.trace)
         result["source_and_ld_observed"]=acquired
         result["pass_result"]=result["post_stop_composite"]["pass"] and progress>=.005 and acquired
-        result["failure"]=None if result["pass_result"] else "NO_VERIFIED_SIGNED_MICRO_MOVEMENT_OR_HANDSHAKE"
+        result["failure"]=None if result["pass_result"] else ("SOURCE_AND_LD_NOT_OBSERVED" if not acquired else "NO_CORRECT_SIGNED_MICRO_MOVEMENT")
+        if MICRO.get("target_distance_m") is not None:
+            error=math.hypot(progress-MICRO["target_distance_m"],cross)
+            result["final_position_error_m"]=error
+            result["position_acceptance_tolerance_m"]=.020
+            result["pass_result"]=result["pass_result"] and result["goal_triggered_stop"] and error<=.020
+            if not result["pass_result"] and result["failure"] is None:
+                result["failure"]="TARGETED_MICRO_POSITION_OR_GOAL_STOP_NOT_QUALIFIED"
     except Exception as exc:
         n.deadline_zero();result["abort_native_sample"]=n.latest_row;result["failure"]=str(exc);result["available_state_topics"]=list(n.messages);result["last_unique_receipts"]=n.unique
     finally:

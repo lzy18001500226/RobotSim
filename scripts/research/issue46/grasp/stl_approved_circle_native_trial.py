@@ -39,6 +39,7 @@ def main():
     p.add_argument("--micro-probe-duration-s",type=float,default=.6)
     p.add_argument("--micro-command-speed",type=float,default=.2)
     p.add_argument("--micro-heading-hold",action="store_true")
+    p.add_argument("--micro-target-distance-m",type=float)
     p.add_argument("--reviewed-foundationwalk-profile",action="store_true",help="explicitly reuse frozen Issue80 SIMULATION_ONLY diagnostic; no new tuning")
     p.add_argument("--physical-lift-test",action="store_true")
     p.add_argument("--source-pad-coacd-comparison",action="store_true",help="reuse the existing hash-locked source-STL proxy pieces for only the two right distal pads; separate SIMULATION_ONLY physics")
@@ -215,6 +216,7 @@ def main():
             raise ValueError("isolated micro capability diagnostic cannot execute grasp")
         start=argv.index("--dock-world-xy")
         argv=argv[:start]+["--use-official-cmd-vel-bridge","--micro-base-probe",args.micro_base_probe,"--micro-probe-duration-s",str(args.micro_probe_duration_s),"--micro-command-speed",str(args.micro_command_speed)]
+    if args.micro_target_distance_m is not None:argv.extend(["--micro-target-distance-m",str(args.micro_target_distance_m)])
     if args.micro_heading_hold:
         if not args.micro_base_probe:raise ValueError("micro heading hold requires isolated micro probe")
         argv.append("--micro-heading-hold")

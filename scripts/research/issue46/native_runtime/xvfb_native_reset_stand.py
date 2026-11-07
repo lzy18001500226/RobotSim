@@ -1095,6 +1095,7 @@ def main() -> None:
     parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
     parser.add_argument("--micro-command-speed",type=float,default=.2)
     parser.add_argument("--micro-heading-hold",action="store_true")
+    parser.add_argument("--micro-target-distance-m",type=float)
     parser.add_argument("--reviewed-foundationwalk-profile",action="store_true")
     parser.add_argument("--lateral-probe-mps", type=float, help="one bounded lateral cmd_vel probe in body-frame m/s; requires the official bridge")
     parser.add_argument("--lateral-probe-duration-s", type=float, default=0.60, help="duration for --lateral-probe-mps; no hand or arm command is sent")
@@ -1124,10 +1125,15 @@ def main() -> None:
 
     if args.micro_heading_hold and (not args.micro_base_probe or args.dock_angular_speed_cap!=.075):
         raise ValueError("micro heading hold requires isolated probe and matching .075 bridge angular cap")
+    if args.micro_target_distance_m is not None and (
+        not args.micro_base_probe or not args.reviewed_foundationwalk_profile or
+        not .02<=args.micro_target_distance_m<=.05 or args.micro_command_speed!=.12 or
+        not .4<=args.micro_probe_duration_s<=2.):
+        raise ValueError("targeted micro cycle requires reviewed profile, .12m/s, .02..05m, <=2s")
     if args.micro_base_probe:
         if args.dock_world_xy is not None or args.fixed_reviewed_checkpoint or args.lateral_probe_mps is not None or args.physical_lift_test or args.pause_on_claw_failure:
             raise ValueError("micro capability probe is isolated from dock, checkpoint and grasp")
-        if not args.use_official_cmd_vel_bridge or not args.native_dock_truth_feedback or not args.initial_hands_fully_open or not .4<=args.micro_probe_duration_s<=1. or not .12<=args.micro_command_speed<=.20:
+        if not args.use_official_cmd_vel_bridge or not args.native_dock_truth_feedback or not args.initial_hands_fully_open or not .4<=args.micro_probe_duration_s<=(2. if args.micro_target_distance_m is not None else 1.) or not .12<=args.micro_command_speed<=.20:
             raise ValueError("micro probe requires official bridge, native feedback, open hands and .4..1s")
         from scripts.research.issue46.native_runtime.native_micro_stop_contract import verify_mc_fsm_runtime_contract
         verify_mc_fsm_runtime_contract(RUNTIME/"mc/lib")
@@ -1407,7 +1413,7 @@ def main() -> None:
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
             limits,provenance=native_leg_safety_contract(include_upper_body=args.native_arm_policy_relay)
-            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay,heading_hold=args.micro_heading_hold))
+            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay,heading_hold=args.micro_heading_hold,target_distance_m=args.micro_target_distance_m))
             bridge_runtime=output/"steady_cmd_vel_bridge.py"
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_steady_bridge_source
             pg.write_new_text(bridge_runtime,build_steady_bridge_source(bridge_source.read_text()))

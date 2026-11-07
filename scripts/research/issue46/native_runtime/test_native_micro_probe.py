@@ -74,6 +74,15 @@ class MicroTests(unittest.TestCase):
         pose["vx"]=.201
         self.assertEqual(micro.physical_fault(dict(joints={}),pose,{},root,"left"),"PLANAR_SPEED")
 
+    def test_targeted_cycle_is_explicit_and_preserves_default_duration_limit(self):
+        self.assertEqual(micro.micro_displacement(dict(x=0.,y=.03),dict(x=0.,y=0.,yaw=math.pi/2),"forward")[2],.03)
+        code=micro.build_script("forward",2.,{},command_speed=.12,heading_hold=True,target_distance_m=.03)
+        compile(code,"targeted","exec")
+        self.assertIn("'target_distance_m': 0.03",code)
+        self.assertIn('result["goal_triggered_stop"]=True',code)
+        for kwargs in (dict(duration_s=2.01,target_distance_m=.03),dict(duration_s=2.,target_distance_m=.03,command_speed=.2),dict(duration_s=2.)):
+            with self.assertRaises(ValueError):micro.build_script("forward",joint_limits={},**kwargs)
+
     def test_source_joint_bounds_are_not_raised(self):
         p=dict(z=.65,roll=0.,pitch=0.,vx=0.,vy=0.)
         r=dict(joints=dict(knee=dict(q=.1,qvel=1.01)))
@@ -142,6 +151,9 @@ class MicroTests(unittest.TestCase):
                  "--native-reset-input","button","--micro-heading-hold",
                  "--dock-angular-speed-cap",".075"]
         with patch.object(sys,"argv",args+heading),patch.object(parent,"require_hashed",side_effect=RuntimeError("REACHED_INPUT_HASH_GATE")):
+            with self.assertRaisesRegex(RuntimeError,"REACHED_INPUT_HASH_GATE"):parent.main()
+        targeted=heading+["--reviewed-foundationwalk-profile","--micro-target-distance-m",".03","--micro-probe-duration-s","2.0"]
+        with patch.object(sys,"argv",args+targeted),patch.object(parent,"require_hashed",side_effect=RuntimeError("REACHED_INPUT_HASH_GATE")):
             with self.assertRaisesRegex(RuntimeError,"REACHED_INPUT_HASH_GATE"):parent.main()
 
     def test_low_input_profile_changes_only_bridge_command_amplitude(self):
