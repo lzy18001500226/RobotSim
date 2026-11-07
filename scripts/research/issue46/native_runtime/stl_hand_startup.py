@@ -130,7 +130,7 @@ exec ./em_run_wsl2.sh
 """
 
 
-def build_native_carry_transition_setting(source):
+def build_native_carry_transition_setting(source, *, native_step=False):
     """Use the installed ActionSelector's existing 500ms smoothing schema.
 
     Only these two action-pair rules change. Controller runners, gains, policy
@@ -146,6 +146,9 @@ def build_native_carry_transition_setting(source):
     result['smooth_transitions']+= [
         {'from':'STAND_DEFAULT','to':'LOCOMOTION_DEFAULT','duration_ms':500},
         {'from':'LOCOMOTION_DEFAULT','to':'STAND_DEFAULT','duration_ms':500}]
+    if native_step:
+        if 'LOCOMOTION_STEP' not in source.get('transition_actions',{}):raise ValueError('native step action missing')
+        result['smooth_transitions'] += [{'from':'STAND_DEFAULT','to':'LOCOMOTION_STEP','duration_ms':500},{'from':'LOCOMOTION_STEP','to':'STAND_DEFAULT','duration_ms':500}]
     return result
 
 

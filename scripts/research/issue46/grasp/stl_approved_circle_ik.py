@@ -245,11 +245,11 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
 
 
 
-def screen_retract(model, state, seed, opening, center, section, offset_world, local_bottle_axis=None):
+def screen_retract(model, state, seed, opening, center, section, offset_world, local_bottle_axis=None, *, carry_lower=False):
     """Reuse the source arm IK for a <=250mm post-lift retreat, zero physics steps."""
     import copy
     offset=np.asarray(offset_world,dtype=float)
-    if offset.shape!=(3,) or not np.isfinite(offset).all() or np.linalg.norm(offset)>.250000001 or not -.02<=offset[2]<=.05:
+    if offset.shape!=(3,) or not np.isfinite(offset).all() or np.linalg.norm(offset)>.250000001 or not ((-.25<=offset[2]<=0. and np.linalg.norm(offset[:2])<1e-12) if carry_lower else -.02<=offset[2]<=.05):
         raise ValueError("post-lift retract outside bounded translation")
     bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
     hand=ik.native.bid(model,"R_omnipicker_base_link");bottle=ik.native.bid(model,"test_cylinder")
@@ -275,7 +275,7 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
         samples.append(dict(fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),solver_evaluations=solved.nfev,solver_status=solved.status,solver_optimality=float(solved.optimality),pass_result=bool(passed)))
     root=ik.native.bid(model,"pelvis")
     robot_bodies=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,b) for b in range(model.nbody) if model.body_rootid[b]==root]
-    return dict(robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
+    return dict(robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_CARRY_LOWER_NOT_PHYSICS_PASS" if carry_lower else "SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
 
 
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):

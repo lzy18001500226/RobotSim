@@ -398,7 +398,7 @@ def run_probe(smoke_only=False):
                 cm=self.messages["common"]
                 mode=cm["action_info"]["action_desc"];status=int(cm["action_info"]["status"]["value"])
                 fsm=int(cm["fsm_state"]["current_state"]);body=int(cm["body_status"]["value"])
-                if mode not in ("STAND_DEFAULT","LOCOMOTION_DEFAULT") or status not in (100,200,300) or fsm not in contract.MC_FSM_ACTIVE_STATES:
+                if mode not in ("STAND_DEFAULT",MICRO.get("carry",{}).get("motion_mode","LOCOMOTION_DEFAULT")) or status not in (100,200,300) or fsm not in contract.MC_FSM_ACTIVE_STATES:
                     raise RuntimeError("MC_PROTECTION_OR_UNEXPECTED_STATE:"+str((mode,status,fsm,body)))
                 leg=self.messages["leg_state"]["joints"]
                 targets=self.messages["leg_command"]["joints"]
@@ -529,17 +529,18 @@ def run_probe(smoke_only=False):
             if require_stop:raise RuntimeError("COMPOSITE_STOP_NOT_QUALIFIED:"+json.dumps(qualified))
             return qualified
 
-        def stand_once(self):
+        def stand_once(self, requested="STAND_DEFAULT"):
+            if requested!="STAND_DEFAULT" and not (requested=="LOCOMOTION_STEP" and MICRO.get("carry",{}).get("motion_mode")==requested):raise RuntimeError("ACTION_NOT_ALLOWLISTED")
             self.publish()
             q=SetMcAction.Request();q.header.stamp=self.get_clock().now().to_msg()
-            q.source=SOURCE;q.command.action_desc="STAND_DEFAULT"
+            q.source=SOURCE;q.command.action_desc=requested
             if not self.mode.service_is_ready():raise RuntimeError("STAND_SERVICE_NOT_READY")
             f=self.mode.call_async(q);until=time.monotonic()+.75
-            self.events.append(dict(event="STAND_REQUEST",t=time.monotonic()))
+            self.events.append(dict(event="STAND_REQUEST" if requested=="STAND_DEFAULT" else "NATIVE_STEP_REQUEST",t=time.monotonic()))
             while not f.done() and time.monotonic()<until:
                 self.publish();self.pump();time.sleep(.015)
             response=raw(f.result()) if f.done() and f.result() is not None else None
-            self.events.append(dict(event="STAND_RESPONSE",t=time.monotonic(),raw=response))
+            self.events.append(dict(event="STAND_RESPONSE" if requested=="STAND_DEFAULT" else "NATIVE_STEP_RESPONSE",t=time.monotonic(),raw=response))
             if response is None or response["response"]["header"]["code"]!=0 or response["response"]["status"]["value"]!=1:
                 raise RuntimeError("STAND_REQUEST_REJECTED_OR_TIMEOUT")
 
@@ -614,7 +615,8 @@ def run_probe(smoke_only=False):
         acquired=any(r["common_source"]["name"]=="robotsim_official_cmd_vel" and
                      r["common_mode_desc"]=="LOCOMOTION_DEFAULT" and
                      (not PLAN.get("native_arm_relay") or r.get("native_arm_source_health",{}).get("last_gain_positive")) for r in n.trace)
-        result["source_and_ld_observed"]=acquired
+        result["source_and_motion_mode_observed"]=acquired
+        if cfg.get("motion_mode","LOCOMOTION_DEFAULT")=="LOCOMOTION_DEFAULT":result["source_and_ld_observed"]=acquired
         result["pass_result"]=result["post_stop_composite"]["pass"] and progress>=.005 and acquired
         result["failure"]=None if result["pass_result"] else ("SOURCE_AND_LD_NOT_OBSERVED" if not acquired else "NO_CORRECT_SIGNED_MICRO_MOVEMENT")
         if MICRO.get("target_distance_m") is not None:
@@ -652,14 +654,14 @@ def run_probe(smoke_only=False):
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False):
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if angular_command_cap not in (.075,.10):raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -675,7 +677,7 @@ def run_carry_navigation(n,contract):
     """One bounded measured-pose task, with zero/qualified-stop clock recovery."""
     import threading
     from point_goal_controller import PointGoalController,ControllerConfig,Pose2D,Goal2D,NavState
-    cfg=MICRO["carry"];result=dict(classification="SIMULATION_ONLY_FETCH_CARRY_ROUTE",pass_result=False,
+    cfg=MICRO["carry"];result=dict(classification="SIMULATION_ONLY_NATIVE_LOCOMOTION_STEP_CARRY" if cfg.get("motion_mode")=="LOCOMOTION_STEP" else "SIMULATION_ONLY_FETCH_CARRY_ROUTE",pass_result=False,
         goal_xy_m=cfg["goal_xy_m"],zero_receipt_ack="UNAVAILABLE",clock_recoveries=[],route_samples=[])
     watchdog=None;began=None;baseline=None
     try:
@@ -688,6 +690,17 @@ def run_carry_navigation(n,contract):
         result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         start=n.sample()["pose"];result["start_pose"]=start
         goal=cfg["goal_xy_m"];bearing=math.atan2(goal[1]-start["y"],goal[0]-start["x"])
+        if cfg.get("motion_mode")=="LOCOMOTION_STEP":
+            n.stand_once("LOCOMOTION_STEP")
+            step_until=time.monotonic()+.75;step_ready=False
+            while time.monotonic()<step_until:
+                n.publish();n.pump();state=n.sample()
+                result.setdefault("native_step_transition",[]).append(state)
+                if state["body_status"]!=baseline:raise RuntimeError("STEP_BODY_STATUS_CHANGED")
+                if state["common_mode_desc"]==state["get_mode_desc"]=="LOCOMOTION_STEP" and state["common_mode_status_value"]==100 and state["get_mode_header_code"]==0 and state["state_age_s"]["get_mode"]<=.20:
+                    step_ready=True;break
+                time.sleep(.02)
+            if not step_ready:raise RuntimeError("NATIVE_STEP_MODE_NOT_POSITIVELY_CONFIRMED")
         controller=PointGoalController(ControllerConfig(xy_tolerance_m=.15,yaw_tolerance_rad=.12,max_forward_mps=.12,max_angular_rps=cfg.get("angular_command_cap",.075),k_angular=.8,goal_timeout_s=cfg["timeout_s"]))
         target=Goal2D(*goal,bearing,"native_scene_world")
         began=time.monotonic();until=began+cfg["timeout_s"];last_graph=began;acquired=False;activation_started=began;progress_state=None;progress_best=None;progress_at=began
@@ -701,7 +714,7 @@ def run_carry_navigation(n,contract):
             except RuntimeError as exc:
                 fault=n.feedback_fault or {}
                 # Only a qualified source-clock epoch fault is recoverable.
-                if not recoverable_carry_clock_fault(fault,exc,len(result["clock_recoveries"])):raise
+                if cfg.get("motion_mode")=="LOCOMOTION_STEP" or not recoverable_carry_clock_fault(fault,exc,len(result["clock_recoveries"])):raise
                 n.deadline_zero();n.stop_started=True
                 if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
                 n.feedback_fault=None
@@ -736,7 +749,7 @@ def run_carry_navigation(n,contract):
                 bounds=row["raw_common"]["speed_status"]
                 if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
                 if row["common_mode_status_value"]==300 and not (cfg.get("native_action_smoothing") and not acquired and 0<=tick-activation_started<=.75):raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
-                handshake=(row["common_mode_desc"]=="LOCOMOTION_DEFAULT" and row["get_mode_desc"]=="LOCOMOTION_DEFAULT" and row["get_mode_header_code"]==0 and row["state_age_s"]["get_mode"]<=.20 and row["common_source"]["name"]=="robotsim_official_cmd_vel")
+                handshake=(row["common_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_header_code"]==0 and row["state_age_s"]["get_mode"]<=.20 and row["common_source"]["name"]=="robotsim_official_cmd_vel")
                 acquired=acquired or handshake
                 if tick-activation_started>.75 and not handshake:raise RuntimeError("CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED")
                 n.publish(forward,0.,angular)
@@ -757,7 +770,8 @@ def run_carry_navigation(n,contract):
         end=n.sample()["pose"];result["end_pose"]=end
         result["final_distance_m"]=math.hypot(goal[0]-end["x"],goal[1]-end["y"])
         result["measured_distance_m"]=math.hypot(end["x"]-start["x"],end["y"]-start["y"])
-        result["source_and_ld_observed"]=acquired
+        result["source_and_motion_mode_observed"]=acquired
+        if cfg.get("motion_mode","LOCOMOTION_DEFAULT")=="LOCOMOTION_DEFAULT":result["source_and_ld_observed"]=acquired
         result["pass_result"]=bool(result.get("goal_triggered_stop") and acquired and result["post_stop_composite"]["pass"] and result["final_distance_m"]<=.15 and result["measured_distance_m"]>.005)
         result["failure"]=None if result["pass_result"] else "CARRY_GOAL_OR_STOP_NOT_QUALIFIED"
     except Exception as exc:

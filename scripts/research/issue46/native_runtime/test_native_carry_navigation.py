@@ -72,7 +72,7 @@ class CarryNavigationTests(unittest.TestCase):
         pose["vx"]=.201
         self.assertEqual(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"},allowed_contact_pairs=[["R_hand_narrow3_Link","test_cylinder"]]),"PLANAR_SPEED")
 class CarryRouteControlFlowTests(unittest.TestCase):
-    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0.):
+    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False):
         import contextlib,io,json,sys,threading
         from types import SimpleNamespace
         from unittest import mock
@@ -82,7 +82,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
             def __init__(self):
                 self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None
                 self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[];self.latest_row={}
-                self.messages={k:{} for k in ("common","imu","leg_state","leg_command")};self.readbacks={"get_mode":(10.,{})};self.x=0.;self.once=False;self.stands=0
+                self.messages={k:{} for k in ("common","imu","leg_state","leg_command")};self.readbacks={"get_mode":(10.,{})};self.x=0.;self.once=False;self.stands=0;self.current_mode="STAND_DEFAULT"
             def start_feedback(self):pass
             def stop_feedback(self):pass
             def destroy_node(self):pass
@@ -99,8 +99,9 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                 self.events.append(dict(event="OBSERVE",seconds=seconds,require_stop=kwargs.get("require_stop",False),t=clock.t))
                 clock.t+=.02
                 return {"pass":True,"fixture_only":True}
-            def stand_once(self):
-                self.stands+=1;self.events.append(dict(event="STAND",t=clock.t))
+            def stand_once(self, requested="STAND_DEFAULT"):
+                self.current_mode=requested
+                self.stands+=int(requested=="STAND_DEFAULT");self.events.append(dict(event="STAND" if requested=="STAND_DEFAULT" else "STEP",t=clock.t))
             def sample(self):
                 if self.moving and fault and not self.once:
                     self.once=True
@@ -109,14 +110,14 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                         raise RuntimeError("NATIVE_FEEDBACK_INVALID:clock")
                     self.feedback_fault={"gate":fault};raise RuntimeError(fault)
                 pose=dict(x=self.x,y=0.,yaw=0.,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.)
-                return dict(body_status=1,pose=pose,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.}}})
+                return dict(body_status=1,pose=pose,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.}}})
         class Timer:
             def __init__(self,seconds,callback):self.callback=callback
             def start(self):
                 if immediate_watchdog:self.callback()
             def cancel(self):pass
         n=Node();written=[]
-        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[.3,0.],"timeout_s":5.}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(Path,"write_text",lambda self,text:written.append(text)),contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[.3,0.],"timeout_s":5.,"motion_mode":"LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(Path,"write_text",lambda self,text:written.append(text)),contextlib.redirect_stdout(io.StringIO()):
             m.run_carry_navigation(n,SimpleNamespace())
         return json.loads(written[-1]),n
     def test_goal_stop_uses_zero_then_stand_then_independent_observation(self):
@@ -127,6 +128,14 @@ class CarryRouteControlFlowTests(unittest.TestCase):
         first_stand=next(i for i,x in enumerate(n.events) if x["event"]=="STAND")
         self.assertTrue(any(x["event"]=="ZERO" for x in n.events[:first_stand]))
         self.assertTrue(any(x["event"]=="OBSERVE" and x.get("require_stop") for x in n.events[first_stand+1:]))
+    def test_native_step_mode_is_requested_and_confirmed_before_nonzero(self):
+        result,n=self.run_route(native_step=True)
+        self.assertTrue(result['pass_result'])
+        self.assertTrue(result['source_and_motion_mode_observed'])
+        self.assertNotIn('source_and_ld_observed',result)
+        self.assertEqual(n.stands,1)
+        self.assertEqual(sum(e['event']=='STEP' for e in n.events),1)
+        self.assertEqual(result['native_step_transition'][0]['common_mode_desc'],'LOCOMOTION_STEP')
     def test_pose_sample_newer_than_loop_start_is_still_fresh(self):
         result,n=self.run_route(pump_delay_s=.003)
         self.assertTrue(result["pass_result"])
@@ -163,7 +172,7 @@ class CarryParentIntegrationTests(unittest.TestCase):
             (out/"carry_heartbeat.json").write_text(json.dumps(dict(pid=19,host_monotonic_ns=now)))
             (out/"native_tracking_carry_handoff.json").write_text(json.dumps(dict(classification="BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY",physical_hold_pass=True,generation=1)))
             (out/"native_micro_stop_contract.py").write_text("# fixture")
-            args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.,carry_sdk_minimum_turn=False,carry_native_action_smoothing=False)
+            args=NS(carry_goal_world_xy=[-.45,1.],carry_timeout_s=5.,carry_sdk_minimum_turn=False,carry_native_action_smoothing=False,carry_native_step_mode=False)
             plan={"lift_preflight":{"retract_preflight":{"pass_result":True,"robot_bodies":["pelvis"],"source_motion_limits":{},"carry_lease_s":30.}}}
             result={"gates":{"OFFICIAL_CMD_VEL_BRIDGE":"PASS"},"commands_not_sent":["locomotion velocity"]}
             calls=[]
@@ -196,6 +205,10 @@ class NativeActionSmoothingTests(unittest.TestCase):
             self.assertEqual(result['smooth_transitions'][2:],[dict(zip(('from','to','duration_ms'),('STAND_DEFAULT','LOCOMOTION_DEFAULT',500))),dict(zip(('from','to','duration_ms'),('LOCOMOTION_DEFAULT','STAND_DEFAULT',500)))])
             del result['smooth_transitions'];del original['smooth_transitions']
             self.assertEqual(result,original)
+        step=h.build_native_carry_transition_setting(yaml.safe_load((base/'action_setting.yaml').read_text()),native_step=True)
+        self.assertEqual(len(step['smooth_transitions']),6)
+        self.assertEqual(step['smooth_transitions'][-2]['to'],'LOCOMOTION_STEP')
+        self.assertEqual(step['smooth_transitions'][-1]['to'],'STAND_DEFAULT')
         with self.assertRaises(ValueError):h.build_native_carry_transition_setting({})
 
 
