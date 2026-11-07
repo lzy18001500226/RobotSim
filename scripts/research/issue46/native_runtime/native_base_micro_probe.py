@@ -209,6 +209,7 @@ def run_probe(smoke_only=False):
             pubs=self.get_publishers_info_by_topic("/aima/mc/locomotion/velocity")
             subs=self.get_subscriptions_info_by_topic("/aima/mc/locomotion/velocity")
             rawpubs=self.get_publishers_info_by_topic("/cmd_vel")
+            self.events.append(dict(event="GRAPH_SNAPSHOT",t=time.monotonic(),publishers=[dict(name=p.node_name,namespace=p.node_namespace,type=p.topic_type,reliability=int(p.qos_profile.reliability),durability=int(p.qos_profile.durability)) for p in pubs],subscribers=[dict(name=p.node_name,namespace=p.node_namespace,type=p.topic_type,reliability=int(p.qos_profile.reliability),durability=int(p.qos_profile.durability)) for p in subs],raw_publishers=[p.node_name for p in rawpubs]))
             if len(pubs)>1 or len(subs)>2 or len(rawpubs)>1:
                 raise RuntimeError("CONFLICTING_VELOCITY_GRAPH")
             if not pubs or len(subs)<2 or not rawpubs:
@@ -230,10 +231,10 @@ def run_probe(smoke_only=False):
             mcsubs=[q for q in subs if q.node_name=="mc_ros2_node"+str(candidates[0][0])]
             ownsubs=[q for q in subs if q.node_name==self.get_name()]
             if len(mcsubs)!=1 or len(ownsubs)!=1:
-                raise RuntimeError("MC_SUBSCRIBER_PROCESS_IDENTITY")
+                raise RuntimeError("MC_SUBSCRIBER_PROCESS_IDENTITY:"+str((candidates,[(q.node_name,q.node_namespace) for q in subs],self.get_name())))
             subs=mcsubs
             if subs[0].node_namespace!="/" or pubs[0].node_namespace!="/":
-                raise RuntimeError("MC_SUBSCRIBER_PROCESS_IDENTITY")
+                raise RuntimeError("MC_SUBSCRIBER_PROCESS_IDENTITY:"+str((candidates,[(q.node_name,q.node_namespace) for q in subs],self.get_name())))
             if "--cfg_file_path=/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/mc_sim.yaml" not in candidates[0][2]:
                 raise RuntimeError("MC_CONFIG_ARGV")
             if candidates[0][1]!="/workspace/raicom2026/mc/bin/aima-mc-app-main":
