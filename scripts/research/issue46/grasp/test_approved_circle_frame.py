@@ -9,7 +9,7 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task')]
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh')]
         cls.ns={'np':np};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
     def test_full_source_posture_cannot_be_executed_or_silently_enabled(self):
@@ -126,7 +126,7 @@ class FrameTests(unittest.TestCase):
         R=np.eye(3).reshape(-1).tolist()
         row={"generation":1,"bodies":{"test_cylinder":{"position_m":[-.1,-.1,.76],"rotation":R},
              "R_omnipicker_base_link":{"position_m":[-.1,-.1,.86],"rotation":R}}}
-        phase={"phase":"RETRACTING","native_arrival_pass":True,"generation":1,
+        phase={"phase":"RETRACTING","native_arrival_pass":True,"generation":1,"pre_retract_physical_lift_pass":True,
                "target_world_m":[0.,0.,.8],"bottle_center_world_m":[0.,0.,.7],
                "bottle_axis_world":[0.,0.,1.],"lift_offset_m":.06,
                "bilateral_contact_pass":True,"slip_reference":"GRASP_SECTION",
@@ -142,7 +142,7 @@ class FrameTests(unittest.TestCase):
         R=np.eye(3).reshape(-1).tolist()
         row={"generation":1,"bodies":{"test_cylinder":{"position_m":[0.,0.,.76],"rotation":R},
              "R_omnipicker_base_link":{"position_m":[0.,0.,.86],"rotation":R}}}
-        phase={"phase":"RETRACTING","native_arrival_pass":True,"generation":1,
+        phase={"phase":"RETRACTING","native_arrival_pass":True,"generation":1,"pre_retract_physical_lift_pass":True,
                "target_world_m":[0.,0.,.8],"bottle_center_world_m":[0.,0.,.7],
                "bottle_axis_world":[0.,0.,1.],"lift_offset_m":.06,
                "bilateral_contact_pass":True,"slip_reference":"GRASP_SECTION",
@@ -151,5 +151,17 @@ class FrameTests(unittest.TestCase):
             phase["retract_offset_world_m"]=offset
             with self.assertRaisesRegex(RuntimeError,"UNQUALIFIED_RETRACT"):
                 self.ns["tracking_task"](row,{"grasp_height_above_center_m":.1},phase)
+
+    def test_retract_phase_has_own_bounded_clock_after_fresh_physical_lift(self):
+        now=20000000000
+        phase={"phase":"RETRACTING","created_host_ns":14000000000,"pre_retract_physical_lift_pass":True,"retract_from_hold_end_ns":13990000000}
+        self.assertTrue(self.ns["tracking_phase_is_fresh"](phase,now))
+        self.assertFalse(self.ns["tracking_phase_is_fresh"](phase,now+1))
+        phase["created_host_ns"]=now;phase["retract_from_hold_end_ns"]=now-10000000
+        self.assertTrue(self.ns["tracking_phase_is_fresh"](phase,now+5500000000))
+        phase["pre_retract_physical_lift_pass"]=False
+        self.assertFalse(self.ns["tracking_phase_is_fresh"](phase,now))
+        phase["pre_retract_physical_lift_pass"]=True;phase["retract_from_hold_end_ns"]=now-201000000
+        self.assertFalse(self.ns["tracking_phase_is_fresh"](phase,now))
 
 if __name__=='__main__':unittest.main()

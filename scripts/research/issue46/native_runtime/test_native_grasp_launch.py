@@ -772,4 +772,12 @@ class PostLiftRetractTests(TestCase):
     def test_default_grasp_does_not_enable_retract(self):
         self.assertNotIn("RETRACT_GATED",generated())
 
+class CompleteNativeTraceTests(TestCase):
+    def test_partial_final_writer_record_is_not_parsed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/"trace.jsonl";p.write_bytes(b'{"a":1}'+bytes([10])+b'{"b":')
+            self.assertEqual(audit.read_complete_native_rows(p),[{"a":1}])
+            p.write_bytes(b'{"a":1}'+bytes([10])+b'BROKEN'+bytes([10]))
+            with self.assertRaises(ValueError):audit.read_complete_native_rows(p)
+
 if __name__=='__main__':main()

@@ -1226,7 +1226,7 @@ def _with_postlift_retract(script, lift_contract):
    print(json.dumps({'pre_retract_physical_lift':accepted}),flush=True)
    if not accepted['pass']:raise RuntimeError('RETRACT_GATED_UNQUALIFIED_PHYSICAL_LIFT')
    retract_execution={'requested':True,'executed':True,'start_host_ns':time.monotonic_ns()}
-   n.lift_phase['phase']='RETRACTING';n.lift_phase['retract_offset_world_m']=[0.,0.,0.];n.write_phase(n.lift_phase)
+   n.lift_phase['phase']='RETRACTING';n.lift_phase['created_host_ns']=time.monotonic_ns();n.lift_phase['retract_from_hold_end_ns']=lift_execution['hold_end_ns'];n.lift_phase['pre_retract_physical_lift_pass']=True;n.lift_phase['retract_offset_world_m']=[0.,0.,0.];n.write_phase(n.lift_phase)
    n.send(goal,4.,'RETRACT',HAND_RIGHT)
    n.lift_phase['retract_offset_world_m']=LIFT_CONTRACT['retract_preflight']['offset_world_m'];n.write_phase(n.lift_phase)
    retract_execution['hold_start_ns']=time.monotonic_ns()

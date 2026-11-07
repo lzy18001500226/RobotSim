@@ -840,3 +840,5 @@ Run81报告文字称转向降到0.12，但原始velocity_command_trace有223条�
 现有真实抬升末端的-150mm世界X/-150mm世界Y路径，13点静态IK和瓶/桌碰撞筛查通过（fetch-chair-postlift-retract-static-20261107T175409Z）；实际CLI前后调用链亦通过APPROACH/LIFT/POST_LIFT_RETRACT_SWEEP（fetch-chair-retract-cli-preflight-20261107T181259Z）。这些不是动态收臂或持物行走PASS。
 
 174412Z新Reset收件与边界确认通过，但bridge图尚未看到publisher时启动检查超时，非零命令0；容器确认删除。父流程原先在ADD响应打印时即把bridge视为启动，现在等待其真实started日志，仍由子流程独立证明唯一图/QoS/新鲜实际输出和源/模式。ADD任务完成仍未确认，不能把state=0当完成。
+
+181830Z真实RGB-D抓取仍完成50mm/1sim秒无支撑保持（最低57.696mm，双垫最小1.671/1.661N，桌力0），收臂刚开始约4.6mm指令时出现CLOSURE_PHASE_EXPIRED，非掉瓶/IK失败。原因是RETRACTING继承了LIFTING起始时间，却落入6s阶段期限。修正为独立且仍为6s的RETRACTING阶段，只能在新鲜物理抬升门通过后的0.20s内建立；每帧更新目标不刷新该起点。未延长旧阶段或状态新鲜度。另将“抬升已完成”和“后续收臂失败”独立分类，保持总体失败；完整行JSON仍严格校验，只忽略正在写入的末尾半行。实际容器已清理，未进入行走。

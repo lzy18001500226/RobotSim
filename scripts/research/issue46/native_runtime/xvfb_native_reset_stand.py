@@ -2267,12 +2267,14 @@ def main() -> None:
                     if lift.get('executed'):
                         result['gates']['HAL_PHYSICAL_LIFT']='FAIL'
                         if 'hold_end_ns' in lift:
-                            rows=[json.loads(line) for line in (output/'native_physics.jsonl').read_text().splitlines()]
+                            rows=native_grasp_audit.read_complete_native_rows(output/'native_physics.jsonl')
                             metrics=native_grasp_audit.evaluate_unsupported_lift(rows,initial_bottle_z_m=lift['initial_bottle_z_m'],hold_start_ns=lift['hold_start_ns'],hold_end_ns=lift['hold_end_ns'])
                             result['physical_lift_evidence']=metrics
-                            result['gates']['HAL_PHYSICAL_LIFT']='PASS' if arm_pregrasp.returncode==0 and metrics['pass'] else 'FAIL'
+                            result['gates']['HAL_PHYSICAL_LIFT']='PASS' if metrics['pass'] else 'FAIL'
                 if args.physical_lift_test and lift.get('executed') and result['gates']['HAL_PHYSICAL_LIFT']!='PASS':
                     result['failure']={'gate':'HAL_PHYSICAL_LIFT','detail':result.get('physical_lift_evidence',lift),'execution_tail':arm_pregrasp.stdout[-1600:]}
+                elif result['gates'].get('POST_LIFT_RETRACT')=='FAIL' and result['gates']['HAL_PHYSICAL_LIFT']=='PASS':
+                    result['failure']={'gate':'POST_LIFT_RETRACT','child_returncode':arm_pregrasp.returncode,'detail':arm_pregrasp.stdout[-1600:]}
                 elif result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] != "PASS":
                     result["failure"] = {"gate": "HAL_BILATERAL_ARM_PREGRASP", "child_returncode": arm_pregrasp.returncode, "closure_issued": bool(closure_issued), "detail": arm_pregrasp.stdout[-1200:] if arm_pregrasp.returncode else "Actual TCP arrival or standing stability did not qualify"}
                 elif result['gates']['HAL_RIGHT_HAND_CLOSE']=='FAIL':

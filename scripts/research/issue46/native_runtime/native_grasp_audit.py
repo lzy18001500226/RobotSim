@@ -380,3 +380,12 @@ def native_reset_dispatch_evidence(path, dispatch, *, expected_pid):
             "before_sim_time_s":before["sim_time_s"],"after_sim_time_s":first["sim_time_s"],
             "dispatch_monotonic_ns":stamp,"boundary_host_ns":first["host_monotonic_ns"],
             "dispatch_to_boundary_s":(first["host_monotonic_ns"]-stamp)*1e-9}
+
+def read_complete_native_rows(path):
+    """Ignore only an in-progress final write; malformed complete records fail."""
+    rows=[]
+    with Path(path).open("rb") as stream:
+        for line in stream:
+            if not line.endswith(bytes([10])):break
+            rows.append(json.loads(line))
+    return rows

@@ -143,6 +143,17 @@ def axis_grasp_error(hand_position, hand_rotation, local_circle_center, section_
                  .1*(np.asarray(hand_rotation)@local-np.asarray(bottle_axis))]
 
 
+
+def tracking_phase_is_fresh(phase, now_ns):
+    limits={"ARRIVAL_HOLD":12.,"CLOSING":6.,"LIFTING":9.,"RETRACTING":6.}
+    stage=phase.get("phase");created=phase.get("created_host_ns")
+    if stage not in limits or not isinstance(created,int) or not 0.<=(now_ns-created)*1e-9<=limits[stage]:return False
+    if stage=="RETRACTING":
+        end=phase.get("retract_from_hold_end_ns")
+        if phase.get("pre_retract_physical_lift_pass") is not True or not isinstance(end,int) or not 0<=created-end<=200000000:return False
+    return True
+
+
 def tracking_task(row, reference, phase=None):
     """Phase-aware fixed grasp target, without promoting motion to success."""
     bottle=row['bodies']['test_cylinder'];B=np.array(bottle['rotation']).reshape(3,3)
@@ -160,6 +171,7 @@ def tracking_task(row, reference, phase=None):
         if phase.get('bilateral_contact_pass') is not True or not np.isfinite(lift) or not 0.<=lift<=.060000001:raise RuntimeError('UNQUALIFIED_OR_UNBOUNDED_LIFT_PHASE')
         offset[2]=lift
         if phase['phase']=='RETRACTING':
+            if phase.get('pre_retract_physical_lift_pass') is not True:raise RuntimeError('RETRACT_WITHOUT_PHYSICAL_LIFT_GATE')
             retreat=np.asarray(phase.get('retract_offset_world_m'),dtype=float)
             if retreat.shape!=(3,) or not np.isfinite(retreat).all() or np.linalg.norm(retreat)>.250000001 or not -.02<=retreat[2]<=.05:
                 raise RuntimeError('UNQUALIFIED_RETRACT_PHASE')
@@ -324,7 +336,7 @@ def track_native(reference_path, latest_path, output_path):
                     if not 0.<=(time.monotonic_ns()-row['host_monotonic_ns'])*1e-9<=.20:raise RuntimeError('STALE_NATIVE_AFTER_INITIAL_IMAGE_READINESS')
                 else:estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
                 row['bodies']['test_cylinder']=qualify_estimate(estimate,generation=row['generation'])
-            if phase is not None and not 0.<=(time.monotonic_ns()-phase['created_host_ns'])*1e-9<=(12. if phase.get('phase')=='ARRIVAL_HOLD' else 9. if phase.get('phase')=='LIFTING' else 6.):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
+            if phase is not None and not tracking_phase_is_fresh(phase,time.monotonic_ns()):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
             generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
