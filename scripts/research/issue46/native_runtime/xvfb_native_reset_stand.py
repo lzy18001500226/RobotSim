@@ -257,6 +257,7 @@ def locomotion_dock_script(
     braking_delay_s: float | None = None,
     native_leg_limits: dict | None = None,
     command_speed_cap: float | None = None,
+    angular_speed_cap: float | None = None,
 ) -> str:
     """Build one bounded, odometry-closed official velocity-control route.
 
@@ -283,6 +284,7 @@ def locomotion_dock_script(
             "braking_delay_s": braking_delay_s,
             "native_leg_limits":native_leg_limits,
             "command_speed_cap":command_speed_cap,
+            "angular_speed_cap":angular_speed_cap,
         }
     )
     import inspect
@@ -418,7 +420,7 @@ class Dock(Node):
   p=row['bodies']['pelvis'];q=p['quaternion_wxyz'];R=p['rotation'];x,y,z=p['position_m']
   if PLAN.get('native_leg_limits'):
    fault=physical_fault(row,native_pose(row),PLAN['native_leg_limits'])
-   if fault:self.feedback_fault={'gate':fault,'native_row_source_ns':stamp};return
+   if fault:self.feedback_fault=self.feedback_fault or {'gate':fault,'native_row_source_ns':stamp};return
   if not all(math.isfinite(v) for v in [x,y,z,*q]):self.feedback_fault={'gate':'NONFINITE_NATIVE_DOCK_POSE'};return
   self.native_generation=row['generation'];self.odom_stamp=stamp;self.odom_last_unique_receipt=stamp*1e-9
   self.pose=(x,y,z,math.atan2(R[3],R[0]),stamp*1e-9);self.quat=q
@@ -519,6 +521,7 @@ try:
     break
   if phase!='HOLD':stable_since=None
   if PLAN.get('command_speed_cap') is not None:fwd=max(-PLAN['command_speed_cap'],min(PLAN['command_speed_cap'],fwd))
+  if PLAN.get('angular_speed_cap') is not None:ang=max(-PLAN['angular_speed_cap'],min(PLAN['angular_speed_cap'],ang))
   n.publish(fwd,lat,ang)
   now=time.monotonic()
   if last_sample_at is None or now-last_sample_at>=.10:
@@ -967,6 +970,7 @@ def main() -> None:
     parser.add_argument("--native-circle-tracking",action="store_true",help="consume fresh source-limited native circle IK updates during arm execution")
     parser.add_argument("--physical-lift-test",action="store_true",help="60mm/3s lift and 1.5s observation only after measured bilateral contact and static lift sweep")
     parser.add_argument("--native-dock-truth-feedback",action="store_true",help="SIMULATION_ONLY exact native pose feedback; not estimator/navigation qualification")
+    parser.add_argument("--dock-angular-speed-cap",type=float,help="explicit <=0.075 rad/s external steering cap; bridge promotion also bounded")
     parser.add_argument("--dock-command-speed-cap",type=float,help="explicit smaller external bridge speed cap; MC/policy/model unchanged")
     parser.add_argument("--dock-braking-delay-s",type=float,help="explicit measured stop-tail predictor; final actual position/stop criteria remain unchanged")
     parser.add_argument("--fixed-reviewed-checkpoint",action="store_true",help="native keyframe episode initialization; no navigation qualification")
@@ -1020,6 +1024,8 @@ def main() -> None:
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
 
+    if args.dock_angular_speed_cap is not None and (args.dock_command_speed_cap is None or not 0.<args.dock_angular_speed_cap<=.075):
+        raise ValueError("angular cap requires bounded dock speed and <=.075 rad/s")
     if args.dock_command_speed_cap is not None and (args.dock_world_xy is None or not args.native_dock_truth_feedback or not .12<=args.dock_command_speed_cap<=.20):
         raise ValueError("bounded dock cap requires native feedback and .12..0.20 m/s")
 
@@ -1298,6 +1304,7 @@ def main() -> None:
                     braking_delay_s=args.dock_braking_delay_s,
                     native_leg_limits=native_leg_safety_contract()[0] if args.native_dock_truth_feedback else None,
                     command_speed_cap=args.dock_command_speed_cap,
+                    angular_speed_cap=args.dock_angular_speed_cap,
                 ),
             )
         if args.micro_base_probe:
@@ -1741,6 +1748,7 @@ def main() -> None:
         if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
             bridge_log = output / "official_cmd_vel_bridge.stdout"
             lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:="+str(args.micro_command_speed)+" -p min_lateral_velocity:="+str(args.micro_command_speed) if args.micro_base_probe else " -p min_forward_velocity:="+str(args.dock_command_speed_cap) if args.dock_command_speed_cap is not None else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
+            if args.dock_angular_speed_cap is not None:lateral_parameter+=" -p min_angular_velocity:="+str(args.dock_angular_speed_cap)+" -p max_angular_velocity:="+str(args.dock_angular_speed_cap)
             bridge_command = (
                 environment
                 + "exec python3 /workspace/robotsim/reference/AgiBot-Community/raicom2026-agibot-X2/"

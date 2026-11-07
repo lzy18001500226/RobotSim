@@ -703,3 +703,10 @@ a misleading stale-control error. Review time never counts toward lift hold.
 对既有两次 RGB-D 完整流程补做相同行走区间审计：005238Z 右/左膝峰值为 13.095641/13.669924 rad/s；000115Z 为 13.346165/13.946299 rad/s。这些历史运行的抓取承力、无支撑抬升测量仍有效，但当时父 runner 没有原生腿速逐帧门，不能继续描述为已通过此次新增源腿速全链路资格。保留原始记录，不改写历史结果。
 
 下一项不同假设为外部 bridge 的较小 0.12 m/s 输入诊断：保留原 MC、FoundationWalk 配置、模型、力和关节限值，只使用 bridge 已公开的 min_forward/min_lateral 参数防止把小请求强制抬到 0.2。输入先与现场 MC 报告的 bounds 核对。仍为单次 0.6 s、严格停止和零重启；不是 MC policy 调参，也不能先验宣称合格。
+
+
+微步 035847Z：0.12 m/s、1.0 s 左移输入，在源限值检查下得到停稳后 forward +0.040386 m、left +0.024546 m、yaw -0.017579 rad；Composite stop 测量 1.984319 s / 100 样本，目标最大变化 0.018598 rad，PASS。该检查按当时 50 Hz 保存帧进行；后续 C observer 已增加每个真实 physics step 的关节速度区间峰值，防止采样间漏峰。
+
+完整较低线速度流程 040934Z 在到桌前之前安全中止，不能算抓取失败：输入 forward 0.12 / 初始 yaw -0.159021，后续小 yaw 被官方桥提升到最小 0.1；约启动 0.591 s 时实际 pelvis 原点速度 0.220098 m/s，COM 0.220532 m/s，超过 0.20。两种速度定义都越界，不能归因于原点/质心的语义差异。没有执行机械臂、闭合或抬升。
+
+后续外部输入配置使用原已验证的更小 angular cap 0.075 rad/s，并同步约束 bridge 的 min/max angular，避免低值请求被抬高。MC 策略、增益和物理限值不变。物理故障保留首次 source timestamp，不让后续零命令观察覆盖首个原因。

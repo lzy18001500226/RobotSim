@@ -68,6 +68,16 @@ class DockFeedbackTests(unittest.TestCase):
         crossed=[(t,x+.30,.08) for t,x,y in history]
         self.assertTrue(predict(crossed,(.85,0.),(0.,0.),.43)['crossed'])
 
+    def test_caps_limit_both_signs_at_the_actual_route_publish_site(self):
+        tree=ast.parse(script());loop=next(n for n in ast.walk(tree) if isinstance(n,ast.While) and any(isinstance(x,ast.Expr) and isinstance(x.value,ast.Call) and isinstance(x.value.func,ast.Attribute) and x.value.func.attr=="publish" for x in n.body))
+        statements=[n for n in loop.body if isinstance(n,ast.If) and "speed_cap" in ast.unparse(n.test)]
+        self.assertEqual(len(statements),2)
+        for v,w in ((.2,.4),(-.2,-.4)):
+            ns=dict(PLAN=dict(command_speed_cap=.12,angular_speed_cap=.075),fwd=v,ang=w)
+            exec(compile(ast.Module(body=statements,type_ignores=[]),"caps","exec"),ns)
+            self.assertAlmostEqual(abs(ns["fwd"]),.12)
+            self.assertAlmostEqual(abs(ns["ang"]),.075)
+
     def test_postdock_observer_has_no_action_or_velocity_command_path(self):
         from scripts.research.issue46.native_runtime.stl_hand_startup import build_stand_client_script
         code=build_stand_client_script(observe_only=True);compile(code,'readonly','exec')
