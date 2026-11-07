@@ -403,4 +403,81 @@ class NativeLaunchTests(TestCase):
         with self.assertRaisesRegex(RuntimeError,'RESET'):refresh()
         self.assertEqual(n.native_generation,1)
 
+class NativeArmRelayTests(TestCase):
+    def test_config_only_restores_and_redirects_the_original_arm_transport(self):
+        import copy
+        from scripts.research.issue46.native_runtime.stl_hand_startup import build_native_arm_relay_config
+        source={"MotionControlModule":{"PublisherManager":{"publisher_cfg_list":[
+            {"name":"arm_joint_command","enable":True,"topic":"/aima/hal/joint/arm/command"},
+            {"name":"hand_joint_command","enable":True,"topic":"/aima/hal/joint/hand/command"},
+            {"name":"waist_joint_command","enable":True,"topic":"/aima/hal/joint/waist/command"},
+            {"name":"leg_joint_command","enable":True,"topic":"/aima/hal/joint/leg/command"}]}},
+            "aimrt":{"channel":{"pub_topics_options":[{"topic_name":"/aima/hal/joint/arm/command","enable_backends":["ros2"]}]}},
+            "frozen_policy_and_gains":{"action_nums":29,"gain":50.}}
+        original=copy.deepcopy(source);expected=copy.deepcopy(source)
+        expected["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"][0]["topic"]="/robotsim/issue46/mc/arm/command"
+        expected["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"][1]["enable"]=False
+        expected["aimrt"]["channel"]["pub_topics_options"][0]["topic_name"]="/robotsim/issue46/mc/arm/command"
+        self.assertEqual(build_native_arm_relay_config(source),expected)
+        self.assertEqual(source,original)
+
+    def test_active_relay_forwards_the_original_message_and_rejects_duplicates(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import arm_bootstrap_hold_script
+        source=ast.parse(arm_bootstrap_hold_script({},relay_arms=True))
+        hold=next(n for n in source.body if isinstance(n,ast.ClassDef))
+        method=next(n for n in hold.body if isinstance(n,ast.FunctionDef) and n.name=="on_mc_arm")
+        hold.bases=[];hold.body=[method]
+        arm=tuple("joint"+str(i) for i in range(14));clock=NS(now=10.)
+        ns=dict(ARM=arm,math=math,time=NS(monotonic=lambda:clock.now),os=NS(path=NS(exists=lambda path:True)),json=json)
+        exec(compile(ast.Module(body=[hold],type_ignores=[]),"relay","exec"),ns)
+        n=ns["Hold"]();n.arm_source_stamp=0;n.arm_receipt=None;n.arm_relay_started=7.;n.arm_relay_count=0;sent=[];n.pub=NS(publish=sent.append)
+        msg=NS(header=NS(stamp=NS(sec=1,nanosec=5)),joints=[NS(name=name,position=.2,velocity=.1,effort=.3,stiffness=50.,damping=3.) for name in arm])
+        n.on_mc_arm(msg);self.assertIs(sent[0],msg);self.assertEqual(n.arm_relay_count,1)
+        clock.now=10.3;n.on_mc_arm(msg)
+        self.assertEqual(n.arm_receipt,10.);self.assertEqual(n.arm_relay_count,1)
+
+
+class GainCaptureReadinessTests(TestCase):
+    def replay(self, delay, *, freeze_stamps=False):
+        import ast,json,math,io,contextlib
+        from types import SimpleNamespace as NS
+        from scripts.research.issue46.native_runtime.stl_hand_startup import build_stand_command_capture_script
+        tree=ast.parse(build_stand_command_capture_script())
+        tree.body=[n for n in tree.body if not isinstance(n,(ast.Import,ast.ImportFrom))]
+        clock=NS(t=0.)
+        class Node:
+            def __init__(self,*args):pass
+            def create_subscription(self,*args):return object()
+            def destroy_node(self):pass
+        ns=dict(Node=Node,json=json,math=math,time=NS(monotonic=lambda:clock.t),
+                QoSProfile=lambda **k:None,ReliabilityPolicy=NS(BEST_EFFORT=2),JointCommandArray=object)
+        def spin(n,timeout_sec):
+            clock.t+=.01
+            if clock.t<delay:return
+            stamp=int((1.+(delay if freeze_stamps else clock.t))*1e9)
+            def packet(names):
+                return NS(header=NS(stamp=NS(sec=stamp//1000000000,nanosec=stamp%1000000000)),
+                          joints=[NS(name=name,position=0.,velocity=0.,effort=0.,stiffness=10.,damping=1.) for name in names])
+            n.store("leg",packet(ns["LEG_ORDER"]));n.store("waist",packet(ns["WAIST_ORDER"]))
+        ns["rclpy"]=NS(init=lambda:None,ok=lambda:True,spin_once=spin,shutdown=lambda:None)
+        output=io.StringIO()
+        with contextlib.redirect_stdout(output):exec(compile(tree,"capture","exec"),ns)
+        return json.loads(output.getvalue())
+
+    def test_complete_measurement_starts_after_fresh_readiness(self):
+        r=self.replay(1.80)
+        self.assertGreaterEqual(r["readiness_delay_s"],1.79)
+        self.assertGreaterEqual(r["capture_duration_s"],2.)
+        self.assertGreater(r["window_counts"]["leg"],100)
+        self.assertGreaterEqual(r["source_span_s"]["waist"],1.90)
+
+    def test_missing_discovery_fails_closed_without_capture(self):
+        with self.assertRaisesRegex(RuntimeError,"discovery/readiness"):
+            self.replay(2.1)
+
+    def test_duplicate_command_stamps_cannot_fake_gain_freshness(self):
+        with self.assertRaisesRegex(RuntimeError,"stale or incomplete"):
+            self.replay(.1,freeze_stamps=True)
+
+
 if __name__=='__main__':main()

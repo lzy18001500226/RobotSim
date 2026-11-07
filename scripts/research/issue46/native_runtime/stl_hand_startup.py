@@ -233,6 +233,19 @@ def build_coordinated_waist_relay_config(source: dict[str, object]) -> dict[str,
     return result
 
 
+def build_native_arm_relay_config(source: dict[str, object], *, relay_waist=False) -> dict[str, object]:
+    """Restore the vendor 29-DOF policy output; change transport ownership only."""
+    result=build_coordinated_waist_relay_config(source) if relay_waist else build_arm_hand_split_mc_config(source)
+    original="/aima/hal/joint/arm/command";private="/robotsim/issue46/mc/arm/command"
+    entries=result["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
+    pubs=[x for x in entries if x.get("name")=="arm_joint_command"]
+    channels=[x for x in result["aimrt"]["channel"]["pub_topics_options"] if x.get("topic_name")==original]
+    if len(pubs)!=1 or pubs[0].get("enable") is not False or pubs[0].get("topic")!=original or len(channels)!=1:
+        raise ValueError("expected exact source MC arm publisher and channel")
+    pubs[0]["enable"]=True;pubs[0]["topic"]=private;channels[0]["topic_name"]=private
+    return result
+
+
 def build_stand_client_script(*, observe_only: bool = False) -> str:
     """Minimal equivalent of the delivered ``set_mc_action SD`` example."""
     code = """#!/usr/bin/env python3
@@ -1386,24 +1399,38 @@ class Capture(Node):
     def __init__(self):
         super().__init__('robotsim_stl_stand_command_capture')
         qos=QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.samples={'arm':0,'leg':0,'waist':0}; self.commands={'arm':{},'leg':{},'waist':{}}
+        self.samples={'arm':0,'leg':0,'waist':0}; self.commands={'arm':{},'leg':{},'waist':{}}; self.stamps={}; self.received={}
         self.create_subscription(JointCommandArray,'/aima/hal/joint/arm/command',lambda msg:self.store('arm',msg),qos)
         self.create_subscription(JointCommandArray,'/aima/hal/joint/leg/command',lambda msg:self.store('leg',msg),qos)
         self.create_subscription(JointCommandArray,'/aima/hal/joint/waist/command',lambda msg:self.store('waist',msg),qos)
     def store(self,area,msg):
+        stamp=int(msg.header.stamp.sec)*1000000000+int(msg.header.stamp.nanosec)
+        if stamp<=self.stamps.get(area,0):return
+        self.stamps[area]=stamp;self.received[area]=time.monotonic()
         self.samples[area]+=1
         self.commands[area]={item.name:{'position':float(item.position),'velocity':float(item.velocity),'effort':float(item.effort),'stiffness':float(item.stiffness),'damping':float(item.damping)} for item in msg.joints}
 rclpy.init(); node=Capture()
 try:
-    end=time.monotonic()+2.0
-    while rclpy.ok() and time.monotonic()<end: rclpy.spin_once(node,timeout_sec=0.02)
+    began=time.monotonic();ready=None;begin_counts=None;begin_stamps=None
     expected={'leg':LEG_ORDER,'waist':WAIST_ORDER}
+    while rclpy.ok() and time.monotonic()-began<4.:
+        rclpy.spin_once(node,timeout_sec=.002);now=time.monotonic()
+        complete=all(all(name in node.commands[area] for name in names) and now-node.received.get(area,0.)<=.20 for area,names in expected.items())
+        if ready is None:
+            if complete:ready=now;begin_counts=dict(node.samples);begin_stamps=dict(node.stamps)
+            elif now-began>=2.:raise RuntimeError('command discovery/readiness unconfirmed within 2s')
+        else:
+            if not complete:raise RuntimeError('captured command stream became stale or incomplete')
+            if now-ready>=2.:break
+    if ready is None or time.monotonic()-ready<2.:raise RuntimeError('complete post-readiness capture window missing')
+    window_counts={area:node.samples[area]-begin_counts[area] for area in expected}
+    window_source_span={area:(node.stamps[area]-begin_stamps[area])*1e-9 for area in expected}
     for area,names in expected.items():
-        if node.samples[area] < 10 or any(name not in node.commands[area] for name in names): raise RuntimeError('missing complete '+area+' command stream')
+        if window_counts[area] < 10 or window_source_span[area]<1.90 or any(name not in node.commands[area] for name in names): raise RuntimeError('missing complete '+area+' command stream')
         for name in names:
             if not all(math.isfinite(node.commands[area][name][field]) for field in ('position','velocity','effort','stiffness','damping')): raise RuntimeError('non-finite '+area+' command')
     arm_complete=all(name in node.commands['arm'] for name in ARM_ORDER)
-    print(json.dumps({'sample_counts':node.samples,'arm_command_stream_complete':arm_complete,'arm_commands':{name:node.commands['arm'][name] for name in ARM_ORDER} if arm_complete else {},'leg_commands':{name:node.commands['leg'][name] for name in LEG_ORDER},'waist_commands':{name:node.commands['waist'][name] for name in WAIST_ORDER}}))
+    print(json.dumps({'sample_counts':node.samples,'window_counts':window_counts,'source_span_s':window_source_span,'readiness_delay_s':ready-began,'capture_duration_s':time.monotonic()-ready,'arm_command_stream_complete':arm_complete,'arm_commands':{name:node.commands['arm'][name] for name in ARM_ORDER} if arm_complete else {},'leg_commands':{name:node.commands['leg'][name] for name in LEG_ORDER},'waist_commands':{name:node.commands['waist'][name] for name in WAIST_ORDER}}))
 finally:
     node.destroy_node(); rclpy.shutdown()
 """

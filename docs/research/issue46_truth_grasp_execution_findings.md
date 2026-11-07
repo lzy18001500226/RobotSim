@@ -722,3 +722,12 @@ a misleading stale-control error. Review time never counts toward lift hold.
 
 复现（只进行静态诊断）：
 env OPENBLAS_NUM_THREADS=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46/grasp/approved_circle_stance_region.py --source-roll-diagnostic /home/lzy18001500226/projects/RobotSim/reviews/issue-46/approved-circle-standing-ik-20261107T020355Z/result.json
+
+
+### 原厂全身策略与抓取占用的边界检查（尚未 live）
+
+安装 foundationwalk_config.yaml 明确定义 action_nums=29，action_seq 包含14个双臂关节。现有抓取集成从启动就关闭MC arm publisher，并由 bootstrap 固定在(.4,0,0,-1.2,...)；这不等于完整保留原厂行走时的29轴输出。该差异是可验证的集成假设，尚未证明就是根速度越界的原因；还需观察实际MC臂命令，不能只凭配置存在断言其已应用。
+
+准备复用已存在的腰部 topic relay 机制，将原生MC arm输出原样接入导航，站稳后再唯一接管抓取。当前只新增了独立配置/worker构建接口和离线消息原样转发测试，尚未接入父runner或执行新物理。禁止把此准备状态当成行走修复 PASS。
+
+只读gain capture亦修正为先取得新鲜完整 leg/waist，再测满2s窗口：discovery最多2s，总计最多4s。重复源时间戳不刷新计数/年龄，中途陈旧立即失败，源时间跨度至少1.90s。不是用更长超时掩盖丢失数据。

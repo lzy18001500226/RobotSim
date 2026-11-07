@@ -672,7 +672,7 @@ gcc -std=c11 -O2 -Wall -Wextra -D_DEFAULT_SOURCE \"${include_dirs[@]}\" \\
 """
 
 
-def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, initial_hand_opening: float | None = None, open_hand_transit_park: bool = False, initial_arm_target=None, initial_arm_effort=None) -> str:
+def arm_bootstrap_hold_script(gains: dict[str, tuple[float, float]], *, relay_waist: bool = False, relay_arms: bool = False, initial_hand_opening: float | None = None, open_hand_transit_park: bool = False, initial_arm_target=None, initial_arm_effort=None) -> str:
     """Hold arms at the installed MC's neutral target before MC owns the legs.
 
     This is an explicitly simulation-only bootstrap for an arm-split MC
@@ -691,7 +691,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from aimdk_msgs.msg import JointCommand, JointCommandArray, JointStateArray, MessageHeader, HandCommand, HandCommandArray, HandType
 ARM=('left_shoulder_pitch_joint','left_shoulder_roll_joint','left_shoulder_yaw_joint','left_elbow_joint','left_wrist_yaw_joint','left_wrist_pitch_joint','left_wrist_roll_joint','right_shoulder_pitch_joint','right_shoulder_roll_joint','right_shoulder_yaw_joint','right_elbow_joint','right_wrist_yaw_joint','right_wrist_pitch_joint','right_wrist_roll_joint')
 TARGET=(.4,0.,0.,-1.2,0.,0.,0.,.4,0.,0.,-1.2,0.,0.,0.)
-RELAY_WAIST=__RELAY_WAIST__; INITIAL_HAND_OPENING=__INITIAL_HAND_OPENING__; OPEN_HAND_TRANSIT_PARK=__OPEN_HAND_TRANSIT_PARK__
+RELAY_ARMS=__RELAY_ARMS__; RELAY_WAIST=__RELAY_WAIST__; INITIAL_HAND_OPENING=__INITIAL_HAND_OPENING__; OPEN_HAND_TRANSIT_PARK=__OPEN_HAND_TRANSIT_PARK__
 INITIAL_ARM_TARGET=__INITIAL_ARM_TARGET__; INITIAL_ARM_EFFORT=__INITIAL_ARM_EFFORT__
 GAINS=__GAINS__; STOP='/workspace/evidence/stop_arm_bootstrap'
 class Hold(Node):
@@ -700,10 +700,23 @@ class Hold(Node):
   self.started=time.monotonic();self.hand_pub=None
   if INITIAL_HAND_OPENING is not None:
    self.hand_pub=self.create_publisher(HandCommandArray,'/aima/hal/joint/hand/command',QoSProfile(depth=10,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.TRANSIENT_LOCAL))
+  self.arm_msg=None;self.arm_source_stamp=0;self.arm_receipt=None;self.arm_relay_count=0;self.arm_relay_started=None;self.arm_handoff_start=None
+  if RELAY_ARMS:self.create_subscription(JointCommandArray,'/robotsim/issue46/mc/arm/command',self.on_mc_arm,q)
   self.waist_pub=None
   if RELAY_WAIST:
    self.waist_pub=self.create_publisher(JointCommandArray,'/aima/hal/joint/waist/command',q)
    self.create_subscription(JointCommandArray,'/robotsim/issue46/mc/waist/command',self.on_waist,q)
+ def on_mc_arm(self,m):
+  if len(m.joints)!=14 or {j.name for j in m.joints}!=set(ARM):raise RuntimeError('INVALID_MC_ARM_GROUP')
+  if any(not all(math.isfinite(float(getattr(j,f))) for f in ('position','velocity','effort','stiffness','damping')) for j in m.joints):raise RuntimeError('NONFINITE_MC_ARM_COMMAND')
+  stamp=int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec)
+  if stamp<=self.arm_source_stamp:return
+  self.arm_source_stamp=stamp;self.arm_receipt=time.monotonic();self.arm_msg=m
+  first='/workspace/evidence/native_arm_relay_initial.json'
+  if not os.path.exists(first):
+   with open(first,'x') as f:json.dump({'source_stamp_ns':stamp,'joints':{j.name:{k:float(getattr(j,k)) for k in ('position','velocity','effort','stiffness','damping')} for j in m.joints}},f)
+  if self.arm_relay_started is not None and time.monotonic()-self.arm_relay_started>=2.:
+   self.pub.publish(m);self.arm_relay_count+=1
  def on_waist(self,m):
   if len(m.joints)!=3 or {j.name for j in m.joints}!={'waist_yaw_joint','waist_pitch_joint','waist_roll_joint'}:raise RuntimeError('INVALID_MC_WAIST_GROUP')
   if any(not all(math.isfinite(float(getattr(j,f))) for f in ('position','velocity','effort','stiffness','damping')) for j in m.joints):raise RuntimeError('NONFINITE_MC_WAIST_COMMAND')
@@ -717,7 +730,25 @@ class Hold(Node):
    if OPEN_HAND_TRANSIT_PARK and name=='right_shoulder_pitch_joint':
     u=max(0.,min(1.,(time.monotonic()-self.started)/2.));target=.4+.4*(3*u*u-2*u*u*u)
    x=JointCommand();x.name=name;x.position=target;x.velocity=0.;x.effort=float(INITIAL_ARM_EFFORT.get(name,0.));x.stiffness=GAINS[name][0];x.damping=GAINS[name][1];m.joints.append(x)
-  self.pub.publish(m)
+  if RELAY_ARMS and os.path.exists('/workspace/evidence/enable_native_arm_relay'):
+   if self.arm_msg is None or time.monotonic()-self.arm_receipt>.20:raise RuntimeError('STALE_MC_ARM_RELAY')
+   if self.arm_relay_started is None:
+    if any(name not in self.state for name in ARM):raise RuntimeError('MISSING_HANDOFF_ARM_STATE')
+    self.arm_handoff_start=dict(self.state);self.arm_relay_started=time.monotonic()
+    if max(abs(j.position-self.state[j.name]) for j in self.arm_msg.joints)>1.1:raise RuntimeError('SOURCE_ARM_HANDOFF_EXCURSION')
+   elapsed=time.monotonic()-self.arm_relay_started
+   if elapsed<2.:
+    u=max(0.,min(1.,elapsed/2.));u=3*u*u-2*u*u*u
+    # Bumpless position handoff to the actual unmodified MC gain/effort fields.
+    for dst,src in zip(m.joints,self.arm_msg.joints):
+     if dst.name!=src.name:
+      src=next(j for j in self.arm_msg.joints if j.name==dst.name)
+     dst.position=self.arm_handoff_start[dst.name]+u*(src.position-self.arm_handoff_start[dst.name])
+     dst.velocity=src.velocity;dst.effort=src.effort;dst.stiffness=src.stiffness;dst.damping=src.damping
+    self.pub.publish(m)
+   elif self.arm_relay_count>0 and not os.path.exists('/workspace/evidence/native_arm_relay_ready.json'):
+    with open('/workspace/evidence/native_arm_relay_ready.json','x') as f:json.dump({'ready':True,'source_stamp_ns':self.arm_source_stamp,'relay_count':self.arm_relay_count,'source_fields_unchanged_after_handoff':True},f)
+  else:self.pub.publish(m)
   if self.hand_pub is not None:
    # Retain the delivered initialization handshake, then hold fully open.
    command=0.0 if time.monotonic()-self.started<.8 else INITIAL_HAND_OPENING
@@ -738,9 +769,9 @@ try:
    n.ready=True;print(json.dumps({'ready':True,'subscription_count':n.pub.get_subscription_count(),'arm_positions_rad':{name:n.state[name] for name in ARM}}),flush=True)
   next_tick+=.01
   while rclpy.ok() and time.monotonic()<next_tick:rclpy.spin_once(n,timeout_sec=.001)
- print(json.dumps({'stopped':os.path.exists(STOP),'ready':n.ready,'waist_relay_count':n.waist_relay_count,'subscription_count':n.pub.get_subscription_count()}),flush=True)
+ print(json.dumps({'stopped':os.path.exists(STOP),'ready':n.ready,'waist_relay_count':n.waist_relay_count,'arm_relay_count':n.arm_relay_count,'subscription_count':n.pub.get_subscription_count()}),flush=True)
 finally:n.destroy_node();rclpy.shutdown()
-""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening)).replace("__OPEN_HAND_TRANSIT_PARK__", repr(open_hand_transit_park)).replace("__INITIAL_ARM_TARGET__", encoded_target).replace("__INITIAL_ARM_EFFORT__", encoded_effort)
+""".replace("__GAINS__", encoded).replace("__RELAY_WAIST__", repr(relay_waist)).replace("__RELAY_ARMS__",repr(relay_arms)).replace("__INITIAL_HAND_OPENING__", repr(initial_hand_opening)).replace("__OPEN_HAND_TRANSIT_PARK__", repr(open_hand_transit_park)).replace("__INITIAL_ARM_TARGET__", encoded_target).replace("__INITIAL_ARM_EFFORT__", encoded_effort)
 
 
 def retarget_neutral_script() -> str:
