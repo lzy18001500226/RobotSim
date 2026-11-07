@@ -121,8 +121,8 @@ def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native
     if direction not in ("forward", "backward", "left", "right"):
         raise ValueError("unknown body-frame micro direction")
     maximum=1. if target_distance_m is None else 2.
-    if target_distance_m is not None and (not math.isfinite(target_distance_m) or not .02<=target_distance_m<=.05 or command_speed!=.12):
-        raise ValueError("targeted micro cycle diagnostic requires .02..05m and the .12m/s profile")
+    if target_distance_m is not None and (not math.isfinite(target_distance_m) or not .02<=target_distance_m<=.05 or command_speed not in (.12,.14) or command_speed==.14 and direction!="forward"):
+        raise ValueError("targeted cycle requires .02..05m and .12, or the reviewed Run81 forward .14 profile")
     if not .4 <= duration_s <= maximum:
         raise ValueError("micro pulse outside its explicit .4..1s or targeted <=2s profile")
     if not math.isfinite(command_speed) or not .12<=command_speed<=.2:raise ValueError("micro input outside previously validated .12..0.20 envelope")
@@ -482,7 +482,10 @@ def run_probe(smoke_only=False):
                     result["trigger_elapsed_s"]=time.monotonic()-began
                     break
             angular=heading_hold_command(row["pose"]["yaw"],start["yaw"]) if MICRO.get("heading_hold") else 0.
-            n.publish(*velocity,angular);time.sleep(max(0.,tick+.02-time.monotonic()))
+            command_velocity=velocity
+            if MICRO["direction"]=="forward" and v==.14 and angular!=0.:
+                command_velocity=(.12,0.)  # exact Run81 straight/arc input envelope
+            n.publish(*command_velocity,angular);time.sleep(max(0.,tick+.02-time.monotonic()))
         # Initiate zero BEFORE any blocking readback or post-pulse inspection.
         n.deadline_zero();n.stop_started=True
         if watchdog:watchdog.cancel()

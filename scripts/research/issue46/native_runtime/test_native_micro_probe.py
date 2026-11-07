@@ -64,7 +64,7 @@ class MicroTests(unittest.TestCase):
         code=micro.build_script("left",1.,{},command_speed=.12,heading_hold=True)
         compile(code,"heading-probe","exec")
         self.assertIn("'heading_hold': True",code)
-        self.assertIn('n.publish(*velocity,angular)',code)
+        self.assertIn('n.publish(*command_velocity,angular)',code)
 
     def test_micro_directions_preserve_cross_track_guard(self):
         pose=dict(x=0.,y=.051,z=.65,roll=0.,pitch=0.,yaw=0.,vx=0.,vy=0.)
@@ -80,6 +80,9 @@ class MicroTests(unittest.TestCase):
         compile(code,"targeted","exec")
         self.assertIn("'target_distance_m': 0.03",code)
         self.assertIn('result["goal_triggered_stop"]=True',code)
+        code14=micro.build_script("forward",2.,{},command_speed=.14,heading_hold=True,target_distance_m=.03)
+        self.assertIn("command_velocity=(.12,0.)",code14)
+        with self.assertRaises(ValueError):micro.build_script("left",2.,{},command_speed=.14,target_distance_m=.03)
         for kwargs in (dict(duration_s=2.01,target_distance_m=.03),dict(duration_s=2.,target_distance_m=.03,command_speed=.2),dict(duration_s=2.)):
             with self.assertRaises(ValueError):micro.build_script("forward",joint_limits={},**kwargs)
 

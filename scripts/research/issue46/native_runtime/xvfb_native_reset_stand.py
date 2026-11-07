@@ -1127,9 +1127,10 @@ def main() -> None:
         raise ValueError("micro heading hold requires isolated probe and matching .075 bridge angular cap")
     if args.micro_target_distance_m is not None and (
         not args.micro_base_probe or not args.reviewed_foundationwalk_profile or
-        not .02<=args.micro_target_distance_m<=.05 or args.micro_command_speed!=.12 or
+        not .02<=args.micro_target_distance_m<=.05 or args.micro_command_speed not in (.12,.14) or
+        args.micro_command_speed==.14 and args.micro_base_probe!="forward" or
         not .4<=args.micro_probe_duration_s<=2.):
-        raise ValueError("targeted micro cycle requires reviewed profile, .12m/s, .02..05m, <=2s")
+        raise ValueError("targeted cycle requires reviewed profile, .12 or Run81 forward .14m/s, .02..05m, <=2s")
     if args.micro_base_probe:
         if args.dock_world_xy is not None or args.fixed_reviewed_checkpoint or args.lateral_probe_mps is not None or args.physical_lift_test or args.pause_on_claw_failure:
             raise ValueError("micro capability probe is isolated from dock, checkpoint and grasp")
