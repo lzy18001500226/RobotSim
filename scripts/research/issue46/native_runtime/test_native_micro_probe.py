@@ -138,6 +138,11 @@ class MicroTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"requires a measured native table-docking"):parent.main()
         with patch.object(sys,"argv",args+["--micro-base-probe","forward","--native-arm-policy-relay"]),patch.object(parent,"require_hashed",side_effect=RuntimeError("REACHED_INPUT_HASH_GATE")):
             with self.assertRaisesRegex(RuntimeError,"REACHED_INPUT_HASH_GATE"):parent.main()
+        heading=["--micro-base-probe","left","--micro-command-speed",".12",
+                 "--native-reset-input","button","--micro-heading-hold",
+                 "--dock-angular-speed-cap",".075"]
+        with patch.object(sys,"argv",args+heading),patch.object(parent,"require_hashed",side_effect=RuntimeError("REACHED_INPUT_HASH_GATE")):
+            with self.assertRaisesRegex(RuntimeError,"REACHED_INPUT_HASH_GATE"):parent.main()
 
     def test_low_input_profile_changes_only_bridge_command_amplitude(self):
         code=micro.build_script("left",.6,{},command_speed=.12)

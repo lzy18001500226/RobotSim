@@ -1113,8 +1113,11 @@ def main() -> None:
         verify_mc_fsm_runtime_contract(RUNTIME/"mc/lib")
     if args.native_arm_policy_relay and (not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher or args.hal_arm_candidate is None or args.fixed_reviewed_checkpoint or args.open_hand_transit_park or args.coordinated_circle_waist):
         raise ValueError("native arm relay requires the unparked arm/hand split path; no fixed checkpoint or waist posture candidate")
-    if args.dock_angular_speed_cap is not None and (args.dock_command_speed_cap is None or not 0.<args.dock_angular_speed_cap<=.075):
-        raise ValueError("angular cap requires bounded dock speed and <=.075 rad/s")
+    if args.dock_angular_speed_cap is not None and (
+        not 0.<args.dock_angular_speed_cap<=.075 or
+        args.dock_command_speed_cap is None and not (args.micro_base_probe and args.micro_heading_hold)
+    ):
+        raise ValueError("angular cap requires bounded dock speed or isolated heading-held micro probe, and <=.075 rad/s")
     if args.dock_command_speed_cap is not None and (args.dock_world_xy is None or not args.native_dock_truth_feedback or not .12<=args.dock_command_speed_cap<=.20):
         raise ValueError("bounded dock cap requires native feedback and .12..0.20 m/s")
 
