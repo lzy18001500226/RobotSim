@@ -437,6 +437,36 @@ class NativeArmRelayTests(TestCase):
         self.assertEqual(n.arm_receipt,10.);self.assertEqual(n.arm_relay_count,1)
 
 
+class WslgForegroundTests(TestCase):
+    def test_foreground_is_verified_and_never_submits_keyboard_or_mouse(self):
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent
+        calls=[]
+        def fake_run(command,**kwargs):
+            calls.append(command)
+            return NS(returncode=0,stdout="C:\\verified-helper.ps1\n" if command[0]=="wslpath" else json.dumps(dict(status="FOREGROUND_VERIFIED",keyboardEvents=0,mouseEvents=0)))
+        with tempfile.TemporaryDirectory() as folder,mock.patch.object(Path,"is_file",return_value=True),mock.patch.object(parent,"run",side_effect=fake_run),mock.patch.object(parent.pg,"write_new_text"):
+            result=parent.activate_wslg_native_window({"title":"MuJoCo : x2t2.5"},Path(folder),label="test")
+        self.assertEqual(result["status"],"FOREGROUND_VERIFIED")
+        self.assertEqual(calls[1][-2:],["-ExpectedTitle","MuJoCo : x2t2.5"])
+        self.assertIn("Hidden",calls[1])
+        self.assertNotIn("SendKeys"," ".join(calls[1]))
+
+    def test_pointer_preflight_distinguishes_stale_state_from_user_holding(self):
+        from scripts.research.issue46.native_runtime.wslg_input_preflight import classify
+        up=dict(LeftDown=False,MiddleDown=False,RightDown=False)
+        self.assertEqual(classify(up,16),"PASS")
+        self.assertEqual(classify(up,1040),"STALE_X11_POINTER_BUTTON_STATE")
+        self.assertEqual(classify(dict(up,RightDown=True),1040),"RELEASE_PHYSICAL_MOUSE_BUTTONS_BEFORE_AUTOMATION")
+        self.assertEqual(classify({},0),"WINDOWS_BUTTON_STATE_UNVERIFIED")
+
+    def test_false_activation_stops_before_any_x11_input(self):
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent
+        responses=[NS(returncode=0,stdout="C:\\helper.ps1"),NS(returncode=2,stdout='{"status":"FOREGROUND_NOT_CONFIRMED"}')]
+        with tempfile.TemporaryDirectory() as folder,mock.patch.object(Path,"is_file",return_value=True),mock.patch.object(parent,"run",side_effect=responses),mock.patch.object(parent.pg,"write_new_text"):
+            with self.assertRaisesRegex(RuntimeError,"WSLG_WINDOWS_FOREGROUND_NOT_VERIFIED"):
+                parent.activate_wslg_native_window({"title":"MuJoCo : x2t2.5"},Path(folder),label="test")
+
+
 class GainCaptureReadinessTests(TestCase):
     def replay(self, delay, *, freeze_stamps=False):
         import ast,json,math,io,contextlib

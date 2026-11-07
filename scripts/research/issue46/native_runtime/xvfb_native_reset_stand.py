@@ -995,6 +995,20 @@ def headless_x11_mounts(root, libs, xkb, *, interactive):
             "--mount",f"type=bind,source={xkb},target=/usr/share/X11/xkb,readonly"]
 
 
+def activate_wslg_native_window(window, output, *, label):
+    """Narrow verified Windows activation; X11 identity/focus gates still apply."""
+    powershell=Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+    helper=Path(__file__).with_name("wslg_mujoco_foreground.ps1")
+    if not powershell.is_file() or not helper.is_file():raise RuntimeError("WSLg foreground helper unavailable")
+    winpath=run(["wslpath","-w",str(helper)],timeout_s=3.).stdout.strip()
+    attempt=run([str(powershell),"-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File",winpath,"-ExpectedTitle",window["title"]],timeout_s=6.,check=False)
+    pg.write_new_text(output/(label+".stdout"),attempt.stdout)
+    if attempt.returncode:raise RuntimeError("WSLG_WINDOWS_FOREGROUND_NOT_VERIFIED:"+attempt.stdout[-1200:])
+    result=json.loads(attempt.stdout.strip().splitlines()[-1])
+    if result.get("status")!="FOREGROUND_VERIFIED" or result.get("keyboardEvents")!=0 or result.get("mouseEvents")!=0:raise RuntimeError("WSLg foreground evidence invalid")
+    return result
+
+
 def decode_arm_execution_output(returncode, stdout):
     """Preserve execution summary when an exception-context JSON follows it."""
     decoded={}
@@ -1584,6 +1598,8 @@ def main() -> None:
         if len(windows) != 1:
             raise RuntimeError(f"expected one verified MuJoCo window: {inspect.stdout}")
         window = windows[0]
+        if args.interactive_x11_display and args.pause_on_claw_failure:
+            result["windows_foreground_before_episode"]=activate_wslg_native_window(window,output,label="windows_foreground_before_episode")
         if args.fixed_reviewed_checkpoint:
             identity=" --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])
             capture_code="import sys;from pathlib import Path;sys.path.insert(0,'/workspace/evidence');import native_mujoco_reset as m;x=m.X11();assert x._target_identity("+str(pid)+","+repr(window['title'])+","+str(window['window_id'])+") is not None;x.capture_png("+str(window['window_id'])+",Path('/workspace/evidence/checkpoint_before_key.png'))"
@@ -2115,6 +2131,7 @@ def main() -> None:
                     if args.native_circle_tracking and not (output/'native_tracking_target.stop').exists():pg.write_new_text(output/'native_tracking_target.stop','controlled execution ended before review-only physics pause\n')
                     # Freeze physical stepping through the verified native UI,
                     # keeping the renderer interactive for multi-angle review.
+                    result["windows_foreground_before_review_pause"]=activate_wslg_native_window(window,output,label="windows_foreground_before_review_pause")
                     before_pause=json.loads((output/'native_latest.json').read_text())
                     paused=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py send-pause --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])+" --dispatch-event-json /workspace/evidence/manual_pause_dispatch.json"],timeout_s=8.,check=False)
                     pg.write_new_text(output/'manual_pause.stdout',paused.stdout)
@@ -2135,9 +2152,13 @@ def main() -> None:
                     pg.write_new_text(output / "manual_review_pause.json", json.dumps(result["manual_review_pause"], ensure_ascii=False, indent=2) + "\n")
                     print(pause_reason + ". MuJoCo remains open. Create continue_after_manual_review to clean up.", flush=True)
                     deadline = time.monotonic() + 900.0
+                    review_window_closed=False
                     while time.monotonic() < deadline and not release.exists():
+                        alive=run(["docker","exec",container,"bash","-c","kill -0 "+str(pid)+" 2>/dev/null"],timeout_s=3.,check=False)
+                        if alive.returncode:
+                            review_window_closed=True;result["manual_review_window_closed"]=True;break
                         time.sleep(0.5)
-                    if not release.exists():
+                    if not release.exists() and not review_window_closed:
                         raise TimeoutError("manual review pause expired without release file")
             if "arm trajectory" in result["commands_not_sent"]:
                 result["commands_not_sent"].remove("arm trajectory")

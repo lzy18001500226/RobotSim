@@ -731,3 +731,20 @@ env OPENBLAS_NUM_THREADS=1 /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/py
 准备复用已存在的腰部 topic relay 机制，将原生MC arm输出原样接入导航，站稳后再唯一接管抓取。当前只新增了独立配置/worker构建接口和离线消息原样转发测试，尚未接入父runner或执行新物理。禁止把此准备状态当成行走修复 PASS。
 
 只读gain capture亦修正为先取得新鲜完整 leg/waist，再测满2s窗口：discovery最多2s，总计最多4s。重复源时间戳不刷新计数/年龄，中途陈旧立即失败，源时间跨度至少1.90s。不是用更长超时掩盖丢失数据。
+
+
+### 2026-11-07 实时阶段3审核及 WSLg 输入恢复
+
+用户明确要求实时物理，不能继续用记录回放代替。新增持久入口：
+wsl.exe -d Ubuntu-22.04 --cd /home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030 --exec env DISPLAY=:0 bash scripts/research/issue46/grasp/run_live_rgbd_grasp_review.sh
+
+仅从已记录且碰撞检查过的桌前 episode-boundary 原生 keyframe 起步，30cm/D70/0.200kg，自由瓶、实际 native mj_step + MC、新鲜RGB-D抓前重观测和有界snapshot目标；不包含行走，也不包含15cm瓶。保持既有源派生 CoACD/控制诊断分类。没有使用回放替代物理。结束后通过原生GUI暂停物理、保留可交互窗口，关闭或终端Ctrl+C后清理。窗口自动审核等待上限900s；禁止恢复已结束控制阶段的物理。
+
+首次063343Z在任何keyframe输入前被焦点检查拒绝（0个鼠标按钮事件），容器已清理。此次观测到Windows物理鼠标键全松开、X11 mask1040仍含Button3按下。XTest release和Windows release-only尝试未消除，未假称恢复。确认无其他Linux GUI/实验容器后，只重启受WSLGd监管的Weston图形进程，没有关闭Ubuntu或Docker。恢复后X11按钮位清零，Docker仍为29.8.1。证据 wslg-stale-input-recovery-20261107T071644Z。
+
+入口现加入只读Windows/X11鼠标状态前检；物理按着时要求先松开，无法确认或持续不一致时不启动仿真；不自动重启用户的其他图形程序。另在可见物理审核的原生初始化和暂停前，精确匹配Windows标题、WSLg进程路径与唯一窗口并验证前台激活，之后仍保留原X11 PID/XID/title/focus及实际原生状态代次检查。未放宽输入验证或机器人门。
+
+072640Z实际实时RGB-D抓取 PASS：最小抬升60.524283mm，最后51个样本/1.000s无支撑保持；两垫法向最小1.581562/1.618526N、桌面力0、平均向上承力1.961479N。arm/closure/lift执行门PASS，child return0。仿真原生时间从86.821停在87.041，已确认暂停；这不是动态稳定验收所用的时间。
+用户随后明确回复“都可操作”，只记为外框与相机操作人工PASS，不推断为抓取视觉或整个长Goal审批。长Goal保持暂停。
+
+本次输入状态不一致已实测，但最初为何漏掉松开事件尚未锁定；跨屏/切换/退出拖动仅为待证假设。不要宣称永久解决WSLg，也不要把此前COPY MODE共享内存问题与每次输入故障混成一个确定原因。
