@@ -36,9 +36,52 @@ Before implementing any mechanical-model change, stop and present the maintainer
 
 Proceed only after explicit approval for that specific proposal. General instructions to fix a gripper, improve contact, or complete a grasp do not approve mechanical redesign. Mechanical-model changes are high-risk and are never an automatic self-merge case.
 
+## C.1 Standing authorization: Issue #46 OmniPicker simulation parameter debugging
+
+**Maintainer clarification, 2026-11-06.** This authorization persists across
+chats working on Issue #46; read it before requesting another parameter approval.
+The protected artifact is the human-reviewed OmniPicker STL shape, assembly and
+0–100% kinematic motion. Ordinary simulation control/parameter debugging that
+preserves those artifacts is not a request to reconstruct the mechanism.
+
+Within the existing Issue #46 research worktree and separate `SIMULATION_ONLY`
+overlays, the maintainer authorizes bounded, evidence-based tuning of gripper
+position-control gains and joint-internal friction/damping without per-parameter
+confirmation. Specifically, an isolated right-claw six-joint comparison of
+`frictionloss=0.3 -> 0` is authorized. Zero is a diagnostic assumption, not a
+manufacturer friction specification. This supersedes the earlier pending
+approval for that comparison and the gain-only proposal in the research report.
+It does not automatically authorize every proposed parameter value.
+
+Execution requirements:
+
+- Preserve immutable upstream files and the reviewed baseline; record exact
+  before/after values, input hashes, purpose and a reproducible command.
+- Change one diagnosed condition at a time; verify actual opening/closing using
+  fresh joint feedback and real `mj_step` physics before attempting contact.
+- Keep existing force/torque, velocity, joint, posture and stop limits. This
+  authorization does not permit raising limits, changing MC gains/binaries,
+  weakening success criteria, or connecting hardware.
+- Joint `frictionloss` is distinct from pad/object contact friction. Contact
+  friction, mass, inertia, gravity and collision parameters are not covered by
+  this standing authorization.
+- If motion becomes unstable or a change affects the reviewed shape, assembly,
+  kinematic envelope or contact geometry, stop that experiment and present the
+  exact affected model for human review. Web overlays can verify appearance;
+  they cannot replace dynamic/force validation.
+- Do not ask again merely because a permitted control parameter affects
+  dynamics. Missing real friction data does not prevent a labeled diagnostic
+  comparison, but its result cannot be promoted to hardware fidelity.
+
+Sections B/C still require case-specific approval for geometry, body/link/joint
+identity, joint types/origins/axes/limits, topology, mimic/equality/transmission
+relationships and collision changes. Replacing the hand, removing contacts,
+adding supports/welds or writing object poses to manufacture a grasp remain
+forbidden. Canonical model promotion/merge review remains separate.
+
 ## D. Stop when source semantics are missing
 
-If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.
+If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.
 
 ## E. Immutable upstream and source-preserving adaptations
 

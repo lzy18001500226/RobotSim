@@ -8,8 +8,91 @@ not authorize physics stepping, mechanical-model changes, or hardware motion.
 - Robot/gripper selection: `X2-OmniPicker-STL` through the registry loader.
 - World source: one scene adapter for the selected map, with explicit map,
   LiDAR, RGB-D, table, interaction-zone, and delivery-zone frames.
-- Ground truth: allowed only for offline evaluation and estimator comparison;
-  never as a navigation, docking, or grasp-control input.
+- Ground truth: permitted in explicitly labeled SIMULATION_ONLY debugging and
+  the maintainer-authorized Stage 2 truth-first grasp/stance validation. Record
+  the target source. Truth may not silently cross an estimator acceptance
+  boundary or be reported as LiDAR/depth-camera navigation or grasp success.
+
+## Current milestone and observed status (2026-11-07)
+
+The maintainer authorized sequential autonomous completion of this simulation
+Goal on 2026-11-07, with Stage 1 taking priority. Reuse this worktree, task state
+machine and evidence roots. Routine implementation, official-source research,
+offline tests and evidence-driven bounded simulations need no per-run approval.
+This does not authorize mechanical redesign, hardware or success overrides.
+
+1. **Truth-first physical grasp:** fixed table stance, actual open/approach,
+   measured circle/axis arrival, bilateral force-bearing closure, >=50mm free
+   bottle lift and >=1s unsupported hold. Independently reproduce before claiming
+   a working full start-to-table-to-grasp review command.
+2. **Reachable stance region:** evaluate nearby x/y/yaw and supported arm/waist
+   postures, collision margins and balance. Include 300mm and 150mm bottle-height
+   cases as separately identified scene inputs; do not promise every pose works.
+3. **RGB-D substitution:** use fresh calibrated bottle axis/diameter/section pose
+   in the same execution chain. Record estimator error against truth separately;
+   truth must not silently feed perception-qualified control.
+4. **Perception-driven stance adjustment:** at a known table with unknown bottle
+   location, observe, assess reachability, make only qualified bounded base
+   corrections, stop, reobserve and replan. Stale pre-move coordinates are invalid.
+5. **LiDAR substitution:** replace base-truth localization with the established
+   mapped LiDAR estimator, retain local RGB-D grasp feedback, and verify the
+   complete reproducible chain. Delivery/manipulation after lifting is out of scope.
+
+Keep each stage's physical result separate. A plan does not qualify a stage.
+Preserve existing geometry and force/posture/stop constraints; use
+the scoped parameter authorization below for ordinary gripper diagnostics.
+
+The five numbered stages above are the current Goal contract. Older task
+messages used “Stage 2” for fixed-stance manipulation and “Stage 3” for base
+repositioning; those shorthand labels do not override this five-stage audit.
+Fixed-stance grasp and RGB-D subtests are qualified separately from the
+strengthened walking safety audit below. Repositioning reuses that grasp chain,
+requires qualified bounded micro motion and a fresh observation after stopping,
+and cannot reuse pre-move object coordinates.
+
+The physical grasp/lift observations below remain valid, but the new native
+source-speed audit changes the **full-chain qualification**: previous runs did
+not enforce native leg speed continuously while walking. Recorded walking
+peaks exceed the installed 11.936 rad/s knee bound. Updated runs fail closed
+on native body/leg speed; the strengthened START-to-table chain is not yet
+qualified. Do not present historical grasp PASS as passing this new audit.
+
+Stage 1 has one historical measured full START-to-table-to-lift PASS (native run
+`20261106T210324Z`): final dock error 10.6mm, minimum bottle rise 55.60mm over
+51 samples spanning 1.000s, zero table support, and bilateral lower-concave-pad
+contact. An independent fixed-stance run also passed (58.49mm minimum rise).
+This uses the explicitly selected **SIMULATION_ONLY source-derived CoACD pad
+comparison**, zero internal joint friction, right-claw kv=1.27, and elliptic
+cone/impratio=10. It does not qualify the untouched whole-mesh collision
+baseline, manufacturer-default physics, perception, or the subsequent stages.
+Independent full-flow repetition `20261106T212727Z` also passed (57.10mm minimum
+rise, 51 unique samples over 1.000s, no table support, cleanup confirmed).
+See the [measured findings](../research/issue46_truth_grasp_execution_findings.md)
+for exact trace identities; do not promote a prior model's PASS to this setup.
+
+Canonical RGB-D substitution now has a fixed-stance physical PASS
+(`20261106T234215Z`, 57.82mm minimum rise) and a full START-to-table physical
+PASS (`20261107T000115Z`, 57.52mm minimum rise). The full run uses a fresh
+calibrated virtual head RGB-D observation, independent pre-execution
+reobservation (0.093mm target difference), and an explicitly bounded stationary
+object snapshot. It is not continuous visibility through the grasping hand.
+Both achieved 51 samples/1.000s unsupported hold; all audited forces fall on
+the approved lower arcs. Assumptions remain upright blue cylinder, known
+height prior and the explicit source-derived collision/control profile above.
+Base truth and independent truth safety/audit are still used; LiDAR substitution
+and perception-driven base adjustment are not qualified by these results.
+
+The 150mm height variant now has source-waist-roll **geometric** candidates
+(050007Z): approach/lift/contact and static support screens pass, with >=39.66mm
+COM support margin. This uses an existing DOF, no mechanical change. Actual
+waist handoff, dynamic balance and short-bottle grasp remain unqualified.
+The 0.12m/s, 1s left micro-step (035847Z) passed measured stopping but has coupled
+forward motion; general forward/back/left/right correction is not yet qualified.
+
+Use the [scoped parameter authorization](../engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging)
+for existing gripper gain/joint-resistance diagnostics; ordinary permitted
+parameter debugging does not require another approval. Model identity,
+geometry, topology, contact and force-limit changes retain their review gates.
 
 ## Task state machine
 
@@ -20,7 +103,10 @@ RESET -> STAND -> NAVIGATE_TO_INTERACTION -> RECEIVE_REQUEST
       -> NAVIGATE_TO_DELIVERY -> PLACE -> REPORT_COMPLETE
 ```
 
-Every transition is fail-closed. A failed localization, stale frame transform,
+This is the intended end-to-end lifecycle, not a statement that all stages run
+successfully today. The research lift executor has the narrowly qualified
+simulation result above; delivery remains unimplemented/unqualified. Every
+transition is fail-closed. A failed localization, stale frame transform,
 unreachable grasp, unsupported object, contact failure, or stability failure
 returns a reasoned failure state rather than moving to the next stage.
 
@@ -37,6 +123,67 @@ returns a reasoned failure state rather than moving to the next stage.
 All spatial contracts use REP-103 units and frames. Map-specific semantic
 locations are configuration data, never hard-coded in planning code.
 
+## Standing OmniPicker grasp sequence
+
+For the frozen `X2-OmniPicker-STL` model, table grasp development follows one
+continuous sequence.  Do not treat a static pose, a working gripper slider, a
+passing arm IK solve, or a completed short physics probe as a completed grasp.
+
+1. Keep the accepted robot, both STL hands, source meshes, collision coverage,
+   table, and object geometry fixed.  Use a vertically supported object on
+   the table.
+2. Search the robot base pose, base yaw, object position on the supported
+   table area, knee bend, waist yaw/pitch, and wrist/arm pose.  The ordinary
+   default remains waist roll within 2 degrees for the qualified 300mm baseline.
+   The current maintainer Goal explicitly includes supported bending/side-body
+   posture for shorter bottles: separately labeled posture candidates may use
+   the existing source waist-roll DOF within its original limits. Require
+   collision, support/balance, smooth approach and actual controller handoff
+   qualification; do not mistake the ordinary preference for a hardware limit.
+   Do not add joints, alter axes/limits or execute an unqualified posture.
+3. Screen every candidate with `mj_forward` before stepping: complete hand
+   pose, bilateral distal-pad contact at the requested close command, no
+   non-pad object intersection, no robot-table collision, finite source joint
+   margins, and object table support.
+4. Start physics from a stable table-preplaced standing state.  First hold the
+   stance, then ramp the upper body to pregrasp.  Record actual hand-to-object
+   error; a static target is not sufficient.
+5. When selecting the opening-first startup path, command open during
+   initialization and retain it through walking under exclusive hand ownership.
+   Verify actual opening before walking and again before approach; command
+   publication or a fixed sleep is not opening confirmation. Preserve an
+   already-open hand at the docking handoff rather than closing it to reactivate.
+   Actual full opening has passed in the labeled zero-internal-friction overlay;
+   this is not vendor-default parameter or complete grasp acceptance.
+6. Only after the physical pregrasp remains stable and the actual hand is in
+   the screened contact region may the gripper close.  Require sustained
+   bilateral distal-pad contact before attempting lift.
+7. Lift in order: a small clearance probe, then a 50 mm lift and hold.  A
+   grasp PASS requires table-support transfer, opposing pad contact, object
+   COM rise of at least 50 mm, and stable hold.  No weld, object qpos write,
+   hidden support, or collision exclusion may substitute for those checks.
+
+Failure handling remains local to the failed stage:
+
+- Static-screen failure: adjust only base stance, supported object placement,
+  source-supported knee/waist posture, or arm/wrist approach pose.
+- Standing or pregrasp failure: correct the initial state or the smooth
+  transition before issuing a close command.
+- Hand-to-object error or missing bilateral contact: search the screened
+  stance/IK neighbourhood using the measured MuJoCo hand pose; do not merely
+  increase gripper force.
+- Contact or lift failure: inspect contact forces, table support, root motion,
+  and object COM before trying the next bounded candidate.
+
+Each failed candidate must preserve its result and select the next local
+candidate. Under the current sequential autonomous Goal, a recorded grasp
+success proceeds to the already authorized next stage; it is not a routine
+permission stop. Stop for an actual required visual decision, an unapproved
+source/model change, or a failure outside supported controls after completing
+independent useful work. Apply the
+explicit parameter authorization above before treating ordinary simulation
+control tuning as an unapproved mechanical change.
+
 ## Workstream split
 
 1. **LiDAR navigation and randomized obstacles** consumes only map/LiDAR/odom
@@ -44,7 +191,9 @@ locations are configuration data, never hard-coded in planning code.
    recorded with each run; their truth pose is not available to the planner.
 2. **RGB-D docking and manipulation** consumes the navigation stop result and
    estimated object pose, then chooses a reachable stance and arm plan. It
-   cannot read object truth after the estimator boundary.
+   cannot read object truth after the estimator boundary in perception-qualified
+   operation. The labeled Stage 2 truth diagnostic is a separate mode; it must
+   never claim fresh RGB-D acceptance.
 3. **Task execution** is the sole owner of state transitions and retries.
 
 The workstreams may investigate independently, but maintained code integrates

@@ -72,11 +72,11 @@ def load_scene_config(path: Path) -> dict[str, object]:
     if not path.is_file() or path.is_symlink():
         raise ValueError(f"scene config is missing or unsafe: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("schema") != "robotsim.raicom2026.x2-stl-autonomy-scene.v3":
+    if payload.get("schema") != "robotsim.raicom2026.x2-stl-autonomy-scene.v4":
         raise ValueError("scene config schema is not the explicit-review-input variant")
     if payload.get("classification") != "SIMULATION_ONLY_STATIC_AUTONOMY_SCENE_INPUT":
         raise ValueError("scene config qualification is unexpected")
-    if not isinstance(payload.get("sources"), dict) or not isinstance(payload.get("environment"), dict):
+    if not isinstance(payload.get("sources"), dict) or not isinstance(payload.get("environment"), dict) or not isinstance(payload.get("initial_base_pose"), dict):
         raise ValueError("scene config lacks source or environment records")
     return payload
 
@@ -139,6 +139,13 @@ def rebind_collision_proxy_meshes(root: ET.Element, recovery: dict[str, object])
         filename = Path(raw).name
         if filename not in expected:
             continue
+        existing = Path(raw)
+        if existing.is_file():
+            if sha256(existing) != expected[filename]:
+                raise ValueError(f"existing collision proxy hash differs from the frozen manifest: {raw}")
+            referenced.add(filename)
+            rewrites.append({"mesh": str(mesh.get("name", "")), "from": raw, "to": raw, "sha256": str(expected[filename])})
+            continue
         if "collision_generated" not in raw:
             raise ValueError(f"proxy-named mesh does not identify the frozen collision source: {raw}")
         target = parts / filename
@@ -175,6 +182,7 @@ def compose_scene(
     approved_scene: Path,
     room: Path,
     environment: dict[str, object],
+    initial_base_pose: dict[str, object],
     recovery: dict[str, object] | None = None,
 ) -> tuple[bytes, dict[str, object]]:
     """Keep the approved robot scene, replacing only its duplicate table."""
@@ -189,6 +197,17 @@ def compose_scene(
     required = {"pelvis", "R_omnipicker_base_link", "L_omnipicker_base_link"}
     if not required.issubset(names):
         raise ValueError("approved scene does not contain the reviewed complete X2-STL robot")
+    base_position = np.asarray(initial_base_pose.get("xyz_m"), dtype=float)
+    base_yaw = initial_base_pose.get("yaw_rad")
+    if base_position.shape != (3,) or not np.isfinite(base_position).all() or not isinstance(base_yaw, (int, float)) or not math.isfinite(float(base_yaw)):
+        raise ValueError("initial base pose is invalid")
+    pelvis = next((body for body in worldbody.findall("body") if body.get("name") == "pelvis"), None)
+    if pelvis is None:
+        raise ValueError("approved full-X2 scene lacks direct pelvis root")
+    initial_pelvis = {key: pelvis.get(key) for key in ("pos", "euler", "quat")}
+    pelvis.set("pos", " ".join(f"{value:.12g}" for value in base_position))
+    pelvis.set("euler", f"0 0 {float(base_yaw):.12g}")
+    pelvis.attrib.pop("quat", None)
     retain_body = environment.get("retain_body")
     if not isinstance(retain_body, str) or retain_body not in names:
         raise ValueError("approved scene does not retain the declared grasp object")
@@ -216,6 +235,11 @@ def compose_scene(
     return ET.tostring(root, encoding="utf-8", xml_declaration=True), {
         "approved_scene_environment_bodies_removed": removed,
         "approved_robot_body": "pelvis",
+        "initial_base_pose": {
+            "source": initial_base_pose.get("source"),
+            "before": initial_pelvis,
+            "after": {"pos": pelvis.get("pos"), "euler": pelvis.get("euler")},
+        },
         "approved_hands": ["L_omnipicker_base_link", "R_omnipicker_base_link"],
         "retained_grasp_object": retain_body,
         "attached_competition_room": {"model": model_name, "prefix": prefix, "table_body": table_after_attach},
@@ -340,7 +364,9 @@ def main() -> None:
     room_rebound_path = output / "raicom_room_absolute_assets.xml"
     room_rebound = rebind_room_assets(room, room_rebound_path)
     scene_path = output / "x2_stl_raicom_autonomy_scene.xml"
-    payload, composition = compose_scene(approved_scene, room_rebound_path, environment, recovery)
+    initial_base_pose = config["initial_base_pose"]
+    assert isinstance(initial_base_pose, dict)
+    payload, composition = compose_scene(approved_scene, room_rebound_path, environment, initial_base_pose, recovery)
     pg.write_new_bytes(scene_path, payload)
     model = mujoco.MjModel.from_xml_path(str(scene_path))
     data = mujoco.MjData(model)
@@ -350,6 +376,12 @@ def main() -> None:
     mujoco.mj_forward(model, data)
     if not np.isfinite(data.qpos).all() or not np.isfinite(data.xpos).all():
         raise RuntimeError("combined approved-X2/RAICOM scene has non-finite state")
+    pelvis = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    if pelvis < 0:
+        raise RuntimeError("combined scene lacks pelvis")
+    expected_base = np.asarray(initial_base_pose["xyz_m"], dtype=float)
+    if not np.allclose(data.xpos[pelvis], expected_base, atol=1e-8):
+        raise RuntimeError("compiled pelvis position differs from the configured RAICOM start pose")
     result = {
         "schema": "robotsim.issue46.x2-stl-raicom-autonomy-static.v2",
         "classification": "SIMULATION_ONLY_STATIC_APPROVED_FULL_X2_IN_RAICOM_ROOM",
@@ -364,6 +396,7 @@ def main() -> None:
         "selected_gripper": {"model_id": loaded.model_id, "model_sha256": loaded.model_sha256, "trajectory_sha256": loaded.metadata["trajectory_sha256"]},
         "generated_scene": {"path": str(scene_path), "sha256": sha256(scene_path)},
         "composition": composition,
+        "initial_base_pose_world": {"xyz_m": data.xpos[pelvis].tolist(), "yaw_rad": float(initial_base_pose["yaw_rad"])},
         "hand_geometry_inventory": stl_hand_inventory(model),
         "viewer": {"collision_proxies_visible": args.show_collision_proxies, "hidden_groups_by_default": [] if args.show_collision_proxies else [STL_COLLISION_RENDER_GROUP]},
         "model": {

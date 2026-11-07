@@ -41,6 +41,8 @@ This is an **investigation obligation, not blanket execution permission**. Never
 
 Before proposing or changing robot/gripper mechanical geometry, links, joints, axes, limits, mimic/equality relations, collision geometry, linkage topology, or model provenance, follow the [mandatory model-integrity contract](docs/engineering/model_integrity.md). It applies to production and `SIMULATION_ONLY` research. Do not invent or reconstruct missing mechanics, and do not promote a research model. Each mechanical change requires explicit case-specific maintainer approval before implementation and a separate human review before merge; general authorization to fix a robot or complete a grasp is not approval to redesign its mechanism.
 
+For Issue #46 OmniPicker, apply the [2026-11-06 standing authorization for simulation parameter debugging](docs/engineering/model_integrity.md#c1-standing-authorization-issue-46-omnipicker-simulation-parameter-debugging). Bounded gripper gain and joint-internal friction/damping diagnostics in separate overlays do not need repeated approval when reviewed STL geometry, assembly, kinematic relationships and existing safety/force limits remain unchanged. Geometry/topology/collision changes still require specific review. Read the owning contract for exact scope; do not generalize this authorization to other workstreams or hardware.
+
 ## Workspace and change boundaries
 
 - Inspect the current branch, working-tree status, and relevant diff before editing. Preserve unrelated user changes.

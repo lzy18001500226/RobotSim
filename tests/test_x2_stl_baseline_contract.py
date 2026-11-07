@@ -21,7 +21,7 @@ class X2STLBaselineContractTests(unittest.TestCase):
     def test_raicom_scene_config_has_no_disposable_review_or_worktree_dependency(self) -> None:
         raw = SCENE_CONFIG.read_text(encoding="utf-8")
         config = json.loads(raw)
-        self.assertEqual(config["schema"], "robotsim.raicom2026.x2-stl-autonomy-scene.v3")
+        self.assertEqual(config["schema"], "robotsim.raicom2026.x2-stl-autonomy-scene.v4")
         self.assertNotIn("reviews/", raw)
         self.assertNotIn("robotsim-issue", raw)
         self.assertNotIn("X2-OmniPicker-CAD", raw)
