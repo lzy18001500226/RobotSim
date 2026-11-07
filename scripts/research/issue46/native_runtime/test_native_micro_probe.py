@@ -139,6 +139,13 @@ class MicroTests(unittest.TestCase):
         limits={item["name"]:item["limits"] for group in data["joints"] for item in group[1]}
         self.assertEqual(limits["right_knee_joint"]["max_velocity"],11.936)
 
+    def test_native_arm_policy_checks_all_29_existing_source_coordinates(self):
+        from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import native_leg_safety_contract
+        limits,_=native_leg_safety_contract(include_upper_body=True)
+        self.assertEqual(len(limits),29)
+        self.assertEqual(limits["right_wrist_pitch_joint"][2],4.188)
+        self.assertLessEqual(limits["right_knee_joint"][2],11.936)
+
     def runtime_methods(self):
         tree=ast.parse(Path(micro.__file__).read_text())
         run=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="run_probe")

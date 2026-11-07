@@ -221,7 +221,7 @@ finally:
 """
 
 
-def native_leg_safety_contract():
+def native_leg_safety_contract(*, include_upper_body=False):
     """Read-only intersection of pinned leg URDF and installed MC model limits."""
     import xml.etree.ElementTree as ET
     source=REPO/"reference/AgibotTech/agibot_x2_urdf"
@@ -233,10 +233,13 @@ def native_leg_safety_contract():
     native_path=RUNTIME/"mc/bin/mc_param/src/robot/lx2501_3_t2d5/robot_model.yaml"
     installed={item["name"]:item["limits"] for group in yaml.safe_load(native_path.read_text())["joints"] for item in group[1]}
     limits={}
-    for side in ("left","right"):
-        for suffix in ("hip_pitch","hip_roll","hip_yaw","knee","ankle_pitch","ankle_roll"):
-            name=side+"_"+suffix+"_joint";a,b=joints[name],installed[name]
-            limits[name]=[max(float(a.get("lower")),b["lower_position"]),min(float(a.get("upper")),b["upper_position"]),min(float(a.get("velocity")),b["max_velocity"])]
+    names=[side+"_"+suffix+"_joint" for side in ("left","right") for suffix in ("hip_pitch","hip_roll","hip_yaw","knee","ankle_pitch","ankle_roll")]
+    if include_upper_body:
+        names += ["waist_yaw_joint","waist_pitch_joint","waist_roll_joint"]
+        names += [side+"_"+suffix+"_joint" for side in ("left","right") for suffix in ("shoulder_pitch","shoulder_roll","shoulder_yaw","elbow","wrist_yaw","wrist_pitch","wrist_roll")]
+    for name in names:
+        a,b=joints[name],installed[name]
+        limits[name]=[max(float(a.get("lower")),b["lower_position"]),min(float(a.get("upper")),b["upper_position"]),min(float(a.get("velocity")),b["max_velocity"])]
     return limits,{"urdf":str(urdfs[0]),"sha256":sha256(urdfs[0]),"revision":revision,"installed_mc_robot_model":str(native_path),"installed_mc_robot_model_sha256":sha256(native_path),"bounds":limits,"policy":"intersection, never raise any pinned or native bound"}
 
 def locomotion_dock_script(
@@ -1370,7 +1373,7 @@ def main() -> None:
                     use_cmd_vel_bridge=bool(args.use_official_cmd_vel_bridge),
                     native_pose_feedback=bool(args.native_dock_truth_feedback),
                     braking_delay_s=args.dock_braking_delay_s,
-                    native_leg_limits=native_leg_safety_contract()[0] if args.native_dock_truth_feedback else None,
+                    native_leg_limits=native_leg_safety_contract(include_upper_body=args.native_arm_policy_relay)[0] if args.native_dock_truth_feedback else None,
                     command_speed_cap=args.dock_command_speed_cap,
                     angular_speed_cap=args.dock_angular_speed_cap,
                     native_arm_relay=args.native_arm_policy_relay,
@@ -1379,7 +1382,7 @@ def main() -> None:
         if args.micro_base_probe:
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
-            limits,provenance=native_leg_safety_contract()
+            limits,provenance=native_leg_safety_contract(include_upper_body=args.native_arm_policy_relay)
             pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay))
             pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
             result["micro_source_joint_limits"]=provenance
@@ -1859,7 +1862,7 @@ def main() -> None:
             marker={"expected_mc_node":"mc_ros2_node"+pids.pop(),"native_generation":native_frame["generation"],"target_source_stamp_ns":source_packet["source_stamp_ns"],"source_fields":targets,"collision_clear_fractions":clear,"minimum_static_com_margin_m":min(com_margins),"physical_model_changed":False}
             pg.write_new_text(output/"native_arm_handoff_preflight.json",json.dumps(marker,indent=2)+"\n")
             pg.write_new_text(output/"enable_native_arm_relay",json.dumps(marker)+"\n")
-            end=time.monotonic()+4.;limits,_=native_leg_safety_contract();ready=False
+            end=time.monotonic()+4.;limits,_=native_leg_safety_contract(include_upper_body=True);ready=False
             while time.monotonic()<end:
                 bootstrap_tail=arm_bootstrap_stdout.read_text()[-1800:]
                 if "Traceback" in bootstrap_tail:raise RuntimeError("NATIVE_ARM_RELAY_CHILD_FAILURE:"+bootstrap_tail)
