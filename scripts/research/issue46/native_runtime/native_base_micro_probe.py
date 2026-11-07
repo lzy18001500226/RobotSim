@@ -673,6 +673,17 @@ def recoverable_carry_clock_fault(fault, error, recovery_count):
             0<=recovery_count<4)
 
 
+def native_step_activation_ready(state, baseline):
+    # Actual installed evidence: successful LS action selects STEP speed mode,
+    # but zero locomotion retains SD. This is prepared, never motion success.
+    return (state['body_status']==baseline and
+            state['get_mode_header_code']==0 and state['state_age_s']['get_mode']<=.20 and
+            state['common_mode_desc']==state['get_mode_desc'] and
+            state['common_mode_desc'] in ('STAND_DEFAULT','LOCOMOTION_STEP') and
+            state['common_mode_status_value']==100 and
+            state['raw_common']['speed_status']['speed_mode']['value']==4)
+
+
 def run_carry_navigation(n,contract):
     """One bounded measured-pose task, with zero/qualified-stop clock recovery."""
     import threading
@@ -695,12 +706,12 @@ def run_carry_navigation(n,contract):
             step_until=time.monotonic()+.75;step_ready=False
             while time.monotonic()<step_until:
                 n.publish();n.pump();state=n.sample()
-                result.setdefault("native_step_transition",[]).append(state)
+                result.setdefault("native_step_transition",[]).append({k:state[k] for k in ("sample_monotonic_s","sim_time_s","get_mode_desc","common_mode_desc","common_mode_status_value","pose")})
                 if state["body_status"]!=baseline:raise RuntimeError("STEP_BODY_STATUS_CHANGED")
-                if state["common_mode_desc"]==state["get_mode_desc"]=="LOCOMOTION_STEP" and state["common_mode_status_value"]==100 and state["get_mode_header_code"]==0 and state["state_age_s"]["get_mode"]<=.20:
-                    step_ready=True;break
+                if native_step_activation_ready(state,baseline):
+                    step_ready=True;result["native_step_prepared_not_motion_pass"]=True;break
                 time.sleep(.02)
-            if not step_ready:raise RuntimeError("NATIVE_STEP_MODE_NOT_POSITIVELY_CONFIRMED")
+            if not step_ready:raise RuntimeError("NATIVE_STEP_ACTIVATION_PRECONDITIONS_UNCONFIRMED")
         controller=PointGoalController(ControllerConfig(xy_tolerance_m=.15,yaw_tolerance_rad=.12,max_forward_mps=.12,max_angular_rps=cfg.get("angular_command_cap",.075),k_angular=.8,goal_timeout_s=cfg["timeout_s"]))
         target=Goal2D(*goal,bearing,"native_scene_world")
         began=time.monotonic();until=began+cfg["timeout_s"];last_graph=began;acquired=False;activation_started=began;progress_state=None;progress_best=None;progress_at=began

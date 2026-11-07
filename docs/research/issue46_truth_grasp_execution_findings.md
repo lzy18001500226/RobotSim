@@ -892,3 +892,20 @@ https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#option
   不能把其静态抗漂移效果视作行走已兼容或真实摩擦认证。
   MuJoCo 3.3.7 的 option/noslip_iterations 文档将其定义为主求解后的
   摩擦方向后处理：https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#option
+
+
+### 原生 LS 的零指令准备态（231511Z 实测）
+
+LOCOMOTION_STEP 请求完整返回 code=0/status=1/message=success；
+CommonState.speed_status.speed_mode=4，MC 日志明确记录进入 STEP 档。
+在零速度下 GetMcAction 与 CommonState 仍一致为 STAND_DEFAULT/100。
+因此 LS 的“已准备”与“已开始步行”必须分开：允许上述正向证据、
+原身体/关节/新鲜度/停止合同均成立后才发有界输入，随后必须确认
+实际 LS 与选中源；若实际返回 LD、保护或不一致，仍停。231511Z
+没有发送任何非零速度，不能当作 LS 行走失败或成功。
+
+此替代模式的 cpgstep_v1.onnx SHA256:
+67f9e7e3f40cbf7809c291a224a7183c5d553d81931ba9509ff094ae237d2612。
+策略与配套 YAML 未修改；它是不同于 FoundationWalk 的独立方案，
+不替代、重标或删除旧 FoundationWalk 失败。其完整 17 个动作关节
+均存在于冻结场景，源动作表允许 SD→LS→SD。

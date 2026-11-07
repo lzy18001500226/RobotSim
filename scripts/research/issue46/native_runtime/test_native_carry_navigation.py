@@ -52,6 +52,17 @@ class CarryNavigationTests(unittest.TestCase):
         with mock.patch.object(sys,'argv',args),contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
             exec(compile(ast.Module(body=prefix,type_ignores=[]),'real_collector_argument_validation','exec'),dict(argparse=argparse,__doc__='validation only'))
 
+    def test_step_preparation_allows_zero_sd_but_requires_positive_speed_readback(self):
+        state=dict(body_status=1,get_mode_header_code=0,state_age_s={'get_mode':.05},get_mode_desc='STAND_DEFAULT',common_mode_desc='STAND_DEFAULT',common_mode_status_value=100,raw_common={'speed_status':{'speed_mode':{'value':4}}})
+        self.assertTrue(m.native_step_activation_ready(state,1))
+        state['raw_common']['speed_status']['speed_mode']['value']=1
+        self.assertFalse(m.native_step_activation_ready(state,1))
+        state['raw_common']['speed_status']['speed_mode']['value']=4
+        state['get_mode_desc']='LOCOMOTION_DEFAULT'
+        self.assertFalse(m.native_step_activation_ready(state,1))
+        state['get_mode_desc']='STAND_DEFAULT';state['state_age_s']['get_mode']=.21
+        self.assertFalse(m.native_step_activation_ready(state,1))
+
     def test_invalid_goals_and_deadlines_are_not_executable(self):
         for goal,seconds in (([2.,0.],90.),([float("nan"),0.],90.),([0.,0.],91.)):
             with self.assertRaises(ValueError):m.build_carry_route_script(goal,{},[],carry_pid=19,timeout_s=seconds)
@@ -110,7 +121,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                         raise RuntimeError("NATIVE_FEEDBACK_INVALID:clock")
                     self.feedback_fault={"gate":fault};raise RuntimeError(fault)
                 pose=dict(x=self.x,y=0.,yaw=0.,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.)
-                return dict(body_status=1,pose=pose,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.}}})
+                return dict(body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
         class Timer:
             def __init__(self,seconds,callback):self.callback=callback
             def start(self):
