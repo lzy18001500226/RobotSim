@@ -776,3 +776,34 @@ reviews/issue-46/native-ui-receipt-correction-offline-20261107T091007Z/ 。
 091358Z真实原生物理复核：PID30的Key控件(section2/item5)在提交后77.871ms返回，native generation到1；窗口即使XInputFocus=0也通过独立纯鼠标收件证明，0个键盘事件。站立、张开、RGB-D重新估计、手臂到位、闭合、抬升均PASS。最后51帧/1.000sim秒最低抬升58.050957mm，双垫最小法向1.640800/1.659285N，桌面力0，平均向上1.961917N。Pause控件原生收件和实际时钟冻结80.961s均通过，保留交互审核窗口。该运行只证明当前30cm/.200kg桌前固定站位的SIMULATION_ONLY源派生碰撞/控制配置，不包含从START行走或整个长Goal。
 
 审核窗口有明确900s上限；超过时间自动清理应记录为review timeout，与已完成的抓取物理PASS分开。085313Z先前收件观测运行已完成抓取，随后900s审核到期并确认容器删除；没有假称其审核关闭属于新的抓取失败。当前091358Z审核尚未结束时不提前声称cleanup完成。长Goal保持暂停。
+
+
+### 2026-11-07 Goal恢复：微调的真实资格、时钟与配置差异
+
+用户恢复五阶段Goal，当前仍以完整行走到桌前后的受限物理抓取为最高验收；四方向微调是准备工作，不把单方向或固定站位抓取外推为整个阶段通过。README旧的“尚无50mm/1s物理抬升”已纠正；保留加强原生腿速审计后的全链路未资格结论。
+
+095411Z在左移后零命令阶段因ROS新鲜度失败。独立连续executor本身未消除此问题；后续103145Z记录到多个源时间戳回退和桥输出约1.103s间隔。只读38s系统时钟采样实测回退0.473953s、0.613829s（micro-clock-regression-readonly-20261107T103913Z）。经用户明确同意，仅临时停止Ubuntu systemd-timesyncd；对比仍回退0.974318s、0.426214s，不能认定该服务是唯一原因。已恢复active/enabled且取消恢复定时器，未改配置或重启发行版（wsl-temporary-timesync-qualification-20261107T104331Z/restoration.json）。未确定具体调时调用者；Docker/WSL公开问题只能作为线索，不能替代本机证据。官方参考：https://ubuntu.com/wsl/docs/stable/explanation/time-sync/ 。
+
+现有桥原样SHA保持9996c197...；只在显式micro诊断中生成SHA记录的调度适配副本，将50Hz计时器与输入过期计算改用steady/monotonic，保留ROS消息时间戳、源、数值/限幅、QoS和注册字段。不是修改MC二进制或ONNX。接收端独立观测wall-minus-monotonic跳变，只在零命令期间清除旧代次缓存并重新取得新鲜状态/完整停稳窗口；不能拼接跨代次窗口。运动中跳变立即发零并锁定失败。源内时间戳仍严格递增，旧/重复数据不刷新年龄，0.20s门不变。Humble无物理测试确认steady timer，0.5s内实际收到24个零消息，MC/仿真均未启动（micro-steady-clock-humble-smoke-20261107T105712Z）。
+
+105949Z：原MC配置、elliptic/impratio10、0.12m/s左移1s加有界航向反馈，实际left +28.196mm、forward +38.444mm、yaw -0.026955rad；停稳1.901165s/76帧，目标最大范围0.001115rad，PASS。零命令观察经历2个时钟代次，最终窗口在同一新代次。它是耦合方向能力，绝非纯横移/精确3cm定位。
+110238Z：相同条件右移，DDS观察到47个-0.12m/s横向消息，源/LD已观察，但最终left +21.059mm、forward +26.846mm。方向FAIL、停稳PASS（1.988014s/73帧）。没有把发布或LD读回当作正确运动。
+
+114131Z：原MC配置的0.12前进在约0.4457s出现实测pelvis速度0.259115m/s，按0.20门中止，无自动重复。后续核对发现当前native入口未挂载旧Issue80诊断覆盖层。现增加显式 --reviewed-foundationwalk-profile，仅复用已批准的冻结文件6eb71287...：左右膝动作缩放0.25->0.19、min_run_velx 0.5->0.1，其他YAML值不变；后者厂商语义仍未知，不据字段名断言原因。源配置b3081e9b...、ONNX b8cca5e9...、runner 0fa34f81...、robot_model 614b0644...均验证，实际容器挂载SHA另外核验。原始文件不改，不生成新调参值；始终标记SIMULATION_ONLY/MODIFIED_FOUNDATIONWALK_CONFIG，历史通过不等于本体当前资格。
+
+115241Z复用旧覆盖层后1s前进净forward -11.189mm，停稳PASS，方向FAIL。115948Z单独标记目标3cm/<=2s诊断，0.12输入仍未到目标，净forward -5.994mm，最终误差38.768mm；停稳PASS、目标FAIL。新2s入口在原M1<=5s内独立限定，默认旧micro仍最多1s，速度/0.18m工作区/50mm横向/姿态/关节/物理停止门不变，目标入口额外要求20mm最终误差与目标触发停止。
+
+Run81报告文字称转向降到0.12，但原始velocity_command_trace有223条非零命令全部forward=0.14，包含angular=0.075，0条0.12。刚才按文字加入的降速分支导致120826Z实际76次0.12、仅9次0.14，已经依原始数据纠正。121732Z保留0.14仍未在2s内到3cm，不能归因于这个分支一种原因。
+
+只读下肢模型对照（native-mc-leg-frame-equivalence-readonly-20261107T121142Z）：源/当前下肢关节轴、位置、限位、身体惯量无差异，pelvis差异为已知场景平移。机器人子树质量分别43.474797kg/44.308583kg；376.99kg是整个场景总质量，含静态环境，不能当机器人质量。数值选项差异为cone 0->1、impratio 1->10；timestep=0.001、积分器、solver/iterations/tolerance/gravity相同。该抓取数值覆盖是全局选项，也作用于脚底，尚不能证明它就是行走问题原因；正在单独恢复native pyramidal/1做不同假设对比。
+
+122629Z该对比在MC启动前因native首帧陈旧中止；实际GL为RTX4060，原生启动记录最大间隔1.355s。现只在MC启动前增加最多4s等待两帧同PID/同代次且各自<=0.20s、模拟时间推进的就绪检查；不放宽运行期新鲜度。异常身份/缺body不重试；回归覆盖陈旧、冻结、PID/代次变化。
+
+小步入口亦接入原生Reset控件收件确认，严格PID/XID/title/pixels/pointer/ancestry；只发一次，不因未确认补第二次。111252Z在发任何Reset前因X11按键滞留退出。确认无实验/其他X11 GUI后，仅恢复WSLGd监管的Weston（12110->39907），发行版和Docker未重启，指针前检实测PASS（wslg-left-button-stale-recovery-20261107T112037Z）。临时/tmp的旧Xvfb工具已不存在；865984字节Ubuntu包仅按APT元数据SHA解包到持久reviews，未系统安装。隔离GPU显示尚未验证成功，不宣称可以替代WSLg。
+
+以上所有已终止native容器均有独立absence证明。四方向精确微调、150mm动态抓取、感知站位闭环及LiDAR替代仍未资格；当前Goal继续，不标完成。
+
+
+123648Z恢复pyramidal/1后仍未到目标，在启动约4.353s（已发零并请求STAND）发生yaw=-0.120073rad而中止，不能把全局求解设置单独认定为根因。原生非地面受力接触未见机器人自碰撞，只有瓶-桌支撑。源/当前IMU站点imu_0及安装变换也一致。旧Run81前2s实际forward约+93mm，而121732Z在同样0.14输入的前2s约-13mm；0.5..1.9s新MC髋俯仰目标范围约0.02..0.03rad，旧记录约0.14..0.19rad，不能当缓存未更新或简单符号翻转。
+
+下一项只读诊断复用旧Issue80 McRLDebug记录器及其已构建ROS覆盖层，不执行旧运动脚本。MC消息introspection库仍为935d4226...，字段为header/obs_vec/action_vec；只提取原快照函数，原记录器源码不改。真实Humble无物理构造确认仅一个RL debug订阅、0个action client、0个速度publisher（只有标准parameter_events），实际schema匹配。证据 reviewed-mc-rl-debug-humble-smoke-20261107T130324Z。显式 --capture-mc-rl-debug 要求当前唯一真实MC publisher身份与实际类型包到达后才允许该诊断运动；向量索引只依匹配配置解释。Micro另补原始IMU、ROS odom及leg command header，零/非单位IMU四元数拒绝，不能以新鲜但零填充的消息通过。

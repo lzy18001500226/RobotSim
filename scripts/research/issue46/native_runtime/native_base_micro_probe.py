@@ -68,6 +68,36 @@ def physical_fault(row, pose, limits, start=None, direction=None):
     return None
 
 
+def prepare_reviewed_rl_debug_capture(output,runtime):
+    """Reuse the old read-only collector and matched ROS overlay, not another controller."""
+    import ast,hashlib
+    from scripts.agent import path_governance as pg
+    base=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-80/foundationwalk-final-left-right-turns-run65-20261022T073901Z")
+    library=Path(runtime)/"mc/lib/libaimdk_msgs__rosidl_typesupport_introspection_cpp.so"
+    sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+    if sha(library)!="935d4226013617a7aee2cdb525e31b6c46e44d608bf88f99eb61467b746cb931":
+        raise ValueError("MC debug ABI is not the reviewed build")
+    schema=json.loads((base/"mc_rl_debug_schema.json").read_text())
+    mc=next(x for x in schema["results"] if "/mc/lib/" in x["library"])
+    if mc["sha256"]!=sha(library) or [x["name"] for x in mc["fields"]]!=["header","obs_vec","action_vec"]:
+        raise ValueError("MC debug field contract mismatch")
+    setup=base/"mc_debug_overlay/install/setup.bash"
+    if not setup.is_file():raise FileNotFoundError(setup)
+    capture=base/"issue80_mc_rl_debug_capture.py"
+    original=base/"issue80_m1_first_motion.py"
+    text=original.read_text();tree=ast.parse(text)
+    helper=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="mc_rl_debug_snapshot")
+    stub="from __future__ import annotations\nimport math\nfrom typing import Any, Mapping\n"+ast.get_source_segment(text,helper)+"\n"
+    pg.write_new_bytes(Path(output)/capture.name,capture.read_bytes())
+    pg.write_new_text(Path(output)/original.name,stub)
+    return dict(classification="REUSED_READ_ONLY_ISSUE80_MC_RL_DEBUG_CAPTURE",
+        source_collector=str(capture),source_collector_sha256=sha(capture),
+        source_snapshot_helper=str(original),source_snapshot_helper_sha256=sha(original),
+        extracted_helper_sha256=hashlib.sha256(stub.encode()).hexdigest(),
+        overlay_setup=str(setup),mc_introspection_sha256=sha(library),
+        fields=["header","obs_vec","action_vec"],velocity_publishers=0,action_clients=0)
+
+
 def build_steady_bridge_source(source):
     """Three hash-bound scheduling edits; preserve ROS headers and all MC fields."""
     import hashlib
@@ -209,6 +239,10 @@ def run_probe(smoke_only=False):
                 if advancing_stamp(self.unique,name,stamp,now):
                     self.messages[name]=raw(m)
 
+        def on_odom(self,m):
+            super().on_odom(m)
+            self.store("ros_odom",m)
+
         def on_leg(self, m):
             super().on_leg(m)
             self.store("leg_state", m)
@@ -306,6 +340,11 @@ def run_probe(smoke_only=False):
                 p=native_pose(r)
                 fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"])
                 if fault: raise RuntimeError(fault)
+                imu=self.messages["imu"]
+                q=imu["orientation"]
+                norm2=sum(float(q[k])**2 for k in ("w","x","y","z"))
+                if not math.isfinite(norm2) or abs(norm2-1.)>.02:
+                    raise RuntimeError("INVALID_IMU_QUATERNION")
                 cm=self.messages["common"]
                 mode=cm["action_info"]["action_desc"];status=int(cm["action_info"]["status"]["value"])
                 fsm=int(cm["fsm_state"]["current_state"]);body=int(cm["body_status"]["value"])
@@ -321,7 +360,9 @@ def run_probe(smoke_only=False):
                 gm_time,gm=self.readbacks.get("get_mode",(0,{}))
                 ages.update(odom=now-r["host_monotonic_ns"]*1e-9,get_mode=now-gm_time)
                 out=dict(sample_monotonic_s=r["host_monotonic_ns"]*1e-9, sim_time_s=r["sim_time_s"],
-                         pose=p,leg_states=leg,mc_leg_command=dict(joints=targets),
+                         pose=p,leg_states=leg,mc_leg_command=dict(header=self.messages["leg_command"]["header"],joints=targets),
+                         raw_imu=imu,raw_ros_odom=self.messages.get("ros_odom"),
+                         imu_quaternion_norm_squared=norm2,
                          state_age_s=ages, get_mode_desc=gm.get("info",{}).get("action_desc"),
                          get_mode_status_value=gm.get("info",{}).get("status",{}).get("value"),
                          get_mode_header_code=gm.get("header",{}).get("code"),
@@ -512,6 +553,7 @@ def run_probe(smoke_only=False):
                 result["failure"]="TARGETED_MICRO_POSITION_OR_GOAL_STOP_NOT_QUALIFIED"
     except Exception as exc:
         n.deadline_zero();result["abort_native_sample"]=n.latest_row;result["failure"]=str(exc);result["available_state_topics"]=list(n.messages);result["last_unique_receipts"]=n.unique
+        result["abort_raw_imu"]=n.messages.get("imu");result["abort_raw_ros_odom"]=n.messages.get("ros_odom")
     finally:
         # Failed readback never suppresses zeros. Native bridge also has an
         # independent 0.20s stale-input timeout. Timer is same-process only.

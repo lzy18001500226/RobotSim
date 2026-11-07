@@ -40,6 +40,7 @@ def main():
     p.add_argument("--micro-command-speed",type=float,default=.2)
     p.add_argument("--micro-heading-hold",action="store_true")
     p.add_argument("--micro-target-distance-m",type=float)
+    p.add_argument("--capture-mc-rl-debug",action="store_true",help="reuse the reviewed read-only MC debug sidecar; no actuator ownership change")
     p.add_argument("--reviewed-foundationwalk-profile",action="store_true",help="explicitly reuse frozen Issue80 SIMULATION_ONLY diagnostic; no new tuning")
     p.add_argument("--physical-lift-test",action="store_true")
     p.add_argument("--source-pad-coacd-comparison",action="store_true",help="reuse the existing hash-locked source-STL proxy pieces for only the two right distal pads; separate SIMULATION_ONLY physics")
@@ -220,6 +221,7 @@ def main():
     if args.micro_heading_hold:
         if not args.micro_base_probe:raise ValueError("micro heading hold requires isolated micro probe")
         argv.append("--micro-heading-hold")
+    if args.capture_mc_rl_debug:argv.append("--capture-mc-rl-debug")
     if args.reviewed_foundationwalk_profile:argv.append("--reviewed-foundationwalk-profile")
     if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
     if args.dock_angular_speed_cap is not None:argv.extend(["--dock-angular-speed-cap",str(args.dock_angular_speed_cap)])

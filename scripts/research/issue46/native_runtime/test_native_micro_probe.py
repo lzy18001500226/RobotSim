@@ -411,4 +411,56 @@ class ReviewedFoundationWalkProfileTests(unittest.TestCase):
             reviewed_foundationwalk_profile(Path("/nonexistent/runtime"))
 
 
+class McDebugReuseTests(unittest.TestCase):
+    def test_collector_reuse_has_no_motion_publishers_or_action_clients(self):
+        import tempfile
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import prepare_reviewed_rl_debug_capture
+        runtime=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026")
+        from unittest.mock import patch
+        from scripts.agent import path_governance as pg
+        with tempfile.TemporaryDirectory() as folder,patch.object(pg,"write_new_bytes",side_effect=lambda p,b:Path(p).write_bytes(b)),patch.object(pg,"write_new_text",side_effect=lambda p,t:Path(p).write_text(t)):
+            p=Path(folder);record=prepare_reviewed_rl_debug_capture(p,runtime)
+            self.assertEqual(record["mc_introspection_sha256"],"935d4226013617a7aee2cdb525e31b6c46e44d608bf88f99eb61467b746cb931")
+            capture=ast.parse((p/"issue80_mc_rl_debug_capture.py").read_text())
+            calls=[n.func.attr for n in ast.walk(capture) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute)]
+            self.assertNotIn("create_publisher",calls);self.assertNotIn("create_client",calls)
+            helper=ast.parse((p/"issue80_m1_first_motion.py").read_text())
+            self.assertEqual([x.name for x in helper.body if isinstance(x,ast.FunctionDef)],["mc_rl_debug_snapshot"])
+            compile(capture,"collector","exec");compile(helper,"snapshot","exec")
+
+    def sample_node(self):
+        n=ContinuousFeedbackTests().methods(("sample",),math=math,native_pose=micro.native_pose,
+                physical_fault=micro.physical_fault,MICRO=dict(joint_limits={},direction="forward"),
+                contract=stop,LEG=("left","right"))
+        n.latest_row=dict(host_monotonic_ns=10000000000,sim_time_s=1.,generation=1,
+                bodies=dict(pelvis=dict(position_m=[0.,0.,.65],rotation=[1.,0.,0.,0.,1.,0.,0.,0.,1.],
+                             origin_velocity_world_angular_linear=[0.]*6)),joints={})
+        n.feedback_fault=None
+        n.unique={name:(1,9.99) for name in ("common","imu","leg_state","leg_command")}
+        n.messages=dict(imu=dict(orientation=dict(w=1.,x=0.,y=0.,z=0.)),
+                common=dict(action_info=dict(action_desc="STAND_DEFAULT",status=dict(value=100)),
+                            fsm_state=dict(current_state=4),body_status=dict(value=1),input_source=dict(name="")),
+                leg_state=dict(joints=[dict(name=x,error_code=0) for x in ("left","right")]),
+                leg_command=dict(header=dict(stamp=dict(sec=1,nanosec=0)),joints=[dict(name=x,position=0.) for x in ("left","right")]),
+                ros_odom=dict(header=dict(frame_id="odom")))
+        n.readbacks=dict(get_mode=(9.99,dict(info=dict(action_desc="STAND_DEFAULT",status=dict(value=100)),header=dict(code=0))))
+        return n
+
+    def test_raw_imu_odom_and_command_source_header_are_preserved(self):
+        from unittest.mock import patch
+        n=self.sample_node()
+        with patch("time.monotonic",return_value=10.):r=n.sample()
+        self.assertEqual(r["raw_imu"]["orientation"]["w"],1.)
+        self.assertEqual(r["raw_ros_odom"]["header"]["frame_id"],"odom")
+        self.assertEqual(r["mc_leg_command"]["header"]["stamp"]["sec"],1)
+        self.assertEqual(r["imu_quaternion_norm_squared"],1.)
+
+    def test_zero_or_invalid_imu_quaternion_fails_before_motion(self):
+        from unittest.mock import patch
+        for value in (0.,float("nan"),3.):
+            n=self.sample_node();n.messages["imu"]["orientation"]["w"]=value
+            with patch("time.monotonic",return_value=10.):
+                with self.assertRaisesRegex(RuntimeError,"INVALID_IMU_QUATERNION"):n.sample()
+
+
 if __name__=="__main__":unittest.main()

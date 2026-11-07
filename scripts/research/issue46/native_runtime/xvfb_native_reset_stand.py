@@ -1096,6 +1096,7 @@ def main() -> None:
     parser.add_argument("--micro-command-speed",type=float,default=.2)
     parser.add_argument("--micro-heading-hold",action="store_true")
     parser.add_argument("--micro-target-distance-m",type=float)
+    parser.add_argument("--capture-mc-rl-debug",action="store_true")
     parser.add_argument("--reviewed-foundationwalk-profile",action="store_true")
     parser.add_argument("--lateral-probe-mps", type=float, help="one bounded lateral cmd_vel probe in body-frame m/s; requires the official bridge")
     parser.add_argument("--lateral-probe-duration-s", type=float, default=0.60, help="duration for --lateral-probe-mps; no hand or arm command is sent")
@@ -1123,6 +1124,8 @@ def main() -> None:
     if args.dock_command_speed_cap is not None and (args.dock_world_xy is None or not args.native_dock_truth_feedback or not .12<=args.dock_command_speed_cap<=.20):
         raise ValueError("bounded dock cap requires native feedback and .12..0.20 m/s")
 
+    if args.capture_mc_rl_debug and not args.micro_base_probe:
+        raise ValueError("MC debug capture is scoped to isolated micro diagnostics")
     if args.micro_heading_hold and (not args.micro_base_probe or args.dock_angular_speed_cap!=.075):
         raise ValueError("micro heading hold requires isolated probe and matching .075 bridge angular cap")
     if args.micro_target_distance_m is not None and (
@@ -1410,6 +1413,9 @@ def main() -> None:
                     native_arm_relay=args.native_arm_policy_relay,
                 ),
             )
+        if args.capture_mc_rl_debug:
+            from scripts.research.issue46.native_runtime.native_base_micro_probe import prepare_reviewed_rl_debug_capture
+            result["mc_rl_debug_capture"]=prepare_reviewed_rl_debug_capture(output,RUNTIME)
         if args.micro_base_probe:
             from scripts.research.issue46.native_runtime.native_base_micro_probe import build_script
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
@@ -1949,6 +1955,22 @@ def main() -> None:
             pg.write_new_text(output / "retargeting_topic_info.stdout", retargeting_topic.stdout)
             result["retargeting_topic"] = {"topic": "/aima/mc/joint/retargeting", "returncode": retargeting_topic.returncode, "raw": retargeting_topic.stdout}
             result["gates"]["RETARGETING_TOPIC_DISCOVERY"] = "PASS" if retargeting_topic.returncode == 0 and "Type:" in retargeting_topic.stdout else "FAIL"
+        if args.capture_mc_rl_debug:
+            setup_host=Path(result["mc_rl_debug_capture"]["overlay_setup"])
+            setup="/workspace/robotsim/"+str(setup_host.relative_to(EVIDENCE_REPO))
+            debug_command=environment+"source "+shlex.quote(setup)+"; python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s 45 > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
+            run(["docker","exec","-d",container,"bash","-lc",debug_command],timeout_s=5.)
+            wait_for(output/"mc_rl_debug_ready.json",'"status"',timeout_s=8.)
+            debug_ready=json.loads((output/"mc_rl_debug_ready.json").read_text())
+            import re
+            mc_pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",(output/"mc-console.log").read_text(errors="replace")))
+            publishers=debug_ready.get("publishers",[])
+            if len(mc_pids)!=1 or debug_ready.get("status")!="READY" or len(publishers)!=1 or publishers[0].get("node_name")!="mc_ros2_node"+next(iter(mc_pids)) or publishers[0].get("node_namespace")!="/":
+                raise RuntimeError("MC_RL_DEBUG_PUBLISHER_NOT_VERIFIED:"+str(debug_ready))
+            result["mc_rl_debug_capture"]["verified_ready"]=debug_ready
+            wait_for(output/"mc_rl_debug_trace.jsonl",'"obs_vec"',timeout_s=2.)
+            result["mc_rl_debug_capture"]["actual_typed_packet_observed"]=True
+
         if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
             bridge_log = output / "official_cmd_vel_bridge.stdout"
             lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:="+str(args.micro_command_speed)+" -p min_lateral_velocity:="+str(args.micro_command_speed) if args.micro_base_probe else " -p min_forward_velocity:="+str(args.dock_command_speed_cap) if args.dock_command_speed_cap is not None else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
