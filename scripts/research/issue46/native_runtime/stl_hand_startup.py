@@ -147,7 +147,7 @@ def build_arm_split_mc_config(source: dict[str, object]) -> dict[str, object]:
     return result
 
 
-def build_arm_hand_split_mc_config(source: dict[str, object]) -> dict[str, object]:
+def build_arm_hand_split_mc_config(source: dict[str, object], *, isolate_disabled_topics=False) -> dict[str, object]:
     """Disable only MC's competing arm and hand publishers in an overlay.
 
     Legs and waist remain owned by the delivered standing controller.  The
@@ -169,6 +169,13 @@ def build_arm_hand_split_mc_config(source: dict[str, object]) -> dict[str, objec
         if len(matches) != 1 or matches[0].get("enable") is not True:
             raise ValueError(f"MC config does not expose exactly one enabled {expected} publisher")
         matches[0]["enable"] = False
+        if isolate_disabled_topics:
+            expected_topic="/aima/hal/joint/"+("arm" if expected=="arm_joint_command" else "hand")+"/command"
+            if matches[0].get("topic")!=expected_topic:raise ValueError("unexpected native disabled publisher topic")
+            matches[0]["topic"]="/robotsim/issue46/inactive_mc/"+("arm" if expected=="arm_joint_command" else "hand")+"/command"
+            channels=[c for c in result.get("aimrt",{}).get("channel",{}).get("pub_topics_options",[]) if c.get("topic_name")==expected_topic]
+            if len(channels)!=1:raise ValueError("expected exact native arm/hand ROS publisher channel")
+            channels[0]["topic_name"]=matches[0]["topic"]
     return result
 
 
@@ -1256,8 +1263,9 @@ def _with_carry_lease(script, retract):
     replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')",count=2)
     replace("('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')")
     replace("   self.pub.publish(m)\n","   self.pub.publish(m);self.last_published_arm_target={name:float(target[name]) for name in LEFT+RIGHT}\n")
-    replace("    self.hand_pub.publish(h)\n",
+    replace("    self.hand_pub.publish(h)\n    if stage==\'HAND_CLOSE_HOLD\':self.close_publish_count+=1\n",
 """    self.hand_pub.publish(h)
+    if stage==\'HAND_CLOSE_HOLD\':self.close_publish_count+=1
    if stage=='CARRY_HOLD':
     for c in self.native_row.get('contacts',[]):
      pair={c.get('body1'),c.get('body2')}

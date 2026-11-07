@@ -132,7 +132,7 @@ class CarryParentIntegrationTests(unittest.TestCase):
                     (out/"native_carry_route_result.json").write_text(json.dumps(dict(pass_result=True,command_log=[dict(forward=.12,lateral=0.,angular=0.)])))
                     (out/"native_carry_owner.exit").write_text("0")
                 return subprocess.CompletedProcess(cmd,0,"")
-            with mock.patch.object(parent.pg,"write_new_text",side_effect=lambda p,t:p.write_text(t)),mock.patch.object(parent.pg,"write_new_bytes",side_effect=lambda p,t:p.write_bytes(t)),mock.patch.object(parent,"run",run),mock.patch.object(audit,"require_fresh_sample",return_value={"generation":1}),mock.patch.object(audit,"read_complete_native_rows",return_value=[]),mock.patch.object(audit,"evaluate_carry_motion",return_value={"pass":True,"fixture_only":True}):
+            with mock.patch.object(parent.pg,"write_new_text",side_effect=lambda p,t:p.write_text(t)),mock.patch.object(parent.pg,"write_new_bytes",side_effect=lambda p,t:p.write_bytes(t)),mock.patch.object(parent,"qualify_static_carry_hold",return_value={"pass":True,"fixture_only":True}),mock.patch.object(parent,"run",run),mock.patch.object(audit,"require_fresh_sample",return_value={"generation":1}),mock.patch.object(audit,"read_complete_native_rows",return_value=[]),mock.patch.object(audit,"evaluate_carry_motion",return_value={"pass":True,"fixture_only":True}):
                 completed=parent.execute_grasp_with_carry("fixture", "",out,args,plan,result,48)
             self.assertEqual(completed.returncode,0)
             self.assertEqual(result["gates"]["CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"],"PASS")
@@ -140,5 +140,48 @@ class CarryParentIntegrationTests(unittest.TestCase):
             self.assertTrue((out/"point_goal_controller.py").is_file())
             self.assertEqual(len(calls),2)
             self.assertNotIn("locomotion velocity",result["commands_not_sent"])
+
+class DisabledPublisherIsolationTests(unittest.TestCase):
+    def test_only_carry_isolates_two_disabled_native_endpoints(self):
+        import copy
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        cfg={"MotionControlModule":{"PublisherManager":{"publisher_cfg_list":[
+            {"name":"arm_joint_command","topic":"/aima/hal/joint/arm/command","enable":True,"frequency":500},
+            {"name":"hand_joint_command","topic":"/aima/hal/joint/hand/command","enable":True,"frequency":50},
+            {"name":"leg_joint_command","topic":"/aima/hal/joint/leg/command","enable":True,"frequency":500}]}}}
+        cfg["aimrt"]={"channel":{"pub_topics_options":[{"topic_name":"/aima/hal/joint/arm/command"},{"topic_name":"/aima/hal/joint/hand/command"}]}}
+        original=copy.deepcopy(cfg)
+        default=h.build_arm_hand_split_mc_config(cfg)
+        isolated=h.build_arm_hand_split_mc_config(cfg,isolate_disabled_topics=True)
+        self.assertEqual(cfg,original)
+        a=default["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
+        b=isolated["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]
+        self.assertEqual(a[2],b[2]);self.assertEqual(b[2],original["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"][2])
+        for old,new in zip(a[:2],b[:2]):
+            self.assertFalse(new["enable"]);self.assertEqual(old["frequency"],new["frequency"])
+            self.assertTrue(old["topic"].startswith("/aima/"))
+            self.assertTrue(new["topic"].startswith("/robotsim/issue46/inactive_mc/"))
+
+class StaticCarryHoldTests(unittest.TestCase):
+    def test_prehold_waits_for_eight_sim_seconds_and_unique_samples(self):
+        import json,tempfile
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as p,native_grasp_audit as a
+        clock=NS(t=10.,sim=-.25)
+        def row(*args):
+            clock.sim+=.25
+            return dict(generation=1,sim_time_s=clock.sim,host_monotonic_ns=int(clock.t*1e9))
+        def health(path):
+            return json.dumps(dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",pid=42,generation=1,healthy=True,host_monotonic_ns=int(clock.t*1e9),native_source_host_ns=int(clock.t*1e9)))
+        with tempfile.TemporaryDirectory() as d,mock.patch.object(a,"require_fresh_sample",side_effect=row),mock.patch.object(Path,"read_text",health),mock.patch.object(p.time,"monotonic",lambda:clock.t),mock.patch.object(p.time,"monotonic_ns",lambda:int(clock.t*1e9)),mock.patch.object(p.time,"sleep",lambda t:setattr(clock,"t",clock.t+t)):
+            result=p.qualify_static_carry_hold(Path(d),dict(pid=42,generation=1))
+        self.assertTrue(result["pass"]);self.assertGreaterEqual(result["sim_span_s"],8.);self.assertGreaterEqual(result["unique_native_samples"],25)
+    def test_stale_held_object_evidence_cannot_qualify(self):
+        import json,tempfile
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as p,native_grasp_audit as a
+        with tempfile.TemporaryDirectory() as d,mock.patch.object(a,"require_fresh_sample",return_value=dict(generation=1,sim_time_s=0.)),mock.patch.object(Path,"read_text",return_value=json.dumps(dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",pid=42,generation=1,healthy=True,host_monotonic_ns=0,native_source_host_ns=0))):
+            with self.assertRaisesRegex(RuntimeError,"HEARTBEAT_UNQUALIFIED"):p.qualify_static_carry_hold(Path(d),dict(pid=42,generation=1))
 
 if __name__=="__main__":unittest.main()

@@ -480,8 +480,10 @@ def run_probe(smoke_only=False):
                 if b"/workspace/evidence/native_hal_bilateral_arm_pregrasp.py" not in argv:raise RuntimeError("CARRY_PROCESS_IDENTITY")
                 for topic,typ in (("/aima/hal/joint/arm/command","aimdk_msgs/msg/JointCommandArray"),("/aima/hal/joint/hand/command","aimdk_msgs/msg/HandCommandArray")):
                     owners=self.get_publishers_info_by_topic(topic)
-                    if not owners or any(x.node_name=="_NODE_NAME_UNKNOWN_" for x in owners):raise RuntimeError("GRAPH_DISCOVERY_PENDING")
-                    if len(owners)!=1 or owners[0].node_name!="robotsim_hal_bilateral_pregrasp" or owners[0].node_namespace!="/" or owners[0].topic_type!=typ:raise RuntimeError("CARRY_PUBLISHER_NOT_UNIQUE")
+                    records=[dict(name=x.node_name,namespace=x.node_namespace,type=x.topic_type,gid=list(x.endpoint_gid)) for x in owners]
+                    self.events.append(dict(event="CARRY_OWNER_GRAPH",topic=topic,t=time.monotonic(),owners=records))
+                    if not owners or any(x.node_name in ("_NODE_NAME_UNKNOWN_","") or x.node_namespace in ("_NODE_NAMESPACE_UNKNOWN_","") or not x.topic_type for x in owners):raise RuntimeError("GRAPH_DISCOVERY_PENDING")
+                    if len(owners)!=1 or owners[0].node_name!="robotsim_hal_bilateral_pregrasp" or owners[0].node_namespace!="/" or owners[0].topic_type!=typ:raise RuntimeError("CARRY_PUBLISHER_NOT_UNIQUE:"+json.dumps(dict(topic=topic,owners=records)))
             self.events.append(dict(event="UNIQUE_PROVENANCE_GRAPH",t=time.monotonic(),mc=candidates[0],
                                     publisher=pubs[0].node_name,subscriber=subs[0].node_name,
                                     configured_history_depth="KEEP_LAST/10; FastDDS graph history may be UNKNOWN/0"))

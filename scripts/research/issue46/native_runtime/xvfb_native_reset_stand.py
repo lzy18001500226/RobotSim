@@ -1140,6 +1140,25 @@ class MicroProbeComplete(Exception):
 
 
 
+
+def qualify_static_carry_hold(output, ready):
+    """Eight actual simulation seconds before locomotion, with a 12s wall cap."""
+    from scripts.research.issue46.native_runtime import native_grasp_audit
+    first=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+    until=time.monotonic()+12.;unique=set();begin=time.monotonic()
+    while time.monotonic()<until:
+        if (output/"native_carry_owner.exit").exists():raise RuntimeError("CARRY_OWNER_EXITED_DURING_STATIC_HOLD")
+        row=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+        health=json.loads((output/"carry_heartbeat.json").read_text())
+        if health.get("mode")!="MEASURED_LOAD_BEARING_CARRY_HOLD" or row["generation"]!=ready["generation"] or health.get("generation")!=ready["generation"] or health.get("pid")!=ready["pid"] or health.get("healthy") is not True or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-health["native_source_host_ns"])*1e-9<=.20:
+            raise RuntimeError("CARRY_STATIC_HOLD_HEARTBEAT_UNQUALIFIED")
+        unique.add(row["host_monotonic_ns"])
+        if row["sim_time_s"]-first["sim_time_s"]>=8. and len(unique)>=25:
+            return {"pass":True,"classification":"EIGHT_SIM_SECONDS_LOAD_BEARING_HOLD","sim_span_s":row["sim_time_s"]-first["sim_time_s"],"host_span_s":time.monotonic()-begin,"unique_native_samples":len(unique)}
+        time.sleep(.02)
+    raise RuntimeError("CARRY_STATIC_HOLD_INCOMPLETE")
+
+
 def execute_grasp_with_carry(container, environment, output, args, replan_record, result, child_budget):
     """Run the existing grip owner and navigation adapter with a measured handoff."""
     import subprocess
@@ -1163,6 +1182,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     if ready.get("schema")!="robotsim.x2.carry-ready.v1" or ready.get("physical_lift_pass") is not True or ready.get("post_lift_retract_pass") is not True or ready.get("generation")!=current["generation"] or heartbeat.get("pid")!=ready.get("pid") or not 0.<=(time.monotonic_ns()-heartbeat["host_monotonic_ns"])*1e-9<=.20:
         raise RuntimeError("CARRY_HANDOFF_UNQUALIFIED")
     result["carry_ready"]=ready
+    result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
     result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.075,'root_cap_m_s':.20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
     limits=retract["source_motion_limits"]
     pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s))
@@ -1519,7 +1539,7 @@ def main() -> None:
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
-            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))) if (args.native_arm_policy_relay or args.observe_native_arm_policy) else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")))), allow_unicode=True, sort_keys=False))
+            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))) if (args.native_arm_policy_relay or args.observe_native_arm_policy) else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=args.carry_goal_world_xy is not None)), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
             pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,relay_arms=args.native_arm_policy_relay,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
             arm_bootstrap_enabled = True
@@ -1769,6 +1789,8 @@ def main() -> None:
         if arm_split_config is not None:
             command[command.index(IMAGE):command.index(IMAGE)] = ["--mount", f"type=bind,source={arm_split_config},target=/workspace/raicom2026/{stl_hand_startup.MC_SIM_CONFIG_RELATIVE},readonly"]
             result["mc_command_split_overlay"] = {"path": str(arm_split_config), "sha256": sha256(arm_split_config), "disabled_publishers": (["arm_joint_command", "hand_joint_command"] if args.coordinated_circle_waist else ["arm_joint_command", "waist_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher else ["arm_joint_command", "hand_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_hand_publisher else ["arm_joint_command" if args.disable_mc_arm_publisher else "waist_joint_command"])}
+            if args.carry_goal_world_xy is not None:
+                result["mc_command_split_overlay"]["redirected_inactive_publishers"]={"arm_joint_command":"/robotsim/issue46/inactive_mc/arm/command","hand_joint_command":"/robotsim/issue46/inactive_mc/hand/command"}
             if args.native_arm_policy_relay or args.observe_native_arm_policy:
                 result["mc_command_split_overlay"]["observe_only"]=bool(args.observe_native_arm_policy)
                 result["mc_command_split_overlay"]["disabled_publishers"]=["hand_joint_command"]

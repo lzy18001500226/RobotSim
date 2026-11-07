@@ -852,3 +852,12 @@ Run81报告文字称转向降到0.12，但原始velocity_command_trace有223条�
 新SIMULATION_ONLY_FETCH_CARRY_ROUTE显式上限90s任务运动、forward0.12、angular0.075、root0.20、状态年龄0.20、到椅区基座误差0.15m。该全房间点目标不是旧0.18m micro或已资格的50mm参考线跟踪，原微调/曲线分支不改；新路线记录实际对直线偏差并持续核对房间边界、真实碰撞、模式/源与握持。无实测位移/角度改善3s即停止，不盲等90s。仅显式source-clock epoch异常允许先零速、请求并确认STAND、完整原复合停稳通过后，以新鲜反馈重新规划；最多4次且不重置总deadline。真实物理/保护/遥测异常不重试。默认旧micro仍遇活动时钟跳变即失败。
 
 真实Humble无物理smoke已完成两个实际ROS节点构造/销毁，握持owner为0client/0velocity pub；导航为既有4client、1个cmd_vel publisher、实际发布0次，executor退出确认。没有启动MC/physics，证据fetch-chair-carry-humble-no-physics-smoke-20261107T191709Z。模拟控制流回归验证目标触发zero-before-STAND/stop、物理fault不重武装、时钟异常必须停稳、deadline不被重武装。完整真实取送尚未运行。
+
+194406Z再运行：相机抓取/收臂又通过，抬升后保持最低55.131mm，但导航尚未非零就因CARRY_PUBLISHER_NOT_UNIQUE拒绝。进一步分开时间线：导航拒绝约ready+2.35s，握持owner约ready+6s才因对象相对手偏移10mm退出；二者独立，不能把后者当图失败的起因。收臂后1s成功尚不足以证明持续搬运。此episode容器确认删除，非零命令0。
+
+精确配置MC的无MuJoCo/无action/无速度发布检查证实：enable:false的MC arm/hand publisher仍出现在ROS图，与HAL owner各形成2个公开endpoint（fetch-chair-mc-disabled-publisher-graph-20261107T200452Z）；不是任意前缀/节点命名问题。新carry配置同时隔离两个PublisherManager topic与对应AimRT pub_topics_options到私有inactive命名空间，enable仍false；腿/腰和厂商原配置不变。坚持公开话题严格唯一，不放宽检查。固定站位默认配置不变。
+
+另修正carry代码生成插入位置，恢复HAND_CLOSE_HOLD发布次数统计在原hand发布分支；此前计数被错误缩进到CARRY分支，造成false“未闭合”报告，实际物理握持证据不受影响。补结构回归。后续先要求8个实际simulation秒、当前native/握持heartbeat持续新鲜的静态保载（12s wall cap），再允许非零。MuJoCo3.3.7官方XML文档说明noslip后处理用于抑制软接触摩擦维度漂移；复用已存在、单独标记的noslip_iterations=2诊断，不改摩擦、质量、几何、约束、控制增益或力上限。只是待验证假设，不是对真机摩擦/抓取的证明：
+https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#option
+
+完成隔离后，等待真实MotionControlModule Started Succeeded再进行6s无物理ROS图检查，公开arm/hand各恰好1个HAL owner，MC只在两个私有inactive话题各注册1个endpoint，速度publisher为0；无action/无physics，audit归档后容器确认删除。证据fetch-chair-inactive-channels-ready-graph-20261107T201903Z。因此不会通过“接受多个公开publisher”来绕过控制权问题。

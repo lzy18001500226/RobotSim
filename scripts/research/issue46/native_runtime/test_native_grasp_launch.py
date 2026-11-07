@@ -766,6 +766,18 @@ class PostLiftRetractTests(TestCase):
         self.assertLess(code.index("RETRACT_GATED_UNQUALIFIED_PHYSICAL_LIFT"),code.index("n.lift_phase['phase']='RETRACTING'"))
         self.assertIn("'RETRACT','RETRACT_HOLD'",code)
         self.assertIn("RETRACT_PHYSICAL_HOLD_UNQUALIFIED",code)
+    def test_carry_does_not_hide_hand_close_publication_counter(self):
+        tree=ast.parse(self.generated_retract(dict(carry_lease_s=115.)))
+        parents={child:parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        nodes=[n for n in ast.walk(tree) if isinstance(n,ast.AugAssign) and isinstance(n.target,ast.Attribute) and n.target.attr=="close_publish_count"]
+        self.assertEqual(len(nodes),1)
+        p=parents[nodes[0]]
+        tests=[]
+        while p in parents:
+            if isinstance(p,ast.If):tests.append(ast.unparse(p.test))
+            p=parents[p]
+        self.assertFalse(any(t=="stage == 'CARRY_HOLD'" for t in tests))
+        self.assertTrue(any(t=="stage == 'HAND_CLOSE_HOLD'" for t in tests))
     def test_bad_retract_cannot_generate_runtime(self):
         for change in (dict(pass_result=False),dict(offset_world_m=[-.3,0.,0.]),dict(duration_s=8.),dict(source_motion_limits={})):
             with self.assertRaises(ValueError):self.generated_retract(change)
