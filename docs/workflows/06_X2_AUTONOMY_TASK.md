@@ -42,12 +42,13 @@ Keep each stage's physical result separate. A plan does not qualify a stage.
 Preserve existing geometry and force/posture/stop constraints; use
 the scoped parameter authorization below for ordinary gripper diagnostics.
 
-Current Stage 2 scope is fixed table stance -> approved lower concave-pad
-support-circle IK -> actual opening/approach/arrival -> closure -> >=50 mm
-object rise -> >=1 s unsupported hold. Use truth first to isolate execution;
-fresh RGB-D substitution remains separately required for perception acceptance.
-Stage 3 adds perception-driven base repositioning; do not expand into it before
-the fixed-stance grasp is qualified.
+The five numbered stages above are the current Goal contract. Older task
+messages used “Stage 2” for fixed-stance manipulation and “Stage 3” for base
+repositioning; those shorthand labels do not override this five-stage audit.
+Fixed-stance grasp and RGB-D subtests are qualified separately from the
+strengthened walking safety audit below. Repositioning reuses that grasp chain,
+requires qualified bounded micro motion and a fresh observation after stopping,
+and cannot reuse pre-move object coordinates.
 
 The physical grasp/lift observations below remain valid, but the new native
 source-speed audit changes the **full-chain qualification**: previous runs did

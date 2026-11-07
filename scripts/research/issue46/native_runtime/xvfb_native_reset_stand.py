@@ -1407,6 +1407,15 @@ def main() -> None:
             from scripts.research.issue46.native_runtime import native_micro_stop_contract
             limits,provenance=native_leg_safety_contract(include_upper_body=args.native_arm_policy_relay)
             pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed,native_arm_relay=args.native_arm_policy_relay,heading_hold=args.micro_heading_hold))
+            bridge_runtime=output/"steady_cmd_vel_bridge.py"
+            from scripts.research.issue46.native_runtime.native_base_micro_probe import build_steady_bridge_source
+            pg.write_new_text(bridge_runtime,build_steady_bridge_source(bridge_source.read_text()))
+            result["official_cmd_vel_bridge"]["runtime_timer_adapter"]={
+                "path":str(bridge_runtime),"sha256":sha256(bridge_runtime),
+                "classification":"SIMULATION_ONLY_STEADY_TIMER_AND_INPUT_TIMEOUT",
+                "source_unchanged":True,"ros_header_clock_unchanged":True,
+                "changed_only":["publish_timer_clock","input_receipt_age_clock","input_timeout_clock"]}
+
             pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
             result["micro_source_joint_limits"]=provenance
         if args.lateral_probe_mps is not None:
@@ -1922,9 +1931,10 @@ def main() -> None:
             if args.dock_angular_speed_cap is not None:lateral_parameter+=" -p min_angular_velocity:="+str(args.dock_angular_speed_cap)+" -p max_angular_velocity:="+str(args.dock_angular_speed_cap)
             bridge_command = (
                 environment
-                + "exec python3 /workspace/robotsim/reference/AgiBot-Community/raicom2026-agibot-X2/"
-                "src/race_task/race_task/cmd_vel_bridge.py --ros-args "
-                "-p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 "
+                + ("exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args "
+                   if args.micro_base_probe else
+                   "exec python3 /workspace/robotsim/reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py --ros-args ")
+                + "-p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 "
                 "-p input_source_priority:=40 -p input_source_timeout:=1000 "
                 + lateral_parameter
                 + "> /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1"

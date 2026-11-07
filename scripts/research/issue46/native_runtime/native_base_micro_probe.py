@@ -68,6 +68,36 @@ def physical_fault(row, pose, limits, start=None, direction=None):
     return None
 
 
+def build_steady_bridge_source(source):
+    """Three hash-bound scheduling edits; preserve ROS headers and all MC fields."""
+    import hashlib
+    if hashlib.sha256(source.encode()).hexdigest() != "9996c19790ef3de720c4d0f9fa2a8a75949f95a2d5800db50cfd3c7587562cc5":
+        raise ValueError("unsupported official bridge source hash")
+    changes=(
+        ("self.timer = self.create_timer(timer_period, self.publish_velocity)",
+         "self.timer = self.create_timer(timer_period, self.publish_velocity, clock=_robotsim_Clock(clock_type=_robotsim_ClockType.STEADY_TIME))"),
+        ("self.last_cmd_time = self.get_clock().now()",
+         "self.last_cmd_time = _robotsim_steady_time.monotonic()"),
+        ("age = (now - self.last_cmd_time).nanoseconds / 1e9",
+         "age = _robotsim_steady_time.monotonic() - self.last_cmd_time"),
+    )
+    for old,new in changes:
+        if source.count(old)!=1:raise ValueError("bridge timer adapter pattern mismatch")
+        source=source.replace(old,new)
+    return ("import time as _robotsim_steady_time\n"
+            "from rclpy.clock import Clock as _robotsim_Clock, ClockType as _robotsim_ClockType\n"
+            + source)
+
+
+def observed_clock_step(previous_offset_ns, before_ns, wall_ns, after_ns):
+    """Qualify an actual host clock discontinuity, not a late DDS timestamp."""
+    if after_ns<before_ns or after_ns-before_ns>1000000:
+        return previous_offset_ns, None
+    offset=wall_ns-(before_ns+after_ns)//2
+    delta=None if previous_offset_ns is None else offset-previous_offset_ns
+    return offset, delta if delta is not None and abs(delta)>10000000 else None
+
+
 def heading_hold_command(current_yaw, initial_yaw):
     """Existing Dock .8 heading feedback, within the qualified .075 rad/s cap."""
     if not all(math.isfinite(x) for x in (current_yaw, initial_yaw)):
@@ -125,6 +155,11 @@ def run_probe(smoke_only=False):
             self.feedback_thread = None
             self.feedback_executor_error = None
             self.receipt_diagnostics = {}
+            self.telemetry_lock = threading.RLock()
+            self.clock_offset_ns = None
+            self.source_epoch = 0
+            self.pumped_epoch = 0
+            self.epoch_changed_at = None
             self.create_subscription(McLocomotionVelocity,"/aima/mc/locomotion/velocity",lambda m:self.bridge_commands.append({"t":time.monotonic(),"raw":raw(m),"evidence":"DDS_OBSERVED_BRIDGE_OUTPUT_NOT_MC_RECEIPT_ACK"}),QOS)
             self.create_subscription(McCommonState, "/aima/mc/common/state",
                                      lambda m: self.store("common", m), QOS)
@@ -134,17 +169,33 @@ def run_probe(smoke_only=False):
 
         def store(self, name, m):
             stamp = int(m.header.stamp.sec)*1000000000+int(m.header.stamp.nanosec)
-            now = time.monotonic()
-            diag = self.receipt_diagnostics.setdefault(name, dict(callbacks=0, duplicates=0,
-                regressions=0, last_callback_monotonic_s=None, last_received_stamp_ns=None))
-            previous = self.unique.get(name)
-            diag["callbacks"] += 1
-            diag["last_callback_monotonic_s"] = now
-            diag["last_received_stamp_ns"] = stamp
-            if previous and stamp <= previous[0]:
-                diag["duplicates" if stamp == previous[0] else "regressions"] += 1
-            if advancing_stamp(self.unique, name, stamp, now):
-                self.messages[name] = raw(m)
+            before=time.monotonic_ns();wall=time.time_ns();after=time.monotonic_ns()
+            now=after*1e-9
+            with self.telemetry_lock:
+                offset,step=observed_clock_step(self.clock_offset_ns,before,wall,after)
+                self.clock_offset_ns=offset
+                if step is not None:
+                    self.source_epoch+=1;self.epoch_changed_at=now
+                    self.unique.clear();self.messages.clear()
+                    moving=self.moving
+                    self.events.append(dict(event="HOST_CLOCK_GENERATION_CHANGE",t=now,
+                        source_epoch=self.source_epoch,offset_delta_ns=step,while_moving=moving))
+                    if moving:
+                        self.deadline_zero()
+                        self.feedback_fault=self.feedback_fault or dict(gate="CLOCK_STEP_DURING_MOTION")
+                diag=self.receipt_diagnostics.setdefault(name,dict(callbacks=0,duplicates=0,
+                    regressions=0,rejected_wrong_epoch=0,last_callback_monotonic_s=None,last_received_stamp_ns=None))
+                previous=self.unique.get(name)
+                diag["callbacks"]+=1;diag["last_callback_monotonic_s"]=now
+                diag["last_received_stamp_ns"]=stamp
+                # Old queued packets cannot seed a new clock generation.
+                if abs(wall-stamp)>200000000:
+                    diag["rejected_wrong_epoch"]+=1
+                    return
+                if previous and stamp<=previous[0]:
+                    diag["duplicates" if stamp==previous[0] else "regressions"]+=1
+                if advancing_stamp(self.unique,name,stamp,now):
+                    self.messages[name]=raw(m)
 
         def on_leg(self, m):
             super().on_leg(m)
@@ -202,6 +253,11 @@ def run_probe(smoke_only=False):
             self.refresh_native_pose()
             self.latest_row=json.loads(Path("/workspace/evidence/native_latest.json").read_text())
             now=time.monotonic()
+            with self.telemetry_lock:
+                if self.pumped_epoch!=self.source_epoch:
+                    for future,_ in self.pending.values():future.cancel()
+                    self.pending.clear();self.readbacks.clear()
+                    self.pumped_epoch=self.source_epoch
             for name, client, req in (
                 ("get_mode", self.get_mode, GetMcAction.Request),
                 ("source", self.current, GetCurrentInputSource.Request),
@@ -223,40 +279,45 @@ def run_probe(smoke_only=False):
                     self.pending[name]=(client.call_async(q),now)
 
         def sample(self, start=None):
-            now=time.monotonic(); r=self.latest_row
-            if r is None or now-r["host_monotonic_ns"]*1e-9>.20 or self.feedback_fault:
-                raise RuntimeError("NATIVE_FEEDBACK_STALE_OR_INVALID")
-            ages={name:now-self.unique.get(name,(0,0))[1]
-                  for name in ("common","imu","leg_state","leg_command")}
-            if any(age>.20 for age in ages.values()):
-                raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:"+str(ages))
-            p=native_pose(r)
-            fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"])
-            if fault: raise RuntimeError(fault)
-            cm=self.messages["common"]
-            mode=cm["action_info"]["action_desc"];status=int(cm["action_info"]["status"]["value"])
-            fsm=int(cm["fsm_state"]["current_state"]);body=int(cm["body_status"]["value"])
-            if mode not in ("STAND_DEFAULT","LOCOMOTION_DEFAULT") or status not in (100,200,300) or fsm not in contract.MC_FSM_ACTIVE_STATES:
-                raise RuntimeError("MC_PROTECTION_OR_UNEXPECTED_STATE:"+str((mode,status,fsm,body)))
-            leg=self.messages["leg_state"]["joints"]
-            targets=self.messages["leg_command"]["joints"]
-            names=set(LEG)
-            if {j["name"] for j in leg}!=names or {j["name"] for j in targets}!=names:
-                raise RuntimeError("INCOMPLETE_LEG_COVERAGE")
-            if any(int(j["error_code"]) for j in leg):
-                raise RuntimeError("LEG_ERROR_CODE")
-            gm_time,gm=self.readbacks.get("get_mode",(0,{}))
-            ages.update(odom=now-r["host_monotonic_ns"]*1e-9,get_mode=now-gm_time)
-            out=dict(sample_monotonic_s=r["host_monotonic_ns"]*1e-9, sim_time_s=r["sim_time_s"],
-                     pose=p,leg_states=leg,mc_leg_command=dict(joints=targets),
-                     state_age_s=ages, get_mode_desc=gm.get("info",{}).get("action_desc"),
-                     get_mode_status_value=gm.get("info",{}).get("status",{}).get("value"),
-                     get_mode_header_code=gm.get("header",{}).get("code"),
-                     common_mode_desc=mode,common_mode_status_value=status,fsm_state=fsm,
-                     body_status=body,common_source=cm["input_source"],
-                     source_readback=self.readbacks.get("source"),raw_common=cm,
-                     native_generation=r["generation"])
-            return out
+            with self.telemetry_lock:
+                now=time.monotonic(); r=self.latest_row
+                if self.epoch_changed_at is not None and not all(k in self.messages for k in ("common","imu","leg_state","leg_command")):
+                    if not self.moving and now-self.epoch_changed_at<=.20:
+                        raise RuntimeError("CLOCK_GENERATION_PENDING")
+                    raise RuntimeError("CRITICAL_NEW_CLOCK_GENERATION_TELEMETRY_MISSING")
+                if r is None or now-r["host_monotonic_ns"]*1e-9>.20 or self.feedback_fault:
+                    raise RuntimeError("NATIVE_FEEDBACK_STALE_OR_INVALID")
+                ages={name:now-self.unique.get(name,(0,0))[1]
+                      for name in ("common","imu","leg_state","leg_command")}
+                if any(age>.20 for age in ages.values()):
+                    raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:"+str(ages))
+                p=native_pose(r)
+                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"])
+                if fault: raise RuntimeError(fault)
+                cm=self.messages["common"]
+                mode=cm["action_info"]["action_desc"];status=int(cm["action_info"]["status"]["value"])
+                fsm=int(cm["fsm_state"]["current_state"]);body=int(cm["body_status"]["value"])
+                if mode not in ("STAND_DEFAULT","LOCOMOTION_DEFAULT") or status not in (100,200,300) or fsm not in contract.MC_FSM_ACTIVE_STATES:
+                    raise RuntimeError("MC_PROTECTION_OR_UNEXPECTED_STATE:"+str((mode,status,fsm,body)))
+                leg=self.messages["leg_state"]["joints"]
+                targets=self.messages["leg_command"]["joints"]
+                names=set(LEG)
+                if {j["name"] for j in leg}!=names or {j["name"] for j in targets}!=names:
+                    raise RuntimeError("INCOMPLETE_LEG_COVERAGE")
+                if any(int(j["error_code"]) for j in leg):
+                    raise RuntimeError("LEG_ERROR_CODE")
+                gm_time,gm=self.readbacks.get("get_mode",(0,{}))
+                ages.update(odom=now-r["host_monotonic_ns"]*1e-9,get_mode=now-gm_time)
+                out=dict(sample_monotonic_s=r["host_monotonic_ns"]*1e-9, sim_time_s=r["sim_time_s"],
+                         pose=p,leg_states=leg,mc_leg_command=dict(joints=targets),
+                         state_age_s=ages, get_mode_desc=gm.get("info",{}).get("action_desc"),
+                         get_mode_status_value=gm.get("info",{}).get("status",{}).get("value"),
+                         get_mode_header_code=gm.get("header",{}).get("code"),
+                         common_mode_desc=mode,common_mode_status_value=status,fsm_state=fsm,
+                         body_status=body,common_source=cm["input_source"],
+                         source_readback=self.readbacks.get("source"),raw_common=cm,
+                         native_generation=r["generation"],source_clock_generation=self.source_epoch)
+                return out
 
         def graph(self):
             pubs=self.get_publishers_info_by_topic("/aima/mc/locomotion/velocity")
@@ -321,7 +382,14 @@ def run_probe(smoke_only=False):
             until=time.monotonic()+seconds;last=None;rows=[];qualified=None
             while rclpy.ok() and time.monotonic()<until:
                 tick=time.monotonic();self.publish();self.pump()
-                row=self.sample(start)
+                try:row=self.sample(start)
+                except RuntimeError as exc:
+                    if str(exc)!="CLOCK_GENERATION_PENDING":raise
+                    rows=[];last=None
+                    time.sleep(max(0.,tick+.02-time.monotonic()))
+                    continue
+                if rows and row.get("source_clock_generation",0)!=rows[-1].get("source_clock_generation",0):
+                    rows=[];last=None
                 if baseline is not None and row["body_status"]!=baseline:
                     raise RuntimeError("BODY_STATUS_CHANGED")
                 stamp=row["sample_monotonic_s"]
@@ -430,6 +498,7 @@ def run_probe(smoke_only=False):
             result["feedback_cleanup_failure"] = str(exc)
             result["pass_result"] = False
         result["source_receipt_diagnostics"] = n.receipt_diagnostics
+        result["source_clock_generations"] = n.source_epoch
         result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace,
                       nonzero_started=motion_started,watchdog_limitation="IN_PROCESS_TIMER_PLUS_BRIDGE_STALE_INPUT_WATCHDOG",
                       stop_contract_revision=contract.__doc__)

@@ -229,9 +229,14 @@ class ContinuousFeedbackTests(unittest.TestCase):
         cls=next(n for n in run.body if isinstance(n,ast.ClassDef))
         cls.bases=[];cls.body=[m for m in cls.body if isinstance(m,ast.FunctionDef) and m.name in names]
         ns=dict(threading=threading,time=__import__("time"),raw=lambda x:x,
-                advancing_stamp=micro.advancing_stamp,json=json,**values)
+                advancing_stamp=micro.advancing_stamp,observed_clock_step=micro.observed_clock_step,json=json,**values)
         exec(compile(ast.Module(body=[cls],type_ignores=[]),"micro-executor","exec"),ns)
-        return ns["Micro"]()
+        node=ns["Micro"]()
+        node.telemetry_lock=threading.RLock();node.clock_offset_ns=None
+        node.source_epoch=0;node.pumped_epoch=0;node.epoch_changed_at=None
+        node.unique={};node.messages={};node.receipt_diagnostics={};node.events=[]
+        node.moving=False
+        return node
 
     def test_feedback_is_processed_during_foreground_wait_and_stops_cleanly(self):
         from unittest.mock import patch
@@ -269,12 +274,15 @@ class ContinuousFeedbackTests(unittest.TestCase):
         n=self.methods(("store",))
         n.unique={};n.messages={};n.receipt_diagnostics={}
         def msg(stamp):return NS(header=NS(stamp=NS(sec=1,nanosec=stamp)))
-        n.store("common",msg(10));before=n.unique["common"]
-        n.store("common",msg(10));n.store("common",msg(9))
+        from unittest.mock import patch
+        with patch("time.time_ns",return_value=1000000000):
+            n.store("common",msg(10));before=n.unique["common"]
+            n.store("common",msg(10));n.store("common",msg(9))
         self.assertEqual(n.unique["common"],before)
         d=n.receipt_diagnostics["common"]
         self.assertEqual((d["callbacks"],d["duplicates"],d["regressions"]),(3,1,1))
-        n.store("common",msg(11));self.assertGreater(n.unique["common"][0],before[0])
+        with patch("time.time_ns",return_value=1000000000):n.store("common",msg(11))
+        self.assertGreater(n.unique["common"][0],before[0])
 
     def test_stale_native_feedback_still_fails_with_continuous_executor(self):
         n=self.methods(("sample",))
@@ -282,6 +290,93 @@ class ContinuousFeedbackTests(unittest.TestCase):
         n.feedback_fault=None
         with self.assertRaisesRegex(RuntimeError,"NATIVE_FEEDBACK_STALE"):
             n.sample()
+
+
+class ClockGenerationTests(unittest.TestCase):
+    methods=ContinuousFeedbackTests.methods
+    def test_clock_step_requires_an_independent_well_bracketed_clock_read(self):
+        offset,step=micro.observed_clock_step(None,100,1100,100)
+        self.assertEqual((offset,step),(1000,None))
+        self.assertEqual(micro.observed_clock_step(offset,200,1200,200),(1000,None))
+        self.assertEqual(micro.observed_clock_step(offset,300,1300,2000000),(1000,None))
+        off,step=micro.observed_clock_step(offset,400,400-1000000000,400)
+        self.assertLess(step,-.9e9)
+
+    def clock_node(self,moving=False):
+        n=self.methods(("store",))
+        n.feedback_fault=None;n.moving=moving
+        n.deadline_zero=lambda:(setattr(n,"moving",False),n.events.append(dict(event="ZERO")))
+        return n
+
+    def message(self,ns):
+        return NS(header=NS(stamp=NS(sec=ns//1000000000,nanosec=ns%1000000000)))
+
+    def test_stopped_clock_generation_drops_old_queued_messages(self):
+        from unittest.mock import patch
+        n=self.clock_node()
+        with patch("time.monotonic_ns",return_value=10000000000),patch("time.time_ns",return_value=2000000000):
+            n.store("common",self.message(2000000000))
+        n.messages["imu"]="old"
+        with patch("time.monotonic_ns",return_value=10020000000),patch("time.time_ns",return_value=1020000000):
+            n.store("common",self.message(2000000000))
+            self.assertEqual(n.messages,{})
+            n.store("common",self.message(1020000000))
+        self.assertEqual(n.source_epoch,1);self.assertNotIn("imu",n.messages)
+        self.assertEqual(n.unique["common"][0],1020000000)
+        self.assertEqual(n.receipt_diagnostics["common"]["rejected_wrong_epoch"],1)
+        self.assertIsNone(n.feedback_fault)
+
+    def test_clock_step_during_motion_latches_zero_and_a_fault(self):
+        from unittest.mock import patch
+        n=self.clock_node(moving=True)
+        with patch("time.monotonic_ns",return_value=10000000000),patch("time.time_ns",return_value=2000000000):
+            n.store("common",self.message(2000000000))
+        with patch("time.monotonic_ns",return_value=10020000000),patch("time.time_ns",return_value=1020000000):
+            n.store("common",self.message(1020000000))
+        self.assertFalse(n.moving);self.assertEqual(n.feedback_fault["gate"],"CLOCK_STEP_DURING_MOTION")
+        self.assertEqual(sum(e["event"]=="ZERO" for e in n.events),1)
+
+    def test_stop_observer_never_combines_different_clock_generations(self):
+        n,sent,clock=MicroTests().runtime_methods();n.moving=False;n.pump=lambda:None
+        def sample(start):
+            r=copy.deepcopy(rows()[0]);r["sample_monotonic_s"]=clock.t
+            r["source_clock_generation"]=0 if clock.t<2.1 else 1
+            return r
+        n.sample=sample
+        with self.assertRaisesRegex(RuntimeError,"COMPOSITE_STOP_NOT_QUALIFIED"):
+            n.observe(3.,baseline=1,require_stop=True)
+        self.assertTrue(all(v==(0.,0.,0.) for v in sent))
+
+
+class SteadyBridgeTests(unittest.TestCase):
+    def source(self):
+        path=Path("/home/lzy18001500226/projects/RobotSim/reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py")
+        return micro.build_steady_bridge_source(path.read_text())
+
+    def test_only_timer_and_input_age_clock_change(self):
+        source=self.source()
+        compile(source,"steady-bridge","exec")
+        self.assertIn("clock=_robotsim_Clock(clock_type=_robotsim_ClockType.STEADY_TIME)",source)
+        self.assertIn("msg.header.stamp = now.to_msg()",source)
+        self.assertIn("age = _robotsim_steady_time.monotonic() - self.last_cmd_time",source)
+        with self.assertRaises(ValueError):micro.build_steady_bridge_source("# altered vendor source")
+
+    def test_backward_wall_time_cannot_extend_nonzero_input_timeout(self):
+        source=ast.parse(self.source())
+        cls=next(x for x in source.body if isinstance(x,ast.ClassDef))
+        cls.bases=[];cls.body=[m for m in cls.body if isinstance(m,ast.FunctionDef) and m.name=="publish_velocity"]
+        clock=NS(t=10.05);sent=[]
+        ns=dict(_robotsim_steady_time=NS(monotonic=lambda:clock.t),
+                MessageHeader=lambda:NS(),McLocomotionVelocity=lambda:NS())
+        exec(compile(ast.Module(body=[cls],type_ignores=[]),"steady","exec"),ns)
+        n=ns[cls.name]();n.last_cmd_time=10.;n.cmd_timeout_sec=.20
+        n.get_clock=lambda:NS(now=lambda:NS(to_msg=lambda:"REAL_BACKWARD_WALL_STAMP"))
+        n.forward_velocity=.12;n.lateral_velocity=0.;n.angular_velocity=0.
+        n.publisher=NS(publish=sent.append);n.source="robotsim_official_cmd_vel"
+        n.publish_velocity();clock.t=10.201;n.publish_velocity()
+        self.assertEqual(sent[0].forward_velocity,.12)
+        self.assertEqual(sent[1].forward_velocity,0.)
+        self.assertEqual(sent[1].header.stamp,"REAL_BACKWARD_WALL_STAMP")
 
 
 if __name__=="__main__":unittest.main()

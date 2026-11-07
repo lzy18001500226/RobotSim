@@ -52,11 +52,15 @@ experiment-specific capabilities, not a blanket qualification of navigation,
 perception, manipulation or hardware deployment. Unity remains the intended
 high-fidelity frontend; its planned role is not evidence of completed integration.
 
-The active Issue #46 milestone is fixed-stance bottle grasping with the reviewed
-`X2-OmniPicker-STL` lower concave-pad support circle. Standing/docking and static
-IK have passing local evidence; actual jaw opening and pose tracking still block
-a qualified bilateral grasp/lift. No >=50 mm lift plus >=1 s unsupported hold
-has passed in this current setup.
+The active Issue #46 milestone uses the reviewed `X2-OmniPicker-STL` lower
+concave-pad support circle. Actual H300/D70/.200kg fixed-stance truth and fresh
+RGB-D grasps have passed bilateral load transfer, >=50 mm lift and >=1 s
+unsupported hold in the explicitly labeled SIMULATION_ONLY source-derived
+collision/control profile. The native interactive review entry is available.
+The strengthened START-to-table chain is still unqualified: subsequent
+per-physics-step source joint-speed checks found violations in historical
+walking traces. Four-direction stance correction, dynamic short-bottle
+postures and LiDAR-based grasp execution remain under validation.
 
 Read the [X2 task workflow](docs/workflows/06_X2_AUTONOMY_TASK.md) for task-stage
 scope and the [measured grasp findings](docs/research/issue46_truth_grasp_execution_findings.md)
