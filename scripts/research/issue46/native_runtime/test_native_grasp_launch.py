@@ -453,20 +453,44 @@ class NativeArmRelayTests(TestCase):
         self.assertEqual(build_native_arm_relay_config(source),expected)
         self.assertEqual(source,original)
 
-    def test_active_relay_forwards_the_original_message_and_rejects_duplicates(self):
+    def relay_method(self):
         from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import arm_bootstrap_hold_script
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import observed_clock_step
         source=ast.parse(arm_bootstrap_hold_script({},relay_arms=True))
         hold=next(n for n in source.body if isinstance(n,ast.ClassDef))
         method=next(n for n in hold.body if isinstance(n,ast.FunctionDef) and n.name=="on_mc_arm")
         hold.bases=[];hold.body=[method]
-        arm=tuple("joint"+str(i) for i in range(14));clock=NS(now=10.)
-        ns=dict(ARM=arm,math=math,time=NS(monotonic=lambda:clock.now,monotonic_ns=lambda:int(clock.now*1e9)),os=NS(path=NS(exists=lambda path:True),replace=lambda a,b:None),json=json,open=lambda *a,**k:io.StringIO())
+        arm=tuple("joint"+str(i) for i in range(14));clock=NS(now=10.);sent=[]
+        ns=dict(ARM=arm,ARM_LIMITS={n:(-1.,1.,2.) for n in arm},math=math,
+                time=NS(monotonic=lambda:clock.now,monotonic_ns=lambda:int(clock.now*1e9),time_ns=lambda:int((clock.now-9.)*1e9)),
+                observed_clock_step=observed_clock_step)
         exec(compile(ast.Module(body=[hold],type_ignores=[]),"relay","exec"),ns)
-        n=ns["Hold"]();n.arm_source_stamp=0;n.arm_receipt=None;n.arm_last_metadata_time=0.;n.arm_relay_started=7.;n.arm_relay_count=0;sent=[];n.pub=NS(publish=sent.append)
+        n=ns[hold.name]();n.clock_offset=None;n.arm_source_stamp=0;n.arm_receipt=None
+        n.arm_relay_count=0;n.positive_count=0;n.owner_verified=True;n.verify_owner=lambda:None
+        n.pub=NS(publish=sent.append)
         msg=NS(header=NS(stamp=NS(sec=1,nanosec=5)),joints=[NS(name=name,position=.2,velocity=.1,effort=.3,stiffness=50.,damping=3.) for name in arm])
-        n.on_mc_arm(msg);self.assertIs(sent[0],msg);self.assertEqual(n.arm_relay_count,1)
-        clock.now=10.3;n.on_mc_arm(msg)
+        return n,msg,sent,clock
+
+    def test_active_relay_forwards_the_original_message_and_rejects_duplicates(self):
+        n,msg,sent,clock=self.relay_method()
+        n.on_mc_arm(msg)
+        self.assertIs(sent[0],msg);self.assertEqual(n.arm_relay_count,1)
+        clock.now=10.1;n.on_mc_arm(msg)
         self.assertEqual(n.arm_receipt,10.);self.assertEqual(n.arm_relay_count,1)
+
+    def test_inactive_stand_commands_are_valid_but_never_count_as_active_gains(self):
+        n,msg,sent,clock=self.relay_method()
+        for j in msg.joints:j.stiffness=j.damping=0.
+        n.on_mc_arm(msg)
+        self.assertIs(sent[0],msg);self.assertEqual(n.positive_count,0);self.assertFalse(n.last_gain_positive)
+
+    def test_unknown_owner_and_invalid_source_targets_cannot_actuate(self):
+        n,msg,sent,clock=self.relay_method();n.owner_verified=False;n.on_mc_arm(msg)
+        self.assertEqual(sent,[])
+        n,msg,sent,clock=self.relay_method();msg.joints[0].position=2.
+        with self.assertRaisesRegex(RuntimeError,"SOURCE_LIMIT"):n.on_mc_arm(msg)
+        self.assertEqual(sent,[])
+
 
 
 class VerifiedPointerControlsTests(TestCase):

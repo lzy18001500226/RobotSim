@@ -44,7 +44,7 @@ def native_pose(row):
                 frame_id="native_scene_world", child_frame_id="pelvis_origin")
 
 
-def physical_fault(row, pose, limits, start=None, direction=None):
+def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None):
     if pose["z"] < .45 or math.hypot(pose["roll"], pose["pitch"]) > math.radians(15):
         return "POSTURE"
     if math.hypot(pose["vx"], pose["vy"]) > .20:
@@ -55,6 +55,15 @@ def physical_fault(row, pose, limits, start=None, direction=None):
             return "JOINT_LIMIT:" + name
         if not math.isfinite(j["qvel"]) or abs(j["qvel"]) > speed or j.get("max_abs_qvel_since_previous_sample",abs(j["qvel"]))>speed:
             return "SOURCE_JOINT_SPEED:" + name
+    if robot_bodies:
+        for contact in row.get("contacts",[]):
+            if contact["efc_address"]<0 or contact["distance_m"]>=-.001 or contact["local_force_torque"][0]<=.1:continue
+            a,b=contact["body1"],contact["body2"];ra,rb=a in robot_bodies,b in robot_bodies
+            if ra and rb:return "ACTIVE_ROBOT_SELF_COLLISION:"+a+":"+b
+            if ra or rb:
+                robot,other=(a,b) if ra else (b,a)
+                if other=="world" and robot in ("left_ankle_pitch_link","left_ankle_roll_link","right_ankle_pitch_link","right_ankle_roll_link"):continue
+                return "ROBOT_ENVIRONMENT_COLLISION:"+robot+":"+other
     if start is not None:
         dx, dy = pose["x"]-start["x"], pose["y"]-start["y"]
         if math.hypot(dx, dy) > .18:
@@ -155,7 +164,7 @@ def micro_displacement(pose,start,direction):
     return forward,lateral,progress,cross
 
 
-def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False,heading_hold=False,target_distance_m=None,observe_native_arm_policy=False):
+def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native_arm_relay=False,heading_hold=False,target_distance_m=None,observe_native_arm_policy=False,robot_bodies=None):
     if direction not in ("forward", "backward", "left", "right"):
         raise ValueError("unknown body-frame micro direction")
     maximum=1. if target_distance_m is None else 2.
@@ -173,7 +182,7 @@ def build_script(direction, duration_s, joint_limits, *, command_speed=.2,native
         refine_position_tolerance_m=.15, timeout_s=30.,
         use_cmd_vel_bridge=True, native_pose_feedback=True,native_arm_relay=native_arm_relay)
     base = base.split("rclpy.init();n=Dock();registered=False")[0]
-    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed, heading_hold=bool(heading_hold),target_distance_m=target_distance_m,observe_native_arm_policy=bool(observe_native_arm_policy))
+    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed, heading_hold=bool(heading_hold),target_distance_m=target_distance_m,observe_native_arm_policy=bool(observe_native_arm_policy),robot_bodies=robot_bodies)
     return base + "\n" + Path(__file__).read_text().replace("from __future__ import annotations","") + "\nMICRO=" + repr(plan) + "\nrun_probe()\n"
 
 
@@ -359,7 +368,7 @@ def run_probe(smoke_only=False):
                 if any(age>.20 for age in ages.values()):
                     raise RuntimeError("CRITICAL_ROS_TELEMETRY_STALE:"+str(ages))
                 p=native_pose(r)
-                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"])
+                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"))
                 if fault: raise RuntimeError(fault)
                 imu=self.messages["imu"]
                 q=imu["orientation"]
@@ -380,7 +389,9 @@ def run_probe(smoke_only=False):
                     raise RuntimeError("LEG_ERROR_CODE")
                 gm_time,gm=self.readbacks.get("get_mode",(0,{}))
                 ages.update(odom=now-r["host_monotonic_ns"]*1e-9,get_mode=now-gm_time)
+                source_arm_health=json.loads(Path("/workspace/evidence/native_arm_relay_heartbeat.json").read_text()) if PLAN.get("native_arm_relay") else None
                 out=dict(sample_monotonic_s=r["host_monotonic_ns"]*1e-9, sim_time_s=r["sim_time_s"],
+                         native_arm_source_health=source_arm_health,
                          pose=p,leg_states=leg,mc_leg_command=dict(header=self.messages["leg_command"]["header"],joints=targets),
                          raw_imu=imu,raw_ros_odom=self.messages.get("ros_odom"),
                          imu_quaternion_norm_squared=norm2,
@@ -569,7 +580,8 @@ def run_probe(smoke_only=False):
         result.update(body_forward_m=forward,body_lateral_m=lateral,
                       yaw_change_rad=(end["yaw"]-start["yaw"]+math.pi)%(2*math.pi)-math.pi)
         acquired=any(r["common_source"]["name"]=="robotsim_official_cmd_vel" and
-                     r["common_mode_desc"]=="LOCOMOTION_DEFAULT" for r in n.trace)
+                     r["common_mode_desc"]=="LOCOMOTION_DEFAULT" and
+                     (not PLAN.get("native_arm_relay") or r.get("native_arm_source_health",{}).get("last_gain_positive")) for r in n.trace)
         result["source_and_ld_observed"]=acquired
         result["pass_result"]=result["post_stop_composite"]["pass"] and progress>=.005 and acquired
         result["failure"]=None if result["pass_result"] else ("SOURCE_AND_LD_NOT_OBSERVED" if not acquired else "NO_CORRECT_SIGNED_MICRO_MOVEMENT")

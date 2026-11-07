@@ -96,6 +96,15 @@ class MicroTests(unittest.TestCase):
         r=dict(joints=dict(knee=dict(q=.1,qvel=.01,max_abs_qvel_since_previous_sample=1.01)))
         self.assertEqual(micro.physical_fault(r,p,dict(knee=(-1,1,1))),"SOURCE_JOINT_SPEED:knee")
 
+    def test_source_native_arm_motion_keeps_active_collision_guard(self):
+        p=dict(z=.65,roll=0.,pitch=0.,vx=0.,vy=0.)
+        bodies=["left_wrist_roll_link","left_ankle_roll_link","right_ankle_roll_link"]
+        def row(a,b,address=0):return dict(joints={},contacts=[dict(body1=a,body2=b,efc_address=address,distance_m=-.002,local_force_torque=[1.])])
+        self.assertIsNone(micro.physical_fault(row("world","left_ankle_roll_link"),p,{},robot_bodies=bodies))
+        self.assertIsNone(micro.physical_fault(row("left_wrist_roll_link","right_ankle_roll_link",-1),p,{},robot_bodies=bodies))
+        self.assertTrue(micro.physical_fault(row("left_wrist_roll_link","right_ankle_roll_link"),p,{},robot_bodies=bodies).startswith("ACTIVE_ROBOT_SELF_COLLISION"))
+        self.assertTrue(micro.physical_fault(row("left_wrist_roll_link","world"),p,{},robot_bodies=bodies).startswith("ROBOT_ENVIRONMENT_COLLISION"))
+
     def test_unchanged_composite_contract(self):
         self.assertTrue(stop.evaluate_stop_window(rows(),baseline_body_status=1)["pass"])
         r=rows();r[-1]["mc_leg_command"]["joints"][1]["position"]=.02001
@@ -262,6 +271,7 @@ class ContinuousFeedbackTests(unittest.TestCase):
         cls.bases=[];cls.body=[m for m in cls.body if isinstance(m,ast.FunctionDef) and m.name in names]
         ns=dict(threading=threading,time=__import__("time"),raw=lambda x:x,
                 advancing_stamp=micro.advancing_stamp,observed_clock_step=micro.observed_clock_step,json=json,**values)
+        ns.setdefault("PLAN",{})
         exec(compile(ast.Module(body=[cls],type_ignores=[]),"micro-executor","exec"),ns)
         node=ns["Micro"]()
         node.telemetry_lock=threading.RLock();node.clock_offset_ns=None
