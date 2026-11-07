@@ -75,6 +75,23 @@ def native_reset_button_signature_matches(pixels: dict[str, tuple[int, int, int]
     center_is_background = near(pixels["center"], NATIVE_RESET_BUTTON_BACKGROUND_RGB)
     return border_visible and center_is_background
 
+NATIVE_KEY_SLIDER_PIXEL_POINTS={"key_left":(133,507),"key_right":(240,526),"key_middle":(220,517),"label_background":(110,518),"reset_border":(68,444),"reset_inside":(68,456),"load_border":(68,534),"load_inside":(68,546)}
+NATIVE_PAUSE_PIXEL_POINTS={"left_interior":(68,426),"right_interior":(180,426),"border_top":(68,414),"border_left":(13,426)}
+NATIVE_PAUSE_BUTTON_POINT=(68,426)
+
+def _ui_color_near(actual,expected):
+    return len(actual)==3 and all(isinstance(v,int) and abs(v-e)<=24 for v,e in zip(actual,expected))
+
+def native_key_slider_signature_matches(pixels):
+    if set(pixels)!=set(NATIVE_KEY_SLIDER_PIXEL_POINTS):return False
+    return all(_ui_color_near(pixels[k],(76,51,76)) for k in ("key_left","key_right","key_middle")) and all(_ui_color_near(pixels[k],(26,26,26)) for k in ("label_background","reset_inside","load_inside")) and all(_ui_color_near(pixels[k],(153,102,102)) for k in ("reset_border","load_border"))
+
+def native_pause_signature_matches(pixels):
+    if set(pixels)!=set(NATIVE_PAUSE_PIXEL_POINTS):return False
+    green=(102,153,102);dark=(26,26,26)
+    sides=(_ui_color_near(pixels["left_interior"],green) and _ui_color_near(pixels["right_interior"],dark)) or (_ui_color_near(pixels["left_interior"],dark) and _ui_color_near(pixels["right_interior"],green))
+    return sides and all(_ui_color_near(pixels[k],green) for k in ("border_top","border_left"))
+
 
 class XClientMessageData(ctypes.Union):
     _fields_ = [
@@ -776,6 +793,25 @@ class X11:
             "return_values_are_focus_proof": False,
         }
 
+    def pointer_root_child_contains_target(self,window):
+        """Prove the root child under the pointer is the target's own frame."""
+        root,child=ctypes.c_ulong(),ctypes.c_ulong()
+        rx,ry,wx,wy=ctypes.c_int(),ctypes.c_int(),ctypes.c_int(),ctypes.c_int()
+        mask=ctypes.c_uint()
+        if not self.lib.XQueryPointer(self.display,self.root,ctypes.byref(root),ctypes.byref(child),ctypes.byref(rx),ctypes.byref(ry),ctypes.byref(wx),ctypes.byref(wy),ctypes.byref(mask)):
+            return {"verified":False,"reason":"root pointer query failed"}
+        current=window;ancestors=[]
+        for _ in range(16):
+            ancestors.append(current)
+            if current==child.value:return {"verified":True,"root_child":child.value,"target_ancestor_chain":ancestors,"root_point":[rx.value,ry.value],"mask":mask.value}
+            if current==self.root:break
+            rt,parent=ctypes.c_ulong(),ctypes.c_ulong();children=ctypes.POINTER(ctypes.c_ulong)();count=ctypes.c_uint()
+            ok=self.lib.XQueryTree(self.display,current,ctypes.byref(rt),ctypes.byref(parent),ctypes.byref(children),ctypes.byref(count))
+            if children:self.lib.XFree(children)
+            if not ok:break
+            current=parent.value
+        return {"verified":False,"root_child":child.value,"target_ancestor_chain":ancestors,"reason":"pointer is over another X11 root child"}
+
     def click_native_reset_button_once(
         self,
         window: int,
@@ -787,6 +823,8 @@ class X11:
         pixel_points: dict[str, tuple[int, int]] = NATIVE_RESET_BUTTON_PIXEL_POINTS,
         dispatched_status: str = "RESET_BUTTON_CLICKED",
         dispatched_classification: str = "NATIVE_RESET_BUTTON_INPUT_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_ROS_TRACE",
+        signature_validator=None,
+        require_pointer_ancestry: bool = False,
     ) -> dict[str, Any]:
         """Click one calibrated native MuJoCo Simulation control in a verified viewer.
 
@@ -824,7 +862,7 @@ class X11:
             if pixel_points == NATIVE_RESET_BUTTON_PIXEL_POINTS
             else self.native_button_pixels(window, pixel_points)
         )
-        if button_pixels is None or not native_reset_button_signature_matches(button_pixels):
+        if button_pixels is None or not (signature_validator or native_reset_button_signature_matches)(button_pixels):
             return {
                 "status": "RESET_NOT_DELIVERED",
                 "reason": f"native {control_label} control pixel signature was not verified; no click sent",
@@ -897,6 +935,11 @@ class X11:
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
             }
+        ancestry=None
+        if require_pointer_ancestry:
+            ancestry=self.pointer_root_child_contains_target(window)
+            if not ancestry.get("verified") or mask_return.value & (1|4|8|64|256|512|1024):
+                return {"status":"RESET_NOT_DELIVERED","reason":"verified pointer-only contract failed (occlusion/modifier/held button)","mouse_button_events_sent":0,"key_events_sent":0,"pointer_ancestry":ancestry,"mask":mask_return.value}
         # The preceding XQueryPointer ran immediately after the XTEST motion
         # request and XSync, and proved the exact native-button coordinates.
         # No pointer-mutating X call occurs between that proof and this final
@@ -929,6 +972,11 @@ class X11:
                 "mouse_button_events_sent": 0,
                 "key_events_sent": 0,
             }
+        if require_pointer_ancestry:
+            check_x,check_y,check_child=ctypes.c_int(),ctypes.c_int(),ctypes.c_ulong()
+            stable=self.lib.XTranslateCoordinates(self.display,window,self.root,local_x,local_y,ctypes.byref(check_x),ctypes.byref(check_y),ctypes.byref(check_child))
+            if not stable or (check_x.value,check_y.value)!=(root_x.value,root_y.value):
+                return {"status":"RESET_NOT_DELIVERED","reason":"target moved before mouse dispatch","mouse_button_events_sent":0,"key_events_sent":0}
         dispatch_utc = datetime.now(timezone.utc).isoformat()
         dispatch_monotonic_ns = time.monotonic_ns()
         press_return = int(self.xtst.XTestFakeButtonEvent(self.display, 1, 1, CURRENT_TIME))
@@ -996,11 +1044,21 @@ class X11:
             dispatched_classification="NATIVE_LOAD_KEY_BUTTON_INPUT_DISPATCHED_STATE_CHANGE_MUST_BE_VERIFIED_BY_NATIVE_TRACE",
         )
 
+    def click_native_pause_once(self,window,expected_pid,expected_title):
+        """Select Pause radio (idempotent); no Space/key or focus assumption."""
+        return self.click_native_reset_button_once(window,expected_pid=expected_pid,expected_title=expected_title,
+            control_label="Pause",button_point=NATIVE_PAUSE_BUTTON_POINT,
+            pixel_points=NATIVE_PAUSE_PIXEL_POINTS,
+            dispatched_status="NATIVE_PAUSE_MOUSE_DISPATCHED",
+            dispatched_classification="NATIVE_PAUSE_SELECTION_EFFECT_REQUIRES_FROZEN_SIM_CLOCK",
+            signature_validator=native_pause_signature_matches,require_pointer_ancestry=True)
+
     def select_native_keyframe_zero_once(
         self,
         window: int,
         expected_pid: int,
         expected_title: str,
+        verified_pointer_only: bool = False,
     ) -> dict[str, Any]:
         """Select keyframe index zero through the native Simulation/Key slider.
 
@@ -1015,6 +1073,15 @@ class X11:
                 "target_window_id": window,
                 "mouse_button_events_sent": 0,
             }
+        if verified_pointer_only:
+            event=self.click_native_reset_button_once(window,expected_pid=expected_pid,expected_title=expected_title,
+                control_label="Key",button_point=NATIVE_KEY_SLIDER_ZERO_POINT,
+                pixel_points=NATIVE_KEY_SLIDER_PIXEL_POINTS,
+                dispatched_status="KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED",
+                dispatched_classification="VERIFIED_NATIVE_MOUSE_ONLY_KEY_SELECTION_EFFECT_REQUIRES_NATIVE_TRACE",
+                signature_validator=native_key_slider_signature_matches,require_pointer_ancestry=True)
+            event.update({"input_path":"MUJOCO_NATIVE_SIMULATION_KEY_SLIDER_POINTER_ONLY","requested_keyframe_index":0,"keyboard_focus_observed":self._input_focus(),"keyboard_events_sent":0,"selection_authoritatively_observed":False})
+            return event
         activation=self.activate_window(window,timeout_s=1.0)
         focus=self.focus_window_direct(window)
         if focus.get("status")!="FOCUSED" or self._target_identity(expected_pid,expected_title,window) is None:
@@ -1287,7 +1354,13 @@ def main() -> int:
     pause_parser.add_argument("--expected-title", required=True)
     pause_parser.add_argument("--window-id", type=int, required=True)
     pause_parser.add_argument("--dispatch-event-json", type=Path, required=True)
+    mouse_pause=sub.add_parser("click-native-pause",help="select verified native Pause radio without keyboard input")
+    mouse_pause.add_argument("--expected-pid",type=int,required=True)
+    mouse_pause.add_argument("--expected-title",required=True)
+    mouse_pause.add_argument("--window-id",type=int,required=True)
+    mouse_pause.add_argument("--dispatch-event-json",type=Path,required=True)
     key_zero_parser = sub.add_parser("select-key-zero", help="select native MuJoCo keyframe index zero once")
+    key_zero_parser.add_argument("--verified-pointer-only",action="store_true",help="no keyboard events; exact UI pixels, pointer ancestry, geometry and native effect required")
     key_zero_parser.add_argument("--expected-pid", type=int, required=True)
     key_zero_parser.add_argument("--expected-title", required=True)
     key_zero_parser.add_argument("--window-id", type=int, required=True)
@@ -1359,6 +1432,12 @@ def main() -> int:
                 os.fsync(stream.fileno())
             print(json.dumps(event_record, indent=2))
             return 0 if event.get("status") == "RESET_BUTTON_CLICKED" else 2
+        if args.command == "click-native-pause":
+            event=x11.click_native_pause_once(args.window_id,args.expected_pid,args.expected_title)
+            record={"schema":"robotsim.native-pause-mouse.v1","window":window,"event":event}
+            with args.dispatch_event_json.open("x",encoding="utf-8") as f:json.dump(record,f,indent=2)
+            print(json.dumps(record,indent=2))
+            return 0 if event.get("status")=="NATIVE_PAUSE_MOUSE_DISPATCHED" else 2
         if args.command == "send-pause":
             event = x11.send_space_once(
                 args.window_id,
@@ -1384,6 +1463,7 @@ def main() -> int:
                 args.window_id,
                 expected_pid=args.expected_pid,
                 expected_title=args.expected_title,
+                verified_pointer_only=args.verified_pointer_only,
             )
             event_record = {
                 "schema": "robotsim.issue80.keyframe-selection-event.v1",

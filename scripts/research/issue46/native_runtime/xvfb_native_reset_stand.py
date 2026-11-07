@@ -1043,6 +1043,7 @@ def main() -> None:
     parser.add_argument("--xvfb-libs", type=Path)
     parser.add_argument("--xkb-root", type=Path)
     parser.add_argument("--interactive-x11-display", help="use a user-visible WSLg X11 display and pause after failed claw response; requires the host X socket mounted explicitly")
+    parser.add_argument("--verified-native-mouse-controls",action="store_true",help="explicit pixel/ancestry-verified mouse-only native Key/Pause controls; no keyboard focus assumption")
     parser.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace",help="one verified native Reset input, without fallback/retry")
     parser.add_argument("--native-render-adapter",help="process-scoped WSLg GPU selection; verified against the actual native GL context before MC startup")
     parser.add_argument("--native-arm-policy-relay",action="store_true",help="preserve actual MC arm commands during standing/navigation; exclusive bounded grasp handoff afterward")
@@ -1104,6 +1105,8 @@ def main() -> None:
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
 
+    if args.verified_native_mouse_controls and not (args.fixed_reviewed_checkpoint and args.interactive_x11_display and args.pause_on_claw_failure):
+        raise ValueError("verified mouse controls are scoped to the visible fixed-stance human-review entry")
     if args.native_arm_policy_relay:
         from scripts.research.issue46.native_runtime.native_micro_stop_contract import verify_mc_fsm_runtime_contract
         verify_mc_fsm_runtime_contract(RUNTIME/"mc/lib")
@@ -1605,7 +1608,7 @@ def main() -> None:
             capture_code="import sys;from pathlib import Path;sys.path.insert(0,'/workspace/evidence');import native_mujoco_reset as m;x=m.X11();assert x._target_identity("+str(pid)+","+repr(window['title'])+","+str(window['window_id'])+") is not None;x.capture_png("+str(window['window_id'])+",Path('/workspace/evidence/checkpoint_before_key.png'))"
             run(["docker","exec",container,"bash","-lc","python3 -c "+shlex.quote(capture_code)],timeout_s=8.)
             before_key=json.loads((output/'native_latest.json').read_text())
-            selection=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py select-key-zero"+identity+" --dispatch-event-json /workspace/evidence/keyframe_selection.json"],timeout_s=10.)
+            selection=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py select-key-zero"+identity+(" --verified-pointer-only" if args.verified_native_mouse_controls else "")+" --dispatch-event-json /workspace/evidence/keyframe_selection.json"],timeout_s=10.)
             pg.write_new_text(output/'keyframe_selection.stdout',selection.stdout)
             # MuJoCo 3.3.7 Simulation/Key already requests load_key when its
             # slider changes (simulate.cc, SECT_SIMULATION case 5). Wait for
@@ -2133,7 +2136,7 @@ def main() -> None:
                     # keeping the renderer interactive for multi-angle review.
                     result["windows_foreground_before_review_pause"]=activate_wslg_native_window(window,output,label="windows_foreground_before_review_pause")
                     before_pause=json.loads((output/'native_latest.json').read_text())
-                    paused=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py send-pause --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])+" --dispatch-event-json /workspace/evidence/manual_pause_dispatch.json"],timeout_s=8.,check=False)
+                    paused=run(["docker","exec",container,"bash","-lc","python3 /workspace/evidence/native_mujoco_reset.py "+("click-native-pause" if args.verified_native_mouse_controls else "send-pause")+" --expected-pid "+str(pid)+" --expected-title "+repr(str(window['title']))+" --window-id "+str(window['window_id'])+" --dispatch-event-json /workspace/evidence/manual_pause_dispatch.json"],timeout_s=8.,check=False)
                     pg.write_new_text(output/'manual_pause.stdout',paused.stdout)
                     pause_deadline=time.monotonic()+3.;pause_stable_since=None;last_sim=None
                     while time.monotonic()<pause_deadline:

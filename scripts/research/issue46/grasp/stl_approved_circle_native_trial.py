@@ -47,6 +47,7 @@ def main():
     p.add_argument("--native-physics-audit",action="store_true",help="read-only actual-engine pose/contact/force observer; ABI must match installed library")
     p.add_argument("--target-source",choices=("truth-diagnostic","historical-rgbd-replay","fresh-rgbd","fresh-rgbd-snapshot"),default="truth-diagnostic",help="explicit provenance; snapshot mode reobserves before a bounded stationary-target execution")
     p.add_argument("--rgbd-render-adapter",help="explicit WSLg/Mesa sensor-process GPU selection, e.g. NVIDIA; actual renderer identity must agree")
+    p.add_argument("--verified-native-mouse-controls",action="store_true")
     p.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace")
     p.add_argument("--native-render-adapter",help="explicit process-only GPU selection for the native simulator, with actual GL identity verification")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
@@ -215,6 +216,7 @@ def main():
     if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
     if args.dock_angular_speed_cap is not None:argv.extend(["--dock-angular-speed-cap",str(args.dock_angular_speed_cap)])
     if args.dock_command_speed_cap is not None:argv.extend(["--dock-command-speed-cap",str(args.dock_command_speed_cap)])
+    if args.verified_native_mouse_controls:argv.append("--verified-native-mouse-controls")
     argv.extend(["--native-reset-input",args.native_reset_input])
     if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
     if args.physical_lift_test:

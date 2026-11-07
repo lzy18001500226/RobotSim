@@ -19,5 +19,6 @@ exec bash scripts/research/issue46/grasp/run_truth_circle_review.sh \
   --target-source fresh-rgbd-snapshot \
   --fixed-reviewed-checkpoint "$reviews/raicom-stl-xvfb-native-reset-stand-20261107T005238Z" \
   --grasp-height-above-center-m 0.10 \
+  --verified-native-mouse-controls \
   --physical-lift-test \
   --pause-for-human-review "$@"

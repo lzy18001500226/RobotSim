@@ -437,6 +437,62 @@ class NativeArmRelayTests(TestCase):
         self.assertEqual(n.arm_receipt,10.);self.assertEqual(n.arm_relay_count,1)
 
 
+class VerifiedPointerControlsTests(TestCase):
+    def node(self, *, pixels_good=True, ancestry=True, mask=16, moved=False):
+        import ctypes
+        from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
+        n=ui.X11.__new__(ui.X11);n.display=1;n.root=1107
+        identity=dict(window_id=123,pid=28,title="MuJoCo : x2t2.5",x=38,y=59,width=1706,height=1074,viewable=True)
+        n._target_identity=lambda *a:identity.copy()
+        n._input_focus=lambda:0
+        n.activate_window=lambda *a,**k:(_ for _ in ()).throw(AssertionError("keyboard activation must not be used"))
+        n.focus_window_direct=n.activate_window
+        n.native_button_pixels=lambda window,points:({k:(76,51,76) if k.startswith("key") else (153,102,102) if k.endswith("border") else (26,26,26) for k in points} if pixels_good else {k:(0,0,0) for k in points})
+        n.pointer_root_child_contains_target=lambda window:dict(verified=ancestry)
+        calls=[];translation=[0]
+        def translate(display,window,root,x,y,rx,ry,child):
+            translation[0]+=1
+            rx._obj.value=x+100+(10 if moved and translation[0]>1 else 0);ry._obj.value=y+200
+            return 1
+        def pointer(display,window,root,child,rx,ry,wx,wy,bits):
+            wx._obj.value=145;wy._obj.value=517;rx._obj.value=245;ry._obj.value=717;bits._obj.value=mask
+            return 1
+        n.lib=NS(XTranslateCoordinates=translate,XQueryPointer=pointer,XFlush=lambda *a:None,XSync=lambda *a:None)
+        n.xtst=NS(XTestFakeMotionEvent=lambda *a:1,XTestFakeButtonEvent=lambda d,b,pressed,t:(calls.append((b,pressed)) or 1))
+        return n,calls
+
+    def test_no_keyboard_focus_can_use_only_the_strict_mouse_contract(self):
+        n,calls=self.node()
+        event=n.select_native_keyframe_zero_once(123,28,"MuJoCo : x2t2.5",verified_pointer_only=True)
+        self.assertEqual(event["status"],"KEYFRAME_INDEX_SELECTION_INPUT_DISPATCHED")
+        self.assertEqual(event["keyboard_focus_observed"],0)
+        self.assertEqual(event["keyboard_events_sent"],0)
+        self.assertEqual(calls,[(1,1),(1,0)])
+        self.assertFalse(event["selection_authoritatively_observed"])
+
+    def test_mouse_path_rejects_wrong_pixels_occlusion_held_button_and_motion(self):
+        for settings in (dict(pixels_good=False),dict(ancestry=False),dict(mask=256),dict(moved=True)):
+            n,calls=self.node(**settings)
+            event=n.select_native_keyframe_zero_once(123,28,"MuJoCo : x2t2.5",verified_pointer_only=True)
+            self.assertEqual(calls,[])
+            self.assertEqual(event["mouse_button_events_sent"],0)
+
+    def test_mouse_path_never_clicks_a_lost_identity(self):
+        n,calls=self.node();n._target_identity=lambda *a:None
+        event=n.select_native_keyframe_zero_once(123,28,"MuJoCo : x2t2.5",verified_pointer_only=True)
+        self.assertEqual(calls,[]);self.assertEqual(event["mouse_button_events_sent"],0)
+
+    def test_archived_live_ui_signatures_and_negative_controls(self):
+        from scripts.research.issue46.native_runtime import native_mujoco_reset as ui
+        key={k:(76,51,76) if k.startswith("key") else (153,102,102) if k.endswith("border") else (25,25,25) for k in ui.NATIVE_KEY_SLIDER_PIXEL_POINTS}
+        self.assertTrue(ui.native_key_slider_signature_matches(key))
+        self.assertFalse(ui.native_key_slider_signature_matches({k:(25,25,25) for k in key}))
+        run=dict(left_interior=(25,25,25),right_interior=(102,153,102),border_top=(102,153,102),border_left=(102,153,102))
+        paused=dict(run,left_interior=(102,153,102),right_interior=(25,25,25))
+        self.assertTrue(ui.native_pause_signature_matches(run));self.assertTrue(ui.native_pause_signature_matches(paused))
+        self.assertFalse(ui.native_pause_signature_matches(dict(run,left_interior=(102,153,102))))
+
+
 class WslgForegroundTests(TestCase):
     def test_foreground_is_verified_and_never_submits_keyboard_or_mouse(self):
         from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent
