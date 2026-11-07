@@ -120,6 +120,18 @@ class MicroTests(unittest.TestCase):
         with patch.object(sys,"argv",args):
             with self.assertRaisesRegex(ValueError,"requires a measured native table-docking"):parent.main()
 
+    def test_low_input_profile_changes_only_bridge_command_amplitude(self):
+        code=micro.build_script("left",.6,{},command_speed=.12)
+        self.assertIn("'command_speed': 0.12",code)
+        self.assertIn('bounds=n.messages["common"]["speed_status"]',code)
+        for value in (.119,.201,float("nan")):
+            with self.assertRaises(ValueError):micro.build_script("left",.6,{},command_speed=value)
+        from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as parent
+        import yaml
+        data=yaml.safe_load((parent.RUNTIME/"mc/bin/mc_param/src/robot/lx2501_3_t2d5/robot_model.yaml").read_text())
+        limits={item["name"]:item["limits"] for group in data["joints"] for item in group[1]}
+        self.assertEqual(limits["right_knee_joint"]["max_velocity"],11.936)
+
     def runtime_methods(self):
         tree=ast.parse(Path(micro.__file__).read_text())
         run=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="run_probe")

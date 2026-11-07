@@ -68,11 +68,12 @@ def physical_fault(row, pose, limits, start=None, direction=None):
     return None
 
 
-def build_script(direction, duration_s, joint_limits):
+def build_script(direction, duration_s, joint_limits, *, command_speed=.2):
     if direction not in ("forward", "backward", "left", "right"):
         raise ValueError("unknown body-frame micro direction")
     if not .4 <= duration_s <= 1.:
         raise ValueError("micro pulse must be .4..1 seconds")
+    if not math.isfinite(command_speed) or not .12<=command_speed<=.2:raise ValueError("micro input outside previously validated .12..20 envelope")
     from scripts.research.issue46.native_runtime.xvfb_native_reset_stand import locomotion_dock_script
     base = locomotion_dock_script(world_start_xy=[-1.5, -1.5],
         world_start_yaw_rad=0., dock_world_xy=[-1.5, -1.5],
@@ -82,7 +83,7 @@ def build_script(direction, duration_s, joint_limits):
         refine_position_tolerance_m=.15, timeout_s=30.,
         use_cmd_vel_bridge=True, native_pose_feedback=True)
     base = base.split("rclpy.init();n=Dock();registered=False")[0]
-    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits)
+    plan = dict(direction=direction, duration_s=duration_s, joint_limits=joint_limits, command_speed=command_speed)
     return base + "\n" + Path(__file__).read_text().replace("from __future__ import annotations","") + "\nMICRO=" + repr(plan) + "\nrun_probe()\n"
 
 
@@ -316,7 +317,13 @@ def run_probe(smoke_only=False):
         result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         start=n.sample()["pose"];result["start_pose"]=start
         n.await_graph()
-        velocity={"forward":(.2,0.),"backward":(-.2,0.),"left":(0.,.2),"right":(0.,-.2)}[MICRO["direction"]]
+        v=MICRO["command_speed"]
+        velocity={"forward":(v,0.),"backward":(-v,0.),"left":(0.,v),"right":(0.,-v)}[MICRO["direction"]]
+        bounds=n.messages["common"]["speed_status"]
+        requested={"forward":velocity[0],"lateral":velocity[1],"angular":0.}
+        if any(not bounds[k+"_bounds"]["min_value"]<=value<=bounds[k+"_bounds"]["max_value"] for k,value in requested.items()):raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
+        result["command_input_speed_m_s"]=v
+        result["mc_reported_speed_bounds"]=bounds
         with n.lock:n.moving=True
         began=time.monotonic();motion_started=True
         n.events.append(dict(event="NONZERO_BEGIN",t=began))
@@ -344,7 +351,7 @@ def run_probe(smoke_only=False):
         result["pass_result"]=result["post_stop_composite"]["pass"] and progress>=.005 and acquired
         result["failure"]=None if result["pass_result"] else "NO_VERIFIED_SIGNED_MICRO_MOVEMENT_OR_HANDSHAKE"
     except Exception as exc:
-        n.deadline_zero();result["failure"]=str(exc);result["available_state_topics"]=list(n.messages);result["last_unique_receipts"]=n.unique
+        n.deadline_zero();result["abort_native_sample"]=n.latest_row;result["failure"]=str(exc);result["available_state_topics"]=list(n.messages);result["last_unique_receipts"]=n.unique
     finally:
         # Failed readback never suppresses zeros. Native bridge also has an
         # independent 0.20s stale-input timeout. Timer is same-process only.
@@ -361,4 +368,4 @@ def run_probe(smoke_only=False):
                       stop_contract_revision=contract.__doc__)
         Path("/workspace/evidence/native_micro_probe_result.json").write_text(json.dumps(result,indent=2)+"\n")
         n.destroy_node();rclpy.shutdown()
-        print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands")}),flush=True)
+        print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)

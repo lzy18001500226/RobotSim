@@ -694,3 +694,12 @@ a misleading stale-control error. Review time never counts toward lift hold.
 150 mm 瓶保留同样直径与质量、底面不变，离线检查现有固定腿/根位姿下的腰 yaw/pitch 与七轴手臂。源范围诊断明确禁止 runtime handoff。最高受检截面距瓶顶 10 mm 时仍有 2.60 mm 位置误差、0.09127 rad 轴误差，原静态门未通过；没有执行该失败姿态。证据：reviews/issue-46/150mm-source-upper-top-section-20261107T020347Z/。这说明受检姿态不合格，不是全空间不可能的证明。没有修改源关节限位、腰/腿控制器或已审核包持圆。
 
 后续站位小步复用现有 Dock、官方 cmd_vel_bridge 和历史 70a84cd 物理停稳计算。单次 0.2 m/s、0.4–1.0 s、零 yaw 的体坐标脉冲；桥独立 cmd timeout 0.20 s。必须先通过原 composite stop，脉冲后零命令至少 1.05 s，再一次 STAND 请求及完整合格停稳窗口；不通过不重启下一次运动。内部定时器仍是同进程，不能代替独立桥超时或物理停稳。MuJoCo 3.3.7 的 XBODY 原点世界速度已通过零步 API 对照测试，区别于 BODY 的惯性质心速度。新微步能力尚待实际动力学验证。
+
+
+### 新增原生腿速审计：抓取证据与行走限速资格分别报告
+
+微步 episode 20261107T033845Z 已通过原 composite pre-stop、精确 MC PID/节点/QoS 和实际桥输出观察；0.2 m/s 左移启动后约 0.179 s，原生右膝速度 11.941105 rad/s，超过固定源 URDF 11.93808，触发零命令并禁止继续。实际安装 MC robot_model.yaml 的同关节上限为 11.936 rad/s；后续检查取两源较小值，未提高限值。实际输入界限 McCommonState 为 forward [-1,0.8]、lateral [-1,1]，没有暴露 0.2 最低非零值；官方 bridge 的 min_* 是独立参数。
+
+对既有两次 RGB-D 完整流程补做相同行走区间审计：005238Z 右/左膝峰值为 13.095641/13.669924 rad/s；000115Z 为 13.346165/13.946299 rad/s。这些历史运行的抓取承力、无支撑抬升测量仍有效，但当时父 runner 没有原生腿速逐帧门，不能继续描述为已通过此次新增源腿速全链路资格。保留原始记录，不改写历史结果。
+
+下一项不同假设为外部 bridge 的较小 0.12 m/s 输入诊断：保留原 MC、FoundationWalk 配置、模型、力和关节限值，只使用 bridge 已公开的 min_forward/min_lateral 参数防止把小请求强制抬到 0.2。输入先与现场 MC 报告的 bounds 核对。仍为单次 0.6 s、严格停止和零重启；不是 MC policy 调参，也不能先验宣称合格。

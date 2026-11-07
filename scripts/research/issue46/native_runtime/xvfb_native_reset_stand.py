@@ -976,6 +976,7 @@ def main() -> None:
     parser.add_argument("--use-official-cmd-vel-bridge", action="store_true", help="route through the pinned RAICOM cmd_vel_bridge instead of publishing the MC velocity type directly")
     parser.add_argument("--micro-base-probe", choices=("forward","backward","left","right"), help="one native body-frame micro pulse and strict composite stop; no arm approach")
     parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
+    parser.add_argument("--micro-command-speed",type=float,default=.2)
     parser.add_argument("--lateral-probe-mps", type=float, help="one bounded lateral cmd_vel probe in body-frame m/s; requires the official bridge")
     parser.add_argument("--lateral-probe-duration-s", type=float, default=0.60, help="duration for --lateral-probe-mps; no hand or arm command is sent")
     parser.add_argument("--inspect-vr-topic", action="store_true", help="read-only discovery of the delivered VR teleoperation topic type; does not change the MC action")
@@ -990,7 +991,7 @@ def main() -> None:
     if args.micro_base_probe:
         if args.dock_world_xy is not None or args.fixed_reviewed_checkpoint or args.lateral_probe_mps is not None or args.physical_lift_test or args.pause_on_claw_failure:
             raise ValueError("micro capability probe is isolated from dock, checkpoint and grasp")
-        if not args.use_official_cmd_vel_bridge or not args.native_dock_truth_feedback or not args.initial_hands_fully_open or not .4<=args.micro_probe_duration_s<=1.:
+        if not args.use_official_cmd_vel_bridge or not args.native_dock_truth_feedback or not args.initial_hands_fully_open or not .4<=args.micro_probe_duration_s<=1. or not .12<=args.micro_command_speed<=.20:
             raise ValueError("micro probe requires official bridge, native feedback, open hands and .4..1s")
         from scripts.research.issue46.native_runtime.native_micro_stop_contract import verify_mc_fsm_runtime_contract
         verify_mc_fsm_runtime_contract(RUNTIME/"mc/lib")
@@ -1274,6 +1275,8 @@ def main() -> None:
             if len(urdfs)!=1:raise ValueError("unique official OmniPicker source required")
             roots=ET.parse(urdfs[0]).getroot()
             velocity={j.get("name"):float(j.find("limit").get("velocity")) for j in roots.findall("joint") if j.find("limit") is not None and j.find("limit").get("velocity") is not None}
+            runtime_model=RUNTIME/"mc/bin/mc_param/src/robot/lx2501_3_t2d5/robot_model.yaml"
+            vendor_limits={item["name"]:item["limits"] for group in yaml.safe_load(runtime_model.read_text())["joints"] for item in group[1]}
             host_scene=Path((claw_control_overlay or overlay)["generated"]["host_scene"]["path"])
             model=mujoco.MjModel.from_xml_path(str(host_scene))
             names=tuple(side+"_"+suffix+"_joint" for side in ("left","right") for suffix in ("hip_pitch","hip_roll","hip_yaw","knee","ankle_pitch","ankle_roll"))
@@ -1281,10 +1284,10 @@ def main() -> None:
             for name in names:
                 j=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)
                 if j<0 or name not in velocity or not model.jnt_limited[j]:raise ValueError("missing source joint bound:"+name)
-                limits[name]=[*map(float,model.jnt_range[j]),velocity[name]]
-            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits))
+                limits[name]=[*map(float,model.jnt_range[j]),min(velocity[name],vendor_limits[name]["max_velocity"])]
+            pg.write_new_text(output/"native_micro_probe.py",build_script(args.micro_base_probe,args.micro_probe_duration_s,limits,command_speed=args.micro_command_speed))
             pg.write_new_bytes(output/"native_micro_stop_contract.py",Path(native_micro_stop_contract.__file__).read_bytes())
-            result["micro_source_joint_limits"]={"urdf":str(urdfs[0]),"sha256":sha256(urdfs[0]),"revision":revision,"bounds":limits}
+            result["micro_source_joint_limits"]={"urdf":str(urdfs[0]),"sha256":sha256(urdfs[0]),"revision":revision,"bounds":limits,"installed_mc_robot_model":str(runtime_model),"installed_mc_robot_model_sha256":sha256(runtime_model),"velocity_policy":"minimum of pinned URDF and installed native MC model; no limit raised"}
         if args.lateral_probe_mps is not None:
             pg.write_new_text(
                 output / "native_lateral_probe.py",
@@ -1718,7 +1721,7 @@ def main() -> None:
             result["gates"]["RETARGETING_TOPIC_DISCOVERY"] = "PASS" if retargeting_topic.returncode == 0 and "Type:" in retargeting_topic.stdout else "FAIL"
         if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
             bridge_log = output / "official_cmd_vel_bridge.stdout"
-            lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20" if args.micro_base_probe else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
+            lateral_parameter = (" -p max_lateral_velocity:=0.20 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:="+str(args.micro_command_speed)+" -p min_lateral_velocity:="+str(args.micro_command_speed) if args.micro_base_probe else "" if args.lateral_probe_mps is None else " -p max_lateral_velocity:=0.30")
             bridge_command = (
                 environment
                 + "exec python3 /workspace/robotsim/reference/AgiBot-Community/raicom2026-agibot-X2/"
@@ -1738,7 +1741,7 @@ def main() -> None:
             pg.write_new_text(output/"native_micro_probe.stdout",micro.stdout)
             path=output/"native_micro_probe_result.json"
             micro_result=json.loads(path.read_text()) if path.is_file() else {"failure":"CHILD_NO_RESULT","stdout_tail":micro.stdout[-1600:]}
-            result["native_micro_probe"]={"returncode":micro.returncode,"result":{k:v for k,v in micro_result.items() if k not in ("trace","command_log","bridge_commands")}}
+            result["native_micro_probe"]={"returncode":micro.returncode,"result":{k:v for k,v in micro_result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}}
             result["gates"]["NATIVE_MICRO_PRESTOP"]="PASS" if micro_result.get("pre_motion_composite",{}).get("pass") else "FAIL"
             result["gates"]["NATIVE_MICRO_SIGNED_DISPLACEMENT"]="NOT_RUN" if not micro_result.get("nonzero_started") else "PASS" if micro.returncode==0 and micro_result.get("pass_result") else "FAIL"
             result["gates"]["NATIVE_MICRO_COMPOSITE_STOP"]="NOT_RUN" if not micro_result.get("nonzero_started") else "PASS" if micro_result.get("post_stop_composite",{}).get("pass") else "FAIL"
