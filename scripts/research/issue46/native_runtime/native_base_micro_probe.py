@@ -404,8 +404,8 @@ def run_probe(smoke_only=False):
                 if not self.moving:
                     fwd=lat=ang=0.
                 if MICRO.get("carry",{}).get("inplace_centre_hold"):
-                    limit=MICRO["carry"].get("turn_recovery_speed",.12) if MICRO["carry"].get("active_mission_phase")=="TURN" else MICRO["carry"].get("transit_command_speed",.12)
-                    if math.hypot(fwd,lat)>limit+1e-8 or abs(ang)>.10000001:
+                    limit=(0. if MICRO["carry"].get("compact_turn") else MICRO["carry"].get("turn_recovery_speed",.12)) if MICRO["carry"].get("active_mission_phase")=="TURN" else MICRO["carry"].get("transit_command_speed",.12)
+                    if math.hypot(fwd,lat)>limit+1e-8 or abs(ang)>MICRO["carry"].get("angular_command_cap",.1)+1e-8:
                         raise RuntimeError("INPLACE_COMMAND_BOUND")
                     if MICRO["carry"].get("active_mission_phase")=="TURN" and math.hypot(fwd,lat)>.12000001 and (not MICRO["carry"].get("active_centre_recovery") or abs(ang)>1e-9):
                         raise RuntimeError("RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE")
@@ -504,10 +504,10 @@ def run_probe(smoke_only=False):
                         pair={c.get("body1"),c.get("body2")}
                         if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
                             raise RuntimeError("CARRY_OBJECT_EXTERNAL_SUPPORT")
-                if MICRO.get("carry",{}).get("inplace_centre_hold") and self.bridge_commands:
+                if (MICRO.get("carry",{}).get("inplace_centre_hold") or MICRO.get("carry",{}).get("compact_turn")) and self.bridge_commands:
                     command=self.bridge_commands[-1]["raw"]
-                    limit=MICRO["carry"].get("turn_recovery_speed",.12) if MICRO["carry"].get("active_mission_phase")=="TURN" else MICRO["carry"].get("transit_command_speed",.12)
-                    if math.hypot(command["forward_velocity"],command["lateral_velocity"])>limit+1e-8 or abs(command["angular_velocity"])>.10000001:
+                    limit=(0. if MICRO["carry"].get("compact_turn") else MICRO["carry"].get("turn_recovery_speed",.12)) if MICRO["carry"].get("active_mission_phase")=="TURN" else MICRO["carry"].get("transit_command_speed",.12)
+                    if math.hypot(command["forward_velocity"],command["lateral_velocity"])>limit+1e-8 or abs(command["angular_velocity"])>MICRO["carry"].get("angular_command_cap",.1)+1e-8:
                         raise RuntimeError("OBSERVED_BRIDGE_COMMAND_BOUND")
                 p=native_pose(r)
                 limit=current_carry_transit_speed_limit("/workspace/evidence",r,MICRO["carry"]["pid"]) if MICRO.get("carry",{}).get("transit_policy_050") else .20
@@ -820,9 +820,11 @@ def inplace_centre_command(pose, origin):
     return c*vx+si*vy,-si*vx+c*vy
 
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12):
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
-    if angular_command_cap not in (.075,.10):raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
+    if compact_turn and not (straight_retreat_turn and transit_policy_050 and not inplace_centre_hold):raise ValueError('compact turn requires pure-yaw bounded carry profile')
+    if compact_turn:angular_command_cap=.30
+    if angular_command_cap not in (.075,.10,.30) or angular_command_cap==.30 and not compact_turn:raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
     if away_1m and (not transit_policy_050 or (native_step and not straight_retreat_turn) or reverse_moving_arc):raise ValueError("away1m requires distinct bounded FoundationWalk profile")
@@ -838,7 +840,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -1032,8 +1034,9 @@ def run_carry_navigation(n,contract):
                         velocity=max(0.,sum((x-mx)*(y-my) for x,y in zip(xs,ys))/var) if var else 0.
                     predicted=progress+velocity*cfg.get("retreat_brake_delay_s",0.)
                     mission["retreat_predicted_settled_progress_m"]=predicted
-                    if progress<.30 and not (progress>=.03 and predicted>=.30):
-                        output=SimpleNamespace(state=NavState.DRIVE,distance_m=.30-progress,
+                    retreat_goal=.50 if cfg.get("compact_turn") else .30
+                    if progress<retreat_goal and not (progress>=.03 and predicted>=retreat_goal):
+                        output=SimpleNamespace(state=NavState.DRIVE,distance_m=retreat_goal-progress,
                                                yaw_error_rad=error,linear_x=-.12,
                                                angular_z=(0. if abs(error)<=.02 else math.copysign(cfg["angular_command_cap"],error)))
                     else:
@@ -1101,6 +1104,7 @@ def run_carry_navigation(n,contract):
                     mission["measured_yaw_rate_rad_s"]=rate
                     mission["predicted_post_zero_yaw_rad"]=math.copysign(reserve,rate)
                     mission["turn_max_center_excursion_m"]=max(mission.get("turn_max_center_excursion_m",0.),math.hypot(p["x"]-mission.get("turn_origin_pose",start)["x"],p["y"]-mission.get("turn_origin_pose",start)["y"]))
+                    if cfg.get("compact_turn") and mission["turn_max_center_excursion_m"]>.30:raise RuntimeError("COMPACT_TURN_RADIUS_300MM")
                     centre_origin=mission.get("turn_origin_pose",start)
                     centre_error=math.hypot(p["x"]-centre_origin["x"],p["y"]-centre_origin["y"])
                     if cfg.get("inplace_centre_hold"):
@@ -1140,7 +1144,9 @@ def run_carry_navigation(n,contract):
                             result["source_and_motion_mode_observed"]=acquired
                             result["forward_one_metre"]="NOT_RUN"
                             result["delivery_table_placement"]="NOT_RUN"
-                            if drift>.05:raise RuntimeError("INPLACE_TURN_CENTER_TRANSLATION:"+str(drift))
+                            bound=.20 if cfg.get("compact_turn") else .05
+                            mission["final_centre_tolerance_m"]=bound
+                            if drift>bound:raise RuntimeError("INPLACE_TURN_CENTER_TRANSLATION:"+str(drift))
                             result["retreat_turn_prefix_pass"]=True
                             result["pass_result"]=True;result["failure"]=None
                             return result

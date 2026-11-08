@@ -875,7 +875,8 @@ class InplaceCentreHoldTests(unittest.TestCase):
         self.assertIn('LATERAL_COMMAND_OUTSIDE_INPLACE_TURN',code)
         self.assertIn('OBSERVED_BRIDGE_COMMAND_BOUND',code)
         self.assertIn('reserve=min(.75',code)
-        self.assertIn('if drift>.05:raise RuntimeError',code)
+        self.assertIn('bound=.20 if cfg.get("compact_turn") else .05',code)
+        self.assertIn('if drift>bound:raise RuntimeError',code)
         with self.assertRaises(ValueError):
             m.build_carry_route_script([0.,0.],{},[],carry_pid=42,inplace_centre_hold=True)
 
@@ -962,3 +963,14 @@ class GlobalImpedanceComparisonTests(unittest.TestCase):
             self.assertEqual(parent.read_bytes(),before)
             self.assertTrue(generated['global_impratio_comparison']['physical_arrays_identical'])
             self.assertIn('approved_local_pad_friction_reference',generated)
+
+class CompactTurnTests(unittest.TestCase):
+    def test_compact_profile_keeps_actual_pure_yaw_and_bounded_measured_radius(self):
+        code=m.build_carry_route_script(None,{},['pelvis'],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        compile(code,'compact_turn','exec')
+        self.assertIn("'angular_command_cap': 0.3",code)
+        self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
+        self.assertIn('bound=.20 if cfg.get("compact_turn") else .05',code)
+        self.assertIn('0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN"',code)
+        self.assertIn('retreat_goal=.50 if cfg.get("compact_turn") else .30',code)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,compact_turn=True)

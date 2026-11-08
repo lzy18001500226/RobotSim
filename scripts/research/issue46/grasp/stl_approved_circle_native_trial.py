@@ -62,6 +62,7 @@ def main():
     p.add_argument("--carry-retention-only",action="store_true",help="user-approved empty-bottle carry: record wobble/slip, stop on actual loss/drop")
     p.add_argument("--approved-two-table-layout",action="store_true",help="reviewed scene: delivery90deg/Y1.6, pickup and fixed stance advanced10cm")
     p.add_argument("--carry-inplace-centre-hold",action="store_true")
+    p.add_argument("--carry-compact-turn",action="store_true",help="SIMULATION_ONLY .30rad/s pure yaw; .30m active radius / .20m final centre bound")
     p.add_argument("--carry-turn-recovery-speed",type=float,choices=(.12,.20),default=.12)
     p.add_argument("--carry-transit-command-speed",type=float,choices=(.12,.20),default=.12,help="explicit SIMULATION_ONLY effective SDK020 transit; no MC/model changes")
     p.add_argument("--carry-turn-brake-delay-s",type=float,default=0.)
@@ -94,6 +95,7 @@ def main():
     args=p.parse_args()
     if args.right_claw_kp is not None and (not args.physical_lift_test or (not args.carry_away_1m and args.carry_goal_world_xy is None)):
         raise ValueError("right gain comparison requires the instrumented physical-lift/carry path")
+    if args.carry_compact_turn and not (args.carry_straight_retreat_turn and args.carry_transit_speed_policy_050 and not args.carry_inplace_centre_hold):raise ValueError("compact pure-turn scope")
     if args.carry_transit_command_speed>.12 and not (args.carry_straight_retreat_turn and args.carry_transit_speed_policy_050):
         raise ValueError("effective020 transit requires explicit bounded carry task")
     if (args.carry_inplace_centre_hold or args.carry_turn_recovery_speed>.12 or args.carry_turn_brake_delay_s) and not args.carry_straight_retreat_turn:
@@ -307,6 +309,7 @@ def main():
         if args.carry_retention_only:argv.append('--carry-retention-only')
         if args.carry_straight_retreat_turn:argv.append('--carry-straight-retreat-turn')
         if args.carry_inplace_centre_hold:argv.append('--carry-inplace-centre-hold')
+        if args.carry_compact_turn:argv.append('--carry-compact-turn')
         if args.carry_transit_command_speed!=.12:argv.extend(['--carry-transit-command-speed',str(args.carry_transit_command_speed)])
         if args.carry_turn_recovery_speed!=.12:argv.extend(['--carry-turn-recovery-speed',str(args.carry_turn_recovery_speed)])
         if args.carry_turn_brake_delay_s:argv.extend(['--carry-turn-brake-delay-s',str(args.carry_turn_brake_delay_s)])
