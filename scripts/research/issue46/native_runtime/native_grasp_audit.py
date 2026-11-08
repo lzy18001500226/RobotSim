@@ -392,10 +392,10 @@ def read_complete_native_rows(path):
     return list(iter_complete_native_rows(path))
 
 
-def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns):
+def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns, transit_policy=None):
     """Independent whole recorded carry audit, including skipped callback frames."""
     import math
-    from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault,carry_transit_speed_limit
     generation=None;previous=None;first_stamp=None;count=0;max_root=0.;max_ratio=(0.,"")
     allowed=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")]
     for row in rows:
@@ -410,7 +410,8 @@ def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns):
             if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
                 return {"pass":False,"failure":"CARRY_OBJECT_EXTERNAL_SUPPORT","source_host_ns":row["host_monotonic_ns"]}
         pose=native_pose(row)
-        fault=physical_fault(row,pose,limits,robot_bodies=robot_bodies,allowed_contact_pairs=allowed)
+        limit=carry_transit_speed_limit(transit_policy,row["host_monotonic_ns"],row["generation"],transit_policy.get("owner_pid") if transit_policy else None)
+        fault=physical_fault(row,pose,limits,robot_bodies=robot_bodies,allowed_contact_pairs=allowed,planar_speed_limit=limit)
         if fault:return {"pass":False,"failure":fault,"source_host_ns":row["host_monotonic_ns"],"source_sim_time_s":row["sim_time_s"]}
         max_root=max(max_root,math.hypot(pose["vx"],pose["vy"]))
         for name,bounds in limits.items():

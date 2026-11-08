@@ -1183,9 +1183,9 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         raise RuntimeError("CARRY_HANDOFF_UNQUALIFIED")
     result["carry_ready"]=ready
     result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
-    result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.10 if args.carry_sdk_minimum_turn else .075,'root_cap_m_s':.20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
+    result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.10 if args.carry_sdk_minimum_turn else .075,'root_cap_m_s':.20,'active_transit_and_bounded_braking_root_cap_m_s':.50 if getattr(args,'carry_transit_speed_policy_050',False) else .20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
     limits=retract["source_motion_limits"]
-    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode))
+    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False)))
     controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
     pg.write_new_bytes(output/"point_goal_controller.py",controller.read_bytes())
     if not (output/"native_micro_stop_contract.py").exists():
@@ -1213,8 +1213,10 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     nav_path=output/"native_carry_route_result.json"
     nav=json.loads(nav_path.read_text()) if nav_path.exists() else {"pass_result":False,"failure":"CARRY_ROUTE_NO_RESULT","stdout_tail":route.stdout[-1600:]}
     result["carry_navigation"]={k:v for k,v in nav.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}
-    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
+    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns(),transit_policy=nav.get("transit_policy_record") if getattr(args,"carry_transit_speed_policy_050",False) else None)
     result["carry_native_motion_audit"]=recorded
+    if getattr(args,"carry_transit_speed_policy_050",False):
+        result["carry_native_strict020_diagnostic"]=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
     if not recorded["pass"]:
         nav["pass_result"]=False;nav.setdefault("failure","RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure")))
         result["carry_navigation"]["recorded_native_failure"]=recorded.get("failure")
@@ -1295,6 +1297,7 @@ def main() -> None:
     parser.add_argument("--carry-sdk-minimum-turn",action="store_true")
     parser.add_argument("--carry-native-action-smoothing",action="store_true")
     parser.add_argument("--carry-native-step-mode",action="store_true")
+    parser.add_argument("--carry-transit-speed-policy-050",action="store_true",help="approved SIMULATION_ONLY: phase/PID/generation-bound .50 root-speed diagnostic; standing remains .20")
     parser.add_argument("--micro-base-probe", choices=("forward","backward","left","right"), help="one native body-frame micro pulse and strict composite stop; no arm approach")
     parser.add_argument("--micro-probe-duration-s",type=float,default=.6)
     parser.add_argument("--micro-command-speed",type=float,default=.2)
@@ -1333,6 +1336,7 @@ def main() -> None:
 
     if args.observe_native_arm_policy and (not args.micro_base_probe or not args.capture_mc_rl_debug or args.native_arm_policy_relay or not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher):
         raise ValueError("arm policy observation requires isolated debug capture, no actuator relay")
+    if args.carry_transit_speed_policy_050 and not (args.carry_goal_world_xy is not None and args.carry_native_step_mode and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated native STEP and approved local contact profile")
     if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
     if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires carry route')
     if args.capture_mc_rl_debug and not (args.micro_base_probe or args.carry_goal_world_xy is not None):
@@ -2339,6 +2343,7 @@ def main() -> None:
                                 if args.carry_goal_world_xy is not None:
                                     replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+50.
                                     replan_record['lift_preflight']['retract_preflight']['carry_grip_force_margin']=args.carry_grip_force_margin
+                                    replan_record['lift_preflight']['retract_preflight']['carry_transit_policy_050']=args.carry_transit_speed_policy_050
                             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")

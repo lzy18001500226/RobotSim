@@ -19,7 +19,7 @@ class CarryNavigationTests(unittest.TestCase):
     def test_sdk_turn_profile_is_explicit_and_retains_physical_speed_limit(self):
         code=m.build_carry_route_script([-.45,1.],{},['pelvis'],carry_pid=19,angular_command_cap=.1)
         self.assertIn("'angular_command_cap': 0.1",code)
-        self.assertIn('> .20',code)
+        self.assertIn('planar_speed_limit=.20',code)
         with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,angular_command_cap=.3)
     def test_real_debug_command_duration_is_interpolated_not_literal_code(self):
         import shlex
@@ -83,7 +83,7 @@ class CarryNavigationTests(unittest.TestCase):
         pose["vx"]=.201
         self.assertEqual(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"},allowed_contact_pairs=[["R_hand_narrow3_Link","test_cylinder"]]),"PLANAR_SPEED")
 class CarryRouteControlFlowTests(unittest.TestCase):
-    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False):
+    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False, transit_policy_050=False):
         import contextlib,io,json,sys,threading
         from types import SimpleNamespace
         from unittest import mock
@@ -92,7 +92,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
         class Node:
             def __init__(self):
                 self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None
-                self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[];self.latest_row={}
+                self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[];self.latest_row={"generation":1}
                 self.messages={k:{} for k in ("common","imu","leg_state","leg_command")};self.readbacks={"get_mode":(10.,{})};self.x=0.;self.once=False;self.stands=0;self.current_mode="STAND_DEFAULT"
             def start_feedback(self):pass
             def stop_feedback(self):pass
@@ -128,7 +128,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                 if immediate_watchdog:self.callback()
             def cancel(self):pass
         n=Node();written=[]
-        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[.3,0.],"timeout_s":5.,"motion_mode":"LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(m,"write_durable_milestone",lambda path,value:written.append(json.dumps(value))),contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[.3,0.],"timeout_s":5.,"pid":19,"transit_policy_050":transit_policy_050,"motion_mode":"LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(m,"write_durable_milestone",lambda path,value:written.append(json.dumps(value))),contextlib.redirect_stdout(io.StringIO()):
             m.run_carry_navigation(n,SimpleNamespace())
         return json.loads(written[-1]),n
     def test_goal_stop_uses_zero_then_stand_then_independent_observation(self):
@@ -363,5 +363,108 @@ class CarryStopEvidenceTests(unittest.TestCase):
         self.assertEqual(result["stop_evidence_error"],"bad diagnostic")
         self.assertFalse(result["pass_result"])
         self.assertFalse(any(x["forward"] or x["angular"] for x in n.command_log))
+
+
+
+
+class CarryTransit050Tests(unittest.TestCase):
+    def permit(self):
+        return dict(schema="robotsim.carry-transit050.v1",owner_pid=42,route_pid=12,route_start_ticks=123,
+                    generation=1,created_ns=10_000_000_000,command_deadline_ns=100_000_000_000,
+                    absolute_deadline_ns=115_000_000_000,braking_ns=None,revoked_ns=None)
+    def test_only_approved_phase_has_higher_speed_limit(self):
+        p=self.permit()
+        self.assertEqual(m.carry_transit_speed_limit(None,11_000_000_000,1,42),.20)
+        for stamp,expected in ((9_999_999_999,.20),(11_000_000_000,.50),(100_000_000_001,.20)):
+            self.assertEqual(m.carry_transit_speed_limit(p,stamp,1,42),expected)
+        p["braking_ns"]=20_000_000_000
+        self.assertEqual(m.carry_transit_speed_limit(p,34_999_999_999,1,42),.50)
+        self.assertEqual(m.carry_transit_speed_limit(p,35_000_000_001,1,42),.20)
+        p["revoked_ns"]=23_000_000_000
+        self.assertEqual(m.carry_transit_speed_limit(p,24_000_000_000,1,42),.20)
+        self.assertEqual(m.carry_transit_speed_limit(p,22_000_000_000,1,42),.50)
+    def test_identity_generation_and_deadline_are_fail_closed(self):
+        p=self.permit()
+        for generation,pid in ((2,42),(1,99)):
+            with self.assertRaises(ValueError):m.carry_transit_speed_limit(p,11_000_000_000,generation,pid)
+        p["command_deadline_ns"]+=1;p["absolute_deadline_ns"]+=1
+        with self.assertRaises(ValueError):m.carry_transit_speed_limit(p,11_000_000_000,1,42)
+    def test_default_physical_and_all_other_safety_guards_remain(self):
+        row=dict(joints={});pose=dict(z=.65,roll=0.,pitch=0.,vx=.3,vy=0.)
+        self.assertEqual(m.physical_fault(row,pose,{}),"PLANAR_SPEED")
+        self.assertIsNone(m.physical_fault(row,pose,{},planar_speed_limit=.50))
+        pose["vx"]=.501
+        self.assertEqual(m.physical_fault(row,pose,{},planar_speed_limit=.50),"PLANAR_SPEED")
+        pose["vx"]=.3;pose["z"]=.4
+        self.assertEqual(m.physical_fault(row,pose,{},planar_speed_limit=.50),"POSTURE")
+        pose["z"]=.65;row["joints"]={"knee":dict(q=0.,qvel=2.,max_abs_qvel_since_previous_sample=2.)}
+        self.assertEqual(m.physical_fault(row,pose,{"knee":(-1.,1.,1.)},planar_speed_limit=.50),"SOURCE_JOINT_SPEED:knee")
+    def test_policy_flag_cannot_enable_other_motion_modes(self):
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,transit_policy_050=True)
+        code=m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,native_step=True,transit_policy_050=True)
+        compile(code,"transit050","exec")
+        self.assertIn("'transit_policy_050': True",code)
+    def test_permit_is_one_shot_and_braking_cannot_extend_it(self):
+        import tempfile,json
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as folder,mock.patch.object(m.time,"monotonic_ns",return_value=10_000_000_000):
+            cfg=dict(pid=42,timeout_s=90.)
+            p=m.carry_transit_phase(None,"TRANSIT",cfg,{"generation":1},folder)
+            with self.assertRaises(RuntimeError):m.carry_transit_phase(None,"TRANSIT",cfg,{"generation":1},folder)
+            with mock.patch.object(m.time,"monotonic_ns",return_value=20_000_000_000):
+                p=m.carry_transit_phase(p,"BRAKING",cfg,{},folder)
+            with mock.patch.object(m.time,"monotonic_ns",return_value=25_000_000_000):
+                p=m.carry_transit_phase(p,"BRAKING",cfg,{},folder)
+                self.assertEqual(p["braking_ns"],20_000_000_000)
+                p=m.carry_transit_phase(p,"REVOKED",cfg,{},folder)
+            self.assertEqual(m.carry_transit_speed_limit(p,26_000_000_000,1,42),.20)
+    def test_live_process_verification_rejects_non_route_python(self):
+        import tempfile,json,os
+        from unittest import mock
+        p=self.permit();p.update(route_pid=os.getpid(),route_start_ticks=int(Path("/proc/self/stat").read_text().rsplit(") ",1)[1].split()[19]))
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder)/"carry_transit_permit.json").write_text(json.dumps(p))
+            with mock.patch.object(m.time,"monotonic_ns",return_value=11_000_000_000):
+                with self.assertRaisesRegex(ValueError,"PROCESS_IDENTITY"):
+                    m.current_carry_transit_speed_limit(folder,{"generation":1,"host_monotonic_ns":11_000_000_000},42)
+
+
+
+
+
+    def test_whole_trace_audit_keeps_pre_and_post_transit_strict(self):
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import native_grasp_audit as audit
+        p=self.permit()
+        def row(stamp,speed):
+            return dict(host_monotonic_ns=stamp,generation=1,engine_version=337,sim_time_s=stamp/1e9,
+                        contacts=[],joints={},speed=speed)
+        with mock.patch.object(m,"native_pose",side_effect=lambda r:dict(vx=r["speed"],vy=0.,z=.65,roll=0.,pitch=0.)):
+            a=audit.evaluate_carry_motion([row(11_000_000_000,.3),row(11_020_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p)
+            self.assertTrue(a["pass"])
+            b=audit.evaluate_carry_motion([row(9_900_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p)
+            self.assertFalse(b["pass"]);self.assertEqual(b["failure"],"PLANAR_SPEED")
+            p["revoked_ns"]=11_010_000_000
+            c=audit.evaluate_carry_motion([row(11_000_000_000,.3),row(11_020_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p)
+            self.assertFalse(c["pass"]);self.assertEqual(c["failure"],"PLANAR_SPEED")
+
+
+
+
+    def test_actual_route_invocation_propagates_and_revokes_policy(self):
+        from unittest import mock
+        phases=[]
+        def phase(record,name,cfg,row,evidence="/workspace/evidence"):
+            phases.append(name)
+            self.assertEqual(cfg["pid"],19)
+            self.assertEqual(row["generation"],1)
+            return {"fixture_phase":name}
+        with mock.patch.object(m,"carry_transit_phase",side_effect=phase):
+            result,n=CarryRouteControlFlowTests().run_route(native_step=True,transit_policy_050=True)
+        self.assertTrue(result["pass_result"])
+        self.assertEqual(phases,["TRANSIT","BRAKING","BRAKING","REVOKED"])
+        self.assertEqual(result["transit_policy_record"],{"fixture_phase":"REVOKED"})
+        self.assertEqual(n.stands,1)
 
 if __name__=="__main__":unittest.main()

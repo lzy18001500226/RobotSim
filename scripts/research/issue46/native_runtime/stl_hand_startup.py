@@ -1226,7 +1226,7 @@ def _with_postlift_retract(script, lift_contract):
         return script
     import inspect
     from scripts.research.issue46.native_runtime.native_grasp_audit import evaluate_unsupported_lift
-    from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault,carry_transit_speed_limit,current_carry_transit_speed_limit
     retract=lift_contract["retract_preflight"];v=retract.get("offset_world_m",[])
     if retract.get("pass_result") is not True or len(v)!=3 or any(not math.isfinite(float(x)) for x in v) or math.sqrt(sum(float(x)**2 for x in v))>.25 or not -.02<=v[2]<=.05 or (retract.get("duration_s"),retract.get("hold_s"))!=(4.,1.5):
         raise ValueError("retract preflight or bounded profile invalid")
@@ -1236,9 +1236,9 @@ def _with_postlift_retract(script, lift_contract):
         nonlocal script
         if script.count(old)!=count:raise ValueError("retract script extension anchor changed:"+old[:50])
         script=script.replace(old,new)
-    replace("class Plan(Node):",inspect.getsource(evaluate_unsupported_lift)+"\n"+inspect.getsource(native_pose)+"\n"+inspect.getsource(physical_fault)+"\nclass Plan(Node):")
+    replace("class Plan(Node):",inspect.getsource(evaluate_unsupported_lift)+"\n"+inspect.getsource(native_pose)+"\n"+inspect.getsource(physical_fault)+"\n"+inspect.getsource(carry_transit_speed_limit)+"\n"+inspect.getsource(current_carry_transit_speed_limit)+"\nclass Plan(Node):")
     replace("self.closing_started=False;self.close_publish_count=0","self.closing_started=False;self.close_publish_count=0;self.native_lift_rows=[]")
-    replace("  values={}\n","  fault=physical_fault(row,native_pose(row),LIFT_CONTRACT['retract_preflight']['source_motion_limits'])\n  if fault:raise RuntimeError('POST_LIFT_SOURCE_SAFETY:'+fault)\n  values={}\n")
+    replace("  values={}\n","  limit=current_carry_transit_speed_limit('/workspace/evidence',row,os.getpid()) if LIFT_CONTRACT['retract_preflight'].get('carry_transit_policy_050') and (getattr(self,'lift_phase',None) or {}).get('phase')=='CARRY_HOLD' else .20\n  fault=physical_fault(row,native_pose(row),LIFT_CONTRACT['retract_preflight']['source_motion_limits'],planar_speed_limit=limit)\n  if fault:raise RuntimeError('POST_LIFT_SOURCE_SAFETY:'+fault)\n  values={}\n")
     replace("  self.arm.update(values);self.native_row=row;","  if not self.native_lift_rows or stamp>self.native_lift_rows[-1]['host_monotonic_ns']:self.native_lift_rows=(self.native_lift_rows+[row])[-140:]\n  self.arm.update(values);self.native_row=row;")
     replace("   if stage in ('LIFT_PROBE','LIFT'):\n",
 """   if stage=='RETRACT':

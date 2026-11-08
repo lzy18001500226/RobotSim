@@ -97,6 +97,25 @@ identification or hardware approval. Keep the original successes and failures.
 This specific approval is separate from C.1 and does not authorize other contact
 parameter changes or promotion/merge.
 
+## C.3 Case authorization: bounded carry-transit root-speed diagnostic
+
+**Direct maintainer approval, 2026-11-08.** The human approved the separate
+SIMULATION_ONLY strategy: instantaneous pelvis planar speed <=0.50m/s only
+during navigation and bounded braking. Command caps remain <=0.12m/s forward
+and <=0.10rad/s angular; startup/standing retain the0.20m/s gate. All source
+joint limits/speeds, posture, grip, collision, freshness, watchdog and complete
+physical/controller-target stop gates remain unchanged.
+
+The explicit native STEP carry profile is PID/start-token and Reset-generation
+bound. One nonzero interval is capped at90s; braking permission lasts at most15s
+and cannot extend the original absolute deadline. Revocation is irreversible;
+this permit cannot authorize rearm. Whole-record audits apply the same phase
+bounds. Missing, stale or invalid identity cannot enable the higher limit.
+No robot geometry, MC/policy/gains, joint limits or hardware changes are approved.
+
+This is a separately reported simulation diagnostic, not vendor acceptance.
+It does not reclassify prior strict0.20 failures as passes.
+
 ## D. Stop when source semantics are missing
 
 If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.

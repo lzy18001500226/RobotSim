@@ -44,10 +44,11 @@ def native_pose(row):
                 frame_id="native_scene_world", child_frame_id="pelvis_origin")
 
 
-def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None):
+def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None,planar_speed_limit=.20):
+    if planar_speed_limit not in (.20,.50):raise ValueError("unsupported explicit physical speed profile")
     if pose["z"] < .45 or math.hypot(pose["roll"], pose["pitch"]) > math.radians(15):
         return "POSTURE"
-    if math.hypot(pose["vx"], pose["vy"]) > .20:
+    if math.hypot(pose["vx"], pose["vy"]) > planar_speed_limit:
         return "PLANAR_SPEED"
     for name, (lo, hi, speed) in limits.items():
         j = row["joints"][name]
@@ -83,6 +84,78 @@ def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=No
         if abs((pose["yaw"]-start["yaw"]+math.pi)%(2*math.pi)-math.pi) > .12:
             return "MICRO_YAW_DRIFT"
     return None
+
+
+def carry_transit_speed_limit(record, stamp_ns, generation, owner_pid):
+    """Approved phase-only limit; timestamps outside the permit retain .20."""
+    if record is None:return .20
+    if (record.get("schema")!="robotsim.carry-transit050.v1" or record.get("owner_pid")!=owner_pid
+            or record.get("generation")!=generation):
+        raise ValueError("CARRY_TRANSIT_PERMIT_IDENTITY")
+    names=("created_ns","command_deadline_ns","absolute_deadline_ns","route_pid","route_start_ticks")
+    if any(type(record.get(k)) is not int or record[k]<=0 for k in names):
+        raise ValueError("CARRY_TRANSIT_PERMIT_FIELDS")
+    created,command,end=(record[k] for k in names[:3])
+    brake,revoked=record.get("braking_ns"),record.get("revoked_ns")
+    if (not 5_000_000_000<=command-created<=90_000_000_000 or end!=command+15_000_000_000
+            or brake is not None and (type(brake) is not int or not created<=brake<=end)
+            or revoked is not None and (type(revoked) is not int or revoked<created
+                                       or brake is not None and revoked<brake)):
+        raise ValueError("CARRY_TRANSIT_PERMIT_BOUND")
+    if stamp_ns<created or revoked is not None and stamp_ns>=revoked:return .20
+    expiry=min(end,brake+15_000_000_000) if brake is not None and stamp_ns>=brake else command
+    return .50 if stamp_ns<=expiry else .20
+
+
+def current_carry_transit_speed_limit(evidence, row, owner_pid):
+    """Only the live PID/start-token verified navigation process can permit .50."""
+    import os,json,time
+    from pathlib import Path
+    path=Path(evidence)/"carry_transit_permit.json"
+    if not path.exists():return .20
+    record=json.loads(path.read_text())
+    limit=min(carry_transit_speed_limit(record,time.monotonic_ns(),row["generation"],owner_pid),
+              carry_transit_speed_limit(record,row["host_monotonic_ns"],row["generation"],owner_pid))
+    if limit==.20:return limit
+    proc=Path("/proc")/str(record["route_pid"])
+    argv=(proc/"cmdline").read_bytes().split(bytes([0]))
+    ticks=int((proc/"stat").read_text().rsplit(") ",1)[1].split()[19])
+    if (b"/workspace/evidence/native_carry_route.py" not in argv
+            or proc.stat().st_uid!=os.getuid() or ticks!=record["route_start_ticks"]):
+        raise ValueError("CARRY_TRANSIT_ROUTE_PROCESS_IDENTITY")
+    return limit
+
+
+def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evidence"):
+    """One permit, one bounded braking interval, and irreversible revocation."""
+    import os,json,time
+    from pathlib import Path
+    path=Path(evidence)/"carry_transit_permit.json";now=time.monotonic_ns()
+    if phase=="TRANSIT":
+        if record is not None or path.exists():raise RuntimeError("CARRY_TRANSIT_REARM_FORBIDDEN")
+        seconds=float(cfg["timeout_s"])
+        if not 5.<=seconds<=90.:raise ValueError("CARRY_TRANSIT_TIMEOUT")
+        record=dict(schema="robotsim.carry-transit050.v1",owner_pid=cfg["pid"],
+                    route_pid=os.getpid(),route_start_ticks=int(Path("/proc/self/stat").read_text().rsplit(") ",1)[1].split()[19]),
+                    generation=native_row["generation"],created_ns=now,
+                    command_deadline_ns=now+int(seconds*1e9),absolute_deadline_ns=now+int(seconds*1e9)+15_000_000_000,
+                    braking_ns=None,revoked_ns=None)
+    elif record is None:return None
+    else:
+        record=dict(record)
+        if phase=="BRAKING":
+            if record["revoked_ns"] is not None or record["braking_ns"] is not None:return record
+            record["braking_ns"]=now
+        elif phase=="REVOKED":
+            if record["revoked_ns"] is not None:return record
+            record["revoked_ns"]=now
+        else:raise ValueError("CARRY_TRANSIT_PHASE")
+    carry_transit_speed_limit(record,now,record["generation"],cfg["pid"])
+    temporary=path.with_name(path.name+".committing")
+    with temporary.open("x") as f:
+        json.dump(record,f);f.flush();os.fsync(f.fileno())
+    os.replace(temporary,path)
+    return record
 
 
 def prepare_reviewed_rl_debug_capture(output,runtime):
@@ -403,7 +476,8 @@ def run_probe(smoke_only=False):
                         if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
                             raise RuntimeError("CARRY_OBJECT_EXTERNAL_SUPPORT")
                 p=native_pose(r)
-                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"))
+                limit=current_carry_transit_speed_limit("/workspace/evidence",r,MICRO["carry"]["pid"]) if MICRO.get("carry",{}).get("transit_policy_050") else .20
+                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit)
                 if fault: raise RuntimeError(fault)
                 imu=self.messages["imu"]
                 q=imu["orientation"]
@@ -669,14 +743,15 @@ def run_probe(smoke_only=False):
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False):
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if angular_command_cap not in (.075,.10):raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
+    if transit_policy_050 and not native_step:raise ValueError("TRANSIT050 requires isolated native STEP carry")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -750,7 +825,8 @@ def run_carry_navigation(n,contract):
     from point_goal_controller import PointGoalController,ControllerConfig,Pose2D,Goal2D,NavState
     cfg=MICRO["carry"];result=dict(classification="SIMULATION_ONLY_NATIVE_LOCOMOTION_STEP_CARRY" if cfg.get("motion_mode")=="LOCOMOTION_STEP" else "SIMULATION_ONLY_FETCH_CARRY_ROUTE",pass_result=False,
         goal_xy_m=cfg["goal_xy_m"],zero_receipt_ack="UNAVAILABLE",clock_recoveries=[],route_samples=[])
-    watchdog=None;began=None;baseline=None
+    if cfg.get("transit_policy_050"):result["classification"]="SIMULATION_ONLY_NATIVE_STEP_CARRY_TRANSIT_050"
+    watchdog=None;began=None;baseline=None;transit_permit=None
     try:
         n.start_feedback();until=time.monotonic()+5.
         while time.monotonic()<until:
@@ -775,6 +851,7 @@ def run_carry_navigation(n,contract):
         controller=PointGoalController(ControllerConfig(xy_tolerance_m=.15,yaw_tolerance_rad=.12,max_forward_mps=.12,max_angular_rps=cfg.get("angular_command_cap",.075),k_angular=.8,goal_timeout_s=cfg["timeout_s"]))
         target=Goal2D(*goal,bearing,"native_scene_world")
         began=time.monotonic();until=began+cfg["timeout_s"];last_graph=began;acquired=False;activation_started=began;progress_state=None;progress_best=None;progress_at=began
+        if cfg.get("transit_policy_050"):transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
         with n.lock:n.moving=True
         watchdog=threading.Timer(cfg["timeout_s"],n.deadline_zero);watchdog.daemon=True;watchdog.start()
         while time.monotonic()<until:
@@ -835,6 +912,7 @@ def run_carry_navigation(n,contract):
             if tick-last_graph>=1.:n.graph();last_graph=tick
             time.sleep(max(0.,tick+.02-time.monotonic()))
         n.deadline_zero();n.stop_started=True
+        transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
         if watchdog:watchdog.cancel()
         n.observe(1.05,baseline=baseline);n.stand_once()
         result["post_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
@@ -849,6 +927,8 @@ def run_carry_navigation(n,contract):
         n.deadline_zero();result["failure"]=str(exc);result["abort_native_sample"]=n.latest_row
     finally:
         n.deadline_zero()
+        try:transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+        except Exception as exc:result["transit_policy_error"]=str(exc);result["pass_result"]=False
         if watchdog:watchdog.cancel()
         end=time.monotonic()+1.05
         while time.monotonic()<end:
@@ -856,6 +936,9 @@ def run_carry_navigation(n,contract):
             try:n.pump()
             except Exception:pass
             time.sleep(.015)
+        try:transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
+        except Exception as exc:result["transit_policy_error"]=str(exc);result["pass_result"]=False
+        result["transit_policy_record"]=transit_permit
         try:n.stop_feedback()
         except Exception as exc:result["feedback_cleanup_failure"]=str(exc);result["pass_result"]=False
         result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace)
