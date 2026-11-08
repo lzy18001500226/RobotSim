@@ -18,6 +18,28 @@ from scripts.research.issue46.native_runtime import xvfb_native_reset_stand as n
 from scripts.agent import path_governance as pg
 
 
+
+def configure_native_background_x11(argv, manifest_path, fixed_checkpoint):
+    """Existing Xvfb backend, same native simulator/physics, no visible WM."""
+    import hashlib
+    manifest_path=Path(manifest_path).resolve()
+    if not fixed_checkpoint:raise ValueError("background X11 requires verified episode-boundary initialization")
+    tools=manifest_path.parent;record=json.loads(manifest_path.read_text())
+    for relative,key in (("root/usr/bin/Xvfb","xvfb_sha256"),("root/usr/bin/xkbcomp","xkbcomp_sha256")):
+        source=tools/relative
+        if source.is_symlink() or hashlib.sha256(source.read_bytes()).hexdigest()!=record[key]:
+            raise ValueError("background X11 tool provenance:"+relative)
+    for original,digest in record["sources"].items():
+        target=tools/"libs"/Path(original).name
+        if target.is_symlink() or hashlib.sha256(target.read_bytes()).hexdigest()!=digest:
+            raise ValueError("background X11 library provenance")
+    result=list(argv)
+    if "--interactive-x11-display" not in result:raise ValueError("expected explicit original X11 configuration")
+    index=result.index("--interactive-x11-display");del result[index:index+2]
+    result.extend(["--xvfb-root",str(tools/"root"),"--xvfb-libs",str(tools/"libs"),"--xkb-root","/usr/share/X11/xkb"])
+    return result
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline",type=Path,required=True)
@@ -57,6 +79,7 @@ def main():
     p.add_argument("--rgbd-render-adapter",help="explicit WSLg/Mesa sensor-process GPU selection, e.g. NVIDIA; actual renderer identity must agree")
     p.add_argument("--verified-native-mouse-controls",action="store_true")
     p.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace")
+    p.add_argument("--native-background-xvfb-tools",type=Path,help="explicit provenance manifest for existing isolated Xvfb backend; RGB-D host rendering remains separate")
     p.add_argument("--native-render-adapter",help="explicit process-only GPU selection for the native simulator, with actual GL identity verification")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--carry-retention-only",action="store_true",help="user-approved empty-bottle carry: record wobble/slip, stop on actual loss/drop")
@@ -311,9 +334,11 @@ def main():
     if args.fixed_reviewed_checkpoint:argv.append("--fixed-reviewed-checkpoint")
     if args.dock_angular_speed_cap is not None:argv.extend(["--dock-angular-speed-cap",str(args.dock_angular_speed_cap)])
     if args.dock_command_speed_cap is not None:argv.extend(["--dock-command-speed-cap",str(args.dock_command_speed_cap)])
-    if args.verified_native_mouse_controls:argv.append("--verified-native-mouse-controls")
+    if args.verified_native_mouse_controls and not args.native_background_xvfb_tools:argv.append("--verified-native-mouse-controls")
     argv.extend(["--native-reset-input",args.native_reset_input])
-    if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
+    if args.native_background_xvfb_tools:
+        argv=configure_native_background_x11(argv,args.native_background_xvfb_tools,args.fixed_reviewed_checkpoint)
+    elif args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
     if args.carry_reverse_moving_arc and ((args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)) or not args.carry_transit_speed_policy_050 or args.carry_native_step_mode):raise ValueError("reverse arc requires bounded FoundationWalk carry, with approved transit policy")
     if args.carry_transit_speed_policy_050 and not ((args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated carry and approved local contact profile")
     if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
