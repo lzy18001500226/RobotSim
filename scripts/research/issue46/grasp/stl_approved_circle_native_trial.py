@@ -34,6 +34,7 @@ def main():
     p.add_argument("--right-claw-zero-internal-friction",action="store_true")
     p.add_argument("--right-claw-damping",type=float)
     p.add_argument("--right-claw-kp",type=float,choices=(2.,4.),help="isolated C.1 gain diagnostic; actual no-contact close/open required before approach")
+    p.add_argument("--global-contact-impratio-one",action="store_true",help="SIMULATION_ONLY global impedance10->1 comparison; elliptic/local22 retained")
     p.add_argument("--approved-pad-friction-reference",action="store_true",help="2026-11-08 approved22 pad/bottle pairs solreffriction .002s, NoSlip0; unchanged geometry/mu/normal/limits")
     p.add_argument("--noslip-solver-diagnostic",action="store_true",help="separate SIMULATION_ONLY two-iteration numerical postsolver; no contact-material/geometry changes")
     p.add_argument("--elliptic-grip-solver-diagnostic",action="store_true",help="Menagerie-style numerical elliptic cone/impratio=10, unchanged actual friction/condim/geometry")
@@ -249,6 +250,9 @@ def main():
         if args.noslip_solver_diagnostic or not args.source_pad_coacd_comparison or not args.elliptic_grip_solver_diagnostic:raise ValueError('approved local tangent reference requires existing22 source pieces/elliptic10 and NoSlip0')
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import add_approved_pad_friction_reference
         claw=add_approved_pad_friction_reference(claw)
+    if args.global_contact_impratio_one:
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import compare_global_impratio_one
+        claw=compare_global_impratio_one(claw)
     if args.fixed_reviewed_checkpoint:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import add_reviewed_checkpoint
         claw=add_reviewed_checkpoint(claw,args.fixed_reviewed_checkpoint,base_offset_xy=args.checkpoint_base_offset_xy_m)

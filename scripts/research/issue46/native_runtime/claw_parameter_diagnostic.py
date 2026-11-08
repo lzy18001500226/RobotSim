@@ -261,3 +261,38 @@ def add_reviewed_checkpoint(parent, capture, *, base_offset_xy=(0.,0.)):
     record['reviewed_checkpoint']['episode_boundary_base_offset_xy_m']=offset.tolist()
     record['reviewed_checkpoint']['offset_is_not_navigation_or_region_qualification']=True
     pg.write_new_text(out/'result.json',json.dumps(record,indent=2)+'\n');pg.write_artifact_manifest(out);return out/'result.json'
+
+
+def compare_global_impratio_one(parent):
+    """Restore native global friction/normal impedance ratio; retain elliptic cone.
+
+    The .002s per-pad tangent references require elliptic contacts. This is
+    therefore a one-condition numerical comparison, not vendor-default physics.
+    """
+    parent=Path(parent);record=json.loads(parent.read_text())
+    if not record.get("approved_local_pad_friction_reference"):raise ValueError("missing qualified local22 parent")
+    for label in ("host_scene","runtime_scene","simulator_config"):
+        item=record["generated"][label]
+        if digest(item["path"])!=item["sha256"]:raise ValueError("solver comparison parent changed")
+    original=mujoco.MjModel.from_xml_path(record["generated"]["host_scene"]["path"])
+    if int(original.opt.cone)!=1 or original.opt.impratio!=10. or original.opt.noslip_iterations:
+        raise ValueError("expected existing elliptic10/NoSlip0 comparison")
+    out=pg.create_unique_output_directory(ROOT/"reviews/issue-46",prefix="global-impratio-one-comparison").native_path
+    for label in ("host_scene","runtime_scene","runtime_hostcheck_scene"):
+        source=Path(record["generated"][label]["path"]);xml=ET.fromstring(source.read_bytes())
+        xml.find("option").set("impratio","1")
+        dst=out/source.name;pg.write_new_bytes(dst,ET.tostring(xml,encoding="utf-8",xml_declaration=True))
+        record["generated"][label]={"path":str(dst),"sha256":digest(dst)}
+    derived=mujoco.MjModel.from_xml_path(record["generated"]["host_scene"]["path"])
+    for name in dir(original):
+        a=getattr(original,name);b=getattr(derived,name)
+        if isinstance(a,np.ndarray) and not np.array_equal(a,b,equal_nan=True):raise ValueError("unexpected physical delta:"+name)
+    if int(derived.opt.cone)!=1 or derived.opt.impratio!=1. or derived.opt.timestep!=original.opt.timestep:raise ValueError("solver comparison scope")
+    cfg=yaml.safe_load(Path(record["generated"]["simulator_config"]["path"]).read_text())
+    cfg["MujocoSimModule"]["simulation_model"]="/workspace/evidence/"+Path(record["generated"]["runtime_scene"]["path"]).name
+    dst=out/"simulator_stl_native_hand_table_control.yaml";pg.write_new_text(dst,yaml.safe_dump(cfg,sort_keys=False))
+    record["generated"]["simulator_config"]={"path":str(dst),"sha256":digest(dst)}
+    record["diagnostic_parameter_delta"]["elliptic_solver"]["impratio_to"]=1.
+    record["global_impratio_comparison"]={"from":10.,"to":1.,"cone":"elliptic","native_cone":"pyramidal","not_vendor_default":True,"purpose":"isolate global contact impedance effect on loaded gait; no friction,geometry,policy or gains changed","parent":str(parent),"parent_sha256":digest(parent),"physical_arrays_identical":True}
+    pg.write_new_text(out/"result.json",json.dumps(record,indent=2)+"\n");pg.write_artifact_manifest(out)
+    return out/"result.json"

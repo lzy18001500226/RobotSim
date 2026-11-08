@@ -1910,7 +1910,7 @@ def main() -> None:
             current=json.loads((output/'native_latest.json').read_text());actual_solver=current.get('solver_options',{})
             delta=(claw_control_overlay or {}).get('diagnostic_parameter_delta',{})
             if delta.get('numerical_solver') and actual_solver.get('noslip_iterations')!=2:raise RuntimeError('NATIVE_NOSLIP_OPTION_NOT_APPLIED')
-            if delta.get('elliptic_solver') and (actual_solver.get('cone')!=1 or actual_solver.get('impratio')!=10.):raise RuntimeError('NATIVE_ELLIPTIC_OPTION_NOT_APPLIED')
+            if delta.get('elliptic_solver') and (actual_solver.get('cone')!=1 or actual_solver.get('impratio')!=delta['elliptic_solver'].get('impratio_to',10.)):raise RuntimeError('NATIVE_ELLIPTIC_OPTION_NOT_APPLIED')
             result['native_solver_options']=actual_solver
             local_friction=(claw_control_overlay or {}).get('approved_local_pad_friction_reference')
             if local_friction:

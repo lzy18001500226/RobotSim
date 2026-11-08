@@ -937,3 +937,28 @@ class EffectiveTransit020Tests(unittest.TestCase):
         for speed in (.21,float('nan')):
             with self.assertRaises(ValueError):m.build_carry_route_script(None,{},[],transit_command_speed=speed,**kw)
         with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,transit_command_speed=.20)
+
+class GlobalImpedanceComparisonTests(unittest.TestCase):
+    def test_only_global_impedance_changes_on_actual_compilation(self):
+        import tempfile,json
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import claw_parameter_diagnostic as c
+        from types import SimpleNamespace as NS
+        with tempfile.TemporaryDirectory() as folder:
+            d=Path(folder);out=d/"new";out.mkdir()
+            xml='<mujoco><option cone="elliptic" impratio="10" timestep=".001"/><worldbody><geom type="sphere" size=".05"/></worldbody></mujoco>'
+            rec={'approved_local_pad_friction_reference':{'pair_count':22},'generated':{},'diagnostic_parameter_delta':{'elliptic_solver':{'cone_to':1,'impratio_to':10.}}}
+            for label in ('host_scene','runtime_scene','runtime_hostcheck_scene'):
+                src=d/(label+'.xml');src.write_text(xml);rec['generated'][label]={'path':str(src),'sha256':c.digest(src)}
+            cfg=d/'sim.yaml';cfg.write_text('MujocoSimModule: {simulation_model: unused}')
+            rec['generated']['simulator_config']={'path':str(cfg),'sha256':c.digest(cfg)}
+            parent=d/'result.json';parent.write_text(json.dumps(rec));before=parent.read_bytes()
+            with mock.patch.object(c.pg,'create_unique_output_directory',return_value=NS(native_path=out)),mock.patch.object(c.pg,'write_artifact_manifest'),mock.patch.object(c.pg,'write_new_bytes',side_effect=lambda p,b:Path(p).write_bytes(b)),mock.patch.object(c.pg,'write_new_text',side_effect=lambda p,s:Path(p).write_text(s)):
+                result=c.compare_global_impratio_one(parent)
+            generated=json.loads(result.read_text())
+            a=c.mujoco.MjModel.from_xml_path(generated['generated']['host_scene']['path'])
+            self.assertEqual(a.opt.impratio,1.)
+            self.assertEqual(int(a.opt.cone),1)
+            self.assertEqual(parent.read_bytes(),before)
+            self.assertTrue(generated['global_impratio_comparison']['physical_arrays_identical'])
+            self.assertIn('approved_local_pad_friction_reference',generated)
