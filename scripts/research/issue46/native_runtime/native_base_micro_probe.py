@@ -617,6 +617,16 @@ def run_probe(smoke_only=False):
                 tick=time.monotonic();self.publish();self.pump()
                 try:row=self.sample(start)
                 except RuntimeError as exc:
+                    # Initial zero-only readiness may reacquire telemetry; any
+                    # already-commanded motion or native/physical fault stays fail-closed.
+                    initial_zero_only=bool(MICRO.get("carry")) and not self.moving and not any(
+                        any(float(c.get(k,0.)) for k in ("forward","lateral","angular")) for c in self.command_log)
+                    if (initial_zero_only and str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")
+                            and time.monotonic()<until-seconds+min(3.,seconds)):
+                        self.events.append(dict(event="PREMOTION_FRESHNESS_REACQUIRE",t=time.monotonic(),failure=str(exc)))
+                        rows=[];last=None;qualified=None
+                        time.sleep(max(0.,tick+.02-time.monotonic()))
+                        continue
                     if str(exc)!="CLOCK_GENERATION_PENDING":raise
                     rows=[];last=None
                     time.sleep(max(0.,tick+.02-time.monotonic()))
@@ -961,7 +971,7 @@ def run_carry_navigation(n,contract):
                     if progress<.30:
                         output=SimpleNamespace(state=NavState.DRIVE,distance_m=.30-progress,
                                                yaw_error_rad=error,linear_x=-.12,
-                                               angular_z=max(-.075,min(.075,.8*error)))
+                                               angular_z=(0. if abs(error)<=.02 else math.copysign(cfg["angular_command_cap"],error)))
                     else:
                         if not acquired:raise RuntimeError("RETREAT_SOURCE_NOT_CONFIRMED")
                         n.deadline_zero();n.stop_started=True
@@ -1015,7 +1025,7 @@ def run_carry_navigation(n,contract):
                     if abs(turn_error)>.08:
                         if abs(turn_error)>math.pi+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=turn_error,
-                                               linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
+                                               linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
                     else:
                         if not acquired:raise RuntimeError("AWAY_TURN_SOURCE_NOT_CONFIRMED")
                         mission["turn_source_and_mode_observed"]=True
@@ -1028,7 +1038,7 @@ def run_carry_navigation(n,contract):
                         heading_error=(bearing-stopped["pose"]["yaw"]+math.pi)%(2*math.pi)-math.pi
                         if abs(heading_error)>.12:raise RuntimeError("AWAY_TURN_STOP_HEADING_NOT_QUALIFIED")
                         mission["turn_end_pose"]=stopped["pose"]
-                        mission["turn_unwrapped_change_rad"]=mission["unwrapped_yaw"]-start["yaw"]
+                        mission["turn_unwrapped_change_rad"]=mission["unwrapped_yaw"]-(mission["turn_origin_pose"]["yaw"] if cfg.get("straight_retreat_turn") else start["yaw"])
                         mission["turn_stop_heading_error_rad"]=heading_error
                         if cfg.get("straight_retreat_turn"):
                             origin=mission["turn_origin_pose"]
@@ -1161,7 +1171,7 @@ def run_carry_navigation(n,contract):
                 result["graph_cleanup_failure"]="GRAPH_THREAD_NOT_JOINED";result["pass_result"]=False
         try:n.stop_feedback()
         except Exception as exc:result["feedback_cleanup_failure"]=str(exc);result["pass_result"]=False
-        result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace)
+        result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace,receipt_diagnostics=getattr(n,"receipt_diagnostics",{}))
         try:result["stop_evidence"]=carry_stop_evidence(result)
         except Exception as exc:
             result["stop_evidence_error"]=str(exc);result["pass_result"]=False

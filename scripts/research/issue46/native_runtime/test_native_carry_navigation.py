@@ -815,6 +815,25 @@ class EmptyBottleOwnerGuardTests(unittest.TestCase):
         self.assertFalse(eval(code,ns))
         ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
 
+class PreMotionReadinessTests(unittest.TestCase):
+    def test_reacquire_never_applies_after_nonzero_or_to_physical_faults(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
+             native_action_smoothing=True,transit_policy_050=True,
+             angular_command_cap=.10,straight_retreat_turn=True)
+        tree=ast.parse(code)
+        assign=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and
+                    any(isinstance(t,ast.Name) and t.id=='initial_zero_only' for t in n.targets))
+        from types import SimpleNamespace as NS
+        ns=dict(MICRO={'carry':True},self=NS(moving=False,command_log=[dict(forward=0.,angular=0.)]))
+        exec(compile(ast.Module(body=[assign],type_ignores=[]),'zero_only','exec'),ns)
+        self.assertTrue(ns['initial_zero_only'])
+        ns['self'].command_log.append(dict(forward=.12))
+        exec(compile(ast.Module(body=[assign],type_ignores=[]),'zero_only','exec'),ns)
+        self.assertFalse(ns['initial_zero_only'])
+        self.assertIn('str(exc).startswith("CRITICAL_ROS_TELEMETRY_STALE:")',code)
+        self.assertIn('min(3.,seconds)',code)
+        self.assertIn('qualified=None',code)
+
 class StraightRetreatInplaceTests(unittest.TestCase):
     def test_turn_has_zero_translation_and_rearm_is_after_measured_stop(self):
         code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
