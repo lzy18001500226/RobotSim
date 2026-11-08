@@ -157,6 +157,10 @@ def main():
             if args.physical_lift_test:command.append('--physical-lift-test')
             if args.approved_pad_friction_reference:command.extend(['--lift-grip-force-margin',str(args.carry_grip_force_margin)])
             if args.post_lift_retract_world_m is not None:command.extend(['--post-lift-retract-world-m',*map(str,args.post_lift_retract_world_m)])
+            if args.carry_goal_world_xy is not None:
+                carry_source_limits,_=native.native_leg_safety_contract(include_upper_body=True)
+                command.extend(['--carry-left-roll-source-range',*map(str,carry_source_limits['left_shoulder_roll_joint'][:2])])
+
             command[command.index("--grasp-height-above-center-m")+1]=str(args.grasp_height_above_center_m)
             command.extend(['--grasp-axis-tilt-rad',str(args.grasp_axis_tilt_rad)])
             if args.inverted_bottle_axis:command.append('--inverted-bottle-axis')

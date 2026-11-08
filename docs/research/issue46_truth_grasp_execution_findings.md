@@ -1160,3 +1160,20 @@ https://x2-aimdk.agibot.com/zh-cn/latest/Interface/control_mod/locomotion.html
 无禁止穿入；没有mj_step，不是动态PASS：
 reviews/issue-46/fetch-chair-reverse-moving-arc-static-20261108T055443Z/result.json。
 运行中仍以真实native位姿、真实命令路径与原生全接触/源关节保护验收。
+
+### 060414Z与非抓取臂源范围内停放
+
+后退弧线已发实际负向线速度与转向，约0.507s因原左肩roll下限停止。
+不放宽-0.061rad源界限。既有左目标约-0.027rad，静态实测约-0.040rad，
+加步态扰动后越界；先前加入effort字段不足以证明原生驱动实际使用该前馈。
+
+只在已有四秒收臂段，同时将非抓取左肩roll目标规划到源下限+0.15rad
+（本源为+0.089rad），其他左关节目标不变。单轴变化<=0.20rad，三次平滑
+插值；运行起点必须与预检相差<=0.03rad，当前源范围在执行前再次逐项核对。
+增益、限位、执行器和模型均未修改。
+
+新的完整保存时钟CLI通过抓取/接近/抬升/收臂及新增左侧自碰撞检查，
+17.916s，零mj_step：approved-circle-standing-ik-20261108T061637Z。
+左臂新目标下的整场景名义反向弧线亦无禁止接触：
+fetch-chair-reverse-parked-left-static-20261108T061941Z。
+这两项仍是离线预检，后续真实8秒持瓶和所有动态门必须重新通过。

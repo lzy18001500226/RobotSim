@@ -626,4 +626,18 @@ class ReverseMovingArcTests(unittest.TestCase):
         compile(code,"reverse_carry","exec")
         self.assertIn("'reverse_moving_arc': True",code)
 
+
+
+
+class SourceBoundedCarryParkTests(unittest.TestCase):
+    def test_non_grasping_arm_park_uses_source_margin_without_changing_limits(self):
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import carry_left_roll_park
+        bounds=[-.061,2.993];park=carry_left_roll_park(-.027,bounds)
+        self.assertAlmostEqual(park["target_rad"],.089)
+        self.assertEqual(bounds,[-.061,2.993])
+        self.assertLess(park["target_rad"]-park["start_rad"],.20)
+        self.assertEqual(carry_left_roll_park(.2,bounds)["target_rad"],.2)
+        with self.assertRaises(ValueError):carry_left_roll_park(-.2,bounds)
+        with self.assertRaises(ValueError):carry_left_roll_park(-.027,[0.,-.1])
+
 if __name__=="__main__":unittest.main()

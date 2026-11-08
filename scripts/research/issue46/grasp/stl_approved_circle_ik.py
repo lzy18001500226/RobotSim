@@ -253,7 +253,18 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
 
 
 
-def screen_retract(model, state, seed, opening, center, section, offset_world, local_bottle_axis=None, *, carry_lower=False):
+def carry_left_roll_park(current, bounds):
+    lo,hi=map(float,bounds);current=float(current)
+    if not np.isfinite([current,lo,hi]).all() or not lo<hi or not lo-.001<=current<=hi+.001:
+        raise ValueError("invalid source left roll park")
+    target=max(current,lo+.15)
+    if target>hi-.01 or target-current>.20:raise ValueError("left roll park outside bounded planning envelope")
+    return dict(joint="left_shoulder_roll_joint",start_rad=current,target_rad=target,
+                source_bounds_rad=[lo,hi],minimum_target_margin_rad=.15,
+                maximum_target_change_rad=.20,range_authority="CALLER_SOURCE_RANGE_RECHECKED_AT_RUNTIME")
+
+
+def screen_retract(model, state, seed, opening, center, section, offset_world, local_bottle_axis=None, *, carry_lower=False, left_roll_bounds=None):
     """Reuse the source arm IK for a <=250mm post-lift retreat, zero physics steps."""
     import copy
     offset=np.asarray(offset_world,dtype=float)
@@ -263,11 +274,13 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
     hand=ik.native.bid(model,"R_omnipicker_base_link");bottle=ik.native.bid(model,"test_cylinder")
     axis=Rotation.from_quat(np.asarray(state["object_pose_world"]["quaternion_wxyz"])[[1,2,3,0]]).as_matrix()[:,2]
     arm=np.array(seed[2:]);samples=[]
+    left_park=carry_left_roll_park(state["arm_positions_rad"]["left_shoulder_roll_joint"],left_roll_bounds) if left_roll_bounds is not None else None
     dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
     local=np.asarray([1.,0.,0.] if local_bottle_axis is None else local_bottle_axis)
     for fraction in np.linspace(0.,1.,13):
         delta=float(fraction)*offset
         frozen=copy.deepcopy(state);frozen["object_pose_world"]["xyz_m"]=(np.asarray(state["object_pose_world"]["xyz_m"])+delta).tolist()
+        if left_park:frozen["arm_positions_rad"][left_park["joint"]]=left_park["start_rad"]+fraction*(left_park["target_rad"]-left_park["start_rad"])
         data=mujoco.MjData(model);target=np.asarray(section)+delta
         ik.set_pose(model,data,frozen,np.r_[seed[:2],arm],np.zeros(3),0.,opening,np.zeros(3))
         qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
@@ -279,11 +292,19 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
             return circle_task_jacobian(model,data,hand,np.asarray(center),local,dofs)
         solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=200,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         arm=solved.x;e=residual(arm);mujoco.mj_forward(model,data);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
-        passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table
-        samples.append(dict(fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),solver_evaluations=solved.nfev,solver_status=solved.status,solver_optimality=float(solved.optimality),pass_result=bool(passed)))
+        left_self=[]
+        if left_park:
+            root=ik.native.bid(model,"pelvis")
+            for c in data.contact:
+                a,b=[int(model.geom_bodyid[g]) for g in (c.geom1,c.geom2)]
+                names=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,x) for x in (a,b)]
+                if c.dist<-.001 and model.body_rootid[a]==root and model.body_rootid[b]==root and any(n.startswith(("left_shoulder","left_elbow","left_wrist","L_omnipicker","L_hand","L_claw")) for n in names):
+                    left_self.append(names)
+        passed=np.linalg.norm(e[:3])<=.001 and np.linalg.norm(e[3:])<=.001 and not bad and not robot_table and not left_self
+        samples.append(dict(left_park_self_contacts=left_self,left_roll_rad=float(frozen["arm_positions_rad"]["left_shoulder_roll_joint"]) if left_park else None,fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),solver_evaluations=solved.nfev,solver_status=solved.status,solver_optimality=float(solved.optimality),pass_result=bool(passed)))
     root=ik.native.bid(model,"pelvis")
     robot_bodies=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,b) for b in range(model.nbody) if model.body_rootid[b]==root]
-    return dict(robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_CARRY_LOWER_NOT_PHYSICS_PASS" if carry_lower else "SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
+    return dict(left_park=left_park,robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_CARRY_LOWER_NOT_PHYSICS_PASS" if carry_lower else "SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
 
 
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
@@ -405,7 +426,7 @@ def track_native(reference_path, latest_path, output_path):
         output_path.with_suffix('.trace.json').write_text(json.dumps(trace))
 
 
-def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,local_axis,retract_offset=None,normal_margin=1.5):
+def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,local_axis,retract_offset=None,normal_margin=1.5,left_roll_bounds=None):
     import copy
     for row in rows:
         row['grasp_only_pass']=row['pass'];row['pass']=False
@@ -421,7 +442,7 @@ def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,
             lifted=copy.deepcopy(state)
             lifted['object_pose_world']['xyz_m']=(np.asarray(state['object_pose_world']['xyz_m'])+[0.,0.,.06]).tolist()
             retract_seed=np.r_[lift_seed[:2],task_lift['samples'][-1]['right_arm_rad']]
-            retreat=screen_retract(model,lifted,retract_seed,opening,center,object_center+[0.,0.,.06],retract_offset,local_axis)
+            retreat=screen_retract(model,lifted,retract_seed,opening,center,object_center+[0.,0.,.06],retract_offset,local_axis,left_roll_bounds=left_roll_bounds)
             task_lift['retract_preflight']=retreat
             candidate_row['gates']['POST_LIFT_RETRACT_SWEEP']='PASS' if retreat['pass_result'] else 'FAIL'
             candidate_row['pass']=bool(retreat['pass_result'])
@@ -444,6 +465,7 @@ def main():
     parser.add_argument("--use-measured-load-frame",action="store_true",help="apply measured <=5mm TCP correction without altering the approved nominal circle")
     parser.add_argument("--runtime-handoff",action="store_true")
     parser.add_argument("--physical-lift-test",action="store_true")
+    parser.add_argument("--carry-left-roll-source-range",type=float,nargs=2)
     parser.add_argument("--lift-grip-force-margin",type=float,choices=(1.5,3.,6.),default=1.5)
     parser.add_argument("--post-lift-retract-world-m",type=float,nargs=3)
     parser.add_argument("--approach-opening-percent",type=int,default=100)
@@ -455,6 +477,7 @@ def main():
     parser.add_argument("--optimize-waist-posture",action="store_true",help="coupled source-bounded waist yaw/pitch and arm solve; requires coordinated physical handoff if executed")
     parser.add_argument("--full-source-posture-diagnostic",action="store_true",help="offline only: distinguish the solver trust region from actual source joint limits; no runtime handoff")
     args = parser.parse_args()
+    if args.carry_left_roll_source_range is not None and (not args.physical_lift_test or args.post_lift_retract_world_m is None):raise ValueError("left carry park requires screened physical lift/retract")
     if args.full_source_posture_diagnostic and (not args.optimize_waist_posture or args.runtime_handoff):raise ValueError('full-source diagnostic is offline only and requires the coupled posture solver')
     scene = json.loads(args.circle_review.read_text())
     candidate = json.loads(args.candidate.read_text())
@@ -617,7 +640,7 @@ def main():
     # Arrival alone is insufficient: qualify the whole already requested
     # lift/retract on each existing grasp branch before selecting its winner.
     if args.physical_lift_test:
-        qualify_grasp_motion_branches(rows,model,state,max(command-1,0),center,object_center,local_axis,args.post_lift_retract_world_m,args.lift_grip_force_margin)
+        qualify_grasp_motion_branches(rows,model,state,max(command-1,0),center,object_center,local_axis,args.post_lift_retract_world_m,args.lift_grip_force_margin,args.carry_left_roll_source_range)
     # Prefer joint margin only among complete task-feasible candidates.
     rows.sort(key=lambda r:(not r["pass"],-r["metrics"]["minimum_joint_margin_rad"] if r["pass"] else r["metrics"]["hand_position_error_m"],r["metrics"]["hand_position_error_m"]))
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path

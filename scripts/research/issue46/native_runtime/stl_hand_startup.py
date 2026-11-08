@@ -1232,6 +1232,14 @@ def _with_postlift_retract(script, lift_contract):
         raise ValueError("retract preflight or bounded profile invalid")
     limits=retract.get('source_motion_limits',{})
     if len(limits)!=29 or any(len(v)!=3 or not all(math.isfinite(float(x)) for x in v) or not v[0]<v[1] or v[2]<=0 for v in limits.values()):raise ValueError('retract needs all29 pinned source motion limits')
+    park=retract.get("left_park")
+    if park:
+        if (park.get("joint")!="left_shoulder_roll_joint"
+                or tuple(park.get("source_bounds_rad",[]))!=tuple(limits[park["joint"]][:2])
+                or not limits[park["joint"]][0]+.149999<=park["target_rad"]<=limits[park["joint"]][1]-.01
+                or not 0.<=park["target_rad"]-park["start_rad"]<=.20):
+            raise ValueError("left park source range or bounded target mismatch")
+
     def replace(old,new,count=1):
         nonlocal script
         if script.count(old)!=count:raise ValueError("retract script extension anchor changed:"+old[:50])
@@ -1244,6 +1252,10 @@ def _with_postlift_retract(script, lift_contract):
 """   if stage=='RETRACT':
     u=min(1.,(time.monotonic()-start)/seconds);smooth=3*u*u-2*u*u*u
     self.lift_phase['retract_offset_world_m']=[smooth*float(x) for x in LIFT_CONTRACT['retract_preflight']['offset_world_m']]
+    park=LIFT_CONTRACT['retract_preflight'].get('left_park')
+    if park:
+     target=dict(target);target[park['joint']]=self.lift_phase['carry_left_start_rad']+smooth*(park['target_rad']-self.lift_phase['carry_left_start_rad'])
+
     self.write_phase(self.lift_phase)
    if stage in ('LIFT_PROBE','LIFT'):
 """)
@@ -1256,6 +1268,12 @@ def _with_postlift_retract(script, lift_contract):
    if not accepted['pass']:raise RuntimeError('RETRACT_GATED_UNQUALIFIED_PHYSICAL_LIFT')
    retract_execution={'requested':True,'executed':True,'start_host_ns':time.monotonic_ns()}
    n.lift_phase['phase']='RETRACTING';n.lift_phase['created_host_ns']=time.monotonic_ns();n.lift_phase['retract_from_hold_end_ns']=lift_execution['hold_end_ns'];n.lift_phase['pre_retract_physical_lift_pass']=True;n.lift_phase['retract_offset_world_m']=[0.,0.,0.];n.write_phase(n.lift_phase)
+   park=LIFT_CONTRACT['retract_preflight'].get('left_park')
+   if park:
+    actual_left=float(n.native_row['joints'][park['joint']]['q'])
+    if abs(actual_left-park['start_rad'])>.03 or not 0.<=park['target_rad']-actual_left<=.20:raise RuntimeError('LEFT_CARRY_PARK_START_UNQUALIFIED')
+    n.lift_phase['carry_left_start_rad']=actual_left
+    goal=dict(goal);goal[park['joint']]=park['target_rad']
    n.send(goal,4.,'RETRACT',HAND_RIGHT)
    n.lift_phase['retract_offset_world_m']=LIFT_CONTRACT['retract_preflight']['offset_world_m'];n.write_phase(n.lift_phase)
    retract_execution['hold_start_ns']=time.monotonic_ns()
