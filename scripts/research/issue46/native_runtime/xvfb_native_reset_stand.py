@@ -1250,7 +1250,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     if getattr(args,"carry_away_1m",False):
         mission=nav.get("away_mission",{})
         turn=nav.get("turn_stop_composite",{})
-        result["gates"]["LEAVE_TABLE_AND_TURN"]="PASS" if turn.get("pass") is True and abs(mission.get("turn_stop_heading_error_rad",99.))<=.12 else "FAIL" if any(c.get("forward") or c.get("angular") for c in nav.get("command_log",[])) else "NOT_RUN"
+        result["gates"]["LEAVE_TABLE_AND_TURN"]="PASS" if turn.get("pass") is True and abs(mission.get("turn_stop_heading_error_rad",99.))<=(json.loads(args.carry_delivery_config.read_text()).get("intermediate_turn_heading_tolerance_rad",.12) if getattr(args,"carry_delivery_config",None) is not None else .12) else "FAIL" if any(c.get("forward") or c.get("angular") for c in nav.get("command_log",[])) else "NOT_RUN"
         result["gates"]["FORWARD_ONE_METRE"]="NOT_RUN" if getattr(args,"carry_straight_retreat_turn",False) else "PASS" if nav.get("pass_result") else "FAIL" if any(c.get("forward",0.)>0 for c in nav.get("command_log",[])) else "NOT_RUN"
         result["gates"]["FINAL_COMPOSITE_STOP"]="NOT_RUN" if "post_stop_composite" not in nav else "PASS" if nav["post_stop_composite"].get("pass") is True else "FAIL"
     if any(any(float(c.get(k,0)) for k in ("forward","lateral","angular")) for c in nav.get("command_log",[])):

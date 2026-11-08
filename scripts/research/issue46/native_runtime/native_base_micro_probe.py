@@ -872,6 +872,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if delivery is not None:
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
+        if not .12<=float(delivery.get("intermediate_turn_heading_tolerance_rad",.12))<=.30:raise ValueError("intermediate task heading bound")
         if delivery.get("schema")!="robotsim.x2.two-table-delivery.v1" or delivery.get("frame")!="native_scene_world":raise ValueError("delivery scene contract")
         if len(delivery["base_goal_world_xy"])!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in delivery["base_goal_world_xy"]):raise ValueError("delivery goal workspace")
     if compact_centre_feedback and not compact_turn:raise ValueError("combined centre feedback requires compact carry")
@@ -1244,8 +1245,12 @@ def run_carry_navigation(n,contract):
                         if result["turn_stop_composite"].get("pass") is not True:raise RuntimeError("AWAY_TURN_STOP_NOT_QUALIFIED")
                         n.await_graph();n.pump();stopped=n.sample()
                         heading_error=(bearing-stopped["pose"]["yaw"]+math.pi)%(2*math.pi)-math.pi
-                        if abs(heading_error)>.12:raise RuntimeError("AWAY_TURN_STOP_HEADING_NOT_QUALIFIED")
+                        mission["turn_stop_heading_error_rad"]=heading_error
                         mission["turn_end_pose"]=stopped["pose"]
+                        heading_tolerance=float(cfg["delivery"].get("intermediate_turn_heading_tolerance_rad",.12)) if cfg.get("delivery") else .12
+                        mission["intermediate_heading_tolerance_rad"]=heading_tolerance
+                        mission["legacy_strict_heading012_pass"]=abs(heading_error)<=.12
+                        if abs(heading_error)>heading_tolerance:raise RuntimeError("AWAY_TURN_STOP_HEADING_NOT_QUALIFIED")
                         mission["turn_active_unwrapped_change_rad"]=mission["unwrapped_yaw"]-(mission["turn_origin_pose"]["yaw"] if cfg.get("straight_retreat_turn") else start["yaw"])
                         tail_delta=(stopped["pose"]["yaw"]-mission["previous_yaw"]+math.pi)%(2*math.pi)-math.pi
                         mission["turn_unwrapped_change_rad"]=mission["turn_active_unwrapped_change_rad"]+tail_delta
