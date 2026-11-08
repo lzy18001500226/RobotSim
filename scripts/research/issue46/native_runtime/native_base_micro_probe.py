@@ -982,6 +982,18 @@ def run_carry_navigation(n,contract):
                             time.sleep(.02)
                         if not prepared:raise RuntimeError("INPLACE_STEP_PREPARATION_FAILED")
                         mission["phase"]="TURN";mission["turn_origin_pose"]=state["pose"]
+                        # The stopped retreat pose defines a new physical turn;
+                        # do not interpret intervening braking yaw as a timestamp jump.
+                        mission["unwrapped_yaw"]=state["pose"]["yaw"]
+                        mission["previous_yaw"]=state["pose"]["yaw"]
+                        mission["previous_source_s"]=state["sample_monotonic_s"]
+                        mission["target_unwrapped_yaw"]=state["pose"]["yaw"]-math.pi
+                        mission["away_heading_rad"]=(state["pose"]["yaw"]-math.pi+math.pi)%(2*math.pi)-math.pi
+                        bearing=mission["away_heading_rad"]
+                        ex=state["pose"]["x"]-start["x"];ey=state["pose"]["y"]-start["y"]
+                        mission["retreat_settled_progress_m"]=-math.cos(start["yaw"])*ex-math.sin(start["yaw"])*ey
+                        mission["retreat_settled_cross_track_m"]=-math.sin(start["yaw"])*ex+math.cos(start["yaw"])*ey
+
                         cfg["permit_filename"]="carry_transit_forward_permit.json";cfg["turn_stop_pass"]=True
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                         acquired=False;activation_started=time.monotonic()

@@ -831,6 +831,8 @@ class StraightRetreatInplaceTests(unittest.TestCase):
             self.assertEqual(ns['forward'],expected)
         self.assertIn('RETREAT_CROSS_TRACK',code)
         self.assertIn('INPLACE_TURN_CENTER_TRANSLATION',code)
+        self.assertIn('mission["previous_yaw"]=state["pose"]["yaw"]',code)
+        self.assertIn('mission["target_unwrapped_yaw"]=state["pose"]["yaw"]-math.pi',code)
         self.assertIn('result["delivery_table_placement"]="NOT_RUN"',code)
         self.assertLess(code.index('result["retreat_stop_composite"]=n.observe'),code.index('n.stand_once("LOCOMOTION_STEP")',code.index('result["retreat_stop_composite"]=n.observe')))
         self.assertLess(code.index('result["retreat_stop_composite"]=n.observe'),code.index('mission["phase"]="TURN"'))
