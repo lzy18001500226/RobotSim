@@ -381,7 +381,7 @@ def run_probe(smoke_only=False):
                 if MICRO.get("carry"):
                     health=json.loads(Path("/workspace/evidence/carry_heartbeat.json").read_text())
                     if health.get("mode")!="MEASURED_LOAD_BEARING_CARRY_HOLD" or health.get("healthy") is not True or health.get("pid")!=MICRO["carry"]["pid"] or health.get("generation")!=r["generation"] or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-health["native_source_host_ns"])*1e-9<=.20:
-                        raise RuntimeError("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED")
+                        raise RuntimeError("CARRY_OWNER_OR_PHYSICAL_HEARTBEAT_UNQUALIFIED:"+json.dumps({k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}))
                 if MICRO.get("carry"):
                     for c in r.get("contacts",[]):
                         pair={c.get("body1"),c.get("body2")}

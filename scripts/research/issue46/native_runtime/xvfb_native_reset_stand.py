@@ -1151,7 +1151,7 @@ def qualify_static_carry_hold(output, ready):
         row=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
         health=json.loads((output/"carry_heartbeat.json").read_text())
         if health.get("mode")!="MEASURED_LOAD_BEARING_CARRY_HOLD" or row["generation"]!=ready["generation"] or health.get("generation")!=ready["generation"] or health.get("pid")!=ready["pid"] or health.get("healthy") is not True or not 0.<=(time.monotonic_ns()-health["host_monotonic_ns"])*1e-9<=.20 or not 0.<=(time.monotonic_ns()-health["native_source_host_ns"])*1e-9<=.20:
-            raise RuntimeError("CARRY_STATIC_HOLD_HEARTBEAT_UNQUALIFIED")
+            raise RuntimeError("CARRY_STATIC_HOLD_HEARTBEAT_UNQUALIFIED:"+json.dumps({k:health.get(k) for k in ("mode","healthy","failure","pid","generation","host_monotonic_ns","native_source_host_ns")}))
         unique.add(row["host_monotonic_ns"])
         if row["sim_time_s"]-first["sim_time_s"]>=8. and len(unique)>=25:
             return {"pass":True,"classification":"EIGHT_SIM_SECONDS_LOAD_BEARING_HOLD","sim_span_s":row["sim_time_s"]-first["sim_time_s"],"host_span_s":time.monotonic()-begin,"unique_native_samples":len(unique)}

@@ -46,7 +46,7 @@ The goal is to provide a reusable simulation and system-integration framework fo
 
 ## Current status
 
-As of 2026-11-06, X2 research has progressed into real MuJoCo/MC standing,
+As of 2026-11-08, X2 research has progressed into real MuJoCo/MC standing,
 bounded locomotion, table-approach and manipulation integration. These are
 experiment-specific capabilities, not a blanket qualification of navigation,
 perception, manipulation or hardware deployment. Unity remains the intended
@@ -60,6 +60,10 @@ collision/control profile. The native interactive review entry is available.
 A bounded post-lift retract has also passed actual native physics; held-object
 navigation to the known chair area is an integration diagnostic, not yet a
 qualified full fetch/delivery task.
+Current carry attempts distinguish a real native gait-start safety failure from
+soft-contact axial creep with NoSlip disabled. A pad-local numerical-friction
+comparison is prepared for specific review; it has not been implemented or
+validated. Source chair geometry/reachability inspection is offline only.
 The strengthened START-to-table chain is still unqualified: subsequent
 per-physics-step source joint-speed checks found violations in historical
 walking traces. Four-direction stance correction, dynamic short-bottle

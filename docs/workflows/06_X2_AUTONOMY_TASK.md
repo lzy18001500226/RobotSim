@@ -42,14 +42,48 @@ SIMULATION_ONLY_FETCH_CARRY_ROUTE: task motion deadline <=90s, input forward
 bounds, telemetry age <=0.20s, goal-base tolerance 0.15m, >=1.05s zero publishing
 before STAND and full original composite stop. Only actual intended distal-pad
 bottle contacts are allowed. A separate grip owner continues HAL arm/hand
-control; Cartesian tracking hands off to its measured joint hold after the
-physical lift/retract gates. No force or object attachment is introduced.
+control. Carry reuses the circle IK with a pelvis-heading-relative TCP and
+world-upright axis at 50Hz, including source-bounded joint-velocity feedforward.
+A carrier fault revokes navigation health before a <=5s last-command grip hold.
+No force or object attachment is introduced.
 
 The current chair-area test goal is base-world (-0.45,1.0), derived from the
 known chair at (0,1.5), not the chair CAD center itself. This point-goal task is
 not an old micro pulse or straight/curved-reference tracking qualification.
 Raw cross-track diagnostics remain visible; room workspace and actual contact
 guards apply. Default micro and reference-path thresholds are unchanged.
+
+Separate explicit diagnostics retain the default profile above:
+--carry-sdk-minimum-turn uses the pinned SDK example's 0.10rad/s angular minimum;
+--carry-native-action-smoothing adds native ActionSelector SD/LD 500ms rules;
+--carry-native-step-mode selects the installed unchanged CPGStep policy/config
+and adds matching SD/LS rules. This is not FoundationWalk qualification.
+A successful LS service selects STEP speed_mode=4 while zero input can retain
+SD/100; that is preparation only. Actual source and LS readback are still
+required after effective input. Source and target stable-stop criteria stay
+unchanged. --carry-grip-force-margin=3 raises only the carry force objective,
+after proven lift/retract, not the existing 2Nm actuator cap.
+
+Current physical result (2026-11-08): RGB-D lift/retract and NoSlip2 static carry
+hold passed; chair delivery has not passed. Native LS/source and its 65-element
+policy observation were observed, followed by measured root-speed violation.
+NoSlip=0 with approximately3N normal per pad instead showed about0.436mm/s axial
+soft-contact creep and failed the10mm hold guard before motion. No target was
+reached. Do not rerun an identical failed profile.
+
+A specific pad/bottle-only friction-reference diagnostic is prepared but NOT
+implemented: 22 already enabled geom pairs, same geometry/mu/normal parameters,
+solreffriction inherited0.02s ->0.002s (=2*native timestep); globalNoSlip stays0.
+This needs case-specific confirmation under model_integrity.md C.1; no permission
+is inferred from a generic completion Goal. See the measured findings for its
+exact source hashes, proposed pair table and approval status.
+
+Source chair connectivity contains14 separate solids; the seat component's top
+at(0,1.5) is0.328213m. No scene collision changes have been implemented.
+Three finite fixed-stance and bounded/full-source waist diagnostic solves did
+not establish a placement solution. They do not prove global unreachability or
+qualify a crouching controller. Keep placement NOT_RUN.
+
 
 Only a proven host-clock epoch fault can enter bounded zero/confirmed-STAND/
 complete-stop recovery before a new command; maximum four, no task-deadline

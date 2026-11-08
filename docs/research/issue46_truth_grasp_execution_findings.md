@@ -921,3 +921,58 @@ NoSlip2 的作用域是整个模型，包含脚底；旧静态夹持 PASS 不能
 仍受原 2 Nm 限制。这是显式 carry-grip-force-margin=3 参数，
 默认抓取/抬升与其他命令仍为 1.5。必须先通过八秒真实静态持瓶，
 不能把力目标、Python 发布成功或静态 IK 当成受力和行走验证。
+
+
+### 2026-11-08 精确待审边界与下一步
+
+完整取送仍未通过，不把固定桌前抓取、回放或静态IK写成START→凳子成功。
+
+| 独立现象 | 实测/状态 | 证据（reviews/issue-46/） |
+|---|---|---|
+| 原生LS实际启动 | 28次角速度0.1发布；Get/Common均LS、选中合法源，McRLDebug观测长度65；+.558s根速度0.2234m/s越过原0.20门 | raicom-stl-xvfb-native-reset-stand-20261107T232631Z |
+| 关NoSlip、携带力目标3 | 实际每侧约3N，轴向下滑拟合−0.4359mm/s，10mm滑移门失败，导航NOT_RUN | raicom-stl-xvfb-native-reset-stand-20261107T234059Z |
+| 待审局部数值方案 | 仅22对已启用包胶/瓶子接触 solreffriction:0.02→0.002s；正常参数、mu、质量、全部执行器/关节/停止门不变；尚未实施 | fetch-chair-local-friction-diagnostic-proposal-20261107T235658Z/proposal.json |
+| 椅子源组件 | 14个连通实体，seat组件6的顶面0.328213m；各部件凸包在座面中心仅seat提供0.328213m上界；整椅凸包原0.536048m | fetch-chair-source-component-seat-audit-20261107T233753Z/result.json |
+| 放置可达性 | 3个固定站位手臂解、3组保守腰姿态及全源边界离线解未找到合格位置/轴；无全局不可达结论 | fetch-chair-seat-fixed-stance-ik-20261108T000057Z/ 与 fetch-chair-seat-waist-reach-diagnostic-20261108T000301Z/ |
+
+该局部求解方案只准备了不可直接加载的XML片段和原/拟议参数表，没有
+生成或运行修改模型。当前 model_integrity.md C.1明确不覆盖接触参数，
+已在当前聊天提出一次具体确认。等待时未再发非零指令。后续应先验证
+局部漂移是否消失，再验证原严格保护下的携带，不能先把实验变成PASS。
+
+整条任务仍是Python研究原型加原生C++MC；未收敛正式C++节点，未完成持瓶
+返回凳子、放置、全链路LiDAR替换或真机验证。实验代码继续保留在
+scripts/research/，不提升到正式运行模型。PR保持Draft。
+
+#### 待确认的完整接触参数差异（未实施）
+
+源场景 SHA256: a310757ec1d8d82f604b59b08c3e0f98f6cac43e71ade99a3acd52298c0d07fc
+
+原输入是已启用的动态配对，摩擦维度继承normal solref=0.02s；下列仅是拟议片段，尚未写入任何模型。其每对 normal solref/solimp、mu、condim、margin/gap均逐项核对一致。与全局NoSlip不同，它只针对现有两侧包胶代理与瓶子。根据模型完整性合同，此处等待一次具体确认，不能因长Goal自动执行。
+
+```xml
+<contact>
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_0" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_0" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_1" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_1" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_2" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_2" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_3" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_3" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_4" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_4" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_5" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_5" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_6" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_6" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_7" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_7" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_8" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_8" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_9" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_9" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_10" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_10" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_narrow3_Link__collision_coacd_11" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_11" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_0" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_12" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_1" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_13" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_2" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_14" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_3" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_15" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_4" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_16" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_5" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_17" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_6" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_18" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_7" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_19" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_8" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_20" solreffriction="0.002 1.0" />
+  <pair geom1="R_hand_wide3_Link__collision_coacd_9" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_21" solreffriction="0.002 1.0" />
+</contact>
+```
