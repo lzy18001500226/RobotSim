@@ -1014,7 +1014,7 @@ class Plan(Node):
      self.lift_contact_lost_since=self.lift_contact_lost_since or time.monotonic()
      if time.monotonic()-self.lift_contact_lost_since>.10:raise RuntimeError('BILATERAL_CONTACT_LOST_DURING_LIFT')
     else:self.lift_contact_lost_since=None
-   if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP'):
+   if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE'):
     endpoint=self.tracking_target();target=dict(target)
     if stage in ('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
      for name in RIGHT:
@@ -1029,6 +1029,12 @@ class Plan(Node):
      limits=SOURCE_LIMITS.get(name)
      if limits is None or not limits[0]+.001<=desired<=limits[1]-.001:raise RuntimeError('LIVE_TARGET_SOURCE_LIMIT:'+name)
      target[name]=desired
+   if stage=='GAIN_NO_CONTACT_CYCLE':
+    if not USE_NATIVE_FEEDBACK:raise RuntimeError('GAIN_CYCLE_REQUIRES_NATIVE')
+    force=float(self.native_row['claw_actuators']['motor_R_claw_joint']['force'])
+    if not math.isfinite(force) or abs(force)>2.000001:raise RuntimeError('GAIN_CYCLE_FORCE_CAP')
+    for c in self.native_row.get('contacts',[]):
+     if any(str(c.get(k,'')).startswith(('R_hand_','R_omnipicker','R_claw')) for k in ('body1','body2')) and abs(float(c['local_force_torque'][0]))>.1:raise RuntimeError('GAIN_CYCLE_NOT_CONTACT_FREE')
    if not self.arm_fresh():raise RuntimeError('STALE_BILATERAL_ARM_FEEDBACK_DURING:'+stage)
    bias=({name:float(self.native_row['joints'][name]['bias_force']) for name in RIGHT} if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK else self.native_bias())
    if USE_NATIVE_BIAS and any(name not in bias for name in RIGHT):raise RuntimeError('INCOMPLETE_NATIVE_BIAS_SAMPLE')
@@ -1093,6 +1099,17 @@ try:
    actual_open=float(n.native_row['joints']['R_claw_joint']['q'])
    print(json.dumps({'native_hand_open':{'command':HAND_OPEN,'expected_joint_rad':-HAND_OPEN,'actual_joint_rad':actual_open,'error_rad':abs(actual_open+HAND_OPEN)}}),flush=True)
    if abs(actual_open+HAND_OPEN)>.03:raise RuntimeError('HAND_OPEN_NOT_REACHED; approach and closure NOT_RUN')
+ if CIRCLE_CONTRACT and CIRCLE_CONTRACT.get('right_gain_no_contact_cycle'):
+  cycle=[]
+  for initial,final in ((HAND_OPEN,0.),(0.,HAND_OPEN)):
+   for i in range(100):
+    u=(i+1)/100.;u=u*u*(3.-2.*u)
+    n.send(start,.02,'GAIN_NO_CONTACT_CYCLE',initial+u*(final-initial))
+   n.send(start,1.5,'GAIN_NO_CONTACT_CYCLE',final);n.refresh_native()
+   q=float(n.native_row['joints']['R_claw_joint']['q']);v=float(n.native_row['joints']['R_claw_joint']['qvel'])
+   cycle.append({'command':final,'actual_q_rad':q,'actual_qvel_rad_s':v,'source_host_ns':n.native_receipt_ns})
+   if abs(q+final)>.03 or abs(v)>.05:raise RuntimeError('GAIN_NO_CONTACT_CYCLE_NOT_SETTLED:'+json.dumps(cycle))
+  write_durable_milestone('/workspace/evidence/right_claw_gain_no_contact_cycle.json',{'pass':True,'actual_native_physics':True,'zero_object_contact':True,'torque_cap_nm':2.,'samples':cycle})
  n.approach_start=dict(start)
  steps=max(1,int(DURATION/.02))
  for i in range(steps):
@@ -1320,7 +1337,7 @@ def _with_carry_lease(script, retract):
     from scripts.research.issue46.native_runtime.native_base_micro_probe import write_durable_milestone
     replace("class Plan(Node):",inspect.getsource(write_durable_milestone)+"\n"+inspect.getsource(carry_abort_last_command_hold)+"\nclass Plan(Node):")
     replace("   if len(self.odom)>1 and math.hypot(","   if stage!='CARRY_HOLD' and len(self.odom)>1 and math.hypot(")
-    replace("stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP')","stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','CARRY_ABORT_HOLD')")
+    replace("stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE')","stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','CARRY_ABORT_HOLD')")
     replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')",count=2)
     replace("('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')")
     replace("  self.tracking_metrics=r.get('metrics',{})","  self.tracking_metrics=r.get('metrics',{});self.tracking_velocity=r.get('right_velocity_rad_s',{})")

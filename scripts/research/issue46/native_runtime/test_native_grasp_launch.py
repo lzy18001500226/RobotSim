@@ -122,6 +122,57 @@ class NativeLaunchTests(TestCase):
             self.assertEqual(b.attrib,expected)
         with self.assertRaises(ValueError):change_friction('<mujoco/>')
 
+    def test_bounded_claw_gain_changes_only_pd_and_keeps_force_cap(self):
+        import mujoco
+        import numpy as np
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import change_friction,JOINTS
+        xml='<mujoco><worldbody>'+''.join('<body pos="'+str(i*2)+' 0 0"><joint name="'+n+'"/><geom type="sphere" size=".1"/></body>' for i,n in enumerate(JOINTS))+'</worldbody><actuator><position name="motor_R_claw_joint" joint="R_claw_joint" kp="2" kv="1.27" gear="-1" forcelimited="true" forcerange="-2 2"/></actuator></mujoco>'
+        a=mujoco.MjModel.from_xml_string(change_friction(xml,right_damping=1.27))
+        z=mujoco.MjModel.from_xml_string(change_friction(xml,right_damping=1.27,right_kp=4.))
+        self.assertEqual(z.actuator_gainprm[0,0],4.)
+        self.assertEqual(z.actuator_biasprm[0,1],-4.)
+        self.assertEqual(z.actuator_biasprm[0,2],-1.27)
+        for key in ('actuator_forcerange','actuator_ctrlrange','jnt_range','jnt_pos','jnt_axis','body_mass','body_inertia','geom_friction'):
+            np.testing.assert_array_equal(getattr(a,key),getattr(z,key))
+        for value in (0.,-1.,4.1,float('nan')):
+            with self.assertRaises(ValueError):change_friction(xml,right_kp=value)
+
+    def test_gain_cycle_guard_rejects_contact_and_over_torque(self):
+        tree=ast.parse(generated())
+        branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and ast.unparse(n.test)=="stage == 'GAIN_NO_CONTACT_CYCLE'")
+        code=compile(ast.Module(body=branch.body,type_ignores=[]),'cycle','exec')
+        row={'claw_actuators':{'motor_R_claw_joint':{'force':1.99}},'contacts':[]}
+        ns={'self':NS(native_row=row),'USE_NATIVE_FEEDBACK':True,'math':math}
+        exec(code,ns)
+        for force in (2.01,float('nan')):
+            row['claw_actuators']['motor_R_claw_joint']['force']=force
+            with self.assertRaisesRegex(RuntimeError,'FORCE_CAP'):exec(code,ns)
+        row['claw_actuators']['motor_R_claw_joint']['force']=.8
+        row['contacts']=[{'body1':'test_cylinder','body2':'R_hand_wide3_Link','local_force_torque':[.11]}]
+        with self.assertRaisesRegex(RuntimeError,'NOT_CONTACT_FREE'):exec(code,ns)
+
+    def test_gain_cycle_requires_actual_closed_and_reopened_feedback_before_approach(self):
+        code=generated();tree=ast.parse(code)
+        branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and 'right_gain_no_contact_cycle' in ast.unparse(n.test))
+        def execute(incorrect):
+            n=NS(native_row={'joints':{'R_claw_joint':{}}},native_receipt_ns=0)
+            calls=[]
+            def send(start,dt,stage,hand):
+                calls.append((stage,hand));n.native_receipt_ns+=1
+                n.native_row['joints']['R_claw_joint']={'q':-hand+(0.05 if incorrect else 0.),'qvel':0.}
+            n.send=send;n.refresh_native=lambda:None
+            write=mock.Mock()
+            exec(compile(ast.Module(body=branch.body,type_ignores=[]),'cycle','exec'),{'n':n,'start':{},'HAND_OPEN':1.,'json':json,'write_durable_milestone':write})
+            return calls,write
+        calls,write=execute(False)
+        self.assertEqual(len(calls),202)
+        self.assertEqual(calls[100],('GAIN_NO_CONTACT_CYCLE',0.))
+        self.assertEqual(calls[-1],('GAIN_NO_CONTACT_CYCLE',1.))
+        self.assertTrue(write.call_args.args[1]['pass'])
+        with self.assertRaisesRegex(RuntimeError,'NOT_SETTLED'):execute(True)
+        self.assertLess(code.index("right_gain_no_contact_cycle"),code.index("n.approach_start=dict(start)"))
+        self.assertIn("'GAIN_NO_CONTACT_CYCLE'",code)
+
     def test_open_diagnostic_returns_before_locomotion(self):
         source=Path(__file__).with_name('xvfb_native_reset_stand.py').read_text();tree=ast.parse(source)
         branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and ast.unparse(n.test)=='args.startup_opening_diagnostic')

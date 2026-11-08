@@ -60,7 +60,7 @@ def reuse_source_pad_proxy(parent):
     destination=out/'simulator_stl_native_hand_table_control.yaml';pg.write_new_text(destination,yaml.safe_dump(cfg,sort_keys=False));record['generated']['simulator_config']={'path':str(destination),'sha256':digest(destination)}
     record['source_pad_collision_comparison']={'classification':'SIMULATION_ONLY_SOURCE_STL_COACD_COMPARISON_NOT_VENDOR_COLLISION','manifest':str(manifest),'manifest_sha256':digest(manifest),'parent':str(parent),'parent_sha256':digest(parent),'scope':['R_hand_narrow3_Link','R_hand_wide3_Link'],'part_count':len(files),'locked_parts':files,'physical_arrays_unchanged':list(physical),'visuals_and_contact_exclusions_unchanged':True,'original_condim_friction_and_force_caps_unchanged':True,'historical_trials_are_not_current_grasp_acceptance':True}
     pg.write_new_text(out/'result.json',json.dumps(record,indent=2)+'\n');pg.write_artifact_manifest(out);return out/'result.json'
-def change_friction(xml, *, both_hands=False, right_damping=None, noslip_iterations=0, elliptic_grip_solver=False):
+def change_friction(xml, *, both_hands=False, right_damping=None, right_kp=None, noslip_iterations=0, elliptic_grip_solver=False):
     root=ET.fromstring(xml)
     names=JOINTS+tuple("L_"+n[2:] for n in JOINTS) if both_hands else JOINTS
     for name in names:
@@ -72,6 +72,11 @@ def change_friction(xml, *, both_hands=False, right_damping=None, noslip_iterati
         nodes=root.findall('./actuator/position[@name="motor_R_claw_joint"]')
         if len(nodes)!=1:raise ValueError('right position actuator not unique')
         nodes[0].set('kv',str(float(right_damping)))
+    if right_kp is not None:
+        if not np.isfinite(right_kp) or float(right_kp) not in (2.,4.):raise ValueError('only source2 or diagnosed4 right claw kp is supported')
+        nodes=root.findall('./actuator/position[@name="motor_R_claw_joint"]')
+        if len(nodes)!=1:raise ValueError('right position actuator not unique')
+        nodes[0].set('kp',str(float(right_kp)))
     if noslip_iterations:
         if noslip_iterations!=2:raise ValueError('only the bounded two-iteration numerical diagnostic is supported')
         option=root.find('option')
@@ -83,7 +88,7 @@ def change_friction(xml, *, both_hands=False, right_damping=None, noslip_iterati
         option.set('cone','elliptic');option.set('impratio','10')
     return ET.tostring(root,encoding='utf-8',xml_declaration=True)
 
-def build(parent, *, both_hands=False, right_damping=None, noslip_iterations=0, elliptic_grip_solver=False):
+def build(parent, *, both_hands=False, right_damping=None, right_kp=None, noslip_iterations=0, elliptic_grip_solver=False):
     parent=Path(parent);record=json.loads(parent.read_text());generated=record['generated']
     if record['classification']!='SIMULATION_ONLY_STL_CLAW_CONTROL_OVERLAY':raise ValueError('unexpected parent')
     for item in generated.values():
@@ -91,7 +96,7 @@ def build(parent, *, both_hands=False, right_damping=None, noslip_iterations=0, 
     out=pg.create_unique_output_directory(ROOT/'reviews/issue-46',prefix='claw-zero-internal-friction').native_path
     for name in ('host_scene','runtime_scene'):
         src=Path(generated[name]['path']);dst=out/src.name
-        pg.write_new_bytes(dst,change_friction(src.read_bytes(),both_hands=both_hands,right_damping=right_damping,noslip_iterations=noslip_iterations,elliptic_grip_solver=elliptic_grip_solver))
+        pg.write_new_bytes(dst,change_friction(src.read_bytes(),both_hands=both_hands,right_damping=right_damping,right_kp=right_kp,noslip_iterations=noslip_iterations,elliptic_grip_solver=elliptic_grip_solver))
         generated[name]={'path':str(dst),'sha256':digest(dst)}
     original=mujoco.MjModel.from_xml_path(json.loads(parent.read_text())['generated']['host_scene']['path'])
     derived=mujoco.MjModel.from_xml_path(generated['host_scene']['path'])
@@ -104,8 +109,10 @@ def build(parent, *, both_hands=False, right_damping=None, noslip_iterations=0, 
         if name=='dof_frictionloss':
             expected=a.copy()
             for i in allowed:expected[i]=0.
-        elif name=='actuator_biasprm' and right_damping is not None:
-            expected=a.copy();act=mujoco.mj_name2id(derived,mujoco.mjtObj.mjOBJ_ACTUATOR,'motor_R_claw_joint');expected[act,2]=-right_damping
+        elif name in ('actuator_gainprm','actuator_biasprm') and (right_damping is not None or right_kp is not None):
+            expected=a.copy();act=mujoco.mj_name2id(derived,mujoco.mjtObj.mjOBJ_ACTUATOR,'motor_R_claw_joint')
+            if right_kp is not None:expected[act,0 if name=='actuator_gainprm' else 1]=right_kp if name=='actuator_gainprm' else -right_kp
+            if right_damping is not None and name=='actuator_biasprm':expected[act,2]=-right_damping
         else:expected=a
         if not np.array_equal(expected,b,equal_nan=True):raise ValueError('unexpected compiled model delta:'+name)
         checked.append(name)
@@ -123,6 +130,12 @@ def build(parent, *, both_hands=False, right_damping=None, noslip_iterations=0, 
     if right_damping is not None:
         act=mujoco.mj_name2id(original,mujoco.mjtObj.mjOBJ_ACTUATOR,'motor_R_claw_joint')
         record['diagnostic_parameter_delta']['right_actuator_kv']={'from':float(-original.actuator_biasprm[act,2]),'to':float(right_damping),'kp_unchanged':float(original.actuator_gainprm[act,0]),'purpose':'damp measured 171640Z impact/rebound; local coupled inertia estimate ~0.2027 kg m2 with native kp=2 gives critical kv ~1.2735; not hardware identification'}
+    if right_kp is not None:
+        act=mujoco.mj_name2id(original,mujoco.mjtObj.mjOBJ_ACTUATOR,'motor_R_claw_joint')
+        if 'right_actuator_kv' in record['diagnostic_parameter_delta']:
+            record['diagnostic_parameter_delta']['right_actuator_kv'].pop('kp_unchanged',None)
+            record['diagnostic_parameter_delta']['right_actuator_kv']['kp_after_explicit_delta']=float(right_kp)
+        record['diagnostic_parameter_delta']['right_actuator_kp']={'from':float(original.actuator_gainprm[act,0]),'to':float(right_kp),'force_cap_nm':derived.actuator_forcerange[act].tolist(),'kv_unchanged_by_kp':float(-derived.actuator_biasprm[act,2]),'requires_native_no_contact_cycle':True,'purpose':'092646Z ctrl0 saturated at ~.76Nm with retained2Nm cap; compare proportional authority, not limit or contact modification'}
     if noslip_iterations:
         if derived.opt.noslip_iterations!=2 or runtime_model.opt.noslip_iterations!=2:raise ValueError('numerical solver option mismatch')
         record['diagnostic_parameter_delta']['numerical_solver']={'noslip_iterations_from':int(original.opt.noslip_iterations),'noslip_iterations_to':2,'purpose':'official MuJoCo soft-friction drift diagnostic after 180821Z','official_source':'https://mujoco.readthedocs.io/en/3.3.7/modeling.html#preventing-slip','geometry_condim_and_contact_friction_unchanged':True,'inverse_dynamics_limitation':'Noslip postprocessing makes inverse dynamics ill-defined; not a vendor-default or hardware qualification'}
