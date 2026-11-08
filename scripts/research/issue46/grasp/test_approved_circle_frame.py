@@ -33,6 +33,26 @@ class FrameTests(unittest.TestCase):
         row['bodies']['test_cylinder']['position_m'][0]+=.007
         with self.assertRaisesRegex(RuntimeError,'SLIPPED'):self.ns['tracking_task'](row,reference,phase)
 
+    def test_empty_bottle_may_tilt_but_cannot_leave_the_grasp_point(self):
+        from scipy.spatial.transform import Rotation
+        reference=dict(grasp_height_above_center_m=.1)
+        phase=dict(phase="CARRY_HOLD",native_arrival_pass=True,post_retract_physical_hold_pass=True,
+                   generation=1,carry_heading_xy_m=[.3,-.2],carry_world_z_m=.85,
+                   initial_object_in_hand_m=[0.,0.,.1],slip_reference="GRASP_SECTION")
+        B=Rotation.from_euler("y",.4).as_matrix()
+        com=np.array([1.,1.,.85])-.1*B[:,2]
+        row=dict(generation=1,bodies={
+            "pelvis":dict(position_m=[2.,3.,.65],rotation=np.eye(3).ravel().tolist()),
+            "R_omnipicker_base_link":dict(position_m=[1.,1.,.75],rotation=np.eye(3).ravel().tolist()),
+            "test_cylinder":dict(position_m=com.tolist(),rotation=B.ravel().tolist())})
+        with self.assertRaisesRegex(RuntimeError,"TILTED"):self.ns["tracking_task"](row,reference,phase)
+        phase["allow_carried_bottle_tilt"]=True
+        point,axis=self.ns["tracking_task"](row,reference,phase)
+        np.testing.assert_allclose(point,[2.3,2.8,.85])
+        np.testing.assert_array_equal(axis,[0.,0.,1.])
+        row["bodies"]["test_cylinder"]["position_m"][0]+=.011
+        with self.assertRaisesRegex(RuntimeError,"SLIPPED"):self.ns["tracking_task"](row,reference,phase)
+
     def test_carry_velocity_feedforward_uses_unique_source_time_and_source_limits(self):
         calculate=self.ns['bounded_tracking_velocity']
         np.testing.assert_allclose(calculate([0.,0.],[.02,-.1],.02,[2.,3.]),[1.,-3.])

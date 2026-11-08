@@ -279,3 +279,18 @@ control tuning as an unapproved mechanical change.
 The workstreams may investigate independently, but maintained code integrates
 sequentially into one active branch and one task PR. Their only shared model
 input is the frozen registry identity above.
+
+
+### Empty-bottle transport criterion (maintainer clarification, 2026-11-08)
+
+The current empty H300 bottle may tilt during transport; world-upright attitude
+is an observation, not grasp failure after a qualified lift. The explicit
+--allow-carried-bottle-tilt profile preserves the legacy strict profile and
+records bottle angle. It does not alter the desired IK task, source mechanics,
+materials, actuator limits or robot posture limits.
+
+Keep the existing grasp-point displacement limit10mm, bilateral contact-loss
+window0.10s, drop-height/environment-support checks, source/MC freshness and
+the complete physical/controller-target stop gates. Initial upright perception
+and pre-closure motion checks remain in force. A published close command is not
+proof of retention; old strict-upright failures are not relabeled as passes.

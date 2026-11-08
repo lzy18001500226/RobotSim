@@ -113,6 +113,12 @@ this permit cannot authorize rearm. Whole-record audits apply the same phase
 bounds. Missing, stale or invalid identity cannot enable the higher limit.
 No robot geometry, MC/policy/gains, joint limits or hardware changes are approved.
 
+The later direct empty-bottle clarification allows object-world tilt after
+qualified lift; it is a task-acceptance change, not a contact/model change.
+Robot posture and retention/drop/collision guards remain unchanged; see the
+[empty-bottle transport criterion](../workflows/06_X2_AUTONOMY_TASK.md).
+
+
 This is a separately reported simulation diagnostic, not vendor acceptance.
 It does not reclassify prior strict0.20 failures as passes.
 

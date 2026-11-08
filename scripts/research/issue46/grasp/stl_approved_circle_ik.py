@@ -175,7 +175,7 @@ def tracking_task(row, reference, phase=None):
         baseline=np.asarray(phase['initial_object_in_hand_m'],dtype=float)
         if phase.get('slip_reference')!='GRASP_SECTION' or baseline.shape!=(3,) or not np.isfinite(baseline).all():raise RuntimeError('INVALID_CARRY_SLIP_REFERENCE')
         if np.linalg.norm(H.T@(measured-np.asarray(hand['position_m']))-baseline)>.01:raise RuntimeError('BOTTLE_SLIPPED_DURING_CARRY')
-        if B[2,2]<np.cos(.10):raise RuntimeError('BOTTLE_TILTED_DURING_CARRY')
+        if not phase.get('allow_carried_bottle_tilt',False) and B[2,2]<np.cos(.10):raise RuntimeError('BOTTLE_TILTED_DURING_CARRY')
         base=row['bodies']['pelvis'];R=np.asarray(base['rotation']).reshape(3,3);yaw=np.arctan2(R[1,0],R[0,0])
         c,s=np.cos(yaw),np.sin(yaw)
         xy=np.asarray(base['position_m'][:2])+np.array([[c,-s],[s,c]])@offset

@@ -522,14 +522,16 @@ class CarryTransit050Tests(unittest.TestCase):
             "--claw-control-overlay-result-sha256","unused",*ns["argv"]])
         reverse_guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_reverse_moving_arc"))
         exec(compile(ast.Module(body=[reverse_guard],type_ignores=[]),"actual_reverse_guard","exec"),{"args":reverse})
-        args.carry_reverse_moving_arc=False;args.carry_away_1m=True;args.carry_goal_world_xy=None
+        args.carry_reverse_moving_arc=False;args.carry_away_1m=True;args.carry_goal_world_xy=None;args.allow_carried_bottle_tilt=True
         ns=dict(args=args,argv=[])
         exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_away_forwarding","exec"),ns)
         self.assertIn("--carry-away-1m",ns["argv"])
         self.assertNotIn("--carry-goal-world-xy",ns["argv"])
+        self.assertIn("--allow-carried-bottle-tilt",ns["argv"])
         away,_=parser_only(inner,"parser",["--table-overlay-result","/unused","--table-overlay-result-sha256","unused",
             "--reset-helper","/unused","--reset-helper-sha256","unused","--claw-control-overlay-result","/unused",
             "--claw-control-overlay-result-sha256","unused",*ns["argv"]])
+        self.assertTrue(away.allow_carried_bottle_tilt)
         away_guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_away_1m"))
         exec(compile(ast.Module(body=[away_guard],type_ignores=[]),"actual_away_guard","exec"),{"args":away})
 
@@ -774,5 +776,27 @@ class SequentialCarryPermitTests(unittest.TestCase):
         self.assertEqual(report["composite_stop_scope"],"TURN_ONLY")
         result["command_log"].append(dict(t=5.,forward=.12))
         self.assertEqual(m.carry_stop_evidence(result)["independent_composite_stop"],"NOT_RUN")
+
+
+
+
+class EmptyBottleOwnerGuardTests(unittest.TestCase):
+    def test_actual_owner_guard_keeps_slip_and_drop_checks(self):
+        import inspect
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        source=inspect.getsource(h._with_carry_lease)
+        tree=ast.parse(source)
+        value=next(n.args[1].value for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="replace"
+                   and len(n.args)>1 and isinstance(n.args[1],ast.Constant) and "CARRY_OBJECT_POSE_OR_SLIP" in str(n.args[1].value))
+        line=next(l.strip() for l in value.splitlines() if l.strip().startswith("if slip>"))
+        expr=line[len("if "):line.index(":raise")]
+        code=compile(ast.parse(expr,mode="eval"),"actual_owner_guard","eval")
+        ns=dict(slip=0.,B=[0.]*8+[math.cos(.4)],obj={"position_m":[0.,0.,.75]},math=math,
+                LIFT_CONTRACT={"retract_preflight":{}})
+        self.assertTrue(eval(code,ns))
+        ns["LIFT_CONTRACT"]["retract_preflight"]["allow_carried_bottle_tilt"]=True
+        self.assertFalse(eval(code,ns))
+        ns["slip"]=.011;self.assertTrue(eval(code,ns))
+        ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
 
 if __name__=="__main__":unittest.main()

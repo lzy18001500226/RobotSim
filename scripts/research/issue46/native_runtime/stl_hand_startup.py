@@ -1343,8 +1343,8 @@ def _with_carry_lease(script, retract):
     delta=[obj['position_m'][i]+CIRCLE_CONTRACT['height_above_center_m']*B[3*i+2]-hand['position_m'][i] for i in range(3)]
     local=[sum(H[3*i+j]*delta[i] for i in range(3)) for j in range(3)]
     slip=math.sqrt(sum((a-b)**2 for a,b in zip(local,self.lift_phase['initial_object_in_hand_m'])))
-    if slip>.01 or B[8]<math.cos(.10) or obj['position_m'][2]<.25:raise RuntimeError('CARRY_OBJECT_POSE_OR_SLIP:'+json.dumps({'slip_m':slip,'vertical_axis_dot':B[8],'bottle_z_m':obj['position_m'][2],'source_host_ns':self.native_receipt_ns}))
-    heartbeat={'mode':'MEASURED_LOAD_BEARING_CARRY_HOLD','healthy':True,'pid':os.getpid(),'node_name':self.get_name(),'host_monotonic_ns':time.monotonic_ns(),'native_source_host_ns':self.native_receipt_ns,'generation':self.native_generation,'object_in_hand_error_m':slip,'bottle_world_xyz_m':obj['position_m'],'publication_is_not_mc_acknowledgement':True}
+    if slip>.01 or (not LIFT_CONTRACT['retract_preflight'].get('allow_carried_bottle_tilt',False) and B[8]<math.cos(.10)) or obj['position_m'][2]<.25:raise RuntimeError('CARRY_OBJECT_POSE_OR_SLIP:'+json.dumps({'slip_m':slip,'vertical_axis_dot':B[8],'bottle_z_m':obj['position_m'][2],'source_host_ns':self.native_receipt_ns}))
+    heartbeat={'mode':'MEASURED_LOAD_BEARING_CARRY_HOLD','healthy':True,'pid':os.getpid(),'node_name':self.get_name(),'host_monotonic_ns':time.monotonic_ns(),'native_source_host_ns':self.native_receipt_ns,'generation':self.native_generation,'object_in_hand_error_m':slip,'bottle_world_tilt_rad':math.acos(max(-1.,min(1.,B[8]))),'empty_bottle_tilt_allowed':bool(LIFT_CONTRACT['retract_preflight'].get('allow_carried_bottle_tilt',False)),'bottle_world_xyz_m':obj['position_m'],'publication_is_not_mc_acknowledgement':True}
     with open('/workspace/evidence/carry_heartbeat.tmp','w') as f:json.dump(heartbeat,f)
     os.replace('/workspace/evidence/carry_heartbeat.tmp','/workspace/evidence/carry_heartbeat.json')
 """)
@@ -1356,7 +1356,7 @@ def _with_carry_lease(script, retract):
    hand=n.native_row['bodies']['R_omnipicker_base_link'];base=n.native_row['bodies']['pelvis'];R=hand['rotation'];c=CIRCLE_CONTRACT['circle_center_local_m']
    tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
    yaw=math.atan2(base['rotation'][3],base['rotation'][0]);dx=tcp[0]-base['position_m'][0];dy=tcp[1]-base['position_m'][1]
-   n.lift_phase.update(phase='CARRY_HOLD',created_host_ns=time.monotonic_ns(),post_retract_physical_hold_pass=True,carry_lease_s=LIFT_CONTRACT['retract_preflight']['carry_lease_s'],carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_source_speed_rad_s=[LIFT_CONTRACT['retract_preflight']['source_motion_limits'][name][2] for name in RIGHT])
+   n.lift_phase.update(phase='CARRY_HOLD',allow_carried_bottle_tilt=bool(LIFT_CONTRACT['retract_preflight'].get('allow_carried_bottle_tilt',False)),created_host_ns=time.monotonic_ns(),post_retract_physical_hold_pass=True,carry_lease_s=LIFT_CONTRACT['retract_preflight']['carry_lease_s'],carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_source_speed_rad_s=[LIFT_CONTRACT['retract_preflight']['source_motion_limits'][name][2] for name in RIGHT])
    n.write_phase(n.lift_phase)
    try:
     n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)

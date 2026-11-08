@@ -764,7 +764,7 @@ def run_probe(smoke_only=False):
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False):
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if angular_command_cap not in (.075,.10):raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
@@ -773,7 +773,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -882,7 +882,7 @@ def run_carry_navigation(n,contract):
     from types import SimpleNamespace
     from point_goal_controller import PointGoalController,ControllerConfig,Pose2D,Goal2D,NavState
     cfg=MICRO["carry"];result=dict(classification="SIMULATION_ONLY_NATIVE_LOCOMOTION_STEP_CARRY" if cfg.get("motion_mode")=="LOCOMOTION_STEP" else "SIMULATION_ONLY_FETCH_CARRY_ROUTE",pass_result=False,
-        goal_xy_m=cfg["goal_xy_m"],zero_receipt_ack="UNAVAILABLE",clock_recoveries=[],route_samples=[])
+        goal_xy_m=cfg["goal_xy_m"],empty_bottle_tilt_allowed=bool(cfg.get("allow_carried_bottle_tilt",False)),zero_receipt_ack="UNAVAILABLE",clock_recoveries=[],route_samples=[])
     if cfg.get("transit_policy_050"):result["classification"]="SIMULATION_ONLY_NATIVE_STEP_CARRY_TRANSIT_050" if cfg.get("motion_mode")=="LOCOMOTION_STEP" else "SIMULATION_ONLY_FOUNDATIONWALK_CARRY_TRANSIT_050"
     if cfg.get("reverse_moving_arc"):result.update(classification="SIMULATION_ONLY_REVERSE_MOVING_ARC_CARRY",goal_yaw_requirement="NOT_REQUIRED_FOR_KNOWN_CHAIR_AREA")
     if cfg.get("away_1m"):result["classification"]="SIMULATION_ONLY_LEAVE_TURN_FORWARD_ONE_METRE"

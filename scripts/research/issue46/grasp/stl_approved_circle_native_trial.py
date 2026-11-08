@@ -57,6 +57,7 @@ def main():
     p.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace")
     p.add_argument("--native-render-adapter",help="explicit process-only GPU selection for the native simulator, with actual GL identity verification")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
+    p.add_argument("--allow-carried-bottle-tilt",action="store_true",help="empty bottle: world tilt is recorded, not a carry failure; retention and robot guards stay active")
     p.add_argument("--carry-away-1m",action="store_true",help="leave table, turn to opposite heading, then carry forward >=1m with measured stops")
     p.add_argument("--carry-goal-world-xy",type=float,nargs=2,help="explicit known-map delivery goal after physical grasp/retract")
     p.add_argument("--carry-timeout-s",type=float,default=90.)
@@ -81,6 +82,7 @@ def main():
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
     args=p.parse_args()
+    if args.allow_carried_bottle_tilt and args.carry_goal_world_xy is None and not args.carry_away_1m:raise ValueError("empty-bottle tilt policy is scoped to verified carry tasks")
     if args.carry_away_1m and (args.carry_goal_world_xy is not None or args.carry_native_step_mode or args.carry_reverse_moving_arc or not args.carry_transit_speed_policy_050):
         raise ValueError("away1m requires its distinct bounded FoundationWalk transit mission")
 
@@ -271,6 +273,7 @@ def main():
     if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and (args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)):raise ValueError('SDK turn diagnostic requires a carry goal')
     if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
         argv.extend(['--carry-timeout-s',str(args.carry_timeout_s),'--carry-grip-force-margin',str(args.carry_grip_force_margin)])
+        if args.allow_carried_bottle_tilt:argv.append('--allow-carried-bottle-tilt')
         if args.carry_away_1m:argv.append('--carry-away-1m')
         else:argv.extend(['--carry-goal-world-xy',*map(str,args.carry_goal_world_xy)])
         if args.carry_sdk_minimum_turn:argv.append('--carry-sdk-minimum-turn')
