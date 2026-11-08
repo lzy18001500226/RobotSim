@@ -57,18 +57,22 @@ concave-pad support circle. Actual H300/D70/.200kg fixed-stance truth and fresh
 RGB-D grasps have passed bilateral load transfer, >=50 mm lift and >=1 s
 unsupported hold in the explicitly labeled SIMULATION_ONLY source-derived
 collision/control profile. The native interactive review entry is available.
-A bounded post-lift retract has also passed actual native physics; held-object
-navigation to the known chair area is an integration diagnostic, not yet a
-qualified full fetch/delivery task.
-Current carry attempts distinguish a real native gait-start safety failure from
-soft-contact axial creep with NoSlip disabled. A pad-local numerical-friction
-comparison received specific approval, passed compiled equivalence and actual
-8-second holding with NoSlip disabled. Carry motion still fails the preserved
-strict transit guards; full chair delivery remains unqualified. Source chair geometry/reachability inspection is offline only.
-The strengthened START-to-table chain is still unqualified: subsequent
-per-physics-step source joint-speed checks found violations in historical
-walking traces. Four-direction stance correction, dynamic short-bottle
-postures and LiDAR-based grasp execution remain under validation.
+A bounded post-lift retract has passed actual native physics. The current task
+uses the human-approved two-table scene. Real carry episode20261108T190527Z
+measured0.346m retreat, about186.2deg signed turn,0.264m peak turn/braking
+excursion and a passing1.984s composite physical/controller-target stop;
+the independent native source-joint audit passed. Its legacy200mm settled
+centre check remained FAIL (213.5mm), which is preserved. A later turn measured
+about184.9deg with the source audit/stop passing and316.7mm braking excursion.
+These observations do not qualify strict pivot precision or full delivery.
+
+The separately labeled functional table-transfer profile replans from actual
+stopped pose and keeps the physical/source-joint/contact/freshness/stop gates.
+It now includes an actual-scene-screened second-table target and existing-owner
+contact-transfer/release code; end-to-end dynamic qualification is in progress.
+No table-delivery, unknown-bottle stance-adjustment, short-bottle dynamics,
+LiDAR-based grasp or hardware acceptance is claimed from static screening.
+The older chair outline and platform P0–P7 labels are historical scope.
 
 Read the [X2 task workflow](docs/workflows/06_X2_AUTONOMY_TASK.md) for task-stage
 scope and the [measured grasp findings](docs/research/issue46_truth_grasp_execution_findings.md)

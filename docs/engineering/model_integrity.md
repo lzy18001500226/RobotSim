@@ -185,8 +185,9 @@ to complete retreat, bounded small-radius180deg turn and placement on the
 approved second table. Record .20m/s SDK-amplitude transit/correction as a
 separate explicit simulation profile; defaults stay unchanged. No per-run
 confirmation for these routine choices. The separately named compact-turn
-comparison uses pure yaw <=.60rad/s (native SDK keyboard bound is1.0), no
-commanded XY during TURN, measured active radius <=.30m and settled centre
+comparison uses pure yaw <=.60rad/s (native SDK keyboard bound is1.0), the pure-yaw variant has zero commanded XY during TURN; the later explicit
+centre-feedback variant uses only longitudinal correction with norm<=.20m/s,
+no unqualified lateral command. Measured active radius <=.30m and settled centre
 <=.20m. This is the user-permitted small-radius task, distinct from the legacy
 strict50mm in-place diagnostic; no source joint or physical stop limit changes. Physical faults stop the current
 episode; analyze them before another distinct attempt. This does not authorize
