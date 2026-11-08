@@ -1068,6 +1068,13 @@ def run_carry_navigation(n,contract):
                         if not prepared:raise RuntimeError("CLOCK_RECOVERY_STEP_PREPARATION_FAILED")
                     if until-time.monotonic()<5.:raise RuntimeError("CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT")
                     transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
+                    if mission is not None and mission["phase"]=="PRESTEP":
+                        pose=n.sample()["pose"]
+                        result["clock_recoveries"][-1]["prestep_restart_from_measured_stop"]=pose
+                        result["clock_recoveries"][-1]["previous_prestep_load_sequence"]=mission.get("prestep_load_sequence",[])
+                        mission["prestep_origin_pose"]=pose
+                        mission["prestep_started_s"]=time.monotonic()
+                        mission["prestep_load_sequence"]=[]
                     if mission is not None and mission["phase"]=="TURN":
                         pose=n.sample()["pose"]
                         delta=(pose["yaw"]-mission["previous_yaw"]+math.pi)%(2*math.pi)-math.pi
@@ -1085,10 +1092,11 @@ def run_carry_navigation(n,contract):
             if not -1.65<=p["x"]<=1.65 or not -1.75<=p["y"]<=1.75:raise RuntimeError("CARRY_ROOM_WORKSPACE")
             if mission is not None:
                 if mission["phase"]=="PRESTEP":
-                    distance=math.hypot(p["x"]-start["x"],p["y"]-start["y"])
-                    yaw_delta=(p["yaw"]-start["yaw"]+math.pi)%(2*math.pi)-math.pi
+                    prep_origin=mission.get("prestep_origin_pose",start)
+                    distance=math.hypot(p["x"]-prep_origin["x"],p["y"]-prep_origin["y"])
+                    yaw_delta=(p["yaw"]-prep_origin["yaw"]+math.pi)%(2*math.pi)-math.pi
                     if distance>.15 or abs(yaw_delta)>.20:raise RuntimeError("GAIT_PREPARATION_POSE_BOUND")
-                    if tick-began>2.:raise RuntimeError("GAIT_PREPARATION_NOT_OBSERVED")
+                    if tick-mission.get("prestep_started_s",began)>2.:raise RuntimeError("GAIT_PREPARATION_NOT_OBSERVED")
                     forces,dominant=native_foot_loads(n.latest_row)
                     supports=mission.setdefault("prestep_load_sequence",[])
                     if dominant and (not supports or supports[-1]["side"]!=dominant):
