@@ -66,8 +66,9 @@ after proven lift/retract, not the existing 2Nm actuator cap. With the approved
 local-friction comparison, the same explicit margin is preloaded before lift;
 real sustained pad force must meet that budget before the probe begins.
 
-Current physical result (2026-11-08): RGB-D lift/retract and NoSlip2 static carry
-hold passed; chair delivery has not passed. Native LS/source and its 65-element
+Current physical result (2026-11-08): RGB-D lift/retract and actual8-second
+static carry passed with the specifically approved local friction reference and
+NoSlip0; chair delivery has not passed. Native LS/source and its 65-element
 policy observation were observed, followed by measured root-speed violation.
 NoSlip=0 with approximately3N normal per pad instead showed about0.436mm/s axial
 soft-contact creep and failed the10mm hold guard before motion. No target was
