@@ -816,6 +816,15 @@ class EmptyBottleOwnerGuardTests(unittest.TestCase):
         ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
 
 class InplaceCentreHoldTests(unittest.TestCase):
+    def test_recovery_uses_eligible_axis_commands_inside_the_same_total_cap(self):
+        origin={'x':0.,'y':0.}
+        self.assertEqual(m.inplace_recovery_command({'x':-.03,'y':0.,'yaw':0.},origin),(.12,0.))
+        self.assertEqual(m.inplace_recovery_command({'x':0.,'y':-.03,'yaw':0.},origin),(0.,.05))
+        for yaw in (0.,.7,1.5,3.):
+            f,l=m.inplace_recovery_command({'x':-.03,'y':.02,'yaw':yaw},origin)
+            self.assertLessEqual(math.hypot(f,l),.12)
+            self.assertTrue((abs(f)==.12 and l==0.) or (f==0. and abs(l)==.05))
+
     def test_startup_is_bounded_monotonic_and_reaches_the_original_cap(self):
         values=[m.bounded_start_scale(t/100.) for t in range(51)]
         self.assertEqual(values[0],0.)
