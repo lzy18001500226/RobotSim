@@ -111,7 +111,10 @@ def carry_policy_speed_limit(records,stamp_ns,generation,owner_pid):
     """At most two non-overlapping one-use intervals for the away/1m task."""
     if records is None:return .20
     if isinstance(records,dict):records=[records]
-    if not isinstance(records,list) or len(records)>2:raise ValueError("CARRY_POLICY_INTERVALS")
+    if not isinstance(records,list):raise ValueError("CARRY_POLICY_INTERVALS")
+    budget=6 if records and all(r.get("task_interval_budget")==6 for r in records) else 2
+    if len(records)>budget:raise ValueError("CARRY_POLICY_INTERVALS")
+    if budget==6 and len({r["command_deadline_ns"] for r in records})>1:raise ValueError("CARRY_POLICY_DEADLINE_RESET")
     ordered=sorted(records,key=lambda r:r["created_ns"])
     for first,second in zip(ordered,ordered[1:]):
         if first.get("revoked_ns") is None or first["revoked_ns"]>second["created_ns"]:
@@ -123,7 +126,7 @@ def current_carry_transit_speed_limit(evidence, row, owner_pid):
     """Only a live PID/start-token verified process can permit .50."""
     import os,json,time
     from pathlib import Path
-    paths=[Path(evidence)/name for name in ("carry_transit_permit.json","carry_transit_forward_permit.json")]
+    paths=[Path(evidence)/name for name in ("carry_transit_permit.json","carry_transit_forward_permit.json",*[f"carry_transit_clock_recovery_{i}.json" for i in range(1,5)])]
     records=[json.loads(path.read_text()) for path in paths if path.exists()]
     now=time.monotonic_ns()
     limit=min(carry_policy_speed_limit(records,now,row["generation"],owner_pid),
@@ -145,12 +148,16 @@ def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evi
     import os,json,time
     from pathlib import Path
     name=cfg.get("permit_filename","carry_transit_permit.json")
-    if name not in ("carry_transit_permit.json","carry_transit_forward_permit.json"):raise ValueError("CARRY_PERMIT_PATH")
+    if name not in ("carry_transit_permit.json","carry_transit_forward_permit.json",*[f"carry_transit_clock_recovery_{i}.json" for i in range(1,5)]):raise ValueError("CARRY_PERMIT_PATH")
     path=Path(evidence)/name;now=time.monotonic_ns()
     if phase=="TRANSIT":
         if record is not None or path.exists():raise RuntimeError("CARRY_TRANSIT_REARM_FORBIDDEN")
         seconds=float(cfg["timeout_s"])
         if not 5.<=seconds<=90.:raise ValueError("CARRY_TRANSIT_TIMEOUT")
+        if name.startswith("carry_transit_clock_recovery_"):
+            previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
+            if not cfg.get("compact_turn") or cfg.get("clock_stop_pass") is not True or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"]:
+                raise RuntimeError("CLOCK_RECOVERY_REARM_NOT_QUALIFIED")
         if name=="carry_transit_forward_permit.json":
             previous=json.loads((Path(evidence)/"carry_transit_permit.json").read_text())
             if cfg.get("turn_stop_pass") is not True or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"]:
@@ -161,6 +168,7 @@ def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evi
                     generation=native_row["generation"],created_ns=now,
                     command_deadline_ns=deadline,absolute_deadline_ns=deadline+15_000_000_000,
                     braking_ns=None,revoked_ns=None)
+        if cfg.get("compact_turn"):record["task_interval_budget"]=6
     elif record is None:return None
     else:
         record=dict(record)
@@ -847,7 +855,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
 
 
 def recoverable_carry_clock_fault(fault, error, recovery_count):
-    return (str(error).startswith("NATIVE_FEEDBACK_INVALID:") and
+    return ((str(error).startswith("NATIVE_FEEDBACK_INVALID:") or str(error)=="CLOCK_GENERATION_PENDING") and
             isinstance(fault,dict) and fault.get("gate")=="CLOCK_STEP_DURING_MOTION" and
             0<=recovery_count<4)
 
@@ -1000,14 +1008,29 @@ def run_carry_navigation(n,contract):
             except RuntimeError as exc:
                 fault=n.feedback_fault or {}
                 # Only a qualified source-clock epoch fault is recoverable.
-                if cfg.get("transit_policy_050") or cfg.get("motion_mode")=="LOCOMOTION_STEP" or not recoverable_carry_clock_fault(fault,exc,len(result["clock_recoveries"])):raise
+                if (cfg.get("transit_policy_050") and not cfg.get("compact_turn")) or cfg.get("motion_mode")=="LOCOMOTION_STEP" or not recoverable_carry_clock_fault(fault,exc,len(result["clock_recoveries"])):raise
                 n.deadline_zero();n.stop_started=True
+                if cfg.get("compact_turn"):transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                 if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
                 n.feedback_fault=None
                 n.observe(1.05,baseline=baseline);n.stand_once()
                 stopped=n.observe(8.,baseline=baseline,require_stop=True)
                 result["clock_recoveries"].append(dict(fault=fault,stop=stopped,t=time.monotonic()))
-                controller.reset();n.await_graph()
+                controller.reset();n.await_graph();n.pump()
+                if cfg.get("compact_turn"):
+                    transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
+                    closed_permits.append(transit_permit);transit_permit=None
+                    cfg["previous_permit_filename"]=cfg.get("permit_filename","carry_transit_permit.json")
+                    cfg["permit_filename"]="carry_transit_clock_recovery_"+str(len(result["clock_recoveries"]))+".json"
+                    cfg["clock_stop_pass"]=bool(stopped["pass"])
+                    if until-time.monotonic()<5.:raise RuntimeError("CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT")
+                    transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
+                    if mission is not None and mission["phase"]=="TURN":
+                        pose=n.sample()["pose"]
+                        delta=(pose["yaw"]-mission["previous_yaw"]+math.pi)%(2*math.pi)-math.pi
+                        mission["unwrapped_yaw"]+=delta
+                        mission["previous_yaw"]=pose["yaw"];mission["previous_source_s"]=None
+                    acquired=False
                 n.stop_started=False
                 with n.lock:n.moving=True
                 activation_started=time.monotonic();continue

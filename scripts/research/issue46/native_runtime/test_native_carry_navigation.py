@@ -974,3 +974,18 @@ class CompactTurnTests(unittest.TestCase):
         self.assertIn('0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN"',code)
         self.assertIn('retreat_goal=.50 if cfg.get("compact_turn") else .30',code)
         with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,compact_turn=True)
+
+class CompactClockRecoveryTests(unittest.TestCase):
+    def test_pending_epoch_is_not_misclassified_but_physical_faults_never_rearm(self):
+        self.assertTrue(m.recoverable_carry_clock_fault({'gate':'CLOCK_STEP_DURING_MOTION'},RuntimeError('CLOCK_GENERATION_PENDING'),0))
+        self.assertFalse(m.recoverable_carry_clock_fault({'gate':'PLANAR_SPEED'},RuntimeError('CLOCK_GENERATION_PENDING'),0))
+        self.assertFalse(m.recoverable_carry_clock_fault({'gate':'CLOCK_STEP_DURING_MOTION'},RuntimeError('SOURCE_JOINT_SPEED:knee'),0))
+        self.assertFalse(m.recoverable_carry_clock_fault({'gate':'CLOCK_STEP_DURING_MOTION'},RuntimeError('CLOCK_GENERATION_PENDING'),4))
+    def test_compact_generated_path_requires_stop_and_keeps_absolute_deadline(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True)
+        compile(code,'compact_clock','exec')
+        self.assertIn('cfg["clock_stop_pass"]=bool(stopped["pass"])',code)
+        self.assertIn('CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT',code)
+        self.assertIn('CARRY_POLICY_DEADLINE_RESET',code)
+        self.assertIn('CLOCK_RECOVERY_REARM_NOT_QUALIFIED',code)
+        self.assertLess(code.index('stopped=n.observe(8.,baseline=baseline,require_stop=True)'),code.index('cfg["clock_stop_pass"]=bool(stopped["pass"])'))
