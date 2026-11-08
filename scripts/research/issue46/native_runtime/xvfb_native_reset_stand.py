@@ -1942,7 +1942,7 @@ def main() -> None:
         sim_command = ["docker", "exec", "-d", container, "bash", "-lc", sim_launch]
         pg.write_new_text(output / "native_sim_launch.json", json.dumps({"command": sim_command, "native_observer_required": native_observer is not None}, indent=2) + "\n")
         run(sim_command, timeout_s=5.0)
-        wait_for(output / "mujoco-console.log", "MujocoSimModule Started Succeeded", timeout_s=25.0)
+        wait_for(output / "mujoco-console.log", "MujocoSimModule Started Succeeded", timeout_s=45.0)
         result["gates"]["SIMULATOR"] = "PASS"
         if native_observer is not None:
             wait_for(output / "native_physics.jsonl", '"host_monotonic_ns"', timeout_s=5.0)
