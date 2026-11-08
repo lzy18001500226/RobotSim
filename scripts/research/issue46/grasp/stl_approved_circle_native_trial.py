@@ -64,6 +64,7 @@ def main():
     p.add_argument("--carry-compact-angular-cap",type=float,choices=(.30,.60),default=.30)
     p.add_argument("--carry-release-source-on-stop",action="store_true",help="DISABLE only our locomotion source after ZERO; ENABLE after full stop before rearm")
     p.add_argument("--carry-compact-centre-feedback",action="store_true",help="existing world-centre P feedback, <=.20m/s norm, during compact turn only")
+    p.add_argument("--carry-vendor-transition-table",action="store_true",help="comparison with unchanged delivered SD/LD action table; no extra500ms rules")
     p.add_argument("--carry-delivery-config",type=Path,help="explicit approved two-table transfer task; not the legacy one-metre test")
     p.add_argument("--carry-gait-prepare",action="store_true",help="bounded native yaw gait wakeup; require measured alternating foot loads before retreat")
     p.add_argument("--carry-inplace-centre-hold",action="store_true")
@@ -101,6 +102,7 @@ def main():
     if args.right_claw_kp is not None and (not args.physical_lift_test or (not args.carry_away_1m and args.carry_goal_world_xy is None)):
         raise ValueError("right gain comparison requires the instrumented physical-lift/carry path")
     if (args.carry_compact_angular_cap!=.30 or args.carry_release_source_on_stop) and not args.carry_compact_turn:raise ValueError("compact source/cap scope")
+    if args.carry_vendor_transition_table and (args.carry_delivery_config is None or args.carry_native_action_smoothing or args.carry_native_step_mode):raise ValueError("vendor transition comparison scope")
     if args.carry_delivery_config is not None and not (args.carry_compact_turn and args.carry_gait_prepare and args.carry_release_source_on_stop and args.carry_compact_centre_feedback and not args.carry_native_step_mode):raise ValueError("delivery profile requires qualified compact FoundationWalk controls")
     if args.carry_compact_centre_feedback and not args.carry_compact_turn:raise ValueError("compact centre feedback scope")
     if args.carry_gait_prepare and not args.carry_compact_turn:raise ValueError("gait preparation requires compact carry")
@@ -324,6 +326,7 @@ def main():
         if args.carry_inplace_centre_hold:argv.append('--carry-inplace-centre-hold')
         if args.carry_compact_turn:argv.append('--carry-compact-turn')
         if args.carry_gait_prepare:argv.append('--carry-gait-prepare')
+        if args.carry_vendor_transition_table:argv.append('--carry-vendor-transition-table')
         if args.carry_delivery_config is not None:argv.extend(['--carry-delivery-config',str(args.carry_delivery_config.resolve())])
         if args.carry_compact_centre_feedback:argv.append('--carry-compact-centre-feedback')
         if args.carry_compact_angular_cap!=.30:argv.extend(['--carry-compact-angular-cap',str(args.carry_compact_angular_cap)])

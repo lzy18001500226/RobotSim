@@ -868,8 +868,9 @@ def inplace_centre_command(pose, origin, max_speed=.12, forward_only=False):
     return c*vx+si*vy,-si*vx+c*vy
 
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False, gait_prepare=False, compact_angular_cap=.30, release_source_on_stop=False, compact_centre_feedback=False, delivery=None):
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False, gait_prepare=False, compact_angular_cap=.30, release_source_on_stop=False, compact_centre_feedback=False, delivery=None, vendor_transition_table=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
+    if vendor_transition_table and (native_action_smoothing or native_step or not delivery):raise ValueError("vendor action-table comparison scope")
     if delivery is not None:
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
         if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
@@ -895,12 +896,12 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if not math.isfinite(retreat_brake_delay_s) or not 0.<=retreat_brake_delay_s<=3.:raise ValueError("retreat braking bound")
     if not math.isfinite(turn_brake_delay_s) or not 0.<=turn_brake_delay_s<=3. or (inplace_centre_hold or turn_brake_delay_s) and not straight_retreat_turn:
         raise ValueError("turn-centre/braking profile requires the explicit in-place task")
-    if straight_retreat_turn and (not away_1m or not native_action_smoothing):
+    if straight_retreat_turn and (not away_1m or not (native_action_smoothing or vendor_transition_table)):
         raise ValueError("retreat/in-place prefix requires the explicit bounded carry transition path")
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),delivery=delivery,compact_centre_feedback=bool(compact_centre_feedback),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),vendor_transition_table=bool(vendor_transition_table),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),delivery=delivery,compact_centre_feedback=bool(compact_centre_feedback),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -1381,7 +1382,7 @@ def run_carry_navigation(n,contract):
                 angular=0. if cfg.get("reverse_moving_arc") and abs(output.yaw_error_rad)<=.02 else output.angular_z
                 bounds=row["raw_common"]["speed_status"]
                 if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["lateral_bounds"]["min_value"]<=lateral<=bounds["lateral_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
-                if row["common_mode_status_value"]==300 and not (cfg.get("native_action_smoothing") and not acquired and 0<=tick-activation_started<=.75):raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
+                if row["common_mode_status_value"]==300 and not ((cfg.get("native_action_smoothing") or cfg.get("vendor_transition_table")) and not acquired and 0<=tick-activation_started<=.75):raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
                 handshake=(row["common_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_header_code"]==0 and row["state_age_s"]["get_mode"]<=.20 and row["common_source"]["name"]=="robotsim_official_cmd_vel")
                 acquired=acquired or handshake
                 if tick-activation_started>.75 and not handshake:raise RuntimeError("CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED")

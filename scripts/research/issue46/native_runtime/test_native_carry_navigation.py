@@ -1074,3 +1074,13 @@ class TwoTableDeliveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):m.carry_policy_speed_limit(xs+[rec(7,True)],23000000000,1,19)
         xs[-1]["command_deadline_ns"]+=1
         with self.assertRaisesRegex(ValueError,"DEADLINE"):m.carry_policy_speed_limit(xs,20000000000,1,19)
+
+class VendorActionTableTests(unittest.TestCase):
+    def test_original_transition_profile_does_not_masquerade_as_added_smoothing(self):
+        import json
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True)
+        compile(code,"vendor_action_table_carry","exec")
+        self.assertIn("'native_action_smoothing': False",code)
+        self.assertIn("'vendor_transition_table': True",code)
+        with self.assertRaises(ValueError):m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True,native_action_smoothing=True)
