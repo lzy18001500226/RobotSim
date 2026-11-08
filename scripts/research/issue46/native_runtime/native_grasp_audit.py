@@ -381,24 +381,28 @@ def native_reset_dispatch_evidence(path, dispatch, *, expected_pid):
             "dispatch_monotonic_ns":stamp,"boundary_host_ns":first["host_monotonic_ns"],
             "dispatch_to_boundary_s":(first["host_monotonic_ns"]-stamp)*1e-9}
 
-def read_complete_native_rows(path):
-    """Ignore only an in-progress final write; malformed complete records fail."""
-    rows=[]
-    with Path(path).open("rb") as stream:
+def iter_complete_native_rows(path):
+    """Stream valid complete rows; only the live trailing partial write is ignored."""
+    with Path(path).open('rb') as stream:
         for line in stream:
             if not line.endswith(bytes([10])):break
-            rows.append(json.loads(line))
-    return rows
+            yield json.loads(line)
+
+def read_complete_native_rows(path):
+    return list(iter_complete_native_rows(path))
+
 
 def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns):
     """Independent whole recorded carry audit, including skipped callback frames."""
     import math
     from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault
-    window=[r for r in rows if start_ns<=r["host_monotonic_ns"]<=end_ns]
-    if len(window)<2:return {"pass":False,"failure":"INSUFFICIENT_CARRY_NATIVE_EVIDENCE"}
-    generation=window[0]["generation"];previous=None;max_root=0.;max_ratio=(0.,"")
+    generation=None;previous=None;first_stamp=None;count=0;max_root=0.;max_ratio=(0.,"")
     allowed=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")]
-    for row in window:
+    for row in rows:
+        if row["host_monotonic_ns"]<start_ns:continue
+        if row["host_monotonic_ns"]>end_ns:continue
+        if first_stamp is None:first_stamp=row["host_monotonic_ns"];generation=row["generation"]
+        count+=1
         if row.get("engine_version")!=337 or row["generation"]!=generation:return {"pass":False,"failure":"CARRY_NATIVE_GENERATION_CHANGED"}
         if previous is not None and not 0<(row["host_monotonic_ns"]-previous["host_monotonic_ns"])*1e-9<=.20:return {"pass":False,"failure":"CARRY_NATIVE_GAP"}
         for c in row.get("contacts",[]):
@@ -413,4 +417,5 @@ def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns):
             j=row["joints"][name];ratio=max(abs(j["qvel"]),j.get("max_abs_qvel_since_previous_sample",0.))/bounds[2]
             max_ratio=max(max_ratio,(ratio,name))
         previous=row
-    return {"pass":True,"classification":"INDEPENDENT_RECORDED_NATIVE_CARRY_MOTION_AUDIT","sample_count":len(window),"host_span_s":(window[-1]["host_monotonic_ns"]-window[0]["host_monotonic_ns"])*1e-9,"max_recorded_root_speed_m_s":max_root,"max_joint_speed_limit_ratio":max_ratio[0],"worst_joint":max_ratio[1]}
+    if count<2:return {"pass":False,"failure":"INSUFFICIENT_CARRY_NATIVE_EVIDENCE"}
+    return {"pass":True,"classification":"INDEPENDENT_RECORDED_NATIVE_CARRY_MOTION_AUDIT","sample_count":count,"host_span_s":(previous["host_monotonic_ns"]-first_stamp)*1e-9,"max_recorded_root_speed_m_s":max_root,"max_joint_speed_limit_ratio":max_ratio[0],"worst_joint":max_ratio[1]}

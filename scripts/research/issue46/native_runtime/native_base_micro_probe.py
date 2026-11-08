@@ -153,6 +153,21 @@ def observed_clock_step(previous_offset_ns, before_ns, wall_ns, after_ns):
     return offset, delta if delta is not None and abs(delta)>10000000 else None
 
 
+def write_durable_milestone(path, value):
+    """Atomic, fsynced one-shot milestones; never used in the 50Hz loop."""
+    import json,os
+    from pathlib import Path
+    destination=Path(path)
+    if destination.exists():raise FileExistsError('refusing existing milestone:'+str(destination))
+    temporary=destination.with_name(destination.name+'.committing')
+    with temporary.open('x',encoding='utf-8') as stream:
+        json.dump(value,stream,allow_nan=False);stream.write(chr(10));stream.flush();os.fsync(stream.fileno())
+    os.replace(temporary,destination)
+    directory=os.open(str(destination.parent),os.O_RDONLY|os.O_DIRECTORY)
+    try:os.fsync(directory)
+    finally:os.close(directory)
+
+
 def heading_hold_command(current_yaw, initial_yaw):
     """Existing Dock .8 heading feedback, within the qualified .075 rad/s cap."""
     if not all(math.isfinite(x) for x in (current_yaw, initial_yaw)):
@@ -799,6 +814,6 @@ def run_carry_navigation(n,contract):
         try:n.stop_feedback()
         except Exception as exc:result["feedback_cleanup_failure"]=str(exc);result["pass_result"]=False
         result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace)
-        Path("/workspace/evidence/native_carry_route_result.json").write_text(json.dumps(result,indent=2)+"\n")
+        write_durable_milestone("/workspace/evidence/native_carry_route_result.json",result)
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}),flush=True)

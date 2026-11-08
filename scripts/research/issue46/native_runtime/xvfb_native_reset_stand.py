@@ -1213,7 +1213,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     nav_path=output/"native_carry_route_result.json"
     nav=json.loads(nav_path.read_text()) if nav_path.exists() else {"pass_result":False,"failure":"CARRY_ROUTE_NO_RESULT","stdout_tail":route.stdout[-1600:]}
     result["carry_navigation"]={k:v for k,v in nav.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}
-    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.read_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
+    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
     result["carry_native_motion_audit"]=recorded
     if not recorded["pass"]:
         nav["pass_result"]=False;nav.setdefault("failure","RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure")))
@@ -2516,7 +2516,8 @@ def main() -> None:
         subprocess.run(["docker", "rm", container], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
         absent=subprocess.run(["docker","inspect",container],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=5.,check=False)
         result['cleanup']={'container':container,'inspect_returncode':absent.returncode,'confirmed_absent':absent.returncode==1 and 'no such object' in absent.stdout.lower() and container.lower() in absent.stdout.lower(),'inspect_output':absent.stdout.strip()}
-        pg.write_new_text(output / "result.json", json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import write_durable_milestone
+        write_durable_milestone(output / "result.json", result)
         pg.write_new_bytes(output / Path(__file__).name, Path(__file__).read_bytes())
         pg.write_artifact_manifest(output)
     print(json.dumps({"output_wsl": str(output), "gates": result["gates"], "failure": result.get("failure")}, ensure_ascii=False, indent=2))

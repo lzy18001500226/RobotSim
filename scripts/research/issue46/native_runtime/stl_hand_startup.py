@@ -1299,7 +1299,8 @@ def _with_carry_lease(script, retract):
         if script.count(old)!=count:raise ValueError("carry extension anchor changed:"+old[:50])
         script=script.replace(old,new)
     import inspect
-    replace("class Plan(Node):",inspect.getsource(carry_abort_last_command_hold)+"\nclass Plan(Node):")
+    from scripts.research.issue46.native_runtime.native_base_micro_probe import write_durable_milestone
+    replace("class Plan(Node):",inspect.getsource(write_durable_milestone)+"\n"+inspect.getsource(carry_abort_last_command_hold)+"\nclass Plan(Node):")
     replace("   if len(self.odom)>1 and math.hypot(","   if stage!='CARRY_HOLD' and len(self.odom)>1 and math.hypot(")
     replace("stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP')","stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','CARRY_ABORT_HOLD')")
     replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')",count=2)
@@ -1337,8 +1338,7 @@ def _with_carry_lease(script, retract):
     n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)
     n.pre_carry_odom=list(n.odom);n.pre_carry_tilt=list(n.tilt)
     ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'carry_required_normal_force_n':LIFT_CONTRACT['required_normal_force_n'],'carry_target_normal_force_n':LIFT_CONTRACT['target_normal_force_n'],'root_actuator_torque_cap_nm_unchanged':2.,'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'start_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}
-    with open('/workspace/evidence/carry_ready.tmp','w') as f:json.dump(ready,f)
-    os.replace('/workspace/evidence/carry_ready.tmp','/workspace/evidence/carry_ready.json')
+    write_durable_milestone('/workspace/evidence/carry_ready.json',ready)
     carry_until=time.monotonic()+float(ready['lease_s'])
     while not os.path.exists('/workspace/evidence/carry_release') and time.monotonic()<carry_until:
      n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)

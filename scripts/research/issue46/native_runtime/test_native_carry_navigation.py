@@ -128,7 +128,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                 if immediate_watchdog:self.callback()
             def cancel(self):pass
         n=Node();written=[]
-        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[.3,0.],"timeout_s":5.,"motion_mode":"LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(Path,"write_text",lambda self,text:written.append(text)),contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[.3,0.],"timeout_s":5.,"motion_mode":"LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(m,"write_durable_milestone",lambda path,value:written.append(json.dumps(value))),contextlib.redirect_stdout(io.StringIO()):
             m.run_carry_navigation(n,SimpleNamespace())
         return json.loads(written[-1]),n
     def test_goal_stop_uses_zero_then_stand_then_independent_observation(self):
@@ -194,7 +194,7 @@ class CarryParentIntegrationTests(unittest.TestCase):
                     (out/"native_carry_route_result.json").write_text(json.dumps(dict(pass_result=True,command_log=[dict(forward=.12,lateral=0.,angular=0.)])))
                     (out/"native_carry_owner.exit").write_text("0")
                 return subprocess.CompletedProcess(cmd,0,"")
-            with mock.patch.object(parent.pg,"write_new_text",side_effect=lambda p,t:p.write_text(t)),mock.patch.object(parent.pg,"write_new_bytes",side_effect=lambda p,t:p.write_bytes(t)),mock.patch.object(parent,"qualify_static_carry_hold",return_value={"pass":True,"fixture_only":True}),mock.patch.object(parent,"run",run),mock.patch.object(parent.time,"monotonic_ns",return_value=now),mock.patch.object(audit,"read_complete_native_rows",return_value=[]),mock.patch.object(audit,"evaluate_carry_motion",return_value={"pass":True,"fixture_only":True}):
+            with mock.patch.object(parent.pg,"write_new_text",side_effect=lambda p,t:p.write_text(t)),mock.patch.object(parent.pg,"write_new_bytes",side_effect=lambda p,t:p.write_bytes(t)),mock.patch.object(parent,"qualify_static_carry_hold",return_value={"pass":True,"fixture_only":True}),mock.patch.object(parent,"run",run),mock.patch.object(parent.time,"monotonic_ns",return_value=now),mock.patch.object(audit,"iter_complete_native_rows",return_value=[]),mock.patch.object(audit,"evaluate_carry_motion",return_value={"pass":True,"fixture_only":True}):
                 completed=parent.execute_grasp_with_carry("fixture", "",out,args,plan,result,48)
             self.assertEqual(completed.returncode,0)
             self.assertEqual(result["gates"]["CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"],"PASS")
@@ -202,6 +202,28 @@ class CarryParentIntegrationTests(unittest.TestCase):
             self.assertTrue((out/"point_goal_controller.py").is_file())
             self.assertEqual(len(calls),2)
             self.assertNotIn("locomotion velocity",result["commands_not_sent"])
+
+class DurableMilestoneTests(unittest.TestCase):
+    def test_streamed_audit_keeps_late_regression_fail_closed(self):
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import native_grasp_audit as audit
+        def row(stamp):return dict(host_monotonic_ns=stamp,generation=1,engine_version=337,sim_time_s=1.,contacts=[],joints={})
+        with mock.patch.object(m,'native_pose',return_value={'vx':0.,'vy':0.}),mock.patch.object(m,'physical_fault',return_value=None):
+            passed=audit.evaluate_carry_motion(iter([row(1000000000),row(1020000000)]),{},[],start_ns=1000000000,end_ns=1100000000)
+            failed=audit.evaluate_carry_motion(iter([row(1000000000),row(1020000000),row(2000000000),row(1010000000)]),{},[],start_ns=1000000000,end_ns=1100000000)
+        self.assertTrue(passed['pass']);self.assertEqual(passed['sample_count'],2)
+        self.assertFalse(failed['pass']);self.assertEqual(failed['failure'],'CARRY_NATIVE_GAP')
+
+    def test_atomic_milestone_is_complete_and_refuses_rewrite(self):
+        import tempfile,json
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'ready.json'
+            m.write_durable_milestone(path,{'ready':True})
+            self.assertEqual(json.loads(path.read_text()),{'ready':True})
+            self.assertFalse(path.with_name(path.name+'.committing').exists())
+            with self.assertRaises(FileExistsError):m.write_durable_milestone(path,{'ready':False})
+            self.assertEqual(json.loads(path.read_text()),{'ready':True})
+
 
 class ApprovedLocalFrictionGuardTests(unittest.TestCase):
     def test_unapproved_solver_or_timestep_cannot_generate_a_model(self):
