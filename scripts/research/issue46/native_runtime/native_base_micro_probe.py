@@ -769,7 +769,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if angular_command_cap not in (.075,.10):raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
-    if away_1m and (not transit_policy_050 or native_step or reverse_moving_arc or angular_command_cap!=.10):raise ValueError("away1m requires distinct bounded FoundationWalk .10 profile")
+    if away_1m and (not transit_policy_050 or native_step or reverse_moving_arc):raise ValueError("away1m requires distinct bounded FoundationWalk profile")
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
@@ -958,7 +958,7 @@ def run_carry_navigation(n,contract):
                     if abs(turn_error)>.08:
                         if abs(turn_error)>math.pi+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=turn_error,
-                                               linear_x=-.12,angular_z=max(-.10,min(.10,.8*turn_error)))
+                                               linear_x=-.12,angular_z=max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
                     else:
                         if not acquired:raise RuntimeError("AWAY_TURN_SOURCE_NOT_CONFIRMED")
                         mission["turn_source_and_mode_observed"]=True

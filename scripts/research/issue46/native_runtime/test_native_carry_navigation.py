@@ -608,6 +608,20 @@ class CarryDebugTimingTests(unittest.TestCase):
 
 
 
+class CarryTurnCapTests(unittest.TestCase):
+    def test_away_turn_obeys_existing_explicit_angular_cap(self):
+        from types import SimpleNamespace
+        for cap in (.075,.10):
+            code=m.build_carry_route_script(None,{},[],carry_pid=42,transit_policy_050=True,away_1m=True,angular_command_cap=cap)
+            tree=ast.parse(code)
+            assignment=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='output' for t in n.targets) and isinstance(n.value,ast.Call) and 'turn_error' in ast.unparse(n.value))
+            for error in (-3.,3.,-.01):
+                ns={'cfg':{'angular_command_cap':cap},'turn_error':error,'SimpleNamespace':SimpleNamespace,'NavState':SimpleNamespace(ALIGN='align')}
+                exec(compile(ast.Module(body=[assignment],type_ignores=[]),'actual_away_turn','exec'),ns)
+                self.assertLessEqual(abs(ns['output'].angular_z),cap)
+                self.assertEqual(ns['output'].linear_x,-.12)
+            self.assertIn('planar_speed_limit=.20',code)
+
 class MeasuredForceTargetTests(unittest.TestCase):
     def test_higher_control_target_does_not_raise_load_acceptance(self):
         from scripts.research.issue46.grasp.stl_approved_circle_ik import grip_force_budget
