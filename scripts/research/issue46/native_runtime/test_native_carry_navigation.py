@@ -48,6 +48,7 @@ class CarryNavigationTests(unittest.TestCase):
             ns=dict(argparse=argparse,__doc__='validation only')
             exec(compile(ast.Module(body=prefix,type_ignores=[]),'real_collector_argument_validation','exec'),ns)
             self.assertEqual(ns['args'].max_duration_s,90.)
+
         args[-1]='170'
         with mock.patch.object(sys,'argv',args),contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
             exec(compile(ast.Module(body=prefix,type_ignores=[]),'real_collector_argument_validation','exec'),dict(argparse=argparse,__doc__='validation only'))
@@ -558,5 +559,20 @@ class CarrySchedulingRepairTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,"NONFINITE_LEFT"):
             exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_left_bias","exec"),ns)
 
+
+
+
+
+class CarryDebugTimingTests(unittest.TestCase):
+    def test_carry_capture_starts_after_static_hold_and_before_motion(self):
+        source=Path(__file__).with_name("xvfb_native_reset_stand.py").read_text()
+        tree=ast.parse(source)
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="execute_grasp_with_carry")
+        code=ast.unparse(fn)
+        self.assertLess(code.index("qualify_static_carry_hold"),code.index("start_runtime_rl_debug_capture"))
+        self.assertLess(code.index("start_runtime_rl_debug_capture"),code.index("route = run("))
+        main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="main")
+        calls=[n for n in ast.walk(main) if isinstance(n,ast.If) and "args.capture_mc_rl_debug and args.carry_goal_world_xy is None" in ast.unparse(n.test)]
+        self.assertEqual(len(calls),1)
 
 if __name__=="__main__":unittest.main()

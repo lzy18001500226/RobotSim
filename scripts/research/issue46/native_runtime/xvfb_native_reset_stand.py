@@ -1141,6 +1141,27 @@ class MicroProbeComplete(Exception):
 
 
 
+def start_runtime_rl_debug_capture(container,environment,output,args,result):
+        import re
+        mc_pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",(output/"mc-console.log").read_text(errors="replace")))
+        if len(mc_pids)!=1:raise RuntimeError("MC_RL_DEBUG_PROCESS_IDENTITY_NOT_UNIQUE")
+        expected_debug_node="mc_ros2_node"+next(iter(mc_pids))
+        setup_host=Path(result["mc_rl_debug_capture"]["overlay_setup"])
+        setup="/workspace/robotsim/"+str(setup_host.relative_to(EVIDENCE_REPO))
+        debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s "+str(90 if args.carry_goal_world_xy is not None else 45)+" > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
+        run(["docker","exec","-d",container,"bash","-lc",debug_command],timeout_s=5.)
+        wait_for(output/"mc_rl_debug_ready.json",'"status"',timeout_s=8.)
+        debug_ready=json.loads((output/"mc_rl_debug_ready.json").read_text())
+        import re
+        mc_pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",(output/"mc-console.log").read_text(errors="replace")))
+        publishers=debug_ready.get("publishers",[])
+        if len(mc_pids)!=1 or debug_ready.get("status")!="READY" or len(publishers)!=1 or publishers[0].get("node_name")!="mc_ros2_node"+next(iter(mc_pids)) or publishers[0].get("node_namespace")!="/":
+            raise RuntimeError("MC_RL_DEBUG_PUBLISHER_NOT_VERIFIED:"+str(debug_ready))
+        result["mc_rl_debug_capture"]["verified_ready"]=debug_ready
+        wait_for(output/"mc_rl_debug_trace.jsonl",'"obs_vec"',timeout_s=2.)
+        result["mc_rl_debug_capture"]["actual_typed_packet_observed"]=True
+
+
 def qualify_static_carry_hold(output, ready):
     """Eight actual simulation seconds before locomotion, with a 12s wall cap."""
     from scripts.research.issue46.native_runtime import native_grasp_audit
@@ -1208,6 +1229,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     if handoff.get("classification")!="BODY_RELATIVE_WORLD_UPRIGHT_IK_CARRY" or handoff.get("physical_hold_pass") is not True or handoff.get("generation")!=ready["generation"]:
         raise RuntimeError("CARRY_TRACKER_RELEASE_INVALID")
 
+    if getattr(args,"capture_mc_rl_debug",False):start_runtime_rl_debug_capture(container,environment,output,args,result)
     route=run(["docker","exec",container,"bash","-lc",environment+f"timeout {int(args.carry_timeout_s+30)}s python3 /workspace/evidence/native_carry_route.py"],timeout_s=args.carry_timeout_s+32.,check=False)
     pg.write_new_text(output/"native_carry_route.stdout",route.stdout)
     nav_path=output/"native_carry_route_result.json"
@@ -2176,25 +2198,8 @@ def main() -> None:
             actual=yaml.safe_load(generated.stdout)
             if actual.get('smooth_transitions')!=seed_cfg['smooth_transitions']:raise RuntimeError('NATIVE_ACTION_SMOOTHING_CONFIG_MISMATCH')
             result['carry_native_action_smoothing']['runtime_rule_count_verified']=True
-        if args.capture_mc_rl_debug:
-            import re
-            mc_pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",(output/"mc-console.log").read_text(errors="replace")))
-            if len(mc_pids)!=1:raise RuntimeError("MC_RL_DEBUG_PROCESS_IDENTITY_NOT_UNIQUE")
-            expected_debug_node="mc_ros2_node"+next(iter(mc_pids))
-            setup_host=Path(result["mc_rl_debug_capture"]["overlay_setup"])
-            setup="/workspace/robotsim/"+str(setup_host.relative_to(EVIDENCE_REPO))
-            debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s "+str(90 if args.carry_goal_world_xy is not None else 45)+" > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
-            run(["docker","exec","-d",container,"bash","-lc",debug_command],timeout_s=5.)
-            wait_for(output/"mc_rl_debug_ready.json",'"status"',timeout_s=8.)
-            debug_ready=json.loads((output/"mc_rl_debug_ready.json").read_text())
-            import re
-            mc_pids=set(re.findall(r"\|[ \t]*Process PID[ \t]*\|[ \t]*(\d+)[ \t]*\|",(output/"mc-console.log").read_text(errors="replace")))
-            publishers=debug_ready.get("publishers",[])
-            if len(mc_pids)!=1 or debug_ready.get("status")!="READY" or len(publishers)!=1 or publishers[0].get("node_name")!="mc_ros2_node"+next(iter(mc_pids)) or publishers[0].get("node_namespace")!="/":
-                raise RuntimeError("MC_RL_DEBUG_PUBLISHER_NOT_VERIFIED:"+str(debug_ready))
-            result["mc_rl_debug_capture"]["verified_ready"]=debug_ready
-            wait_for(output/"mc_rl_debug_trace.jsonl",'"obs_vec"',timeout_s=2.)
-            result["mc_rl_debug_capture"]["actual_typed_packet_observed"]=True
+        if args.capture_mc_rl_debug and args.carry_goal_world_xy is None:
+            start_runtime_rl_debug_capture(container,environment,output,args,result)
 
         if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
             bridge_log = output / "official_cmd_vel_bridge.stdout"
