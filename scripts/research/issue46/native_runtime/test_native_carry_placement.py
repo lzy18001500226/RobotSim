@@ -62,3 +62,23 @@ class PlacementTests(unittest.TestCase):
         self.assertIn("TABLE_SUPPORT_LOST_BEFORE_CLOSEOUT",code)
         self.assertNotIn(".qpos[",code)
         self.assertNotIn("mj_step(",code)
+
+    def test_neutral_stow_validates_all_arm_limits_before_first_publication(self):
+        import ast,math
+        from pathlib import Path
+        from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference,perform_native_neutral_stow
+        source=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261108T215555Z/native_hal_bilateral_arm_pregrasp.py")
+        values={}
+        for node in ast.parse(source.read_text()).body:
+            if isinstance(node,ast.Assign):
+                for name in node.targets:
+                    if isinstance(name,ast.Name) and name.id in ("LIFT_CONTRACT","LEFT","RIGHT"):
+                        values[name.id]=ast.literal_eval(node.value)
+        settings=native_stand_arm_reference()
+        class BeforePublish(Exception):pass
+        class Node:
+            def refresh_native(self):raise BeforePublish()
+        scope={**values,"math":math}
+        import inspect
+        exec(inspect.getsource(perform_native_neutral_stow),scope)
+        with self.assertRaises(BeforePublish):scope["perform_native_neutral_stow"](Node(),settings)

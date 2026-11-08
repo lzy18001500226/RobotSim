@@ -22,7 +22,7 @@ def perform_native_neutral_stow(n, settings):
     target=settings["arm_target_rad"]
     if set(target)!=set(LEFT+RIGHT) or settings["duration_s"]!=6.:raise RuntimeError("STOW_SCOPE")
     for name,value in target.items():
-        lo,hi=SOURCE_LIMITS[name][:2]
+        lo,hi=LIFT_CONTRACT["retract_preflight"]["source_motion_limits"][name][:2]
         if not math.isfinite(value) or not lo+.01<=value<=hi-.01:raise RuntimeError("STOW_SOURCE_LIMIT:"+name)
     n.refresh_native();start={name:float(n.arm[name]) for name in LEFT+RIGHT};began=time.monotonic()
     for index in range(300):
