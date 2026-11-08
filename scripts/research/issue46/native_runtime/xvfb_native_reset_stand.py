@@ -1218,8 +1218,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         source=REPO/"reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py"
         if not (output/"steady_cmd_vel_bridge.py").exists():pg.write_new_text(output/"steady_cmd_vel_bridge.py",micro.build_steady_bridge_source(source.read_text()))
         bridge_linear=max(getattr(args,"carry_transit_command_speed",.12),getattr(args,"carry_turn_recovery_speed",.12))
-        if getattr(args,"carry_compact_turn",False):carry_angular=.30
-        carry_angular=.10 if (args.carry_sdk_minimum_turn or getattr(args,"carry_away_1m",False)) else .075
+        carry_angular=.30 if getattr(args,"carry_compact_turn",False) else .10 if (args.carry_sdk_minimum_turn or getattr(args,"carry_away_1m",False)) else .075
         bridge_command=(environment+f"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:={0.0 if args.carry_inplace_centre_hold else .12} -p max_forward_velocity:={bridge_linear} -p max_backward_velocity:={bridge_linear} -p min_lateral_velocity:=0.0 -p max_lateral_velocity:={args.carry_turn_recovery_speed if args.carry_inplace_centre_hold else 0.0} -p min_angular_velocity:={0.0 if getattr(args,'carry_away_1m',False) else carry_angular} -p max_angular_velocity:={carry_angular} > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1")
         run(["docker","exec","-d",container,"bash","-lc",bridge_command],timeout_s=5.)
         wait_for(bridge,"cmd_vel_bridge started.",timeout_s=10.)

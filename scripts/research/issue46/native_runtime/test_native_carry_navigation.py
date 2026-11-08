@@ -989,3 +989,19 @@ class CompactClockRecoveryTests(unittest.TestCase):
         self.assertIn('CARRY_POLICY_DEADLINE_RESET',code)
         self.assertIn('CLOCK_RECOVERY_REARM_NOT_QUALIFIED',code)
         self.assertLess(code.index('stopped=n.observe(8.,baseline=baseline,require_stop=True)'),code.index('cfg["clock_stop_pass"]=bool(stopped["pass"])'))
+
+class RealCompactBridgeArgumentTests(unittest.TestCase):
+    def test_complete_actual_bridge_argument_path_does_not_overwrite_yaw_cap(self):
+        import shlex
+        from types import SimpleNamespace as NS
+        tree=ast.parse(Path(__file__).with_name('xvfb_native_reset_stand.py').read_text())
+        func=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='execute_grasp_with_carry')
+        bridge_if=next(n for n in func.body if isinstance(n,ast.If) and any(isinstance(c,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='bridge_command' for t in c.targets) for c in n.body))
+        statements=[n for n in bridge_if.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id in ('bridge_linear','carry_angular','bridge_command') for t in n.targets) or isinstance(n,ast.If) and 'carry_compact_turn' in ast.unparse(n.test)]
+        for compact,expected in ((True,.3),(False,.1)):
+            args=NS(carry_compact_turn=compact,carry_sdk_minimum_turn=True,carry_away_1m=True,carry_transit_command_speed=.12,carry_turn_recovery_speed=.12,carry_inplace_centre_hold=False)
+            ns=dict(args=args,environment='')
+            exec(compile(ast.Module(body=statements,type_ignores=[]),'actual_bridge_launch_arguments','exec'),ns)
+            argv=shlex.split(ns['bridge_command'])
+            self.assertIn('max_angular_velocity:='+str(expected),argv)
+            self.assertEqual(ns['carry_angular'],expected)
