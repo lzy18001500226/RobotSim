@@ -872,6 +872,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if delivery is not None:
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
+        if not 0.<=float(delivery.get("intermediate_turn_stop_reserve_rad",0.))<=.40:raise ValueError("intermediate stopping reserve bound")
         if delivery.get("gait_prepare_angular_rad_s",.10) not in (-.10,.10):raise ValueError("gait preparation direction")
         if not .12<=float(delivery.get("intermediate_turn_heading_tolerance_rad",.12))<=.30:raise ValueError("intermediate task heading bound")
         if delivery.get("schema")!="robotsim.x2.two-table-delivery.v1" or delivery.get("frame")!="native_scene_world":raise ValueError("delivery scene contract")
@@ -1213,8 +1214,11 @@ def run_carry_navigation(n,contract):
                         rate=sum((x-mx)*(y-my) for x,y in zip(xs,ys))/variance if variance else 0.
                         if rate*turn_error>0:
                             reserve=min(.75,abs(rate)*cfg.get("turn_brake_delay_s",0.))
+                    profile_reserve=float((cfg.get("delivery") or {}).get("intermediate_turn_stop_reserve_rad",0.))
+                    reserve=max(reserve,profile_reserve)
                     mission["measured_yaw_rate_rad_s"]=rate
-                    mission["predicted_post_zero_yaw_rad"]=math.copysign(reserve,rate)
+                    mission["profile_observed_stop_reserve_rad"]=profile_reserve
+                    mission["predicted_post_zero_yaw_rad"]=math.copysign(reserve,turn_error if profile_reserve else rate)
                     mission["turn_max_center_excursion_m"]=max(mission.get("turn_max_center_excursion_m",0.),math.hypot(p["x"]-mission.get("turn_origin_pose",start)["x"],p["y"]-mission.get("turn_origin_pose",start)["y"]))
                     if cfg.get("compact_turn") and mission["turn_max_center_excursion_m"]>.30:raise RuntimeError("COMPACT_TURN_RADIUS_300MM")
                     centre_origin=mission.get("turn_origin_pose",start)
@@ -1436,6 +1440,17 @@ def run_carry_navigation(n,contract):
             try:n.pump()
             except Exception:pass
             time.sleep(.015)
+        if cfg.get("delivery") and not result.get("pass_result") and result.get("failure"):
+            try:
+                n.pump();safe=n.sample()
+                if baseline is not None and safe["body_status"]==baseline:
+                    last_nonzero=max((c["t"] for c in n.command_log if any(c[k] for k in ("forward","lateral","angular"))),default=0.)
+                    already_requested=any(e.get("event")=="STAND_REQUEST" and e.get("t",0.)>=last_nonzero for e in n.events)
+                    if not already_requested:n.stand_once()
+                    brake_end=min(transit_permit["absolute_deadline_ns"],transit_permit["braking_ns"]+15000000000)*1e-9 if transit_permit else time.monotonic()+8.
+                    remaining=min(8.,brake_end-time.monotonic())
+                    if remaining>=2.:result["abort_post_stop_composite"]=n.observe(remaining,baseline=baseline,require_stop=True)
+            except Exception as exc:result["abort_stop_observation_failure"]=str(exc)
         try:transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
         except Exception as exc:result["transit_policy_error"]=str(exc);result["pass_result"]=False
         result["transit_policy_record"]=transit_permit

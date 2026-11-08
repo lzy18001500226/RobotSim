@@ -31,5 +31,7 @@
   "compact_turn_footprint_m": 0.3,
   "source_note": "human-approved90deg deliverytable at(0,1.6), original pickup/fixedstance+10cm; compiled geometry measurements20261108; actual reaching/placement remain live gates",
   "intermediate_turn_heading_tolerance_rad": 0.3,
-  "gait_prepare_angular_rad_s": -0.1
+  "gait_prepare_angular_rad_s": -0.1,
+  "intermediate_turn_stop_reserve_rad": 0.35,
+  "turn_stop_reserve_evidence": "same-profile native190527 tail.21256rad and200946 tail.28469rad;202634terminalstagnation~.315rad remaining; planned trigger not a physical PASS"
 }
