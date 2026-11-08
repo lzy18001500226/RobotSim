@@ -88,6 +88,15 @@ class FrameTests(unittest.TestCase):
         self.assertTrue(rows[1]['pass']);self.assertEqual(rows[1]['gates']['LIFT_SWEEP'],'PASS')
         self.assertFalse(rows[2]['pass']);self.assertEqual(rows[2]['motion_qualification'],'NOT_EVALUATED')
 
+    def test_25percent_actual_grip_force_increment_keeps_minimum_gate(self):
+        minimum,old=self.ns['grip_force_budget'](.2*9.81,1.,6.)
+        minimum2,new=self.ns['grip_force_budget'](.2*9.81,1.,7.5)
+        self.assertEqual(minimum,minimum2)
+        self.assertAlmostEqual(old,5.886)
+        self.assertAlmostEqual(new,7.3575)
+        self.assertAlmostEqual(new/old,1.25)
+        with self.assertRaises(ValueError):self.ns['grip_force_budget'](.2*9.81,1.,8.)
+
     def test_grip_force_setpoint_is_not_the_minimum_load_acceptance(self):
         minimum,target=self.ns['grip_force_budget'](.2*9.81,1.,3.)
         self.assertAlmostEqual(minimum,1.4715);self.assertAlmostEqual(target,2.943)
