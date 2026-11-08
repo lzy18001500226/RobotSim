@@ -872,6 +872,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if delivery is not None:
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
+        if not .05<=float(delivery.get("retreat_cross_track_limit_m",.05))<=.15:raise ValueError("retreat task corridor bound")
         if not 0.<=float(delivery.get("intermediate_turn_stop_reserve_rad",0.))<=.40:raise ValueError("intermediate stopping reserve bound")
         if delivery.get("gait_prepare_angular_rad_s",.10) not in (-.10,.10):raise ValueError("gait preparation direction")
         if not .12<=float(delivery.get("intermediate_turn_heading_tolerance_rad",.12))<=.30:raise ValueError("intermediate task heading bound")
@@ -1130,7 +1131,10 @@ def run_carry_navigation(n,contract):
                     cross=-math.sin(origin["yaw"])*dx+math.cos(origin["yaw"])*dy
                     mission["retreat_progress_m"]=progress
                     mission["retreat_max_cross_track_m"]=max(mission.get("retreat_max_cross_track_m",0.),abs(cross))
-                    if abs(cross)>.05:raise RuntimeError("RETREAT_CROSS_TRACK")
+                    corridor=float((cfg.get("delivery") or {}).get("retreat_cross_track_limit_m",.05))
+                    mission["retreat_task_corridor_m"]=corridor
+                    mission["legacy_instantaneous_50mm_cross_track_pass"]=mission["retreat_max_cross_track_m"]<=.05
+                    if abs(cross)>corridor:raise RuntimeError("RETREAT_CROSS_TRACK")
                     error=(origin["yaw"]-p["yaw"]+math.pi)%(2*math.pi)-math.pi
                     history=mission.setdefault("retreat_progress_history",[])
                     if not history or row["sample_monotonic_s"]>history[-1][0]:

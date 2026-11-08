@@ -30,7 +30,9 @@ The current transfer path intent is:
 The user permits a bounded small turning footprint. The separately named
 two-table task uses <=0.30m measured turn/braking footprint and plans its next
 segment from the actual stopped pose. Its intermediate approximately180deg
-heading allowance is0.30rad; final table-approach yaw remains0.12rad. The route
+heading allowance is0.30rad; its preliminary retreat corridor is0.15m,
+with the old instantaneous50mm result still reported separately. Final
+table-approach yaw remains0.12rad. The route
 uses actual pose, so an intermediate heading error is not propagated as a
 fictitious exact pose. It does not relabel the legacy50mm
 in-place or200mm settled-centre checks. Source joints, body/velocity/contact,

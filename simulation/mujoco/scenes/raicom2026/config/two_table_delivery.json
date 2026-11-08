@@ -33,5 +33,7 @@
   "intermediate_turn_heading_tolerance_rad": 0.3,
   "gait_prepare_angular_rad_s": -0.1,
   "intermediate_turn_stop_reserve_rad": 0.35,
-  "turn_stop_reserve_evidence": "same-profile native190527 tail.21256rad and200946 tail.28469rad;202634terminalstagnation~.315rad remaining; planned trigger not a physical PASS"
+  "turn_stop_reserve_evidence": "same-profile native190527 tail.21256rad and200946 tail.28469rad;202634terminalstagnation~.315rad remaining; planned trigger not a physical PASS",
+  "retreat_cross_track_limit_m": 0.15,
+  "retreat_corridor_scope": "preliminary transfer task; retain raw instantaneous50mm legacy result separately; not a strict straight-reference qualification"
 }
