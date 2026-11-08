@@ -816,6 +816,15 @@ class EmptyBottleOwnerGuardTests(unittest.TestCase):
         ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
 
 class InplaceCentreHoldTests(unittest.TestCase):
+    def test_startup_is_bounded_monotonic_and_reaches_the_original_cap(self):
+        values=[m.bounded_start_scale(t/100.) for t in range(51)]
+        self.assertEqual(values[0],0.)
+        self.assertEqual(values[-1],1.)
+        self.assertEqual(values,sorted(values))
+        self.assertTrue(all(0<=v<=1 for v in values))
+        self.assertEqual(m.bounded_start_scale(1.),1.)
+        with self.assertRaisesRegex(RuntimeError,'CLOCK'):m.bounded_start_scale(float('nan'))
+
     def test_world_error_is_rotated_to_body_and_total_speed_is_bounded(self):
         pose={'x':.1,'y':0.,'yaw':math.pi/2};origin={'x':0.,'y':0.}
         f,l=m.inplace_centre_command(pose,origin)

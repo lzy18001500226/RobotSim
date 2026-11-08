@@ -783,6 +783,13 @@ def run_probe(smoke_only=False):
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)
 
+def bounded_start_scale(elapsed_s):
+    """Half-second command ramp; no increase to command or joint limits."""
+    if not math.isfinite(elapsed_s) or elapsed_s<0:raise RuntimeError("INVALID_START_CLOCK")
+    u=min(1.,elapsed_s/.5)
+    return u*u*(3.-2.*u)
+
+
 def inplace_centre_command(pose, origin):
     """Body-frame XY compensation; cap total speed at the existing .12m/s."""
     values=[pose[k] for k in ("x","y","yaw")]+[origin[k] for k in ("x","y")]
@@ -1147,6 +1154,9 @@ def run_carry_navigation(n,contract):
                 if cfg.get("reverse_moving_arc") and output.state==NavState.FINAL_ALIGN:raise RuntimeError("REVERSE_ARC_UNSUPPORTED_TERMINAL_ALIGNMENT")
                 if mission is not None:cfg["active_mission_phase"]=mission["phase"]
                 forward=(output.linear_x if cfg.get("inplace_centre_hold") and mission["phase"]=="TURN" else 0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN" else -.12 if mission["phase"] in ("RETREAT","TURN") else .12) if mission is not None else -.12 if cfg.get("reverse_moving_arc") else .12 if output.linear_x>0 else 0.
+                if cfg.get("inplace_centre_hold") and mission is not None and mission["phase"]=="RETREAT":
+                    forward*=bounded_start_scale(max(0.,tick-activation_started))
+                    mission["retreat_input_ramp_s"]=.5
                 lateral=getattr(output,"lateral_y",0.)
                 angular=0. if cfg.get("reverse_moving_arc") and abs(output.yaw_error_rad)<=.02 else output.angular_z
                 bounds=row["raw_common"]["speed_status"]
