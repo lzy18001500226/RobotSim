@@ -1008,7 +1008,7 @@ def run_carry_navigation(n,contract):
             except RuntimeError as exc:
                 fault=n.feedback_fault or {}
                 # Only a qualified source-clock epoch fault is recoverable.
-                if (cfg.get("transit_policy_050") and not cfg.get("compact_turn")) or cfg.get("motion_mode")=="LOCOMOTION_STEP" or not recoverable_carry_clock_fault(fault,exc,len(result["clock_recoveries"])):raise
+                if (cfg.get("transit_policy_050") and not cfg.get("compact_turn")) or (cfg.get("motion_mode")=="LOCOMOTION_STEP" and not cfg.get("compact_turn")) or not recoverable_carry_clock_fault(fault,exc,len(result["clock_recoveries"])):raise
                 n.deadline_zero();n.stop_started=True
                 if cfg.get("compact_turn"):transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                 if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
@@ -1023,6 +1023,14 @@ def run_carry_navigation(n,contract):
                     cfg["previous_permit_filename"]=cfg.get("permit_filename","carry_transit_permit.json")
                     cfg["permit_filename"]="carry_transit_clock_recovery_"+str(len(result["clock_recoveries"]))+".json"
                     cfg["clock_stop_pass"]=bool(stopped["pass"])
+                    if cfg.get("motion_mode")=="LOCOMOTION_STEP":
+                        n.stand_once("LOCOMOTION_STEP")
+                        prepared=False;prepare_until=time.monotonic()+.75
+                        while time.monotonic()<prepare_until:
+                            n.publish();n.pump();state=n.sample()
+                            if native_step_activation_ready(state,baseline):prepared=True;break
+                            time.sleep(.02)
+                        if not prepared:raise RuntimeError("CLOCK_RECOVERY_STEP_PREPARATION_FAILED")
                     if until-time.monotonic()<5.:raise RuntimeError("CLOCK_RECOVERY_TASK_DEADLINE_INSUFFICIENT")
                     transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                     if mission is not None and mission["phase"]=="TURN":
