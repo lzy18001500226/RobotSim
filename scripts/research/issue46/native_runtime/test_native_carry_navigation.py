@@ -929,6 +929,7 @@ class EffectiveTransit020Tests(unittest.TestCase):
         code=m.build_carry_route_script(None,{},['pelvis'],transit_command_speed=.20,**kw)
         compile(code,'effective020','exec')
         self.assertIn("'transit_command_speed': 0.2",code)
+        self.assertEqual(code.count('else MICRO["carry"].get("transit_command_speed",.12)'),2)
         self.assertIn('cfg.get("transit_command_speed",.12)==.12',code)
         self.assertIn('ACTIVE_ROBOT_SELF_COLLISION',code)
         default=m.build_carry_route_script([0.,0.],{},[],carry_pid=19)

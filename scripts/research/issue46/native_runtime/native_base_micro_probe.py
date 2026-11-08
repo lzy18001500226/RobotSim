@@ -506,7 +506,7 @@ def run_probe(smoke_only=False):
                             raise RuntimeError("CARRY_OBJECT_EXTERNAL_SUPPORT")
                 if MICRO.get("carry",{}).get("inplace_centre_hold") and self.bridge_commands:
                     command=self.bridge_commands[-1]["raw"]
-                    limit=MICRO["carry"].get("turn_recovery_speed",.12) if MICRO["carry"].get("active_mission_phase")=="TURN" else .12
+                    limit=MICRO["carry"].get("turn_recovery_speed",.12) if MICRO["carry"].get("active_mission_phase")=="TURN" else MICRO["carry"].get("transit_command_speed",.12)
                     if math.hypot(command["forward_velocity"],command["lateral_velocity"])>limit+1e-8 or abs(command["angular_velocity"])>.10000001:
                         raise RuntimeError("OBSERVED_BRIDGE_COMMAND_BOUND")
                 p=native_pose(r)
