@@ -195,6 +195,16 @@ attachment, state teleportation, vendor-binary edits or hardware execution.
 Keep source joint limits, the existing .50m/s active-transit root bound,
 posture/freshness/watchdog and the complete independent physical stop.
 
+The compact simulation path may recover an independently measured host-wall
+clock epoch only through immediate zero, >=1.05s zero publishing, accepted SD,
+fresh new-epoch telemetry and the unchanged complete composite stop. Up to
+four such clock recoveries share the original90s absolute command deadline;
+up to six non-overlapping PID/generation-bound permits cover the original
+two segments plus those recoveries. No permit is reactivated or overwritten.
+Physical, posture, source-joint, collision, stale-native or ownership faults
+remain non-recoverable within the episode. The temporary timesyncd comparison
+did not establish stable WSL wall time; the service was restored active.
+
 ## D. Stop when source semantics are missing
 
 If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.
