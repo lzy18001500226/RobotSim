@@ -1315,7 +1315,7 @@ def main() -> None:
     parser.add_argument("--use-official-cmd-vel-bridge", action="store_true", help="route through the pinned RAICOM cmd_vel_bridge instead of publishing the MC velocity type directly")
     parser.add_argument("--carry-goal-world-xy",type=float,nargs=2)
     parser.add_argument("--carry-timeout-s",type=float,default=90.)
-    parser.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0),default=1.5)
+    parser.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0,6.0),default=1.5)
     parser.add_argument("--carry-sdk-minimum-turn",action="store_true")
     parser.add_argument("--carry-native-action-smoothing",action="store_true")
     parser.add_argument("--carry-native-step-mode",action="store_true")

@@ -1292,7 +1292,7 @@ def _with_carry_lease(script, retract):
     """Keep the proven HAL grip/arm owner alive; it never publishes velocity."""
     lease=float(retract["carry_lease_s"])
     margin=float(retract.get("carry_grip_force_margin",1.5))
-    if margin not in (1.5,3.):raise ValueError("unsupported explicit carry force margin")
+    if margin not in (1.5,3.,6.):raise ValueError("unsupported explicit carry force margin")
     if not math.isfinite(lease) or not 5.<=lease<=200.:raise ValueError("carry lease outside bounded 5..200s")
     def replace(old,new,count=1):
         nonlocal script

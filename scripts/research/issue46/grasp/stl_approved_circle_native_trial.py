@@ -59,7 +59,7 @@ def main():
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--carry-goal-world-xy",type=float,nargs=2,help="explicit known-map delivery goal after physical grasp/retract")
     p.add_argument("--carry-timeout-s",type=float,default=90.)
-    p.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0),default=1.5)
+    p.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0,6.0),default=1.5)
     p.add_argument("--carry-transit-speed-policy-050",action="store_true")
     p.add_argument("--carry-native-step-mode",action="store_true",help="explicit source-pinned native LOCOMOTION_STEP alternative; no policy/config/gain edits")
     p.add_argument("--carry-native-action-smoothing",action="store_true",help="separate native ActionSelector SD/LD 500ms transition diagnostic; no runner/gain/policy edits")

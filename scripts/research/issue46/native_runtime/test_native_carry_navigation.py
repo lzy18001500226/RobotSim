@@ -575,4 +575,16 @@ class CarryDebugTimingTests(unittest.TestCase):
         calls=[n for n in ast.walk(main) if isinstance(n,ast.If) and "args.capture_mc_rl_debug and args.carry_goal_world_xy is None" in ast.unparse(n.test)]
         self.assertEqual(len(calls),1)
 
+
+
+
+class MeasuredForceTargetTests(unittest.TestCase):
+    def test_higher_control_target_does_not_raise_load_acceptance(self):
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import grip_force_budget
+        minimum,target=grip_force_budget(.2*9.81,1.,6.)
+        self.assertAlmostEqual(minimum,1.4715)
+        self.assertAlmostEqual(target,5.886)
+        self.assertEqual(grip_force_budget(.2*9.81,1.),(minimum,minimum))
+        with self.assertRaises(ValueError):grip_force_budget(.2*9.81,1.,12.)
+
 if __name__=="__main__":unittest.main()
