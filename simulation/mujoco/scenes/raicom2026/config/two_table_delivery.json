@@ -37,5 +37,7 @@
   "retreat_cross_track_limit_m": 0.15,
   "retreat_corridor_scope": "preliminary transfer task; retain raw instantaneous50mm legacy result separately; not a strict straight-reference qualification",
   "turn_braking_footprint_m": 0.35,
-  "turn_footprint_scope": "active30cm retained; table-transfer braking/settled35cm, not legacy strict pivot qualification; actual current pose replanned"
+  "turn_footprint_scope": "active30cm retained; table-transfer braking/settled35cm, not legacy strict pivot qualification; actual current pose replanned",
+  "gait_prepare_required_load_states": 1,
+  "gait_readiness_scope": "actual foot unloading AND measured knee motion AND live source/mode; observe full alternation during transit, not a redundant pre-motion complete cycle"
 }

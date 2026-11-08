@@ -876,6 +876,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
         if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
         if not .05<=float(delivery.get("retreat_cross_track_limit_m",.05))<=.15:raise ValueError("retreat task corridor bound")
         if not 0.<=float(delivery.get("intermediate_turn_stop_reserve_rad",0.))<=.40:raise ValueError("intermediate stopping reserve bound")
+        if delivery.get("gait_prepare_required_load_states",2) not in (1,2):raise ValueError("gait readiness scope")
         if delivery.get("gait_prepare_angular_rad_s",.10) not in (-.10,.10):raise ValueError("gait preparation direction")
         if not .12<=float(delivery.get("intermediate_turn_heading_tolerance_rad",.12))<=.30:raise ValueError("intermediate task heading bound")
         if delivery.get("schema")!="robotsim.x2.two-table-delivery.v1" or delivery.get("frame")!="native_scene_world":raise ValueError("delivery scene contract")
@@ -1110,6 +1111,11 @@ def run_carry_navigation(n,contract):
             p=row["pose"]
             if not -1.65<=p["x"]<=1.65 or not -1.75<=p["y"]<=1.75:raise RuntimeError("CARRY_ROOM_WORKSPACE")
             if mission is not None:
+                if cfg.get("gait_prepare"):
+                    foot_forces,dominant=native_foot_loads(n.latest_row)
+                    observed=mission.setdefault("observed_support_changes",[])
+                    if dominant and (not observed or observed[-1]["side"]!=dominant):
+                        observed.append(dict(side=dominant,t=tick,source_host_ns=n.latest_row["host_monotonic_ns"],force_n=foot_forces))
                 if mission["phase"]=="PRESTEP":
                     prep_origin=mission.get("prestep_origin_pose",start)
                     distance=math.hypot(p["x"]-prep_origin["x"],p["y"]-prep_origin["y"])
@@ -1120,7 +1126,10 @@ def run_carry_navigation(n,contract):
                     supports=mission.setdefault("prestep_load_sequence",[])
                     if dominant and (not supports or supports[-1]["side"]!=dominant):
                         supports.append(dict(side=dominant,t=tick,source_host_ns=n.latest_row["host_monotonic_ns"],force_n=forces))
-                    if len(supports)>=2 and acquired:
+                    required=(cfg.get("delivery") or {}).get("gait_prepare_required_load_states",2)
+                    knee_motion=max(abs(n.latest_row["joints"][name]["qvel"]) for name in ("left_knee_joint","right_knee_joint"))
+                    mission["prestep_actual_knee_motion_rad_s"]=knee_motion
+                    if len(supports)>=required and acquired and (required==2 or knee_motion>.20):
                         mission["prestep_end_pose"]=p;mission["retreat_origin_pose"]=p
                         mission["phase"]="RETREAT";progress_state=None;progress_best=None;progress_at=tick
                         continue
@@ -1417,6 +1426,8 @@ def run_carry_navigation(n,contract):
                 yaw_error=(cfg["delivery"]["base_goal_world_yaw_rad"]-end["yaw"]+math.pi)%(2*math.pi)-math.pi
                 result["delivery_final_yaw_error_rad"]=yaw_error
                 result["pass_result"]=bool(result["pass_result"] and abs(yaw_error)<=.12 and result.get("retreat_turn_prefix_pass") and result["retreat_stop_composite"]["pass"] and result["turn_stop_composite"]["pass"])
+                mission["bilateral_support_alternation_observed"]={x["side"] for x in mission.get("observed_support_changes",[])}=={"left","right"}
+                result["pass_result"]=bool(result["pass_result"] and mission["bilateral_support_alternation_observed"])
                 result["delivery_base_arrival_pass"]=result["pass_result"]
                 result["classification"]="SIMULATION_ONLY_TWO_TABLE_APPROACH_NOT_PLACEMENT"
             elif mission["phase"]!="FORWARD":result["pass_result"]=False

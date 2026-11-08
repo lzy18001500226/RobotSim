@@ -1017,7 +1017,8 @@ class NativeGaitPreparationTests(unittest.TestCase):
         compile(code,'native_prestep','exec')
         self.assertIn('GAIT_PREPARATION_NOT_OBSERVED',code)
         self.assertIn('GAIT_PREPARATION_POSE_BOUND',code)
-        self.assertIn('len(supports)>=2 and acquired',code)
+        self.assertIn('len(supports)>=required and acquired',code)
+        self.assertIn('required==2 or knee_motion>.20',code)
         self.assertIn('mission["phase"]=="PRESTEP":forward=0.',code)
 
 class SourceReleaseProtocolTests(unittest.TestCase):
