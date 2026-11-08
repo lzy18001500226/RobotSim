@@ -467,4 +467,36 @@ class CarryTransit050Tests(unittest.TestCase):
         self.assertEqual(result["transit_policy_record"],{"fixture_phase":"REVOKED"})
         self.assertEqual(n.stands,1)
 
+
+
+
+    def test_real_outer_parser_forwarding_and_inner_parser_accept_new_option(self):
+        import argparse,sys
+        from unittest import mock
+        outer=Path(__file__).parents[1]/"grasp/stl_approved_circle_native_trial.py"
+        def parser_only(path,variable,arguments):
+            tree=ast.parse(path.read_text());main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="main")
+            body=[]
+            for node in main.body:
+                if isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id in (variable,"args") for t in node.targets):
+                    body.append(node)
+                    if any(isinstance(t,ast.Name) and t.id=="args" for t in node.targets):break
+                elif isinstance(node,ast.Expr) and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute) and isinstance(node.value.func.value,ast.Name) and node.value.func.value.id==variable:body.append(node)
+            ns=dict(argparse=argparse,Path=Path,__doc__="offline actual parser")
+            with mock.patch.object(sys,"argv",["offline",*arguments]):
+                exec(compile(ast.Module(body=body,type_ignores=[]),"actual_parser","exec"),ns)
+            return ns["args"],main
+        args,main=parser_only(outer,"p",["--baseline","/unused","--circle-review","/unused","--candidate","/unused",
+            "--carry-goal-world-xy","-.45","1.","--carry-native-step-mode","--carry-native-action-smoothing",
+            "--approved-pad-friction-reference","--carry-transit-speed-policy-050"])
+        branch=next(n for n in main.body if isinstance(n,ast.If) and ast.unparse(n.test)=="args.carry_goal_world_xy is not None")
+        ns=dict(args=args,argv=[])
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_forwarding","exec"),ns)
+        self.assertIn("--carry-transit-speed-policy-050",ns["argv"])
+        inner=Path(__file__).with_name("xvfb_native_reset_stand.py")
+        parsed,_=parser_only(inner,"parser",["--table-overlay-result","/unused","--table-overlay-result-sha256","unused",
+            "--reset-helper","/unused","--reset-helper-sha256","unused",*ns["argv"]])
+        self.assertTrue(parsed.carry_transit_speed_policy_050)
+        self.assertTrue(parsed.carry_native_step_mode)
+
 if __name__=="__main__":unittest.main()

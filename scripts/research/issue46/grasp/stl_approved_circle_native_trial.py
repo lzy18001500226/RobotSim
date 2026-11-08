@@ -60,6 +60,7 @@ def main():
     p.add_argument("--carry-goal-world-xy",type=float,nargs=2,help="explicit known-map delivery goal after physical grasp/retract")
     p.add_argument("--carry-timeout-s",type=float,default=90.)
     p.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0),default=1.5)
+    p.add_argument("--carry-transit-speed-policy-050",action="store_true")
     p.add_argument("--carry-native-step-mode",action="store_true",help="explicit source-pinned native LOCOMOTION_STEP alternative; no policy/config/gain edits")
     p.add_argument("--carry-native-action-smoothing",action="store_true",help="separate native ActionSelector SD/LD 500ms transition diagnostic; no runner/gain/policy edits")
     p.add_argument("--carry-sdk-minimum-turn",action="store_true",help="explicit .10 rad/s SDK-minimum turn diagnostic; physical root/joint caps unchanged")
@@ -251,6 +252,7 @@ def main():
     if args.verified_native_mouse_controls:argv.append("--verified-native-mouse-controls")
     argv.extend(["--native-reset-input",args.native_reset_input])
     if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
+    if args.carry_transit_speed_policy_050 and not (args.carry_goal_world_xy is not None and args.carry_native_step_mode and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated native STEP and approved local contact profile")
     if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
     if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires a carry goal')
     if args.carry_goal_world_xy is not None:
@@ -258,6 +260,7 @@ def main():
         if args.carry_sdk_minimum_turn:argv.append('--carry-sdk-minimum-turn')
         if args.carry_native_action_smoothing:argv.append('--carry-native-action-smoothing')
         if args.carry_native_step_mode:argv.append('--carry-native-step-mode')
+        if args.carry_transit_speed_policy_050:argv.append('--carry-transit-speed-policy-050')
     if args.physical_lift_test:
         argv.append('--physical-lift-test')
         argv[argv.index('--hal-hand-close-hold-s')+1]='5'
