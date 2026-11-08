@@ -177,6 +177,15 @@ def tracking_task(row, reference, phase=None):
         if np.linalg.norm(H.T@(measured-np.asarray(hand['position_m']))-baseline)>.01:raise RuntimeError('BOTTLE_SLIPPED_DURING_CARRY')
         if not phase.get('allow_carried_bottle_tilt',False) and B[2,2]<np.cos(.10):raise RuntimeError('BOTTLE_TILTED_DURING_CARRY')
         base=row['bodies']['pelvis'];R=np.asarray(base['rotation']).reshape(3,3);yaw=np.arctan2(R[1,0],R[0,0])
+        frame=phase.get('carry_pose_frame','YAW_WORLD_UP')
+        if frame=='TORSO_RIGID':
+            delta=np.asarray(phase.get('carry_rigid_offset_base_m'),dtype=float)
+            axis=np.asarray(phase.get('carry_rigid_axis_base'),dtype=float)
+            if not phase.get('allow_carried_bottle_tilt',False) or delta.shape!=(3,) or axis.shape!=(3,) or not np.isfinite(delta).all() or not np.isfinite(axis).all() or np.linalg.norm(delta)>.8 or abs(np.linalg.norm(axis)-1.)>1e-5:
+                raise RuntimeError('INVALID_RIGID_CARRY_TASK_FRAME')
+            torso=row['bodies']['torso_link'];T=np.asarray(torso['rotation']).reshape(3,3)
+            return np.asarray(torso['position_m'])+T@delta,T@axis
+        if frame!='YAW_WORLD_UP':raise RuntimeError('UNKNOWN_CARRY_TASK_FRAME')
         c,s=np.cos(yaw),np.sin(yaw)
         xy=np.asarray(base['position_m'][:2])+np.array([[c,-s],[s,c]])@offset
         # Follow translation/yaw, reject pelvis roll/pitch sway. Object truth

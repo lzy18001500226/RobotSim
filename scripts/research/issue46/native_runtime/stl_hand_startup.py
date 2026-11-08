@@ -1374,11 +1374,21 @@ def _with_carry_lease(script, retract):
    tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
    yaw=math.atan2(base['rotation'][3],base['rotation'][0]);dx=tcp[0]-base['position_m'][0];dy=tcp[1]-base['position_m'][1]
    n.lift_phase.update(phase='CARRY_HOLD',allow_carried_bottle_tilt=bool(LIFT_CONTRACT['retract_preflight'].get('allow_carried_bottle_tilt',False)),created_host_ns=time.monotonic_ns(),post_retract_physical_hold_pass=True,carry_lease_s=LIFT_CONTRACT['retract_preflight']['carry_lease_s'],carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_source_speed_rad_s=[LIFT_CONTRACT['retract_preflight']['source_motion_limits'][name][2] for name in RIGHT])
+   if n.lift_phase['allow_carried_bottle_tilt']:
+    # Fixed carry pose relative to the actual shoulder-support torso, captured once after
+    # the accepted physical hold. Object truth never drives this target.
+    reference_body=n.native_row['bodies']['torso_link'];P=reference_body['rotation'];axis_local=CIRCLE_CONTRACT['local_bottle_axis_in_hand']
+    actual_axis=[sum(R[3*i+j]*axis_local[j] for j in range(3)) for i in range(3)]
+    delta=[tcp[i]-reference_body['position_m'][i] for i in range(3)]
+    n.lift_phase.update(carry_pose_frame='TORSO_RIGID',
+      carry_rigid_offset_base_m=[sum(P[3*i+j]*delta[i] for i in range(3)) for j in range(3)],
+      carry_rigid_axis_base=[sum(P[3*i+j]*actual_axis[i] for i in range(3)) for j in range(3)])
+   else:n.lift_phase['carry_pose_frame']='YAW_WORLD_UP'
    n.write_phase(n.lift_phase)
    try:
     n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)
     n.pre_carry_odom=list(n.odom);n.pre_carry_tilt=list(n.tilt)
-    ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'carry_required_normal_force_n':LIFT_CONTRACT['required_normal_force_n'],'carry_target_normal_force_n':LIFT_CONTRACT['target_normal_force_n'],'root_actuator_torque_cap_nm_unchanged':2.,'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'start_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}
+    ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'carry_pose_frame':n.lift_phase.get('carry_pose_frame','YAW_WORLD_UP'),'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'carry_required_normal_force_n':LIFT_CONTRACT['required_normal_force_n'],'carry_target_normal_force_n':LIFT_CONTRACT['target_normal_force_n'],'root_actuator_torque_cap_nm_unchanged':2.,'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'start_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}
     write_durable_milestone('/workspace/evidence/carry_ready.json',ready)
     carry_until=time.monotonic()+float(ready['lease_s'])
     while not os.path.exists('/workspace/evidence/carry_release') and time.monotonic()<carry_until:

@@ -27,6 +27,32 @@ class FrameTests(unittest.TestCase):
         self.assertIn("if not 0<=age<=.20:raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')",source)
         self.assertIn("if (now-row['host_monotonic_ns'])*1e-9>.20",source)
 
+    def test_empty_bottle_rigid_carry_follows_torso_without_chasing_object(self):
+        from scipy.spatial.transform import Rotation
+        H=np.eye(3);R=Rotation.from_euler('xyz',[.12,-.1,.6]).as_matrix()
+        offset=np.array([.24,-.15,.2]);axis=np.array([0.,0.,1.])
+        phase=dict(phase='CARRY_HOLD',native_arrival_pass=True,post_retract_physical_hold_pass=True,generation=1,
+                   carry_heading_xy_m=[.24,-.15],carry_world_z_m=.85,initial_object_in_hand_m=[0.,0.,.1],
+                   slip_reference='GRASP_SECTION',allow_carried_bottle_tilt=True,carry_pose_frame='TORSO_RIGID',
+                   carry_rigid_offset_base_m=offset.tolist(),carry_rigid_axis_base=axis.tolist())
+        row=dict(generation=1,bodies={'pelvis':dict(position_m=[2.,3.,.65],rotation=R.ravel().tolist()),
+                 'R_omnipicker_base_link':dict(position_m=[1.,1.,.75],rotation=H.ravel().tolist()),
+                 'test_cylinder':dict(position_m=[1.,1.,.75],rotation=H.ravel().tolist())})
+        row['bodies']['torso_link']=dict(position_m=[2.,3.,.65],rotation=R.ravel().tolist())
+        point,direction=self.ns['tracking_task'](row,dict(grasp_height_above_center_m=.1),phase)
+        np.testing.assert_allclose(point,np.array([2.,3.,.65])+R@offset)
+        np.testing.assert_allclose(direction,R@axis)
+        row['bodies']['test_cylinder']['position_m'][0]+=.005
+        moved,_=self.ns['tracking_task'](row,dict(grasp_height_above_center_m=.1),phase)
+        np.testing.assert_array_equal(point,moved)
+        row['bodies']['test_cylinder']['position_m'][0]+=.006
+        with self.assertRaisesRegex(RuntimeError,'SLIPPED'):self.ns['tracking_task'](row,dict(grasp_height_above_center_m=.1),phase)
+        row['bodies']['test_cylinder']['position_m'][0]=1.
+        phase['allow_carried_bottle_tilt']=False
+        with self.assertRaisesRegex(RuntimeError,'INVALID_RIGID'):self.ns['tracking_task'](row,dict(grasp_height_above_center_m=.1),phase)
+        phase['allow_carried_bottle_tilt']=True;phase['carry_rigid_offset_base_m']=[float('nan'),0.,0.]
+        with self.assertRaisesRegex(RuntimeError,'INVALID_RIGID'):self.ns['tracking_task'](row,dict(grasp_height_above_center_m=.1),phase)
+
     def test_carry_target_follows_base_xy_yaw_but_not_pelvis_sway_or_object_truth(self):
         from scipy.spatial.transform import Rotation
         reference=dict(grasp_height_above_center_m=.1)

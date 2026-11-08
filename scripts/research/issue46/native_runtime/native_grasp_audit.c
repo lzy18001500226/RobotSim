@@ -169,7 +169,7 @@ void mj_step(const mjModel* m,mjData* d) {
     pair_count++;
   }
   fprintf(sink,"\"contact_pair_parameters\":{\"model_pair_count\":%d,\"pad_bottle_pair_count\":%d,\"min_tangent_timeconst_s\":%.17g,\"max_tangent_timeconst_s\":%.17g},\"bodies\":{",m->npair,pair_count,(double)tangent_min,(double)tangent_max);
-  body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");fputc(',',sink);body(m,d,"head_pitch_link");
+  body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");fputc(',',sink);body(m,d,"head_pitch_link");fputc(',',sink);body(m,d,"torso_link");
   fputs("},\"joints\":{",sink);
   int emitted_joint=0;
   for (int j=0;j<m->njnt;j++) {
