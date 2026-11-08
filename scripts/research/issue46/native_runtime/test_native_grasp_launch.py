@@ -911,3 +911,20 @@ class CompleteNativeTraceTests(TestCase):
             with self.assertRaises(ValueError):audit.read_complete_native_rows(p)
 
 if __name__=='__main__':main()
+
+class NativeSlowConsumerReadTests(TestCase):
+    def test_one_new_same_generation_sample_can_replace_expired_local_read(self):
+        import io
+        row=dict(host_monotonic_ns=90000000,engine_version=337,generation=1,process_pid=8,sim_time_s=1.,bodies={n:{} for n in ("pelvis","R_omnipicker_base_link","test_cylinder")})
+        fresh=dict(row,host_monotonic_ns=290000000,sim_time_s=1.2)
+        streams=[io.BytesIO((json.dumps(r)+chr(10)).encode()) for r in (row,fresh)]
+        with mock.patch.object(Path,'exists',return_value=True),mock.patch.object(Path,'open',side_effect=streams),mock.patch('time.monotonic_ns',side_effect=[0,300000000,310000000]):
+            result=audit.require_fresh_sample(Path('/input'))
+        self.assertTrue(result['reacquired_after_slow_local_read'])
+        self.assertAlmostEqual(result['age_s'],.02)
+    def test_repeated_old_sample_cannot_refresh_native_age(self):
+        import io
+        row=dict(host_monotonic_ns=90000000,engine_version=337,generation=1,process_pid=8,sim_time_s=1.,bodies={n:{} for n in ("pelvis","R_omnipicker_base_link","test_cylinder")})
+        streams=[io.BytesIO((json.dumps(row)+chr(10)).encode()) for _ in range(2)]
+        with mock.patch.object(Path,'exists',return_value=True),mock.patch.object(Path,'open',side_effect=streams),mock.patch('time.monotonic_ns',side_effect=[0,300000000,310000000]):
+            with self.assertRaisesRegex(RuntimeError,'STALE'):audit.require_fresh_sample(Path('/input'))

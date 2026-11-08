@@ -158,24 +158,34 @@ def require_fresh_sample(path, *, now_ns=None):
     import math
     path=Path(path)
     latest=path.with_name("native_latest.json")
-    raw = (latest if latest.exists() else path).read_bytes()[-1048576:]
-    lines = raw.splitlines()
-    if not raw.endswith(b"\n"):
-        lines = lines[:-1]
-    for line in reversed(lines):
-        try:
-            row = json.loads(line)
-            break
-        except (ValueError, UnicodeDecodeError):
-            continue
-    else:
+    source=latest if latest.exists() else path
+    def read():
+        with source.open("rb") as stream:
+            stream.seek(0,2);stream.seek(max(0,stream.tell()-1048576));raw=stream.read()
+        lines=raw.splitlines()
+        if not raw.endswith(bytes([10])):lines=lines[:-1]
+        for line in reversed(lines):
+            try:return json.loads(line)
+            except (ValueError,UnicodeDecodeError):continue
         raise RuntimeError("NATIVE_OBSERVER_NO_COMPLETE_SAMPLE")
-    age = ((time.monotonic_ns() if now_ns is None else now_ns) - row["host_monotonic_ns"]) * 1e-9
-    if not math.isfinite(age) or not 0.0 <= age <= 0.20:
+    began=time.monotonic_ns()
+    row=read();checked=time.monotonic_ns() if now_ns is None else now_ns
+    age=(checked-row["host_monotonic_ns"])*1e-9
+    reacquired=False
+    # A long local deserialization/GC scheduling pause must not qualify the old
+    # row. Read ONCE again; only a strictly advancing same-generation native
+    # row may qualify, against the unchanged actual .20s freshness gate.
+    if now_ns is None and age>.20 and checked-began>=100000000:
+        fresh=read();checked=time.monotonic_ns()
+        if (fresh.get("generation"),fresh.get("process_pid"),fresh.get("engine_version"))!=(row.get("generation"),row.get("process_pid"),row.get("engine_version")):
+            raise RuntimeError("NATIVE_OBSERVER_IDENTITY_CHANGED_DURING_READ")
+        if fresh["host_monotonic_ns"]>row["host_monotonic_ns"]:
+            row=fresh;age=(checked-row["host_monotonic_ns"])*1e-9;reacquired=True
+    if not math.isfinite(age) or not 0.0<=age<=.20:
         raise RuntimeError("NATIVE_OBSERVER_STALE_SAMPLE")
-    if row.get("engine_version") != 337 or any(row.get("bodies", {}).get(n) is None for n in ("pelvis", "R_omnipicker_base_link", "test_cylinder")):
+    if row.get("engine_version")!=337 or any(row.get("bodies",{}).get(n) is None for n in ("pelvis","R_omnipicker_base_link","test_cylinder")):
         raise RuntimeError("NATIVE_OBSERVER_MISSING_REQUIRED_BODIES")
-    return {"pass": True, "age_s": age, "engine_version": row["engine_version"], "host_monotonic_ns":row["host_monotonic_ns"], "sim_time_s": row["sim_time_s"], "generation": row["generation"], "process_pid":row.get("process_pid")}
+    return {"pass":True,"age_s":age,"engine_version":row["engine_version"],"host_monotonic_ns":row["host_monotonic_ns"],"sim_time_s":row["sim_time_s"],"generation":row["generation"],"process_pid":row.get("process_pid"),"consumer_read_duration_s":(checked-began)*1e-9,"reacquired_after_slow_local_read":reacquired}
 
 
 def await_native_startup_ready(path, *, timeout_s=4.):
