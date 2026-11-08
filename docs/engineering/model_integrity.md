@@ -177,6 +177,20 @@ Use an explicit opt-in; defaults remain0.12. No automatic second launch or
 motion retry is covered by this one-attempt authorization. Preserve the exact
 command, source revision and actual result even when it stops before motion.
 
+## C.6 Autonomous carry-control iteration (2026-11-09)
+
+The user's direct current instruction supersedes C.5's single-run budget for
+subsequent research: autonomously choose ordinary numerical/control experiments
+to complete retreat, bounded small-radius180deg turn and placement on the
+approved second table. Record .20m/s SDK-amplitude transit/correction as a
+separate explicit simulation profile; defaults stay unchanged. No per-run
+confirmation for these routine choices. Physical faults stop the current
+episode; analyze them before another distinct attempt. This does not authorize
+a different robot/hand, mechanics, collision removal, hidden support, object
+attachment, state teleportation, vendor-binary edits or hardware execution.
+Keep source joint limits, the existing .50m/s active-transit root bound,
+posture/freshness/watchdog and the complete independent physical stop.
+
 ## D. Stop when source semantics are missing
 
 If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.

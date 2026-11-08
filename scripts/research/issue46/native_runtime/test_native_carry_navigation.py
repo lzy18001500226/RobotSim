@@ -822,7 +822,7 @@ class InplaceCentreHoldTests(unittest.TestCase):
           native_action_smoothing=True,transit_policy_050=True,angular_command_cap=.1,
           straight_retreat_turn=True,inplace_centre_hold=True,turn_recovery_speed=.20)
         tree=ast.parse(code)
-        branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and 'RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE' in ast.unparse(n) and ast.unparse(n.test).startswith('math.hypot'))
+        branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and 'RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE' in ast.unparse(n) and any(isinstance(stmt,ast.Raise) and 'RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE' in ast.unparse(stmt) for stmt in n.body))
         cfg={'active_centre_recovery':True,'active_mission_phase':'TURN','turn_recovery_speed':.20}
         ns={'MICRO':{'carry':cfg},'fwd':.2,'lat':0.,'ang':0.,'math':math}
         exec(compile(ast.Module(body=[branch],type_ignores=[]),'actual020_scope','exec'),ns)
@@ -922,3 +922,17 @@ class StraightRetreatInplaceTests(unittest.TestCase):
         compile(code,'retreat_inplace','exec')
 
 if __name__=="__main__":unittest.main()
+
+class EffectiveTransit020Tests(unittest.TestCase):
+    def test_opt_in_is_scoped_and_keeps_defaults(self):
+        kw=dict(carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,inplace_centre_hold=True,turn_recovery_speed=.20)
+        code=m.build_carry_route_script(None,{},['pelvis'],transit_command_speed=.20,**kw)
+        compile(code,'effective020','exec')
+        self.assertIn("'transit_command_speed': 0.2",code)
+        self.assertIn('cfg.get("transit_command_speed",.12)==.12',code)
+        self.assertIn('ACTIVE_ROBOT_SELF_COLLISION',code)
+        default=m.build_carry_route_script([0.,0.],{},[],carry_pid=19)
+        self.assertIn("'transit_command_speed': 0.12",default)
+        for speed in (.21,float('nan')):
+            with self.assertRaises(ValueError):m.build_carry_route_script(None,{},[],transit_command_speed=speed,**kw)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,transit_command_speed=.20)

@@ -5,9 +5,16 @@ not authorize physics stepping, mechanical-model changes, or hardware motion.
 
 ## Current scope and accepted review (2026-11-08)
 
-The user cleared the previous long Goal. This workflow retains evidence and
-review decisions; it does not restart that Goal or authorize a new live episode.
-The current request is to streamline these instructions.
+On 2026-11-09 the maintainer explicitly resumed an autonomous simulation Goal:
+complete retreat, a bounded small-radius180deg turn, transport and placement on
+the reviewed second table; then diagnose grip drift and bounded local stance
+adjustment. Routine control choices and distinct bounded SIMULATION_ONLY
+experiments require no repeated permission. Each physical fault terminates
+that episode; diagnose and correct before the next. Keep the actual X2,
+reviewed OmniPicker, collisions, source-joint limits and hardware isolation.
+A .20m/s SDK-amplitude transit/correction comparison is an explicit opt-in,
+not a new default or a manufacturer/hardware qualification. Preserve .50m/s
+active root bound, .10rad/s angular cap and the complete stop contract.
 
 The accepted next carry **path intent** is:
 

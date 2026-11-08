@@ -262,9 +262,10 @@ def load_review(result_path):
     return record, model, data
 
 
-def configure_camera(camera, preset, delivery_position=(0., 1.5, 0.), pickup_position=(1.5, -1.4, 0.)):
+def configure_camera(camera, preset, delivery_position=(0., 1.5, 0.), pickup_position=(1.5, -1.4, 0.), hip_position=(.95,-1.43,.61)):
     target, distance = {
         "overview": ([0.0, 0.0, .55], 5.7),
+        "hip": (hip_position, .85),
         "delivery": ([delivery_position[0], delivery_position[1], .45], 2.2),
         "pickup": ([pickup_position[0]-.3, pickup_position[1], .7], 2.2),
     }[preset]
@@ -274,22 +275,39 @@ def configure_camera(camera, preset, delivery_position=(0., 1.5, 0.), pickup_pos
     camera.elevation = -42.
 
 
-def view(result_path, initial_preset="overview"):
+def view(result_path, initial_preset="overview", recorded_frame=None):
     import mujoco.viewer
+    frame = json.loads(Path(recorded_frame).read_text()) if recorded_frame else None
     record, model, data = load_review(result_path)
-    state = {"preset": initial_preset}
+    contacts = [] if frame is None else [c for c in frame["contacts"] if {c["body1"],c["body2"]}=={"pelvis","left_hip_roll_link"}]
+    if frame is not None:
+        from scripts.research.issue46.native_runtime.native_grasp_audit import apply_recorded_native_frame
+        apply_recorded_native_frame(model,data,frame)
+    hip = contacts[0]["position_m"] if contacts else [.95,-1.43,.61]
+    state = {"preset": initial_preset, "colliders": False}
     def key(code):
-        if code in (49, 50, 51):
-            state["preset"] = {49: "overview", 50: "delivery", 51: "pickup"}[code]
+        if code in (49, 50, 51, 52):
+            state["preset"] = {49:"overview",50:"delivery",51:"pickup",52:"hip"}[code]
+        if code==67:state["colliders"]=not state["colliders"]
     with mujoco.viewer.launch_passive(model, data, key_callback=key) as window:
         window.opt.geomgroup[:] = [1, 1, 0, 0, 1, 0]
         while window.is_running():
             if state["preset"]:
-                configure_camera(window.cam, state["preset"], record["delivery_table"]["body_origin_world_m"], record["pickup_table"]["body_origin_world_m"])
+                configure_camera(window.cam, state["preset"], record["delivery_table"]["body_origin_world_m"], record["pickup_table"]["body_origin_world_m"],hip)
                 state["preset"] = None
-            window.set_texts([(None, mujoco.mjtGridPos.mjGRID_TOPLEFT,
-                               "TWO-TABLE LAYOUT REVIEW / NO PHYSICS",
-                               "1 overview | 2 NEW delivery table | 3 original pickup table | mouse rotate/pan/zoom")])
+            window.opt.geomgroup[:] = [1,0,0,1,0,0] if state["colliders"] else [1,1,0,0,1,0]
+            window.opt.flags[mujoco.mjtVisFlag.mjVIS_CONVEXHULL] = state["colliders"]
+            with window.lock():
+                window.user_scn.ngeom=0
+                for contact in contacts:
+                    g=window.user_scn.geoms[window.user_scn.ngeom]
+                    mujoco.mjv_initGeom(g,mujoco.mjtGeom.mjGEOM_SPHERE,np.array([.006]*3),np.asarray(contact["position_m"]),np.eye(3).ravel(),np.array([1.,.15,.12,1.],dtype=np.float32))
+                    window.user_scn.ngeom+=1
+            title="RECORDED HIP CONTACT / NO PHYSICS" if frame else "TWO-TABLE LAYOUT REVIEW / NO PHYSICS"
+            detail="1 overview | 2 delivery | 3 pickup | 4 HIP | C colliders/visual | mouse free view"
+            window.set_texts([(None,mujoco.mjtGridPos.mjGRID_TOPLEFT,title,detail),
+                (None,mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,"RED = recorded contact, not a new simulation",
+                 ("pelvis / left_hip_roll: %.3fmm, %.1fN" % (contacts[0]["distance_m"]*1000.,contacts[0]["local_force_torque"][0])) if contacts else "")])
             window.sync()
             time.sleep(.02)
 
@@ -302,10 +320,11 @@ if __name__ == "__main__":
     parser.add_argument("--delivery-yaw-deg", type=float, choices=(0., 90.), default=90.)
     parser.add_argument("--toward-backboard-m", type=float, default=0.)
     parser.add_argument("--pickup-forward-m", type=float, default=0.)
-    parser.add_argument("--camera", choices=("overview", "delivery", "pickup"), default="overview")
+    parser.add_argument("--camera", choices=("overview", "delivery", "pickup","hip"), default="overview")
     parser.add_argument("--robot-stance-forward-m", type=float, choices=(0., .1), default=0.)
+    parser.add_argument("--recorded-native-frame",type=Path)
     args = parser.parse_args()
     if args.source_result:
         print(build(args.source_result, args.delivery_yaw_deg, args.toward_backboard_m, args.pickup_forward_m, args.robot_stance_forward_m))
     else:
-        view(args.review_result, args.camera)
+        view(args.review_result, args.camera,args.recorded_native_frame)
