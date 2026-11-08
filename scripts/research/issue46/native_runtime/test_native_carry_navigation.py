@@ -1038,3 +1038,14 @@ class SourceReleaseProtocolTests(unittest.TestCase):
         self.assertEqual(node.events[0]['meaning'],'SERVICE_ACCEPTANCE_NOT_TASK_COMPLETION_OR_ZERO_RECEIPT')
         self.assertIn('n.source_enabled(False) if cfg.get("release_source_on_stop") else None',code)
         self.assertIn('n.observe(1.05,baseline=baseline);n.stand_once()',code)
+
+class CombinedCompactCentreTests(unittest.TestCase):
+    def test_bounded_feedback_is_world_fixed_and_preserves_default(self):
+        origin=dict(x=0.,y=0.)
+        self.assertEqual(m.inplace_centre_command(dict(x=-.1,y=0.,yaw=0.),origin,.20),(.20,0.))
+        f,l=m.inplace_centre_command(dict(x=-.1,y=0.,yaw=math.pi/2),origin,.20)
+        self.assertAlmostEqual(f,0.);self.assertAlmostEqual(l,-.20)
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,compact_angular_cap=.60)
+        compile(code,'combined_compact','exec')
+        self.assertIn('inplace_centre_command(p,mission["turn_origin_pose"],.20)',code)
+        self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
