@@ -808,6 +808,14 @@ class PostLiftRetractTests(TestCase):
         if change:retract.update(change)
         lift={"pass":True,"height_m":.06,"duration_s":3.,"hold_s":1.5,"retract_preflight":retract}
         return h.build_hal_bilateral_arm_plan_script({n:(30.,1.) for n in names},[0.]*7,[0.]*7,duration_s=6.,hold_s=1.,restore=False,right_hand_command=0.,hand_hold_s=2.,circle_contract={"dummy":True},track_native_circle=True,use_native_joint_feedback=True,lift_contract=lift)
+    def test_native_command_loop_defers_gc_but_restores_it_without_relaxing_age(self):
+        code=self.generated_retract(dict(carry_lease_s=115.))
+        compile(code,'native_carry_gc','exec')
+        self.assertIn('gc.disable()',code)
+        self.assertIn('if cyclic_gc_was_enabled:gc.enable()',code)
+        self.assertIn('def arm_fresh(self,max_age=.20):',code)
+        self.assertIn("'native_age_s':",code)
+        self.assertLess(code.index('gc.disable()'),code.index('rclpy.init();n=Plan()'))
     def test_actual_generated_retract_compiles_and_retains_force_and_source_guards(self):
         code=self.generated_retract();compile(code,"generated_retract","exec")
         tree=ast.parse(code)

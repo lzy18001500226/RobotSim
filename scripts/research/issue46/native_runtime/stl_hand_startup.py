@@ -1238,8 +1238,8 @@ finally:
             # Native rows and retained trace dictionaries are acyclic. Keep
             # reference counting, defer unpredictable cyclic-GC scans until teardown.
             # Freshness, source-joint and collision checks remain authoritative.
-            script = script.replace("rclpy.init();n=Plan()", "import gc\\ncyclic_gc_was_enabled=gc.isenabled()\\ngc.disable()\\nrclpy.init();n=Plan()")
-            script = script.replace("n.destroy_node();rclpy.shutdown()", "n.destroy_node();rclpy.shutdown()\\n if cyclic_gc_was_enabled:gc.enable()")
+            script = script.replace("rclpy.init();n=Plan()", "import gc\ncyclic_gc_was_enabled=gc.isenabled()\ngc.disable()\nrclpy.init();n=Plan()")
+            script = script.replace("n.destroy_node();rclpy.shutdown()", "n.destroy_node();rclpy.shutdown()\n if cyclic_gc_was_enabled:gc.enable()")
         return script
     return script
 
