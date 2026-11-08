@@ -861,7 +861,7 @@ def run_carry_navigation(n,contract):
             n.publish();n.pump()
             if all(k in n.messages for k in ("common","imu","leg_state","leg_command")) and "get_mode" in n.readbacks:break
             time.sleep(.01)
-        n.await_graph();baseline=n.sample()["body_status"]
+        n.await_graph();n.pump();baseline=n.sample()["body_status"]
         result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         start=n.sample()["pose"];result["start_pose"]=start
         goal=cfg["goal_xy_m"];bearing=math.atan2(goal[1]-start["y"],goal[0]-start["x"])

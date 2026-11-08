@@ -84,7 +84,7 @@ class CarryNavigationTests(unittest.TestCase):
         pose["vx"]=.201
         self.assertEqual(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"},allowed_contact_pairs=[["R_hand_narrow3_Link","test_cylinder"]]),"PLANAR_SPEED")
 class CarryRouteControlFlowTests(unittest.TestCase):
-    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False, transit_policy_050=False):
+    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False, transit_policy_050=False, graph_delay_s=0., check_cached_native_age=False):
         import contextlib,io,json,sys,threading
         from types import SimpleNamespace
         from unittest import mock
@@ -94,13 +94,13 @@ class CarryRouteControlFlowTests(unittest.TestCase):
             def __init__(self):
                 self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None
                 self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[];self.latest_row={"generation":1}
-                self.messages={k:{} for k in ("common","imu","leg_state","leg_command")};self.readbacks={"get_mode":(10.,{})};self.x=0.;self.once=False;self.stands=0;self.current_mode="STAND_DEFAULT"
+                self.messages={k:{} for k in ("common","imu","leg_state","leg_command")};self.readbacks={"get_mode":(10.,{})};self.x=0.;self.once=False;self.stands=0;self.current_mode="STAND_DEFAULT";self.native_sample_at=clock.t
             def start_feedback(self):pass
             def stop_feedback(self):pass
             def destroy_node(self):pass
-            def pump(self):clock.t+=pump_delay_s
-            def graph(self):pass
-            def await_graph(self):pass
+            def pump(self):clock.t+=pump_delay_s;self.native_sample_at=clock.t
+            def graph(self):clock.t+=graph_delay_s
+            def await_graph(self):self.graph()
             def publish(self,f=0.,l=0.,a=0.):
                 if not self.moving:f=l=a=0.
                 self.command_log.append(dict(t=clock.t,forward=f,lateral=l,angular=a))
@@ -115,6 +115,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                 self.current_mode=requested
                 self.stands+=int(requested=="STAND_DEFAULT");self.events.append(dict(event="STAND" if requested=="STAND_DEFAULT" else "STEP",t=clock.t))
             def sample(self):
+                if check_cached_native_age and clock.t-self.native_sample_at>.20:raise RuntimeError("NATIVE_FEEDBACK_STALE_OR_INVALID")
                 if self.moving and fault and not self.once:
                     self.once=True
                     if fault=="clock":
@@ -148,6 +149,11 @@ class CarryRouteControlFlowTests(unittest.TestCase):
         self.assertEqual(n.stands,1)
         self.assertEqual(sum(e['event']=='STEP' for e in n.events),1)
         self.assertEqual(result['native_step_transition'][0]['common_mode_desc'],'LOCOMOTION_STEP')
+    def test_startup_graph_must_refresh_native_sample_before_baseline(self):
+        result,n=self.run_route(graph_delay_s=.25,check_cached_native_age=True)
+        self.assertTrue(result["pass_result"])
+        self.assertIn("pre_motion_composite",result)
+
     def test_pose_sample_newer_than_loop_start_is_still_fresh(self):
         result,n=self.run_route(pump_delay_s=.003)
         self.assertTrue(result["pass_result"])
