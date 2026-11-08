@@ -3,6 +3,67 @@
 This workflow defines the handoff contracts for the RAICOM-style task. It does
 not authorize physics stepping, mechanical-model changes, or hardware motion.
 
+## Current scope and accepted review (2026-11-08)
+
+The user cleared the previous long Goal. This workflow retains evidence and
+review decisions; it does not restart that Goal or authorize a new live episode.
+The current request is to streamline these instructions.
+
+The accepted next carry **path intent** is:
+
+    actual grasp/lift/retract
+    -> straight retreat (about0.30m in the reviewed proposal)
+    -> measured stop
+    -> in-place turn180deg
+    -> measured stop
+    -> forward1.00m from the new stopped origin
+    -> complete physical/controller-target stop
+
+Do not substitute a continuous reverse arc for in-place turning. The turn
+center must not sustain translation; stepping sway remains visible. Installed
+MC support and actual execution of the new three-segment sequence are not yet
+qualified. Measure each segment and its stop separately; reverse-arc travel
+does not count toward the final forward metre.
+
+The user accepted the contact geometry and path intent displayed in
+reviews/issue-46/grasp-planned-vs-native-web-review-20261108T112418Z/.
+This is visual acceptance, not transport PASS. In source episode20261108T105237Z,
+the pre-motion frame has two load-bearing solver contacts per pad, about7.4N
+per side and2.467mm circle/section-center error. The old reverse arc reached
+about175.5deg; its stop transition then failed the10mm relative-grasp-point
+guard (observed10.432mm). Final forward1m and complete stop remain unqualified.
+Four geometric support candidates do not guarantee four effective contacts
+throughout motion.
+Opening percentage is a position command, not a force percentage. Report
+requested pad normal force in N, measured contact forces and actual actuator
+torque in N·m separately; a gain increase alone need not increase a closed-loop
+force setpoint.
+
+### Fast human collaboration and runtime iteration
+
+1. Reuse the accepted lower-concave-pad region, support-circle data and existing
+   IK/route/MC interfaces. Do not repeat visual approval or all101 opening fits
+   for an unrelated correction.
+2. For a materially changed grasp/path proposal, show only the needed review:
+   one gripper/contact view and one XY path view. Separate planned geometry
+   from actual contact forces/trajectories. Do not port the whole simulator or
+   add a second navigation/review framework.
+3. Once that version is accepted, make the smallest correction, run the
+   [affected minimum checks](../engineering/validation.md#minimum-checks-and-evidence-reuse),
+   then proceed to the authorized bounded real simulation. Do not add another
+   broad audit or identical preflight campaign.
+4. Use the first physical/interface failure to select one distinct next change.
+   Avoid blind velocity/gain sweeps and repeated approval for already permitted
+   parameter work.
+5. Preserve approved force, source-joint, posture, collision, freshness and stop
+   boundaries. Empty-bottle world tilt is allowed during qualified carry;
+   retention, contact loss and drop are separate observations. Do not move the
+   planning circle to conceal object slippage.
+6. Deliver the runnable MuJoCo command and measured outcome promptly. Reopen
+   human review only for a changed visual/path decision, contradictory
+   evidence or a specifically unapproved boundary. This documentation update
+   does not authorize hardware or a new runtime episode.
+
 ## Frozen inputs
 
 - Robot/gripper selection: `X2-OmniPicker-STL` through the registry loader.
@@ -13,9 +74,10 @@ not authorize physics stepping, mechanical-model changes, or hardware motion.
   the target source. Truth may not silently cross an estimator acceptance
   boundary or be reported as LiDAR/depth-camera navigation or grasp success.
 
-## Current delivery Goal (2026-11-08)
+## Historical delivery outline (superseded scope)
 
-Reuse the existing runner and task interfaces:
+This earlier chair-delivery outline is retained as context, not an active
+queue or prerequisite for the current carry milestone:
 START -> known table -> RGB-D bottle observation -> reachable grasp or bounded
 necessary stance correction -> actual lift -> collision-screened carry posture
 -> held-object locomotion to the known chair area -> measured stable stop.
@@ -42,8 +104,11 @@ SIMULATION_ONLY_FETCH_CARRY_ROUTE: task motion deadline <=90s, input forward
 bounds, telemetry age <=0.20s, goal-base tolerance 0.15m, >=1.05s zero publishing
 before STAND and full original composite stop. Only actual intended distal-pad
 bottle contacts are allowed. A separate grip owner continues HAL arm/hand
-control. Carry reuses the circle IK with a pelvis-heading-relative TCP and
-world-upright axis at 50Hz, including source-bounded joint-velocity feedforward.
+control. The legacy carry profile uses a pelvis-heading-relative TCP and world-upright
+axis at50Hz. The later explicit empty-bottle profile captures a torso-relative
+carry pose after the qualified hold, allowing body tilt without unnecessary
+world-upright arm compensation. Preserve its frame/provenance and source-bounded
+joint-velocity feedforward; neither profile is a transport PASS.
 A carrier fault revokes navigation health before a <=5s last-command grip hold.
 No force or object attachment is introduced.
 
@@ -66,7 +131,7 @@ after proven lift/retract, not the existing 2Nm actuator cap. With the approved
 local-friction comparison, the same explicit margin is preloaded before lift;
 real sustained pad force must meet that budget before the probe begins.
 
-Current physical result (2026-11-08): RGB-D lift/retract and actual8-second
+Earlier physical results (preserved, not the current next-action plan): RGB-D lift/retract and actual8-second
 static carry passed with the specifically approved local friction reference and
 NoSlip0; chair delivery has not passed. Native LS/source and its 65-element
 policy observation were observed, followed by measured root-speed violation.
@@ -122,9 +187,10 @@ Keep each stage's physical result separate. A plan does not qualify a stage.
 Preserve existing geometry and force/posture/stop constraints; use
 the scoped parameter authorization below for ordinary gripper diagnostics.
 
-The five numbered stages above are the current Goal contract. Older task
-messages used “Stage 2” for fixed-stance manipulation and “Stage 3” for base
-repositioning; those shorthand labels do not override this five-stage audit.
+The five numbered stages above are historical scope, not a current Goal
+contract. Current user directions and the accepted milestone above take
+precedence. Do not restart chair delivery, stance adjustment, LiDAR, voice or
+C++ migration from these historical stage labels.
 Fixed-stance grasp and RGB-D subtests are qualified separately from the
 strengthened walking safety audit below. Repositioning reuses that grasp chain,
 requires qualified bounded micro motion and a fresh observation after stopping,

@@ -57,8 +57,12 @@ Execution requirements:
 
 - Preserve immutable upstream files and the reviewed baseline; record exact
   before/after values, input hashes, purpose and a reproducible command.
-- Change one diagnosed condition at a time; verify actual opening/closing using
-  fresh joint feedback and real `mj_step` physics before attempting contact.
+- Change one diagnosed condition at a time. A new gripper gain or
+  joint-resistance configuration needs actual contact-free opening/closing
+  with fresh feedback and real physics before its first contact trial.
+  Reuse that result for the unchanged model/build/parameter combination;
+  an unrelated path or observer edit need not repeat that cycle.
+  Verify the active configuration and current required hand readiness instead.
 - Keep existing force/torque, velocity, joint, posture and stop limits. This
   authorization does not permit raising limits, changing MC gains/binaries,
   weakening success criteria, or connecting hardware.
@@ -72,6 +76,12 @@ Execution requirements:
 - Do not ask again merely because a permitted control parameter affects
   dynamics. Missing real friction data does not prevent a labeled diagnostic
   comparison, but its result cannot be promoted to hardware fidelity.
+
+An accepted visual review persists for the identified geometry/contact region
+and grasp-frame version. Routine authorized parameter debugging does not reopen
+an unchanged visual scope. A materially changed region, assembly, collider or
+task frame must be shown explicitly. Reuse the existing web viewer instead of
+building another review system or rerunning unchanged geometry fitting.
 
 Sections B/C still require case-specific approval for geometry, body/link/joint
 identity, joint types/origins/axes/limits, topology, mimic/equality/transmission
