@@ -186,6 +186,10 @@ def main():
         if any(str(v).endswith('/stl_approved_circle_ik.py') for v in command) and '--runtime-handoff' in command and result.returncode==0 and json.loads(result.stdout.strip().splitlines()[-1]).get('gate')=='PASS':
             reference=Path(json.loads(result.stdout.strip().splitlines()[-1])['output_wsl'])/'result.json'
             evidence=Path(command[command.index('--standing-state')+1]).parent
+            if args.right_claw_kp is not None:
+                extended=json.loads(reference.read_text());extended['native_no_contact_gain_cycle_budget_s']=9.
+                reference=evidence/'native_gain_cycle_tracking_reference.json'
+                pg.write_new_text(reference,json.dumps(extended,indent=2)+'\n')
             if args.target_source=='fresh-rgbd-snapshot':
                 from scripts.research.issue46.perception.native_rgbd_grasp import await_initial_estimate,make_stationary_snapshot
                 plan=json.loads(reference.read_text());planned=plan['perception']['observation_at_plan']

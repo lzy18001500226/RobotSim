@@ -386,7 +386,9 @@ def track_native(reference_path, latest_path, output_path):
         model=load_cached_model(reference['scene']['path'],cache['path'])
     else:model=mujoco.MjModel.from_xml_path(reference['scene']['path'])
     print(json.dumps({'tracker_initialization':'MODEL_READY','host_monotonic_ns':time.monotonic_ns()}),flush=True)
-    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.;generation=None;trace=[];previous_carry=None;carry_velocity=np.zeros(7)
+    cycle_budget=float(reference.get('native_no_contact_gain_cycle_budget_s',0.))
+    if cycle_budget not in (0.,9.):raise ValueError('unreviewed native no-contact cycle budget')
+    seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.+cycle_budget;generation=None;trace=[];previous_carry=None;carry_velocity=np.zeros(7)
     output_path=Path(output_path);stop=output_path.with_suffix('.stop')
     # Loading the offline model can temporarily contend with the native runtime.
     # Before producing any executable target, await a genuinely fresh sample.

@@ -12,6 +12,21 @@ class FrameTests(unittest.TestCase):
         functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget')]
         cls.ns={'np':np};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
+    def test_native_gain_cycle_has_scoped_startup_budget_without_freshness_relaxation(self):
+        source=Path(__file__).with_name('stl_approved_circle_ik.py').read_text()
+        fn=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='track_native')
+        assign=next(n for n in fn.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='cycle_budget' for t in n.targets))
+        guard=fn.body[fn.body.index(assign)+1]
+        code=compile(ast.Module(body=[assign,guard],type_ignores=[]),'cycle_budget','exec')
+        for value in (0.,9.):
+            ns={'reference':{'native_no_contact_gain_cycle_budget_s':value}}
+            exec(code,ns);self.assertEqual(ns['cycle_budget'],value)
+        for value in (1.,float('nan'),100.):
+            with self.assertRaises(ValueError):exec(code,{'reference':{'native_no_contact_gain_cycle_budget_s':value}})
+        self.assertIn("deadline=time.monotonic()+45.+cycle_budget",source)
+        self.assertIn("if not 0<=age<=.20:raise RuntimeError('STALE_NATIVE_TRACKING_SOURCE')",source)
+        self.assertIn("if (now-row['host_monotonic_ns'])*1e-9>.20",source)
+
     def test_carry_target_follows_base_xy_yaw_but_not_pelvis_sway_or_object_truth(self):
         from scipy.spatial.transform import Rotation
         reference=dict(grasp_height_above_center_m=.1)
