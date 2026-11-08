@@ -1033,7 +1033,9 @@ def run_carry_navigation(n,contract):
                     acquired=False
                 n.stop_started=False
                 with n.lock:n.moving=True
-                activation_started=time.monotonic();continue
+                activation_started=time.monotonic()
+                progress_state=None;progress_best=None;progress_at=activation_started
+                continue
             if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
             p=row["pose"]
             if not -1.65<=p["x"]<=1.65 or not -1.75<=p["y"]<=1.75:raise RuntimeError("CARRY_ROOM_WORKSPACE")
