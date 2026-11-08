@@ -770,12 +770,12 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
     if away_1m and (not transit_policy_050 or (native_step and not straight_retreat_turn) or reverse_moving_arc):raise ValueError("away1m requires distinct bounded FoundationWalk profile")
-    if straight_retreat_turn and (not away_1m or not native_step or not native_action_smoothing):
-        raise ValueError("retreat/in-place prefix requires the explicit reviewed native STEP transition path")
+    if straight_retreat_turn and (not away_1m or not native_action_smoothing):
+        raise ValueError("retreat/in-place prefix requires the explicit bounded carry transition path")
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -972,14 +972,17 @@ def run_carry_navigation(n,contract):
                         mission["retreat_end_pose"]=stopped["pose"]
                         transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
                         closed_permits.append(transit_permit);transit_permit=None
-                        cfg["motion_mode"]="LOCOMOTION_STEP"
-                        n.stand_once("LOCOMOTION_STEP")
-                        ready_until=time.monotonic()+.75;prepared=False
-                        while time.monotonic()<ready_until:
-                            n.publish();n.pump();state=n.sample()
-                            result.setdefault("inplace_mode_preparation",[]).append({k:state[k] for k in ("sample_monotonic_s","get_mode_desc","common_mode_desc","common_mode_status_value","pose")})
-                            if native_step_activation_ready(state,baseline):prepared=True;break
-                            time.sleep(.02)
+                        cfg["motion_mode"]=cfg.get("inplace_motion_mode","LOCOMOTION_STEP")
+                        state=stopped;prepared=cfg["motion_mode"]=="LOCOMOTION_DEFAULT"
+                        mission["turn_mode"]=cfg["motion_mode"]
+                        if cfg["motion_mode"]=="LOCOMOTION_STEP":
+                            n.stand_once("LOCOMOTION_STEP")
+                            ready_until=time.monotonic()+.75
+                            while time.monotonic()<ready_until:
+                                n.publish();n.pump();state=n.sample()
+                                result.setdefault("inplace_mode_preparation",[]).append({k:state[k] for k in ("sample_monotonic_s","get_mode_desc","common_mode_desc","common_mode_status_value","pose")})
+                                if native_step_activation_ready(state,baseline):prepared=True;break
+                                time.sleep(.02)
                         if not prepared:raise RuntimeError("INPLACE_STEP_PREPARATION_FAILED")
                         mission["phase"]="TURN";mission["turn_origin_pose"]=state["pose"]
                         # The stopped retreat pose defines a new physical turn;
