@@ -41,9 +41,15 @@
   "gait_prepare_required_load_states": 1,
   "gait_readiness_scope": "actual foot unloading AND measured knee motion AND live source/mode; observe full alternation during transit, not a redundant pre-motion complete cycle",
   "carry_native_neutral_stow": {
-    "classification": "NATIVE_STAND_REFERENCE_JOINT_STOW_NOT_VENDOR_CARRY_QUALIFICATION",
+    "classification": "NATIVE_LEFT_ARM_REFERENCE_AND_IK_UPRIGHT_RIGHT_PAYLOAD_NOT_VENDOR_CARRY_QUALIFICATION",
     "source": "/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/cpgtelecon_config.yaml",
     "source_sha256": "125956f6550e851c7dcded27c9c1e1df1e9a197377f1143ae9c0060288e985a1",
+    "operational_right_arm_ik": {
+      "path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-stow-task-reference-20261108T232340Z/result.json",
+      "sha256": "1e76139fedc33c048b67f67d8f6fe6f95bf621538be61113fd137a944d41eecd",
+      "source_native_frame": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-stow-task-reference-20261108T232340Z/reference_native_frame.json",
+      "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
+    },
     "arm_target_rad": {
       "left_shoulder_pitch_joint": 0.4,
       "left_shoulder_roll_joint": 0.0,
@@ -52,16 +58,15 @@
       "left_wrist_yaw_joint": 0.0,
       "left_wrist_pitch_joint": 0.0,
       "left_wrist_roll_joint": 0.0,
-      "right_shoulder_pitch_joint": 0.4,
-      "right_shoulder_roll_joint": 0.0,
-      "right_shoulder_yaw_joint": 0.0,
-      "right_elbow_joint": -1.2,
-      "right_wrist_yaw_joint": 0.0,
-      "right_wrist_pitch_joint": 0.0,
-      "right_wrist_roll_joint": 0.0
+      "right_shoulder_pitch_joint": 0.4367390764789471,
+      "right_shoulder_roll_joint": 0.010987167164649222,
+      "right_shoulder_yaw_joint": -0.3746039323834534,
+      "right_elbow_joint": -1.3944005949031821,
+      "right_wrist_yaw_joint": -0.4190868999004553,
+      "right_wrist_pitch_joint": -0.5079999999999999,
+      "right_wrist_roll_joint": 1.3716945551504172
     },
     "duration_s": 6.0,
-    "wrist_yaw_choice": "zero source-bounded neutral",
     "physical_validation": "NOT_RUN"
   }
 }
