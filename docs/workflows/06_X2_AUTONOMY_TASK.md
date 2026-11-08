@@ -62,7 +62,9 @@ A successful LS service selects STEP speed_mode=4 while zero input can retain
 SD/100; that is preparation only. Actual source and LS readback are still
 required after effective input. Source and target stable-stop criteria stay
 unchanged. --carry-grip-force-margin=3 raises only the carry force objective,
-after proven lift/retract, not the existing 2Nm actuator cap.
+after proven lift/retract, not the existing 2Nm actuator cap. With the approved
+local-friction comparison, the same explicit margin is preloaded before lift;
+real sustained pad force must meet that budget before the probe begins.
 
 Current physical result (2026-11-08): RGB-D lift/retract and NoSlip2 static carry
 hold passed; chair delivery has not passed. Native LS/source and its 65-element

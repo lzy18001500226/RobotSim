@@ -44,7 +44,7 @@ class FrameTests(unittest.TestCase):
         rows=[dict(pass_result=True,pass_=True,q_rad=dict(q=.6),gates={}),dict(pass_result=True,pass_=True,q_rad=dict(q=.2),gates={}),dict(pass_result=True,pass_=True,q_rad=dict(q=.1),gates={})]
         for row in rows:row['pass']=row.pop('pass_')
         def lift(model,state,q,*args):return dict(pass_=float(q[0])<.3)
-        def checked(model,state,q,*args):
+        def checked(model,state,q,*args,**kwargs):
             result=lift(model,state,q,*args);result['pass']=result.pop('pass_');return result
         with mock.patch.dict(self.ns,dict(ik=NS(ACTIVE=['q']),screen_lift=checked)):
             self.ns['qualify_grasp_motion_branches'](rows,None,{},39,np.zeros(3),np.zeros(3),np.array([1.,0.,0.]))

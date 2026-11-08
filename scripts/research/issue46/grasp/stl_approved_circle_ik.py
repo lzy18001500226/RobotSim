@@ -212,9 +212,10 @@ def tracking_task(row, reference, phase=None):
     return anchor+offset,axis
 
 
-def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=None):
+def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=None, *, normal_margin=1.5):
     """Thirteen zero-step, source-limited lift samples; no runtime pose writes."""
     import copy
+    if normal_margin not in (1.5,3.):raise ValueError("unsupported grip force budget margin")
     bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
     hand=ik.native.bid(model,'R_omnipicker_base_link');bottle=ik.native.bid(model,'test_cylinder')
     free=ik.native.jid(model,'test_cylinder_free')
@@ -241,7 +242,7 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
     mu=min(float(model.geom_friction[g,0]) for g in range(model.ngeom) if int(model.geom_bodyid[g]) in (bottle,ik.native.bid(model,'R_hand_narrow3_Link'),ik.native.bid(model,'R_hand_wide3_Link')))
     mass=float(model.body_mass[bottle]);weight=mass*float(np.linalg.norm(model.opt.gravity))
     if not mu>0 or not mass>0:raise ValueError('invalid known payload/friction for diagnostic force budget')
-    return {'pass':all(s['pass'] for s in samples),'samples':samples,'mj_step_calls':0,'height_m':.06,'duration_s':3.,'hold_s':1.5,'contact_command':opening/100.,'mass_kg':mass,'sliding_friction':mu,'required_normal_force_n':1.5*weight/(2*mu),'force_budget_is_simulation_assumption':True,'free_body_preflight':{'pass':True,'joint':'test_cylinder_free','gravity_m_s2':model.opt.gravity.tolist(),'gravcomp':0.,'object_actuator_count':len(driven),'attachment_count':len(attachments)}}
+    return {'pass':all(s['pass'] for s in samples),'samples':samples,'mj_step_calls':0,'height_m':.06,'duration_s':3.,'hold_s':1.5,'contact_command':opening/100.,'mass_kg':mass,'sliding_friction':mu,'required_normal_force_n':normal_margin*weight/(2*mu),'force_budget_margin':normal_margin,'force_budget_is_simulation_assumption':True,'free_body_preflight':{'pass':True,'joint':'test_cylinder_free','gravity_m_s2':model.opt.gravity.tolist(),'gravcomp':0.,'object_actuator_count':len(driven),'attachment_count':len(attachments)}}
 
 
 
@@ -397,7 +398,7 @@ def track_native(reference_path, latest_path, output_path):
         output_path.with_suffix('.trace.json').write_text(json.dumps(trace))
 
 
-def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,local_axis,retract_offset=None):
+def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,local_axis,retract_offset=None,normal_margin=1.5):
     import copy
     for row in rows:
         row['grasp_only_pass']=row['pass'];row['pass']=False
@@ -405,7 +406,7 @@ def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,
     for candidate_row in rows:
         if not candidate_row['grasp_only_pass']:continue
         lift_seed=np.array([candidate_row['q_rad'][n] for n in ik.ACTIVE])
-        task_lift=screen_lift(model,state,lift_seed,opening,center,object_center,local_axis)
+        task_lift=screen_lift(model,state,lift_seed,opening,center,object_center,local_axis,normal_margin=normal_margin)
         candidate_row['lift_preflight']=task_lift
         candidate_row['gates']['LIFT_SWEEP']='PASS' if task_lift['pass'] else 'FAIL'
         candidate_row['pass']=bool(task_lift['pass'])
@@ -436,6 +437,7 @@ def main():
     parser.add_argument("--use-measured-load-frame",action="store_true",help="apply measured <=5mm TCP correction without altering the approved nominal circle")
     parser.add_argument("--runtime-handoff",action="store_true")
     parser.add_argument("--physical-lift-test",action="store_true")
+    parser.add_argument("--lift-grip-force-margin",type=float,choices=(1.5,3.),default=1.5)
     parser.add_argument("--post-lift-retract-world-m",type=float,nargs=3)
     parser.add_argument("--approach-opening-percent",type=int,default=100)
     parser.add_argument("--free-bottle-axis-roll",action="store_true",help="constrain reviewed bottle axis and circle centre, letting IK choose axial roll")
@@ -608,7 +610,7 @@ def main():
     # Arrival alone is insufficient: qualify the whole already requested
     # lift/retract on each existing grasp branch before selecting its winner.
     if args.physical_lift_test:
-        qualify_grasp_motion_branches(rows,model,state,max(command-1,0),center,object_center,local_axis,args.post_lift_retract_world_m)
+        qualify_grasp_motion_branches(rows,model,state,max(command-1,0),center,object_center,local_axis,args.post_lift_retract_world_m,args.lift_grip_force_margin)
     # Prefer joint margin only among complete task-feasible candidates.
     rows.sort(key=lambda r:(not r["pass"],-r["metrics"]["minimum_joint_margin_rad"] if r["pass"] else r["metrics"]["hand_position_error_m"],r["metrics"]["hand_position_error_m"]))
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path

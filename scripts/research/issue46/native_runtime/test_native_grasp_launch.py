@@ -814,6 +814,21 @@ class PostLiftRetractTests(TestCase):
         self.assertIn("'root_actuator_torque_cap_nm_unchanged':2.",code)
         with self.assertRaises(ValueError):self.generated_retract(dict(carry_lease_s=115.,carry_grip_force_margin=10.))
 
+    def test_lift_requires_sustained_measured_force_budget_not_touch_only(self):
+        import json,tempfile
+        from unittest import mock
+        code=self.generated_retract()
+        tree=ast.parse(code);fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='native_bilateral_contact')
+        ns={'json':json};exec(compile(ast.Module(body=[fn],type_ignores=[]),'force_gate','exec'),ns)
+        def trace(force):
+            return ''.join(json.dumps(dict(host_monotonic_ns=int((10+i*.02)*1e9),sim_time_s=i*.02,contacts=[dict(body1='test_cylinder',body2=n,local_force_torque=[force,0.,0.,0.,0.,0.]) for n in ('R_hand_narrow3_Link','R_hand_wide3_Link')]))+chr(10) for i in range(25))
+        import io
+        with mock.patch('builtins.open',side_effect=lambda *a,**k:io.BytesIO(trace(1.6).encode())):
+            self.assertTrue(ns['native_bilateral_contact'](10.)['pass'])
+            self.assertFalse(ns['native_bilateral_contact'](10.,minimum_normal_force_n=2.943)['pass'])
+        with mock.patch('builtins.open',side_effect=lambda *a,**k:io.BytesIO(trace(3.).encode())):
+            self.assertTrue(ns['native_bilateral_contact'](10.,minimum_normal_force_n=2.943)['pass'])
+
     def test_carry_lease_keeps_body_relative_ik_and_velocity_out_of_grip_owner(self):
         code=self.generated_retract(dict(carry_lease_s=115.))
         compile(code,"carry_lease","exec")

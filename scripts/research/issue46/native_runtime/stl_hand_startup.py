@@ -864,7 +864,7 @@ def native_circle_arrival(contract):
  angle=math.acos(max(-1.,min(1.,sum(world_axis[i]*B[3*i+2] for i in range(3)))))
  expected_raw=math.acos(max(-1.,min(1.,local_axis[0])))
  return {'pass':error<=.005 and nominal_error<=.005 and angle<=.03 and abs(raw_angle-expected_raw)<=.03,'position_error_m':error,'nominal_circle_error_m':nominal_error,'axis_error_rad':angle,'raw_hand_axis_to_bottle_rad':raw_angle,'planned_mesh_axis_offset_rad':expected_raw,'tcp_world_m':tcp,'target_world_m':target,'bottle_center_world_m':bottle['position_m'],'bottle_axis_world':[B[2],B[5],B[8]],'target_source':target_source,'image_source_host_ns':image_source_ns,'native_pose_age_s':age,'sim_time_s':row['sim_time_s'],'classification':'SIMULATION_ONLY_NATIVE_TCP_ARRIVAL'}
-def native_bilateral_contact(close_start):
+def native_bilateral_contact(close_start,minimum_normal_force_n=.1):
  path='/workspace/evidence/native_physics.jsonl'
  with open(path,'rb') as stream:
   stream.seek(0,2);size=stream.tell();stream.seek(max(0,size-1048576));raw=stream.read()
@@ -881,7 +881,7 @@ def native_bilateral_contact(close_start):
    if 'test_cylinder' not in pair:continue
    for name in forces:
     if name in pair:forces[name]+=max(0.,float(c['local_force_torque'][0]))
-  if all(v>=.1 for v in forces.values()):
+  if all(v>=minimum_normal_force_n for v in forces.values()):
    if bilateral and (int(row['host_monotonic_ns'])-bilateral[-1][0])*1e-9>.10:bilateral=[]
    bilateral.append((int(row['host_monotonic_ns']),forces,row['sim_time_s']))
   else:bilateral=[]
@@ -1157,7 +1157,7 @@ try:
   n.send(goal,HAND_HOLD,'HAND_CLOSE_HOLD',HAND_RIGHT);closure_issued=True
   if LIFT_CONTRACT is not None:
    close_start=min(x['host_monotonic_s'] for x in n.trace if x['stage']=='HAND_CLOSE_HOLD')
-   contact=native_bilateral_contact(close_start)
+   contact=native_bilateral_contact(close_start,minimum_normal_force_n=float(LIFT_CONTRACT['required_normal_force_n']))
    print(json.dumps({'prelift_bilateral_contact':contact}),flush=True)
    if not contact['pass']:raise RuntimeError('LIFT_GATED_NO_SUSTAINED_BILATERAL_CONTACT')
    n.refresh_native();grasped_position=list(n.native_row['bodies']['test_cylinder']['position_m'])
@@ -1326,7 +1326,7 @@ def _with_carry_lease(script, retract):
     needle="   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')\n if RESTORE:"
     replace(needle,
 """   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')
-   LIFT_CONTRACT['required_normal_force_n']*=float(LIFT_CONTRACT['retract_preflight'].get('carry_grip_force_margin',1.5))/1.5
+   LIFT_CONTRACT['required_normal_force_n']*=float(LIFT_CONTRACT['retract_preflight'].get('carry_grip_force_margin',1.5))/float(LIFT_CONTRACT.get('force_budget_margin',1.5))
    carry_target=dict(n.last_published_arm_target)
    hand=n.native_row['bodies']['R_omnipicker_base_link'];base=n.native_row['bodies']['pelvis'];R=hand['rotation'];c=CIRCLE_CONTRACT['circle_center_local_m']
    tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]

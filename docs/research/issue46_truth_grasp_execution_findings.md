@@ -976,3 +976,14 @@ scripts/research/，不提升到正式运行模型。PR保持Draft。
   <pair geom1="R_hand_wide3_Link__collision_coacd_9" geom2="test_cylinder_collision" condim="3" friction="1 1 0.0050000000000000001 0.0001 0.0001" solref="0.02 1" solimp="0.90000000000000002 0.94999999999999996 0.001 0.5 2" margin="0.0" gap="0.0" name="diagnostic_pad_bottle_21" solreffriction="0.002 1.0" />
 </contact>
 ```
+
+
+### 已批准局部摩擦对比的首次真实加载（004533Z）
+
+原生337模型正向确认22对、tau=0.002s、NoSlip0；闭合双侧接触通过，
+但8mm载荷转移探针中出现单侧接触丢失，未进入携带。
+提起前每侧仅约1.6N：原 carry-margin=3 直到抬升/收臂后才使用，
+没有在实际承重前建立该预紧力。控制修正将已显式选择的3倍重量余量
+用于本局部参数配置的闭合/抬升，并在探针之前要求真实连续测得该力；
+默认配置仍1.5，现有2Nm、关节/速度/姿态门和0.002s参数均不变。
+这项控制修正不把首次局部参数试验改写成成功。

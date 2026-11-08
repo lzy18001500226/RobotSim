@@ -153,6 +153,7 @@ def main():
             command.extend(["--target-source",args.target_source,"--free-bottle-axis-roll"])
             if host_model_cache:command.extend(['--host-model-cache',str(host_model_cache)])
             if args.physical_lift_test:command.append('--physical-lift-test')
+            if args.approved_pad_friction_reference:command.extend(['--lift-grip-force-margin',str(args.carry_grip_force_margin)])
             if args.post_lift_retract_world_m is not None:command.extend(['--post-lift-retract-world-m',*map(str,args.post_lift_retract_world_m)])
             command[command.index("--grasp-height-above-center-m")+1]=str(args.grasp_height_above_center_m)
             command.extend(['--grasp-axis-tilt-rad',str(args.grasp_axis_tilt_rad)])

@@ -2394,9 +2394,11 @@ def main() -> None:
             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.stdout", arm_pregrasp.stdout)
             arm_pregrasp_result = decode_arm_execution_output(arm_pregrasp.returncode,arm_pregrasp.stdout)
             if args.carry_goal_world_xy is not None:
-                result["gates"]["CARRY_TO_CHAIR"]="PASS" if arm_pregrasp_result.get("carry_execution",{}).get("pass") is True and result.get("carry_navigation",{}).get("pass_result") is True and result.get("carry_native_motion_audit",{}).get("pass") is True else "FAIL"
+                result["gates"]["CARRY_TO_CHAIR"]="NOT_RUN" if "carry_navigation" not in result else "PASS" if arm_pregrasp_result.get("carry_execution",{}).get("pass") is True and result["carry_navigation"].get("pass_result") is True and result.get("carry_native_motion_audit",{}).get("pass") is True else "FAIL"
             if replan_record.get('lift_preflight',{}).get('retract_preflight'):
-                result['gates']['POST_LIFT_RETRACT']='PASS' if arm_pregrasp_result.get('post_lift_retract',{}).get('pass') is True else 'FAIL'
+                execution_trace=json.loads((output/'native_hal_pregrasp_trace.json').read_text()).get('trace',[]) if (output/'native_hal_pregrasp_trace.json').exists() else []
+                retract_observed=bool(arm_pregrasp_result.get('post_lift_retract')) or any(x.get('stage') in ('RETRACT','RETRACT_HOLD') for x in execution_trace)
+                result['gates']['POST_LIFT_RETRACT']='PASS' if arm_pregrasp_result.get('post_lift_retract',{}).get('pass') is True else 'FAIL' if retract_observed else 'NOT_RUN'
             result["native_hal_bilateral_arm_pregrasp"] = {"candidate": result.get("hal_arm_candidate"), "plan_mode": args.hal_arm_plan_mode, "target_right_arm_rad": hal_arm_target_right, "target_left_arm_rad": hal_arm_target_left, "returncode": arm_pregrasp.returncode, "result": arm_pregrasp_result}
             result["gates"]["HAL_BILATERAL_ARM_PREGRASP"] = "PASS" if arm_pregrasp.returncode == 0 and arm_pregrasp_result.get("native_tcp_arrival", {}).get("pass") and arm_pregrasp_result.get("motion_stability", {}).get("pass") else "FAIL"
             if args.hal_right_hand_command is not None:
@@ -2432,7 +2434,7 @@ def main() -> None:
                     result['failure']={'gate':'HAL_PHYSICAL_LIFT','detail':result.get('physical_lift_evidence',lift)}
                 if "hand command" in result["commands_not_sent"]:
                     result["commands_not_sent"].remove("hand command")
-                if args.carry_goal_world_xy is not None and result.get("carry_navigation",{}).get("pass_result") is not True:
+                if args.carry_goal_world_xy is not None and "carry_navigation" in result and result["carry_navigation"].get("pass_result") is not True:
                     result["failure"]={"gate":"CARRY_NAVIGATION","detail":result.get("carry_navigation",{})}
                 if args.carry_goal_world_xy is not None:
                     result["gates"]["CHAIR_SEAT_PLACEMENT"]="NOT_RUN"
