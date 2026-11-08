@@ -1035,7 +1035,7 @@ class Plan(Node):
     if not math.isfinite(force) or abs(force)>2.000001:raise RuntimeError('GAIN_CYCLE_FORCE_CAP')
     for c in self.native_row.get('contacts',[]):
      if any(str(c.get(k,'')).startswith(('R_hand_','R_omnipicker','R_claw')) for k in ('body1','body2')) and abs(float(c['local_force_torque'][0]))>.1:raise RuntimeError('GAIN_CYCLE_NOT_CONTACT_FREE')
-   if not self.arm_fresh():raise RuntimeError('STALE_BILATERAL_ARM_FEEDBACK_DURING:'+stage)
+   if not self.arm_fresh():raise RuntimeError('STALE_BILATERAL_ARM_FEEDBACK_DURING:'+stage+':'+json.dumps({'native_age_s':(time.monotonic_ns()-self.native_receipt_ns)*1e-9 if self.native_receipt_ns else None,'native_source_ns':self.native_receipt_ns,'control_sequence':self.seq}))
    bias=({name:float(self.native_row['joints'][name]['bias_force']) for name in RIGHT} if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK else self.native_bias())
    if USE_NATIVE_BIAS and any(name not in bias for name in RIGHT):raise RuntimeError('INCOMPLETE_NATIVE_BIAS_SAMPLE')
    m=JointCommandArray();m.header=MessageHeader();m.header.stamp=self.get_clock().now().to_msg();m.header.frame_id='hal_bilateral_pregrasp';m.header.sequence=self.seq;self.seq+=1
@@ -1233,7 +1233,14 @@ finally:
  n.destroy_node();rclpy.shutdown()
 """.replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
     if lift_contract and lift_contract.get('retract_preflight'):
-        return _with_postlift_retract(script, lift_contract)
+        script = _with_postlift_retract(script, lift_contract)
+        if use_native_joint_feedback:
+            # Native rows and retained trace dictionaries are acyclic. Keep
+            # reference counting, defer unpredictable cyclic-GC scans until teardown.
+            # Freshness, source-joint and collision checks remain authoritative.
+            script = script.replace("rclpy.init();n=Plan()", "import gc\\ncyclic_gc_was_enabled=gc.isenabled()\\ngc.disable()\\nrclpy.init();n=Plan()")
+            script = script.replace("n.destroy_node();rclpy.shutdown()", "n.destroy_node();rclpy.shutdown()\\n if cyclic_gc_was_enabled:gc.enable()")
+        return script
     return script
 
 
