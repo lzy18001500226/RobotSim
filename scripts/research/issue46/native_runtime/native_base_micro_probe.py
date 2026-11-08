@@ -872,6 +872,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if delivery is not None:
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
+        if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
         if not .05<=float(delivery.get("retreat_cross_track_limit_m",.05))<=.15:raise ValueError("retreat task corridor bound")
         if not 0.<=float(delivery.get("intermediate_turn_stop_reserve_rad",0.))<=.40:raise ValueError("intermediate stopping reserve bound")
         if delivery.get("gait_prepare_angular_rad_s",.10) not in (-.10,.10):raise ValueError("gait preparation direction")
@@ -1275,12 +1276,12 @@ def run_carry_navigation(n,contract):
                             result["forward_one_metre"]="NOT_RUN"
                             result["delivery_table_placement"]="NOT_RUN"
                             bound=.20 if cfg.get("compact_turn") else .05
-                            if cfg.get("delivery"):bound=.30
+                            if cfg.get("delivery"):bound=float(cfg["delivery"].get("turn_braking_footprint_m",.30))
                             mission["final_centre_tolerance_m"]=bound
                             turn_rows=[r for r in n.trace if r["sample_monotonic_s"]>=mission.get("turn_start_source_s",0.)]
                             peak=max([drift]+[math.hypot(r["pose"]["x"]-origin["x"],r["pose"]["y"]-origin["y"]) for r in turn_rows])
                             mission["turn_and_braking_peak_radius_m"]=peak
-                            if cfg.get("compact_turn") and peak>.30:raise RuntimeError("COMPACT_TURN_BRAKING_RADIUS_300MM")
+                            if cfg.get("compact_turn") and peak>(float(cfg["delivery"].get("turn_braking_footprint_m",.30)) if cfg.get("delivery") else .30):raise RuntimeError("COMPACT_TURN_BRAKING_RADIUS_TASK_LIMIT")
                             if drift>bound:raise RuntimeError("INPLACE_TURN_CENTER_TRANSLATION:"+str(drift))
                             result["retreat_turn_prefix_pass"]=True
                             if cfg.get("delivery"):

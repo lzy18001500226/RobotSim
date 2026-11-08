@@ -28,7 +28,7 @@ The current transfer path intent is:
     -> approach/lower, actual table-contact transfer, open, released-object hold
 
 The user permits a bounded small turning footprint. The separately named
-two-table task uses <=0.30m measured turn/braking footprint and plans its next
+two-table task uses <=0.30m active turn and <=0.35m measured braking/settled footprint and plans its next
 segment from the actual stopped pose. Its intermediate approximately180deg
 heading allowance is0.30rad; its preliminary retreat corridor is0.15m,
 with the old instantaneous50mm result still reported separately. Final
