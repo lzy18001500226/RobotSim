@@ -380,7 +380,7 @@ def main():
     if args.initial_hands_fully_open:argv.append("--initial-hands-fully-open")
     if args.native_arm_policy_relay:argv.append("--native-arm-policy-relay")
     if args.open_hand_transit_park:argv.append("--open-hand-transit-park")
-    if args.pause_for_human_review:argv.append("--pause-on-claw-failure")
+    if args.pause_for_human_review and not args.native_background_xvfb_tools:argv.append("--pause-on-claw-failure")
     if args.coordinated_waist_pitch_offset_rad and not args.native_physics_audit:raise ValueError("coordinated circle execution requires native TCP observation")
     if args.coordinated_waist_pitch_offset_rad:argv.extend(["--coordinated-circle-waist","--disable-mc-waist-publisher"])
     sys.argv=argv
