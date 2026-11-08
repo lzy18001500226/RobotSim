@@ -816,6 +816,13 @@ class EmptyBottleOwnerGuardTests(unittest.TestCase):
         ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
 
 class InplaceCentreHoldTests(unittest.TestCase):
+    def test_prepared020_recovery_is_opt_in_and_single_axis_only(self):
+        origin={'x':0.,'y':0.}
+        self.assertEqual(m.inplace_recovery_command({'x':-.03,'y':0.,'yaw':0.},origin,.20),(.20,0.))
+        self.assertEqual(m.inplace_recovery_command({'x':0.,'y':-.03,'yaw':0.},origin,.20),(0.,.20))
+        with self.assertRaises(ValueError):m.inplace_recovery_command({'x':0.,'y':0.,'yaw':0.},origin,.3)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=42,turn_recovery_speed=.20)
+
     def test_recovery_uses_eligible_axis_commands_inside_the_same_total_cap(self):
         origin={'x':0.,'y':0.}
         self.assertEqual(m.inplace_recovery_command({'x':-.03,'y':0.,'yaw':0.},origin),(.12,0.))
