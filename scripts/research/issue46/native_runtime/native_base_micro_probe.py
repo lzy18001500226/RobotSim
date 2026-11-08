@@ -872,6 +872,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if delivery is not None:
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
+        if delivery.get("gait_prepare_angular_rad_s",.10) not in (-.10,.10):raise ValueError("gait preparation direction")
         if not .12<=float(delivery.get("intermediate_turn_heading_tolerance_rad",.12))<=.30:raise ValueError("intermediate task heading bound")
         if delivery.get("schema")!="robotsim.x2.two-table-delivery.v1" or delivery.get("frame")!="native_scene_world":raise ValueError("delivery scene contract")
         if len(delivery["base_goal_world_xy"])!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in delivery["base_goal_world_xy"]):raise ValueError("delivery goal workspace")
@@ -1119,7 +1120,8 @@ def run_carry_navigation(n,contract):
                         mission["prestep_end_pose"]=p;mission["retreat_origin_pose"]=p
                         mission["phase"]="RETREAT";progress_state=None;progress_best=None;progress_at=tick
                         continue
-                    output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=.1,linear_x=0.,angular_z=.1)
+                    prep_angular=(cfg.get("delivery") or {}).get("gait_prepare_angular_rad_s",.10)
+                    output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=prep_angular,linear_x=0.,angular_z=prep_angular)
                 elif mission["phase"]=="RETREAT":
                     origin=mission.get("retreat_origin_pose",start)
                     dx=p["x"]-origin["x"];dy=p["y"]-origin["y"]
