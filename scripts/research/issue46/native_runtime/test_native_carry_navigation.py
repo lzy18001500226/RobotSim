@@ -1005,3 +1005,17 @@ class RealCompactBridgeArgumentTests(unittest.TestCase):
             argv=shlex.split(ns['bridge_command'])
             self.assertIn('max_angular_velocity:='+str(expected),argv)
             self.assertEqual(ns['carry_angular'],expected)
+
+class NativeGaitPreparationTests(unittest.TestCase):
+    def test_gait_readiness_uses_actual_foot_contact_loads(self):
+        def contact(side,force):return dict(efc_address=0,body1="world",body2=side+"_ankle_roll_link",local_force_torque=[force])
+        self.assertEqual(m.native_foot_loads({'contacts':[contact('left',250),contact('right',20)]})[1],'left')
+        self.assertEqual(m.native_foot_loads({'contacts':[contact('left',20),contact('right',250)]})[1],'right')
+        self.assertIsNone(m.native_foot_loads({'contacts':[contact('left',130),contact('right',130)]})[1])
+    def test_generated_prestep_is_bounded_and_has_zero_forward_input(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,gait_prepare=True)
+        compile(code,'native_prestep','exec')
+        self.assertIn('GAIT_PREPARATION_NOT_OBSERVED',code)
+        self.assertIn('GAIT_PREPARATION_POSE_BOUND',code)
+        self.assertIn('len(supports)>=2 and acquired',code)
+        self.assertIn('mission["phase"]=="PRESTEP":forward=0.',code)
