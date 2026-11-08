@@ -1047,5 +1047,7 @@ class CombinedCompactCentreTests(unittest.TestCase):
         self.assertAlmostEqual(f,0.);self.assertAlmostEqual(l,-.20)
         code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,compact_angular_cap=.60)
         compile(code,'combined_compact','exec')
-        self.assertIn('inplace_centre_command(p,mission["turn_origin_pose"],.20)',code)
+        self.assertIn('inplace_centre_command(p,mission["turn_origin_pose"],.20,forward_only=True)',code)
+        self.assertEqual(m.inplace_centre_command(dict(x=-.1,y=-.1,yaw=0.),origin,.20,forward_only=True),(.20,0.))
+        self.assertIn('UNQUALIFIED_LATERAL_COMPACT_COMMAND',code)
         self.assertIn('COMPACT_TURN_RADIUS_300MM',code)

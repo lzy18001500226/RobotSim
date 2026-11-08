@@ -417,6 +417,7 @@ def run_probe(smoke_only=False):
                         raise RuntimeError("INPLACE_COMMAND_BOUND")
                     if not MICRO["carry"].get("compact_centre_feedback") and MICRO["carry"].get("active_mission_phase")=="TURN" and math.hypot(fwd,lat)>.12000001 and (not MICRO["carry"].get("active_centre_recovery") or abs(ang)>1e-9):
                         raise RuntimeError("RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE")
+                    if MICRO["carry"].get("compact_centre_feedback") and lat:raise RuntimeError("UNQUALIFIED_LATERAL_COMPACT_COMMAND")
                     if lat and MICRO["carry"].get("active_mission_phase")!="TURN":
                         raise RuntimeError("LATERAL_COMMAND_OUTSIDE_INPLACE_TURN")
                 super().publish(fwd, lat, ang)
@@ -514,6 +515,7 @@ def run_probe(smoke_only=False):
                             raise RuntimeError("CARRY_OBJECT_EXTERNAL_SUPPORT")
                 if (MICRO.get("carry",{}).get("inplace_centre_hold") or MICRO.get("carry",{}).get("compact_turn")) and self.bridge_commands:
                     command=self.bridge_commands[-1]["raw"]
+                    if MICRO["carry"].get("compact_centre_feedback") and command["lateral_velocity"]:raise RuntimeError("OBSERVED_UNQUALIFIED_LATERAL_COMPACT_COMMAND")
                     limit=(.20 if MICRO["carry"].get("compact_centre_feedback") else 0. if MICRO["carry"].get("compact_turn") else MICRO["carry"].get("turn_recovery_speed",.12)) if MICRO["carry"].get("active_mission_phase")=="TURN" else MICRO["carry"].get("transit_command_speed",.12)
                     if math.hypot(command["forward_velocity"],command["lateral_velocity"])>limit+1e-8 or abs(command["angular_velocity"])>MICRO["carry"].get("angular_command_cap",.1)+1e-8:
                         raise RuntimeError("OBSERVED_BRIDGE_COMMAND_BOUND")
@@ -844,7 +846,7 @@ def inplace_recovery_command(pose, origin, speed=.12):
     return 0.,math.copysign(.20 if speed==.20 else .05,l)
 
 
-def inplace_centre_command(pose, origin, max_speed=.12):
+def inplace_centre_command(pose, origin, max_speed=.12, forward_only=False):
     """Existing centre feedback; explicit combined-turn diagnostic may use .20."""
     if max_speed not in (.12,.20):raise ValueError("centre feedback cap")
     values=[pose[k] for k in ("x","y","yaw")]+[origin[k] for k in ("x","y")]
@@ -853,9 +855,12 @@ def inplace_centre_command(pose, origin, max_speed=.12):
     radius=math.hypot(ex,ey)
     if radius<=.01:return 0.,0.
     gain=.12/.05
+    c=math.cos(pose["yaw"]);si=math.sin(pose["yaw"])
+    if forward_only:
+        error=c*ex+si*ey
+        return (max(-max_speed,min(max_speed,gain*error)) if abs(error)>.01 else 0.),0.
     vx=gain*ex;vy=gain*ey
     scale=min(1.,max_speed/math.hypot(vx,vy));vx*=scale;vy*=scale
-    c=math.cos(pose["yaw"]);si=math.sin(pose["yaw"])
     return c*vx+si*vy,-si*vx+c*vy
 
 
@@ -1130,7 +1135,7 @@ def run_carry_navigation(n,contract):
                     if progress<retreat_goal and not (progress>=.03 and predicted>=retreat_goal):
                         output=SimpleNamespace(state=NavState.DRIVE,distance_m=retreat_goal-progress,
                                                yaw_error_rad=error,linear_x=-.12,
-                                               angular_z=(0. if abs(error)<=.02 else math.copysign(min(.1,cfg["angular_command_cap"]),error)))
+                                               angular_z=(0. if abs(error)<=.02 else math.copysign(min(.30 if cfg.get("compact_turn") else .1,cfg["angular_command_cap"]),error)))
                     else:
                         if not acquired:raise RuntimeError("RETREAT_SOURCE_NOT_CONFIRMED")
                         n.deadline_zero();n.stop_started=True
@@ -1211,7 +1216,7 @@ def run_carry_navigation(n,contract):
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=turn_error,
                                                linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(min(.30,cfg["angular_command_cap"]) if cfg.get("compact_turn") and abs(turn_error)<.60 else cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
                         if cfg.get("compact_centre_feedback"):
-                            output.linear_x,output.lateral_y=inplace_centre_command(p,mission["turn_origin_pose"],.20)
+                            output.linear_x,output.lateral_y=inplace_centre_command(p,mission["turn_origin_pose"],.20,forward_only=True)
                             mission["combined_xy_feedback_ticks"]=mission.get("combined_xy_feedback_ticks",0)+1
                         if cfg.get("inplace_centre_hold"):
                             output.linear_x,output.lateral_y=(0.,0.) if cfg.get("turn_recovery_speed",.12)>.12 else inplace_centre_command(p,mission["turn_origin_pose"])
