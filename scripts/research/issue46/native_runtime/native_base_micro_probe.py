@@ -407,6 +407,8 @@ def run_probe(smoke_only=False):
                     limit=MICRO["carry"].get("turn_recovery_speed",.12) if MICRO["carry"].get("active_mission_phase")=="TURN" else .12
                     if math.hypot(fwd,lat)>limit+1e-8 or abs(ang)>.10000001:
                         raise RuntimeError("INPLACE_COMMAND_BOUND")
+                    if math.hypot(fwd,lat)>.12000001 and (not MICRO["carry"].get("active_centre_recovery") or abs(ang)>1e-9):
+                        raise RuntimeError("RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE")
                     if lat and MICRO["carry"].get("active_mission_phase")!="TURN":
                         raise RuntimeError("LATERAL_COMMAND_OUTSIDE_INPLACE_TURN")
                 super().publish(fwd, lat, ang)
@@ -1190,7 +1192,9 @@ def run_carry_navigation(n,contract):
                     if output.state==NavState.ALIGN and abs(output.yaw_error_rad)>abs((bearing-initial_steering_yaw+math.pi)%(2*math.pi)-math.pi)+.10:
                         raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                 if cfg.get("reverse_moving_arc") and output.state==NavState.FINAL_ALIGN:raise RuntimeError("REVERSE_ARC_UNSUPPORTED_TERMINAL_ALIGNMENT")
-                if mission is not None:cfg["active_mission_phase"]=mission["phase"]
+                if mission is not None:
+                    cfg["active_mission_phase"]=mission["phase"]
+                    cfg["active_centre_recovery"]=mission["phase"]=="TURN" and bool(mission.get("turn_centre_recovery"))
                 forward=(output.linear_x if cfg.get("inplace_centre_hold") and mission["phase"]=="TURN" else 0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN" else -.12 if mission["phase"] in ("RETREAT","TURN") else .12) if mission is not None else -.12 if cfg.get("reverse_moving_arc") else .12 if output.linear_x>0 else 0.
                 if cfg.get("inplace_centre_hold") and mission is not None and mission["phase"]=="RETREAT":
                     forward*=bounded_start_scale(max(0.,tick-activation_started))

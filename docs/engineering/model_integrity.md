@@ -165,6 +165,18 @@ stop remain. Do not modify model geometry, force limits or the MC to obtain a
 PASS. The user-approved two-table layout and10cm fixed-stance target update
 are derived episode-boundary scene changes, not an active-robot teleport.
 
+## C.5 One in-place centre-recovery020 experiment (2026-11-08)
+
+The user's direct reply explicitly approves ONE independent simulation:
+only TURN position recovery may command one body-frame XY axis up to0.20m/s,
+with angular command zero during that recovery. Normal retreat/travel stays
+<=0.12m/s, nominal turn angular<=0.10rad/s, actual root<=0.50m/s.
+All source-joint, posture, collision, freshness and full-stop gates remain.
+No model, MC policy/gains or grip-force change is authorized by this exception.
+Use an explicit opt-in; defaults remain0.12. No automatic second launch or
+motion retry is covered by this one-attempt authorization. Preserve the exact
+command, source revision and actual result even when it stops before motion.
+
 ## D. Stop when source semantics are missing
 
 If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.

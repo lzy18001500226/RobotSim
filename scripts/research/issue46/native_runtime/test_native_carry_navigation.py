@@ -816,6 +816,21 @@ class EmptyBottleOwnerGuardTests(unittest.TestCase):
         ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
 
 class InplaceCentreHoldTests(unittest.TestCase):
+    def test020_publisher_rejects_rotation_or_other_phase_at_the_higher_limit(self):
+        from types import SimpleNamespace as NS
+        code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
+          native_action_smoothing=True,transit_policy_050=True,angular_command_cap=.1,
+          straight_retreat_turn=True,inplace_centre_hold=True,turn_recovery_speed=.20)
+        tree=ast.parse(code)
+        branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and 'RECOVERY020_OUTSIDE_POSITION_ONLY_PHASE' in ast.unparse(n) and ast.unparse(n.test).startswith('math.hypot'))
+        cfg={'active_centre_recovery':True,'active_mission_phase':'TURN','turn_recovery_speed':.20}
+        ns={'MICRO':{'carry':cfg},'fwd':.2,'lat':0.,'ang':0.,'math':math}
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),'actual020_scope','exec'),ns)
+        ns['ang']=.1
+        with self.assertRaisesRegex(RuntimeError,'POSITION_ONLY'):exec(compile(ast.Module(body=[branch],type_ignores=[]),'actual020_scope','exec'),ns)
+        ns['ang']=0.;cfg['active_centre_recovery']=False
+        with self.assertRaisesRegex(RuntimeError,'POSITION_ONLY'):exec(compile(ast.Module(body=[branch],type_ignores=[]),'actual020_scope','exec'),ns)
+
     def test_prepared020_recovery_is_opt_in_and_single_axis_only(self):
         origin={'x':0.,'y':0.}
         self.assertEqual(m.inplace_recovery_command({'x':-.03,'y':0.,'yaw':0.},origin,.20),(.20,0.))

@@ -92,6 +92,8 @@ def main():
     args=p.parse_args()
     if args.right_claw_kp is not None and (not args.physical_lift_test or (not args.carry_away_1m and args.carry_goal_world_xy is None)):
         raise ValueError("right gain comparison requires the instrumented physical-lift/carry path")
+    if (args.carry_inplace_centre_hold or args.carry_turn_recovery_speed>.12 or args.carry_turn_brake_delay_s) and not args.carry_straight_retreat_turn:
+        raise ValueError("in-place controls require their explicit bounded task")
     if args.allow_carried_bottle_tilt and args.carry_goal_world_xy is None and not args.carry_away_1m:raise ValueError("empty-bottle tilt policy is scoped to verified carry tasks")
     if args.carry_away_1m and (args.carry_goal_world_xy is not None or (args.carry_native_step_mode and not args.carry_straight_retreat_turn) or args.carry_reverse_moving_arc or not args.carry_transit_speed_policy_050):
         raise ValueError("away1m requires its distinct bounded FoundationWalk transit mission")
