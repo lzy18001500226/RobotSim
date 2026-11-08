@@ -403,6 +403,11 @@ def run_probe(smoke_only=False):
             with self.lock:
                 if not self.moving:
                     fwd=lat=ang=0.
+                if MICRO.get("carry",{}).get("inplace_centre_hold"):
+                    if math.hypot(fwd,lat)>.12000001 or abs(ang)>.10000001:
+                        raise RuntimeError("INPLACE_COMMAND_BOUND")
+                    if lat and MICRO["carry"].get("active_mission_phase")!="TURN":
+                        raise RuntimeError("LATERAL_COMMAND_OUTSIDE_INPLACE_TURN")
                 super().publish(fwd, lat, ang)
                 self.command_log.append(dict(t=time.monotonic(), forward=fwd, lateral=lat, angular=ang,
                                              evidence="PYTHON_PUBLISH_CALL_ONLY_NO_MC_ACK"))
@@ -496,6 +501,10 @@ def run_probe(smoke_only=False):
                         pair={c.get("body1"),c.get("body2")}
                         if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
                             raise RuntimeError("CARRY_OBJECT_EXTERNAL_SUPPORT")
+                if MICRO.get("carry",{}).get("inplace_centre_hold") and self.bridge_commands:
+                    command=self.bridge_commands[-1]["raw"]
+                    if math.hypot(command["forward_velocity"],command["lateral_velocity"])>.12000001 or abs(command["angular_velocity"])>.10000001:
+                        raise RuntimeError("OBSERVED_BRIDGE_COMMAND_BOUND")
                 p=native_pose(r)
                 limit=current_carry_transit_speed_limit("/workspace/evidence",r,MICRO["carry"]["pid"]) if MICRO.get("carry",{}).get("transit_policy_050") else .20
                 fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit)
@@ -774,18 +783,34 @@ def run_probe(smoke_only=False):
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False):
+def inplace_centre_command(pose, origin):
+    """Body-frame XY compensation; cap total speed at the existing .12m/s."""
+    values=[pose[k] for k in ("x","y","yaw")]+[origin[k] for k in ("x","y")]
+    if not all(math.isfinite(v) for v in values):raise RuntimeError("INVALID_TURN_CENTRE_FEEDBACK")
+    ex=origin["x"]-pose["x"];ey=origin["y"]-pose["y"]
+    radius=math.hypot(ex,ey)
+    if radius<=.01:return 0.,0.
+    gain=.12/.05
+    vx=gain*ex;vy=gain*ey
+    scale=min(1.,.12/math.hypot(vx,vy));vx*=scale;vy*=scale
+    c=math.cos(pose["yaw"]);si=math.sin(pose["yaw"])
+    return c*vx+si*vy,-si*vx+c*vy
+
+
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0.):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if angular_command_cap not in (.075,.10):raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
     if away_1m and (not transit_policy_050 or (native_step and not straight_retreat_turn) or reverse_moving_arc):raise ValueError("away1m requires distinct bounded FoundationWalk profile")
+    if not math.isfinite(turn_brake_delay_s) or not 0.<=turn_brake_delay_s<=3. or (inplace_centre_hold or turn_brake_delay_s) and not straight_retreat_turn:
+        raise ValueError("turn-centre/braking profile requires the explicit in-place task")
     if straight_retreat_turn and (not away_1m or not native_action_smoothing):
         raise ValueError("retreat/in-place prefix requires the explicit bounded carry transition path")
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),inplace_centre_hold=bool(inplace_centre_hold),turn_brake_delay_s=float(turn_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -1021,11 +1046,28 @@ def run_carry_navigation(n,contract):
                         if abs(delta)>.20:raise RuntimeError("AWAY_TURN_YAW_GENERATION_DISCONTINUITY")
                         mission["unwrapped_yaw"]+=delta
                         mission["previous_yaw"]=p["yaw"];mission["previous_source_s"]=source
+                        history=mission.setdefault("turn_yaw_history",[])
+                        history.append([source,mission["unwrapped_yaw"]])
+                        history[:]=[x for x in history if source-x[0]<=1.5]
                     turn_error=mission["target_unwrapped_yaw"]-mission["unwrapped_yaw"]
-                    if abs(turn_error)>.08:
+                    history=mission.get("turn_yaw_history",[])
+                    reserve=0.;rate=0.
+                    if len(history)>2 and history[-1][0]-history[0][0]>=1.:
+                        xs=[x[0]-history[0][0] for x in history];ys=[x[1] for x in history]
+                        mx=sum(xs)/len(xs);my=sum(ys)/len(ys)
+                        variance=sum((x-mx)**2 for x in xs)
+                        rate=sum((x-mx)*(y-my) for x,y in zip(xs,ys))/variance if variance else 0.
+                        if rate*turn_error>0:
+                            reserve=min(.75,abs(rate)*cfg.get("turn_brake_delay_s",0.))
+                    mission["measured_yaw_rate_rad_s"]=rate
+                    mission["predicted_post_zero_yaw_rad"]=math.copysign(reserve,rate)
+                    mission["turn_max_center_excursion_m"]=max(mission.get("turn_max_center_excursion_m",0.),math.hypot(p["x"]-mission.get("turn_origin_pose",start)["x"],p["y"]-mission.get("turn_origin_pose",start)["y"]))
+                    if abs(turn_error)>max(.08,reserve):
                         if abs(turn_error)>math.pi+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=turn_error,
                                                linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
+                        if cfg.get("inplace_centre_hold"):
+                            output.linear_x,output.lateral_y=inplace_centre_command(p,mission["turn_origin_pose"])
                     else:
                         if not acquired:raise RuntimeError("AWAY_TURN_SOURCE_NOT_CONFIRMED")
                         mission["turn_source_and_mode_observed"]=True
@@ -1103,22 +1145,24 @@ def run_carry_navigation(n,contract):
                     if output.state==NavState.ALIGN and abs(output.yaw_error_rad)>abs((bearing-initial_steering_yaw+math.pi)%(2*math.pi)-math.pi)+.10:
                         raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                 if cfg.get("reverse_moving_arc") and output.state==NavState.FINAL_ALIGN:raise RuntimeError("REVERSE_ARC_UNSUPPORTED_TERMINAL_ALIGNMENT")
-                forward=(0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN" else -.12 if mission["phase"] in ("RETREAT","TURN") else .12) if mission is not None else -.12 if cfg.get("reverse_moving_arc") else .12 if output.linear_x>0 else 0.
+                if mission is not None:cfg["active_mission_phase"]=mission["phase"]
+                forward=(output.linear_x if cfg.get("inplace_centre_hold") and mission["phase"]=="TURN" else 0. if cfg.get("straight_retreat_turn") and mission["phase"]=="TURN" else -.12 if mission["phase"] in ("RETREAT","TURN") else .12) if mission is not None else -.12 if cfg.get("reverse_moving_arc") else .12 if output.linear_x>0 else 0.
+                lateral=getattr(output,"lateral_y",0.)
                 angular=0. if cfg.get("reverse_moving_arc") and abs(output.yaw_error_rad)<=.02 else output.angular_z
                 bounds=row["raw_common"]["speed_status"]
-                if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
+                if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["lateral_bounds"]["min_value"]<=lateral<=bounds["lateral_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
                 if row["common_mode_status_value"]==300 and not (cfg.get("native_action_smoothing") and not acquired and 0<=tick-activation_started<=.75):raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
                 handshake=(row["common_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_desc"]==cfg.get("motion_mode","LOCOMOTION_DEFAULT") and row["get_mode_header_code"]==0 and row["state_age_s"]["get_mode"]<=.20 and row["common_source"]["name"]=="robotsim_official_cmd_vel")
                 acquired=acquired or handshake
                 if tick-activation_started>.75 and not handshake:raise RuntimeError("CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED")
-                n.publish(forward,0.,angular)
+                n.publish(forward,lateral,angular)
             elif output.state==NavState.SETTLING:n.publish()
             elif output.state==NavState.ARRIVED:
                 result["goal_triggered_stop"]=True;break
             else:
                 result["controller_rejection"]={"state":output.state.value,"reason":output.reason,"control_now_s":control_now,"native_source_s":row["sample_monotonic_s"]}
                 raise RuntimeError("CARRY_CONTROLLER_"+output.state.value+":"+output.reason)
-            result["route_samples"].append(dict(t=tick,mission_phase=mission["phase"] if mission else None,state=output.state.value,pose=p,distance_m=output.distance_m,yaw_error_rad=output.yaw_error_rad,linear=n.command_log[-1]["forward"],angular=n.command_log[-1]["angular"],controller_linear=output.linear_x,controller_angular=output.angular_z))
+            result["route_samples"].append(dict(t=tick,mission_phase=mission["phase"] if mission else None,state=output.state.value,pose=p,distance_m=output.distance_m,yaw_error_rad=output.yaw_error_rad,linear=n.command_log[-1]["forward"],lateral=n.command_log[-1]["lateral"],angular=n.command_log[-1]["angular"],controller_linear=output.linear_x,controller_angular=output.angular_z))
             n.trace.append(row)
             if tick-last_graph>=1. and graph_job is None:
                 graph_job=start_carry_graph_check(n);last_graph=tick

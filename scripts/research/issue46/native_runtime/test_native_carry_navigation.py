@@ -123,7 +123,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                         raise RuntimeError("NATIVE_FEEDBACK_INVALID:clock")
                     self.feedback_fault={"gate":fault};raise RuntimeError(fault)
                 pose=dict(x=self.x,y=0.,yaw=0.,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.)
-                return dict(body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
+                return dict(body_status=1,pose=pose,sim_time_s=clock.t,sample_monotonic_s=clock.t,common_mode_status_value=200 if self.moving else 100,common_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_desc="LOCOMOTION_STEP" if self.current_mode=="LOCOMOTION_STEP" else "LOCOMOTION_DEFAULT" if self.moving else "STAND_DEFAULT",get_mode_header_code=0,state_age_s={"get_mode":0.},common_source={"name":"robotsim_official_cmd_vel"},raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.},"speed_mode":{"value":4 if native_step else 1}}})
         class Timer:
             def __init__(self,seconds,callback):self.callback=callback
             def start(self):
@@ -714,7 +714,7 @@ class AwayOneMetreControlFlowTests(unittest.TestCase):
                     common_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
                     common_mode_status_value=100,state_age_s={"get_mode":0.},
                     common_source={"name":"robotsim_official_cmd_vel"},
-                    raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.}}})
+                    raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"lateral_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.}}})
             def observe(self,seconds,**kw):
                 self.publish();clock.t+=2.1 if kw.get("require_stop") else seconds;self.pump()
                 passed=turn_stop_pass if self.stands==1 and kw.get("require_stop") else True
@@ -814,6 +814,30 @@ class EmptyBottleOwnerGuardTests(unittest.TestCase):
         ns["LIFT_CONTRACT"]["retract_preflight"]["carry_retention_only"]=True
         self.assertFalse(eval(code,ns))
         ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
+
+class InplaceCentreHoldTests(unittest.TestCase):
+    def test_world_error_is_rotated_to_body_and_total_speed_is_bounded(self):
+        pose={'x':.1,'y':0.,'yaw':math.pi/2};origin={'x':0.,'y':0.}
+        f,l=m.inplace_centre_command(pose,origin)
+        self.assertAlmostEqual(f,0.,places=12);self.assertAlmostEqual(l,.12)
+        for x,y,yaw in ((.03,.04,0.),(-.3,.4,1.2),(.005,0.,0.)):
+            f,l=m.inplace_centre_command(dict(x=x,y=y,yaw=yaw),origin)
+            self.assertLessEqual(math.hypot(f,l),.120000001)
+        self.assertEqual(m.inplace_centre_command(dict(x=.005,y=0.,yaw=0.),origin),(0.,0.))
+        with self.assertRaisesRegex(RuntimeError,'INVALID_TURN'):
+            m.inplace_centre_command(dict(x=float('nan'),y=0.,yaw=0.),origin)
+
+    def test_pose_hold_is_scoped_to_inplace_and_brake_predictor_is_bounded(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
+          native_action_smoothing=True,transit_policy_050=True,angular_command_cap=.1,
+          straight_retreat_turn=True,inplace_centre_hold=True,turn_brake_delay_s=2.73)
+        compile(code,'centre_hold','exec')
+        self.assertIn('LATERAL_COMMAND_OUTSIDE_INPLACE_TURN',code)
+        self.assertIn('OBSERVED_BRIDGE_COMMAND_BOUND',code)
+        self.assertIn('reserve=min(.75',code)
+        self.assertIn('if drift>.05:raise RuntimeError',code)
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script([0.,0.],{},[],carry_pid=42,inplace_centre_hold=True)
 
 class PreMotionReadinessTests(unittest.TestCase):
     def test_reacquire_never_applies_after_nonzero_or_to_physical_faults(self):

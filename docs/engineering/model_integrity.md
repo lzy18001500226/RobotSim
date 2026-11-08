@@ -141,6 +141,14 @@ record, and whole-record audits bind both intervals to the verified arm owner.
 This does not authorize recovery/rearm after a physical or clock safety fault.
 
 
+The later in-place-turn request is implemented as an explicit outer-loop
+ground-truth centre-hold diagnostic: only during TURN, body-frame XY correction
+has total commanded magnitude <=0.12m/s and angular magnitude <=0.10rad/s.
+The native MC still owns alternating leg support; no direct leg trajectories,
+MC gain/policy edits or new velocity publisher are introduced. This does not
+qualify general four-direction micro-motion. Original robot/source and stop
+guards remain, including measured centre/yaw acceptance.
+
 ## C.4 Empty-bottle carry acceptance (2026-11-08)
 
 The user explicitly accepts bottle wobble and relative circle/section-center
