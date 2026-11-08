@@ -252,7 +252,7 @@ def main():
     if args.verified_native_mouse_controls:argv.append("--verified-native-mouse-controls")
     argv.extend(["--native-reset-input",args.native_reset_input])
     if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
-    if args.carry_transit_speed_policy_050 and not (args.carry_goal_world_xy is not None and args.carry_native_step_mode and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated native STEP and approved local contact profile")
+    if args.carry_transit_speed_policy_050 and not (args.carry_goal_world_xy is not None and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated carry and approved local contact profile")
     if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
     if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires a carry goal')
     if args.carry_goal_world_xy is not None:

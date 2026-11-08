@@ -401,8 +401,10 @@ class CarryTransit050Tests(unittest.TestCase):
         pose["z"]=.65;row["joints"]={"knee":dict(q=0.,qvel=2.,max_abs_qvel_since_previous_sample=2.)}
         self.assertEqual(m.physical_fault(row,pose,{"knee":(-1.,1.,1.)},planar_speed_limit=.50),"SOURCE_JOINT_SPEED:knee")
     def test_policy_flag_cannot_enable_other_motion_modes(self):
+        ordinary=m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,transit_policy_050=True)
+        self.assertIn("'motion_mode': 'LOCOMOTION_DEFAULT'",ordinary)
         with self.assertRaises(ValueError):
-            m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,transit_policy_050=True)
+            m.build_carry_route_script([-.45,1.],{},[],carry_pid=0,transit_policy_050=True)
         code=m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,native_step=True,transit_policy_050=True)
         compile(code,"transit050","exec")
         self.assertIn("'transit_policy_050': True",code)

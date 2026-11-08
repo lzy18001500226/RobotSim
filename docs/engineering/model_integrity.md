@@ -106,8 +106,8 @@ and <=0.10rad/s angular; startup/standing retain the0.20m/s gate. All source
 joint limits/speeds, posture, grip, collision, freshness, watchdog and complete
 physical/controller-target stop gates remain unchanged.
 
-The explicit native STEP carry profile is PID/start-token and Reset-generation
-bound. One nonzero interval is capped at90s; braking permission lasts at most15s
+The explicit carry profile (existing native STEP or FoundationWalk mode) is
+PID/start-token and Reset-generation bound. One nonzero interval is capped at90s; braking permission lasts at most15s
 and cannot extend the original absolute deadline. Revocation is irreversible;
 this permit cannot authorize rearm. Whole-record audits apply the same phase
 bounds. Missing, stale or invalid identity cannot enable the higher limit.
