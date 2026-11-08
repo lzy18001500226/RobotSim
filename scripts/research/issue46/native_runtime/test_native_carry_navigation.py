@@ -450,12 +450,12 @@ class CarryTransit050Tests(unittest.TestCase):
             return dict(host_monotonic_ns=stamp,generation=1,engine_version=337,sim_time_s=stamp/1e9,
                         contacts=[],joints={},speed=speed)
         with mock.patch.object(m,"native_pose",side_effect=lambda r:dict(vx=r["speed"],vy=0.,z=.65,roll=0.,pitch=0.)):
-            a=audit.evaluate_carry_motion([row(11_000_000_000,.3),row(11_020_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p)
+            a=audit.evaluate_carry_motion([row(11_000_000_000,.3),row(11_020_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p,expected_owner_pid=42)
             self.assertTrue(a["pass"])
-            b=audit.evaluate_carry_motion([row(9_900_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p)
+            b=audit.evaluate_carry_motion([row(9_900_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p,expected_owner_pid=42)
             self.assertFalse(b["pass"]);self.assertEqual(b["failure"],"PLANAR_SPEED")
             p["revoked_ns"]=11_010_000_000
-            c=audit.evaluate_carry_motion([row(11_000_000_000,.3),row(11_020_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p)
+            c=audit.evaluate_carry_motion([row(11_000_000_000,.3),row(11_020_000_000,.3)],{},[],start_ns=0,end_ns=120_000_000_000,transit_policy=p,expected_owner_pid=42)
             self.assertFalse(c["pass"]);self.assertEqual(c["failure"],"PLANAR_SPEED")
 
 
@@ -498,7 +498,7 @@ class CarryTransit050Tests(unittest.TestCase):
         args,main=parser_only(outer,"p",["--baseline","/unused","--circle-review","/unused","--candidate","/unused",
             "--carry-goal-world-xy","-.45","1.","--carry-native-step-mode","--carry-native-action-smoothing",
             "--approved-pad-friction-reference","--carry-transit-speed-policy-050"])
-        branch=next(n for n in main.body if isinstance(n,ast.If) and ast.unparse(n.test)=="args.carry_goal_world_xy is not None")
+        branch=next(n for n in main.body if isinstance(n,ast.If) and any(isinstance(x,ast.Call) and isinstance(x.func,ast.Attribute) and isinstance(x.func.value,ast.Name) and x.func.value.id=="argv" and "carry_timeout_s" in ast.unparse(x) for x in ast.walk(n)))
         ns=dict(args=args,argv=[])
         exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_forwarding","exec"),ns)
         self.assertIn("--carry-transit-speed-policy-050",ns["argv"])
@@ -522,6 +522,17 @@ class CarryTransit050Tests(unittest.TestCase):
             "--claw-control-overlay-result-sha256","unused",*ns["argv"]])
         reverse_guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_reverse_moving_arc"))
         exec(compile(ast.Module(body=[reverse_guard],type_ignores=[]),"actual_reverse_guard","exec"),{"args":reverse})
+        args.carry_reverse_moving_arc=False;args.carry_away_1m=True;args.carry_goal_world_xy=None
+        ns=dict(args=args,argv=[])
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_away_forwarding","exec"),ns)
+        self.assertIn("--carry-away-1m",ns["argv"])
+        self.assertNotIn("--carry-goal-world-xy",ns["argv"])
+        away,_=parser_only(inner,"parser",["--table-overlay-result","/unused","--table-overlay-result-sha256","unused",
+            "--reset-helper","/unused","--reset-helper-sha256","unused","--claw-control-overlay-result","/unused",
+            "--claw-control-overlay-result-sha256","unused",*ns["argv"]])
+        away_guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_away_1m"))
+        exec(compile(ast.Module(body=[away_guard],type_ignores=[]),"actual_away_guard","exec"),{"args":away})
+
 
 
 
@@ -589,7 +600,7 @@ class CarryDebugTimingTests(unittest.TestCase):
         self.assertLess(code.index("qualify_static_carry_hold"),code.index("start_runtime_rl_debug_capture"))
         self.assertLess(code.index("start_runtime_rl_debug_capture"),code.index("route = run("))
         main=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=="main")
-        calls=[n for n in ast.walk(main) if isinstance(n,ast.If) and "args.capture_mc_rl_debug and args.carry_goal_world_xy is None" in ast.unparse(n.test)]
+        calls=[n for n in ast.walk(main) if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.capture_mc_rl_debug and") and any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=="start_runtime_rl_debug_capture" for part in n.body for x in ast.walk(part))]
         self.assertEqual(len(calls),1)
 
 
@@ -639,5 +650,129 @@ class SourceBoundedCarryParkTests(unittest.TestCase):
         self.assertEqual(carry_left_roll_park(.2,bounds)["target_rad"],.2)
         with self.assertRaises(ValueError):carry_left_roll_park(-.2,bounds)
         with self.assertRaises(ValueError):carry_left_roll_park(-.027,[0.,-.1])
+
+
+
+
+class RuntimePlanningBoundsTests(unittest.TestCase):
+    def test_intersection_changes_search_constraints_without_editing_model(self):
+        import mujoco,numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import joint_planning_bounds
+        model=mujoco.MjModel.from_xml_string('<mujoco><compiler angle="radian"/><worldbody><body><joint name="right_wrist_pitch_joint" range="-1 1"/><geom size=".01"/></body></worldbody></mujoco>')
+        original=model.jnt_range.copy();name="right_wrist_pitch_joint"
+        bounds=joint_planning_bounds(model,[name],{name:[-.523599,.523599,4.188]})
+        np.testing.assert_allclose(bounds,[[-.523599,.523599]])
+        np.testing.assert_array_equal(model.jnt_range,original)
+        np.testing.assert_array_equal(joint_planning_bounds(model,[name],{name:[-2.,2.]}),original)
+        with self.assertRaises(ValueError):joint_planning_bounds(model,[name],{})
+
+
+
+
+class AwayOneMetreControlFlowTests(unittest.TestCase):
+    def run_mission(self,timeout=90.,turn_stop_pass=True):
+        import sys,threading,tempfile,json,contextlib,io
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        sys.path.insert(0,str(Path(__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation/robotsim_navigation"))
+        clock=NS(t=100.)
+        class Node:
+            def __init__(self):
+                self.lock=threading.Lock();self.moving=False;self.stop_started=False;self.feedback_fault=None
+                self.events=[];self.command_log=[];self.bridge_commands=[];self.trace=[]
+                self.messages={k:{} for k in ("common","imu","leg_state","leg_command")}
+                self.readbacks={"get_mode":(100.,{})};self.latest_row={"generation":1}
+                self.x=.85;self.y=-1.5;self.yaw=.1;self.last_t=100.;self.command=(0.,0.);self.stands=0
+            def publish(self,f=0.,l=0.,a=0.):
+                if not self.moving:f=a=0.
+                self.command=(f,a);self.command_log.append(dict(t=clock.t,forward=f,lateral=0.,angular=a))
+            def pump(self):
+                dt=clock.t-self.last_t;f,a=self.command
+                self.x+=f*math.cos(self.yaw)*dt;self.y+=f*math.sin(self.yaw)*dt
+                self.yaw=(self.yaw+a*dt+math.pi)%(2*math.pi)-math.pi;self.last_t=clock.t
+            def sample(self):
+                self.pump();active=self.moving and any(self.command)
+                return dict(body_status=1,sample_monotonic_s=clock.t,sim_time_s=clock.t,
+                    pose=dict(x=self.x,y=self.y,yaw=self.yaw,z=.65,vx=0.,vy=0.,vz=0.,roll=0.,pitch=0.),
+                    get_mode_header_code=0,get_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
+                    common_mode_desc="LOCOMOTION_DEFAULT" if active else "STAND_DEFAULT",
+                    common_mode_status_value=100,state_age_s={"get_mode":0.},
+                    common_source={"name":"robotsim_official_cmd_vel"},
+                    raw_common={"speed_status":{"forward_bounds":{"min_value":-1.,"max_value":1.},"angular_bounds":{"min_value":-1.,"max_value":1.}}})
+            def observe(self,seconds,**kw):
+                self.publish();clock.t+=2.1 if kw.get("require_stop") else seconds;self.pump()
+                passed=turn_stop_pass if self.stands==1 and kw.get("require_stop") else True
+                result={"pass":passed,"fixture_only":True,"metrics":{"duration_s":2.,"sample_count":100,"window_end_monotonic_s":clock.t}}
+                self.events.append(dict(event="OBSERVE_FIXTURE",t=clock.t,stands=self.stands,require_stop=kw.get("require_stop",False),pass_result=passed))
+                return result
+            def deadline_zero(self):
+                self.moving=False;self.publish();self.events.append(dict(event="DEADLINE_ZERO_ATTEMPT",t=clock.t))
+            def stand_once(self):
+                self.stands+=1;self.events.append(dict(event="STAND_REQUEST",t=clock.t))
+            def graph(self):pass
+            def await_graph(self):self.graph()
+            def start_feedback(self):pass
+            def stop_feedback(self):pass
+            def destroy_node(self):pass
+        class Timer:
+            durations=[]
+            def __init__(self,seconds,callback):self.durations.append(seconds)
+            def start(self):pass
+            def cancel(self):pass
+        n=Node();written=[]
+        real_phase=m.carry_transit_phase
+        with tempfile.TemporaryDirectory() as folder:
+            def phase(record,name,cfg,row):return real_phase(record,name,cfg,row,folder)
+            with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":None,"timeout_s":timeout,"pid":19,"transit_policy_050":True,"away_1m":True,"angular_command_cap":.10,"motion_mode":"LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",NS(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"monotonic_ns",lambda:int(clock.t*1e9)),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(.001,dt))),mock.patch.object(m,"carry_transit_phase",side_effect=phase),mock.patch.object(m,"start_carry_graph_check",return_value=None),mock.patch.object(m,"write_durable_milestone",lambda path,value:written.append(json.dumps(value))),contextlib.redirect_stdout(io.StringIO()):
+                m.run_carry_navigation(n,NS())
+        return json.loads(written[-1]),n,Timer.durations
+    def test_full_task_uses_measured_turn_stop_then_a_separate_forward_metre(self):
+        result,n,timers=self.run_mission()
+        self.assertTrue(result["pass_result"],result.get("failure"))
+        self.assertTrue(result["turn_stop_composite"]["pass"])
+        mission=result["away_mission"]
+        self.assertGreaterEqual(mission["final_forward_projection_m"],1.)
+        self.assertLessEqual(result["final_distance_m"],.15)
+        self.assertLessEqual(abs(mission["final_heading_error_rad"]),.12)
+        self.assertEqual(n.stands,2);self.assertEqual(len(timers),1)
+        positive=next(c["t"] for c in n.command_log if c["forward"]>0)
+        self.assertGreaterEqual(positive,result["turn_stop_composite"]["metrics"]["window_end_monotonic_s"])
+        records=result["transit_policy_records"]
+        self.assertEqual(len(records),2)
+        self.assertLessEqual(records[0]["revoked_ns"],records[1]["created_ns"])
+        self.assertLessEqual(records[1]["command_deadline_ns"],records[0]["command_deadline_ns"])
+    def test_failed_turn_stop_never_allows_forward_commands(self):
+        result,n,_=self.run_mission(turn_stop_pass=False)
+        self.assertFalse(result["pass_result"])
+        self.assertEqual(result["failure"],"AWAY_TURN_STOP_NOT_QUALIFIED")
+        self.assertFalse(any(c["forward"]>0 for c in n.command_log))
+    def test_mid_stop_does_not_reset_total_command_budget(self):
+        result,n,timers=self.run_mission(timeout=35.)
+        self.assertFalse(result["pass_result"])
+        self.assertEqual(result["failure"],"AWAY_FORWARD_AGGREGATE_DEADLINE_INSUFFICIENT")
+        self.assertFalse(any(c["forward"]>0 for c in n.command_log))
+        self.assertEqual(len(timers),1)
+
+
+
+
+class SequentialCarryPermitTests(unittest.TestCase):
+    def test_second_interval_requires_revoked_first_and_cannot_overlap(self):
+        first=CarryTransit050Tests().permit();first["revoked_ns"]=20_000_000_000
+        second=dict(first,created_ns=21_000_000_000,command_deadline_ns=100_000_000_000,
+                    absolute_deadline_ns=115_000_000_000,revoked_ns=40_000_000_000)
+        self.assertEqual(m.carry_policy_speed_limit([first,second],19_000_000_000,1,42),.50)
+        self.assertEqual(m.carry_policy_speed_limit([first,second],20_500_000_000,1,42),.20)
+        self.assertEqual(m.carry_policy_speed_limit([first,second],22_000_000_000,1,42),.50)
+        first["revoked_ns"]=None
+        with self.assertRaises(ValueError):m.carry_policy_speed_limit([first,second],22_000_000_000,1,42)
+    def test_turn_stop_report_cannot_cover_later_forward_motion(self):
+        gate={"pass":True,"metrics":{"window_end_monotonic_s":4.}}
+        result=dict(turn_stop_composite=gate,command_log=[dict(t=1.,forward=-.12),dict(t=2.,forward=0.)])
+        report=m.carry_stop_evidence(result)
+        self.assertEqual(report["independent_composite_stop"],"PASS")
+        self.assertEqual(report["composite_stop_scope"],"TURN_ONLY")
+        result["command_log"].append(dict(t=5.,forward=.12))
+        self.assertEqual(m.carry_stop_evidence(result)["independent_composite_stop"],"NOT_RUN")
 
 if __name__=="__main__":unittest.main()

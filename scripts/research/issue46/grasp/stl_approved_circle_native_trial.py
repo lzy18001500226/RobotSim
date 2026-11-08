@@ -57,6 +57,7 @@ def main():
     p.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace")
     p.add_argument("--native-render-adapter",help="explicit process-only GPU selection for the native simulator, with actual GL identity verification")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
+    p.add_argument("--carry-away-1m",action="store_true",help="leave table, turn to opposite heading, then carry forward >=1m with measured stops")
     p.add_argument("--carry-goal-world-xy",type=float,nargs=2,help="explicit known-map delivery goal after physical grasp/retract")
     p.add_argument("--carry-timeout-s",type=float,default=90.)
     p.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0,6.0),default=1.5)
@@ -80,6 +81,9 @@ def main():
     p.add_argument("--arm-plan-duration-s",type=float,default=12.0)
     p.add_argument("--arm-plan-hold-s",type=float,default=5.0)
     args=p.parse_args()
+    if args.carry_away_1m and (args.carry_goal_world_xy is not None or args.carry_native_step_mode or args.carry_reverse_moving_arc or not args.carry_transit_speed_policy_050):
+        raise ValueError("away1m requires its distinct bounded FoundationWalk transit mission")
+
     if args.review_captured_run:
         from scripts.research.issue46.native_runtime.native_grasp_audit import review_native_capture
         review_native_capture(args.review_captured_run,dry_run=args.review_dry_run,full_flow=args.review_full_flow)
@@ -91,7 +95,7 @@ def main():
         v=args.post_lift_retract_world_m
         if not args.physical_lift_test or any(not math.isfinite(x) for x in v) or math.sqrt(sum(x*x for x in v))>.25 or not -.02<=v[2]<=.05:
             raise ValueError('bounded retract requires physical lift and <=250mm translation')
-    if args.carry_goal_world_xy is not None and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.post_lift_retract_world_m is None or args.coordinated_waist_pitch_offset_rad or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in args.carry_goal_world_xy)):
+    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.post_lift_retract_world_m is None or args.coordinated_waist_pitch_offset_rad or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):
         raise ValueError('carry needs screened arm-only physical lift/retract and bounded room goal/deadline')
     baseline=json.loads((args.baseline/"result.json").read_text())
     if not args.native_physics_audit:
@@ -146,6 +150,10 @@ def main():
                 else:raise RuntimeError('RGBD_SENSOR_READINESS_TIMEOUT')
                 synchronized['object_pose_world']={'xyz_m':pose['position_m'],'quaternion_wxyz':pose['quaternion_wxyz']}
                 synchronized['perception']={'latest_path':str(latest),'source':'FRESH_SIMULATED_CALIBRATED_HEAD_RGBD','truth_not_control_target':True}
+            if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
+                carry_source_limits,carry_source_provenance=native.native_leg_safety_contract(include_upper_body=True)
+                synchronized["runtime_source_motion_limits"]=carry_source_limits
+                synchronized["runtime_source_motion_provenance"]=carry_source_provenance
             state=state.parent/"native_synchronized_dock_state.json"
             pg.write_new_text(state,json.dumps(synchronized,indent=2)+"\n")
             state=str(state)
@@ -157,7 +165,7 @@ def main():
             if args.physical_lift_test:command.append('--physical-lift-test')
             if args.approved_pad_friction_reference:command.extend(['--lift-grip-force-margin',str(args.carry_grip_force_margin)])
             if args.post_lift_retract_world_m is not None:command.extend(['--post-lift-retract-world-m',*map(str,args.post_lift_retract_world_m)])
-            if args.carry_goal_world_xy is not None:
+            if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                 carry_source_limits,_=native.native_leg_safety_contract(include_upper_body=True)
                 command.extend(['--carry-left-roll-source-range',*map(str,carry_source_limits['left_shoulder_roll_joint'][:2])])
 
@@ -257,12 +265,14 @@ def main():
     if args.verified_native_mouse_controls:argv.append("--verified-native-mouse-controls")
     argv.extend(["--native-reset-input",args.native_reset_input])
     if args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
-    if args.carry_reverse_moving_arc and (args.carry_goal_world_xy is None or not args.carry_transit_speed_policy_050 or args.carry_native_step_mode):raise ValueError("reverse arc requires bounded FoundationWalk carry, with approved transit policy")
-    if args.carry_transit_speed_policy_050 and not (args.carry_goal_world_xy is not None and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated carry and approved local contact profile")
+    if args.carry_reverse_moving_arc and ((args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)) or not args.carry_transit_speed_policy_050 or args.carry_native_step_mode):raise ValueError("reverse arc requires bounded FoundationWalk carry, with approved transit policy")
+    if args.carry_transit_speed_policy_050 and not ((args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated carry and approved local contact profile")
     if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
-    if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires a carry goal')
-    if args.carry_goal_world_xy is not None:
-        argv.extend(['--carry-goal-world-xy',*map(str,args.carry_goal_world_xy),'--carry-timeout-s',str(args.carry_timeout_s),'--carry-grip-force-margin',str(args.carry_grip_force_margin)])
+    if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and (args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)):raise ValueError('SDK turn diagnostic requires a carry goal')
+    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
+        argv.extend(['--carry-timeout-s',str(args.carry_timeout_s),'--carry-grip-force-margin',str(args.carry_grip_force_margin)])
+        if args.carry_away_1m:argv.append('--carry-away-1m')
+        else:argv.extend(['--carry-goal-world-xy',*map(str,args.carry_goal_world_xy)])
         if args.carry_sdk_minimum_turn:argv.append('--carry-sdk-minimum-turn')
         if args.carry_native_action_smoothing:argv.append('--carry-native-action-smoothing')
         if args.carry_native_step_mode:argv.append('--carry-native-step-mode')

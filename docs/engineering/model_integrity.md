@@ -116,6 +116,15 @@ No robot geometry, MC/policy/gains, joint limits or hardware changes are approve
 This is a separately reported simulation diagnostic, not vendor acceptance.
 It does not reclassify prior strict0.20 failures as passes.
 
+The maintainer's later explicit leave/turn-then-forward1m Goal permits two
+sequential task segments. The second uses a distinct one-use permit only after
+a real accepted intermediate composite stop and fresh state/ownership checks.
+The original absolute90s command deadline is shared and never reset; limits
+are not multiplied per segment. Permits cannot overlap or reuse a revoked
+record, and whole-record audits bind both intervals to the verified arm owner.
+This does not authorize recovery/rearm after a physical or clock safety fault.
+
+
 ## D. Stop when source semantics are missing
 
 If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.

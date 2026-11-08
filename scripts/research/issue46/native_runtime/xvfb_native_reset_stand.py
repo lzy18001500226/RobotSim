@@ -1148,7 +1148,7 @@ def start_runtime_rl_debug_capture(container,environment,output,args,result):
         expected_debug_node="mc_ros2_node"+next(iter(mc_pids))
         setup_host=Path(result["mc_rl_debug_capture"]["overlay_setup"])
         setup="/workspace/robotsim/"+str(setup_host.relative_to(EVIDENCE_REPO))
-        debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s "+str(90 if args.carry_goal_world_xy is not None else 45)+" > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
+        debug_command=environment+"source "+shlex.quote(setup)+"; env ROBOTSIM_MC_DEBUG_EXPECTED_NODE="+shlex.quote(expected_debug_node)+" python3 /workspace/evidence/issue80_mc_rl_debug_capture.py --output /workspace/evidence/mc_rl_debug_trace.jsonl --ready-marker /workspace/evidence/mc_rl_debug_ready.json --summary /workspace/evidence/mc_rl_debug_summary.json --ready-timeout-s 5 --max-duration-s "+str(90 if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) else 45)+" > /workspace/evidence/mc_rl_debug_capture.stdout 2>&1"
         run(["docker","exec","-d",container,"bash","-lc",debug_command],timeout_s=5.)
         wait_for(output/"mc_rl_debug_ready.json",'"status"',timeout_s=8.)
         debug_ready=json.loads((output/"mc_rl_debug_ready.json").read_text())
@@ -1204,9 +1204,9 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         raise RuntimeError("CARRY_HANDOFF_UNQUALIFIED")
     result["carry_ready"]=ready
     result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
-    result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.10 if args.carry_sdk_minimum_turn else .075,'root_cap_m_s':.20,'active_transit_and_bounded_braking_root_cap_m_s':.50 if getattr(args,'carry_transit_speed_policy_050',False) else .20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
+    result['carry_route_profile']={'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'forward_cap_m_s':.12,'angular_cap_rad_s':.10 if (args.carry_sdk_minimum_turn or getattr(args,'carry_away_1m',False)) else .075,'root_cap_m_s':.20,'active_transit_and_bounded_braking_root_cap_m_s':.50 if getattr(args,'carry_transit_speed_policy_050',False) else .20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
     limits=retract["source_motion_limits"]
-    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False)))
+    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if (args.carry_sdk_minimum_turn or getattr(args,"carry_away_1m",False)) else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False),away_1m=getattr(args,"carry_away_1m",False)))
     controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
     pg.write_new_bytes(output/"point_goal_controller.py",controller.read_bytes())
     if not (output/"native_micro_stop_contract.py").exists():
@@ -1217,8 +1217,8 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     if result["gates"].get("OFFICIAL_CMD_VEL_BRIDGE")!="PASS":
         source=REPO/"reference/AgiBot-Community/raicom2026-agibot-X2/src/race_task/race_task/cmd_vel_bridge.py"
         if not (output/"steady_cmd_vel_bridge.py").exists():pg.write_new_text(output/"steady_cmd_vel_bridge.py",micro.build_steady_bridge_source(source.read_text()))
-        carry_angular=.10 if args.carry_sdk_minimum_turn else .075
-        bridge_command=(environment+f"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.12 -p max_forward_velocity:=0.12 -p min_angular_velocity:={carry_angular} -p max_angular_velocity:={carry_angular} > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1")
+        carry_angular=.10 if (args.carry_sdk_minimum_turn or getattr(args,"carry_away_1m",False)) else .075
+        bridge_command=(environment+f"exec python3 /workspace/evidence/steady_cmd_vel_bridge.py --ros-args -p source:=robotsim_official_cmd_vel -p publish_hz:=50.0 -p input_source_priority:=40 -p input_source_timeout:=1000 -p cmd_timeout_sec:=0.20 -p min_forward_velocity:=0.12 -p max_forward_velocity:=0.12 -p min_angular_velocity:={0.0 if getattr(args,'carry_away_1m',False) else carry_angular} -p max_angular_velocity:={carry_angular} > /workspace/evidence/official_cmd_vel_bridge.stdout 2>&1")
         run(["docker","exec","-d",container,"bash","-lc",bridge_command],timeout_s=5.)
         wait_for(bridge,"cmd_vel_bridge started.",timeout_s=10.)
         result["gates"]["OFFICIAL_CMD_VEL_BRIDGE"]="PASS"
@@ -1235,15 +1235,23 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     nav_path=output/"native_carry_route_result.json"
     nav=json.loads(nav_path.read_text()) if nav_path.exists() else {"pass_result":False,"failure":"CARRY_ROUTE_NO_RESULT","stdout_tail":route.stdout[-1600:]}
     result["carry_navigation"]={k:v for k,v in nav.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}
-    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns(),transit_policy=nav.get("transit_policy_record") if getattr(args,"carry_transit_speed_policy_050",False) else None)
+    recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns(),transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")) if getattr(args,"carry_transit_speed_policy_050",False) else None,expected_owner_pid=ready["pid"])
     result["carry_native_motion_audit"]=recorded
     if getattr(args,"carry_transit_speed_policy_050",False):
         result["carry_native_strict020_diagnostic"]=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
     if not recorded["pass"]:
-        nav["pass_result"]=False;nav.setdefault("failure","RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure")))
+        nav["pass_result"]=False
+        if not nav.get("failure"):nav["failure"]="RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure"))
         result["carry_navigation"]["recorded_native_failure"]=recorded.get("failure")
         result["carry_navigation"]["pass_result"]=False;result["carry_navigation"]["failure"]=nav["failure"]
-    result["gates"]["CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"]="PASS" if nav.get("pass_result") else "FAIL"
+    mission_gate="CARRY_AWAY_ONE_METRE_AND_COMPOSITE_STOP" if getattr(args,"carry_away_1m",False) else "CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"
+    result["gates"][mission_gate]="PASS" if nav.get("pass_result") else "FAIL"
+    if getattr(args,"carry_away_1m",False):
+        mission=nav.get("away_mission",{})
+        turn=nav.get("turn_stop_composite",{})
+        result["gates"]["LEAVE_TABLE_AND_TURN"]="PASS" if turn.get("pass") is True and abs(mission.get("turn_stop_heading_error_rad",99.))<=.12 else "FAIL" if any(c.get("forward") or c.get("angular") for c in nav.get("command_log",[])) else "NOT_RUN"
+        result["gates"]["FORWARD_ONE_METRE"]="PASS" if nav.get("pass_result") else "FAIL" if any(c.get("forward",0.)>0 for c in nav.get("command_log",[])) else "NOT_RUN"
+        result["gates"]["FINAL_COMPOSITE_STOP"]="NOT_RUN" if "post_stop_composite" not in nav else "PASS" if nav["post_stop_composite"].get("pass") is True else "FAIL"
     if any(any(float(c.get(k,0)) for k in ("forward","lateral","angular")) for c in nav.get("command_log",[])):
         if "locomotion velocity" in result["commands_not_sent"]:result["commands_not_sent"].remove("locomotion velocity")
     pg.write_new_text(output/"carry_release","NAVIGATION_CONTROLLER_FINISHED; PHYSICAL_PASS_REMAINS_SEPARATE\n")
@@ -1313,6 +1321,7 @@ def main() -> None:
     parser.add_argument("--dock-position-tolerance-m", type=float, default=0.18, help="primary table-dock acceptance radius; use a smaller value only for manipulation alignment")
     parser.add_argument("--dock-timeout-s", type=float, default=30.0, help="bounded route deadline; used only with --dock-world-xy")
     parser.add_argument("--use-official-cmd-vel-bridge", action="store_true", help="route through the pinned RAICOM cmd_vel_bridge instead of publishing the MC velocity type directly")
+    parser.add_argument("--carry-away-1m",action="store_true",help="leave table, turn to opposite heading, then carry forward >=1m with measured stops")
     parser.add_argument("--carry-goal-world-xy",type=float,nargs=2)
     parser.add_argument("--carry-timeout-s",type=float,default=90.)
     parser.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0,6.0),default=1.5)
@@ -1339,8 +1348,11 @@ def main() -> None:
     parser.add_argument("--preset-motion-id", type=int, help="one built-in animation-player motion ID used only to verify the delivered native upper-body service")
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
+    if args.carry_away_1m and (args.carry_goal_world_xy is not None or args.carry_native_step_mode or args.carry_reverse_moving_arc or not args.carry_transit_speed_policy_050):
+        raise ValueError("away1m requires its distinct bounded FoundationWalk transit mission")
+
     replan_record={}
-    if args.carry_goal_world_xy is not None and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.coordinated_circle_waist or args.micro_base_probe or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in args.carry_goal_world_xy)):raise ValueError('bounded arm-only carry route required')
+    if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and (not args.physical_lift_test or not args.reviewed_foundationwalk_profile or args.coordinated_circle_waist or args.micro_base_probe or not 5.<=args.carry_timeout_s<=90. or any(not math.isfinite(x) or abs(x)>1.65 for x in (args.carry_goal_world_xy or []))):raise ValueError('bounded arm-only carry route required')
 
     if args.verified_native_mouse_controls and not (args.fixed_reviewed_checkpoint and args.interactive_x11_display and args.pause_on_claw_failure):
         raise ValueError("verified mouse controls are scoped to the visible fixed-stance human-review entry")
@@ -1359,11 +1371,11 @@ def main() -> None:
 
     if args.observe_native_arm_policy and (not args.micro_base_probe or not args.capture_mc_rl_debug or args.native_arm_policy_relay or not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher):
         raise ValueError("arm policy observation requires isolated debug capture, no actuator relay")
-    if args.carry_reverse_moving_arc and (args.carry_goal_world_xy is None or not args.carry_transit_speed_policy_050 or args.carry_native_step_mode):raise ValueError("reverse arc requires bounded FoundationWalk carry, with approved transit policy")
-    if args.carry_transit_speed_policy_050 and not (args.carry_goal_world_xy is not None and args.claw_control_overlay_result is not None):raise ValueError("TRANSIT050 requires isolated carry and approved local contact profile")
+    if args.carry_reverse_moving_arc and ((args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)) or not args.carry_transit_speed_policy_050 or args.carry_native_step_mode):raise ValueError("reverse arc requires bounded FoundationWalk carry, with approved transit policy")
+    if args.carry_transit_speed_policy_050 and not ((args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and args.claw_control_overlay_result is not None):raise ValueError("TRANSIT050 requires isolated carry and approved local contact profile")
     if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
-    if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires carry route')
-    if args.capture_mc_rl_debug and not (args.micro_base_probe or args.carry_goal_world_xy is not None):
+    if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and (args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)):raise ValueError('SDK turn diagnostic requires carry route')
+    if args.capture_mc_rl_debug and not (args.micro_base_probe or (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False))):
         raise ValueError("MC debug capture is scoped to isolated micro diagnostics")
     if args.micro_heading_hold and (not args.micro_base_probe or args.dock_angular_speed_cap!=.075):
         raise ValueError("micro heading hold requires isolated probe and matching .075 bridge angular cap")
@@ -1576,7 +1588,7 @@ def main() -> None:
         elif args.disable_mc_arm_publisher and args.disable_mc_hand_publisher:
             mc_source = RUNTIME / stl_hand_startup.MC_SIM_CONFIG_RELATIVE
             arm_split_config = output / "mc_sim_arm_hand_split.yaml"
-            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))) if (args.native_arm_policy_relay or args.observe_native_arm_policy) else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=args.carry_goal_world_xy is not None)), allow_unicode=True, sort_keys=False))
+            pg.write_new_text(arm_split_config, yaml.safe_dump((stl_hand_startup.build_native_arm_relay_config(yaml.safe_load(mc_source.read_text(encoding="utf-8"))) if (args.native_arm_policy_relay or args.observe_native_arm_policy) else stl_hand_startup.build_arm_hand_split_mc_config(yaml.safe_load(mc_source.read_text(encoding="utf-8")),isolate_disabled_topics=(args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)))), allow_unicode=True, sort_keys=False))
             bootstrap_gains = stl_hand_startup.load_animation_player_arm_pd_parameters()
             pg.write_new_text(output / "native_arm_bootstrap_hold.py", arm_bootstrap_hold_script(bootstrap_gains,relay_arms=args.native_arm_policy_relay,initial_hand_opening=1.0 if args.initial_hands_fully_open else None,open_hand_transit_park=args.open_hand_transit_park,initial_arm_target=None if checkpoint is None else checkpoint["initial_arm_command_rad"],initial_arm_effort=None if checkpoint is None else checkpoint["initial_arm_effort_nm"]))
             arm_bootstrap_enabled = True
@@ -1850,7 +1862,7 @@ def main() -> None:
         if arm_split_config is not None:
             command[command.index(IMAGE):command.index(IMAGE)] = ["--mount", f"type=bind,source={arm_split_config},target=/workspace/raicom2026/{stl_hand_startup.MC_SIM_CONFIG_RELATIVE},readonly"]
             result["mc_command_split_overlay"] = {"path": str(arm_split_config), "sha256": sha256(arm_split_config), "disabled_publishers": (["arm_joint_command", "hand_joint_command"] if args.coordinated_circle_waist else ["arm_joint_command", "waist_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_waist_publisher else ["arm_joint_command", "hand_joint_command"] if args.disable_mc_arm_publisher and args.disable_mc_hand_publisher else ["arm_joint_command" if args.disable_mc_arm_publisher else "waist_joint_command"])}
-            if args.carry_goal_world_xy is not None:
+            if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                 result["mc_command_split_overlay"]["redirected_inactive_publishers"]={"arm_joint_command":"/robotsim/issue46/inactive_mc/arm/command","hand_joint_command":"/robotsim/issue46/inactive_mc/hand/command"}
             if args.native_arm_policy_relay or args.observe_native_arm_policy:
                 result["mc_command_split_overlay"]["observe_only"]=bool(args.observe_native_arm_policy)
@@ -2200,7 +2212,7 @@ def main() -> None:
             actual=yaml.safe_load(generated.stdout)
             if actual.get('smooth_transitions')!=seed_cfg['smooth_transitions']:raise RuntimeError('NATIVE_ACTION_SMOOTHING_CONFIG_MISMATCH')
             result['carry_native_action_smoothing']['runtime_rule_count_verified']=True
-        if args.capture_mc_rl_debug and args.carry_goal_world_xy is None:
+        if args.capture_mc_rl_debug and (args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)):
             start_runtime_rl_debug_capture(container,environment,output,args,result)
 
         if args.use_official_cmd_vel_bridge and not args.fixed_reviewed_checkpoint:
@@ -2348,7 +2360,7 @@ def main() -> None:
                                 limits,provenance=native_leg_safety_contract(include_upper_body=True)
                                 replan_record['lift_preflight']['retract_preflight']['source_motion_limits']=limits
                                 result['retract_motion_limit_provenance']=provenance
-                                if args.carry_goal_world_xy is not None:
+                                if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                                     replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+50.
                                     replan_record['lift_preflight']['retract_preflight']['carry_grip_force_margin']=args.carry_grip_force_margin
                                     replan_record['lift_preflight']['retract_preflight']['carry_transit_policy_050']=args.carry_transit_speed_policy_050
@@ -2400,14 +2412,14 @@ def main() -> None:
                     raise RuntimeError("hybrid arm bootstrap did not stop before the arm-only pregrasp")
             child_budget=42 if args.physical_lift_test else 35
             if replan_record.get('lift_preflight',{}).get('retract_preflight',{}).get('pass_result') is True:child_budget+=6
-            if args.carry_goal_world_xy is not None:
+            if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                 arm_pregrasp=execute_grasp_with_carry(container,environment,output,args,replan_record,result,child_budget)
             else:
                 arm_pregrasp = run(["docker", "exec", container, "bash", "-lc", environment + f"timeout {child_budget}s python3 /workspace/evidence/native_hal_bilateral_arm_pregrasp.py"], timeout_s=child_budget+2., check=False)
             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.stdout", arm_pregrasp.stdout)
             arm_pregrasp_result = decode_arm_execution_output(arm_pregrasp.returncode,arm_pregrasp.stdout)
-            if args.carry_goal_world_xy is not None:
-                result["gates"]["CARRY_TO_CHAIR"]="NOT_RUN" if "carry_navigation" not in result else "PASS" if arm_pregrasp_result.get("carry_execution",{}).get("pass") is True and result["carry_navigation"].get("pass_result") is True and result.get("carry_native_motion_audit",{}).get("pass") is True else "FAIL"
+            if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
+                result["gates"]["CARRY_AWAY_ONE_METRE" if getattr(args,"carry_away_1m",False) else "CARRY_TO_CHAIR"]="NOT_RUN" if "carry_navigation" not in result else "PASS" if arm_pregrasp_result.get("carry_execution",{}).get("pass") is True and result["carry_navigation"].get("pass_result") is True and result.get("carry_native_motion_audit",{}).get("pass") is True else "FAIL"
             if replan_record.get('lift_preflight',{}).get('retract_preflight'):
                 execution_trace=json.loads((output/'native_hal_pregrasp_trace.json').read_text()).get('trace',[]) if (output/'native_hal_pregrasp_trace.json').exists() else []
                 retract_observed=bool(arm_pregrasp_result.get('post_lift_retract')) or any(x.get('stage') in ('RETRACT','RETRACT_HOLD') for x in execution_trace)
@@ -2447,9 +2459,9 @@ def main() -> None:
                     result['failure']={'gate':'HAL_PHYSICAL_LIFT','detail':result.get('physical_lift_evidence',lift)}
                 if "hand command" in result["commands_not_sent"]:
                     result["commands_not_sent"].remove("hand command")
-                if args.carry_goal_world_xy is not None and "carry_navigation" in result and result["carry_navigation"].get("pass_result") is not True:
+                if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and "carry_navigation" in result and result["carry_navigation"].get("pass_result") is not True:
                     result["failure"]={"gate":"CARRY_NAVIGATION","detail":result.get("carry_navigation",{})}
-                if args.carry_goal_world_xy is not None:
+                if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                     result["gates"]["CHAIR_SEAT_PLACEMENT"]="NOT_RUN"
                 if args.pause_on_claw_failure and (result["gates"]["HAL_RIGHT_HAND_CLOSE"] != "PASS" or args.physical_lift_test):
                     if args.native_circle_tracking and not (output/'native_tracking_target.stop').exists():pg.write_new_text(output/'native_tracking_target.stop','controlled execution ended before review-only physics pause\n')

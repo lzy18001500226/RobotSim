@@ -36,7 +36,7 @@ def solve_bounded_upper_posture(model,state,start,center,section,axis,local_axis
     Pose bounds are tighter than source limits. The arm excursion and all
     final collision/lift gates are retained; this does not command the robot.
     """
-    source=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ACTIVE])
+    source=joint_planning_bounds(model,ik.ACTIVE,state.get("runtime_source_motion_limits"))
     excursion=np.array([.25,.18]+[1.1]*7)
     lower=np.maximum(source[:,0]+.011,start-excursion);upper=np.minimum(source[:,1]-.011,start+excursion)
     if full_source_diagnostic:lower=source[:,0]+.011;upper=source[:,1]-.011
@@ -212,6 +212,23 @@ def tracking_task(row, reference, phase=None):
     return anchor+offset,axis
 
 
+def joint_planning_bounds(model, names, source_ranges=None):
+    """Intersect planning constraints; never mutate compiled model limits."""
+    result=[]
+    for name in names:
+        lo,hi=map(float,model.jnt_range[ik.native.jid(model,name)])
+        if source_ranges is not None:
+            value=source_ranges.get(name)
+            if value is None or len(value) not in (2,3) or not np.isfinite(value).all():
+                raise ValueError("incomplete runtime planning bounds:"+name)
+            if value[0]>=value[1] or len(value)==3 and value[2]<=0:
+                raise ValueError("invalid runtime planning bounds:"+name)
+            lo=max(lo,float(value[0]));hi=min(hi,float(value[1]))
+        if not lo<hi:raise ValueError("empty source planning intersection:"+name)
+        result.append([lo,hi])
+    return np.asarray(result)
+
+
 def grip_force_budget(weight_n, friction, control_margin=1.5):
     if not np.isfinite(weight_n) or weight_n<=0 or not np.isfinite(friction) or friction<=0 or control_margin not in (1.5,3.,6.):
         raise ValueError('invalid force budget')
@@ -222,7 +239,7 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
     """Thirteen zero-step, source-limited lift samples; no runtime pose writes."""
     import copy
     if normal_margin not in (1.5,3.,6.):raise ValueError("unsupported grip force budget margin")
-    bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+    bounds=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
     hand=ik.native.bid(model,'R_omnipicker_base_link');bottle=ik.native.bid(model,'test_cylinder')
     free=ik.native.jid(model,'test_cylinder_free')
     attachments=[i for i in range(model.neq) if model.eq_type[i] in (mujoco.mjtEq.mjEQ_CONNECT,mujoco.mjtEq.mjEQ_WELD) and bottle in (model.eq_obj1id[i],model.eq_obj2id[i])]
@@ -270,7 +287,9 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
     offset=np.asarray(offset_world,dtype=float)
     if offset.shape!=(3,) or not np.isfinite(offset).all() or np.linalg.norm(offset)>.250000001 or not ((-.25<=offset[2]<=0. and np.linalg.norm(offset[:2])<1e-12) if carry_lower else -.02<=offset[2]<=.05):
         raise ValueError("post-lift retract outside bounded translation")
-    bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+    bounds=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
+    search_reserve=.03 if left_roll_bounds is not None and state.get("runtime_source_motion_limits") else 0.
+    bounds[:,0]+=search_reserve;bounds[:,1]-=search_reserve
     hand=ik.native.bid(model,"R_omnipicker_base_link");bottle=ik.native.bid(model,"test_cylinder")
     axis=Rotation.from_quat(np.asarray(state["object_pose_world"]["quaternion_wxyz"])[[1,2,3,0]]).as_matrix()[:,2]
     arm=np.array(seed[2:]);samples=[]
@@ -304,7 +323,7 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
         samples.append(dict(left_park_self_contacts=left_self,left_roll_rad=float(frozen["arm_positions_rad"]["left_shoulder_roll_joint"]) if left_park else None,fraction=float(fraction),position_error_m=float(np.linalg.norm(e[:3])),axis_residual=float(np.linalg.norm(e[3:])),forbidden_object_bodies=bad,robot_table_bodies=robot_table,right_arm_rad=arm.tolist(),solver_evaluations=solved.nfev,solver_status=solved.status,solver_optimality=float(solved.optimality),pass_result=bool(passed)))
     root=ik.native.bid(model,"pelvis")
     robot_bodies=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,b) for b in range(model.nbody) if model.body_rootid[b]==root]
-    return dict(left_park=left_park,robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_CARRY_LOWER_NOT_PHYSICS_PASS" if carry_lower else "SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
+    return dict(joint_search_extra_reserve_rad=search_reserve,left_park=left_park,robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_CARRY_LOWER_NOT_PHYSICS_PASS" if carry_lower else "SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
 
 
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
@@ -317,7 +336,7 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         if j>=0:data.qpos[model.jnt_qposadr[j]]=float(item['q'])
     b=row['bodies']['test_cylinder'];bottle=ik.native.bid(model,'test_cylinder');adr=int(model.jnt_qposadr[ik.native.jid(model,'test_cylinder_free')]);data.qpos[adr:adr+3]=b['position_m'];data.qpos[adr+3:adr+7]=b['quaternion_wxyz']
     centre=np.array(reference.get('execution_grasp_frame',{}).get('center_m',reference['circle']['center_m']));target,bottle_axis=tracking_task(row,reference,phase);local_axis=np.asarray(reference.get('local_bottle_axis_in_hand',[1.,0.,0.]))
-    ids=[ik.native.jid(model,n) for n in ik.ARM];qa=np.array([model.jnt_qposadr[j] for j in ids]);bounds=np.array([model.jnt_range[j] for j in ids]);hand=ik.native.bid(model,'R_omnipicker_base_link')
+    ids=[ik.native.jid(model,n) for n in ik.ARM];qa=np.array([model.jnt_qposadr[j] for j in ids]);bounds=joint_planning_bounds(model,ik.ARM,reference.get("source_joint_limits_rad"));hand=ik.native.bid(model,'R_omnipicker_base_link')
     def residual(q):
         data.qpos[qa]=q;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
         return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,target,bottle_axis,local_axis)
@@ -503,7 +522,7 @@ def main():
     q[0]+=args.waist_yaw_offset_rad
     q[1]+=args.waist_pitch_offset_rad
     for index,name in enumerate(('waist_yaw_joint','waist_pitch_joint')):
-        limits=model.jnt_range[ik.native.jid(model,name)]
+        limits=joint_planning_bounds(model,[name],state.get("runtime_source_motion_limits"))[0]
         if not limits[0]+1e-3<=q[index]<=limits[1]-1e-3:raise ValueError('planned waist pose violates unchanged source joint limits:'+name)
     waist_changed=bool(args.waist_pitch_offset_rad or args.waist_yaw_offset_rad or args.optimize_waist_posture)
     perception = candidate["perception"]
@@ -590,14 +609,14 @@ def main():
             bid=ik.native.bid(model,'R_omnipicker_base_link');error=axis_grasp_error(check.xpos[bid],check.xmat[bid].reshape(3,3),center,object_center,bottle_axis,local_axis)
             angle=float(2*np.arcsin(np.clip(np.linalg.norm(error[3:])/.2,0,1)))
             if np.linalg.norm(error[:3])+.1*angle < metrics['hand_position_error_m']+.1*metrics['hand_orientation_error_rad']:
-                solved=q.copy();bounds_source=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+                solved=q.copy();bounds_source=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
                 metrics={**metrics,'solver':'coupled_source_upper_directed_axis','hand_position_error_m':float(np.linalg.norm(error[:3])),'hand_orientation_error_rad':angle,'minimum_joint_margin_rad':float(np.min(np.minimum(q[2:]-bounds_source[:,0],bounds_source[:,1]-q[2:])))}
         # Independently verify a stuck Jacobian solution using bounded nonlinear
         # least squares and the full SO(3) rotation error (no 180deg ambiguity).
         data=mujoco.MjData(model)
         hand=ik.native.bid(model,"R_omnipicker_base_link")
         cylinder=ik.native.bid(model,"test_cylinder")
-        source_bounds=np.array([model.jnt_range[ik.native.jid(model,n)] for n in ik.ARM])
+        source_bounds=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
         bounds=np.column_stack((np.maximum(source_bounds[:,0],approach_start[2:]-1.1),np.minimum(source_bounds[:,1],approach_start[2:]+1.1)))
         def residual(arm):
             trial=np.r_[q[:2],arm]
@@ -645,7 +664,7 @@ def main():
     rows.sort(key=lambda r:(not r["pass"],-r["metrics"]["minimum_joint_margin_rad"] if r["pass"] else r["metrics"]["hand_position_error_m"],r["metrics"]["hand_position_error_m"]))
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path
     record={"classification":"SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK","mj_step_calls":0,"grasp_section_center_world_m":object_center.tolist(),"grasp_height_above_center_m":args.grasp_height_above_center_m,"circle_review":str(args.circle_review),"circle_review_sha256":hashlib.sha256(args.circle_review.read_bytes()).hexdigest(),"circle":match,"standing_state":str(args.standing_state),"scene":candidate["scene"],"perception":perception,"root_legs_waist_frozen":True,"commands":{"open":open_command,"match":command,"closure_probe":max(command-1,0)},"rows":rows,"gate":"PASS" if rows[0]["pass"] else "FAIL","dynamics":"NOT_RUN"}
-    record["source_joint_limits_rad"]={name:model.jnt_range[ik.native.jid(model,name)].tolist() for name in ik.ACTIVE}
+    record["source_joint_limits_rad"]={name:value for name,value in zip(ik.ACTIVE,joint_planning_bounds(model,ik.ACTIVE,state.get("runtime_source_motion_limits")).tolist())}
     record["target_source"]=args.target_source
     record["free_bottle_axis_roll"]=args.free_bottle_axis_roll
     record["waist_pitch_offset_rad"]=args.waist_pitch_offset_rad
