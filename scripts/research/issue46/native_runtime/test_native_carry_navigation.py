@@ -302,4 +302,66 @@ class StaticCarryHoldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d,mock.patch.object(a,"require_fresh_sample",return_value=dict(generation=1,sim_time_s=0.)),mock.patch.object(Path,"read_text",return_value=json.dumps(dict(mode="MEASURED_LOAD_BEARING_CARRY_HOLD",pid=42,generation=1,healthy=True,host_monotonic_ns=0,native_source_host_ns=0))):
             with self.assertRaisesRegex(RuntimeError,"HEARTBEAT_UNQUALIFIED"):p.qualify_static_carry_hold(Path(d),dict(pid=42,generation=1))
 
+
+
+class CarryStopEvidenceTests(unittest.TestCase):
+    def test_zero_publication_does_not_prove_receipt_or_stop(self):
+        result=dict(pass_result=False,failure="PLANAR_SPEED",
+                    command_log=[dict(t=1.,forward=.12),dict(t=1.1,forward=0.),dict(t=2.15,forward=0.)])
+        evidence=m.carry_stop_evidence(result)
+        self.assertEqual(evidence["first_zero_after_nonzero_publish_s"],1.1)
+        self.assertEqual(evidence["zero_receipt_ack"],"UNAVAILABLE")
+        self.assertEqual(evidence["independent_composite_stop"],"NOT_RUN")
+        self.assertEqual(evidence["stand_request_count"],0)
+        self.assertFalse(evidence["rearm_authorized"])
+        self.assertEqual(result["failure"],"PLANAR_SPEED")
+    def test_service_acceptance_and_stale_stand_do_not_prove_physical_stop(self):
+        row=dict(sample_monotonic_s=2.,get_mode_header_code=0,get_mode_desc="STAND_DEFAULT",
+                 common_mode_desc="STAND_DEFAULT",get_mode_status_value=100,common_mode_status_value=100,
+                 state_age_s={k:0. for k in ("odom","common","imu","leg_state","leg_command","get_mode")})
+        row["state_age_s"]["leg_state"]=.21
+        result=dict(events=[dict(event="STAND_REQUEST",t=1.2),
+                            dict(event="STAND_RESPONSE",t=1.3,raw={"status":1})],
+                    trace=[row],command_log=[dict(t=1.,angular=.1),dict(t=1.1,angular=0.)])
+        evidence=m.carry_stop_evidence(result)
+        self.assertEqual(evidence["stand_request_count"],1)
+        self.assertEqual(evidence["fresh_agreeing_stand_after_zero_sample_count"],0)
+        self.assertEqual(evidence["independent_composite_stop"],"NOT_RUN")
+        self.assertFalse(evidence["rearm_authorized"])
+    def test_complete_gate_is_independent_and_failure_still_prevents_rearm(self):
+        result=dict(post_stop_composite={"pass":True},pass_result=True,failure=None)
+        self.assertTrue(m.carry_stop_evidence(result)["route_acceptance_recorded"])
+        self.assertFalse(m.carry_stop_evidence(result)["rearm_authorized"])
+        result["failure"]="BOTTLE_TILTED"
+        self.assertFalse(m.carry_stop_evidence(result)["rearm_authorized"])
+        result["post_stop_composite"]={"pass":False}
+        self.assertEqual(m.carry_stop_evidence(result)["independent_composite_stop"],"FAIL")
+    def test_no_motion_cannot_select_prelude_zeros_as_a_motion_stop(self):
+        result=dict(command_log=[dict(t=1.,forward=0.),dict(t=2.,forward=0.)])
+        evidence=m.carry_stop_evidence(result)
+        self.assertIsNone(evidence["first_zero_after_nonzero_publish_s"])
+        self.assertEqual(evidence["zero_publish_count_after_nonzero"],0)
+        self.assertFalse(evidence["rearm_authorized"])
+
+
+    def test_duplicate_stand_samples_are_not_counted_as_unique_readbacks(self):
+        row=dict(sample_monotonic_s=2.,get_mode_header_code=0,get_mode_desc="STAND_DEFAULT",
+                 common_mode_desc="STAND_DEFAULT",get_mode_status_value=100,common_mode_status_value=100,
+                 state_age_s={k:.01 for k in ("odom","common","imu","leg_state","leg_command","get_mode")})
+        result=dict(command_log=[dict(t=1.,angular=.1),dict(t=1.1,angular=0.)],
+                    trace=[row,row,dict(row,sample_monotonic_s=2.02)])
+        evidence=m.carry_stop_evidence(result)
+        self.assertEqual(evidence["fresh_agreeing_stand_after_zero_sample_count"],2)
+        self.assertEqual(evidence["independent_composite_stop"],"NOT_RUN")
+        self.assertFalse(evidence["rearm_authorized"])
+
+    def test_summary_failure_preserves_physical_fault_and_zero_cleanup(self):
+        from unittest import mock
+        with mock.patch.object(m,"carry_stop_evidence",side_effect=ValueError("bad diagnostic")):
+            result,n=CarryRouteControlFlowTests().run_route("PLANAR_SPEED")
+        self.assertEqual(result["failure"],"PLANAR_SPEED")
+        self.assertEqual(result["stop_evidence_error"],"bad diagnostic")
+        self.assertFalse(result["pass_result"])
+        self.assertFalse(any(x["forward"] or x["angular"] for x in n.command_log))
+
 if __name__=="__main__":unittest.main()

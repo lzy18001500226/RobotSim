@@ -1050,3 +1050,17 @@ reviews/issue-46/fetch-chair-transit-speed-policy-proposal-20261108T020015Z/
 该原型不作为可执行携带方案：
 reviews/issue-46/fetch-chair-unqualified-plane-prototype-archive-20261108T024923Z/disposition.json。
 恢复后的原范围182项离线回归全部通过；这不增加任何持瓶导航成功声明。
+
+### 异常退出的停止证据显式分层（离线修正）
+
+013934Z与014728Z在携带健康门失败后立即置零，执行既有1.05s
+零发布清理；两轮都没有STAND_REQUEST，也没有post_stop_composite。
+因此停止合同是NOT_RUN，不能把它写成物理停止PASS，亦不能由已发零命令
+推导MC收到或施加零命令。首个物理失败仍保留，未经新实验改写。
+
+现有携带runner只增加结果级stop_evidence：末次非零/首次零发布时间、
+零发布跨度和间隔、STAND请求及原响应、新鲜且严格推进的SD读回数量、
+既有独立停止门的PASS/FAIL/NOT_RUN。该报告不产生重武装许可。
+摘要自身异常不覆盖首因，也不阻止原置零清理；运行顺序、时限和安全门未变。
+六项聚焦回归加入原范围，合计188项通过；没有启动新的物理实验。
+离线结果及原文件哈希：reviews/issue-46/fetch-chair-abort-stop-evidence-20261108T031451Z/saved_trace_analysis.json。

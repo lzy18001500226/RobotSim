@@ -699,6 +699,51 @@ def native_step_activation_ready(state, baseline):
             state['raw_common']['speed_status']['speed_mode']['value']==4)
 
 
+def carry_stop_evidence(result):
+    """Describe saved stop evidence without issuing actions or qualifying a stop."""
+    commands=result.get("command_log",[])
+    nonzero=[c for c in commands if any(c.get(k,0.) for k in ("forward","lateral","angular"))]
+    last_nonzero=nonzero[-1]["t"] if nonzero else None
+    zeros=[c for c in commands if not any(c.get(k,0.) for k in ("forward","lateral","angular"))
+           and last_nonzero is not None and c["t"]>=last_nonzero]
+    first_zero=zeros[0]["t"] if zeros else None
+    events=result.get("events",[])
+    requests=[e for e in events if e.get("event")=="STAND_REQUEST"]
+    responses=[e for e in events if e.get("event")=="STAND_RESPONSE"]
+    stand_samples=[]
+    for row in result.get("trace",[]):
+        ages=row.get("state_age_s",{})
+        required=("odom","common","imu","leg_state","leg_command","get_mode")
+        if (first_zero is not None and row.get("sample_monotonic_s",-1.)>=first_zero
+                and (not stand_samples or row["sample_monotonic_s"]>stand_samples[-1])
+                and all(k in ages and math.isfinite(ages[k]) and 0.<=ages[k]<=.20 for k in required)
+                and row.get("get_mode_header_code")==0
+                and row.get("get_mode_desc")=="STAND_DEFAULT"
+                and row.get("common_mode_desc")=="STAND_DEFAULT"
+                and row.get("get_mode_status_value")==100
+                and row.get("common_mode_status_value")==100):
+            stand_samples.append(row["sample_monotonic_s"])
+    gate=result.get("post_stop_composite")
+    gate_status=("PASS" if gate.get("pass") is True else "FAIL" if gate.get("pass") is False
+                 else "UNCONFIRMED") if isinstance(gate,dict) else "NOT_RUN"
+    return dict(
+        classification="OBSERVATION_ONLY_NOT_AN_ADDITIONAL_STOP_ACCEPTANCE",
+        command_publication_evidence="PYTHON_PUBLISH_CALL_ONLY_NO_MC_ACK",
+        zero_receipt_ack="UNAVAILABLE",
+        last_nonzero_publish_s=last_nonzero,first_zero_after_nonzero_publish_s=first_zero,
+        zero_publish_count_after_nonzero=len(zeros),
+        zero_publication_span_s=zeros[-1]["t"]-first_zero if zeros else None,
+        zero_publication_max_gap_s=max((b["t"]-a["t"] for a,b in zip(zeros,zeros[1:])),default=None),
+        stand_request_count=len(requests),
+        stand_service_responses=[dict(t=e.get("t"),raw=e.get("raw")) for e in responses],
+        fresh_agreeing_stand_after_zero_sample_count=len(stand_samples),
+        first_fresh_agreeing_stand_after_zero_s=stand_samples[0] if stand_samples else None,
+        independent_composite_stop=gate_status,
+        route_acceptance_recorded=bool(gate_status=="PASS" and result.get("pass_result") is True
+                                      and not result.get("failure")),
+        rearm_authorized=False)
+
+
 def run_carry_navigation(n,contract):
     """One bounded measured-pose task, with zero/qualified-stop clock recovery."""
     import threading
@@ -814,6 +859,9 @@ def run_carry_navigation(n,contract):
         try:n.stop_feedback()
         except Exception as exc:result["feedback_cleanup_failure"]=str(exc);result["pass_result"]=False
         result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace)
+        try:result["stop_evidence"]=carry_stop_evidence(result)
+        except Exception as exc:
+            result["stop_evidence_error"]=str(exc);result["pass_result"]=False
         write_durable_milestone("/workspace/evidence/native_carry_route_result.json",result)
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}),flush=True)
