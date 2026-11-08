@@ -1053,7 +1053,7 @@ class Plan(Node):
       self.grip_command=HAND_OPEN+u*(probe-HAND_OPEN)
      else:
       normal={name:sum(max(0.,float(c['local_force_torque'][0])) for c in self.native_row.get('contacts',[]) if 'test_cylinder' in (c.get('body1'),c.get('body2')) and name in (c.get('body1'),c.get('body2'))) for name in ('R_hand_narrow3_Link','R_hand_wide3_Link')}
-      self.grip_command=force_guided_close_step(self.grip_command,float(hand_right),probe,normal,float(LIFT_CONTRACT['required_normal_force_n']),now-self.grip_tick)
+      self.grip_command=force_guided_close_step(self.grip_command,float(hand_right),probe,normal,float(LIFT_CONTRACT.get('target_normal_force_n',LIFT_CONTRACT['required_normal_force_n'])),now-self.grip_tick)
      commanded_hand=self.grip_command;self.grip_tick=now
     x=HandCommand();x.name='right_claw_joint';x.position=commanded_hand;x.velocity=1.;x.acceleration=1.;x.deceleration=1.;x.effort=1.;h.right_hands.append(x)
     self.hand_pub.publish(h)
@@ -1326,7 +1326,7 @@ def _with_carry_lease(script, retract):
     needle="   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')\n if RESTORE:"
     replace(needle,
 """   if not accepted['pass']:raise RuntimeError('RETRACT_PHYSICAL_HOLD_UNQUALIFIED')
-   LIFT_CONTRACT['required_normal_force_n']*=float(LIFT_CONTRACT['retract_preflight'].get('carry_grip_force_margin',1.5))/float(LIFT_CONTRACT.get('force_budget_margin',1.5))
+   LIFT_CONTRACT['target_normal_force_n']=float(LIFT_CONTRACT.get('target_normal_force_n',LIFT_CONTRACT['required_normal_force_n']))*float(LIFT_CONTRACT['retract_preflight'].get('carry_grip_force_margin',1.5))/float(LIFT_CONTRACT.get('force_budget_margin',1.5))
    carry_target=dict(n.last_published_arm_target)
    hand=n.native_row['bodies']['R_omnipicker_base_link'];base=n.native_row['bodies']['pelvis'];R=hand['rotation'];c=CIRCLE_CONTRACT['circle_center_local_m']
    tcp=[hand['position_m'][i]+sum(R[3*i+j]*c[j] for j in range(3)) for i in range(3)]
@@ -1336,7 +1336,7 @@ def _with_carry_lease(script, retract):
    try:
     n.send(carry_target,.05,'CARRY_HOLD',HAND_RIGHT)
     n.pre_carry_odom=list(n.odom);n.pre_carry_tilt=list(n.tilt)
-    ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'carry_required_normal_force_n':LIFT_CONTRACT['required_normal_force_n'],'root_actuator_torque_cap_nm_unchanged':2.,'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'start_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}
+    ready={'schema':'robotsim.x2.carry-ready.v1','pid':os.getpid(),'node_name':n.get_name(),'generation':n.native_generation,'host_monotonic_ns':time.monotonic_ns(),'physical_lift_pass':True,'post_lift_retract_pass':True,'arm_target_rad':carry_target,'lease_s':LIFT_CONTRACT['retract_preflight']['carry_lease_s'],'carry_required_normal_force_n':LIFT_CONTRACT['required_normal_force_n'],'carry_target_normal_force_n':LIFT_CONTRACT['target_normal_force_n'],'root_actuator_torque_cap_nm_unchanged':2.,'start_base_world_xyz_m':n.native_row['bodies']['pelvis']['position_m'],'start_bottle_world_xyz_m':n.native_row['bodies']['test_cylinder']['position_m']}
     with open('/workspace/evidence/carry_ready.tmp','w') as f:json.dump(ready,f)
     os.replace('/workspace/evidence/carry_ready.tmp','/workspace/evidence/carry_ready.json')
     carry_until=time.monotonic()+float(ready['lease_s'])

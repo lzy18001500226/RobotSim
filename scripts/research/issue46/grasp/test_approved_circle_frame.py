@@ -9,7 +9,7 @@ class FrameTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         tree=ast.parse(Path(__file__).with_name('stl_approved_circle_ik.py').read_text())
-        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches')]
+        functions=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('axis_grasp_error','circle_target','tracking_task','tracking_phase_is_fresh','bounded_tracking_velocity','qualify_grasp_motion_branches','grip_force_budget')]
         cls.ns={'np':np};exec(compile(ast.Module(body=functions,type_ignores=[]),'planner','exec'),cls.ns)
 
     def test_carry_target_follows_base_xy_yaw_but_not_pelvis_sway_or_object_truth(self):
@@ -52,6 +52,12 @@ class FrameTests(unittest.TestCase):
         self.assertFalse(rows[0]['pass']);self.assertEqual(rows[0]['gates']['LIFT_SWEEP'],'FAIL')
         self.assertTrue(rows[1]['pass']);self.assertEqual(rows[1]['gates']['LIFT_SWEEP'],'PASS')
         self.assertFalse(rows[2]['pass']);self.assertEqual(rows[2]['motion_qualification'],'NOT_EVALUATED')
+
+    def test_grip_force_setpoint_is_not_the_minimum_load_acceptance(self):
+        minimum,target=self.ns['grip_force_budget'](.2*9.81,1.,3.)
+        self.assertAlmostEqual(minimum,1.4715);self.assertAlmostEqual(target,2.943)
+        self.assertGreater(1.93,minimum);self.assertLess(1.93,target)
+        self.assertEqual(self.ns['grip_force_budget'](.2*9.81,1.,1.5),(minimum,minimum))
 
     def test_full_source_posture_cannot_be_executed_or_silently_enabled(self):
         import subprocess,sys

@@ -809,7 +809,7 @@ class PostLiftRetractTests(TestCase):
     def test_explicit_carry_force_budget_changes_only_after_qualified_retract(self):
         code=self.generated_retract(dict(carry_lease_s=115.,carry_grip_force_margin=3.))
         compile(code,'carry_force_margin','exec')
-        update=code.index("LIFT_CONTRACT['required_normal_force_n']*=")
+        update=code.index("LIFT_CONTRACT['target_normal_force_n']=")
         self.assertGreater(update,code.index("RETRACT_PHYSICAL_HOLD_UNQUALIFIED"))
         self.assertIn("'root_actuator_torque_cap_nm_unchanged':2.",code)
         with self.assertRaises(ValueError):self.generated_retract(dict(carry_lease_s=115.,carry_grip_force_margin=10.))

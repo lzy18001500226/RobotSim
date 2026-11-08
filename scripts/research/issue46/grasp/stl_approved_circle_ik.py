@@ -212,6 +212,12 @@ def tracking_task(row, reference, phase=None):
     return anchor+offset,axis
 
 
+def grip_force_budget(weight_n, friction, control_margin=1.5):
+    if not np.isfinite(weight_n) or weight_n<=0 or not np.isfinite(friction) or friction<=0 or control_margin not in (1.5,3.):
+        raise ValueError('invalid force budget')
+    return 1.5*weight_n/(2*friction),control_margin*weight_n/(2*friction)
+
+
 def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=None, *, normal_margin=1.5):
     """Thirteen zero-step, source-limited lift samples; no runtime pose writes."""
     import copy
@@ -242,7 +248,8 @@ def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=
     mu=min(float(model.geom_friction[g,0]) for g in range(model.ngeom) if int(model.geom_bodyid[g]) in (bottle,ik.native.bid(model,'R_hand_narrow3_Link'),ik.native.bid(model,'R_hand_wide3_Link')))
     mass=float(model.body_mass[bottle]);weight=mass*float(np.linalg.norm(model.opt.gravity))
     if not mu>0 or not mass>0:raise ValueError('invalid known payload/friction for diagnostic force budget')
-    return {'pass':all(s['pass'] for s in samples),'samples':samples,'mj_step_calls':0,'height_m':.06,'duration_s':3.,'hold_s':1.5,'contact_command':opening/100.,'mass_kg':mass,'sliding_friction':mu,'required_normal_force_n':normal_margin*weight/(2*mu),'force_budget_margin':normal_margin,'force_budget_is_simulation_assumption':True,'free_body_preflight':{'pass':True,'joint':'test_cylinder_free','gravity_m_s2':model.opt.gravity.tolist(),'gravcomp':0.,'object_actuator_count':len(driven),'attachment_count':len(attachments)}}
+    required_force,target_force=grip_force_budget(weight,mu,normal_margin)
+    return {'pass':all(s['pass'] for s in samples),'samples':samples,'mj_step_calls':0,'height_m':.06,'duration_s':3.,'hold_s':1.5,'contact_command':opening/100.,'mass_kg':mass,'sliding_friction':mu,'required_normal_force_n':required_force,'target_normal_force_n':target_force,'force_budget_margin':normal_margin,'force_budget_is_simulation_assumption':True,'free_body_preflight':{'pass':True,'joint':'test_cylinder_free','gravity_m_s2':model.opt.gravity.tolist(),'gravcomp':0.,'object_actuator_count':len(driven),'attachment_count':len(attachments)}}
 
 
 
