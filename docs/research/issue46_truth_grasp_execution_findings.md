@@ -931,14 +931,13 @@ NoSlip2 的作用域是整个模型，包含脚底；旧静态夹持 PASS 不能
 |---|---|---|
 | 原生LS实际启动 | 28次角速度0.1发布；Get/Common均LS、选中合法源，McRLDebug观测长度65；+.558s根速度0.2234m/s越过原0.20门 | raicom-stl-xvfb-native-reset-stand-20261107T232631Z |
 | 关NoSlip、携带力目标3 | 实际每侧约3N，轴向下滑拟合−0.4359mm/s，10mm滑移门失败，导航NOT_RUN | raicom-stl-xvfb-native-reset-stand-20261107T234059Z |
-| 待审局部数值方案 | 仅22对已启用包胶/瓶子接触 solreffriction:0.02→0.002s；正常参数、mu、质量、全部执行器/关节/停止门不变；尚未实施 | fetch-chair-local-friction-diagnostic-proposal-20261107T235658Z/proposal.json |
+| 待审局部数值方案 | 仅22对已启用包胶/瓶子接触 solreffriction:0.02→0.002s；正常参数、mu、质量、全部执行器/关节/停止门不变；该历史提案随后获C.2批准并已实测，见下文 | fetch-chair-local-friction-diagnostic-proposal-20261107T235658Z/proposal.json |
 | 椅子源组件 | 14个连通实体，seat组件6的顶面0.328213m；各部件凸包在座面中心仅seat提供0.328213m上界；整椅凸包原0.536048m | fetch-chair-source-component-seat-audit-20261107T233753Z/result.json |
 | 放置可达性 | 3个固定站位手臂解、3组保守腰姿态及全源边界离线解未找到合格位置/轴；无全局不可达结论 | fetch-chair-seat-fixed-stance-ik-20261108T000057Z/ 与 fetch-chair-seat-waist-reach-diagnostic-20261108T000301Z/ |
 
-该局部求解方案只准备了不可直接加载的XML片段和原/拟议参数表，没有
-生成或运行修改模型。当前 model_integrity.md C.1明确不覆盖接触参数，
-已在当前聊天提出一次具体确认。等待时未再发非零指令。后续应先验证
-局部漂移是否消失，再验证原严格保护下的携带，不能先把实验变成PASS。
+上述是235658Z时的历史提案状态；随后直接批准已记录在
+model_integrity.md C.2，实际加载及持瓶结果见下文。原模型和失败记录保留。
+当前未批准的是独立运动态速度门提案，不能由接触参数批准推导。
 
 整条任务仍是Python研究原型加原生C++MC；未收敛正式C++节点，未完成持瓶
 返回凳子、放置、全链路LiDAR替换或真机验证。实验代码继续保留在
@@ -1036,3 +1035,18 @@ Git fsck通过。一次性ready/result改为原子写入、fsync文件和目录�
 完整数据与提案：
 reviews/issue-46/fetch-chair-transit-guard-forensics-20261108T015650Z/
 reviews/issue-46/fetch-chair-transit-speed-policy-proposal-20261108T020015Z/
+
+
+### 未通过的携带夹持平面轨迹已退出运行入口
+
+在等待运动态策略审查期间，仅离线检查了更紧凑的携带姿态。
+单端点可求解，但完整分段轨迹在原位置/轴/旋转精度合同下失败：
+023824Z联合路径和024526Z先平移后旋转路径都未通过。
+未放宽残差，没有对此运行mj_step或持瓶运动。
+
+四个仅属于本次原型的源文件差异已逐项保存SHA256和完整patch后，
+恢复到20e43c9c8ef07b4c3961fcbb5928284105afdf4b。
+原已通过的抓取/抬升/收臂、本次C.2参数及其他用户文件均保留。
+该原型不作为可执行携带方案：
+reviews/issue-46/fetch-chair-unqualified-plane-prototype-archive-20261108T024923Z/disposition.json。
+恢复后的原范围182项离线回归全部通过；这不增加任何持瓶导航成功声明。
