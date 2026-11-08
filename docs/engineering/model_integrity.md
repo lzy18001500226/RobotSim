@@ -212,6 +212,19 @@ Physical, posture, source-joint, collision, stale-native or ownership faults
 remain non-recoverable within the episode. The temporary timesyncd comparison
 did not establish stable WSL wall time; the service was restored active.
 
+The separately named two-table transfer task may continue from an actually
+qualified stop inside its <=0.30m turn/braking footprint, using the measured
+new pose, rather than demanding the legacy0.20m settled-centre precision.
+The legacy result and profile remain unchanged. Three normal segments plus
+up to four clock recoveries use at most seven non-overlapping one-use permits,
+all sharing the original90s absolute command deadline. Table placement uses
+the same sole HAL arm/hand owner; only after arrival/full stop/current SD may
+the held bottle transfer contact to the approved delivery table. Intended
+bottle-table support is a task-contact permission, not a collision filter or
+geometry edit. Released placement requires actual table load, absent pad load,
+fresh stable object motion and a complete measured support interval. No welds,
+object pose writes, force-cap changes or fabricated success.
+
 ## D. Stop when source semantics are missing
 
 If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.

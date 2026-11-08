@@ -1,0 +1,33 @@
+{
+  "schema": "robotsim.x2.two-table-delivery.v1",
+  "classification": "SIMULATION_ONLY_KNOWN_SCENE_TASK_NOT_VENDOR_DEFAULT",
+  "frame": "native_scene_world",
+  "table_body": "raicom_delivery_table",
+  "base_goal_world_xy": [
+    0.015,
+    0.98
+  ],
+  "base_goal_world_yaw_rad": 1.6560482606828113,
+  "placement_center_world_m": [
+    0.2,
+    1.52,
+    0.6968309428515006
+  ],
+  "table_bounds_min_world_m": [
+    -0.45089150290580626,
+    1.321745507199895,
+    -0.010973995898385547
+  ],
+  "table_bounds_max_world_m": [
+    0.45089160438871073,
+    1.87825448304453,
+    0.5468309428515006
+  ],
+  "tabletop_world_z_m": 0.5468309428515006,
+  "bottle_radius_m": 0.035,
+  "bottle_height_m": 0.3,
+  "bottle_mass_kg": 0.2,
+  "task_position_tolerance_m": 0.15,
+  "compact_turn_footprint_m": 0.3,
+  "source_note": "human-approved90deg deliverytable at(0,1.6), original pickup/fixedstance+10cm; compiled geometry measurements20261108; actual reaching/placement remain live gates"
+}

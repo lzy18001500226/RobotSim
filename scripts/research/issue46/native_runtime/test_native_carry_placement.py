@@ -1,0 +1,46 @@
+"""Focused table-support and existing-owner extension checks; no physics."""
+import unittest
+from scripts.research.issue46.native_runtime import native_carry_placement as p
+
+class PlacementTests(unittest.TestCase):
+    def request(self):
+        return dict(generation=1,bottle_height_m=.30,bottle_radius_m=.035,bottle_mass_kg=.2,
+                    table_bounds_min_world_m=[-.45089,1.32174,-.011],table_bounds_max_world_m=[.45089,1.87825,.54683],tabletop_world_z_m=.54683)
+    def row(self,i,pad=0.,side="raicom_delivery_table"):
+        return dict(host_monotonic_ns=1000000000+i*40000000,sim_time_s=10.+i*.04,generation=1,
+                    bodies={"test_cylinder":dict(position_m=[.15,1.52,.69683],rotation=[1.,0.,0.,0.,1.,0.,0.,0.,1.],origin_velocity_world_angular_linear=[0.]*6)},
+                    contacts=[dict(efc_address=0,body1=side,body2="test_cylinder",local_force_torque=[1.962,0.,0.,0.,0.,0.],signed_bottle_world_z_force_n=1.962),
+                              dict(efc_address=1,body1="R_hand_narrow3_Link",body2="test_cylinder",local_force_torque=[pad,0.,0.,0.,0.,0.],signed_bottle_world_z_force_n=0.)])
+    def test_actual_released_support_contract_is_separate_from_grip(self):
+        result=p.evaluate_placed_hold([self.row(i) for i in range(52)],self.request())
+        self.assertTrue(result["pass_result"]);self.assertGreaterEqual(result["measured_hold_sim_s"],2.)
+        for rows in ([self.row(i,pad=2.) for i in range(52)],[self.row(i,side="world") for i in range(52)],[self.row(i) for i in range(20)]):
+            self.assertFalse(p.evaluate_placed_hold(rows,self.request())["pass_result"])
+    def test_stale_duplicate_or_off_table_data_cannot_pass(self):
+        rows=[self.row(i) for i in range(52)];rows[-1]=rows[-2]
+        self.assertFalse(p.evaluate_placed_hold(rows,self.request())["pass_result"])
+        rows=[self.row(i) for i in range(52)]
+        for r in rows:r["bodies"]["test_cylinder"]["position_m"][1]=1.30
+        self.assertFalse(p.evaluate_placed_hold(rows,self.request())["pass_result"])
+    def test_opt_in_preserves_the_existing_owner_and_has_no_motion_or_pose_write_path(self):
+        from scripts.research.issue46.native_runtime.test_native_grasp_launch import PostLiftRetractTests
+        normal=PostLiftRetractTests().generated_retract(dict(carry_lease_s=140.))
+        code=PostLiftRetractTests().generated_retract(dict(carry_lease_s=140.,delivery_table_placement=True,robot_bodies=["pelvis"]))
+        compile(code,"actual_placement_owner","exec")
+        self.assertNotIn("perform_native_placement",normal)
+        self.assertIn("perform_native_placement(n,request)",code)
+        self.assertIn("PLACEMENT_PHYSICAL_SAFETY",code)
+        self.assertIn("TABLE_SUPPORT_LOST_BEFORE_CLOSEOUT",code)
+        self.assertNotIn("create_publisher(Twist",code)
+        self.assertNotIn("mj_step(",code)
+        self.assertNotIn(".qpos[",code)
+
+    def test_final_mode_observer_has_no_control_or_velocity_interface(self):
+        import ast
+        code=p.placement_mode_observer_script();compile(code,"placement_observe_only","exec")
+        imports=[n.module for n in ast.walk(ast.parse(code)) if isinstance(n,ast.ImportFrom)]
+        self.assertNotIn("SetMcAction",code)
+        self.assertNotIn("create_publisher",code)
+        self.assertNotIn("SetMcInputSource",code)
+        self.assertIn("GetMcAction",code)
+        self.assertIn("McCommonState",code)

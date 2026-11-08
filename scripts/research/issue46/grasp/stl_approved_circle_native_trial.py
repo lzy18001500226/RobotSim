@@ -64,6 +64,7 @@ def main():
     p.add_argument("--carry-compact-angular-cap",type=float,choices=(.30,.60),default=.30)
     p.add_argument("--carry-release-source-on-stop",action="store_true",help="DISABLE only our locomotion source after ZERO; ENABLE after full stop before rearm")
     p.add_argument("--carry-compact-centre-feedback",action="store_true",help="existing world-centre P feedback, <=.20m/s norm, during compact turn only")
+    p.add_argument("--carry-delivery-config",type=Path,help="explicit approved two-table transfer task; not the legacy one-metre test")
     p.add_argument("--carry-gait-prepare",action="store_true",help="bounded native yaw gait wakeup; require measured alternating foot loads before retreat")
     p.add_argument("--carry-inplace-centre-hold",action="store_true")
     p.add_argument("--carry-compact-turn",action="store_true",help="SIMULATION_ONLY .30rad/s pure yaw; .30m active radius / .20m final centre bound")
@@ -100,6 +101,7 @@ def main():
     if args.right_claw_kp is not None and (not args.physical_lift_test or (not args.carry_away_1m and args.carry_goal_world_xy is None)):
         raise ValueError("right gain comparison requires the instrumented physical-lift/carry path")
     if (args.carry_compact_angular_cap!=.30 or args.carry_release_source_on_stop) and not args.carry_compact_turn:raise ValueError("compact source/cap scope")
+    if args.carry_delivery_config is not None and not (args.carry_compact_turn and args.carry_gait_prepare and args.carry_release_source_on_stop and args.carry_compact_centre_feedback and not args.carry_native_step_mode):raise ValueError("delivery profile requires qualified compact FoundationWalk controls")
     if args.carry_compact_centre_feedback and not args.carry_compact_turn:raise ValueError("compact centre feedback scope")
     if args.carry_gait_prepare and not args.carry_compact_turn:raise ValueError("gait preparation requires compact carry")
     if args.carry_compact_turn and not (args.carry_straight_retreat_turn and args.carry_transit_speed_policy_050 and not args.carry_inplace_centre_hold):raise ValueError("compact pure-turn scope")
@@ -270,6 +272,10 @@ def main():
         from scripts.research.issue46.scene.delivery_table_overlay import build as scene_build
         layout=scene_build(claw,90.,.10,.10,.10)
         claw=Path(json.loads(Path(layout).read_text())["native_overlay_result"]["path"])
+    if args.carry_delivery_config is not None:
+        if not args.approved_two_table_layout:raise ValueError("delivery requires the exact approved two-table scene")
+        from scripts.research.issue46.native_runtime.native_carry_placement import prepare_delivery_scene
+        claw=prepare_delivery_scene(claw,args.carry_delivery_config)
     if args.carry_retention_only and (not args.allow_carried_bottle_tilt or not args.carry_away_1m):
         raise ValueError("retention-only is explicitly scoped to qualified empty-bottle carry")
     if args.source_pad_coacd_comparison:
@@ -318,6 +324,7 @@ def main():
         if args.carry_inplace_centre_hold:argv.append('--carry-inplace-centre-hold')
         if args.carry_compact_turn:argv.append('--carry-compact-turn')
         if args.carry_gait_prepare:argv.append('--carry-gait-prepare')
+        if args.carry_delivery_config is not None:argv.extend(['--carry-delivery-config',str(args.carry_delivery_config.resolve())])
         if args.carry_compact_centre_feedback:argv.append('--carry-compact-centre-feedback')
         if args.carry_compact_angular_cap!=.30:argv.extend(['--carry-compact-angular-cap',str(args.carry_compact_angular_cap)])
         if args.carry_release_source_on_stop:argv.append('--carry-release-source-on-stop')

@@ -1051,3 +1051,26 @@ class CombinedCompactCentreTests(unittest.TestCase):
         self.assertEqual(m.inplace_centre_command(dict(x=-.1,y=-.1,yaw=0.),origin,.20,forward_only=True),(.20,0.))
         self.assertIn('UNQUALIFIED_LATERAL_COMPACT_COMMAND',code)
         self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
+
+class TwoTableDeliveryTests(unittest.TestCase):
+    def test_actual_delivery_profile_uses_same_controller_and_separate_stop_permit(self):
+        import json
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,compact_angular_cap=.60,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg)
+        compile(code,"real_two_table_route","exec")
+        self.assertIn('DELIVERY_REARM_NOT_QUALIFIED',code)
+        self.assertIn('DELIVERY_GOAL_CROSSED_WITHOUT_ARRIVAL',code)
+        self.assertIn('DELIVERY_ALIGNMENT_RADIUS_300MM',code)
+        self.assertIn('mission["phase"]=="DELIVERY"',code)
+        self.assertIn('turn_and_braking_peak_radius_m',code)
+        with self.assertRaises(ValueError):m.build_carry_route_script([0.,0.],{},[],carry_pid=19,delivery=cfg)
+
+    def test_three_segments_and_clock_recovery_never_reset_task_deadline(self):
+        def rec(i,last=False):
+            t=1000000000+i*3000000000
+            return dict(schema="robotsim.carry-transit050.v1",owner_pid=19,generation=1,route_pid=6,route_start_ticks=1,created_ns=t,command_deadline_ns=90000000000,absolute_deadline_ns=105000000000,braking_ns=None if last else t+1000000000,revoked_ns=None if last else t+2000000000,task_interval_budget=7)
+        xs=[rec(i,i==6) for i in range(7)]
+        self.assertEqual(m.carry_policy_speed_limit(xs,20000000000,1,19),.50)
+        with self.assertRaises(ValueError):m.carry_policy_speed_limit(xs+[rec(7,True)],23000000000,1,19)
+        xs[-1]["command_deadline_ns"]+=1
+        with self.assertRaisesRegex(ValueError,"DEADLINE"):m.carry_policy_speed_limit(xs,20000000000,1,19)

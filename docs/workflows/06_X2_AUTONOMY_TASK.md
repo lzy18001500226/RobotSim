@@ -16,21 +16,31 @@ A .20m/s SDK-amplitude transit/correction comparison is an explicit opt-in,
 not a new default or a manufacturer/hardware qualification. Preserve .50m/s
 active root bound, .10rad/s angular cap and the complete stop contract.
 
-The accepted next carry **path intent** is:
+The current transfer path intent is:
 
-    actual grasp/lift/retract
-    -> straight retreat (about0.30m in the reviewed proposal)
+    actual RGB-D grasp/lift/retract
+    -> bounded native gait preparation and retreat
     -> measured stop
-    -> in-place turn180deg
+    -> compact turn180deg, measured from the real stopped origin
     -> measured stop
-    -> forward1.00m from the new stopped origin
-    -> complete physical/controller-target stop
+    -> existing point-goal controller to the approved second table
+    -> measured stop, positive current SD
+    -> approach/lower, actual table-contact transfer, open, released-object hold
 
-Do not substitute a continuous reverse arc for in-place turning. The turn
-center must not sustain translation; stepping sway remains visible. Installed
-MC support and actual execution of the new three-segment sequence are not yet
-qualified. Measure each segment and its stop separately; reverse-arc travel
-does not count toward the final forward metre.
+The user permits a bounded small turning footprint. The separately named
+two-table task uses <=0.30m measured turn/braking footprint and plans its next
+segment from the actual stopped pose. It does not relabel the legacy50mm
+in-place or200mm settled-centre checks. Source joints, body/velocity/contact,
+freshness and full physical/controller-target stop criteria are unchanged.
+
+Real episode20261108T190527Z measured retreat0.346041m, integrated signed turn
+-186.197874deg, turn/braking peak radius0.263557m, settled-centre drift0.213505m,
+and turn-stop yaw error0.108449rad. The composite stop passed over1.983836s,
+target variation0.013051rad; independent native physics audit passed. Its raw
+legacy200mm result remains FAIL, not retroactively PASS. Forward1m and table
+placement were NOT_RUN. The new transfer configuration is
+simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json;
+its static scene/IK screen is not dynamic qualification.
 
 The user accepted the contact geometry and path intent displayed in
 reviews/issue-46/grasp-planned-vs-native-web-review-20261108T112418Z/.

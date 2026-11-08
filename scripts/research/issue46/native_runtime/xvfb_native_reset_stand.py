@@ -1206,7 +1206,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
     result['carry_route_profile']={'compact_turn':getattr(args,'carry_compact_turn',False),'compact_turn_angular_cap':getattr(args,'carry_compact_angular_cap',.30) if getattr(args,'carry_compact_turn',False) else None,'compact_turn_radius_m':.30 if getattr(args,'carry_compact_turn',False) else None,'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'turn_centre_recovery_cap_m_s':getattr(args,'carry_turn_recovery_speed',.12),'turn_centre_recovery_scope':'TURN_POSITION_RECOVERY_ONLY_WITH_ZERO_ANGULAR','forward_cap_m_s':getattr(args,'carry_transit_command_speed',.12),'angular_cap_rad_s':getattr(args,'carry_compact_angular_cap',.30) if getattr(args,'carry_compact_turn',False) else .10 if (args.carry_sdk_minimum_turn or getattr(args,'carry_away_1m',False)) else .075,'root_cap_m_s':.20,'active_transit_and_bounded_braking_root_cap_m_s':.50 if getattr(args,'carry_transit_speed_policy_050',False) else .20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
     limits=retract["source_motion_limits"]
-    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False),away_1m=getattr(args,"carry_away_1m",False),allow_carried_bottle_tilt=getattr(args,"allow_carried_bottle_tilt",False),straight_retreat_turn=getattr(args,"carry_straight_retreat_turn",False),inplace_centre_hold=getattr(args,"carry_inplace_centre_hold",False),turn_brake_delay_s=getattr(args,"carry_turn_brake_delay_s",0.),retreat_brake_delay_s=getattr(args,"carry_retreat_brake_delay_s",0.),turn_recovery_speed=getattr(args,"carry_turn_recovery_speed",.12),transit_command_speed=getattr(args,"carry_transit_command_speed",.12),compact_turn=getattr(args,"carry_compact_turn",False),gait_prepare=getattr(args,"carry_gait_prepare",False),compact_angular_cap=getattr(args,"carry_compact_angular_cap",.30),release_source_on_stop=getattr(args,"carry_release_source_on_stop",False),compact_centre_feedback=getattr(args,"carry_compact_centre_feedback",False)))
+    pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False),away_1m=getattr(args,"carry_away_1m",False),allow_carried_bottle_tilt=getattr(args,"allow_carried_bottle_tilt",False),straight_retreat_turn=getattr(args,"carry_straight_retreat_turn",False),inplace_centre_hold=getattr(args,"carry_inplace_centre_hold",False),turn_brake_delay_s=getattr(args,"carry_turn_brake_delay_s",0.),retreat_brake_delay_s=getattr(args,"carry_retreat_brake_delay_s",0.),turn_recovery_speed=getattr(args,"carry_turn_recovery_speed",.12),transit_command_speed=getattr(args,"carry_transit_command_speed",.12),compact_turn=getattr(args,"carry_compact_turn",False),gait_prepare=getattr(args,"carry_gait_prepare",False),compact_angular_cap=getattr(args,"carry_compact_angular_cap",.30),release_source_on_stop=getattr(args,"carry_release_source_on_stop",False),compact_centre_feedback=getattr(args,"carry_compact_centre_feedback",False),delivery=json.loads(args.carry_delivery_config.read_text()) if getattr(args,"carry_delivery_config",None) is not None else None))
     controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
     pg.write_new_bytes(output/"point_goal_controller.py",controller.read_bytes())
     if not (output/"native_micro_stop_contract.py").exists():
@@ -1245,7 +1245,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         if not nav.get("failure"):nav["failure"]="RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure"))
         result["carry_navigation"]["recorded_native_failure"]=recorded.get("failure")
         result["carry_navigation"]["pass_result"]=False;result["carry_navigation"]["failure"]=nav["failure"]
-    mission_gate="RETREAT_AND_INPLACE_TURN_PREFIX" if getattr(args,"carry_straight_retreat_turn",False) else "CARRY_AWAY_ONE_METRE_AND_COMPOSITE_STOP" if getattr(args,"carry_away_1m",False) else "CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"
+    mission_gate="SECOND_TABLE_BASE_ARRIVAL_AND_STOP" if getattr(args,"carry_delivery_config",None) is not None else "RETREAT_AND_INPLACE_TURN_PREFIX" if getattr(args,"carry_straight_retreat_turn",False) else "CARRY_AWAY_ONE_METRE_AND_COMPOSITE_STOP" if getattr(args,"carry_away_1m",False) else "CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"
     result["gates"][mission_gate]="PASS" if nav.get("pass_result") else "FAIL"
     if getattr(args,"carry_away_1m",False):
         mission=nav.get("away_mission",{})
@@ -1255,8 +1255,29 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         result["gates"]["FINAL_COMPOSITE_STOP"]="NOT_RUN" if "post_stop_composite" not in nav else "PASS" if nav["post_stop_composite"].get("pass") is True else "FAIL"
     if any(any(float(c.get(k,0)) for k in ("forward","lateral","angular")) for c in nav.get("command_log",[])):
         if "locomotion velocity" in result["commands_not_sent"]:result["commands_not_sent"].remove("locomotion velocity")
+    if getattr(args,"carry_delivery_config",None) is not None:
+        result["gates"]["PHYSICAL_TABLE_PLACEMENT"]="NOT_RUN"
+        if nav.get("pass_result") and recorded.get("pass"):
+            from scripts.research.issue46.native_runtime.native_carry_placement import placement_mode_observer_script
+            pg.write_new_text(output/"native_placement_mode_observer.py",placement_mode_observer_script())
+            mode=run(["docker","exec",container,"bash","-lc",environment+"timeout 4s python3 /workspace/evidence/native_placement_mode_observer.py"],timeout_s=6.,check=False)
+            pg.write_new_text(output/"placement_mode_readback.stdout",mode.stdout)
+            observed=json.loads(mode.stdout.strip().splitlines()[-1]) if mode.returncode==0 else {}
+            if not observed.get("pass_result"):raise RuntimeError("PLACEMENT_LIVE_STAND_READBACK_FAILED")
+            cfg=json.loads(args.carry_delivery_config.read_text())
+            fresh=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+            request={**cfg,"schema":"robotsim.x2.table-place-request.v1","created_host_ns":time.monotonic_ns(),"owner_pid":ready["pid"],"generation":fresh["generation"],"navigation_and_composite_stop_pass":True,"confirmed_stand":True,"section_target_world_m":[cfg["placement_center_world_m"][0],cfg["placement_center_world_m"][1],cfg["placement_center_world_m"][2]+replan_record["grasp_height_above_center_m"]],"mode_observation":observed}
+            pg.write_new_text(output/"carry_place_request.json",json.dumps(request))
+            place_deadline=time.monotonic()+28.
+            while not (output/"native_table_place_result.json").exists() and not exit_path.exists() and time.monotonic()<place_deadline:
+                native_grasp_audit.require_fresh_sample(output/"native_latest.json");time.sleep(.05)
+            place_path=output/"native_table_place_result.json"
+            placed=json.loads(place_path.read_text()) if place_path.exists() else {"pass_result":False,"failure":"PLACEMENT_NO_RESULT_OR_TIMEOUT"}
+            result["table_placement"]=placed
+            result["gates"]["PHYSICAL_TABLE_PLACEMENT"]="PASS" if placed.get("pass_result") else "FAIL"
+            if not placed.get("pass_result"):result["failure"]={"gate":"PHYSICAL_TABLE_PLACEMENT","detail":placed}
     pg.write_new_text(output/"carry_release","NAVIGATION_CONTROLLER_FINISHED; PHYSICAL_PASS_REMAINS_SEPARATE\n")
-    deadline=time.monotonic()+5.
+    deadline=time.monotonic()+8.
     while not exit_path.exists() and time.monotonic()<deadline:time.sleep(.05)
     if not exit_path.exists():raise RuntimeError("CARRY_OWNER_TERMINATION_UNCONFIRMED")
     return owner_result()
@@ -1326,6 +1347,7 @@ def main() -> None:
     parser.add_argument("--carry-compact-angular-cap",type=float,choices=(.30,.60),default=.30)
     parser.add_argument("--carry-release-source-on-stop",action="store_true",help="DISABLE only our locomotion source after ZERO; ENABLE after full stop before rearm")
     parser.add_argument("--carry-compact-centre-feedback",action="store_true",help="existing world-centre P feedback, <=.20m/s norm, during compact turn only")
+    parser.add_argument("--carry-delivery-config",type=Path,help="explicit approved two-table transfer task; not the legacy one-metre test")
     parser.add_argument("--carry-gait-prepare",action="store_true",help="bounded native yaw gait wakeup; require measured alternating foot loads before retreat")
     parser.add_argument("--carry-inplace-centre-hold",action="store_true")
     parser.add_argument("--carry-compact-turn",action="store_true",help="SIMULATION_ONLY .30rad/s pure yaw; .30m active radius / .20m final centre bound")
@@ -1363,6 +1385,7 @@ def main() -> None:
     parser.add_argument("--preset-motion-area", type=int, default=2, help="official preset-motion control-area bitmask; the default is the right hand")
     args = parser.parse_args()
     if (args.carry_compact_angular_cap!=.30 or args.carry_release_source_on_stop) and not args.carry_compact_turn:raise ValueError("compact source/cap scope")
+    if args.carry_delivery_config is not None and not (args.carry_compact_turn and args.carry_gait_prepare and args.carry_release_source_on_stop and args.carry_compact_centre_feedback and not args.carry_native_step_mode):raise ValueError("delivery profile requires qualified compact FoundationWalk controls")
     if args.carry_compact_centre_feedback and not args.carry_compact_turn:raise ValueError("compact centre feedback scope")
     if args.carry_gait_prepare and not args.carry_compact_turn:raise ValueError("gait preparation requires compact carry")
     if args.carry_compact_turn and not (args.carry_straight_retreat_turn and args.carry_transit_speed_policy_050 and not args.carry_inplace_centre_hold):raise ValueError("compact pure-turn scope")
@@ -1548,6 +1571,12 @@ def main() -> None:
             raise ValueError("claw control overlay does not pass static preflight")
         if claw_control_overlay.get("parent_table_overlay", {}).get("sha256") != sha256(table_result):
             raise ValueError("claw control overlay is not derived from this exact table overlay")
+        if args.carry_delivery_config is not None:
+            plan_ref=claw_control_overlay.get("delivery_static_plan")
+            if not plan_ref:raise ValueError("actual-scene delivery static plan missing")
+            plan_path=require_hashed(Path(plan_ref["path"]),plan_ref["sha256"],label="delivery static plan")
+            plan=json.loads(plan_path.read_text())
+            if plan["config_sha256"]!=sha256(args.carry_delivery_config) or plan["host_scene"]["sha256"]!=claw_control_overlay["generated"]["host_scene"]["sha256"]:raise ValueError("delivery plan/input changed")
         control_generated = claw_control_overlay.get("generated", {})
         for name in ("runtime_scene", "simulator_config"):
             inputs[name] = require_hashed(Path(str(control_generated.get(name, {}).get("path", ""))), str(control_generated.get(name, {}).get("sha256", "")), label=f"claw control {name}")
@@ -2385,6 +2414,7 @@ def main() -> None:
                                 result['retract_motion_limit_provenance']=provenance
                                 if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                                     replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+50.
+                                    if args.carry_delivery_config is not None:replan_record['lift_preflight']['retract_preflight']['delivery_table_placement']=True
                                     replan_record['lift_preflight']['retract_preflight']['carry_grip_force_margin']=args.carry_grip_force_margin
                                     replan_record['lift_preflight']['retract_preflight']['carry_transit_policy_050']=args.carry_transit_speed_policy_050
                                     replan_record['lift_preflight']['retract_preflight']['allow_carried_bottle_tilt']=args.allow_carried_bottle_tilt
@@ -2445,7 +2475,7 @@ def main() -> None:
             pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.stdout", arm_pregrasp.stdout)
             arm_pregrasp_result = decode_arm_execution_output(arm_pregrasp.returncode,arm_pregrasp.stdout)
             if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
-                result["gates"]["RETREAT_AND_INPLACE_TURN" if getattr(args,"carry_straight_retreat_turn",False) else "CARRY_AWAY_ONE_METRE" if getattr(args,"carry_away_1m",False) else "CARRY_TO_CHAIR"]="NOT_RUN" if "carry_navigation" not in result else "PASS" if arm_pregrasp_result.get("carry_execution",{}).get("pass") is True and result["carry_navigation"].get("pass_result") is True and result.get("carry_native_motion_audit",{}).get("pass") is True else "FAIL"
+                result["gates"]["TWO_TABLE_TRANSFER_EXECUTION" if args.carry_delivery_config is not None else "RETREAT_AND_INPLACE_TURN" if getattr(args,"carry_straight_retreat_turn",False) else "CARRY_AWAY_ONE_METRE" if getattr(args,"carry_away_1m",False) else "CARRY_TO_CHAIR"]="NOT_RUN" if "carry_navigation" not in result else "PASS" if arm_pregrasp_result.get("carry_execution",{}).get("pass") is True and result["carry_navigation"].get("pass_result") is True and result.get("carry_native_motion_audit",{}).get("pass") is True else "FAIL"
             if replan_record.get('lift_preflight',{}).get('retract_preflight'):
                 execution_trace=json.loads((output/'native_hal_pregrasp_trace.json').read_text()).get('trace',[]) if (output/'native_hal_pregrasp_trace.json').exists() else []
                 retract_observed=bool(arm_pregrasp_result.get('post_lift_retract')) or any(x.get('stage') in ('RETRACT','RETRACT_HOLD') for x in execution_trace)
@@ -2473,6 +2503,9 @@ def main() -> None:
                             metrics=native_grasp_audit.evaluate_unsupported_lift(rows,initial_bottle_z_m=lift['initial_bottle_z_m'],hold_start_ns=lift['hold_start_ns'],hold_end_ns=lift['hold_end_ns'])
                             result['physical_lift_evidence']=metrics
                             result['gates']['HAL_PHYSICAL_LIFT']='PASS' if metrics['pass'] else 'FAIL'
+                if args.carry_delivery_config is not None and result["gates"].get("HAL_PHYSICAL_LIFT")=="PASS" and result["gates"].get("POST_LIFT_RETRACT")=="PASS" and arm_pregrasp_result.get("native_tcp_arrival",{}).get("pass") and result.get("carry_static_hold",{}).get("pass"):
+                    result["gates"]["HAL_BILATERAL_ARM_PREGRASP"]="PASS"
+                    result["initial_grasp_stage_scope"]="INITIAL_MEASURED_ARRIVAL_LIFT_RETRACT_STATIC_HOLD; later transport/place faults remain separate"
                 if args.physical_lift_test and lift.get('executed') and result['gates']['HAL_PHYSICAL_LIFT']!='PASS':
                     result['failure']={'gate':'HAL_PHYSICAL_LIFT','detail':result.get('physical_lift_evidence',lift),'execution_tail':arm_pregrasp.stdout[-1600:]}
                 elif result['gates'].get('POST_LIFT_RETRACT')=='FAIL' and result['gates']['HAL_PHYSICAL_LIFT']=='PASS':

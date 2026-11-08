@@ -177,6 +177,16 @@ def tracking_task(row, reference, phase=None):
         if not phase.get('carry_retention_only',False) and np.linalg.norm(H.T@(measured-np.asarray(hand['position_m']))-baseline)>.01:raise RuntimeError('BOTTLE_SLIPPED_DURING_CARRY')
         if not phase.get('allow_carried_bottle_tilt',False) and B[2,2]<np.cos(.10):raise RuntimeError('BOTTLE_TILTED_DURING_CARRY')
         base=row['bodies']['pelvis'];R=np.asarray(base['rotation']).reshape(3,3);yaw=np.arctan2(R[1,0],R[0,0])
+        if phase.get('placement_active'):
+            request=phase.get('placement_request',{})
+            point=np.asarray(phase.get('placement_target_world_m'),dtype=float)
+            axis=np.asarray(phase.get('placement_axis_world'),dtype=float)
+            start=np.asarray(phase.get('placement_start_world_m'),dtype=float)
+            if (request.get('schema')!='robotsim.x2.table-place-request.v1' or request.get('navigation_and_composite_stop_pass') is not True or
+                request.get('generation')!=row['generation'] or any(v.shape!=(3,) or not np.isfinite(v).all() for v in (point,axis,start)) or
+                abs(np.linalg.norm(axis)-1.)>.001 or np.linalg.norm(point-start)>.50):
+                raise RuntimeError('UNQUALIFIED_TABLE_PLACEMENT_TARGET')
+            return point,axis
         frame=phase.get('carry_pose_frame','YAW_WORLD_UP')
         if frame=='TORSO_RIGID':
             delta=np.asarray(phase.get('carry_rigid_offset_base_m'),dtype=float)
