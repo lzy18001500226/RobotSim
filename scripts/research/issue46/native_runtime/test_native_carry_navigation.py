@@ -495,8 +495,15 @@ class CarryTransit050Tests(unittest.TestCase):
         self.assertIn("--carry-transit-speed-policy-050",ns["argv"])
         inner=Path(__file__).with_name("xvfb_native_reset_stand.py")
         parsed,_=parser_only(inner,"parser",["--table-overlay-result","/unused","--table-overlay-result-sha256","unused",
-            "--reset-helper","/unused","--reset-helper-sha256","unused",*ns["argv"]])
+            "--reset-helper","/unused","--reset-helper-sha256","unused","--claw-control-overlay-result","/unused","--claw-control-overlay-result-sha256","unused",*ns["argv"]])
         self.assertTrue(parsed.carry_transit_speed_policy_050)
         self.assertTrue(parsed.carry_native_step_mode)
+        inner_main=next(n for n in ast.parse(inner.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=="main")
+        guard=next(n for n in inner_main.body if isinstance(n,ast.If) and "args.carry_transit_speed_policy_050" in ast.unparse(n.test))
+        exec(compile(ast.Module(body=[guard],type_ignores=[]),"actual_native_guard","exec"),{"args":parsed})
+        parsed.claw_control_overlay_result=None
+        with self.assertRaises(ValueError):
+            exec(compile(ast.Module(body=[guard],type_ignores=[]),"actual_native_guard","exec"),{"args":parsed})
+
 
 if __name__=="__main__":unittest.main()

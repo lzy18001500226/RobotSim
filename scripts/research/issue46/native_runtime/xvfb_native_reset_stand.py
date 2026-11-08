@@ -1336,7 +1336,7 @@ def main() -> None:
 
     if args.observe_native_arm_policy and (not args.micro_base_probe or not args.capture_mc_rl_debug or args.native_arm_policy_relay or not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher):
         raise ValueError("arm policy observation requires isolated debug capture, no actuator relay")
-    if args.carry_transit_speed_policy_050 and not (args.carry_goal_world_xy is not None and args.carry_native_step_mode and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated native STEP and approved local contact profile")
+    if args.carry_transit_speed_policy_050 and not (args.carry_goal_world_xy is not None and args.carry_native_step_mode and args.claw_control_overlay_result is not None):raise ValueError("TRANSIT050 requires isolated native STEP and approved local contact profile")
     if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
     if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and args.carry_goal_world_xy is None:raise ValueError('SDK turn diagnostic requires carry route')
     if args.capture_mc_rl_debug and not (args.micro_base_probe or args.carry_goal_world_xy is not None):
@@ -1528,6 +1528,7 @@ def main() -> None:
         result["official_cmd_vel_bridge"] = {"path": str(bridge_source), "sha256": sha256(bridge_source), "revision": bridge_revision, "source": "AgiBot-Community/raicom2026-agibot-X2"}
     if claw_control_overlay is not None:
         result["claw_control_overlay"] = {"path": str(args.claw_control_overlay_result), "sha256": sha256(args.claw_control_overlay_result), "control_change": claw_control_overlay.get("control_change")}
+        if args.carry_transit_speed_policy_050 and not (claw_control_overlay or {}).get("approved_local_pad_friction_reference"):raise ValueError("TRANSIT050 local friction provenance missing")
         result['contact_representation']=claw_control_overlay.get('source_pad_collision_comparison',{'classification':'RAW_WHOLE_STL_CONVEX_COLLISION_BASELINE'})
     try:
         for source in inputs.values():
