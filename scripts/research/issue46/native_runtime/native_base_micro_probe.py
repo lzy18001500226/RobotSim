@@ -1131,9 +1131,10 @@ def run_carry_navigation(n,contract):
                         mission["target_unwrapped_yaw"]=state["pose"]["yaw"]-math.pi
                         mission["away_heading_rad"]=(state["pose"]["yaw"]-math.pi+math.pi)%(2*math.pi)-math.pi
                         bearing=mission["away_heading_rad"]
-                        ex=state["pose"]["x"]-start["x"];ey=state["pose"]["y"]-start["y"]
-                        mission["retreat_settled_progress_m"]=-math.cos(start["yaw"])*ex-math.sin(start["yaw"])*ey
-                        mission["retreat_settled_cross_track_m"]=-math.sin(start["yaw"])*ex+math.cos(start["yaw"])*ey
+                        origin=mission.get("retreat_origin_pose",start)
+                        ex=state["pose"]["x"]-origin["x"];ey=state["pose"]["y"]-origin["y"]
+                        mission["retreat_settled_progress_m"]=-math.cos(origin["yaw"])*ex-math.sin(origin["yaw"])*ey
+                        mission["retreat_settled_cross_track_m"]=-math.sin(origin["yaw"])*ex+math.cos(origin["yaw"])*ey
 
                         cfg["permit_filename"]="carry_transit_forward_permit.json";cfg["turn_stop_pass"]=True
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
