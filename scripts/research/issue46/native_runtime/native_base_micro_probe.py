@@ -743,14 +743,15 @@ def run_probe(smoke_only=False):
         n.destroy_node();rclpy.shutdown()
         print(json.dumps({k:v for k,v in result.items() if k not in ("trace","command_log","bridge_commands","abort_native_sample")}),flush=True)
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False):
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if angular_command_cap not in (.075,.10):raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
+    if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -854,6 +855,7 @@ def run_carry_navigation(n,contract):
     cfg=MICRO["carry"];result=dict(classification="SIMULATION_ONLY_NATIVE_LOCOMOTION_STEP_CARRY" if cfg.get("motion_mode")=="LOCOMOTION_STEP" else "SIMULATION_ONLY_FETCH_CARRY_ROUTE",pass_result=False,
         goal_xy_m=cfg["goal_xy_m"],zero_receipt_ack="UNAVAILABLE",clock_recoveries=[],route_samples=[])
     if cfg.get("transit_policy_050"):result["classification"]="SIMULATION_ONLY_NATIVE_STEP_CARRY_TRANSIT_050" if cfg.get("motion_mode")=="LOCOMOTION_STEP" else "SIMULATION_ONLY_FOUNDATIONWALK_CARRY_TRANSIT_050"
+    if cfg.get("reverse_moving_arc"):result.update(classification="SIMULATION_ONLY_REVERSE_MOVING_ARC_CARRY",goal_yaw_requirement="NOT_REQUIRED_FOR_KNOWN_CHAIR_AREA")
     watchdog=None;began=None;baseline=None;transit_permit=None;graph_job=None
     try:
         n.start_feedback();until=time.monotonic()+5.
@@ -876,7 +878,7 @@ def run_carry_navigation(n,contract):
                     step_ready=True;result["native_step_prepared_not_motion_pass"]=True;break
                 time.sleep(.02)
             if not step_ready:raise RuntimeError("NATIVE_STEP_ACTIVATION_PRECONDITIONS_UNCONFIRMED")
-        controller=PointGoalController(ControllerConfig(xy_tolerance_m=.15,yaw_tolerance_rad=.12,max_forward_mps=.12,max_angular_rps=cfg.get("angular_command_cap",.075),k_angular=.8,goal_timeout_s=cfg["timeout_s"]))
+        controller=PointGoalController(ControllerConfig(xy_tolerance_m=.10 if cfg.get("reverse_moving_arc") else .15,yaw_tolerance_rad=.12,max_forward_mps=.12,max_angular_rps=cfg.get("angular_command_cap",.075),k_angular=.8,goal_timeout_s=cfg["timeout_s"]))
         target=Goal2D(*goal,bearing,"native_scene_world")
         began=time.monotonic();until=began+cfg["timeout_s"];last_graph=began;acquired=False;activation_started=began;progress_state=None;progress_best=None;progress_at=began
         if cfg.get("transit_policy_050"):transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
@@ -905,8 +907,11 @@ def run_carry_navigation(n,contract):
             if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
             p=row["pose"]
             if not -1.65<=p["x"]<=1.65 or not -1.75<=p["y"]<=1.75:raise RuntimeError("CARRY_ROOM_WORKSPACE")
+            if cfg.get("reverse_moving_arc") and math.hypot(goal[0]-p["x"],goal[1]-p["y"])<=.10:
+                result["goal_triggered_stop"]=True;result["position_only_chair_area"]=True;break
             control_now=time.monotonic()
-            output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=control_now)
+            steering_yaw=(p["yaw"]+2*math.pi)%(2*math.pi)-math.pi if cfg.get("reverse_moving_arc") else p["yaw"]
+            output=controller.step(Pose2D(p["x"],p["y"],steering_yaw,"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=control_now)
             if output.state in (NavState.ALIGN,NavState.DRIVE,NavState.FINAL_ALIGN):
                 metric=output.distance_m if output.state==NavState.DRIVE else abs(output.yaw_error_rad)
                 threshold=.01 if output.state==NavState.DRIVE else .02
@@ -919,10 +924,12 @@ def run_carry_navigation(n,contract):
                 dx,dy=goal[0]-start["x"],goal[1]-start["y"];length=math.hypot(dx,dy)
                 cross=abs(dx*(p["y"]-start["y"])-dy*(p["x"]-start["x"]))/length
                 result["max_cross_track_to_direct_segment_m"]=max(result.get("max_cross_track_to_direct_segment_m",0.),cross)
-                if output.state==NavState.ALIGN and abs(output.yaw_error_rad)>abs((bearing-start["yaw"]+math.pi)%(2*math.pi)-math.pi)+.10:
+                initial_steering_yaw=(start["yaw"]+2*math.pi)%(2*math.pi)-math.pi if cfg.get("reverse_moving_arc") else start["yaw"]
+                if output.state==NavState.ALIGN and abs(output.yaw_error_rad)>abs((bearing-initial_steering_yaw+math.pi)%(2*math.pi)-math.pi)+.10:
                     raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
-                forward=.12 if output.linear_x>0 else 0.
-                angular=output.angular_z
+                if cfg.get("reverse_moving_arc") and output.state==NavState.FINAL_ALIGN:raise RuntimeError("REVERSE_ARC_UNSUPPORTED_TERMINAL_ALIGNMENT")
+                forward=-.12 if cfg.get("reverse_moving_arc") else .12 if output.linear_x>0 else 0.
+                angular=0. if cfg.get("reverse_moving_arc") and abs(output.yaw_error_rad)<=.02 else output.angular_z
                 bounds=row["raw_common"]["speed_status"]
                 if not bounds["forward_bounds"]["min_value"]<=forward<=bounds["forward_bounds"]["max_value"] or not bounds["angular_bounds"]["min_value"]<=angular<=bounds["angular_bounds"]["max_value"]:raise RuntimeError("MC_REPORTED_INPUT_BOUNDS")
                 if row["common_mode_status_value"]==300 and not (cfg.get("native_action_smoothing") and not acquired and 0<=tick-activation_started<=.75):raise RuntimeError("MC_TRANSITION_DURING_CARRY_COMMAND")
@@ -949,6 +956,7 @@ def run_carry_navigation(n,contract):
         end=n.sample()["pose"];result["end_pose"]=end
         result["final_distance_m"]=math.hypot(goal[0]-end["x"],goal[1]-end["y"])
         result["measured_distance_m"]=math.hypot(end["x"]-start["x"],end["y"]-start["y"])
+        result["measured_yaw_change_rad"]=(end["yaw"]-start["yaw"]+math.pi)%(2*math.pi)-math.pi
         result["source_and_motion_mode_observed"]=acquired
         if cfg.get("motion_mode","LOCOMOTION_DEFAULT")=="LOCOMOTION_DEFAULT":result["source_and_ld_observed"]=acquired
         result["pass_result"]=bool(result.get("goal_triggered_stop") and acquired and result["post_stop_composite"]["pass"] and result["final_distance_m"]<=.15 and result["measured_distance_m"]>.005)

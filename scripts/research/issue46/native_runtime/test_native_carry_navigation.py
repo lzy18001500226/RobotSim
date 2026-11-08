@@ -84,7 +84,7 @@ class CarryNavigationTests(unittest.TestCase):
         pose["vx"]=.201
         self.assertEqual(m.physical_fault(row,pose,{},robot_bodies={"R_hand_narrow3_Link"},allowed_contact_pairs=[["R_hand_narrow3_Link","test_cylinder"]]),"PLANAR_SPEED")
 class CarryRouteControlFlowTests(unittest.TestCase):
-    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False, transit_policy_050=False, graph_delay_s=0., check_cached_native_age=False):
+    def run_route(self, fault=None, immediate_watchdog=False, pump_delay_s=0., native_step=False, transit_policy_050=False, graph_delay_s=0., check_cached_native_age=False, reverse_moving_arc=False):
         import contextlib,io,json,sys,threading
         from types import SimpleNamespace
         from unittest import mock
@@ -104,7 +104,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
             def publish(self,f=0.,l=0.,a=0.):
                 if not self.moving:f=l=a=0.
                 self.command_log.append(dict(t=clock.t,forward=f,lateral=l,angular=a))
-                if f:self.x+=.03
+                if f:self.x+=.03 if f>0 else -.03
             def deadline_zero(self):
                 self.moving=False;self.publish();self.events.append(dict(event="ZERO",t=clock.t))
             def observe(self,seconds,**kwargs):
@@ -130,7 +130,7 @@ class CarryRouteControlFlowTests(unittest.TestCase):
                 if immediate_watchdog:self.callback()
             def cancel(self):pass
         n=Node();written=[]
-        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[.3,0.],"timeout_s":5.,"pid":19,"transit_policy_050":transit_policy_050,"motion_mode":"LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(m,"write_durable_milestone",lambda path,value:written.append(json.dumps(value))),contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.object(m,"MICRO",{"carry":{"goal_xy_m":[-.3,0.] if reverse_moving_arc else [.3,0.],"timeout_s":5.,"pid":19,"transit_policy_050":transit_policy_050,"reverse_moving_arc":reverse_moving_arc,"motion_mode":"LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT"}},create=True),mock.patch.object(m,"rclpy",SimpleNamespace(shutdown=lambda:None),create=True),mock.patch("threading.Timer",Timer),mock.patch.object(m.time,"monotonic",lambda:clock.t),mock.patch.object(m.time,"sleep",lambda dt:setattr(clock,"t",clock.t+max(dt,.001))),mock.patch.object(m,"write_durable_milestone",lambda path,value:written.append(json.dumps(value))),contextlib.redirect_stdout(io.StringIO()):
             m.run_carry_navigation(n,SimpleNamespace())
         return json.loads(written[-1]),n
     def test_goal_stop_uses_zero_then_stand_then_independent_observation(self):
@@ -508,11 +508,20 @@ class CarryTransit050Tests(unittest.TestCase):
         self.assertTrue(parsed.carry_transit_speed_policy_050)
         self.assertTrue(parsed.carry_native_step_mode)
         inner_main=next(n for n in ast.parse(inner.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=="main")
-        guard=next(n for n in inner_main.body if isinstance(n,ast.If) and "args.carry_transit_speed_policy_050" in ast.unparse(n.test))
+        guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_transit_speed_policy_050"))
         exec(compile(ast.Module(body=[guard],type_ignores=[]),"actual_native_guard","exec"),{"args":parsed})
         parsed.claw_control_overlay_result=None
         with self.assertRaises(ValueError):
             exec(compile(ast.Module(body=[guard],type_ignores=[]),"actual_native_guard","exec"),{"args":parsed})
+        args.carry_native_step_mode=False;args.carry_reverse_moving_arc=True
+        ns=dict(args=args,argv=[])
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_reverse_forwarding","exec"),ns)
+        self.assertIn("--carry-reverse-moving-arc",ns["argv"])
+        reverse,_=parser_only(inner,"parser",["--table-overlay-result","/unused","--table-overlay-result-sha256","unused",
+            "--reset-helper","/unused","--reset-helper-sha256","unused","--claw-control-overlay-result","/unused",
+            "--claw-control-overlay-result-sha256","unused",*ns["argv"]])
+        reverse_guard=next(n for n in inner_main.body if isinstance(n,ast.If) and ast.unparse(n.test).startswith("args.carry_reverse_moving_arc"))
+        exec(compile(ast.Module(body=[reverse_guard],type_ignores=[]),"actual_reverse_guard","exec"),{"args":reverse})
 
 
 
@@ -594,5 +603,27 @@ class MeasuredForceTargetTests(unittest.TestCase):
         self.assertAlmostEqual(target,5.886)
         self.assertEqual(grip_force_budget(.2*9.81,1.),(minimum,minimum))
         with self.assertRaises(ValueError):grip_force_budget(.2*9.81,1.,12.)
+
+
+
+
+class ReverseMovingArcTests(unittest.TestCase):
+    def test_reverse_route_stops_by_measured_distance_and_full_existing_stop(self):
+        result,n=CarryRouteControlFlowTests().run_route(reverse_moving_arc=True)
+        self.assertTrue(result["pass_result"])
+        self.assertTrue(result["position_only_chair_area"])
+        self.assertEqual(result["goal_yaw_requirement"],"NOT_REQUIRED_FOR_KNOWN_CHAIR_AREA")
+        nonzero=[c for c in n.command_log if c["forward"] or c["angular"]]
+        self.assertTrue(nonzero);self.assertTrue(all(c["forward"]==-.12 for c in nonzero))
+        self.assertLessEqual(result["final_distance_m"],.15)
+        self.assertTrue(result["post_stop_composite"]["pass"])
+        self.assertEqual(n.stands,1)
+    def test_reverse_profile_cannot_select_step_or_omit_phase_policy(self):
+        for policy,step in ((False,False),(True,True)):
+            with self.assertRaises(ValueError):
+                m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,transit_policy_050=policy,native_step=step,reverse_moving_arc=True)
+        code=m.build_carry_route_script([-.45,1.],{},[],carry_pid=42,transit_policy_050=True,reverse_moving_arc=True)
+        compile(code,"reverse_carry","exec")
+        self.assertIn("'reverse_moving_arc': True",code)
 
 if __name__=="__main__":unittest.main()

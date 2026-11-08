@@ -1136,3 +1136,27 @@ C.3批准的问题本身没有限定MC模式，只限定导航/有界制动与�
 而非把实现时的额外STEP限定当成新的权限要求。下一项切回既有
 FoundationWalk转向路径，保持紧凑收臂、margin6、C.2与C.3及同一源/模式/
 物理停止合同。模型、二进制、ONNX与冻结诊断配置不改，不作速度扫参。
+
+### 原地纯转不能作为取送前提；复用现有控制器的后退弧线方案
+
+054451Z已通过新鲜启动门，实际FW源/模式生效后约0.435s触发
+CARRY_HEADING_RESPONSE_DIVERGED；不盲目反转Twist符号。官方AimDK
+locomotion文档（latest1.1.0与0.9.0接口字段）均定义逆时针为正，
+sim_contents明确不保证仅角速度启动原地转向。latest文档不被当作已证明
+匹配所装May22二进制；它与本地两模式的实际结果共同说明不能把纯转
+当成前置已验证原语：
+https://x2-aimdk.agibot.com/en/latest/sim_contents.html
+https://x2-aimdk.agibot.com/zh-cn/latest/Interface/control_mod/locomotion.html
+
+独立--carry-reverse-moving-arc仅复用原PointGoalController：
+用yaw+pi表示后退行进朝向，实际Twist.forward=-0.12，角速度仍原符号、
+上限0.10；转向时也保持有界后退，不先做原地纯转。
+0.10m位置触发置零，比最终0.15m区域验收更紧；凳区任务不要求面朝凳子，
+故此模式不声称末端朝向/放置对接资格。默认原有姿态目标模式不变。
+完整原STAND及复合物理/控制目标停止门、方向背离/无进展/源/碰撞门均保留。
+
+从实际052907Z持瓶姿态作名义运动学与整个已加载场景的静态接触扫掠，
+27.5s到(-0.45908,0.90071)，目标(-0.45,1.0)距离0.09971m，
+无禁止穿入；没有mj_step，不是动态PASS：
+reviews/issue-46/fetch-chair-reverse-moving-arc-static-20261108T055443Z/result.json。
+运行中仍以真实native位姿、真实命令路径与原生全接触/源关节保护验收。
