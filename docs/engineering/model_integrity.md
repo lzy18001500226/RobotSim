@@ -141,6 +141,22 @@ record, and whole-record audits bind both intervals to the verified arm owner.
 This does not authorize recovery/rearm after a physical or clock safety fault.
 
 
+## C.4 Empty-bottle carry acceptance (2026-11-08)
+
+The user explicitly accepts bottle wobble and relative circle/section-center
+drift during carry provided the bottle is not lost or dropped. This supersedes
+the10mm relative-grasp-point stop criterion only AFTER actual grasp, lift and
+retract have qualified. Record that drift and tilt; do not move the circle or
+object to conceal it. The separately named retention-only profile may continue
+with one loaded pad; losing all pad support for the existing0.10s interval
+still fails as loss of grasp. This is not proof of floor impact.
+
+Initial approach/closure/lift/retract criteria, actual contact physics,2Nm cap,
+robot/source joint limits, posture, collision, freshness and complete physical
+stop remain. Do not modify model geometry, force limits or the MC to obtain a
+PASS. The user-approved two-table layout and10cm fixed-stance target update
+are derived episode-boundary scene changes, not an active-robot teleport.
+
 ## D. Stop when source semantics are missing
 
 If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.

@@ -802,7 +802,7 @@ class EmptyBottleOwnerGuardTests(unittest.TestCase):
         tree=ast.parse(source)
         value=next(n.args[1].value for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=="replace"
                    and len(n.args)>1 and isinstance(n.args[1],ast.Constant) and "CARRY_OBJECT_POSE_OR_SLIP" in str(n.args[1].value))
-        line=next(l.strip() for l in value.splitlines() if l.strip().startswith("if slip>"))
+        line=next(l.strip() for l in value.splitlines() if "CARRY_OBJECT_POSE_OR_SLIP:" in l and l.strip().startswith("if "))
         expr=line[len("if "):line.index(":raise")]
         code=compile(ast.parse(expr,mode="eval"),"actual_owner_guard","eval")
         ns=dict(slip=0.,B=[0.]*8+[math.cos(.4)],obj={"position_m":[0.,0.,.75]},math=math,
@@ -811,6 +811,29 @@ class EmptyBottleOwnerGuardTests(unittest.TestCase):
         ns["LIFT_CONTRACT"]["retract_preflight"]["allow_carried_bottle_tilt"]=True
         self.assertFalse(eval(code,ns))
         ns["slip"]=.011;self.assertTrue(eval(code,ns))
+        ns["LIFT_CONTRACT"]["retract_preflight"]["carry_retention_only"]=True
+        self.assertFalse(eval(code,ns))
         ns["slip"]=0.;ns["obj"]["position_m"][2]=.2;self.assertTrue(eval(code,ns))
+
+class StraightRetreatInplaceTests(unittest.TestCase):
+    def test_turn_has_zero_translation_and_rearm_is_after_measured_stop(self):
+        code=m.build_carry_route_script(None,{},[],carry_pid=42,away_1m=True,
+             native_step=True,native_action_smoothing=True,transit_policy_050=True,
+             angular_command_cap=.10,straight_retreat_turn=True)
+        tree=ast.parse(code)
+        assign=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign) and
+                    any(isinstance(t,ast.Name) and t.id=='forward' for t in n.targets) and
+                    'straight_retreat_turn' in ast.unparse(n.value))
+        from types import SimpleNamespace
+        for phase,expected in [('RETREAT',-.12),('TURN',0.)]:
+            ns=dict(cfg={'straight_retreat_turn':True},mission={'phase':phase},output=SimpleNamespace(linear_x=-.12))
+            exec(compile(ast.Module(body=[assign],type_ignores=[]),'actual_command','exec'),ns)
+            self.assertEqual(ns['forward'],expected)
+        self.assertIn('RETREAT_CROSS_TRACK',code)
+        self.assertIn('INPLACE_TURN_CENTER_TRANSLATION',code)
+        self.assertIn('result["delivery_table_placement"]="NOT_RUN"',code)
+        self.assertLess(code.index('result["retreat_stop_composite"]=n.observe'),code.index('n.stand_once("LOCOMOTION_STEP")',code.index('result["retreat_stop_composite"]=n.observe')))
+        self.assertLess(code.index('result["retreat_stop_composite"]=n.observe'),code.index('mission["phase"]="TURN"'))
+        compile(code,'retreat_inplace','exec')
 
 if __name__=="__main__":unittest.main()

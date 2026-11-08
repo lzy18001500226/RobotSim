@@ -58,6 +58,9 @@ def main():
     p.add_argument("--native-reset-input",choices=("backspace","button"),default="backspace")
     p.add_argument("--native-render-adapter",help="explicit process-only GPU selection for the native simulator, with actual GL identity verification")
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
+    p.add_argument("--carry-retention-only",action="store_true",help="user-approved empty-bottle carry: record wobble/slip, stop on actual loss/drop")
+    p.add_argument("--approved-two-table-layout",action="store_true",help="reviewed scene: delivery90deg/Y1.6, pickup and fixed stance advanced10cm")
+    p.add_argument("--carry-straight-retreat-turn",action="store_true",help="actual30cm retreat then native in-place180, each with composite stop")
     p.add_argument("--allow-carried-bottle-tilt",action="store_true",help="empty bottle: world tilt is recorded, not a carry failure; retention and robot guards stay active")
     p.add_argument("--carry-away-1m",action="store_true",help="leave table, turn to opposite heading, then carry forward >=1m with measured stops")
     p.add_argument("--carry-goal-world-xy",type=float,nargs=2,help="explicit known-map delivery goal after physical grasp/retract")
@@ -86,7 +89,7 @@ def main():
     if args.right_claw_kp is not None and (not args.physical_lift_test or (not args.carry_away_1m and args.carry_goal_world_xy is None)):
         raise ValueError("right gain comparison requires the instrumented physical-lift/carry path")
     if args.allow_carried_bottle_tilt and args.carry_goal_world_xy is None and not args.carry_away_1m:raise ValueError("empty-bottle tilt policy is scoped to verified carry tasks")
-    if args.carry_away_1m and (args.carry_goal_world_xy is not None or args.carry_native_step_mode or args.carry_reverse_moving_arc or not args.carry_transit_speed_policy_050):
+    if args.carry_away_1m and (args.carry_goal_world_xy is not None or (args.carry_native_step_mode and not args.carry_straight_retreat_turn) or args.carry_reverse_moving_arc or not args.carry_transit_speed_policy_050):
         raise ValueError("away1m requires its distinct bounded FoundationWalk transit mission")
 
     if args.review_captured_run:
@@ -240,6 +243,13 @@ def main():
     if args.fixed_reviewed_checkpoint:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import add_reviewed_checkpoint
         claw=add_reviewed_checkpoint(claw,args.fixed_reviewed_checkpoint,base_offset_xy=args.checkpoint_base_offset_xy_m)
+    if args.approved_two_table_layout:
+        if not args.fixed_reviewed_checkpoint:raise ValueError("two-table fixed-stance diagnostic requires reviewed episode initialization")
+        from scripts.research.issue46.scene.delivery_table_overlay import build as scene_build
+        layout=scene_build(claw,90.,.10,.10,.10)
+        claw=Path(json.loads(Path(layout).read_text())["native_overlay_result"]["path"])
+    if args.carry_retention_only and (not args.allow_carried_bottle_tilt or not args.carry_away_1m):
+        raise ValueError("retention-only is explicitly scoped to qualified empty-bottle carry")
     if args.source_pad_coacd_comparison:
         # The static collider must match the actual selected runtime variant;
         # retain the original candidate and source scene as immutable inputs.
@@ -281,6 +291,8 @@ def main():
     if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
         argv.extend(['--carry-timeout-s',str(args.carry_timeout_s),'--carry-grip-force-margin',str(args.carry_grip_force_margin)])
         if args.allow_carried_bottle_tilt:argv.append('--allow-carried-bottle-tilt')
+        if args.carry_retention_only:argv.append('--carry-retention-only')
+        if args.carry_straight_retreat_turn:argv.append('--carry-straight-retreat-turn')
         if args.carry_away_1m:argv.append('--carry-away-1m')
         else:argv.extend(['--carry-goal-world-xy',*map(str,args.carry_goal_world_xy)])
         if args.carry_sdk_minimum_turn:argv.append('--carry-sdk-minimum-turn')
