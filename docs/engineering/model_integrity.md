@@ -185,7 +185,7 @@ to complete retreat, bounded small-radius180deg turn and placement on the
 approved second table. Record .20m/s SDK-amplitude transit/correction as a
 separate explicit simulation profile; defaults stay unchanged. No per-run
 confirmation for these routine choices. The separately named compact-turn
-comparison uses pure yaw <=.30rad/s (native SDK keyboard bound is1.0), no
+comparison uses pure yaw <=.60rad/s (native SDK keyboard bound is1.0), no
 commanded XY during TURN, measured active radius <=.30m and settled centre
 <=.20m. This is the user-permitted small-radius task, distinct from the legacy
 strict50mm in-place diagnostic; no source joint or physical stop limit changes. Physical faults stop the current
@@ -201,6 +201,13 @@ fresh new-epoch telemetry and the unchanged complete composite stop. Up to
 four such clock recoveries share the original90s absolute command deadline;
 up to six non-overlapping PID/generation-bound permits cover the original
 two segments plus those recoveries. No permit is reactivated or overwritten.
+The opt-in source-release stop protocol sends documented INPUTACTION_DISABLE
+(2002) only for the episode-owned robotsim_official_cmd_vel after initiating
+zero, retains >=1.05s zero publication and the full SD/physical stop, then sends
+INPUTACTION_ENABLE (2001) before a qualified next segment. Service acceptance
+is not task completion or a zero-command acknowledgement. Record actual source,
+model input and physical behavior independently; no built-in source changes.
+
 Physical, posture, source-joint, collision, stale-native or ownership faults
 remain non-recoverable within the episode. The temporary timesyncd comparison
 did not establish stable WSL wall time; the service was restored active.

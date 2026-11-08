@@ -61,6 +61,8 @@ def main():
     p.add_argument("--grasp-height-above-center-m",type=float,default=.075,help="grasp section within the canonical 300mm bottle body")
     p.add_argument("--carry-retention-only",action="store_true",help="user-approved empty-bottle carry: record wobble/slip, stop on actual loss/drop")
     p.add_argument("--approved-two-table-layout",action="store_true",help="reviewed scene: delivery90deg/Y1.6, pickup and fixed stance advanced10cm")
+    p.add_argument("--carry-compact-angular-cap",type=float,choices=(.30,.60),default=.30)
+    p.add_argument("--carry-release-source-on-stop",action="store_true",help="DISABLE only our locomotion source after ZERO; ENABLE after full stop before rearm")
     p.add_argument("--carry-gait-prepare",action="store_true",help="bounded native yaw gait wakeup; require measured alternating foot loads before retreat")
     p.add_argument("--carry-inplace-centre-hold",action="store_true")
     p.add_argument("--carry-compact-turn",action="store_true",help="SIMULATION_ONLY .30rad/s pure yaw; .30m active radius / .20m final centre bound")
@@ -96,6 +98,7 @@ def main():
     args=p.parse_args()
     if args.right_claw_kp is not None and (not args.physical_lift_test or (not args.carry_away_1m and args.carry_goal_world_xy is None)):
         raise ValueError("right gain comparison requires the instrumented physical-lift/carry path")
+    if (args.carry_compact_angular_cap!=.30 or args.carry_release_source_on_stop) and not args.carry_compact_turn:raise ValueError("compact source/cap scope")
     if args.carry_gait_prepare and not args.carry_compact_turn:raise ValueError("gait preparation requires compact carry")
     if args.carry_compact_turn and not (args.carry_straight_retreat_turn and args.carry_transit_speed_policy_050 and not args.carry_inplace_centre_hold):raise ValueError("compact pure-turn scope")
     if args.carry_transit_command_speed>.12 and not (args.carry_straight_retreat_turn and args.carry_transit_speed_policy_050):
@@ -313,6 +316,8 @@ def main():
         if args.carry_inplace_centre_hold:argv.append('--carry-inplace-centre-hold')
         if args.carry_compact_turn:argv.append('--carry-compact-turn')
         if args.carry_gait_prepare:argv.append('--carry-gait-prepare')
+        if args.carry_compact_angular_cap!=.30:argv.extend(['--carry-compact-angular-cap',str(args.carry_compact_angular_cap)])
+        if args.carry_release_source_on_stop:argv.append('--carry-release-source-on-stop')
         if args.carry_transit_command_speed!=.12:argv.extend(['--carry-transit-command-speed',str(args.carry_transit_command_speed)])
         if args.carry_turn_recovery_speed!=.12:argv.extend(['--carry-turn-recovery-speed',str(args.carry_turn_recovery_speed)])
         if args.carry_turn_brake_delay_s:argv.extend(['--carry-turn-brake-delay-s',str(args.carry_turn_brake_delay_s)])

@@ -998,8 +998,8 @@ class RealCompactBridgeArgumentTests(unittest.TestCase):
         func=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='execute_grasp_with_carry')
         bridge_if=next(n for n in func.body if isinstance(n,ast.If) and any(isinstance(c,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='bridge_command' for t in c.targets) for c in n.body))
         statements=[n for n in bridge_if.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id in ('bridge_linear','carry_angular','bridge_command') for t in n.targets) or isinstance(n,ast.If) and 'carry_compact_turn' in ast.unparse(n.test)]
-        for compact,expected in ((True,.3),(False,.1)):
-            args=NS(carry_compact_turn=compact,carry_sdk_minimum_turn=True,carry_away_1m=True,carry_transit_command_speed=.12,carry_turn_recovery_speed=.12,carry_inplace_centre_hold=False)
+        for compact,expected in ((True,.3),(True,.6),(False,.1)):
+            args=NS(carry_compact_turn=compact,carry_compact_angular_cap=expected if compact else .3,carry_sdk_minimum_turn=True,carry_away_1m=True,carry_transit_command_speed=.12,carry_turn_recovery_speed=.12,carry_inplace_centre_hold=False)
             ns=dict(args=args,environment='')
             exec(compile(ast.Module(body=statements,type_ignores=[]),'actual_bridge_launch_arguments','exec'),ns)
             argv=shlex.split(ns['bridge_command'])
@@ -1019,3 +1019,22 @@ class NativeGaitPreparationTests(unittest.TestCase):
         self.assertIn('GAIT_PREPARATION_POSE_BOUND',code)
         self.assertIn('len(supports)>=2 and acquired',code)
         self.assertIn('mission["phase"]=="PRESTEP":forward=0.',code)
+
+class SourceReleaseProtocolTests(unittest.TestCase):
+    def test_real_source_method_uses_only_documented_custom_source_actions(self):
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,native_action_smoothing=True,transit_policy_050=True,compact_turn=True,compact_angular_cap=.60,release_source_on_stop=True)
+        method=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=='source_enabled')
+        ns=dict(MICRO={'carry':{'release_source_on_stop':True}},SetMcInputSource=NS(Request=lambda:NS(request=NS(header=NS()),action=NS(),input_source=NS())),McInputAction=NS(INPUTACTION_ENABLE=2001,INPUTACTION_DISABLE=2002),time=__import__('time'),raw=lambda x:x if isinstance(x,dict) else vars(x))
+        exec(compile(ast.Module(body=[method],type_ignores=[]),'actual_source_admin','exec'),ns)
+        requests=[]
+        response={'response':{'header':{'code':0},'state':0,'task_id':1}}
+        future=NS(done=lambda:True,result=lambda:response)
+        node=NS(get_clock=lambda:NS(now=lambda:NS(to_msg=lambda:None)),src=NS(service_is_ready=lambda:True,call_async=lambda q:(requests.append(q) or future)),events=[])
+        ns['source_enabled'](node,False);ns['source_enabled'](node,True)
+        self.assertEqual([q.action.value for q in requests],[2002,2001])
+        self.assertEqual([q.input_source.name for q in requests],['robotsim_official_cmd_vel']*2)
+        self.assertEqual(node.events[0]['meaning'],'SERVICE_ACCEPTANCE_NOT_TASK_COMPLETION_OR_ZERO_RECEIPT')
+        self.assertIn('n.source_enabled(False) if cfg.get("release_source_on_stop") else None',code)
+        self.assertIn('n.observe(1.05,baseline=baseline);n.stand_once()',code)

@@ -670,6 +670,21 @@ def run_probe(smoke_only=False):
             if require_stop:raise RuntimeError("COMPOSITE_STOP_NOT_QUALIFIED:"+json.dumps(qualified))
             return qualified
 
+        def source_enabled(self, enabled):
+            if not MICRO.get("carry",{}).get("release_source_on_stop"):return
+            if getattr(self,"source_requested_enabled",True)==enabled:return
+            q=SetMcInputSource.Request();q.request.header.stamp=self.get_clock().now().to_msg()
+            q.action.value=McInputAction.INPUTACTION_ENABLE if enabled else McInputAction.INPUTACTION_DISABLE
+            q.input_source.name="robotsim_official_cmd_vel";q.input_source.priority=40;q.input_source.timeout=1000
+            if not self.src.service_is_ready():raise RuntimeError("CARRY_SOURCE_ADMIN_UNAVAILABLE")
+            f=self.src.call_async(q);deadline=time.monotonic()+.5
+            while not f.done() and time.monotonic()<deadline:
+                self.publish();self.pump();time.sleep(.01)
+            response=raw(f.result()) if f.done() and f.result() is not None else None
+            self.events.append(dict(event="SOURCE_ENABLE_ACK" if enabled else "SOURCE_DISABLE_ACK",t=time.monotonic(),request=raw(q),raw=response,meaning="SERVICE_ACCEPTANCE_NOT_TASK_COMPLETION_OR_ZERO_RECEIPT"))
+            if response is None or response["response"]["header"]["code"]!=0:raise RuntimeError("CARRY_SOURCE_ADMIN_REJECTED_OR_TIMEOUT")
+            self.source_requested_enabled=enabled
+
         def stand_once(self, requested="STAND_DEFAULT"):
             if requested!="STAND_DEFAULT" and not (requested=="LOCOMOTION_STEP" and MICRO.get("carry",{}).get("motion_mode")==requested):raise RuntimeError("ACTION_NOT_ALLOWLISTED")
             self.publish()
@@ -775,6 +790,9 @@ def run_probe(smoke_only=False):
         # independent 0.20s stale-input timeout. Timer is same-process only.
         n.deadline_zero()
         if watchdog:watchdog.cancel()
+        if cfg.get("release_source_on_stop"):
+            try:n.source_enabled(False)
+            except Exception as exc:result["source_disable_cleanup_failure"]=str(exc)
         end=time.monotonic()+1.05
         while rclpy.ok() and time.monotonic()<end:
             n.publish()
@@ -840,12 +858,13 @@ def inplace_centre_command(pose, origin):
     return c*vx+si*vy,-si*vx+c*vy
 
 
-def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False, gait_prepare=False):
+def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False, gait_prepare=False, compact_angular_cap=.30, release_source_on_stop=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if gait_prepare and not compact_turn:raise ValueError("gait preparation is scoped to the explicit compact carry experiment")
     if compact_turn and not (straight_retreat_turn and transit_policy_050 and not inplace_centre_hold):raise ValueError('compact turn requires pure-yaw bounded carry profile')
-    if compact_turn:angular_command_cap=.30
-    if angular_command_cap not in (.075,.10,.30) or angular_command_cap==.30 and not compact_turn:raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
+    if compact_angular_cap not in (.30,.60) or (compact_angular_cap!=.30 or release_source_on_stop) and not compact_turn:raise ValueError("compact angular/source protocol scope")
+    if compact_turn:angular_command_cap=compact_angular_cap
+    if angular_command_cap not in (.075,.10,.30,.60) or angular_command_cap>.10 and not compact_turn:raise ValueError('carry angular command must use existing cap or pinned SDK minimum')
     if (not away_1m and (goal_xy is None or len(goal_xy)!=2 or not all(math.isfinite(x) and -1.65<=x<=1.65 for x in goal_xy))) or not 5.<=timeout_s<=90. or not isinstance(carry_pid,int) or carry_pid<=0:
         raise ValueError("invalid bounded carry route")
     if away_1m and (not transit_policy_050 or (native_step and not straight_retreat_turn) or reverse_moving_arc):raise ValueError("away1m requires distinct bounded FoundationWalk profile")
@@ -861,7 +880,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -1026,6 +1045,7 @@ def run_carry_navigation(n,contract):
                 if cfg.get("compact_turn"):transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                 if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
                 n.feedback_fault=None
+                n.source_enabled(False) if cfg.get("release_source_on_stop") else None
                 n.observe(1.05,baseline=baseline);n.stand_once()
                 stopped=n.observe(8.,baseline=baseline,require_stop=True)
                 result["clock_recoveries"].append(dict(fault=fault,stop=stopped,t=time.monotonic()))
@@ -1051,6 +1071,7 @@ def run_carry_navigation(n,contract):
                         delta=(pose["yaw"]-mission["previous_yaw"]+math.pi)%(2*math.pi)-math.pi
                         mission["unwrapped_yaw"]+=delta
                         mission["previous_yaw"]=pose["yaw"];mission["previous_source_s"]=None
+                    if cfg.get("release_source_on_stop"):n.source_enabled(True)
                     acquired=False
                 n.stop_started=False
                 with n.lock:n.moving=True
@@ -1104,6 +1125,7 @@ def run_carry_navigation(n,contract):
                         if not acquired:raise RuntimeError("RETREAT_SOURCE_NOT_CONFIRMED")
                         n.deadline_zero();n.stop_started=True
                         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+                        n.source_enabled(False) if cfg.get("release_source_on_stop") else None
                         n.observe(1.05,baseline=baseline);n.stand_once()
                         result["retreat_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
                         n.await_graph();n.pump();stopped=n.sample()
@@ -1138,6 +1160,7 @@ def run_carry_navigation(n,contract):
 
                         cfg["permit_filename"]="carry_transit_forward_permit.json";cfg["turn_stop_pass"]=True
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
+                        if cfg.get("release_source_on_stop"):n.source_enabled(True)
                         acquired=False;activation_started=time.monotonic()
                         progress_state=None;progress_best=None;progress_at=activation_started
                         n.stop_started=False
@@ -1176,7 +1199,7 @@ def run_carry_navigation(n,contract):
                     if abs(turn_error)>max(.08,reserve) or recovering:
                         if abs(turn_error)>math.pi+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=turn_error,
-                                               linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
+                                               linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(min(.30,cfg["angular_command_cap"]) if cfg.get("compact_turn") and abs(turn_error)<.60 else cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
                         if cfg.get("inplace_centre_hold"):
                             output.linear_x,output.lateral_y=(0.,0.) if cfg.get("turn_recovery_speed",.12)>.12 else inplace_centre_command(p,mission["turn_origin_pose"])
                             if recovering:
@@ -1188,6 +1211,7 @@ def run_carry_navigation(n,contract):
                         mission["turn_source_and_mode_observed"]=True
                         n.deadline_zero();n.stop_started=True
                         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+                        n.source_enabled(False) if cfg.get("release_source_on_stop") else None
                         n.observe(1.05,baseline=baseline);n.stand_once()
                         result["turn_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
                         if result["turn_stop_composite"].get("pass") is not True:raise RuntimeError("AWAY_TURN_STOP_NOT_QUALIFIED")
@@ -1293,6 +1317,7 @@ def run_carry_navigation(n,contract):
         n.deadline_zero();n.stop_started=True
         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
         if watchdog:watchdog.cancel()
+        n.source_enabled(False) if cfg.get("release_source_on_stop") else None
         n.observe(1.05,baseline=baseline);n.stand_once()
         result["post_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         end=n.sample()["pose"];result["end_pose"]=end
@@ -1322,6 +1347,9 @@ def run_carry_navigation(n,contract):
         try:transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
         except Exception as exc:result["transit_policy_error"]=str(exc);result["pass_result"]=False
         if watchdog:watchdog.cancel()
+        if cfg.get("release_source_on_stop"):
+            try:n.source_enabled(False)
+            except Exception as exc:result["source_disable_cleanup_failure"]=str(exc)
         end=time.monotonic()+1.05
         while time.monotonic()<end:
             n.publish()
