@@ -203,6 +203,20 @@ class CarryParentIntegrationTests(unittest.TestCase):
             self.assertEqual(len(calls),2)
             self.assertNotIn("locomotion velocity",result["commands_not_sent"])
 
+class ApprovedLocalFrictionGuardTests(unittest.TestCase):
+    def test_unapproved_solver_or_timestep_cannot_generate_a_model(self):
+        import json
+        from types import SimpleNamespace as NS
+        from unittest import mock
+        from scripts.research.issue46.native_runtime import claw_parameter_diagnostic as c
+        record=dict(classification='SIMULATION_ONLY_STL_CLAW_CONTROL_OVERLAY',source_pad_collision_comparison={'part_count':22},generated={k:{'path':'/unused','sha256':'same'} for k in ('host_scene','runtime_scene','simulator_config')})
+        for options in (dict(npair=1,noslip=0,cone=1,dt=.001),dict(npair=0,noslip=2,cone=1,dt=.001),dict(npair=0,noslip=0,cone=0,dt=.001),dict(npair=0,noslip=0,cone=1,dt=.002)):
+            model=NS(npair=options['npair'],opt=NS(noslip_iterations=options['noslip'],cone=options['cone'],impratio=10.,timestep=options['dt']))
+            with mock.patch.object(Path,'read_text',return_value=json.dumps(record)),mock.patch.object(c,'digest',return_value='same'),mock.patch.object(c.mujoco.MjModel,'from_xml_path',return_value=model),mock.patch.object(c.pg,'create_unique_output_directory') as allocator:
+                with self.assertRaisesRegex(ValueError,'native1ms'):c.add_approved_pad_friction_reference(Path('/unused'))
+                allocator.assert_not_called()
+
+
 class NativeActionSmoothingTests(unittest.TestCase):
     def test_only_two_native_action_pair_rules_are_added(self):
         import copy,yaml

@@ -62,8 +62,8 @@ navigation to the known chair area is an integration diagnostic, not yet a
 qualified full fetch/delivery task.
 Current carry attempts distinguish a real native gait-start safety failure from
 soft-contact axial creep with NoSlip disabled. A pad-local numerical-friction
-comparison is prepared for specific review; it has not been implemented or
-validated. Source chair geometry/reachability inspection is offline only.
+comparison received specific approval and passed offline equivalence; its
+actual holding/carry validation is still pending. Source chair geometry/reachability inspection is offline only.
 The strengthened START-to-table chain is still unqualified: subsequent
 per-physics-step source joint-speed checks found violations in historical
 walking traces. Four-direction stance correction, dynamic short-bottle

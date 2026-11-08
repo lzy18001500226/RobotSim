@@ -154,7 +154,21 @@ void mj_step(const mjModel* m,mjData* d) {
   if(!sink){sink=logfile;return;}
   long long started=mono_ns();
   fprintf(sink,"{\"host_monotonic_ns\":%lld,\"process_pid\":%ld,\"sim_time_s\":%.17g,\"generation\":%d,\"engine_version\":%d,\"timestep_s\":%.17g,\"model_keyframe_count\":%d,",started,(long)getpid(),(double)d->time,generation,version_real(),(double)m->opt.timestep,m->nkey);
-  fprintf(sink,"\"solver_options\":{\"noslip_iterations\":%d,\"cone\":%d,\"impratio\":%.17g,\"iterations\":%d},\"bodies\":{",m->opt.noslip_iterations,m->opt.cone,(double)m->opt.impratio,m->opt.iterations);
+  fprintf(sink,"\"solver_options\":{\"noslip_iterations\":%d,\"cone\":%d,\"impratio\":%.17g,\"iterations\":%d},",m->opt.noslip_iterations,m->opt.cone,(double)m->opt.impratio,m->opt.iterations);
+  int pair_count=0;
+  mjtNum tangent_min=0,tangent_max=0;
+  int object_id=id_real(m,mjOBJ_BODY,"test_cylinder");
+  int narrow_id=id_real(m,mjOBJ_BODY,"R_hand_narrow3_Link");
+  int wide_id=id_real(m,mjOBJ_BODY,"R_hand_wide3_Link");
+  for(int p=0;p<m->npair;p++) {
+    int a=m->geom_bodyid[m->pair_geom1[p]],b=m->geom_bodyid[m->pair_geom2[p]];
+    if(!((a==object_id && (b==narrow_id || b==wide_id)) || (b==object_id && (a==narrow_id || a==wide_id))))continue;
+    mjtNum value=m->pair_solreffriction[2*p];
+    if(!pair_count || value<tangent_min)tangent_min=value;
+    if(!pair_count || value>tangent_max)tangent_max=value;
+    pair_count++;
+  }
+  fprintf(sink,"\"contact_pair_parameters\":{\"model_pair_count\":%d,\"pad_bottle_pair_count\":%d,\"min_tangent_timeconst_s\":%.17g,\"max_tangent_timeconst_s\":%.17g},\"bodies\":{",m->npair,pair_count,(double)tangent_min,(double)tangent_max);
   body(m,d,"pelvis");fputc(',',sink);body(m,d,"R_omnipicker_base_link");fputc(',',sink);body(m,d,"test_cylinder");fputc(',',sink);body(m,d,"head_pitch_link");
   fputs("},\"joints\":{",sink);
   int emitted_joint=0;
@@ -193,6 +207,8 @@ void mj_step(const mjModel* m,mjData* d) {
     array(c->pos,3);fputs(",\"contact_frame\":",sink);array(c->frame,9);
     fputs(",\"local_force_torque\":",sink);array(f,6);
     fputs(",\"contact_friction\":",sink);array(c->friction,5);
+    fputs(",\"contact_solref\":",sink);array(c->solref,2);
+    fputs(",\"contact_solreffriction\":",sink);array(c->solreffriction,2);
     mjtNum v1[6]={0},v2[6]={0},rel[3]={0},local[3]={0};
     velocity_real(m,d,mjOBJ_BODY,b1,v1,0);velocity_real(m,d,mjOBJ_BODY,b2,v2,0);
     for(int k=0;k<3;k++) {

@@ -134,6 +134,77 @@ def build(parent, *, both_hands=False, right_damping=None, noslip_iterations=0, 
     return out/'result.json'
 
 
+
+def add_approved_pad_friction_reference(parent):
+    """2026-11-08 case-approved local numerical comparison; no source edits."""
+    parent=Path(parent);record=json.loads(parent.read_text());before=copy.deepcopy(record)
+    if record.get('classification')!='SIMULATION_ONLY_STL_CLAW_CONTROL_OVERLAY' or record.get('source_pad_collision_comparison',{}).get('part_count')!=22:raise ValueError('approved source22 parent not established')
+    for label in ('host_scene','runtime_scene','simulator_config'):
+        item=record['generated'][label]
+        if digest(item['path'])!=item['sha256']:raise ValueError('local friction parent hash mismatch')
+    model=mujoco.MjModel.from_xml_path(record['generated']['host_scene']['path'])
+    if model.npair or model.opt.noslip_iterations!=0 or int(model.opt.cone)!=1 or model.opt.impratio!=10. or abs(model.opt.timestep-.001)>1e-12:
+        raise ValueError('approved local friction comparison requires no preexisting pairs, native1ms, NoSlip0, elliptic10')
+    bottle=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,'test_cylinder_collision')
+    if bottle<0:raise ValueError('bottle collider missing')
+    pairs=[]
+    for body,count in (('R_hand_narrow3_Link',12),('R_hand_wide3_Link',10)):
+        bid=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,body)
+        selected=[g for g in range(model.ngeom) if model.geom_bodyid[g]==bid and model.geom_contype[g]]
+        if len(selected)!=count:raise ValueError('approved22 source pad pieces not present')
+        for g in selected:
+            name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_GEOM,g)
+            if not name.startswith(body+'__collision_coacd_'):raise ValueError('unexpected pad collider identity')
+            if not ((model.geom_contype[g]&model.geom_conaffinity[bottle]) or (model.geom_contype[bottle]&model.geom_conaffinity[g])):raise ValueError('pair was not already collision-enabled')
+            if model.geom_priority[g]!=model.geom_priority[bottle] or any(not np.array_equal(getattr(model,k)[g],getattr(model,k)[bottle]) for k in ('geom_solref','geom_solimp','geom_friction')):raise ValueError('explicit normal/friction mixing would differ')
+            friction=model.geom_friction[g]
+            pairs.append({'name':'diagnostic_pad_bottle_'+str(len(pairs)),'geom1':name,'geom2':'test_cylinder_collision','condim':int(max(model.geom_condim[g],model.geom_condim[bottle])),'friction':[float(friction[0]),float(friction[0]),float(friction[1]),float(friction[2]),float(friction[2])],'solref':model.geom_solref[g].tolist(),'solimp':model.geom_solimp[g].tolist(),'margin':float(max(model.geom_margin[g],model.geom_margin[bottle])),'gap':float(max(model.geom_gap[g],model.geom_gap[bottle])),'solreffriction':[.002,1.]})
+    out=pg.create_unique_output_directory(ROOT/'reviews/issue-46',prefix='approved-pad-tangent-reference').native_path
+    for label in ('host_scene','runtime_scene'):
+        source=Path(record['generated'][label]['path']);xml=ET.fromstring(source.read_bytes())
+        contact=xml.find('contact')
+        if contact is None:contact=ET.SubElement(xml,'contact')
+        if contact.findall('pair'):raise ValueError('refusing duplicate explicit contact pairs')
+        for pair in pairs:
+            attributes={k:(' '.join(format(x,'.17g') for x in v) if isinstance(v,list) else str(v)) for k,v in pair.items()}
+            ET.SubElement(contact,'pair',**attributes)
+        dest=out/source.name;pg.write_new_bytes(dest,ET.tostring(xml,encoding='utf-8',xml_declaration=True));record['generated'][label]={'path':str(dest),'sha256':digest(dest)}
+    derived=mujoco.MjModel.from_xml_path(record['generated']['host_scene']['path'])
+    # Appending pair names changes packed-name offsets/hash slots. Validate
+    # every existing object's semantic name/ID, rather than hiding name drift.
+    named_types=((mujoco.mjtObj.mjOBJ_BODY,model.nbody),(mujoco.mjtObj.mjOBJ_JOINT,model.njnt),(mujoco.mjtObj.mjOBJ_GEOM,model.ngeom),(mujoco.mjtObj.mjOBJ_ACTUATOR,model.nu),(mujoco.mjtObj.mjOBJ_SENSOR,model.nsensor),(mujoco.mjtObj.mjOBJ_SITE,model.nsite),(mujoco.mjtObj.mjOBJ_MESH,model.nmesh),(mujoco.mjtObj.mjOBJ_EQUALITY,model.neq))
+    for kind,count in named_types:
+        for i in range(count):
+            if mujoco.mj_id2name(model,kind,i)!=mujoco.mj_id2name(derived,kind,i):raise ValueError('existing object name/ID changed')
+    checked=[]
+    for name in dir(model):
+        a=getattr(model,name)
+        if not isinstance(a,np.ndarray) or name=='_sizes' or name.startswith(('pair_','name_','names')):continue
+        if not np.array_equal(a,getattr(derived,name),equal_nan=True):raise ValueError('local friction unexpected physical array delta:'+name)
+        checked.append(name)
+    for dimension in ('nq','nv','nu','njnt','nbody','ngeom','nmesh','neq','nsensor','nsite','ncam','nkey','ntendon'):
+        if getattr(model,dimension)!=getattr(derived,dimension):raise ValueError('non-pair model dimensions changed:'+dimension)
+    if derived.npair!=22 or derived.opt.noslip_iterations!=0 or derived.opt.timestep!=model.opt.timestep:raise ValueError('local friction scope/solver changed')
+    for pair in pairs:
+        i=mujoco.mj_name2id(derived,mujoco.mjtObj.mjOBJ_PAIR,pair['name'])
+        for field,key in (('pair_friction','friction'),('pair_solref','solref'),('pair_solimp','solimp'),('pair_solreffriction','solreffriction')):
+            if not np.array_equal(getattr(derived,field)[i],pair[key]):raise ValueError('compiled explicit pair differs:'+field)
+        if derived.pair_dim[i]!=pair['condim'] or derived.pair_margin[i]!=pair['margin'] or derived.pair_gap[i]!=pair['gap']:raise ValueError('pair contact dimensions/margin changed')
+    cfg=yaml.safe_load(Path(before['generated']['simulator_config']['path']).read_text())
+    cfg['MujocoSimModule']['simulation_model']='/workspace/evidence/'+Path(record['generated']['runtime_scene']['path']).name
+    cfg_path=out/'simulator_stl_native_hand_table_control.yaml';pg.write_new_text(cfg_path,yaml.safe_dump(cfg,sort_keys=False));record['generated']['simulator_config']={'path':str(cfg_path),'sha256':digest(cfg_path)}
+    runtime_source=Path(record['generated']['runtime_scene']['path'])
+    projection=runtime_source.read_bytes().replace(b'/workspace/raicom2026',str(ROOT/'simulation/mujoco/raicom2026').encode()).replace(b'/workspace/robotsim',str(ROOT).encode())
+    projected=out/'runtime_compile_check.xml';pg.write_new_bytes(projected,projection)
+    runtime=mujoco.MjModel.from_xml_path(str(projected))
+    for name in checked+['pair_dim','pair_friction','pair_solref','pair_solimp','pair_solreffriction','pair_geom1','pair_geom2','pair_margin','pair_gap']:
+        if not np.array_equal(getattr(derived,name),getattr(runtime,name),equal_nan=True):raise ValueError('local friction host/runtime mismatch:'+name)
+    record['generated']['runtime_hostcheck_scene']={'path':str(projected),'sha256':digest(projected)}
+    record['approved_local_pad_friction_reference']={'classification':'SIMULATION_ONLY_CASE_APPROVED_NUMERICAL_CONTACT_COMPARISON','approval':'direct maintainer reply 2026-11-08: approve exact22 existing pairs, .02s to .002s, NoSlip0; no other mechanical/limit changes','parent':str(parent),'parent_sha256':digest(parent),'pairs':pairs,'pair_count':22,'normal_friction_geometry_limits_unchanged':True,'global_noslip_iterations':0,'other_compiled_arrays_unchanged':checked,'existing_named_object_ids_unchanged':True,'mj_step_calls':0,'official_source':'https://mujoco.readthedocs.io/en/3.3.7/XMLreference.html#contact-pair-solreffriction'}
+    pg.write_new_text(out/'result.json',json.dumps(record,indent=2)+'\n');pg.write_artifact_manifest(out)
+    return out/'result.json'
+
+
 def add_reviewed_checkpoint(parent, capture, *, base_offset_xy=(0.,0.)):
     """Add only a native episode-boundary keyframe from the reviewed real pose."""
     from scripts.research.issue46.native_runtime.native_grasp_audit import apply_recorded_native_frame

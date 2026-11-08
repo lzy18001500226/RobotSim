@@ -79,6 +79,24 @@ relationships and collision changes. Replacing the hand, removing contacts,
 adding supports/welds or writing object poses to manufacture a grasp remain
 forbidden. Canonical model promotion/merge review remains separate.
 
+## C.2 Case authorization: local OmniPicker-bottle friction-reference diagnostic
+
+**Direct maintainer approval, 2026-11-08.** The user approved exactly this
+SIMULATION_ONLY comparison: 22 already collision-enabled source-CoACD pad/bottle
+geom pairs, friction-reference time constant inherited0.02s ->0.002s, with
+globalNoSlip disabled. The active native timestep is0.001s; do not silently
+change timestep or extend this value to other timesteps/pairs. Explicit pairs
+must preserve their previous condim, friction coefficients, normal solref/
+solimp, margin/gap, all geometry/assembly/mass/inertia, and the2Nm actuator
+and original velocity/posture/stop limits. No source asset edits or attachments.
+
+Validate source/derived compiled equivalence and actual native pair parameters
+before contact; qualify real static holding before the existing bounded chair
+carry diagnostic. This is a numerical comparison, not manufacturer material
+identification or hardware approval. Keep the original successes and failures.
+This specific approval is separate from C.1 and does not authorize other contact
+parameter changes or promotion/merge.
+
 ## D. Stop when source semantics are missing
 
 If source geometry, assembly, loop semantics, joint type, pin pairing, collision policy, or physical parameters are insufficient, stop before building a guessed mechanism. The explicitly authorized simulation parameter diagnostics in C.1 are an exception for those parameters only; they do not establish missing mechanical semantics. Record the exact missing information and request manufacturer/maintainer clarification. Do not tune guessed parameters or repeat speculative variants to force a result.

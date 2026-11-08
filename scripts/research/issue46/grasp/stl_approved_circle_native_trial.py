@@ -33,6 +33,7 @@ def main():
     p.add_argument("--both-claws-zero-internal-friction",action="store_true")
     p.add_argument("--right-claw-zero-internal-friction",action="store_true")
     p.add_argument("--right-claw-damping",type=float)
+    p.add_argument("--approved-pad-friction-reference",action="store_true",help="2026-11-08 approved22 pad/bottle pairs solreffriction .002s, NoSlip0; unchanged geometry/mu/normal/limits")
     p.add_argument("--noslip-solver-diagnostic",action="store_true",help="separate SIMULATION_ONLY two-iteration numerical postsolver; no contact-material/geometry changes")
     p.add_argument("--elliptic-grip-solver-diagnostic",action="store_true",help="Menagerie-style numerical elliptic cone/impratio=10, unchanged actual friction/condim/geometry")
     p.add_argument("--micro-base-probe",choices=("forward","backward","left","right"))
@@ -208,6 +209,10 @@ def main():
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import build
         claw=build(claw,both_hands=args.both_claws_zero_internal_friction,right_damping=args.right_claw_damping,noslip_iterations=2 if args.noslip_solver_diagnostic else 0,elliptic_grip_solver=args.elliptic_grip_solver_diagnostic)
     elif args.right_claw_damping is not None or args.noslip_solver_diagnostic or args.elliptic_grip_solver_diagnostic:raise ValueError('parameter/solver diagnostics require an explicit existing zero-internal-friction profile')
+    if args.approved_pad_friction_reference:
+        if args.noslip_solver_diagnostic or not args.source_pad_coacd_comparison or not args.elliptic_grip_solver_diagnostic:raise ValueError('approved local tangent reference requires existing22 source pieces/elliptic10 and NoSlip0')
+        from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import add_approved_pad_friction_reference
+        claw=add_approved_pad_friction_reference(claw)
     if args.fixed_reviewed_checkpoint:
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import add_reviewed_checkpoint
         claw=add_reviewed_checkpoint(claw,args.fixed_reviewed_checkpoint,base_offset_xy=args.checkpoint_base_offset_xy_m)

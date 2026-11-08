@@ -71,11 +71,10 @@ NoSlip=0 with approximately3N normal per pad instead showed about0.436mm/s axial
 soft-contact creep and failed the10mm hold guard before motion. No target was
 reached. Do not rerun an identical failed profile.
 
-A specific pad/bottle-only friction-reference diagnostic is prepared but NOT
-implemented: 22 already enabled geom pairs, same geometry/mu/normal parameters,
+A specific pad/bottle-only friction-reference diagnostic is specifically approved (2026-11-08) and implemented for validation: 22 already enabled geom pairs, same geometry/mu/normal parameters,
 solreffriction inherited0.02s ->0.002s (=2*native timestep); globalNoSlip stays0.
-This needs case-specific confirmation under model_integrity.md C.1; no permission
-is inferred from a generic completion Goal. See the measured findings for its
+The exact direct approval is recorded in model_integrity.md C.2; no permission
+is generalized to other contact values or limits. See the measured findings for its
 exact source hashes, proposed pair table and approval status.
 
 Source chair connectivity contains14 separate solids; the seat component's top

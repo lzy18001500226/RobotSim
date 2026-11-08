@@ -1857,6 +1857,13 @@ def main() -> None:
             if delta.get('numerical_solver') and actual_solver.get('noslip_iterations')!=2:raise RuntimeError('NATIVE_NOSLIP_OPTION_NOT_APPLIED')
             if delta.get('elliptic_solver') and (actual_solver.get('cone')!=1 or actual_solver.get('impratio')!=10.):raise RuntimeError('NATIVE_ELLIPTIC_OPTION_NOT_APPLIED')
             result['native_solver_options']=actual_solver
+            local_friction=(claw_control_overlay or {}).get('approved_local_pad_friction_reference')
+            if local_friction:
+                actual_pairs=current.get('contact_pair_parameters',{})
+                if actual_solver.get('noslip_iterations')!=0 or actual_solver.get('cone')!=1 or actual_pairs.get('model_pair_count')!=22 or actual_pairs.get('pad_bottle_pair_count')!=22 or any(abs(float(actual_pairs.get(k,-1))-.002)>1e-12 for k in ('min_tangent_timeconst_s','max_tangent_timeconst_s')):
+                    raise RuntimeError('NATIVE_LOCAL_FRICTION_CASE_NOT_APPLIED')
+                result['approved_local_pad_friction_reference']={'actual_native_pairs':actual_pairs,'approval':'2026-11-08 direct maintainer approval','source_overlay_metadata':local_friction}
+
             result["gates"]["NATIVE_STATE_OBSERVER"] = "PASS"
             if args.native_render_adapter:
                 wait_for(output/'native_graphics.json','"renderer"',timeout_s=3.)

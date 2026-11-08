@@ -944,11 +944,11 @@ NoSlip2 的作用域是整个模型，包含脚底；旧静态夹持 PASS 不能
 返回凳子、放置、全链路LiDAR替换或真机验证。实验代码继续保留在
 scripts/research/，不提升到正式运行模型。PR保持Draft。
 
-#### 待确认的完整接触参数差异（未实施）
+#### 已获准的完整接触参数差异（物理验证中）
 
 源场景 SHA256: a310757ec1d8d82f604b59b08c3e0f98f6cac43e71ade99a3acd52298c0d07fc
 
-原输入是已启用的动态配对，摩擦维度继承normal solref=0.02s；下列仅是拟议片段，尚未写入任何模型。其每对 normal solref/solimp、mu、condim、margin/gap均逐项核对一致。与全局NoSlip不同，它只针对现有两侧包胶代理与瓶子。根据模型完整性合同，此处等待一次具体确认，不能因长Goal自动执行。
+原输入是已启用的动态配对，摩擦维度继承normal solref=0.02s；下列片段已按2026-11-08直接批准写入独立验证模型。其每对 normal solref/solimp、mu、condim、margin/gap均逐项核对一致。与全局NoSlip不同，它只针对现有两侧包胶代理与瓶子。直接批准已记录在 model_integrity.md C.2。离线验证392项非配对数值数组及全部既有命名ID保持相同，真实物理结果仍须另行验证。
 
 ```xml
 <contact>
