@@ -819,6 +819,35 @@ def carry_stop_evidence(result):
         rearm_authorized=False)
 
 
+def start_carry_graph_check(n):
+    """Keep the same readonly graph verification off the command scheduler."""
+    import threading,time
+    job=dict(started=time.monotonic(),completed=None,error=None)
+    def worker():
+        try:n.graph()
+        except Exception as exc:
+            job["error"]=str(exc)
+            n.deadline_zero()
+        finally:job["completed"]=time.monotonic()
+    job["thread"]=threading.Thread(target=worker,daemon=True)
+    job["thread"].start()
+    return job
+
+
+def poll_carry_graph_check(n,job,now):
+    if job is None:return None
+    end=job["completed"]
+    if job["error"] is not None:
+        n.deadline_zero();raise RuntimeError("CARRY_GRAPH_CHECK_FAILED:"+job["error"])
+    if (end if end is not None else now)-job["started"]>.20:
+        n.deadline_zero();raise RuntimeError("CARRY_GRAPH_CHECK_DEADLINE")
+    if end is not None:
+        n.events.append(dict(event="ASYNC_GRAPH_CHECK_COMPLETE",started=job["started"],completed=end,
+                             duration_s=end-job["started"]))
+        return None
+    return job
+
+
 def run_carry_navigation(n,contract):
     """One bounded measured-pose task, with zero/qualified-stop clock recovery."""
     import threading
@@ -826,7 +855,7 @@ def run_carry_navigation(n,contract):
     cfg=MICRO["carry"];result=dict(classification="SIMULATION_ONLY_NATIVE_LOCOMOTION_STEP_CARRY" if cfg.get("motion_mode")=="LOCOMOTION_STEP" else "SIMULATION_ONLY_FETCH_CARRY_ROUTE",pass_result=False,
         goal_xy_m=cfg["goal_xy_m"],zero_receipt_ack="UNAVAILABLE",clock_recoveries=[],route_samples=[])
     if cfg.get("transit_policy_050"):result["classification"]="SIMULATION_ONLY_NATIVE_STEP_CARRY_TRANSIT_050"
-    watchdog=None;began=None;baseline=None;transit_permit=None
+    watchdog=None;began=None;baseline=None;transit_permit=None;graph_job=None
     try:
         n.start_feedback();until=time.monotonic()+5.
         while time.monotonic()<until:
@@ -857,6 +886,7 @@ def run_carry_navigation(n,contract):
         while time.monotonic()<until:
             tick=time.monotonic()
             if not n.moving and (n.feedback_fault or {}).get("gate")!="CLOCK_STEP_DURING_MOTION":break
+            graph_job=poll_carry_graph_check(n,graph_job,tick)
             try:
                 n.pump();row=n.sample()
             except RuntimeError as exc:
@@ -909,7 +939,8 @@ def run_carry_navigation(n,contract):
                 raise RuntimeError("CARRY_CONTROLLER_"+output.state.value+":"+output.reason)
             result["route_samples"].append(dict(t=tick,state=output.state.value,pose=p,distance_m=output.distance_m,yaw_error_rad=output.yaw_error_rad,linear=n.command_log[-1]["forward"],angular=n.command_log[-1]["angular"],controller_linear=output.linear_x,controller_angular=output.angular_z))
             n.trace.append(row)
-            if tick-last_graph>=1.:n.graph();last_graph=tick
+            if tick-last_graph>=1. and graph_job is None:
+                graph_job=start_carry_graph_check(n);last_graph=tick
             time.sleep(max(0.,tick+.02-time.monotonic()))
         n.deadline_zero();n.stop_started=True
         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
@@ -939,6 +970,10 @@ def run_carry_navigation(n,contract):
         try:transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
         except Exception as exc:result["transit_policy_error"]=str(exc);result["pass_result"]=False
         result["transit_policy_record"]=transit_permit
+        if graph_job is not None:
+            graph_job["thread"].join(.20)
+            if graph_job["thread"].is_alive():
+                result["graph_cleanup_failure"]="GRAPH_THREAD_NOT_JOINED";result["pass_result"]=False
         try:n.stop_feedback()
         except Exception as exc:result["feedback_cleanup_failure"]=str(exc);result["pass_result"]=False
         result.update(events=n.events,command_log=n.command_log,bridge_commands=n.bridge_commands,trace=n.trace)

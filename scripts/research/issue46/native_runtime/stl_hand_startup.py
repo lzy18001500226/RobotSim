@@ -1306,6 +1306,12 @@ def _with_carry_lease(script, retract):
     replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')",count=2)
     replace("('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')")
     replace("  self.tracking_metrics=r.get('metrics',{})","  self.tracking_metrics=r.get('metrics',{});self.tracking_velocity=r.get('right_velocity_rad_s',{})")
+    replace("   bias=({name:float(self.native_row['joints'][name]['bias_force']) for name in RIGHT} if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK else self.native_bias())",
+"""   bias=({name:float(self.native_row['joints'][name]['bias_force']) for name in RIGHT} if USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK else self.native_bias())
+   if stage=='CARRY_HOLD' and USE_NATIVE_BIAS and USE_NATIVE_FEEDBACK:
+    left_bias={name:float(self.native_row['joints'][name]['bias_force']) for name in LEFT}
+    if any(not math.isfinite(x) for x in left_bias.values()):raise RuntimeError('NONFINITE_LEFT_CARRY_BIAS')
+    bias.update(left_bias)""")
     replace("x.velocity=0.;x.effort=float(bias.get(name,0.))","x.velocity=float(self.tracking_velocity.get(name,0.)) if stage=='CARRY_HOLD' and name in RIGHT else 0.;x.effort=float(bias.get(name,0.))")
     replace("   self.pub.publish(m)\n","   self.pub.publish(m);self.last_arm_message=m;self.last_published_arm_target={name:float(target[name]) for name in LEFT+RIGHT}\n")
     replace("    self.hand_pub.publish(h)\n    if stage==\'HAND_CLOSE_HOLD\':self.close_publish_count+=1\n",

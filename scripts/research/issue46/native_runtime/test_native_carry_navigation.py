@@ -506,4 +506,57 @@ class CarryTransit050Tests(unittest.TestCase):
             exec(compile(ast.Module(body=[guard],type_ignores=[]),"actual_native_guard","exec"),{"args":parsed})
 
 
+
+
+
+class CarrySchedulingRepairTests(unittest.TestCase):
+    def test_graph_work_does_not_block_caller_and_deadline_stops(self):
+        import threading
+        from types import SimpleNamespace
+        release=threading.Event();entered=threading.Event();zeros=[]
+        def graph():entered.set();release.wait(1.)
+        node=SimpleNamespace(graph=graph,deadline_zero=lambda:zeros.append(True),events=[])
+        job=m.start_carry_graph_check(node)
+        try:
+            self.assertTrue(entered.wait(.1))
+            self.assertIs(m.poll_carry_graph_check(node,job,job["started"]+.10),job)
+            with self.assertRaisesRegex(RuntimeError,"GRAPH_CHECK_DEADLINE"):
+                m.poll_carry_graph_check(node,job,job["started"]+.201)
+            self.assertEqual(len(zeros),1)
+        finally:release.set();job["thread"].join(.3)
+    def test_graph_identity_failure_is_still_fail_closed(self):
+        from types import SimpleNamespace
+        zeros=[]
+        def graph():raise RuntimeError("CARRY_PUBLISHER_NOT_UNIQUE")
+        node=SimpleNamespace(graph=graph,deadline_zero=lambda:zeros.append(True),events=[])
+        job=m.start_carry_graph_check(node);job["thread"].join(.1)
+        with self.assertRaisesRegex(RuntimeError,"PUBLISHER_NOT_UNIQUE"):
+            m.poll_carry_graph_check(node,job,job["started"]+.01)
+        self.assertTrue(zeros)
+    def test_left_bias_only_applies_in_existing_carry_stage_and_rejects_nan(self):
+        from scripts.research.issue46.native_runtime.test_pregrasp_feedback import generated
+        # Real generated owner code; extract the new stage branch only.
+        code=generated()
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        import inspect
+        source=inspect.getsource(h._with_carry_lease)
+        tree=ast.parse(source)
+        replacement=next(n for n in ast.walk(tree) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name)
+                         and n.func.id=="replace" and isinstance(n.args[0],ast.Constant)
+                         and "bias=({" in str(n.args[0].value))
+        branch_code=replacement.args[1].value
+        branch=next(n for n in ast.parse(inspect.cleandoc(branch_code)).body if isinstance(n,ast.If))
+        from types import SimpleNamespace
+        row=SimpleNamespace(native_row={"joints":{"left":{"bias_force":1.28}}})
+        ns=dict(stage="CARRY_HOLD",USE_NATIVE_BIAS=True,USE_NATIVE_FEEDBACK=True,LEFT=["left"],self=row,bias={},math=math)
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_left_bias","exec"),ns)
+        self.assertEqual(ns["bias"],{"left":1.28})
+        ns.update(stage="LIFT_HOLD",bias={})
+        exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_left_bias","exec"),ns)
+        self.assertEqual(ns["bias"],{})
+        ns["stage"]="CARRY_HOLD";row.native_row["joints"]["left"]["bias_force"]=float("nan")
+        with self.assertRaisesRegex(RuntimeError,"NONFINITE_LEFT"):
+            exec(compile(ast.Module(body=[branch],type_ignores=[]),"actual_left_bias","exec"),ns)
+
+
 if __name__=="__main__":unittest.main()
