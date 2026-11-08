@@ -44,3 +44,21 @@ class PlacementTests(unittest.TestCase):
         self.assertNotIn("SetMcInputSource",code)
         self.assertIn("GetMcAction",code)
         self.assertIn("McCommonState",code)
+
+    def test_neutral_stow_and_placement_share_existing_owner_and_release_contract(self):
+        from scripts.research.issue46.native_runtime.test_native_grasp_launch import PostLiftRetractTests
+        from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference
+        settings=native_stand_arm_reference()
+        self.assertEqual(len(settings["arm_target_rad"]),14)
+        self.assertEqual(settings["duration_s"],6.)
+        code=PostLiftRetractTests().generated_retract(dict(carry_lease_s=160.,delivery_table_placement=True,
+             carry_native_neutral_stow=settings,robot_bodies=["pelvis"]))
+        compile(code,"stow_and_placement_owner","exec")
+        self.assertEqual(code.count("carry_target=perform_native_neutral_stow(n,NATIVE_STOW_SETTINGS)"),1)
+        force_line=next(l for l in code.splitlines() if "if (sum(forces.values()) if stage" in l)
+        self.assertIn("placement_release",force_line)
+        self.assertIn("STOW_PHYSICAL_SAFETY",code)
+        self.assertIn("STOW_TRACKER_REVISION_UNCONFIRMED",code)
+        self.assertIn("TABLE_SUPPORT_LOST_BEFORE_CLOSEOUT",code)
+        self.assertNotIn(".qpos[",code)
+        self.assertNotIn("mj_step(",code)

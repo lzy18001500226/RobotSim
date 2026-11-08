@@ -75,7 +75,7 @@ def perform_native_placement(n, request):
     n.lift_phase.update(placement_active=True,placement_start_world_m=initial,placement_request=request)
     rows=[];n.placement_rows=rows;began=time.monotonic()
     def tick(point,axis,hand_command):
-        if time.monotonic()-began>25.:raise RuntimeError("PLACEMENT_WATCHDOG")
+        if time.monotonic()-began>35.:raise RuntimeError("PLACEMENT_WATCHDOG")
         n.lift_phase.update(placement_target_world_m=list(point),placement_axis_world=list(axis))
         n.write_phase(n.lift_phase)
         n.send(target,.02,"CARRY_HOLD",hand_command)
@@ -83,12 +83,16 @@ def perform_native_placement(n, request):
         if math.dist(start_pose,n.native_row["bodies"]["pelvis"]["position_m"])>.08:raise RuntimeError("PLACEMENT_BASE_MOVED")
         if not rows or n.native_row["host_monotonic_ns"]>rows[-1]["host_monotonic_ns"]:rows.append(n.native_row)
         return placement_contact_state(n.native_row,request)
-    for index in range(200):
-        u=(index+1)/200.;v=u*u*(3.-2.*u)
-        point=[a+v*(b-a) for a,b in zip(initial,clearance)]
+    high=initial.copy();high[2]=max(initial[2],clearance[2])
+    for index in range(150):
+        u=(index+1)/150.;v=u*u*(3.-2.*u)
+        point=[a+v*(b-a) for a,b in zip(initial,high)]
         axis=[a+v*(b-a) for a,b in zip(initial_axis,[0.,0.,1.])]
         size=math.sqrt(sum(x*x for x in axis));axis=[x/size for x in axis]
         tick(point,axis,HAND_RIGHT)
+    for index in range(200):
+        u=(index+1)/200.;v=u*u*(3.-2.*u)
+        tick([a+v*(b-a) for a,b in zip(high,clearance)],[0.,0.,1.],HAND_RIGHT)
     for _ in range(25):tick(clearance,[0.,0.,1.],HAND_RIGHT)
     if n.tracking_metrics.get("actual_position_error_m",1.)>.005:raise RuntimeError("PLACEMENT_APPROACH_NOT_REACHED")
     # Approach the support surface slowly. A positive actual vertical table
@@ -113,6 +117,22 @@ def perform_native_placement(n, request):
         result=evaluate_placed_hold(rows[-175:],request)
         if result["pass_result"]:break
     if not result or not result["pass_result"]:raise RuntimeError("RELEASED_BOTTLE_NOT_STABLY_TABLE_SUPPORTED:"+json.dumps(result))
+    # Clear the real open claw, then require the same independent released
+    # support again. No geometric cage is counted as an independent placement.
+    n.refresh_native()
+    if -float(n.native_row["joints"]["R_claw_joint"]["q"])<.95:raise RuntimeError("PLACEMENT_HAND_NOT_ACTUALLY_OPEN")
+    hand=n.native_row["bodies"]["R_omnipicker_base_link"];H=hand["rotation"];local=CIRCLE_CONTRACT["circle_center_local_m"]
+    outward=[sum(H[3*i+j]*local[j] for j in range(3)) for i in range(3)];length=math.sqrt(sum(x*x for x in outward))
+    retreat=[point[i]-.08*outward[i]/length for i in range(3)]
+    start_point=point.copy()
+    for index in range(100):
+        u=(index+1)/100.;v=u*u*(3.-2.*u)
+        tick([a+v*(b-a) for a,b in zip(start_point,retreat)],[0.,0.,1.],HAND_OPEN)
+    for _ in range(175):
+        tick(retreat,[0.,0.,1.],HAND_OPEN);result=evaluate_placed_hold(rows[-175:],request)
+        if result["pass_result"]:break
+    if not result["pass_result"]:raise RuntimeError("PLACEMENT_NOT_STABLE_AFTER_WITHDRAWAL:"+json.dumps(result))
+    result["open_claw_withdrawal_m"]=.08
     result.update(owner_pid=os.getpid(),generation=n.native_generation,command_path="EXISTING_HAL_ARM_AND_HAND_OWNER",table_body="raicom_delivery_table",elapsed_wall_s=time.monotonic()-began,request=request)
     write_durable_milestone("/workspace/evidence/native_table_place_result.json",result)
     n.placement_completed=True
@@ -142,7 +162,7 @@ def extend_existing_owner(script):
             line=line.replace("'CARRY_HOLD',HAND_RIGHT)","'CARRY_HOLD',HAND_OPEN if getattr(n,'placement_released',False) else HAND_RIGHT)")
         if "if 'test_cylinder' in pair and not pair." in line:
             line=line.replace("and not pair.","and not (getattr(self,'placement_request',None) and 'raicom_delivery_table' in pair) and not pair.")
-        if "if (sum(forces.values()) if stage=='CARRY_HOLD'" in line:
+        if "if (sum(forces.values()) if stage" in line:
             line=line[:-1]+" and not (getattr(self,'placement_release',False) and placement_contact_state(self.native_row,self.placement_request)['table_vertical_force_n']>.1):"
         if "if LIFT_CONTRACT is not None and stage in " in line:
             line=line[:-1]+" and not getattr(self,'placement_release',False):"
@@ -200,7 +220,14 @@ def prepare_delivery_scene(parent, config_path):
     body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"test_cylinder")
     if not np.allclose(model.geom_size[geom,:2],[cfg["bottle_radius_m"],cfg["bottle_height_m"]/2.]) or abs(model.body_mass[body]-cfg["bottle_mass_kg"])>1e-9:raise ValueError("actual bottle differs from profile")
     source=root/"reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261108T190527Z"
-    row=json.loads((source/"native_latest.json").read_text())
+    route_reference=json.loads((source/"native_latest.json").read_text())
+    row=route_reference
+    if cfg.get("carry_native_neutral_stow"):
+        ready=json.loads((source/"carry_ready.json").read_text())
+        for line in (source/"native_physics.jsonl").open():
+            candidate=json.loads(line)
+            if candidate["host_monotonic_ns"]>=ready["host_monotonic_ns"]:
+                row=candidate;break
     if row["engine_version"]!=337:raise ValueError("reference ABI")
     constants={}
     for n in ast.parse((source/"native_hal_bilateral_arm_pregrasp.py").read_text()).body:
@@ -208,6 +235,24 @@ def prepare_delivery_scene(parent, config_path):
             for target in n.targets:
                 if isinstance(target,ast.Name) and target.id in ("CIRCLE_CONTRACT","RIGHT","LIFT_CONTRACT"):constants[target.id]=ast.literal_eval(n.value)
     apply_recorded_native_frame(model,data,row)
+    stow_plan=None
+    if cfg.get("carry_native_neutral_stow"):
+        from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference,screen_native_stow
+        actual_settings=native_stand_arm_reference()
+        if actual_settings!=cfg["carry_native_neutral_stow"]:raise ValueError("native stow source changed")
+        stow_plan=screen_native_stow(model,data,actual_settings)
+        if not stow_plan["pass_static"]:raise ValueError("native stow collision:"+str([r for r in stow_plan["rows"] if r["collisions"]][:1]))
+        stow_plan["actual_reference_source_ns"]=row["host_monotonic_ns"]
+        oldhand=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"R_omnipicker_base_link");oldobj=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"test_cylinder")
+        H=data.xmat[oldhand].reshape(3,3).copy();held_local=H.T@(data.xpos[oldobj]-data.xpos[oldhand]);held_rotation=H.T@data.xmat[oldobj].reshape(3,3)
+        row=route_reference;apply_recorded_native_frame(model,data,row)
+        for name,q in actual_settings["arm_target_rad"].items():
+            data.qpos[model.jnt_qposadr[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,name)]]=q
+        mujoco.mj_forward(model,data);H=data.xmat[oldhand].reshape(3,3)
+        oa=int(model.jnt_qposadr[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,"test_cylinder_free")])
+        data.qpos[oa:oa+3]=data.xpos[oldhand]+H@held_local
+        quat=Rotation.from_matrix(H@held_rotation).as_quat();data.qpos[oa+3:oa+7]=quat[[3,0,1,2]]
+        mujoco.mj_forward(model,data)
     old=np.asarray(row["bodies"]["pelvis"]["position_m"]);oldR=np.asarray(row["bodies"]["pelvis"]["rotation"]).reshape(3,3)
     oldyaw=math.atan2(oldR[1,0],oldR[0,0]);goal=np.asarray(cfg["base_goal_world_xy"])
     hand=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"R_omnipicker_base_link");bottle=body
@@ -216,12 +261,18 @@ def prepare_delivery_scene(parent, config_path):
     object_free=int(model.jnt_qposadr[mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,"test_cylinder_free")])
     robot_root=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"pelvis")
     robot={i for i in range(model.nbody) if model.body_rootid[i]==robot_root}
-    def collision_screen():
+    def collision_screen(check_object=True):
         bad=[]
         for c in data.contact:
             if c.dist>=-.001:continue
             a,b=[int(model.geom_bodyid[g]) for g in (c.geom1,c.geom2)]
             ra,rb=a in robot,b in robot
+            if check_object and body in (a,b):
+                other=b if a==body else a
+                name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,other)
+                if name not in ("R_hand_narrow3_Link","R_hand_wide3_Link"):
+                    bad.append(["test_cylinder",name,float(c.dist)])
+                continue
             if ra==rb:continue
             other=b if ra else a
             name=mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,other)
@@ -249,7 +300,9 @@ def prepare_delivery_scene(parent, config_path):
     section=np.asarray(cfg["placement_center_world_m"])+[0.,0.,.10]
     start=data.xpos[hand]+data.xmat[hand].reshape(3,3)@centre
     start_axis=data.xmat[hand].reshape(3,3)@axis
-    targets=[(start+u*(section+[0,0,.06]-start),(1-u)*start_axis+u*np.array([0.,0.,1.])) for u in np.linspace(0,1,13)]
+    high=start.copy();high[2]=max(start[2],section[2]+.06)
+    targets=[(start+u*(high-start),(1-u)*start_axis+u*np.array([0.,0.,1.])) for u in np.linspace(0,1,9)]
+    targets += [(high+u*(section+[0,0,.06]-high),np.array([0.,0.,1.])) for u in np.linspace(0,1,13)]
     targets += [(section+[0.,0.,z],np.array([0.,0.,1.])) for z in np.linspace(.06,0,7)]
     checks=[]
     for point,worldaxis in targets:
@@ -261,12 +314,12 @@ def prepare_delivery_scene(parent, config_path):
             residual(q);return circle_task_jacobian(model,data,hand,centre,axis,dof)
         fit=least_squares(residual,np.clip(qseed,bounds[:,0]+.01,bounds[:,1]-.01),jac=jac,bounds=(bounds[:,0]+.01,bounds[:,1]-.01),max_nfev=150,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         qseed=fit.x;error=residual(qseed)
-        mujoco.mj_forward(model,data);bad=collision_screen()
+        mujoco.mj_forward(model,data);bad=collision_screen(check_object=False)
         checks.append(dict(point=point.tolist(),position_error_m=float(np.linalg.norm(error[:3])),axis_residual=float(np.linalg.norm(error[3:])),robot_environment_contacts=bad,right_arm_rad=qseed.tolist()))
         if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001 or bad:raise ValueError("placement IK/collision screen:"+str(checks[-1]))
     out=pg.create_unique_output_directory(root/"reviews/issue-46",prefix="two-table-delivery-static-plan").native_path
     digest=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
-    plan=dict(classification="STATIC_REFERENCE_POSTURE_ROUTE_AND_ARM_SCREEN_NOT_DYNAMIC_PASS",mj_step_calls=0,config=cfg,config_path=str(Path(config_path).resolve()),config_sha256=digest(config_path),host_scene=record["generated"]["host_scene"],reference_native_frame=str(source/"native_latest.json"),reference_native_frame_sha256=digest(source/"native_latest.json"),route_pose_samples=len(poses),arm_samples=checks,limitations="fixed recorded carry posture; actual gait, support/release and arrival remain live gates")
+    plan=dict(stow_plan=stow_plan,reference_native_source_ns=row["host_monotonic_ns"],classification="STATIC_REFERENCE_POSTURE_ROUTE_AND_ARM_SCREEN_NOT_DYNAMIC_PASS",mj_step_calls=0,config=cfg,config_path=str(Path(config_path).resolve()),config_sha256=digest(config_path),host_scene=record["generated"]["host_scene"],reference_native_frame=str(source/"native_latest.json"),reference_native_frame_sha256=digest(source/"native_latest.json"),route_pose_samples=len(poses),arm_samples=checks,limitations="fixed recorded carry posture; actual gait, support/release and arrival remain live gates")
     pg.write_new_text(out/"plan.json",json.dumps(plan,indent=2)+"\n")
     record["delivery_static_plan"]={"path":str(out/"plan.json"),"sha256":digest(out/"plan.json")}
     pg.write_new_text(out/"result.json",json.dumps(record,indent=2)+"\n");pg.write_artifact_manifest(out)

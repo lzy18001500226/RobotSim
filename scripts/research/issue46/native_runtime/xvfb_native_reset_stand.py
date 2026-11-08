@@ -1268,7 +1268,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
             fresh=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
             request={**cfg,"schema":"robotsim.x2.table-place-request.v1","created_host_ns":time.monotonic_ns(),"owner_pid":ready["pid"],"generation":fresh["generation"],"navigation_and_composite_stop_pass":True,"confirmed_stand":True,"section_target_world_m":[cfg["placement_center_world_m"][0],cfg["placement_center_world_m"][1],cfg["placement_center_world_m"][2]+replan_record["grasp_height_above_center_m"]],"mode_observation":observed}
             pg.write_new_text(output/"carry_place_request.json",json.dumps(request))
-            place_deadline=time.monotonic()+28.
+            place_deadline=time.monotonic()+38.
             while not (output/"native_table_place_result.json").exists() and not exit_path.exists() and time.monotonic()<place_deadline:
                 native_grasp_audit.require_fresh_sample(output/"native_latest.json");time.sleep(.05)
             place_path=output/"native_table_place_result.json"
@@ -2415,8 +2415,11 @@ def main() -> None:
                                 replan_record['lift_preflight']['retract_preflight']['source_motion_limits']=limits
                                 result['retract_motion_limit_provenance']=provenance
                                 if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
-                                    replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+50.
-                                    if args.carry_delivery_config is not None:replan_record['lift_preflight']['retract_preflight']['delivery_table_placement']=True
+                                    replan_record['lift_preflight']['retract_preflight']['carry_lease_s']=args.carry_timeout_s+(70. if args.carry_delivery_config is not None else 50.)
+                                    if args.carry_delivery_config is not None:
+                                        replan_record['lift_preflight']['retract_preflight']['delivery_table_placement']=True
+                                        settings=json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow")
+                                        if settings:replan_record['lift_preflight']['retract_preflight']['carry_native_neutral_stow']=settings
                                     replan_record['lift_preflight']['retract_preflight']['carry_grip_force_margin']=args.carry_grip_force_margin
                                     replan_record['lift_preflight']['retract_preflight']['carry_transit_policy_050']=args.carry_transit_speed_policy_050
                                     replan_record['lift_preflight']['retract_preflight']['allow_carried_bottle_tilt']=args.allow_carried_bottle_tilt

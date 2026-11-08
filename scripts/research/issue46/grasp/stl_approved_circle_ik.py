@@ -441,6 +441,10 @@ def track_native(reference_path, latest_path, output_path):
                 else:estimate=json.loads(Path(reference['perception']['latest_path']).read_text())
                 row['bodies']['test_cylinder']=qualify_estimate(estimate,generation=row['generation'])
             if phase is not None and not tracking_phase_is_fresh(phase,time.monotonic_ns()):raise RuntimeError('CLOSURE_PHASE_EXPIRED')
+            revision=(phase or {}).get('carry_pose_revision')
+            if revision is not None and revision!=locals().get('previous_pose_revision'):
+                seed=np.array([row['joints'][name]['q'] for name in ik.ARM])
+                previous_carry=None;previous_pose_revision=revision
             generation=row['generation'];seed,metrics=solve_tracking_endpoint(model,row,reference,seed,phase)
             if phase is not None and phase.get('phase')=='CARRY_HOLD':
                 if previous_carry is not None and row['host_monotonic_ns']>previous_carry[0]:
@@ -454,7 +458,7 @@ def track_native(reference_path, latest_path, output_path):
                 deadline=phase['created_host_ns']*1e-9+float(phase['carry_lease_s'])
             now=time.monotonic_ns()
             if (now-row['host_monotonic_ns'])*1e-9>.20:raise RuntimeError('NATIVE_TRACKING_COMPUTE_DEADLINE')
-            record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'phase':phase.get('phase') if phase else None,'right_velocity_rad_s':dict(zip(ik.ARM,carry_velocity.tolist())),'metrics':metrics}
+            record={'pass':True,'created_host_ns':now,'source_host_ns':row['host_monotonic_ns'],'generation':generation,'right_target_rad':dict(zip(ik.ARM,seed.tolist())),'phase':phase.get('phase') if phase else None,'phase_revision':(phase or {}).get('carry_pose_revision'),'right_velocity_rad_s':dict(zip(ik.ARM,carry_velocity.tolist())),'metrics':metrics}
             temp=output_path.with_suffix('.tmp');temp.write_text(json.dumps(record));os.replace(temp,output_path);trace.append(record)
             period=.02 if phase is not None and phase.get('phase')=='CARRY_HOLD' else .1
             time.sleep(max(0,period-(time.monotonic()-tick)))

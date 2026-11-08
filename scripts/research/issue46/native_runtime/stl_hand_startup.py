@@ -1411,6 +1411,9 @@ def _with_carry_lease(script, retract):
     final_line=next(line for line in script.splitlines() if line.startswith(" drift=math.hypot("))
     replace(final_line," standing_odom=getattr(n,'pre_carry_odom',n.odom);standing_tilt=getattr(n,'pre_carry_tilt',n.tilt)\n"+final_line.replace("n.odom","standing_odom").replace("n.tilt","standing_tilt"))
     replace("'motion_stability':{'sample_count':len(n.odom),'planar_drift_m':drift,'max_tilt_rad':max(n.tilt) if n.tilt else None,'pass':stable}","'motion_stability':{'scope':'STANDING_BEFORE_CARRY','sample_count':len(standing_odom),'planar_drift_m':drift,'max_tilt_rad':max(standing_tilt) if standing_tilt else None,'pass':stable}")
+    if retract.get("carry_native_neutral_stow"):
+        from scripts.research.issue46.native_runtime.native_carry_posture import extend_native_stow
+        script=extend_native_stow(script,retract["carry_native_neutral_stow"])
     if retract.get("delivery_table_placement"):
         from scripts.research.issue46.native_runtime.native_carry_placement import extend_existing_owner
         script=extend_existing_owner(script)
