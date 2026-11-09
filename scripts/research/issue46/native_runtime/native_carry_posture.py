@@ -26,7 +26,7 @@ def native_stand_arm_reference():
     return dict(classification="SAVED_PREFIX_VALIDATED_OPERATIONAL_ARM_POSE_NOT_NATIVE_POLICY_REFERENCE",
                 source=str(source),source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                 operational_right_arm_ik=dict(path=str(task_path),sha256="f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",source_native_frame=task["source_native_frame"],scene_sha256=task["scene_sha256"]),
-                arm_target_rad=targets,duration_s=6.,physical_validation="NOT_RUN")
+                arm_target_rad=targets,duration_s=6.,physical_validation="NOT_RUN",follow_native_unloaded_arm_after_turn=True)
 
 def perform_native_neutral_stow(n, settings):
     import os

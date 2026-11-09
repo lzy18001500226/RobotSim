@@ -1414,6 +1414,9 @@ def _with_carry_lease(script, retract):
     if retract.get("carry_native_neutral_stow"):
         from scripts.research.issue46.native_runtime.native_carry_posture import extend_native_stow
         script=extend_native_stow(script,retract["carry_native_neutral_stow"])
+    if (retract.get("carry_native_neutral_stow") or {}).get("follow_native_unloaded_arm_after_turn"):
+        from scripts.research.issue46.native_runtime.native_carry_left_policy import extend_unloaded_arm_follow
+        script=extend_unloaded_arm_follow(script)
     if retract.get("delivery_table_placement"):
         from scripts.research.issue46.native_runtime.native_carry_placement import extend_existing_owner
         script=extend_existing_owner(script)

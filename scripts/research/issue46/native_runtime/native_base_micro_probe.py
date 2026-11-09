@@ -1378,6 +1378,8 @@ def run_carry_navigation(n,contract):
                                 goal=list(cfg["delivery"]["base_goal_world_xy"])
                                 target=Goal2D(*goal,float(cfg["delivery"]["base_goal_world_yaw_rad"]),"native_scene_world")
                                 controller=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=cfg["angular_command_cap"],k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
+                                if (cfg["delivery"].get("carry_native_neutral_stow") or {}).get("follow_native_unloaded_arm_after_turn"):
+                                    write_durable_milestone("/workspace/evidence/carry_unloaded_arm_follow.json",dict(owner_pid=cfg["pid"],generation=n.latest_row["generation"],created_ns=time.monotonic_ns(),deadline_ns=int((until+15.)*1e9),turn_and_composite_stop_pass=True))
                                 mission["phase"]="DELIVERY";mission["delivery_origin_pose"]=stopped["pose"]
                                 mission["delivery_target_world_xy"]=goal;cfg["transit_command_speed"]=float(cfg["delivery"].get("delivery_forward_command_m_s",.20))
                                 transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)

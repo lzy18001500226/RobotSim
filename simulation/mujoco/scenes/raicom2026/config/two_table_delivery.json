@@ -67,7 +67,8 @@
       "right_wrist_roll_joint": 1.4604811268837392
     },
     "duration_s": 6.0,
-    "physical_validation": "NOT_RUN"
+    "physical_validation": "NOT_RUN",
+    "follow_native_unloaded_arm_after_turn": true
   },
   "turn_terminal_angular_taper_angle_rad": 0.6,
   "turn_terminal_translation_free_angle_rad": 0.0,
@@ -85,5 +86,6 @@
   "delivery_forward_command_m_s": 0.3,
   "forward_response_profile": "SIMULATION_ONLY_LOADED_CARRY_FORWARD030_NOT_VENDOR_QUALIFICATION",
   "carry_reference_scope": "RESTORED_MEASURED004726_PREFIX_POSE_TORSO_RIGID_NOT_NATIVE_POLICY_REFERENCE",
-  "activation_protocol": "EXISTING_GAIT_PREPARE_THEN_RETREAT"
+  "activation_protocol": "EXISTING_GAIT_PREPARE_THEN_RETREAT",
+  "unloaded_arm_follow_scope": "SIMULATION_ONLY_AFTER_VERIFIED_TURN_STOP_NATIVE_SOURCE_PRIVATE_SINGLE_OWNER_RIGHT_IK_UNCHANGED"
 }
