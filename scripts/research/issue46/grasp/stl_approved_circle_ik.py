@@ -249,7 +249,7 @@ def joint_planning_bounds(model, names, source_ranges=None):
 
 
 def grip_force_budget(weight_n, friction, control_margin=1.5):
-    if not np.isfinite(weight_n) or weight_n<=0 or not np.isfinite(friction) or friction<=0 or control_margin not in (1.5,3.,6.,7.5):
+    if not np.isfinite(weight_n) or weight_n<=0 or not np.isfinite(friction) or friction<=0 or control_margin not in (1.5,3.,6.,7.5,15.):
         raise ValueError('invalid force budget')
     return 1.5*weight_n/(2*friction),control_margin*weight_n/(2*friction)
 
@@ -257,7 +257,7 @@ def grip_force_budget(weight_n, friction, control_margin=1.5):
 def screen_lift(model, state, seed, opening, center, section, local_bottle_axis=None, *, normal_margin=1.5):
     """Thirteen zero-step, source-limited lift samples; no runtime pose writes."""
     import copy
-    if normal_margin not in (1.5,3.,6.,7.5):raise ValueError("unsupported grip force budget margin")
+    if normal_margin not in (1.5,3.,6.,7.5,15.):raise ValueError("unsupported grip force budget margin")
     bounds=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
     hand=ik.native.bid(model,'R_omnipicker_base_link');bottle=ik.native.bid(model,'test_cylinder')
     free=ik.native.jid(model,'test_cylinder_free')
@@ -525,7 +525,7 @@ def main():
     parser.add_argument("--runtime-handoff",action="store_true")
     parser.add_argument("--physical-lift-test",action="store_true")
     parser.add_argument("--carry-left-roll-source-range",type=float,nargs=2)
-    parser.add_argument("--lift-grip-force-margin",type=float,choices=(1.5,3.,6.,7.5),default=1.5)
+    parser.add_argument("--lift-grip-force-margin",type=float,choices=(1.5,3.,6.,7.5,15.),default=1.5)
     parser.add_argument("--post-lift-retract-world-m",type=float,nargs=3)
     parser.add_argument("--approach-opening-percent",type=int,default=100)
     parser.add_argument("--free-bottle-axis-roll",action="store_true",help="constrain reviewed bottle axis and circle centre, letting IK choose axial roll")

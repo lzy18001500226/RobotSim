@@ -628,6 +628,9 @@ class MeasuredForceTargetTests(unittest.TestCase):
         minimum,target=grip_force_budget(.2*9.81,1.,6.)
         self.assertAlmostEqual(minimum,1.4715)
         self.assertAlmostEqual(target,5.886)
+        stronger_minimum,stronger_target=grip_force_budget(.2*9.81,1.,15.)
+        self.assertEqual(stronger_minimum,minimum)
+        self.assertAlmostEqual(stronger_target,14.715)
         self.assertEqual(grip_force_budget(.2*9.81,1.),(minimum,minimum))
         with self.assertRaises(ValueError):grip_force_budget(.2*9.81,1.,12.)
 

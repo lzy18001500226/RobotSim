@@ -101,7 +101,7 @@ def main():
     p.add_argument("--carry-away-1m",action="store_true",help="leave table, turn to opposite heading, then carry forward >=1m with measured stops")
     p.add_argument("--carry-goal-world-xy",type=float,nargs=2,help="explicit known-map delivery goal after physical grasp/retract")
     p.add_argument("--carry-timeout-s",type=float,default=90.)
-    p.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0,6.0,7.5),default=1.5)
+    p.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0,6.0,7.5,15.0),default=1.5)
     p.add_argument("--carry-reverse-moving-arc",action="store_true")
     p.add_argument("--carry-transit-speed-policy-050",action="store_true")
     p.add_argument("--carry-native-step-mode",action="store_true",help="explicit source-pinned native LOCOMOTION_STEP alternative; no policy/config/gain edits")

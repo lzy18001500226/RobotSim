@@ -1362,7 +1362,7 @@ def main() -> None:
     parser.add_argument("--carry-away-1m",action="store_true",help="leave table, turn to opposite heading, then carry forward >=1m with measured stops")
     parser.add_argument("--carry-goal-world-xy",type=float,nargs=2)
     parser.add_argument("--carry-timeout-s",type=float,default=90.)
-    parser.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0,6.0,7.5),default=1.5)
+    parser.add_argument("--carry-grip-force-margin",type=float,choices=(1.5,3.0,6.0,7.5,15.0),default=1.5)
     parser.add_argument("--carry-sdk-minimum-turn",action="store_true")
     parser.add_argument("--carry-native-action-smoothing",action="store_true")
     parser.add_argument("--carry-native-step-mode",action="store_true")
