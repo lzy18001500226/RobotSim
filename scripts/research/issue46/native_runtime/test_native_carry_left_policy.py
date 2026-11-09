@@ -68,3 +68,19 @@ class NativeLeftTests(unittest.TestCase):
             n.get_publishers_info_by_topic=lambda topic:[endpoint("arbitrary_node")]
             with self.assertRaisesRegex(RuntimeError,"SOURCE_IDENTITY"):
                 policy.select_native_carry_left(n,"CARRY_HOLD")
+
+    def test_private_arm_does_not_readvertise_the_disabled_hand_topic(self):
+        from pathlib import Path
+        import yaml,copy
+        from scripts.research.issue46.native_runtime.stl_hand_startup import build_native_arm_relay_config,MC_SIM_CONFIG_RELATIVE
+        root=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026")
+        original=yaml.safe_load((root/MC_SIM_CONFIG_RELATIVE).read_text())
+        before=copy.deepcopy(original)
+        cfg=build_native_arm_relay_config(original,isolate_disabled_hand=True)
+        entries={p["name"]:p for p in cfg["MotionControlModule"]["PublisherManager"]["publisher_cfg_list"]}
+        self.assertTrue(entries["arm_joint_command"]["enable"])
+        self.assertEqual(entries["arm_joint_command"]["topic"],"/robotsim/issue46/mc/arm/command")
+        self.assertFalse(entries["hand_joint_command"]["enable"])
+        self.assertEqual(entries["hand_joint_command"]["topic"],"/robotsim/issue46/inactive_mc/hand/command")
+        self.assertFalse(any(x.get("topic_name")=="/aima/hal/joint/hand/command" for x in cfg["aimrt"]["channel"]["pub_topics_options"]))
+        self.assertEqual(original,before)

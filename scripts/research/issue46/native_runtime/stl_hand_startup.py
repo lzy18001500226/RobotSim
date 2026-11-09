@@ -262,7 +262,7 @@ def build_coordinated_waist_relay_config(source: dict[str, object]) -> dict[str,
     return result
 
 
-def build_native_arm_relay_config(source: dict[str, object], *, relay_waist=False) -> dict[str, object]:
+def build_native_arm_relay_config(source: dict[str, object], *, relay_waist=False, isolate_disabled_hand=False) -> dict[str, object]:
     """Restore the vendor 29-DOF policy output; change transport ownership only."""
     result=build_coordinated_waist_relay_config(source) if relay_waist else build_arm_hand_split_mc_config(source)
     original="/aima/hal/joint/arm/command";private="/robotsim/issue46/mc/arm/command"
@@ -272,6 +272,14 @@ def build_native_arm_relay_config(source: dict[str, object], *, relay_waist=Fals
     if len(pubs)!=1 or pubs[0].get("enable") is not False or pubs[0].get("topic")!=original or len(channels)!=1:
         raise ValueError("expected exact source MC arm publisher and channel")
     pubs[0]["enable"]=True;pubs[0]["topic"]=private;channels[0]["topic_name"]=private
+    if isolate_disabled_hand:
+        hand=[x for x in entries if x.get("name")=="hand_joint_command"]
+        original_hand="/aima/hal/joint/hand/command"
+        hand_channels=[x for x in result["aimrt"]["channel"]["pub_topics_options"] if x.get("topic_name")==original_hand]
+        if len(hand)!=1 or hand[0].get("enable") is not False or hand[0].get("topic")!=original_hand or len(hand_channels)!=1:
+            raise ValueError("native arm relay requires exact disabled hand producer")
+        hand[0]["topic"]="/robotsim/issue46/inactive_mc/hand/command"
+        hand_channels[0]["topic_name"]=hand[0]["topic"]
     return result
 
 
