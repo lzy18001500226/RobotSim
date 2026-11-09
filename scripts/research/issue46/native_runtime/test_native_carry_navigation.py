@@ -1115,3 +1115,21 @@ class DeliveryTurnStopGoTests(unittest.TestCase):
                 self.assertNotIn("enable",events)
             self.assertEqual(n.observe.call_args_list[0].args,(1.05,))
             self.assertTrue(n.observe.call_args_list[1].kwargs["require_stop"])
+
+class TerminalPivotControlTests(unittest.TestCase):
+    def test_actual_terminal_turn_removes_translation_without_changing_bounds(self):
+        import json
+        from types import SimpleNamespace as NS
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,gait_prepare=True,release_source_on_stop=True,delivery=cfg,vendor_transition_table=True)
+        node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and ast.unparse(n.test)=='cfg.get(\'compact_centre_feedback\')' and any('terminal_turn_translation_free_ticks' in ast.unparse(x) for x in n.body))
+        for error,expect_zero in ((.5,True),(1.5,False)):
+            out=NS(linear_x=9.,lateral_y=9.)
+            ns=dict(cfg={"compact_centre_feedback":True,"delivery":cfg},turn_error=error,output=out,p=dict(x=-.10,y=0.,yaw=0.),
+                    mission={"turn_origin_pose":dict(x=0.,y=0.)},inplace_centre_command=m.inplace_centre_command)
+            exec(compile(ast.Module(body=[node],type_ignores=[]),"actual_terminal_turn_control","exec"),ns)
+            self.assertEqual(out.linear_x==0.,expect_zero)
+            self.assertEqual(out.lateral_y,0.)
+            self.assertLessEqual(abs(out.linear_x),.20)
+        self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
+        self.assertEqual(cfg["turn_braking_footprint_m"],.35)

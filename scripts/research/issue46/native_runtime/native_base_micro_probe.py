@@ -1245,10 +1245,15 @@ def run_carry_navigation(n,contract):
                     if abs(turn_error)>max(.08,reserve) or recovering:
                         if abs(turn_error)>math.pi+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=turn_error,
-                                               linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(min(.30,cfg["angular_command_cap"]) if cfg.get("compact_turn") and abs(turn_error)<.60 else cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
+                                               linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(min(.30,cfg["angular_command_cap"]) if cfg.get("compact_turn") and abs(turn_error)<float((cfg.get("delivery") or {}).get("turn_terminal_angular_taper_angle_rad",.60)) else cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
                         if cfg.get("compact_centre_feedback"):
-                            output.linear_x,output.lateral_y=inplace_centre_command(p,mission["turn_origin_pose"],.20,forward_only=True)
-                            mission["combined_xy_feedback_ticks"]=mission.get("combined_xy_feedback_ticks",0)+1
+                            terminal_angle=float((cfg.get("delivery") or {}).get("turn_terminal_translation_free_angle_rad",0.))
+                            if abs(turn_error)<terminal_angle:
+                                output.linear_x=0.;output.lateral_y=0.
+                                mission["terminal_turn_translation_free_ticks"]=mission.get("terminal_turn_translation_free_ticks",0)+1
+                            else:
+                                output.linear_x,output.lateral_y=inplace_centre_command(p,mission["turn_origin_pose"],.20,forward_only=True)
+                                mission["combined_xy_feedback_ticks"]=mission.get("combined_xy_feedback_ticks",0)+1
                         if cfg.get("inplace_centre_hold"):
                             output.linear_x,output.lateral_y=(0.,0.) if cfg.get("turn_recovery_speed",.12)>.12 else inplace_centre_command(p,mission["turn_origin_pose"])
                             if recovering:

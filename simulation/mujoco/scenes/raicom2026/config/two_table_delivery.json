@@ -68,5 +68,7 @@
     },
     "duration_s": 6.0,
     "physical_validation": "NOT_RUN"
-  }
+  },
+  "turn_terminal_angular_taper_angle_rad": 1.2,
+  "turn_terminal_translation_free_angle_rad": 1.0
 }
