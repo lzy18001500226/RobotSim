@@ -9,7 +9,7 @@ import time
 def native_stand_arm_reference(profile="FULL_SOURCE"):
     from pathlib import Path
     import hashlib,yaml
-    if profile=="FIXED_CARRY_CPG_STEP":
+    if profile in ("FIXED_CARRY_CPG_STEP","REVIEWED_UPRIGHT_CARRY"):
         source=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261109T004726Z/native_neutral_stow_result.json")
         if hashlib.sha256(source.read_bytes()).hexdigest()!="6e87d4eb66065fc5667a7b44f926d02ec8aaf32dc6e0af529b5427a0c2fed0b5":raise ValueError("fixed carry reference changed")
         record=json.loads(source.read_text())
@@ -86,7 +86,7 @@ def extend_native_stow(script, settings):
         if in_send and text=="self.refresh_native()":
             indent=" "*(len(line)-len(line.lstrip()))
             out.extend([indent+"if stage=='CARRY_STOW':",
-                        indent+" fault=physical_fault(self.native_row,native_pose(self.native_row),LIFT_CONTRACT['retract_preflight']['source_motion_limits'],robot_bodies=LIFT_CONTRACT['retract_preflight']['robot_bodies'],allowed_contact_pairs=[['test_cylinder',p] for p in ('R_hand_narrow3_Link','R_hand_wide3_Link')])",
+                        indent+" fault=physical_fault(self.native_row,native_pose(self.native_row),LIFT_CONTRACT['retract_preflight']['source_motion_limits'],robot_bodies=LIFT_CONTRACT['retract_preflight']['robot_bodies'],allowed_contact_pairs=[['test_cylinder',p] for p in ('R_hand_narrow3_Link','R_hand_wide3_Link')],review_incidental_contacts=bool(LIFT_CONTRACT['retract_preflight'].get('incidental_contact_diagnostic')))",
                         indent+" if fault:raise RuntimeError('STOW_PHYSICAL_SAFETY:'+fault)"])
         if "self.tracking_metrics=r.get('metrics',{})" in text:
             out.append("  self.tracking_revision=r.get('phase_revision')")

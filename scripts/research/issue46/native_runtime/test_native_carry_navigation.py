@@ -6,6 +6,65 @@ import unittest
 from scripts.research.issue46.native_runtime import native_base_micro_probe as m
 
 class CarryNavigationTests(unittest.TestCase):
+    def test_clock_recovery_turn_stop_requires_prior_handshake_and_fresh_stand(self):
+        mission=dict(turn_source_and_mode_observed=True,target_unwrapped_yaw=-3.6822340361,
+                     unwrapped_yaw=-3.4992502788,clock_recovery_turn_stop=dict(
+                     stop={"pass":True},completed_s=10.,command_index=1,generation=1))
+        row=dict(native_generation=1,common_mode_desc="STAND_DEFAULT",get_mode_desc="STAND_DEFAULT",
+                 get_mode_header_code=0,common_mode_status_value=100,get_mode_status_value=100,
+                 state_age_s={"common":.03,"get_mode":.04})
+        commands=[dict(forward=.19,angular=-.3)]
+        self.assertEqual(m.recovered_turn_stop(mission,row,commands,10.02,.30),{"pass":True})
+        self.assertIsNone(m.recovered_turn_stop(mission,row,commands,10.21,.30))
+        self.assertIsNone(m.recovered_turn_stop(mission,row,commands+[dict(forward=.1)],10.02,.30))
+        mission["turn_source_and_mode_observed"]=False
+        self.assertIsNone(m.recovered_turn_stop(mission,row,commands,10.02,.30))
+        mission["turn_source_and_mode_observed"]=True
+        mission["clock_recovery_turn_stop"]["stop"]["pass"]=False
+        self.assertIsNone(m.recovered_turn_stop(mission,row,commands,10.02,.30))
+
+    def test_pure_forward_probe_rejects_saved_reverse_displacement_and_cannot_refresh_deadline(self):
+        origin=dict(x=.9651719454847869,y=-1.5375498174742752,yaw=1.9662637305634856)
+        probe=m.delivery_direction_probe(None,origin,0.)
+        actual=dict(x=1.005960704974692,y=-1.705640411700534,yaw=1.8852998892781574)
+        self.assertEqual(m.delivery_direction_probe(probe,actual,.9)["failure"],"DELIVERY_FORWARD_RESPONSE_REVERSED_30MM")
+        self.assertEqual(m.delivery_direction_probe(probe,origin,1.)["failure"],"DELIVERY_FORWARD_RESPONSE_UNCONFIRMED_1S")
+        p=dict(origin,x=origin["x"]+.04*math.cos(origin["yaw"]),y=origin["y"]+.04*math.sin(origin["yaw"]))
+        self.assertTrue(m.delivery_direction_probe(probe,p,.5)["qualified"])
+        self.assertFalse(probe["qualified"])
+
+    def test_real_145703_positive_direction_is_not_rejected_as_speed_performance(self):
+        origin=dict(x=.9632511342194044,y=-1.6665462031117202,yaw=1.9883522628713364)
+        probe=m.delivery_direction_probe(None,origin,0.)
+        forward=.013561144223032338;lateral=-.040509443910514475;yaw=origin["yaw"]
+        pose=dict(origin,x=origin["x"]+forward*math.cos(yaw)-lateral*math.sin(yaw),
+                  y=origin["y"]+forward*math.sin(yaw)+lateral*math.cos(yaw))
+        actual=m.delivery_direction_probe(probe,pose,1.020992114994442)
+        self.assertTrue(actual["qualified"])
+        self.assertNotIn("failure",actual)
+
+    def test_pure_forward_adapter_handles_real_immutable_controller_output(self):
+        import sys
+        sys.path.insert(0,str(Path(__file__).resolve().parents[4]/"ros2_ws/src/robotsim_navigation"))
+        from robotsim_navigation.point_goal_controller import PointGoalController,ControllerConfig,Pose2D,Goal2D,NavState
+        c=PointGoalController(ControllerConfig(max_forward_mps=.30))
+        actual=c.step(Pose2D(1.0078,-1.4446,2.0085,"native_scene_world",1.),
+                      Goal2D(.015,.98,1.656,"native_scene_world"),now_steady_s=1.)
+        self.assertEqual(actual.state,NavState.DRIVE)
+        adapted=m.pure_forward_activation_output(actual)
+        self.assertEqual(adapted.angular_z,0.)
+        self.assertEqual(adapted.linear_x,actual.linear_x)
+        self.assertNotEqual(actual.angular_z,0.)
+        self.assertIsNot(actual,adapted)
+
+    def test_single_turn_points_at_second_table_instead_of_fixed_180(self):
+        pose=dict(x=.6416,y=-1.4794,yaw=-.2167)
+        bearing,target=m.table_turn_target(pose,[.015,.98])
+        self.assertGreater(target-pose["yaw"],0.)
+        self.assertLess(abs(target-pose["yaw"]),math.pi)
+        self.assertAlmostEqual(math.sin(target-bearing),0.,places=12)
+        self.assertGreater(abs((pose["yaw"]-math.pi-bearing+math.pi)%(2*math.pi)-math.pi),1.)
+
     def test_route_generation_uses_existing_controller_and_fixed_caps(self):
         code=m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.)
         compile(code,"carry_route","exec")
@@ -1126,7 +1185,7 @@ class TerminalPivotControlTests(unittest.TestCase):
         cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
         cfg["turn_terminal_translation_free_angle_rad"]=1.
         code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,gait_prepare=True,release_source_on_stop=True,delivery=cfg,vendor_transition_table=True)
-        node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and ast.unparse(n.test)=='cfg.get(\'compact_centre_feedback\')' and any('terminal_turn_translation_free_ticks' in ast.unparse(x) for x in n.body))
+        node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and "cfg.get('compact_centre_feedback')" in ast.unparse(n.test) and any('terminal_turn_translation_free_ticks' in ast.unparse(x) for x in n.body))
         for error,expect_zero in ((.5,True),(1.5,False)):
             out=NS(linear_x=9.,lateral_y=9.)
             ns=dict(cfg={"compact_centre_feedback":True,"delivery":cfg},turn_error=error,output=out,p=dict(x=-.10,y=0.,yaw=0.),

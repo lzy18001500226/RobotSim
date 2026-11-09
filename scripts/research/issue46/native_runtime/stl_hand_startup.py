@@ -961,6 +961,8 @@ class Plan(Node):
   for contact in row.get('contacts',[]):
    pair={contact.get('body1'),contact.get('body2')}
    if 'test_cylinder' in pair and not pair.issubset({'test_cylinder','raicom_table_table','R_hand_narrow3_Link','R_hand_wide3_Link'}) and float(contact['local_force_torque'][0])>.1:
+    review=(LIFT_CONTRACT or {}).get('retract_preflight',{}).get('incidental_contact_diagnostic') and (getattr(self,'lift_phase',None) or {}).get('phase')=='CARRY_HOLD'
+    if review and contact.get('distance_m',-1.)>=-.005 and pair.intersection(set(LIFT_CONTRACT['retract_preflight']['robot_bodies'])):continue
     raise RuntimeError('FORBIDDEN_NATIVE_BOTTLE_CONTACT:'+json.dumps(contact))
   self.arm.update(values);self.native_row=row;self.native_receipt_ns=stamp;self.native_generation=row['generation'];self.native_sim_time=row['sim_time_s']
  def arm_fresh(self,max_age=.20):
@@ -1003,6 +1005,7 @@ class Plan(Node):
  def send(self,target,seconds,stage,hand_right=None):
   end=time.monotonic()+seconds;next_tick=time.monotonic();start=time.monotonic()
   while rclpy.ok() and time.monotonic()<end:
+   if (LIFT_CONTRACT or {}).get('retract_preflight',{}).get('incidental_contact_diagnostic') and os.path.exists('/workspace/evidence/human_review_stop'):raise RuntimeError('HUMAN_REVIEW_STOP')
    if self.tilt and max(self.tilt)>math.radians(15):raise RuntimeError('PREGRASP_TILT_LIMIT')
    if len(self.odom)>1 and math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])>.05:raise RuntimeError('PREGRASP_BASE_DRIFT_LIMIT:'+json.dumps({'stage':stage,'start_xy':self.odom[0],'current_xy':self.odom[-1],'measured_drift_m':math.hypot(self.odom[-1][0]-self.odom[0][0],self.odom[-1][1]-self.odom[0][1])}))
    self.refresh_native()

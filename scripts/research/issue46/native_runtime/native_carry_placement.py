@@ -191,7 +191,7 @@ def extend_existing_owner(script):
         if text.startswith("self.arm.update(values);self.native_row=row;"):
             output.extend([
                 "  if getattr(self,'placement_request',None):",
-                "   fault=physical_fault(row,native_pose(row),LIFT_CONTRACT['retract_preflight']['source_motion_limits'],robot_bodies=LIFT_CONTRACT['retract_preflight']['robot_bodies'],allowed_contact_pairs=[['test_cylinder',p] for p in ('R_hand_narrow3_Link','R_hand_wide3_Link')])",
+                "   fault=physical_fault(row,native_pose(row),LIFT_CONTRACT['retract_preflight']['source_motion_limits'],robot_bodies=LIFT_CONTRACT['retract_preflight']['robot_bodies'],allowed_contact_pairs=[['test_cylinder',p] for p in ('R_hand_narrow3_Link','R_hand_wide3_Link')],review_incidental_contacts=bool(LIFT_CONTRACT['retract_preflight'].get('incidental_contact_diagnostic')))",
                 "   if fault:raise RuntimeError('PLACEMENT_PHYSICAL_SAFETY:'+fault)",
                 '   if getattr(self,"placement_root_start",None) and math.dist(self.placement_root_start,self.native_row["bodies"]["pelvis"]["position_m"])>.08:raise RuntimeError("PLACEMENT_BASE_MOVED")',
             ])
@@ -227,7 +227,9 @@ def prepare_delivery_scene(parent, config_path):
     geom=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_GEOM,"test_cylinder_collision")
     body=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"test_cylinder")
     if not np.allclose(model.geom_size[geom,:2],[cfg["bottle_radius_m"],cfg["bottle_height_m"]/2.]) or abs(model.body_mass[body]-cfg["bottle_mass_kg"])>1e-9:raise ValueError("actual bottle differs from profile")
-    source=root/"reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261108T190527Z"
+    source=Path(cfg.get("route_reference",{}).get("path",str(root/"reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261108T190527Z")))
+    if cfg.get("route_reference") and hashlib.sha256((source/"native_latest.json").read_bytes()).hexdigest()!=cfg["route_reference"]["native_latest_sha256"]:
+        raise ValueError("accepted route start reference changed")
     route_reference=json.loads((source/"native_latest.json").read_text())
     row=route_reference
     if cfg.get("carry_native_neutral_stow"):
@@ -261,6 +263,13 @@ def prepare_delivery_scene(parent, config_path):
         data.qpos[oa:oa+3]=data.xpos[oldhand]+H@held_local
         quat=Rotation.from_matrix(H@held_rotation).as_quat();data.qpos[oa+3:oa+7]=quat[[3,0,1,2]]
         mujoco.mj_forward(model,data)
+    if cfg.get("review_prefix_only"):
+        out=pg.create_unique_output_directory(root/"reviews/issue-46",prefix="retreat-turn-review-scene-check").native_path
+        plan=dict(classification="PREFIX_REVIEW_SCENE_AND_STOW_ONLY_NOT_DYNAMIC_VALIDATION",config=cfg,config_sha256=hashlib.sha256(Path(config_path).read_bytes()).hexdigest(),host_scene=record["generated"]["host_scene"],mj_step_calls=0,stow_plan=stow_plan,scene=record["generated"]["host_scene"],placement_and_route_to_second_table="NOT_RUN")
+        pg.write_new_text(out/"plan.json",json.dumps(plan,indent=2))
+        record["delivery_static_plan"]={"path":str(out/"plan.json"),"sha256":hashlib.sha256((out/"plan.json").read_bytes()).hexdigest()}
+        pg.write_new_text(out/"result.json",json.dumps(record,indent=2))
+        return out/"result.json"
     old=np.asarray(row["bodies"]["pelvis"]["position_m"]);oldR=np.asarray(row["bodies"]["pelvis"]["rotation"]).reshape(3,3)
     oldyaw=math.atan2(oldR[1,0],oldR[0,0]);goal=np.asarray(cfg["base_goal_world_xy"])
     hand=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"R_omnipicker_base_link");bottle=body

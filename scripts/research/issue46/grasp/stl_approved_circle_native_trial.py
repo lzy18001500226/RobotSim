@@ -40,11 +40,28 @@ def configure_native_background_x11(argv, manifest_path, fixed_checkpoint):
     return result
 
 
+def verified_grasp_reuse(episode):
+    import hashlib
+    episode=Path(episode).resolve();result=json.loads((episode/"result.json").read_text())
+    if any(result["gates"].get(k)!="PASS" for k in ("HAL_PHYSICAL_LIFT","POST_LIFT_RETRACT","HAL_RIGHT_HAND_CLOSE")):
+        raise ValueError("reuse requires physically verified grasp/lift/retract")
+    plan=Path(result["hal_arm_runtime_replan"]["path"])
+    if hashlib.sha256(plan.read_bytes()).hexdigest()!=result["hal_arm_runtime_replan"]["sha256"]:raise ValueError("cached grasp plan changed")
+    cycle=episode/"right_claw_gain_no_contact_cycle.json";proof=json.loads(cycle.read_text())
+    if not (proof.get("pass") and proof.get("actual_native_physics") and proof.get("zero_object_contact") and proof.get("torque_cap_nm")==2.):
+        raise ValueError("prior actual gain cycle is not verified")
+    return dict(episode=str(episode),plan=str(plan),plan_sha256=hashlib.sha256(plan.read_bytes()).hexdigest(),
+                cycle=str(cycle),cycle_sha256=hashlib.sha256(cycle.read_bytes()).hexdigest(),
+                scene_sha256=json.loads(plan.read_text())["scene"]["sha256"])
+
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline",type=Path,required=True)
     p.add_argument("--circle-review",type=Path,required=True)
     p.add_argument("--candidate",type=Path,required=True)
+    p.add_argument("--reuse-verified-grasp-plan",type=Path,help="prior actual grasp episode; reuse IK seed and verified unchanged gain cycle")
     p.add_argument("--fixed-reviewed-checkpoint",type=Path,help="initialize native episode with reviewed ungrasped keyframe; no walking claimed")
     p.add_argument("--checkpoint-base-offset-xy-m",type=float,nargs=2,default=(0.,0.),help="screened <=20mm per-axis episode-boundary stance diagnostic only")
     p.add_argument("--review-captured-run",type=Path)
@@ -220,6 +237,10 @@ def main():
             command=["/home/lzy18001500226/.local/bin/uv","run","--offline","--with","mujoco==3.3.6","--with","numpy==2.2.6","--with","scipy==1.15.3","python3",str(Path(__file__).with_name("stl_approved_circle_ik.py")),"--circle-review",str(args.circle_review),"--candidate",str(args.candidate),"--standing-state",state,"--grasp-height-above-center-m","0.075","--runtime-handoff"]
             command.extend(["--target-source",args.target_source,"--free-bottle-axis-roll"])
             if host_model_cache:command.extend(['--host-model-cache',str(host_model_cache)])
+            if args.reuse_verified_grasp_plan:
+                reuse=verified_grasp_reuse(args.reuse_verified_grasp_plan)
+                if reuse["scene_sha256"]!=json.loads(args.candidate.read_text())["scene"]["sha256"]:raise ValueError("reuse requires unchanged compiled scene/control configuration")
+                command.extend(["--warm-start-plan",reuse["plan"]])
             if args.physical_lift_test:command.append('--physical-lift-test')
             if args.approved_pad_friction_reference:command.extend(['--lift-grip-force-margin',str(args.carry_grip_force_margin)])
             if args.post_lift_retract_world_m is not None:command.extend(['--post-lift-retract-world-m',*map(str,args.post_lift_retract_world_m)])
@@ -240,7 +261,9 @@ def main():
             reference=Path(json.loads(result.stdout.strip().splitlines()[-1])['output_wsl'])/'result.json'
             evidence=Path(command[command.index('--standing-state')+1]).parent
             if args.right_claw_kp is not None:
-                extended=json.loads(reference.read_text());extended['native_no_contact_gain_cycle_budget_s']=9.
+                extended=json.loads(reference.read_text())
+                if args.reuse_verified_grasp_plan:extended["reused_gain_cycle"]=verified_grasp_reuse(args.reuse_verified_grasp_plan)
+                else:extended['native_no_contact_gain_cycle_budget_s']=9.
                 reference=evidence/'native_gain_cycle_tracking_reference.json'
                 pg.write_new_text(reference,json.dumps(extended,indent=2)+'\n')
             if args.target_source=='fresh-rgbd-snapshot':

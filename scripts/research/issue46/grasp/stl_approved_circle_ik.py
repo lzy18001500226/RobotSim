@@ -531,6 +531,7 @@ def main():
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--standing-state", type=Path, required=True)
     parser.add_argument("--host-model-cache",type=Path)
+    parser.add_argument("--warm-start-plan",type=Path)
     parser.add_argument("--grasp-height-above-center-m",type=float,default=0.0)
     parser.add_argument("--grasp-axis-tilt-rad",type=float,default=0.,help="measured functional-axis correction; 0.03rad orientation residual remains relative to the planned grasp frame")
     parser.add_argument("--inverted-bottle-axis",action="store_true",help="explicit opposite axial branch of the same cylindrical grasp, unchanged source geometry and limits")
@@ -653,9 +654,29 @@ def main():
         if args.waist_yaw_offset_rad or args.waist_pitch_offset_rad or not args.free_bottle_axis_roll:raise ValueError('coupled posture solve requires free axial roll and no separate waist offsets')
         q,upper_posture=solve_bounded_upper_posture(model,state,approach_start,center,object_center,bottle_axis,local_axis,command,old_q,full_source_diagnostic=args.full_source_posture_diagnostic);old_q=q.copy()
     azimuths=(float(candidate["search"]["candidate"]["grasp_azimuth_rad"]),) if args.optimize_waist_posture else (float(candidate["search"]["candidate"]["grasp_azimuth_rad"]),float(candidate["search"]["candidate"]["grasp_azimuth_rad"])-0.8,float(candidate["search"]["candidate"]["grasp_azimuth_rad"])+0.8)
+    warm=None
+    if args.warm_start_plan:
+        warm=json.loads(args.warm_start_plan.read_text())
+        if (warm["scene"]["sha256"]!=candidate["scene"]["sha256"] or
+            warm["circle_review_sha256"]!=hashlib.sha256(args.circle_review.read_bytes()).hexdigest() or
+            warm["grasp_height_above_center_m"]!=args.grasp_height_above_center_m or
+            not args.free_bottle_axis_roll or not warm.get("free_bottle_axis_roll") or warm.get("gate")!="PASS"):
+            raise ValueError("warm-start scene/circle/section contract differs")
+        old_q=np.array([warm["rows"][0]["q_rad"][n] for n in ik.ACTIVE]);old_q[:2]=q[:2]
+        azimuths=(warm["rows"][0]["azimuth_rad"],)
     for azimuth in azimuths:
-        attempts=[ik.solve(model,state,np.zeros(3),0.,command,seed.copy(),np.zeros(3),azimuth,np.zeros(3),0.,0.,None,object_center) for seed in (q,old_q)]
-        solved,metrics=min(attempts,key=lambda item:item[1]["hand_position_error_m"]+item[1]["hand_orientation_error_rad"]*.1)
+        if warm is None:
+            attempts=[ik.solve(model,state,np.zeros(3),0.,command,seed.copy(),np.zeros(3),azimuth,np.zeros(3),0.,0.,None,object_center) for seed in (q,old_q)]
+            solved,metrics=min(attempts,key=lambda item:item[1]["hand_position_error_m"]+item[1]["hand_orientation_error_rad"]*.1)
+        else:
+            solved=old_q.copy();check=mujoco.MjData(model)
+            ik.set_pose(model,check,state,solved,np.zeros(3),0.,command,np.zeros(3))
+            hand_id=ik.native.bid(model,"R_omnipicker_base_link")
+            error=axis_grasp_error(check.xpos[hand_id],check.xmat[hand_id].reshape(3,3),center,object_center,bottle_axis,local_axis)
+            source_limits=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
+            metrics=dict(solver="REUSED_BRANCH_INITIAL_GUESS_ONLY",hand_position_error_m=float(np.linalg.norm(error[:3])),
+                         hand_orientation_error_rad=float(2*np.arcsin(np.clip(np.linalg.norm(error[3:])/.2,0,1))),
+                         minimum_joint_margin_rad=float(np.min(np.minimum(solved[2:]-source_limits[:,0],source_limits[:,1]-solved[2:]))))
         if upper_posture is not None:
             # A full-rotation seed solve must not discard a better directed-axis
             # solution of the actual five-constraint task.
@@ -682,8 +703,12 @@ def main():
             if args.free_bottle_axis_roll:
                 return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,object_center,data.xmat[cylinder].reshape(3,3)[:,2],local_axis)
             return np.r_[data.xpos[hand]-target,.1*Rotation.from_matrix(desired@data.xmat[hand].reshape(3,3).T).as_rotvec()]
-        for seed in (solved,old_q):
-            opt=least_squares(residual,np.clip(seed[2:],bounds[:,0]+1e-5,bounds[:,1]-1e-5),bounds=(bounds[:,0]+1e-5,bounds[:,1]-1e-5),max_nfev=180,ftol=1e-10,xtol=1e-10,gtol=1e-10,diff_step=1e-5)
+        dofs=np.array([model.jnt_dofadr[ik.native.jid(model,name)] for name in ik.ARM])
+        def directed_jacobian(arm):
+            residual(arm)
+            return circle_task_jacobian(model,data,hand,center,local_axis,dofs)
+        for seed in ((solved,) if warm is not None else (solved,old_q)):
+            opt=least_squares(residual,np.clip(seed[2:],bounds[:,0]+1e-5,bounds[:,1]-1e-5),jac=directed_jacobian if args.free_bottle_axis_roll else "2-point",bounds=(bounds[:,0]+1e-5,bounds[:,1]-1e-5),max_nfev=180,ftol=1e-10,xtol=1e-10,gtol=1e-10,diff_step=1e-5)
             e=residual(opt.x)
             if np.linalg.norm(e[:3])+.1*np.linalg.norm(e[3:]) < metrics["hand_position_error_m"]+.01*metrics["hand_orientation_error_rad"]:
                 solved=np.r_[q[:2],opt.x]
@@ -727,6 +752,7 @@ def main():
     if upper_posture is not None:record['bounded_upper_posture_solve']=upper_posture
     record["root_legs_waist_frozen"]=not waist_changed
     record["root_and_legs_frozen"]=True
+    if warm is not None:record["warm_start"]={"path":str(args.warm_start_plan),"sha256":hashlib.sha256(args.warm_start_plan.read_bytes()).hexdigest(),"scope":"INITIAL_GUESS_ONLY_CURRENT_RGBD_STATE_AND_ALL_GATES_RECOMPUTED"}
     record["fresh_runtime_rgbd_verified"]=args.target_source in ('fresh-rgbd','fresh-rgbd-snapshot')
     if args.host_model_cache:record['host_model_cache']={'path':str(args.host_model_cache),'sha256':hashlib.sha256(args.host_model_cache.read_bytes()).hexdigest()}
     record['local_bottle_axis_in_hand']=local_axis.tolist();record['grasp_axis_tilt_rad']=theta

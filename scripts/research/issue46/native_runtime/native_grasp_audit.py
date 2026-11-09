@@ -402,7 +402,7 @@ def read_complete_native_rows(path):
     return list(iter_complete_native_rows(path))
 
 
-def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns, transit_policy=None, expected_owner_pid=None):
+def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns, transit_policy=None, expected_owner_pid=None, review_incidental_contacts=False):
     """Independent whole recorded carry audit, including skipped callback frames."""
     import math
     from scripts.research.issue46.native_runtime.native_base_micro_probe import native_pose,physical_fault,carry_policy_speed_limit
@@ -418,11 +418,12 @@ def evaluate_carry_motion(rows, limits, robot_bodies, *, start_ns, end_ns, trans
         for c in row.get("contacts",[]):
             pair={c.get("body1"),c.get("body2")}
             if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
-                return {"pass":False,"failure":"CARRY_OBJECT_EXTERNAL_SUPPORT","source_host_ns":row["host_monotonic_ns"]}
+                if not (review_incidental_contacts and pair.intersection(set(robot_bodies)) and c["distance_m"]>=-.005):
+                    return {"pass":False,"failure":"CARRY_OBJECT_EXTERNAL_SUPPORT","source_host_ns":row["host_monotonic_ns"]}
         pose=native_pose(row)
         if transit_policy and expected_owner_pid is None:return {"pass":False,"failure":"CARRY_AUDIT_OWNER_BINDING_MISSING"}
         limit=carry_policy_speed_limit(transit_policy,row["host_monotonic_ns"],row["generation"],expected_owner_pid)
-        fault=physical_fault(row,pose,limits,robot_bodies=robot_bodies,allowed_contact_pairs=allowed,planar_speed_limit=limit)
+        fault=physical_fault(row,pose,limits,robot_bodies=robot_bodies,allowed_contact_pairs=allowed,planar_speed_limit=limit,review_incidental_contacts=review_incidental_contacts)
         if fault:return {"pass":False,"failure":fault,"source_host_ns":row["host_monotonic_ns"],"source_sim_time_s":row["sim_time_s"]}
         max_root=max(max_root,math.hypot(pose["vx"],pose["vy"]))
         for name,bounds in limits.items():

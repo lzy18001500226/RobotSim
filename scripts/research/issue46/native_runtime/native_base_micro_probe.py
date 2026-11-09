@@ -44,7 +44,7 @@ def native_pose(row):
                 frame_id="native_scene_world", child_frame_id="pelvis_origin")
 
 
-def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None,planar_speed_limit=.20):
+def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=None,allowed_contact_pairs=None,planar_speed_limit=.20,review_incidental_contacts=False):
     if planar_speed_limit not in (.20,.50):raise ValueError("unsupported explicit physical speed profile")
     if pose["z"] < .45 or math.hypot(pose["roll"], pose["pitch"]) > math.radians(15):
         return "POSTURE"
@@ -68,6 +68,8 @@ def physical_fault(row, pose, limits, start=None, direction=None,robot_bodies=No
             if contact["efc_address"]<0 or contact["distance_m"]>=-.001 or contact["local_force_torque"][0]<=.1:continue
             a,b=contact["body1"],contact["body2"];ra,rb=a in robot_bodies,b in robot_bodies
             if frozenset((a,b)) in allowed:continue
+            incidental=(frozenset((a,b))==frozenset(("pelvis","left_hip_roll_link")) or "test_cylinder" in (a,b) and (ra or rb))
+            if review_incidental_contacts and incidental and contact["distance_m"]>=-.005:continue
             if ra and rb:return "ACTIVE_ROBOT_SELF_COLLISION:"+a+":"+b
             if ra or rb:
                 robot,other=(a,b) if ra else (b,a)
@@ -524,6 +526,7 @@ def run_probe(smoke_only=False):
                     for c in r.get("contacts",[]):
                         pair={c.get("body1"),c.get("body2")}
                         if "test_cylinder" in pair and not pair.intersection({"R_hand_narrow3_Link","R_hand_wide3_Link"}) and float(c["local_force_torque"][0])>.1:
+                            if MICRO["carry"].get("incidental_contact_diagnostic") and c["distance_m"]>=-.005 and pair.intersection(set(MICRO.get("robot_bodies",[]))):continue
                             raise RuntimeError("CARRY_OBJECT_EXTERNAL_SUPPORT")
                 if (MICRO.get("carry",{}).get("inplace_centre_hold") or MICRO.get("carry",{}).get("compact_turn")) and self.bridge_commands:
                     command=self.bridge_commands[-1]["raw"]
@@ -533,7 +536,7 @@ def run_probe(smoke_only=False):
                         raise RuntimeError("OBSERVED_BRIDGE_COMMAND_BOUND")
                 p=native_pose(r)
                 limit=current_carry_transit_speed_limit("/workspace/evidence",r,MICRO["carry"]["pid"]) if MICRO.get("carry",{}).get("transit_policy_050") else .20
-                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit)
+                fault=physical_fault(r,p,MICRO["joint_limits"],start,MICRO["direction"],robot_bodies=MICRO.get("robot_bodies"),allowed_contact_pairs=MICRO.get("allowed_contact_pairs"),planar_speed_limit=limit,review_incidental_contacts=bool(MICRO.get("carry",{}).get("incidental_contact_diagnostic")))
                 if fault: raise RuntimeError(fault)
                 imu=self.messages["imu"]
                 q=imu["orientation"]
@@ -894,6 +897,33 @@ def table_terminal_braking_footprint(poses, origin, target_yaw, baseline_radius,
 
 
 
+def table_turn_target(pose, goal_xy):
+    bearing=math.atan2(goal_xy[1]-pose["y"],goal_xy[0]-pose["x"])
+    delta=(bearing-pose["yaw"]+math.pi)%(2*math.pi)-math.pi
+    return bearing,pose["yaw"]+delta
+
+
+def pure_forward_activation_output(output):
+    from dataclasses import replace
+    return replace(output,angular_z=0.)
+
+
+def delivery_direction_probe(probe, pose, now):
+    """One short pure-forward activation; physical displacement decides direction."""
+    if probe is None:
+        probe=dict(started_s=now,origin=dict(pose),qualified=False)
+    origin=probe["origin"]
+    dx=pose["x"]-origin["x"];dy=pose["y"]-origin["y"]
+    forward=math.cos(origin["yaw"])*dx+math.sin(origin["yaw"])*dy
+    lateral=-math.sin(origin["yaw"])*dx+math.cos(origin["yaw"])*dy
+    probe=dict(probe,elapsed_s=now-probe["started_s"],forward_m=forward,lateral_m=lateral)
+    if forward<-.03:probe["failure"]="DELIVERY_FORWARD_RESPONSE_REVERSED_30MM"
+    elif abs(lateral)>.05:probe["failure"]="DELIVERY_DIRECTION_PROBE_LATERAL_50MM"
+    elif forward>=.005:probe["qualified"]=True
+    elif now-probe["started_s"]>=1.:probe["failure"]="DELIVERY_FORWARD_RESPONSE_UNCONFIRMED_1S"
+    return probe
+
+
 def delivery_forward_progress(state, distance, now, active, epoch):
     """Accumulate the existing three-second no-progress budget across ALIGN."""
     if state is None:
@@ -959,10 +989,25 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),vendor_transition_table=bool(vendor_transition_table),native_step_all_transit=step_all,motion_mode="LOCOMOTION_STEP" if step_all or native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),delivery=delivery,compact_centre_feedback=bool(compact_centre_feedback),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),vendor_transition_table=bool(vendor_transition_table),review_prefix_only=bool((delivery or {}).get("review_prefix_only")),incidental_contact_diagnostic=bool((delivery or {}).get("incidental_contact_diagnostic") or (delivery or {}).get("review_prefix_only")),native_step_all_transit=step_all,motion_mode="LOCOMOTION_STEP" if step_all or native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),delivery=delivery,compact_centre_feedback=bool(compact_centre_feedback),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
+
+
+def recovered_turn_stop(mission, row, commands, now, heading_tolerance):
+    """Reuse a measured recovery stop only before any new nonzero command."""
+    cached=mission.get("clock_recovery_turn_stop")
+    if not cached or not mission.get("turn_source_and_mode_observed"):return None
+    if cached["stop"].get("pass") is not True or row["native_generation"]!=cached["generation"]:return None
+    if not 0.<=now-cached["completed_s"]<=.20:return None
+    if any(any(c.get(k,0.) for k in ("forward","lateral","angular"))
+           for c in commands[cached["command_index"]:]):return None
+    if (row["common_mode_desc"]!="STAND_DEFAULT" or row["get_mode_desc"]!="STAND_DEFAULT"
+        or row["get_mode_header_code"]!=0 or row["common_mode_status_value"]!=100
+        or row["get_mode_status_value"]!=100 or max(row["state_age_s"].values())>.20):return None
+    if abs(mission["target_unwrapped_yaw"]-mission["unwrapped_yaw"])>heading_tolerance:return None
+    return cached["stop"]
 
 
 def recoverable_carry_clock_fault(fault, error, recovery_count):
@@ -1123,6 +1168,7 @@ def run_carry_navigation(n,contract):
         with n.lock:n.moving=True
         watchdog=threading.Timer(max(.001,until-time.monotonic()),n.deadline_zero);watchdog.daemon=True;watchdog.start()
         while time.monotonic()<until:
+            if Path("/workspace/evidence/human_review_stop").exists():raise RuntimeError("HUMAN_REVIEW_STOP")
             tick=time.monotonic()
             if not n.moving and (n.feedback_fault or {}).get("gate")!="CLOCK_STEP_DURING_MOTION":break
             graph_job=poll_carry_graph_check(n,graph_job,tick)
@@ -1169,6 +1215,8 @@ def run_carry_navigation(n,contract):
                         delta=(pose["yaw"]-mission["previous_yaw"]+math.pi)%(2*math.pi)-math.pi
                         mission["unwrapped_yaw"]+=delta
                         mission["previous_yaw"]=pose["yaw"];mission["previous_source_s"]=None
+                        mission["clock_recovery_turn_stop"]=dict(stop=stopped,completed_s=time.monotonic(),
+                            command_index=len(n.command_log),generation=n.latest_row["generation"])
                     if cfg.get("release_source_on_stop"):n.source_enabled(True)
                     acquired=False
                 n.stop_started=False
@@ -1276,6 +1324,9 @@ def run_carry_navigation(n,contract):
                         mission["target_unwrapped_yaw"]=state["pose"]["yaw"]-math.pi
                         mission["turn_start_source_s"]=state["sample_monotonic_s"]
                         mission["away_heading_rad"]=(state["pose"]["yaw"]-math.pi+math.pi)%(2*math.pi)-math.pi
+                        if (cfg.get("delivery") or {}).get("turn_to_delivery_bearing"):
+                            bearing,mission["target_unwrapped_yaw"]=table_turn_target(state["pose"],cfg["delivery"]["base_goal_world_xy"])
+                            mission["away_heading_rad"]=bearing;mission["turn_goal"]="ACTUAL_SECOND_TABLE_BEARING"
                         bearing=mission["away_heading_rad"]
                         origin=mission.get("retreat_origin_pose",start)
                         ex=state["pose"]["x"]-origin["x"];ey=state["pose"]["y"]-origin["y"]
@@ -1300,6 +1351,10 @@ def run_carry_navigation(n,contract):
                         history=mission.setdefault("turn_yaw_history",[])
                         history.append([source,mission["unwrapped_yaw"]])
                         history[:]=[x for x in history if source-x[0]<=1.5]
+                    if (cfg.get("delivery") or {}).get("turn_to_delivery_bearing"):
+                        bearing,_=table_turn_target(p,cfg["delivery"]["base_goal_world_xy"])
+                        mission["target_unwrapped_yaw"]=mission["unwrapped_yaw"]+(bearing-p["yaw"]+math.pi)%(2*math.pi)-math.pi
+                        mission["away_heading_rad"]=bearing
                     turn_error=mission["target_unwrapped_yaw"]-mission["unwrapped_yaw"]
                     history=mission.get("turn_yaw_history",[])
                     reserve=0.;rate=0.
@@ -1316,7 +1371,7 @@ def run_carry_navigation(n,contract):
                     mission["profile_observed_stop_reserve_rad"]=profile_reserve
                     mission["predicted_post_zero_yaw_rad"]=math.copysign(reserve,turn_error if profile_reserve else rate)
                     mission["turn_max_center_excursion_m"]=max(mission.get("turn_max_center_excursion_m",0.),math.hypot(p["x"]-mission.get("turn_origin_pose",start)["x"],p["y"]-mission.get("turn_origin_pose",start)["y"]))
-                    if cfg.get("compact_turn") and mission["turn_max_center_excursion_m"]>.30:raise RuntimeError("COMPACT_TURN_RADIUS_300MM")
+                    if cfg.get("compact_turn") and not cfg.get("incidental_contact_diagnostic") and mission["turn_max_center_excursion_m"]>.30:raise RuntimeError("COMPACT_TURN_RADIUS_300MM")
                     centre_origin=mission.get("turn_origin_pose",start)
                     centre_error=math.hypot(p["x"]-centre_origin["x"],p["y"]-centre_origin["y"])
                     if cfg.get("inplace_centre_hold"):
@@ -1327,7 +1382,7 @@ def run_carry_navigation(n,contract):
                         if abs(turn_error)>math.pi+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=turn_error,
                                                linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(min(.30,cfg["angular_command_cap"]) if cfg.get("compact_turn") and abs(turn_error)<float((cfg.get("delivery") or {}).get("turn_terminal_angular_taper_angle_rad",.60)) else cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
-                        if cfg.get("compact_centre_feedback"):
+                        if cfg.get("compact_centre_feedback") and not (cfg.get("delivery") or {}).get("turn_translation_strategy")=="PURE_YAW":
                             terminal_angle=float((cfg.get("delivery") or {}).get("turn_terminal_translation_free_angle_rad",0.))
                             if abs(turn_error)<terminal_angle:
                                 output.linear_x=0.;output.lateral_y=0.
@@ -1342,14 +1397,25 @@ def run_carry_navigation(n,contract):
                                 output.angular_z=0.;output.state=NavState.DRIVE;output.distance_m=centre_error
                                 mission["centre_recovery_ticks"]=mission.get("centre_recovery_ticks",0)+1
                     else:
-                        if not acquired:raise RuntimeError("AWAY_TURN_SOURCE_NOT_CONFIRMED")
-                        mission["turn_source_and_mode_observed"]=True
+                        recovery_stop=recovered_turn_stop(mission,row,n.command_log,time.monotonic(),
+                            float((cfg.get("delivery") or {}).get("intermediate_turn_heading_tolerance_rad",.12)))
+                        if not acquired and recovery_stop is None:raise RuntimeError("AWAY_TURN_SOURCE_NOT_CONFIRMED")
                         n.deadline_zero();n.stop_started=True
                         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                         n.source_enabled(False) if cfg.get("release_source_on_stop") else None
-                        stand_transition()
-                        result["turn_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
+                        if recovery_stop is not None:
+                            result["turn_stop_composite"]=recovery_stop
+                            mission["turn_completion_used_measured_clock_recovery_stop"]=True
+                        else:
+                            stand_transition()
+                            result["turn_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
                         if result["turn_stop_composite"].get("pass") is not True:raise RuntimeError("AWAY_TURN_STOP_NOT_QUALIFIED")
+                        if cfg.get("review_prefix_only"):
+                            n.pump();review_end=n.sample()["pose"]
+                            result.update(classification="SIMULATION_ONLY_LIVE_RETREAT_TURN_REVIEW_NOT_TRANSFER_ACCEPTANCE",review_capture_complete=True,pass_result=True,failure=None,end_pose=review_end,post_stop_composite=result["turn_stop_composite"])
+                            mission["turn_center_final_drift_m"]=math.hypot(review_end["x"]-mission["turn_origin_pose"]["x"],review_end["y"]-mission["turn_origin_pose"]["y"])
+                            mission["turn_stop_heading_error_rad"]=(bearing-review_end["yaw"]+math.pi)%(2*math.pi)-math.pi
+                            return result
                         n.await_graph();n.pump();stopped=n.sample()
                         heading_error=(bearing-stopped["pose"]["yaw"]+math.pi)%(2*math.pi)-math.pi
                         mission["turn_stop_heading_error_rad"]=heading_error
@@ -1368,7 +1434,7 @@ def run_carry_navigation(n,contract):
                             mission["turn_center_final_drift_m"]=drift
                             result["end_pose"]=stopped["pose"]
                             result["post_stop_composite"]=result["turn_stop_composite"]
-                            result["source_and_motion_mode_observed"]=acquired
+                            result["source_and_motion_mode_observed"]=mission["turn_source_and_mode_observed"]
                             result["forward_one_metre"]="NOT_RUN"
                             result["delivery_table_placement"]="NOT_RUN"
                             bound=.20 if cfg.get("compact_turn") else .05
@@ -1398,7 +1464,8 @@ def run_carry_navigation(n,contract):
                                 else:
                                     goal=list(cfg["delivery"]["base_goal_world_xy"])
                                     target=Goal2D(*goal,float(cfg["delivery"]["base_goal_world_yaw_rad"]),"native_scene_world");mission["phase"]="DELIVERY"
-                                controller=PointGoalController(ControllerConfig(xy_tolerance_m=.01 if egress else .10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=.10 if egress else cfg["angular_command_cap"],k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
+                                result.pop("post_stop_composite",None);result.pop("end_pose",None)
+                                controller=PointGoalController(ControllerConfig(xy_tolerance_m=.01 if egress else .10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=.10 if egress else float(cfg["delivery"].get("delivery_tracking_angular_cap_rad_s",cfg["angular_command_cap"])),align_tolerance_rad=float(cfg["delivery"].get("intermediate_turn_heading_tolerance_rad",.20)),k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
                                 mission["delivery_origin_pose"]=stopped["pose"]
                                 mission["delivery_target_world_xy"]=goal;cfg["transit_command_speed"]=float(cfg["delivery"].get("delivery_forward_command_m_s",.20))
                                 if (cfg["delivery"].get("carry_native_neutral_stow") or {}).get("follow_native_unloaded_arm_after_turn"):
@@ -1450,7 +1517,7 @@ def run_carry_navigation(n,contract):
                         cfg["permit_filename"]="carry_transit_delivery_rearm_"+str(cfg["delivery_rearm_count"])+".json"
                         goal=list(cfg["delivery"]["base_goal_world_xy"])
                         target=Goal2D(*goal,float(cfg["delivery"]["base_goal_world_yaw_rad"]),"native_scene_world")
-                        controller=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=cfg["angular_command_cap"],k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
+                        controller=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=float(cfg["delivery"].get("delivery_tracking_angular_cap_rad_s",cfg["angular_command_cap"])),align_tolerance_rad=float(cfg["delivery"].get("intermediate_turn_heading_tolerance_rad",.20)),k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
                         mission["phase"]="DELIVERY";mission["delivery_origin_pose"]=stopped["pose"]
                         mission["delivery_target_world_xy"]=goal;mission["delivery_alignment_state"]=None
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
@@ -1547,8 +1614,16 @@ def run_carry_navigation(n,contract):
                             mission["delivery_alignment_origin"]=p;mission["delivery_alignment_state"]=output.state.value
                         pivot=mission["delivery_alignment_origin"]
                         if math.hypot(p["x"]-pivot["x"],p["y"]-pivot["y"])>.30:raise RuntimeError("DELIVERY_ALIGNMENT_RADIUS_300MM")
-                        forward,_=inplace_centre_command(p,pivot,.20,forward_only=True)
+                        if cfg["delivery"].get("delivery_alignment_pure_yaw"):
+                            forward=0.
+                        else:
+                            forward,_=inplace_centre_command(p,pivot,.20,forward_only=True)
                     else:mission["delivery_alignment_state"]=None
+                    if mission["phase"]=="DELIVERY" and output.state==NavState.DRIVE and cfg["delivery"].get("pure_forward_direction_probe") and not mission.get("direction_probe",{}).get("qualified"):
+                        probe=delivery_direction_probe(mission.get("direction_probe"),p,tick)
+                        mission["direction_probe"]=probe
+                        if probe.get("failure"):raise RuntimeError(probe["failure"])
+                        if not probe["qualified"]:output=pure_forward_activation_output(output)
                 if mission is not None and mission["phase"]=="PRESTEP":forward=0.
                 lateral=getattr(output,"lateral_y",0.)
                 angular=0. if cfg.get("reverse_moving_arc") and abs(output.yaw_error_rad)<=.02 else output.angular_z
@@ -1559,6 +1634,8 @@ def run_carry_navigation(n,contract):
                 if handshake and (cfg.get("delivery",{}).get("carry_native_neutral_stow") or {}).get("native_arm_follow_scope")=="FULL_SOURCE" and not Path("/workspace/evidence/carry_unloaded_arm_follow.json").exists():
                     write_durable_milestone("/workspace/evidence/carry_unloaded_arm_follow.json",dict(owner_pid=cfg["pid"],generation=n.latest_row["generation"],created_ns=time.monotonic_ns(),deadline_ns=int((until+15.)*1e9),turn_and_composite_stop_pass=False,standing_and_ld_source_handoff_pass=bool(result["pre_motion_composite"]["pass"] and handshake),arm_scope="FULL_SOURCE"))
                 acquired=acquired or handshake
+                if handshake and mission is not None and mission["phase"]=="TURN":
+                    mission["turn_source_and_mode_observed"]=True
                 if tick-activation_started>.75 and not handshake:raise RuntimeError("CARRY_SOURCE_LD_HANDSHAKE_NOT_CONFIRMED")
                 n.publish(forward,lateral,angular)
             elif output.state==NavState.SETTLING:n.publish()

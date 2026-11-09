@@ -201,7 +201,7 @@ class MicroTests(unittest.TestCase):
             def publish(self,*v):sent.append(v)
         clock=NS(t=1.)
         ns=dict(Dock=Base,time=NS(monotonic=lambda:clock.t,sleep=lambda d:setattr(clock,"t",clock.t+d)),
-                threading=threading,rclpy=NS(ok=lambda:True),contract=stop,json=json)
+                threading=threading,rclpy=NS(ok=lambda:True),contract=stop,json=json,MICRO={})
         exec(compile(ast.Module(body=[cls],type_ignores=[]),"micro","exec"),ns)
         n=ns["Micro"]();n.lock=threading.Lock();n.moving=True;n.events=[];n.command_log=[];n.trace=[]
         return n,sent,clock

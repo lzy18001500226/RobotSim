@@ -1238,16 +1238,26 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     nav=json.loads(nav_path.read_text()) if nav_path.exists() else {"pass_result":False,"failure":"CARRY_ROUTE_NO_RESULT","stdout_tail":route.stdout[-1600:]}
     result["carry_navigation"]={k:v for k,v in nav.items() if k not in ("events","command_log","bridge_commands","trace","abort_native_sample","route_samples")}
     recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns(),transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")) if getattr(args,"carry_transit_speed_policy_050",False) else None,expected_owner_pid=ready["pid"])
+    diagnostic_contacts=bool(getattr(args,"carry_delivery_config",None) and json.loads(args.carry_delivery_config.read_text()).get("incidental_contact_diagnostic"))
+    if diagnostic_contacts:
+        result["carry_native_legacy_strict_contact_audit"]=recorded
+        recorded=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns(),transit_policy=nav.get("transit_policy_records",nav.get("transit_policy_record")),expected_owner_pid=ready["pid"],review_incidental_contacts=True)
+        recorded["contact_policy"]="USER_APPROVED_SIMULATION_ONLY_INCIDENTAL_CONTACT_RECORDING; engine contact forces unchanged"
     result["carry_native_motion_audit"]=recorded
     if getattr(args,"carry_transit_speed_policy_050",False):
         result["carry_native_strict020_diagnostic"]=native_grasp_audit.evaluate_carry_motion(native_grasp_audit.iter_complete_native_rows(output/"native_physics.jsonl"),limits,retract["robot_bodies"],start_ns=ready["host_monotonic_ns"],end_ns=time.monotonic_ns())
-    if not recorded["pass"]:
+    review_prefix=bool(getattr(args,"carry_delivery_config",None) and json.loads(args.carry_delivery_config.read_text()).get("review_prefix_only"))
+    if not recorded["pass"] and not review_prefix:
         nav["pass_result"]=False
         if not nav.get("failure"):nav["failure"]="RECORDED_NATIVE_CARRY_SAFETY:"+str(recorded.get("failure"))
         result["carry_navigation"]["recorded_native_failure"]=recorded.get("failure")
         result["carry_navigation"]["pass_result"]=False;result["carry_navigation"]["failure"]=nav["failure"]
     mission_gate="SECOND_TABLE_BASE_ARRIVAL_AND_STOP" if getattr(args,"carry_delivery_config",None) is not None else "RETREAT_AND_INPLACE_TURN_PREFIX" if getattr(args,"carry_straight_retreat_turn",False) else "CARRY_AWAY_ONE_METRE_AND_COMPOSITE_STOP" if getattr(args,"carry_away_1m",False) else "CHAIR_AREA_ARRIVAL_AND_COMPOSITE_STOP"
     result["gates"][mission_gate]="PASS" if nav.get("pass_result") else "FAIL"
+    if review_prefix:
+        result["gates"]["SECOND_TABLE_BASE_ARRIVAL_AND_STOP"]="NOT_RUN"
+        result["gates"]["LIVE_RETREAT_TURN_REVIEW"]="CAPTURED" if nav.get("review_capture_complete") else "HALTED"
+        result["review_only_policy"]=dict(incidental_contacts_recorded_not_task_qualified=True,strict_audit=recorded,normal_transfer_acceptance=False)
     if getattr(args,"carry_away_1m",False):
         mission=nav.get("away_mission",{})
         turn=nav.get("turn_stop_composite",{})
@@ -1258,7 +1268,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         if "locomotion velocity" in result["commands_not_sent"]:result["commands_not_sent"].remove("locomotion velocity")
     if getattr(args,"carry_delivery_config",None) is not None:
         result["gates"]["PHYSICAL_TABLE_PLACEMENT"]="NOT_RUN"
-        if nav.get("pass_result") and recorded.get("pass"):
+        if nav.get("pass_result") and recorded.get("pass") and not review_prefix:
             from scripts.research.issue46.native_runtime.native_carry_placement import placement_mode_observer_script
             pg.write_new_text(output/"native_placement_mode_observer.py",placement_mode_observer_script())
             mode=run(["docker","exec",container,"bash","-lc",environment+"timeout 4s python3 /workspace/evidence/native_placement_mode_observer.py"],timeout_s=6.,check=False)
@@ -1626,6 +1636,8 @@ def main() -> None:
         result["claw_control_overlay"] = {"path": str(args.claw_control_overlay_result), "sha256": sha256(args.claw_control_overlay_result), "control_change": claw_control_overlay.get("control_change")}
         if args.carry_transit_speed_policy_050 and not (claw_control_overlay or {}).get("approved_local_pad_friction_reference"):raise ValueError("TRANSIT050 local friction provenance missing")
         result['contact_representation']=claw_control_overlay.get('source_pad_collision_comparison',{'classification':'RAW_WHOLE_STL_CONVEX_COLLISION_BASELINE'})
+    if claw_control_overlay:
+        pg.write_new_text(output/"live_view_scene.json",json.dumps(dict(scene=claw_control_overlay["generated"]["host_scene"],engine_version=337,read_only_view=True)))
     try:
         for source in inputs.values():
             pg.write_new_bytes(output / source.name, source.read_bytes())
@@ -2426,11 +2438,13 @@ def main() -> None:
                                         replan_record['lift_preflight']['retract_preflight']['delivery_table_placement']=True
                                         settings=json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow")
                                         if settings:replan_record['lift_preflight']['retract_preflight']['carry_native_neutral_stow']=settings
+                                        replan_record['lift_preflight']['retract_preflight']['review_prefix_only']=bool(json.loads(args.carry_delivery_config.read_text()).get('review_prefix_only'))
+                                        replan_record['lift_preflight']['retract_preflight']['incidental_contact_diagnostic']=bool(json.loads(args.carry_delivery_config.read_text()).get('incidental_contact_diagnostic') or json.loads(args.carry_delivery_config.read_text()).get('review_prefix_only'))
                                     replan_record['lift_preflight']['retract_preflight']['carry_grip_force_margin']=args.carry_grip_force_margin
                                     replan_record['lift_preflight']['retract_preflight']['carry_transit_policy_050']=args.carry_transit_speed_policy_050
                                     replan_record['lift_preflight']['retract_preflight']['allow_carried_bottle_tilt']=args.allow_carried_bottle_tilt
                                     replan_record['lift_preflight']['retract_preflight']['carry_retention_only']=args.carry_retention_only
-                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"right_gain_no_contact_cycle":bool((claw_control_overlay or {}).get("diagnostic_parameter_delta",{}).get("right_actuator_kp",{}).get("requires_native_no_contact_cycle")),"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
+                            pg.write_new_text(output / "native_hal_bilateral_arm_pregrasp.py", stl_hand_startup.build_hal_bilateral_arm_plan_script(arm_gains, hal_arm_target_right, hal_arm_target_left, duration_s=args.arm_plan_duration_s, hold_s=args.arm_plan_hold_s, restore=args.hal_arm_plan_mode == "round-trip", right_hand_command=((0.0 if args.physical_lift_test else float(replan_record.get("commands",{}).get("closure_probe",0))/100.) if args.hal_right_hand_command is not None else None), hand_hold_s=args.hal_hand_close_hold_s if args.hal_right_hand_command is not None else 0.0, initial_arm_state={name: float(dock_arm_state[name]) for name in tuple(arm_gains)},circle_contract=({"circle_center_local_m":replan_record.get("execution_grasp_frame",{}).get("center_m",replan_record["circle"]["center_m"]),"nominal_circle_center_local_m":replan_record["circle"]["center_m"],"height_above_center_m":replan_record["grasp_height_above_center_m"],"right_gain_no_contact_cycle":bool((claw_control_overlay or {}).get("diagnostic_parameter_delta",{}).get("right_actuator_kp",{}).get("requires_native_no_contact_cycle")) and not bool(replan_record.get("reused_gain_cycle")),"reused_gain_cycle":replan_record.get("reused_gain_cycle"),"local_bottle_axis_in_hand":replan_record.get("local_bottle_axis_in_hand",[1.,0.,0.]),"perception_latest":"/workspace/evidence/fresh_rgbd/latest.json" if replan_record.get("target_source")=="fresh-rgbd" else None,"perception_snapshot":"/workspace/evidence/rgbd_grasp_snapshot.json" if replan_record.get("target_source")=="fresh-rgbd-snapshot" else None} if "circle" in replan_record else None),use_native_bias_effort=True,use_native_joint_feedback=not args.coordinated_circle_waist,track_native_circle=args.native_circle_tracking,enable_single_residual_feedforward=True,source_joint_limits=replan_record.get("source_joint_limits_rad",{}),waist_target=waist_target,hand_open_command=float(replan_record.get("commands",{}).get("open",97))/100.,lift_contract=replan_record.get("lift_preflight") if args.physical_lift_test else None))
                         else:
                             raise RuntimeError("runtime static replan did not retain the required pad, table-clearance, and joint-margin gates")
                 if hal_pregrasp_background:
@@ -2487,6 +2501,7 @@ def main() -> None:
             arm_pregrasp_result = decode_arm_execution_output(arm_pregrasp.returncode,arm_pregrasp.stdout)
             if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
                 result["gates"]["TWO_TABLE_TRANSFER_EXECUTION" if args.carry_delivery_config is not None else "RETREAT_AND_INPLACE_TURN" if getattr(args,"carry_straight_retreat_turn",False) else "CARRY_AWAY_ONE_METRE" if getattr(args,"carry_away_1m",False) else "CARRY_TO_CHAIR"]="NOT_RUN" if "carry_navigation" not in result else "PASS" if arm_pregrasp_result.get("carry_execution",{}).get("pass") is True and result["carry_navigation"].get("pass_result") is True and result.get("carry_native_motion_audit",{}).get("pass") is True else "FAIL"
+                if args.carry_delivery_config and json.loads(args.carry_delivery_config.read_text()).get("review_prefix_only"):result["gates"]["TWO_TABLE_TRANSFER_EXECUTION"]="NOT_RUN"
             if replan_record.get('lift_preflight',{}).get('retract_preflight'):
                 execution_trace=json.loads((output/'native_hal_pregrasp_trace.json').read_text()).get('trace',[]) if (output/'native_hal_pregrasp_trace.json').exists() else []
                 retract_observed=bool(arm_pregrasp_result.get('post_lift_retract')) or any(x.get('stage') in ('RETRACT','RETRACT_HOLD') for x in execution_trace)
