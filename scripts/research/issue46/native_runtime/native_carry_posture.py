@@ -15,24 +15,18 @@ def native_stand_arm_reference():
     for side in ("left","right"):
         for joint,value in (("shoulder_pitch",other["default_shoulder_pitch_pos"]),("shoulder_roll",other["default_shoulder_roll_pos"]),("shoulder_yaw",0.),("elbow",other["default_elbow_pos"]),("wrist_yaw",0.),("wrist_pitch",0.),("wrist_roll",0.)):
             targets[side+"_"+joint+"_joint"]=float(value)
-    walk_source=source.with_name("foundationwalk_config.yaml")
-    walk=yaml.safe_load(walk_source.read_text())
-    walking_neutral=dict(zip(walk["BaseConfig"]["seq"],walk["ACConfig"]["robot"]["default_dof_pos"]))
-    for name in targets:
-        if name.startswith("left_"):targets[name]=float(walking_neutral[name])
     # Fixed operational carry pose solved against the actual source meshes;
-    # left arm remains the delivered neutral reference. It is not a policy edit.
-    task_path=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-carry-front-hip-clearance-20261109T033215Z/result.json")
-    if hashlib.sha256(task_path.read_bytes()).hexdigest()!="cdd11d9dc280a854b56456d00d0d58860bf003337b0371d4d5d3b770cc82a607":raise ValueError("upright carry task source changed")
+    # left arm is the operational folded pose used by the passing004726 episode. This is not a FoundationWalk policy reference or policy edit.
+    task_path=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/result.json")
+    if hashlib.sha256(task_path.read_bytes()).hexdigest()!="f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42":raise ValueError("upright carry task source changed")
     task=json.loads(task_path.read_text())
     if not task["static_screen"]["pass_static"] or max(abs(x) for x in task["task_residual"])>.0001:raise ValueError("upright task geometry unqualified")
     if set(task["right_arm_rad"])!={n for n in targets if n.startswith("right_")}:raise ValueError("upright task scope")
     targets.update(task["right_arm_rad"])
-    return dict(classification="NATIVE_FOUNDATIONWALK_LEFT_REFERENCE_AND_IK_UPRIGHT_RIGHT_PAYLOAD_NOT_VENDOR_CARRY_QUALIFICATION",
-                source=str(walk_source),source_sha256=hashlib.sha256(walk_source.read_bytes()).hexdigest(),
-                historical_stand_reference=dict(path=str(source),sha256=hashlib.sha256(source.read_bytes()).hexdigest()),
-                operational_right_arm_ik=dict(path=str(task_path),sha256="cdd11d9dc280a854b56456d00d0d58860bf003337b0371d4d5d3b770cc82a607",source_native_frame=task["source_native_frame"],scene_sha256=task["scene_sha256"]),
-                arm_target_rad=targets,duration_s=6.,carry_reference_frame="TORSO_RIGID",physical_validation="NOT_RUN")
+    return dict(classification="SAVED_PREFIX_VALIDATED_OPERATIONAL_ARM_POSE_NOT_NATIVE_POLICY_REFERENCE",
+                source=str(source),source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                operational_right_arm_ik=dict(path=str(task_path),sha256="f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",source_native_frame=task["source_native_frame"],scene_sha256=task["scene_sha256"]),
+                arm_target_rad=targets,duration_s=6.,physical_validation="NOT_RUN")
 
 def perform_native_neutral_stow(n, settings):
     import os
