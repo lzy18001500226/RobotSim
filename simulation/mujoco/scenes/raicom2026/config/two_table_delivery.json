@@ -41,9 +41,13 @@
   "gait_prepare_required_load_states": 1,
   "gait_readiness_scope": "actual foot unloading AND measured knee motion AND live source/mode; observe full alternation during transit, not a redundant pre-motion complete cycle",
   "carry_native_neutral_stow": {
-    "classification": "NATIVE_LEFT_ARM_REFERENCE_AND_IK_UPRIGHT_RIGHT_PAYLOAD_NOT_VENDOR_CARRY_QUALIFICATION",
-    "source": "/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/cpgtelecon_config.yaml",
-    "source_sha256": "125956f6550e851c7dcded27c9c1e1df1e9a197377f1143ae9c0060288e985a1",
+    "classification": "NATIVE_FOUNDATIONWALK_LEFT_REFERENCE_AND_IK_UPRIGHT_RIGHT_PAYLOAD_NOT_VENDOR_CARRY_QUALIFICATION",
+    "source": "/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml",
+    "source_sha256": "b3081e9bca2035d4a986657bdc03b79ca0ed5d4e852c7972d86816f569acc2e9",
+    "historical_stand_reference": {
+      "path": "/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/cpgtelecon_config.yaml",
+      "sha256": "125956f6550e851c7dcded27c9c1e1df1e9a197377f1143ae9c0060288e985a1"
+    },
     "operational_right_arm_ik": {
       "path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/result.json",
       "sha256": "f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",
@@ -51,10 +55,10 @@
       "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
     },
     "arm_target_rad": {
-      "left_shoulder_pitch_joint": 0.4,
-      "left_shoulder_roll_joint": 0.0,
+      "left_shoulder_pitch_joint": 0.2,
+      "left_shoulder_roll_joint": 0.2,
       "left_shoulder_yaw_joint": 0.0,
-      "left_elbow_joint": -1.2,
+      "left_elbow_joint": -0.3,
       "left_wrist_yaw_joint": 0.0,
       "left_wrist_pitch_joint": 0.0,
       "left_wrist_roll_joint": 0.0,
