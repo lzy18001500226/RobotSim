@@ -314,7 +314,7 @@ def prepare_delivery_scene(parent, config_path):
             return axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),centre,point,worldaxis,axis)
         def jac(q):
             residual(q);return circle_task_jacobian(model,data,hand,centre,axis,dof)
-        fit=least_squares(residual,np.clip(qseed,bounds[:,0]+.01,bounds[:,1]-.01),jac=jac,bounds=(bounds[:,0]+.01,bounds[:,1]-.01),max_nfev=150,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        fit=least_squares(residual,np.clip(qseed,bounds[:,0]+.01,bounds[:,1]-.01),jac=jac,bounds=(bounds[:,0]+.01,bounds[:,1]-.01),max_nfev=500,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         qseed=fit.x;error=residual(qseed)
         mujoco.mj_forward(model,data);bad=collision_screen(check_object=False)
         checks.append(dict(point=point.tolist(),position_error_m=float(np.linalg.norm(error[:3])),axis_residual=float(np.linalg.norm(error[3:])),robot_environment_contacts=bad,right_arm_rad=qseed.tolist()))
