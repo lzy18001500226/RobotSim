@@ -1189,3 +1189,20 @@ class DeliveryAlignmentPermitTests(unittest.TestCase):
             cfg["permit_filename"]="carry_transit_delivery_rearm_99.json"
             with self.assertRaisesRegex(ValueError,"CARRY_PERMIT_PATH"):
                 m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+
+class DeliveryCumulativeProgressTests(unittest.TestCase):
+    def test_alignment_interleaving_does_not_reset_forward_failure(self):
+        state=None
+        for i in range(80):
+            state=m.delivery_forward_progress(state,2.+i*.001,i*.1,i%4!=3,"same")
+        self.assertTrue(state["no_progress"])
+        self.assertGreater(state["active_without_progress_s"],3.)
+        state=m.delivery_forward_progress(state,1.8,8.1,True,"same")
+        self.assertFalse(state["no_progress"])
+    def test_rearm_gap_does_not_count_as_command_time_or_clear_prior_failure_budget(self):
+        state=m.delivery_forward_progress(None,2.,0.,True,"one")
+        state=m.delivery_forward_progress(state,2.1,.1,True,"one")
+        before=state["active_without_progress_s"]
+        after=m.delivery_forward_progress(state,2.2,8.,True,"two")
+        self.assertEqual(after["active_without_progress_s"],before)
+        self.assertEqual(after["best_distance_m"],2.)

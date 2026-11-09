@@ -85,5 +85,7 @@
     "static_clearance_path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/two-table-terminal-aisle-reserve040-static-20261109T004240Z/result.json",
     "static_clearance_sha256": "c6fb73e55e833649f98cfbf8a913edbaccddec8c7ceac958cf699ca3cd6f6c3e",
     "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
-  }
+  },
+  "delivery_forward_command_m_s": 0.3,
+  "forward_response_profile": "SIMULATION_ONLY_LOADED_CARRY_FORWARD030_NOT_VENDOR_QUALIFICATION"
 }

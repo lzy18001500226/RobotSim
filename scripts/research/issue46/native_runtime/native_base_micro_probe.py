@@ -428,6 +428,10 @@ def run_probe(smoke_only=False):
                     if MICRO["carry"].get("compact_centre_feedback") and lat:raise RuntimeError("UNQUALIFIED_LATERAL_COMPACT_COMMAND")
                     if lat and MICRO["carry"].get("active_mission_phase")!="TURN":
                         raise RuntimeError("LATERAL_COMMAND_OUTSIDE_INPLACE_TURN")
+                carry=MICRO.get("carry",{})
+                if carry.get("delivery"):
+                    positive=float(carry["delivery"].get("delivery_forward_command_m_s",.20)) if carry.get("active_mission_phase")=="DELIVERY" else .20
+                    if fwd>positive+1e-8 or fwd<-.20000001 or lat:raise RuntimeError("TWO_TABLE_PHASE_COMMAND_BOUND")
                 super().publish(fwd, lat, ang)
                 self.command_log.append(dict(t=time.monotonic(), forward=fwd, lateral=lat, angular=ang,
                                              evidence="PYTHON_PUBLISH_CALL_ONLY_NO_MC_ACK"))
@@ -889,10 +893,30 @@ def table_terminal_braking_footprint(poses, origin, target_yaw, baseline_radius,
                 original_radial_criterion_pass=peak<=baseline_radius,violations=outside)
 
 
+
+def delivery_forward_progress(state, distance, now, active, epoch):
+    """Accumulate the existing three-second no-progress budget across ALIGN."""
+    if state is None:
+        if not active:return None
+        state=dict(best_distance_m=distance,active_without_progress_s=0.,last_time=now,last_active=False,epoch=epoch)
+    result=dict(state)
+    if now<result["last_time"]:raise RuntimeError("DELIVERY_PROGRESS_CLOCK")
+    if epoch==result["epoch"] and result["last_active"]:
+        # The existing command bridge expires each request after 0.20s.
+        result["active_without_progress_s"]+=min(.20,now-result["last_time"])
+    if distance<result["best_distance_m"]-.01:
+        result["best_distance_m"]=distance;result["active_without_progress_s"]=0.
+    result.update(last_time=now,last_active=bool(active),epoch=epoch,
+                  no_progress=result["active_without_progress_s"]>3.,
+                  timer_scope="PUBLISHED_REQUEST_LEASE_NOT_MC_ACK")
+    return result
+
+
 def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False, gait_prepare=False, compact_angular_cap=.30, release_source_on_stop=False, compact_centre_feedback=False, delivery=None, vendor_transition_table=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if vendor_transition_table and (native_action_smoothing or native_step or not delivery):raise ValueError("vendor action-table comparison scope")
     if delivery is not None:
+        if float(delivery.get("delivery_forward_command_m_s",.20)) not in (.20,.30):raise ValueError("delivery forward response profile bound")
         if delivery.get("stand_transition_strategy","ZERO_WINDOW_THEN_SD") not in ("ZERO_WINDOW_THEN_SD","EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"):raise ValueError("stand transition diagnostic scope")
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
         if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
@@ -1351,9 +1375,9 @@ def run_carry_navigation(n,contract):
                                 cfg["permit_filename"]="carry_transit_delivery_permit.json";cfg["delivery_turn_stop_pass"]=True
                                 goal=list(cfg["delivery"]["base_goal_world_xy"])
                                 target=Goal2D(*goal,float(cfg["delivery"]["base_goal_world_yaw_rad"]),"native_scene_world")
-                                controller=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.12,max_forward_mps=.20,max_angular_rps=cfg["angular_command_cap"],k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
+                                controller=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=cfg["angular_command_cap"],k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
                                 mission["phase"]="DELIVERY";mission["delivery_origin_pose"]=stopped["pose"]
-                                mission["delivery_target_world_xy"]=goal;cfg["transit_command_speed"]=.20
+                                mission["delivery_target_world_xy"]=goal;cfg["transit_command_speed"]=float(cfg["delivery"].get("delivery_forward_command_m_s",.20))
                                 transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                                 n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
                                 progress_state=None;progress_best=None;progress_at=activation_started
@@ -1429,6 +1453,10 @@ def run_carry_navigation(n,contract):
             control_now=time.monotonic()
             steering_yaw=(p["yaw"]+2*math.pi)%(2*math.pi)-math.pi if cfg.get("reverse_moving_arc") else p["yaw"]
             if mission is None:output=controller.step(Pose2D(p["x"],p["y"],steering_yaw,"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=control_now)
+            if mission is not None and mission["phase"]=="DELIVERY" and output.distance_m is not None:
+                monitor=delivery_forward_progress(mission.get("delivery_forward_progress"),output.distance_m,tick,output.state==NavState.DRIVE and output.linear_x>0.,cfg["permit_filename"])
+                mission["delivery_forward_progress"]=monitor
+                if monitor is not None and monitor["no_progress"]:raise RuntimeError("DELIVERY_CUMULATIVE_FORWARD_WITHOUT_PROGRESS")
             if output.state in (NavState.ALIGN,NavState.DRIVE,NavState.FINAL_ALIGN):
                 metric=output.distance_m if output.state==NavState.DRIVE else abs(output.yaw_error_rad)
                 threshold=.01 if output.state==NavState.DRIVE else .02
@@ -1454,7 +1482,7 @@ def run_carry_navigation(n,contract):
                     forward*=bounded_start_scale(max(0.,tick-activation_started))
                     mission["retreat_input_ramp_s"]=.5
                 if mission is not None and mission["phase"]=="DELIVERY":
-                    forward=.20 if output.linear_x>0. else 0.
+                    forward=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)) if output.linear_x>0. else 0.
                     if output.state in (NavState.ALIGN,NavState.FINAL_ALIGN):
                         if mission.get("delivery_alignment_state")!=output.state.value:
                             mission["delivery_alignment_origin"]=p;mission["delivery_alignment_state"]=output.state.value
