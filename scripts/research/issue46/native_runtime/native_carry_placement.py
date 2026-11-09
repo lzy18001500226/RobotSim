@@ -287,10 +287,17 @@ def prepare_delivery_scene(parent, config_path):
         data.qpos[object_free:object_free+3]=np.r_[xy,old[2]]+R@rel
         quat=Rotation.from_matrix(R@object_rotation_local).as_quat();data.qpos[object_free+3:object_free+7]=quat[[3,0,1,2]]
         mujoco.mj_forward(model,data)
-    bearing=math.atan2(goal[1]-old[1],goal[0]-old[0])
-    poses=[(old[:2],oldyaw+u*((bearing-oldyaw+math.pi)%(2*math.pi)-math.pi)) for u in np.linspace(0,1,9)]
-    poses += [(old[:2]+u*(goal-old[:2]),bearing) for u in np.linspace(0,1,17)]
-    poses += [(goal,bearing+u*((cfg["base_goal_world_yaw_rad"]-bearing+math.pi)%(2*math.pi)-math.pi)) for u in np.linspace(0,1,9)]
+    egress=float(cfg.get("post_turn_egress_m",0.))
+    if egress not in (0.,1.):raise ValueError("unsupported outward egress length")
+    waypoints=[old[:2]]
+    if egress:waypoints.append(old[:2]+(egress+.10)*np.array([math.cos(oldyaw),math.sin(oldyaw)]))
+    waypoints.append(goal);poses=[];previous_yaw=oldyaw
+    for a,b in zip(waypoints,waypoints[1:]):
+        bearing=math.atan2(b[1]-a[1],b[0]-a[0])
+        poses.extend((a,previous_yaw+u*((bearing-previous_yaw+math.pi)%(2*math.pi)-math.pi)) for u in np.linspace(0,1,9))
+        poses.extend((a+u*(b-a),bearing) for u in np.linspace(0,1,17))
+        previous_yaw=bearing
+    poses.extend((goal,bearing+u*((cfg["base_goal_world_yaw_rad"]-bearing+math.pi)%(2*math.pi)-math.pi)) for u in np.linspace(0,1,9))
     for xy,yaw in poses:
         set_root(xy,yaw)
         bad=collision_screen()

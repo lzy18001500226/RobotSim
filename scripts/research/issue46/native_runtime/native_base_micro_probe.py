@@ -160,7 +160,7 @@ def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evi
                 raise RuntimeError("DELIVERY_REARM_NOT_QUALIFIED")
         if name in [f"carry_transit_delivery_rearm_{i}.json" for i in range(1,5)]:
             previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
-            if not cfg.get("delivery") or cfg.get("delivery_alignment_stop_pass") is not True or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"] or cfg.get("absolute_command_deadline_ns")!=previous["command_deadline_ns"]:
+            if not cfg.get("delivery") or (cfg.get("delivery_alignment_stop_pass") is not True and cfg.get("egress_stop_pass") is not True) or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"] or cfg.get("absolute_command_deadline_ns")!=previous["command_deadline_ns"]:
                 raise RuntimeError("DELIVERY_ALIGNMENT_REARM_NOT_QUALIFIED")
         if name.startswith("carry_transit_clock_recovery_"):
             previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
@@ -430,7 +430,7 @@ def run_probe(smoke_only=False):
                         raise RuntimeError("LATERAL_COMMAND_OUTSIDE_INPLACE_TURN")
                 carry=MICRO.get("carry",{})
                 if carry.get("delivery"):
-                    positive=float(carry["delivery"].get("delivery_forward_command_m_s",.20)) if carry.get("active_mission_phase")=="DELIVERY" else .20
+                    positive=float(carry["delivery"].get("delivery_forward_command_m_s",.20)) if carry.get("active_mission_phase") in ("EGRESS","DELIVERY") else .20
                     if fwd>positive+1e-8 or fwd<-.20000001 or lat:raise RuntimeError("TWO_TABLE_PHASE_COMMAND_BOUND")
                 super().publish(fwd, lat, ang)
                 self.command_log.append(dict(t=time.monotonic(), forward=fwd, lateral=lat, angular=ang,
@@ -1375,13 +1375,19 @@ def run_carry_navigation(n,contract):
                                 closed_permits.append(transit_permit);transit_permit=None
                                 cfg["previous_permit_filename"]=cfg["permit_filename"]
                                 cfg["permit_filename"]="carry_transit_delivery_permit.json";cfg["delivery_turn_stop_pass"]=True
-                                goal=list(cfg["delivery"]["base_goal_world_xy"])
-                                target=Goal2D(*goal,float(cfg["delivery"]["base_goal_world_yaw_rad"]),"native_scene_world")
-                                controller=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=cfg["angular_command_cap"],k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
+                                egress=float(cfg["delivery"].get("post_turn_egress_m",0.))
+                                if egress:
+                                    goal=[stopped["pose"]["x"]+(egress+.10)*math.cos(bearing),stopped["pose"]["y"]+(egress+.10)*math.sin(bearing)]
+                                    target=Goal2D(*goal,bearing,"native_scene_world");mission["phase"]="EGRESS"
+                                    mission["egress_origin_pose"]=stopped["pose"];mission["egress_heading_rad"]=bearing
+                                else:
+                                    goal=list(cfg["delivery"]["base_goal_world_xy"])
+                                    target=Goal2D(*goal,float(cfg["delivery"]["base_goal_world_yaw_rad"]),"native_scene_world");mission["phase"]="DELIVERY"
+                                controller=PointGoalController(ControllerConfig(xy_tolerance_m=.01 if egress else .10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=.10 if egress else cfg["angular_command_cap"],k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
+                                mission["delivery_origin_pose"]=stopped["pose"]
+                                mission["delivery_target_world_xy"]=goal;cfg["transit_command_speed"]=float(cfg["delivery"].get("delivery_forward_command_m_s",.20))
                                 if (cfg["delivery"].get("carry_native_neutral_stow") or {}).get("follow_native_unloaded_arm_after_turn"):
                                     write_durable_milestone("/workspace/evidence/carry_unloaded_arm_follow.json",dict(owner_pid=cfg["pid"],generation=n.latest_row["generation"],created_ns=time.monotonic_ns(),deadline_ns=int((until+15.)*1e9),turn_and_composite_stop_pass=True))
-                                mission["phase"]="DELIVERY";mission["delivery_origin_pose"]=stopped["pose"]
-                                mission["delivery_target_world_xy"]=goal;cfg["transit_command_speed"]=float(cfg["delivery"].get("delivery_forward_command_m_s",.20))
                                 transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                                 n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
                                 progress_state=None;progress_best=None;progress_at=activation_started
@@ -1405,6 +1411,39 @@ def run_carry_navigation(n,contract):
                         progress_state=None;progress_best=None;progress_at=activation_started
                         with n.lock:n.moving=True
                         continue
+                elif mission["phase"]=="EGRESS":
+                    origin=mission["egress_origin_pose"];heading=mission["egress_heading_rad"]
+                    dx=p["x"]-origin["x"];dy=p["y"]-origin["y"]
+                    along=math.cos(heading)*dx+math.sin(heading)*dy
+                    cross=-math.sin(heading)*dx+math.cos(heading)*dy
+                    mission["egress_measured_forward_m"]=along
+                    mission["egress_max_cross_track_m"]=max(mission.get("egress_max_cross_track_m",0.),abs(cross))
+                    if abs(cross)>.05:raise RuntimeError("OUTWARD_EGRESS_CROSS_TRACK")
+                    if along>=float(cfg["delivery"]["post_turn_egress_m"]):
+                        n.deadline_zero();n.stop_started=True
+                        transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+                        n.source_enabled(False) if cfg.get("release_source_on_stop") else None
+                        stand_transition()
+                        result["egress_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
+                        if result["egress_stop_composite"].get("pass") is not True:raise RuntimeError("OUTWARD_EGRESS_STOP_NOT_QUALIFIED")
+                        n.await_graph();n.pump();stopped=n.sample()
+                        result["egress_stop_pose"]=stopped["pose"]
+                        transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
+                        closed_permits.append(transit_permit);transit_permit=None
+                        cfg["previous_permit_filename"]=cfg["permit_filename"];cfg["egress_stop_pass"]=True
+                        cfg["delivery_rearm_count"]=cfg.get("delivery_rearm_count",0)+1
+                        cfg["permit_filename"]="carry_transit_delivery_rearm_"+str(cfg["delivery_rearm_count"])+".json"
+                        goal=list(cfg["delivery"]["base_goal_world_xy"])
+                        target=Goal2D(*goal,float(cfg["delivery"]["base_goal_world_yaw_rad"]),"native_scene_world")
+                        controller=PointGoalController(ControllerConfig(xy_tolerance_m=.10,yaw_tolerance_rad=.12,max_forward_mps=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)),max_angular_rps=cfg["angular_command_cap"],k_angular=.8,goal_timeout_s=max(5.,until-time.monotonic())))
+                        mission["phase"]="DELIVERY";mission["delivery_origin_pose"]=stopped["pose"]
+                        mission["delivery_target_world_xy"]=goal;mission["delivery_alignment_state"]=None
+                        transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
+                        n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
+                        progress_state=None;progress_best=None;progress_at=activation_started
+                        with n.lock:n.moving=True
+                        continue
+                    output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=time.monotonic())
                 elif mission["phase"]=="DELIVERY":
                     distance=math.hypot(goal[0]-p["x"],goal[1]-p["y"])
                     final_yaw_error=(target.yaw-p["yaw"]+math.pi)%(2*math.pi)-math.pi
@@ -1431,7 +1470,8 @@ def run_carry_navigation(n,contract):
                         closed_permits.append(transit_permit);transit_permit=None
                         cfg["previous_permit_filename"]=cfg["permit_filename"]
                         cfg["delivery_alignment_stop_pass"]=True
-                        count=len(result["delivery_alignment_stop_composites"])
+                        cfg["delivery_rearm_count"]=cfg.get("delivery_rearm_count",0)+1
+                        count=cfg["delivery_rearm_count"]
                         cfg["permit_filename"]="carry_transit_delivery_rearm_"+str(count)+".json"
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
                         mission["delivery_alignment_state"]=None;controller.reset()
@@ -1457,7 +1497,7 @@ def run_carry_navigation(n,contract):
             control_now=time.monotonic()
             steering_yaw=(p["yaw"]+2*math.pi)%(2*math.pi)-math.pi if cfg.get("reverse_moving_arc") else p["yaw"]
             if mission is None:output=controller.step(Pose2D(p["x"],p["y"],steering_yaw,"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=control_now)
-            if mission is not None and mission["phase"]=="DELIVERY" and output.distance_m is not None:
+            if mission is not None and mission["phase"] in ("EGRESS","DELIVERY") and output.distance_m is not None:
                 monitor=delivery_forward_progress(mission.get("delivery_forward_progress"),output.distance_m,tick,output.state==NavState.DRIVE and output.linear_x>0.,cfg["permit_filename"])
                 mission["delivery_forward_progress"]=monitor
                 if monitor is not None and monitor["no_progress"]:raise RuntimeError("DELIVERY_CUMULATIVE_FORWARD_WITHOUT_PROGRESS")
@@ -1485,7 +1525,7 @@ def run_carry_navigation(n,contract):
                 if cfg.get("inplace_centre_hold") and not cfg.get("gait_prepare") and mission is not None and mission["phase"]=="RETREAT" and cfg.get("transit_command_speed",.12)==.12:
                     forward*=bounded_start_scale(max(0.,tick-activation_started))
                     mission["retreat_input_ramp_s"]=.5
-                if mission is not None and mission["phase"]=="DELIVERY":
+                if mission is not None and mission["phase"] in ("EGRESS","DELIVERY"):
                     forward=float(cfg["delivery"].get("delivery_forward_command_m_s",.20)) if output.linear_x>0. else 0.
                     if output.state in (NavState.ALIGN,NavState.FINAL_ALIGN):
                         if mission.get("delivery_alignment_state")!=output.state.value:
@@ -1536,6 +1576,8 @@ def run_carry_navigation(n,contract):
                 result["pass_result"]=bool(result["pass_result"] and abs(yaw_error)<=.12 and result.get("retreat_turn_prefix_pass") and result["retreat_stop_composite"]["pass"] and result["turn_stop_composite"]["pass"])
                 mission["bilateral_support_alternation_observed"]={x["side"] for x in mission.get("observed_support_changes",[])}=={"left","right"}
                 result["pass_result"]=bool(result["pass_result"] and mission["bilateral_support_alternation_observed"])
+                if cfg["delivery"].get("post_turn_egress_m"):
+                    result["pass_result"]=bool(result["pass_result"] and result.get("egress_stop_composite",{}).get("pass") and mission.get("egress_measured_forward_m",0.)>=cfg["delivery"]["post_turn_egress_m"])
                 result["delivery_base_arrival_pass"]=result["pass_result"]
                 result["classification"]="SIMULATION_ONLY_TWO_TABLE_APPROACH_NOT_PLACEMENT"
             elif mission["phase"]!="FORWARD":result["pass_result"]=False

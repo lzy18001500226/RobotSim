@@ -32,8 +32,8 @@
   "source_note": "human-approved90deg deliverytable at(0,1.6), original pickup/fixedstance+10cm; compiled geometry measurements20261108; actual reaching/placement remain live gates",
   "intermediate_turn_heading_tolerance_rad": 0.3,
   "gait_prepare_angular_rad_s": -0.1,
-  "intermediate_turn_stop_reserve_rad": 0.35,
-  "turn_stop_reserve_evidence": "same-profile native190527 tail.21256rad and200946 tail.28469rad;202634terminalstagnation~.315rad remaining; planned trigger not a physical PASS",
+  "intermediate_turn_stop_reserve_rad": 0.4,
+  "turn_stop_reserve_evidence": "061921 real terminal turn remaining.3941rad radius.2901m, later remaining.3881 radius.2998 before .3003m guard; .40rad trigger stays inside existing planning bound. Actual finalheading/composite/footprint gates unchanged",
   "retreat_cross_track_limit_m": 0.15,
   "retreat_corridor_scope": "preliminary transfer task; retain raw instantaneous50mm legacy result separately; not a strict straight-reference qualification",
   "turn_braking_footprint_m": 0.35,
@@ -87,5 +87,7 @@
   "forward_response_profile": "SIMULATION_ONLY_LOADED_CARRY_FORWARD030_NOT_VENDOR_QUALIFICATION",
   "carry_reference_scope": "RESTORED_MEASURED004726_PREFIX_POSE_TORSO_RIGID_NOT_NATIVE_POLICY_REFERENCE",
   "activation_protocol": "EXISTING_GAIT_PREPARE_THEN_RETREAT",
-  "unloaded_arm_follow_scope": "SIMULATION_ONLY_AFTER_VERIFIED_TURN_STOP_NATIVE_SOURCE_PRIVATE_SINGLE_OWNER_RIGHT_IK_UNCHANGED"
+  "unloaded_arm_follow_scope": "SIMULATION_ONLY_AFTER_VERIFIED_TURN_STOP_NATIVE_SOURCE_PRIVATE_SINGLE_OWNER_RIGHT_IK_UNCHANGED",
+  "post_turn_egress_m": 1.0,
+  "post_turn_egress_scope": "SIMULATION_ONLY_MEASURED_1M_AWAY_BEFORE_SECOND_TABLE_ALIGNMENT_SAME_ROUTE_CONTROLLER"
 }

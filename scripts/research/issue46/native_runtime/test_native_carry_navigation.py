@@ -1221,3 +1221,37 @@ class VendorDirectRetreatTests(unittest.TestCase):
         cfg.pop("activation_protocol")
         with self.assertRaises(ValueError):
             m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True,transit_command_speed=.20)
+
+class OutwardEgressHandoffTests(unittest.TestCase):
+    def test_egress_requires_real_stop_before_second_table_rearm(self):
+        import copy,json,threading
+        from pathlib import Path
+        from types import SimpleNamespace as NS
+        cfgfile=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
+            transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,gait_prepare=True,
+            release_source_on_stop=True,delivery=cfgfile,vendor_transition_table=True)
+        node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and ast.unparse(n.test)=="mission['phase'] == 'EGRESS'")
+        wrapper=ast.parse("for _ in range(1):\n pass")
+        wrapper.body[0].body=node.body
+        for passed in (False,True):
+            events=[]
+            n=NS(lock=threading.RLock(),latest_row={"generation":1},deadline_zero=lambda:events.append("zero"),source_enabled=lambda x:events.append(("source",x)),
+                observe=lambda *a,**k:{"pass":passed},await_graph=lambda:events.append("graph"),
+                pump=lambda:None,sample=lambda:{"pose":{"x":-1.01,"y":0.,"yaw":math.pi}})
+            config=dict(delivery=cfgfile,pid=19,release_source_on_stop=True,permit_filename="carry_transit_delivery_permit.json",angular_command_cap=.6)
+            scope=dict(n=n,cfg=config,mission={"egress_origin_pose":{"x":0.,"y":0.},"egress_heading_rad":math.pi},
+                p={"x":-1.01,"y":0.},math=math,result={},transit_permit={"old":True},closed_permits=[],baseline={},
+                stand_transition=lambda:events.append("stand"),carry_transit_phase=lambda rec,phase,*a:events.append(phase) or {"phase":phase},
+                Goal2D=lambda *a:a,PointGoalController=lambda a:a,ControllerConfig=lambda **a:a,time=NS(monotonic=lambda:2.),until=90.)
+            if passed:exec(compile(wrapper,"actual_egress_handoff","exec"),scope)
+            else:
+                with self.assertRaisesRegex(RuntimeError,"OUTWARD_EGRESS_STOP_NOT_QUALIFIED"):
+                    exec(compile(wrapper,"actual_egress_handoff","exec"),scope)
+            self.assertEqual(events[0],"zero")
+            if passed:
+                self.assertEqual(scope["mission"]["phase"],"DELIVERY")
+                self.assertTrue(config["egress_stop_pass"])
+                self.assertEqual(config["permit_filename"],"carry_transit_delivery_rearm_1.json")
+                self.assertIn("TRANSIT",events)
+            else:self.assertNotIn("TRANSIT",events)
