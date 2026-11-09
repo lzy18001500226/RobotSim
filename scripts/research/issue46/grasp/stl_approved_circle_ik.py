@@ -328,7 +328,21 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
         def jacobian(q):
             residual(q)
             return circle_task_jacobian(model,data,hand,np.asarray(center),local,dofs)
-        solved=least_squares(residual,np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001),jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=200,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        # Reuse the live directed-axis DLS warm start instead of spending the
+        # whole trust-region budget drifting along the free axial-roll valley.
+        q_warm=np.clip(arm,bounds[:,0]+.001,bounds[:,1]-.001)
+        for warm_iteration in range(20):
+            warm_error=residual(q_warm)
+            if np.linalg.norm(warm_error[:3])<1e-4 and np.linalg.norm(warm_error[3:])<1e-4:break
+            J=jacobian(q_warm)
+            dq=-J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),warm_error)
+            q_warm=np.clip(q_warm+np.clip(dq,-.03,.03),bounds[:,0]+.001,bounds[:,1]-.001)
+        warm_error=residual(q_warm)
+        if np.linalg.norm(warm_error[:3])<1e-4 and np.linalg.norm(warm_error[3:])<1e-4:
+            from types import SimpleNamespace
+            solved=SimpleNamespace(x=q_warm,nfev=warm_iteration+1,status="LIVE_DLS_TASK_TOLERANCE_MET",optimality=float(np.linalg.norm(jacobian(q_warm).T@warm_error,np.inf)))
+        else:
+            solved=least_squares(residual,q_warm,jac=jacobian,bounds=(bounds[:,0]+.001,bounds[:,1]-.001),max_nfev=200,ftol=1e-9,xtol=1e-9,gtol=1e-9)
         arm=solved.x;e=residual(arm);mujoco.mj_forward(model,data);pads,bad,table,robot_table=ik.contacts(model,data,bottle)
         left_self=[]
         if left_park:
