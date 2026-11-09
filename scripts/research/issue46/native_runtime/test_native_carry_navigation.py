@@ -1121,6 +1121,7 @@ class TerminalPivotControlTests(unittest.TestCase):
         import json
         from types import SimpleNamespace as NS
         cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        cfg["turn_terminal_translation_free_angle_rad"]=1.
         code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,gait_prepare=True,release_source_on_stop=True,delivery=cfg,vendor_transition_table=True)
         node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and ast.unparse(n.test)=='cfg.get(\'compact_centre_feedback\')' and any('terminal_turn_translation_free_ticks' in ast.unparse(x) for x in n.body))
         for error,expect_zero in ((.5,True),(1.5,False)):
@@ -1150,3 +1151,16 @@ class ContinuousZeroStandStrategyTests(unittest.TestCase):
             self.assertNotIn("pass_result",ns["result"])
         self.assertIn('require_stop=True',code)
         self.assertIn('DELIVERY_ALIGNMENT_STOP_NOT_QUALIFIED',code)
+
+class TerminalAisleClearanceTests(unittest.TestCase):
+    def test_extension_is_terminal_heading_and_one_sided_not_a_larger_circle(self):
+        origin=dict(x=0.,y=0.)
+        extension=dict(frame="native_scene_world",maximum_radius_m=.5,lateral_m=.2,terminal_yaw_error_rad=.4)
+        pose=lambda x,y,yaw=math.pi:dict(x=x,y=y,yaw=yaw)
+        self.assertTrue(m.table_terminal_braking_footprint([pose(.40,.10)],origin,math.pi,.35,extension)["pass_clearance"])
+        self.assertFalse(m.table_terminal_braking_footprint([pose(.40,.10)],origin,math.pi,.35)["pass_clearance"])
+        for unsafe in (pose(-.40,.10),pose(.40,-.25),pose(.51,0.),pose(.40,.10,math.pi/2)):
+            self.assertFalse(m.table_terminal_braking_footprint([unsafe],origin,math.pi,.35,extension)["pass_clearance"])
+        actual=m.table_terminal_braking_footprint([pose(.4,.1)],origin,math.pi,.35,extension)
+        self.assertFalse(actual["original_radial_criterion_pass"])
+        self.assertTrue(actual["used_aisle_reserve"])

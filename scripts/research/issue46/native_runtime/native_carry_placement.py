@@ -207,6 +207,7 @@ def prepare_delivery_scene(parent, config_path):
     root=Path("/home/lzy18001500226/projects/RobotSim")
     record=json.loads(Path(parent).read_text());cfg=json.loads(Path(config_path).read_text())
     if cfg.get("schema")!="robotsim.x2.two-table-delivery.v1" or not record.get("approved_two_table_layout"):raise ValueError("two-table scene provenance")
+    if cfg.get("terminal_braking_aisle_reserve") and cfg["terminal_braking_aisle_reserve"]["scene_sha256"]!=record["generated"]["host_scene"]["sha256"]:raise ValueError("terminal aisle scene changed")
     model=mujoco.MjModel.from_xml_path(record["generated"]["host_scene"]["path"]);data=mujoco.MjData(model);mujoco.mj_forward(model,data)
     table=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"raicom_delivery_table")
     points=[]

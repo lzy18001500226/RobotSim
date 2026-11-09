@@ -868,6 +868,23 @@ def inplace_centre_command(pose, origin, max_speed=.12, forward_only=False):
     return c*vx+si*vy,-si*vx+c*vy
 
 
+
+def table_terminal_braking_footprint(poses, origin, target_yaw, baseline_radius, extension=None):
+    """Task clearance only; never substitutes for the composite physical stop."""
+    peak=0.;outside=[];used=False
+    for pose in poses:
+        dx=pose["x"]-origin["x"];dy=pose["y"]-origin["y"];radius=math.hypot(dx,dy);peak=max(peak,radius)
+        if radius<=baseline_radius:continue
+        yaw_error=abs((pose["yaw"]-target_yaw+math.pi)%(2*math.pi)-math.pi)
+        allowed=(extension is not None and extension.get("frame")=="native_scene_world" and
+                 0.<=dx and abs(dy)<=extension["lateral_m"] and radius<=extension["maximum_radius_m"] and
+                 yaw_error<=extension["terminal_yaw_error_rad"])
+        if allowed:used=True
+        else:outside.append(dict(dx_m=dx,dy_m=dy,radius_m=radius,yaw_error_rad=yaw_error))
+    return dict(pass_clearance=not outside,peak_radius_m=peak,used_aisle_reserve=used,
+                original_radial_criterion_pass=peak<=baseline_radius,violations=outside)
+
+
 def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False, gait_prepare=False, compact_angular_cap=.30, release_source_on_stop=False, compact_centre_feedback=False, delivery=None, vendor_transition_table=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if vendor_transition_table and (native_action_smoothing or native_step or not delivery):raise ValueError("vendor action-table comparison scope")
@@ -875,6 +892,13 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
         if delivery.get("stand_transition_strategy","ZERO_WINDOW_THEN_SD") not in ("ZERO_WINDOW_THEN_SD","EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"):raise ValueError("stand transition diagnostic scope")
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
         if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
+        extension=delivery.get("terminal_braking_aisle_reserve")
+        if extension is not None:
+            if extension.get("classification")!="SIMULATION_ONLY_TERMINAL_AISLE_RESERVE" or extension.get("frame")!="native_scene_world" or extension.get("maximum_radius_m")!=.50 or extension.get("lateral_m")!=.20 or extension.get("terminal_yaw_error_rad")!=.40:raise ValueError("terminal aisle reserve scope")
+            import hashlib
+            proof=Path(extension["static_clearance_path"])
+            if hashlib.sha256(proof.read_bytes()).hexdigest()!=extension["static_clearance_sha256"] or json.loads(proof.read_text()).get("pass_clearance") is not True:raise ValueError("terminal aisle clearance provenance")
+
         if not .05<=float(delivery.get("retreat_cross_track_limit_m",.05))<=.15:raise ValueError("retreat task corridor bound")
         if not 0.<=float(delivery.get("intermediate_turn_stop_reserve_rad",0.))<=.40:raise ValueError("intermediate stopping reserve bound")
         if delivery.get("gait_prepare_required_load_states",2) not in (1,2):raise ValueError("gait readiness scope")
@@ -1308,8 +1332,13 @@ def run_carry_navigation(n,contract):
                             turn_rows=[r for r in n.trace if r["sample_monotonic_s"]>=mission.get("turn_start_source_s",0.)]
                             peak=max([drift]+[math.hypot(r["pose"]["x"]-origin["x"],r["pose"]["y"]-origin["y"]) for r in turn_rows])
                             mission["turn_and_braking_peak_radius_m"]=peak
-                            if cfg.get("compact_turn") and peak>(float(cfg["delivery"].get("turn_braking_footprint_m",.30)) if cfg.get("delivery") else .30):raise RuntimeError("COMPACT_TURN_BRAKING_RADIUS_TASK_LIMIT")
-                            if drift>bound:raise RuntimeError("INPLACE_TURN_CENTER_TRANSLATION:"+str(drift))
+                            extension=(cfg.get("delivery") or {}).get("terminal_braking_aisle_reserve")
+                            radial_braking_bound=float(cfg["delivery"].get("turn_braking_footprint_m",.30)) if cfg.get("delivery") else .30
+                            footprint=table_terminal_braking_footprint([r["pose"] for r in turn_rows],origin,bearing,radial_braking_bound,extension)
+                            mission["terminal_braking_footprint"]=footprint
+                            if cfg.get("compact_turn") and not footprint["pass_clearance"]:raise RuntimeError("COMPACT_TURN_BRAKING_RADIUS_TASK_LIMIT")
+                            if not (extension and footprint["pass_clearance"]):
+                                if drift>bound:raise RuntimeError("INPLACE_TURN_CENTER_TRANSLATION:"+str(drift))
                             result["retreat_turn_prefix_pass"]=True
                             if cfg.get("delivery"):
                                 transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)

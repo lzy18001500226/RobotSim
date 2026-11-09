@@ -69,7 +69,17 @@
     "duration_s": 6.0,
     "physical_validation": "NOT_RUN"
   },
-  "turn_terminal_angular_taper_angle_rad": 1.2,
-  "turn_terminal_translation_free_angle_rad": 1.0,
-  "stand_transition_strategy": "EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"
+  "turn_terminal_angular_taper_angle_rad": 0.6,
+  "turn_terminal_translation_free_angle_rad": 0.0,
+  "stand_transition_strategy": "ZERO_WINDOW_THEN_SD",
+  "terminal_braking_aisle_reserve": {
+    "classification": "SIMULATION_ONLY_TERMINAL_AISLE_RESERVE",
+    "frame": "native_scene_world",
+    "maximum_radius_m": 0.5,
+    "lateral_m": 0.2,
+    "terminal_yaw_error_rad": 0.4,
+    "static_clearance_path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/two-table-terminal-aisle-reserve040-static-20261109T004240Z/result.json",
+    "static_clearance_sha256": "c6fb73e55e833649f98cfbf8a913edbaccddec8c7ceac958cf699ca3cd6f6c3e",
+    "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
+  }
 }
