@@ -914,12 +914,15 @@ def delivery_forward_progress(state, distance, now, active, epoch):
 
 def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, timeout_s=90., angular_command_cap=.075, native_action_smoothing=False, native_step=False, transit_policy_050=False, reverse_moving_arc=False, away_1m=False, allow_carried_bottle_tilt=False, straight_retreat_turn=False, inplace_centre_hold=False, turn_brake_delay_s=0., retreat_brake_delay_s=0.,turn_recovery_speed=.12, transit_command_speed=.12, compact_turn=False, gait_prepare=False, compact_angular_cap=.30, release_source_on_stop=False, compact_centre_feedback=False, delivery=None, vendor_transition_table=False):
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
-    if vendor_transition_table and (native_action_smoothing or native_step or not delivery):raise ValueError("vendor action-table comparison scope")
+    step_all=bool(delivery and delivery.get("transit_motion_mode")=="LOCOMOTION_STEP")
+    if step_all and (not native_step or not vendor_transition_table):raise ValueError("native STEP transit requires original table and explicit source mode")
+    if vendor_transition_table and (native_action_smoothing or native_step and not step_all or not delivery):raise ValueError("vendor action-table comparison scope")
     if delivery is not None:
+        if delivery.get("transit_motion_mode","LOCOMOTION_DEFAULT") not in ("LOCOMOTION_DEFAULT","LOCOMOTION_STEP"):raise ValueError("unsupported native transit mode")
         if float(delivery.get("delivery_forward_command_m_s",.20)) not in (.20,.30):raise ValueError("delivery forward response profile bound")
         if delivery.get("stand_transition_strategy","ZERO_WINDOW_THEN_SD") not in ("ZERO_WINDOW_THEN_SD","EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"):raise ValueError("stand transition diagnostic scope")
         direct_retreat=delivery.get("activation_protocol")=="VENDOR_DIRECT_RETREAT_NONZERO"
-        if not (compact_turn and (gait_prepare or direct_retreat and transit_command_speed==.20) and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop or explicit vendor-direct retreat profile")
+        if not (compact_turn and (gait_prepare or direct_retreat and transit_command_speed==.20) and release_source_on_stop and compact_centre_feedback and (not native_step or step_all)):raise ValueError("delivery requires the measured FoundationWalk compact/stop or explicit vendor-direct retreat profile")
         if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
         extension=delivery.get("terminal_braking_aisle_reserve")
         if extension is not None:
@@ -956,7 +959,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if reverse_moving_arc and (not transit_policy_050 or native_step):raise ValueError("reverse moving arc requires explicit FoundationWalk carry transit profile")
     script=build_script("forward",1.,joint_limits,command_speed=.12,robot_bodies=robot_bodies)
     script=script.rsplit("\nrun_probe()",1)[0]
-    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),vendor_transition_table=bool(vendor_transition_table),motion_mode="LOCOMOTION_STEP" if native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),delivery=delivery,compact_centre_feedback=bool(compact_centre_feedback),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
+    options=dict(carry=dict(goal_xy_m=None if away_1m else list(goal_xy),pid=carry_pid,timeout_s=timeout_s,angular_command_cap=angular_command_cap,native_action_smoothing=bool(native_action_smoothing),vendor_transition_table=bool(vendor_transition_table),native_step_all_transit=step_all,motion_mode="LOCOMOTION_STEP" if step_all or native_step and not straight_retreat_turn else "LOCOMOTION_DEFAULT",straight_retreat_turn=bool(straight_retreat_turn),compact_turn=bool(compact_turn),delivery=delivery,compact_centre_feedback=bool(compact_centre_feedback),release_source_on_stop=bool(release_source_on_stop),gait_prepare=bool(gait_prepare),inplace_centre_hold=bool(inplace_centre_hold),turn_recovery_speed=float(turn_recovery_speed),transit_command_speed=float(transit_command_speed),turn_brake_delay_s=float(turn_brake_delay_s),retreat_brake_delay_s=float(retreat_brake_delay_s),inplace_motion_mode="LOCOMOTION_STEP" if native_step else "LOCOMOTION_DEFAULT",transit_policy_050=bool(transit_policy_050),reverse_moving_arc=bool(reverse_moving_arc),away_1m=bool(away_1m),allow_carried_bottle_tilt=bool(allow_carried_bottle_tilt)),graph_startup_timeout_s=5.,
                  allowed_contact_pairs=[["test_cylinder",p] for p in ("R_hand_narrow3_Link","R_hand_wide3_Link")])
     return script+"\nMICRO.update("+repr(options)+")\nrun_probe()\n"
 
@@ -1101,7 +1104,7 @@ def run_carry_navigation(n,contract):
             result["away_mission"]=mission
             bearing=away
         else:bearing=math.atan2(goal[1]-start["y"],goal[0]-start["x"])
-        if cfg.get("motion_mode")=="LOCOMOTION_STEP":
+        if cfg.get("motion_mode")=="LOCOMOTION_STEP" and not cfg.get("native_step_all_transit"):
             n.stand_once("LOCOMOTION_STEP")
             step_until=time.monotonic()+.75;step_ready=False
             while time.monotonic()<step_until:
@@ -1144,7 +1147,7 @@ def run_carry_navigation(n,contract):
                     cfg["previous_permit_filename"]=cfg.get("permit_filename","carry_transit_permit.json")
                     cfg["permit_filename"]="carry_transit_clock_recovery_"+str(len(result["clock_recoveries"]))+".json"
                     cfg["clock_stop_pass"]=bool(stopped["pass"])
-                    if cfg.get("motion_mode")=="LOCOMOTION_STEP":
+                    if cfg.get("motion_mode")=="LOCOMOTION_STEP" and not cfg.get("native_step_all_transit"):
                         n.stand_once("LOCOMOTION_STEP")
                         prepared=False;prepare_until=time.monotonic()+.75
                         while time.monotonic()<prepare_until:
@@ -1174,6 +1177,18 @@ def run_carry_navigation(n,contract):
                 progress_state=None;progress_best=None;progress_at=activation_started
                 continue
             if row["body_status"]!=baseline:raise RuntimeError("BODY_STATUS_CHANGED")
+            if cfg.get("native_step_all_transit") and cfg.get("step_prepared_permit")!=cfg.get("permit_filename","carry_transit_permit.json"):
+                n.stand_once("LOCOMOTION_STEP")
+                prepared=False;prepare_until=min(until,time.monotonic()+.75)
+                while time.monotonic()<prepare_until:
+                    n.publish();n.pump();prepared_state=n.sample()
+                    result.setdefault("native_step_transitions",[]).append({k:prepared_state[k] for k in ("sample_monotonic_s","get_mode_desc","common_mode_desc","get_mode_status_value","common_mode_status_value","body_status","raw_common")})
+                    if native_step_activation_ready(prepared_state,baseline):prepared=True;break
+                    time.sleep(.02)
+                if not prepared:raise RuntimeError("NATIVE_STEP_TRANSIT_PREPARATION_FAILED")
+                cfg["step_prepared_permit"]=cfg.get("permit_filename","carry_transit_permit.json")
+                activation_started=time.monotonic()
+                continue
             p=row["pose"]
             if not -1.65<=p["x"]<=1.65 or not -1.75<=p["y"]<=1.75:raise RuntimeError("CARRY_ROOM_WORKSPACE")
             if mission is not None:
@@ -1241,7 +1256,7 @@ def run_carry_navigation(n,contract):
                         transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
                         closed_permits.append(transit_permit);transit_permit=None
                         cfg["motion_mode"]=cfg.get("inplace_motion_mode","LOCOMOTION_STEP")
-                        state=stopped;prepared=cfg["motion_mode"]=="LOCOMOTION_DEFAULT"
+                        state=stopped;prepared=cfg["motion_mode"]=="LOCOMOTION_DEFAULT" or bool(cfg.get("native_step_all_transit"))
                         mission["turn_mode"]=cfg["motion_mode"]
                         if cfg["motion_mode"]=="LOCOMOTION_STEP":
                             n.stand_once("LOCOMOTION_STEP")

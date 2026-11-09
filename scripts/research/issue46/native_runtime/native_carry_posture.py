@@ -6,9 +6,19 @@ import math
 import json
 import time
 
-def native_stand_arm_reference():
+def native_stand_arm_reference(profile="FULL_SOURCE"):
     from pathlib import Path
     import hashlib,yaml
+    if profile=="FIXED_CARRY_CPG_STEP":
+        source=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261109T004726Z/native_neutral_stow_result.json")
+        if hashlib.sha256(source.read_bytes()).hexdigest()!="6e87d4eb66065fc5667a7b44f926d02ec8aaf32dc6e0af529b5427a0c2fed0b5":raise ValueError("fixed carry reference changed")
+        record=json.loads(source.read_text())
+        if record.get("pass_result") is not True:raise ValueError("fixed carry reference lacks physical stow")
+        settings=dict(record["settings"])
+        settings.update(classification="SIMULATION_ONLY_MEASURED_UPRIGHT_CARRY_POSE_WITH_NATIVE_CPG_STEP_NOT_VENDOR_CARRY_QUALIFICATION",
+            reference_profile=profile,reference_path=str(source),reference_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),carry_reference_frame="TORSO_RIGID")
+        return settings
+    if profile!="FULL_SOURCE":raise ValueError("unsupported carry reference profile")
     source=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml")
     cfg=yaml.safe_load(source.read_text())
     nominal=dict(zip(cfg["BaseConfig"]["seq"],cfg["ACConfig"]["robot"]["default_dof_pos"]))

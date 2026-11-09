@@ -82,7 +82,6 @@
   "forward_response_profile": "SIMULATION_ONLY_LOADED_CARRY_FORWARD030_NOT_VENDOR_QUALIFICATION",
   "carry_reference_scope": "NATIVE_FULLBODY_ARM_FOLLOW_DURING_LOCOMOTION_GRIP_OWNER_AND_INITIAL_CIRCLE_IK_PRESERVED",
   "activation_protocol": "VENDOR_DIRECT_RETREAT_NONZERO",
-  "unloaded_arm_follow_scope": "SIMULATION_ONLY_AFTER_VERIFIED_TURN_STOP_NATIVE_SOURCE_PRIVATE_SINGLE_OWNER_RIGHT_IK_UNCHANGED",
   "post_turn_egress_m": 1.0,
   "post_turn_egress_scope": "SIMULATION_ONLY_MEASURED_1M_AWAY_BEFORE_SECOND_TABLE_ALIGNMENT_SAME_ROUTE_CONTROLLER",
   "preplacement_arm_settings": {
@@ -118,5 +117,6 @@
     "path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261109T004726Z/native_neutral_stow_result.json",
     "sha256": "6e87d4eb66065fc5667a7b44f926d02ec8aaf32dc6e0af529b5427a0c2fed0b5",
     "scope": "operational joint path only; actual current-pose clearance and stable placement remain gates"
-  }
+  },
+  "native_arm_follow_scope": "SIMULATION_ONLY_NATIVE_14_ARM_COMMANDS_AFTER_QUALIFIED_STAND_AND_LD_SINGLE_OWNER_HAND_FORCE_SEPARATE"
 }

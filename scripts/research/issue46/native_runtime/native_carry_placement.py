@@ -246,7 +246,7 @@ def prepare_delivery_scene(parent, config_path):
     stow_plan=None
     if cfg.get("carry_native_neutral_stow"):
         from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference,screen_native_stow
-        actual_settings=native_stand_arm_reference()
+        actual_settings=native_stand_arm_reference(profile=cfg["carry_native_neutral_stow"].get("reference_profile","FULL_SOURCE"))
         if actual_settings!=cfg["carry_native_neutral_stow"]:raise ValueError("native stow source changed")
         stow_plan=screen_native_stow(model,data,actual_settings)
         if not stow_plan["pass_static"]:raise ValueError("native stow collision:"+str([r for r in stow_plan["rows"] if r["collisions"]][:1]))

@@ -1258,3 +1258,25 @@ class OutwardEgressHandoffTests(unittest.TestCase):
                 self.assertEqual(config["permit_filename"],"carry_transit_delivery_rearm_1.json")
                 self.assertIn("TRANSIT",events)
             else:self.assertNotIn("TRANSIT",events)
+
+class NativeStepAllTransitTests(unittest.TestCase):
+    def test_original_step_controller_is_explicit_and_does_not_edit_action_rules(self):
+        import json,yaml
+        from pathlib import Path
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery_native_step.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
+            transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,release_source_on_stop=True,
+            transit_command_speed=.20,compact_angular_cap=.30,native_step=True,vendor_transition_table=True,delivery=cfg)
+        options=next(ast.literal_eval(n.value.args[0]) for n in ast.walk(ast.parse(code)) if isinstance(n,ast.Expr) and isinstance(n.value,ast.Call) and isinstance(n.value.func,ast.Attribute) and ast.unparse(n.value.func)=="MICRO.update")
+        self.assertEqual(options["carry"]["motion_mode"],"LOCOMOTION_STEP")
+        self.assertTrue(options["carry"]["native_step_all_transit"])
+        self.assertFalse(options["carry"]["native_action_smoothing"])
+        self.assertIn('step_prepared_permit',code)
+        root=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5")
+        rules=yaml.safe_load((root/"sim/action_ruler.yaml").read_text())["action_rules"]
+        self.assertIn("LOCOMOTION_STEP",rules["STAND_DEFAULT"]["next_actions"])
+        self.assertIn("STAND_DEFAULT",rules["LOCOMOTION_STEP"]["next_actions"])
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
+                transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,release_source_on_stop=True,
+                transit_command_speed=.20,vendor_transition_table=True,delivery=cfg)

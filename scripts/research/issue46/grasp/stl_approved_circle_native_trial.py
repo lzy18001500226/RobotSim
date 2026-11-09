@@ -125,11 +125,12 @@ def main():
     if args.right_claw_kp is not None and (not args.physical_lift_test or (not args.carry_away_1m and args.carry_goal_world_xy is None)):
         raise ValueError("right gain comparison requires the instrumented physical-lift/carry path")
     if (args.carry_compact_angular_cap!=.30 or args.carry_release_source_on_stop) and not args.carry_compact_turn:raise ValueError("compact source/cap scope")
-    if args.carry_vendor_transition_table and (args.carry_delivery_config is None or args.carry_native_action_smoothing or args.carry_native_step_mode):raise ValueError("vendor transition comparison scope")
+    source_step_all=bool(args.carry_delivery_config and json.loads(args.carry_delivery_config.read_text()).get("transit_motion_mode")=="LOCOMOTION_STEP")
+    if args.carry_vendor_transition_table and (args.carry_delivery_config is None or args.carry_native_action_smoothing or args.carry_native_step_mode and not source_step_all):raise ValueError("vendor transition comparison scope")
     if args.carry_delivery_config is not None:
         if any((json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow") or {}).get(k) for k in ("follow_native_unloaded_arm_after_turn","native_arm_follow_scope")) and not args.observe_native_arm_policy:raise ValueError("native unloaded arm following requires verified private MC arm producer")
         direct_retreat=json.loads(args.carry_delivery_config.read_text()).get("activation_protocol")=="VENDOR_DIRECT_RETREAT_NONZERO" and args.carry_transit_command_speed==.20
-        if not (args.carry_compact_turn and (args.carry_gait_prepare or direct_retreat) and args.carry_release_source_on_stop and args.carry_compact_centre_feedback and not args.carry_native_step_mode):raise ValueError("delivery profile requires qualified compact controls or explicit vendor-direct retreat")
+        if not (args.carry_compact_turn and (args.carry_gait_prepare or direct_retreat) and args.carry_release_source_on_stop and args.carry_compact_centre_feedback and (not args.carry_native_step_mode or source_step_all)):raise ValueError("delivery profile requires qualified compact controls or explicit vendor-direct retreat")
     if args.carry_compact_centre_feedback and not args.carry_compact_turn:raise ValueError("compact centre feedback scope")
     if args.carry_gait_prepare and not args.carry_compact_turn:raise ValueError("gait preparation requires compact carry")
     if args.carry_compact_turn and not (args.carry_straight_retreat_turn and args.carry_transit_speed_policy_050 and not args.carry_inplace_centre_hold):raise ValueError("compact pure-turn scope")
@@ -344,7 +345,7 @@ def main():
     elif args.native_render_adapter:argv.extend(['--native-render-adapter',args.native_render_adapter])
     if args.carry_reverse_moving_arc and ((args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)) or not args.carry_transit_speed_policy_050 or args.carry_native_step_mode):raise ValueError("reverse arc requires bounded FoundationWalk carry, with approved transit policy")
     if args.carry_transit_speed_policy_050 and not ((args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)) and args.approved_pad_friction_reference):raise ValueError("TRANSIT050 requires isolated carry and approved local contact profile")
-    if args.carry_native_step_mode and not args.carry_native_action_smoothing:raise ValueError('native step diagnostic requires explicit native transition smoothing')
+    if args.carry_native_step_mode and not args.carry_native_action_smoothing and not (source_step_all and args.carry_vendor_transition_table):raise ValueError('native step diagnostic requires original validated table or explicit transition diagnostic')
     if (args.carry_sdk_minimum_turn or args.carry_native_action_smoothing or args.carry_native_step_mode) and (args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)):raise ValueError('SDK turn diagnostic requires a carry goal')
     if (args.carry_goal_world_xy is not None or getattr(args,"carry_away_1m",False)):
         argv.extend(['--carry-timeout-s',str(args.carry_timeout_s),'--carry-grip-force-margin',str(args.carry_grip_force_margin)])
