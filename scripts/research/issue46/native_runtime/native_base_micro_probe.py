@@ -1148,10 +1148,20 @@ def task_along_speed(trace, pose, goal_xy, stamp):
     dx=goal_xy[0]-pose["x"];dy=goal_xy[1]-pose["y"];size=math.hypot(dx,dy)
     if size<1e-9:return 0.
     dx/=size;dy/=size
+    eligible=[r for r in trace if r["sample_monotonic_s"]<=stamp]
+    if eligible and all("sim_time_s" in r and "x" in r["pose"] and "y" in r["pose"] for r in eligible[-2:]):
+        latest=eligible[-1]["sim_time_s"]
+        unique={r["sim_time_s"]:r for r in eligible if 0.<=latest-r["sim_time_s"]<=1.}
+        rows=list(unique.values())
+        if len(rows)>=3 and rows[-1]["sim_time_s"]-rows[0]["sim_time_s"]>=.5:
+            ts=[r["sim_time_s"] for r in rows];ys=[r["pose"]["x"]*dx+r["pose"]["y"]*dy for r in rows]
+            mt=sum(ts)/len(ts);my=sum(ys)/len(ys)
+            denominator=sum((t-mt)**2 for t in ts)
+            if denominator>0.:return max(0.,sum((t-mt)*(y-my) for t,y in zip(ts,ys))/denominator)
     unique={r["sample_monotonic_s"]:r for r in trace if stamp-.35<=r["sample_monotonic_s"]<=stamp}
     values=[r["pose"]["vx"]*dx+r["pose"]["vy"]*dy for r in unique.values()]
     current=pose["vx"]*dx+pose["vy"]*dy
-    return max(0.,current,sum(values)/len(values) if values else current)
+    return max(0.,sum(values)/len(values) if values else current)
 
 
 def await_carry_initial_state(n):

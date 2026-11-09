@@ -149,4 +149,3 @@ class InstalledModeSchemaTests(unittest.TestCase):
         common["action_info"]=dict(action_desc="LOCOMOTION_STEP",status=dict(value=100));self.assertFalse(check())
         common["action_info"]=mode;state["received_ns"]=700_000_000;self.assertFalse(check())
         self.assertNotIn("create_publisher",code)
-

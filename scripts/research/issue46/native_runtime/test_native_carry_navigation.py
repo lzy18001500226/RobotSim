@@ -1408,3 +1408,8 @@ class StepCalibrationEpochTests(unittest.TestCase):
         rows[-2]["source_clock_generation"]=2
         self.assertIsNone(step_cruise_reference(rows,dict(x=.18,y=0.),(1.,0.),.9))
 
+class NativeProgressSpeedTests(unittest.TestCase):
+    def test_gait_velocity_peak_does_not_become_mean_braking_speed(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
+        rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,pose=dict(x=i*.025,y=0.,vx=.45 if i%2 else .05,vy=0.)) for i in range(11)]
+        self.assertAlmostEqual(task_along_speed(rows,dict(x=.25,y=0.,vx=.45,vy=0.),(1.,0.),1.),.25)
