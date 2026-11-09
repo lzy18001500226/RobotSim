@@ -84,3 +84,16 @@ class NativeLeftTests(unittest.TestCase):
         self.assertEqual(entries["hand_joint_command"]["topic"],"/robotsim/issue46/inactive_mc/hand/command")
         self.assertFalse(any(x.get("topic_name")=="/aima/hal/joint/hand/command" for x in cfg["aimrt"]["channel"]["pub_topics_options"]))
         self.assertEqual(original,before)
+
+    def test_verified_wall_clock_epoch_accepts_new_lower_stamps_but_not_old_queue(self):
+        n=SimpleNamespace(native_policy_stamp=2000000000,native_policy_offset=-1000000000,native_policy_packet=self.packet())
+        def msg(sec,nanosec):
+            return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=sec,nanosec=nanosec)),
+                joints=[SimpleNamespace(name=name,**FIELDS) for name in NAMES])
+        with patch.object(policy.time,"monotonic_ns",return_value=3000000000),patch.object(policy.time,"time_ns",return_value=1500000000),patch.multiple(policy,LEFT=NAMES[:7],RIGHT=NAMES[7:],LIFT_CONTRACT={"retract_preflight":{"source_motion_limits":LIMITS}},create=True):
+            policy.on_native_carry_arm(n,msg(1,500000000))
+            self.assertEqual(n.native_policy_stamp,1500000000)
+            self.assertEqual(n.native_policy_epoch,1)
+            packet=copy.deepcopy(n.native_policy_packet)
+            policy.on_native_carry_arm(n,msg(2,0))
+            self.assertEqual(n.native_policy_packet,packet)

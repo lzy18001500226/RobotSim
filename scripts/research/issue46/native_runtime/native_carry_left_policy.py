@@ -7,6 +7,7 @@ import math
 import json
 import time
 import os
+from scripts.research.issue46.native_runtime.native_base_micro_probe import observed_clock_step
 
 
 def validate_native_arm_packet(packet, limits, now_ns, wall_ns):
@@ -28,6 +29,14 @@ def validate_native_arm_packet(packet, limits, now_ns, wall_ns):
 
 
 def on_native_carry_arm(self, message):
+    before=time.monotonic_ns();wall=time.time_ns();after=time.monotonic_ns()
+    offset,step=observed_clock_step(getattr(self,"native_policy_offset",None),before,wall,after)
+    self.native_policy_offset=offset
+    if step is not None:
+        self.native_policy_stamp=0;self.native_policy_packet=None
+        self.native_left_last=None;self.native_left_idle=None
+        self.native_policy_epoch=getattr(self,"native_policy_epoch",0)+1
+        print(json.dumps({"native_arm_source_clock_epoch":self.native_policy_epoch,"offset_delta_ns":step,"old_packet_discarded":True}),flush=True)
     stamp=int(message.header.stamp.sec)*1000000000+int(message.header.stamp.nanosec)
     if stamp<=getattr(self,"native_policy_stamp",0):return
     if len(message.joints)!=14 or len({j.name for j in message.joints})!=14:
@@ -84,7 +93,7 @@ def select_native_carry_left(self, stage):
 
 def extend_unloaded_arm_follow(script):
     import inspect
-    helpers="\n".join(inspect.getsource(f) for f in (validate_native_arm_packet,on_native_carry_arm,select_native_carry_left))
+    helpers="\n".join(inspect.getsource(f) for f in (observed_clock_step,validate_native_arm_packet,on_native_carry_arm,select_native_carry_left))
     anchor="class Plan(Node):"
     if script.count(anchor)!=1:raise ValueError("native left owner anchor")
     script=script.replace(anchor,helpers+"\n"+anchor)
