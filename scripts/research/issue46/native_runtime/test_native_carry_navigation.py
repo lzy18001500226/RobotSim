@@ -1360,3 +1360,51 @@ class NativeStepAllTransitTests(unittest.TestCase):
             m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,
                 transit_policy_050=True,compact_turn=True,compact_centre_feedback=True,release_source_on_stop=True,
                 transit_command_speed=.20,vendor_transition_table=True,delivery=cfg)
+
+
+
+class MeasuredStepStopPredictionTests(unittest.TestCase):
+    def test_stopped_clock_recovery_does_not_reuse_cruising_brake_reserve(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
+        pose=dict(x=0.,y=.77,vx=0.,vy=0.)
+        old=[dict(sample_monotonic_s=5.,pose=dict(vx=0.,vy=.3))]
+        self.assertEqual(task_along_speed(old,pose,(0.,1.),10.),0.)
+    def test_duplicate_receipts_cannot_bias_the_unique_velocity_average(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
+        trace=[dict(sample_monotonic_s=9.8,pose=dict(vx=.4,vy=0.))]*20
+        trace.append(dict(sample_monotonic_s=9.9,pose=dict(vx=0.,vy=0.)))
+        self.assertAlmostEqual(task_along_speed(trace,dict(x=0.,y=0.,vx=0.,vy=0.),(1.,0.),10.),.2)
+    def test_motion_away_from_goal_never_creates_forward_stop_reserve(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import task_along_speed
+        self.assertEqual(task_along_speed([],dict(x=0.,y=0.,vx=-.2,vy=0.),(1.,0.),1.),0.)
+
+class RightClawStaticScreenReuseTests(unittest.TestCase):
+    def test_only_bounded_pd_delta_preserves_geometry_screen(self):
+        import tempfile,hashlib
+        from pathlib import Path
+        from scripts.research.issue46.native_runtime.native_carry_placement import verify_right_claw_pd_only
+        xml='<mujoco><worldbody><body><joint name="R_claw_joint"/><geom size=".1" mass=".2"/></body></worldbody><actuator><position name="motor_R_claw_joint" joint="R_claw_joint" kp="4" kv="1.27" forcerange="-2 2"/></actuator></mujoco>'
+        with tempfile.TemporaryDirectory() as root:
+            a=Path(root)/"a.xml";b=Path(root)/"b.xml";a.write_text(xml)
+            sha=hashlib.sha256(a.read_bytes()).hexdigest()
+            b.write_text(xml.replace('kp="4"','kp="6"'))
+            self.assertEqual(verify_right_claw_pd_only(a,b,sha)["new_kp"],6.)
+            for wrong in (xml.replace('size=".1"','size=".2"'),xml.replace('forcerange="-2 2"','forcerange="-3 3"')):
+                b.write_text(wrong)
+                with self.assertRaises(ValueError):verify_right_claw_pd_only(a,b,sha)
+
+
+
+class StepCalibrationEpochTests(unittest.TestCase):
+    def test_one_step_sample_after_clock_recovery_is_not_cruising(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import step_cruise_reference
+        rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,get_mode_desc="STAND_DEFAULT",common_mode_desc="STAND_DEFAULT",pose=dict(x=0.,y=0.)) for i in range(10)]
+        rows.append(dict(sample_monotonic_s=1.,sim_time_s=1.,get_mode_desc="LOCOMOTION_STEP",common_mode_desc="LOCOMOTION_STEP",pose=dict(x=.001,y=0.)))
+        self.assertIsNone(step_cruise_reference(rows,dict(x=.001,y=0.),(1.,0.),1.))
+    def test_contiguous_measured_progress_qualifies_calibration(self):
+        from scripts.research.issue46.native_runtime.native_base_micro_probe import step_cruise_reference
+        rows=[dict(sample_monotonic_s=i*.1,sim_time_s=i*.1,get_mode_desc="LOCOMOTION_STEP",common_mode_desc="LOCOMOTION_STEP",pose=dict(x=i*.02,y=0.),native_generation=1,source_clock_generation=1) for i in range(10)]
+        self.assertAlmostEqual(step_cruise_reference(rows,dict(x=.18,y=0.),(1.,0.),.9),.2)
+        rows[-2]["source_clock_generation"]=2
+        self.assertIsNone(step_cruise_reference(rows,dict(x=.18,y=0.),(1.,0.),.9))
+

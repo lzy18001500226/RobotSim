@@ -692,7 +692,8 @@ def main():
         hand=ik.native.bid(model,"R_omnipicker_base_link")
         cylinder=ik.native.bid(model,"test_cylinder")
         source_bounds=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
-        bounds=np.column_stack((np.maximum(source_bounds[:,0],approach_start[2:]-1.1),np.minimum(source_bounds[:,1],approach_start[2:]+1.1)))
+        cache_margin=.01 if warm is not None else 0.
+        bounds=np.column_stack((np.maximum(source_bounds[:,0]+cache_margin,approach_start[2:]-1.1),np.minimum(source_bounds[:,1]-cache_margin,approach_start[2:]+1.1)))
         def residual(arm):
             trial=np.r_[q[:2],arm]
             ik.set_pose(model,data,state,trial,np.zeros(3),0.,command,np.zeros(3),0.,None)

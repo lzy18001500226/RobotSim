@@ -7,21 +7,44 @@ ROOT=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46")
 CACHE=ROOT/"human-internal-contact-review-20261109T091125Z/review_binary_manifest.json"
 WINPY=Path("/mnt/d/Dev/Anaconda/python.exe")
 CMD=['bash', 'scripts/research/issue46/grasp/run_live_rgbd_grasp_review.sh', '--post-lift-retract-world-m', '-.24', '0', '0', '--reviewed-foundationwalk-profile', '--carry-timeout-s', '90', '--carry-sdk-minimum-turn', '--capture-mc-rl-debug', '--carry-grip-force-margin', '15.0', '--approved-pad-friction-reference', '--carry-transit-speed-policy-050', '--carry-away-1m', '--grasp-height-above-center-m', '0.10', '--allow-carried-bottle-tilt', '--right-claw-kp', '4', '--carry-straight-retreat-turn', '--carry-retention-only', '--approved-two-table-layout', '--carry-turn-brake-delay-s', '0.30', '--carry-retreat-brake-delay-s', '2.23', '--carry-compact-turn', '--carry-gait-prepare', '--carry-transit-command-speed', '0.12', '--carry-compact-angular-cap', '0.60', '--carry-release-source-on-stop', '--carry-compact-centre-feedback', '--carry-vendor-transition-table', '--carry-delivery-config', '/home/lzy18001500226/robotsim-x2-stl-autonomy-integration-20261030/simulation/mujoco/scenes/raicom2026/config/retreat_turn_human_review.json', '--native-background-xvfb-tools', '/home/lzy18001500226/projects/RobotSim/reviews/issue-46/portable-xvfb-background-native-tools-20261108T230445Z/manifest.json']
+
+def matching_review_model(manifest, episode):
+    """Use the already verified camera-only cache for this exact live scene."""
+    import hashlib
+    frozen=json.loads(CACHE.read_text())
+    if manifest["scene"]["sha256"]==frozen["source_scene"]["sha256"]:return CACHE
+    for path in sorted(ROOT.glob("native-rgbd-host-cache-*/result.json"),reverse=True):
+        cache=json.loads(path.read_text())
+        if cache.get("source_sha256")!=manifest["scene"]["sha256"] or cache.get("engine")!=336:continue
+        required={"body_pos","body_mass","jnt_range","geom_size","geom_pos","actuator_gainprm","actuator_forcerange","key_qpos"}
+        if not required.issubset(cache.get("unchanged_physical_arrays",[])) or cache.get("mj_step_calls")!=0:raise RuntimeError("unverified review cache")
+        binary=Path(cache["binary"])
+        if hashlib.sha256(binary.read_bytes()).hexdigest()!=cache["binary_sha256"]:raise RuntimeError("review cache binary changed")
+        out=episode/"live_review_model_manifest.json"
+        pg.write_new_text(out,json.dumps(dict(path=str(binary),sha256=cache["binary_sha256"],source_scene=manifest["scene"],provenance=dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest()),scope="READ_ONLY_ACTUAL_NATIVE_STATE_CAMERA_ONLY_MODEL_CACHE"),indent=2)+"\n")
+        return out
+    raise RuntimeError("no exact-scene verified review model cache")
+
+
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument("--check-only",action="store_true");parser.add_argument("--to-delivery-table",action="store_true");parser.add_argument("--delivery-mode",choices=("default","step"),default="step");parser.add_argument("--right-claw-kp",type=float,choices=(4.,6.),default=None,help="SIMULATION_ONLY grip gain; original 2Nm torque cap is unchanged");parser.add_argument("--no-viewer",action="store_true",help="autonomous real-physics run without the extra Windows read-only renderer");args=parser.parse_args()
     os.chdir(REPO)
+    if args.right_claw_kp is None:args.right_claw_kp=6. if args.to_delivery_table else 4.
     if Path(subprocess.check_output(["git","rev-parse","--show-toplevel"],text=True).strip()).resolve()!=REPO:raise RuntimeError("wrong worktree")
-    if not CACHE.is_file() or not WINPY.is_file():raise RuntimeError("review renderer dependency missing")
+    if not args.no_viewer and (not CACHE.is_file() or not WINPY.is_file()):raise RuntimeError("review renderer dependency missing")
     installed=Path("/mnt/c/Users/HP/.codex/visualizations/2026/10/03/01a1014f-2b35-7fe2-b6f6-a934b993405b/mujoco336-review-runtime/packages/mujoco")
-    if not installed.is_dir():raise RuntimeError("isolated Windows renderer missing")
+    if not args.no_viewer and not installed.is_dir():raise RuntimeError("isolated Windows renderer missing")
     status=subprocess.run(["docker","info","--format","{{.ServerVersion}}"],text=True,capture_output=True,timeout=8)
     if status.returncode:raise RuntimeError("Docker is not ready:"+status.stderr)
     if subprocess.check_output(["docker","ps","-q"],text=True).strip():raise RuntimeError("another container is running; did not launch")
-    profile=REPO/"simulation/mujoco/scenes/raicom2026/config"/("reviewed_carry_table_delivery.json" if args.to_delivery_table else "retreat_turn_human_review.json")
+    profile=REPO/"simulation/mujoco/scenes/raicom2026/config"/(("reviewed_carry_step_forward.json" if args.delivery_mode=="step" else "reviewed_carry_table_delivery.json") if args.to_delivery_table else "retreat_turn_human_review.json")
     CMD[CMD.index("--carry-delivery-config")+1]=str(profile)
+    CMD[CMD.index("--right-claw-kp")+1]=str(args.right_claw_kp)
     if args.to_delivery_table:
-        CMD[CMD.index("--carry-compact-angular-cap")+1]="0.30"
-        CMD.extend(["--reuse-verified-grasp-plan",str(ROOT/"raicom-stl-xvfb-native-reset-stand-20261109T150617Z")])
+        CMD[CMD.index("--carry-compact-angular-cap")+1]="0.60"
+    if args.to_delivery_table:
+        prior="raicom-stl-xvfb-native-reset-stand-20261109T150617Z" if args.right_claw_kp==4. else "raicom-stl-xvfb-native-reset-stand-20261109T201208Z"
+        CMD.extend(["--reuse-verified-grasp-plan",str(ROOT/prior)])
     if bool(json.loads(profile.read_text()).get("review_prefix_only"))==args.to_delivery_table:raise RuntimeError("review/transfer scope changed")
     if args.check_only:
         print(json.dumps(dict(status="READY",worktree=str(REPO),command=CMD,physics_started=False)));return
@@ -38,12 +61,11 @@ def main():
                 owned=set(ROOT.glob("raicom-stl-xvfb-native-reset-stand-*"))-old
                 if len(owned)>1:raise RuntimeError("ambiguous live episode")
                 if owned:episode=next(iter(owned))
-                if episode and not viewer_started and (episode/"live_view_scene.json").exists() and (episode/"native_latest.json").exists():
-                    manifest=json.loads((episode/"live_view_scene.json").read_text());cache=json.loads(CACHE.read_text())
-                    if manifest["scene"]["sha256"]!=cache["source_scene"]["sha256"]:raise RuntimeError("live scene and review model differ")
+                if not args.no_viewer and episode and not viewer_started and (episode/"live_view_scene.json").exists() and (episode/"native_latest.json").exists():
+                    manifest=json.loads((episode/"live_view_scene.json").read_text());review_cache=matching_review_model(manifest,episode)
                     def win(path):return subprocess.check_output(["wslpath","-w",str(path)],text=True).strip()
                     viewer=REPO/"scripts/research/issue46/grasp/native_live_review_windows.py"
-                    argv=[r"D:\Dev\Anaconda\python.exe","-I","-S",win(viewer),win(episode),win(CACHE),win(REPO)]
+                    argv=[r"D:\Dev\Anaconda\python.exe","-I","-S",win(viewer),win(episode),win(review_cache),win(REPO)]
                     code="import subprocess,json;from pathlib import Path;root=Path("+repr(win(episode))+");log=(root/'live_viewer.stdout').open('x');p=subprocess.Popen("+repr(argv)+",stdout=log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW);print(json.dumps(dict(viewer_pid=p.pid)))"
                     launched=subprocess.run([str(WINPY),"-c",code],text=True,capture_output=True,timeout=12)
                     if launched.returncode:raise RuntimeError("live viewer launch failed:"+launched.stderr)
@@ -76,5 +98,10 @@ def main():
     print("EVIDENCE",out,flush=True)
     if native is not None and native.returncode!=0:raise SystemExit(native.returncode)
     if episode and (episode/"result.json").exists():
-        result=json.loads((episode/"result.json").read_text());print(json.dumps(dict(review=result.get("gates",{}).get("LIVE_RETREAT_TURN_REVIEW"),failure=result.get("failure"),cleanup=result.get("cleanup")),ensure_ascii=False),flush=True)
+        result=json.loads((episode/"result.json").read_text())
+        failure=result.get("failure")
+        if isinstance(failure,dict) and isinstance(failure.get("detail"),dict):
+            failure=dict(gate=failure.get("gate"),cause=failure["detail"].get("failure",failure["detail"].get("error")))
+        keys=("HAL_PHYSICAL_LIFT","POST_LIFT_RETRACT","LEAVE_TABLE_AND_TURN","SECOND_TABLE_BASE_ARRIVAL_AND_STOP","FINAL_COMPOSITE_STOP","PHYSICAL_TABLE_PLACEMENT","TWO_TABLE_TRANSFER_EXECUTION")
+        print(json.dumps(dict(gates={k:result.get("gates",{}).get(k,"NOT_RUN") for k in keys},failure=failure,cleanup=result.get("cleanup"),full_result=str(episode/"result.json")),ensure_ascii=False),flush=True)
 if __name__=="__main__":main()

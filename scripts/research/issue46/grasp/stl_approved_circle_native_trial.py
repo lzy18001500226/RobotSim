@@ -43,7 +43,12 @@ def configure_native_background_x11(argv, manifest_path, fixed_checkpoint):
 def verified_grasp_reuse(episode):
     import hashlib
     episode=Path(episode).resolve();result=json.loads((episode/"result.json").read_text())
-    if any(result["gates"].get(k)!="PASS" for k in ("HAL_PHYSICAL_LIFT","POST_LIFT_RETRACT","HAL_RIGHT_HAND_CLOSE")):
+    final_gates=all(result["gates"].get(k)=="PASS" for k in ("HAL_PHYSICAL_LIFT","POST_LIFT_RETRACT","HAL_RIGHT_HAND_CLOSE"))
+    ready=result.get("carry_ready",{})
+    qualified_handoff=(ready.get("physical_lift_pass") is True and ready.get("post_lift_retract_pass") is True
+        and result.get("carry_static_hold",{}).get("pass") is True
+        and result.get("carry_native_motion_audit",{}).get("pass") is True)
+    if not (final_gates or qualified_handoff):
         raise ValueError("reuse requires physically verified grasp/lift/retract")
     plan=Path(result["hal_arm_runtime_replan"]["path"])
     if hashlib.sha256(plan.read_bytes()).hexdigest()!=result["hal_arm_runtime_replan"]["sha256"]:raise ValueError("cached grasp plan changed")
@@ -81,7 +86,7 @@ def main():
     p.add_argument("--both-claws-zero-internal-friction",action="store_true")
     p.add_argument("--right-claw-zero-internal-friction",action="store_true")
     p.add_argument("--right-claw-damping",type=float)
-    p.add_argument("--right-claw-kp",type=float,choices=(2.,4.),help="isolated C.1 gain diagnostic; actual no-contact close/open required before approach")
+    p.add_argument("--right-claw-kp",type=float,choices=(2.,4.,6.),help="isolated C.1 gain diagnostic; actual no-contact close/open required before approach")
     p.add_argument("--global-contact-impratio-one",action="store_true",help="SIMULATION_ONLY global impedance10->1 comparison; elliptic/local22 retained")
     p.add_argument("--approved-pad-friction-reference",action="store_true",help="2026-11-08 approved22 pad/bottle pairs solreffriction .002s, NoSlip0; unchanged geometry/mu/normal/limits")
     p.add_argument("--noslip-solver-diagnostic",action="store_true",help="separate SIMULATION_ONLY two-iteration numerical postsolver; no contact-material/geometry changes")
@@ -266,6 +271,22 @@ def main():
                 command.extend(["--waist-pitch-offset-rad",str(args.coordinated_waist_pitch_offset_rad)])
             kwargs["timeout_s"]=45.
         result=original(command,**kwargs)
+        if (any(str(v).endswith('/stl_approved_circle_ik.py') for v in command) and '--runtime-handoff' in command
+            and '--warm-start-plan' in command and result.returncode==0
+            and json.loads(result.stdout.strip().splitlines()[-1]).get('gate')!='PASS'):
+            # A reused initial guess is not acceptance. Fall back once to the
+            # existing full branch search, still before any grasp command.
+            evidence=Path(command[command.index('--standing-state')+1]).parent
+            pg.write_new_text(evidence/'cached_grasp_branch_rejected.stdout',result.stdout)
+            cold=list(command);i=cold.index('--warm-start-plan');del cold[i:i+2]
+            old_state=json.loads(Path(cold[cold.index('--standing-state')+1]).read_text())
+            native_grasp_audit.require_fresh_sample(evidence/'native_latest.json')
+            fresh=native_grasp_audit.planning_state_from_native(json.loads((evidence/'native_latest.json').read_text()),old_state)
+            state_path=evidence/'native_synchronized_fallback_state.json'
+            pg.write_new_text(state_path,json.dumps(fresh,indent=2)+'\n')
+            cold[cold.index('--standing-state')+1]=str(state_path)
+            pg.write_new_text(evidence/'cached_grasp_fallback_command.json',json.dumps(cold,indent=2)+'\n')
+            result=original(cold,**kwargs)
         if any(str(v).endswith('/stl_approved_circle_ik.py') for v in command) and '--runtime-handoff' in command and result.returncode==0 and json.loads(result.stdout.strip().splitlines()[-1]).get('gate')=='PASS':
             reference=Path(json.loads(result.stdout.strip().splitlines()[-1])['output_wsl'])/'result.json'
             evidence=Path(command[command.index('--standing-state')+1]).parent

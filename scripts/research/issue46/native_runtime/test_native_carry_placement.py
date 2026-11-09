@@ -129,3 +129,24 @@ class PlacementTests(unittest.TestCase):
         self.assertLess(np.max(np.abs(delta)),.03)
         with self.assertRaisesRegex(RuntimeError,"INVALID_CARRY_POSTURE_REFERENCE"):
             carry_posture_nullspace_direction(J,q,np.full(7,np.nan))
+
+
+class InstalledModeSchemaTests(unittest.TestCase):
+    def test_observer_uses_get_action_header_not_set_action_response(self):
+        import ast
+        from types import SimpleNamespace
+        code=p.placement_mode_observer_script()
+        tree=ast.parse(code)
+        expr=next(n.value for n in ast.walk(tree) if isinstance(n,ast.Assign) and any(isinstance(x,ast.Name) and x.id=="passed" for x in n.targets))
+        mode=dict(action_desc="STAND_DEFAULT",status=dict(value=100))
+        reply=dict(header=dict(code=0),info=mode)
+        common=dict(action_info=mode,body_status=dict(value=1))
+        clock=SimpleNamespace(monotonic_ns=lambda:1_000_000_000)
+        state=dict(received_ns=950_000_000)
+        def check():return eval(compile(ast.Expression(expr),"<actual placement schema gate>","eval"),dict(reply=reply,common=common,state=state,time=clock))
+        self.assertTrue(check())
+        reply["header"]["code"]=1;self.assertFalse(check());reply["header"]["code"]=0
+        common["action_info"]=dict(action_desc="LOCOMOTION_STEP",status=dict(value=100));self.assertFalse(check())
+        common["action_info"]=mode;state["received_ns"]=700_000_000;self.assertFalse(check())
+        self.assertNotIn("create_publisher",code)
+

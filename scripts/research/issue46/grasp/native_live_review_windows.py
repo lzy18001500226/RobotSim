@@ -21,13 +21,13 @@ glfw.set_window_pos(window,60,80);glfw.make_context_current(window);glfw.swap_in
 cam=mujoco.MjvCamera();mujoco.mjv_defaultCamera(cam);cam.lookat[:]=[.95,-1.5,.80];cam.distance=1.9;cam.azimuth=135.;cam.elevation=-20.
 opt=mujoco.MjvOption();opt.geomgroup[3:]=0
 scene=mujoco.MjvScene(model,maxgeom=20000);context=mujoco.MjrContext(model,mujoco.mjtFontScale.mjFONTSCALE_150)
-state={"cursor":None};stamp=None;receipt=None;row=None;ready_written=False;ended=False;viewer_error=None
+state={"cursor":None,"follow":True,"phase":"","phase_read_at":0.};stamp=None;receipt=None;row=None;ready_written=False;ended=False;viewer_error=None
 def cursor(w,x,y):
     before=state["cursor"];state["cursor"]=(x,y)
     if before is None:return
     height=max(1,glfw.get_window_size(w)[1])
     if glfw.get_mouse_button(w,glfw.MOUSE_BUTTON_LEFT)==glfw.PRESS:action=mujoco.mjtMouse.mjMOUSE_ROTATE_V
-    elif glfw.get_mouse_button(w,glfw.MOUSE_BUTTON_RIGHT)==glfw.PRESS:action=mujoco.mjtMouse.mjMOUSE_MOVE_V
+    elif glfw.get_mouse_button(w,glfw.MOUSE_BUTTON_RIGHT)==glfw.PRESS:action=mujoco.mjtMouse.mjMOUSE_MOVE_V;state["follow"]=False
     else:return
     mujoco.mjv_moveCamera(model,action,(x-before[0])/height,(y-before[1])/height,scene,cam)
 def scroll(w,x,y):mujoco.mjv_moveCamera(model,mujoco.mjtMouse.mjMOUSE_ZOOM,0,-.05*y,scene,cam)
@@ -35,22 +35,26 @@ def key(w,k,s,a,m):
     if a!=glfw.PRESS:return
     if k==glfw.KEY_ESCAPE:glfw.set_window_should_close(w,True)
     elif k==glfw.KEY_5 and row is not None:
-        cam.lookat[:]=np.asarray(row["bodies"]["pelvis"]["position_m"])+[0,0,.2];cam.distance=1.9
+        state["follow"]=True;cam.lookat[:]=np.asarray(row["bodies"]["pelvis"]["position_m"])+[0,0,.2];cam.distance=1.9
     elif k==glfw.KEY_6 and row is not None:
-        cam.lookat[:]=row["bodies"]["R_omnipicker_base_link"]["position_m"];cam.distance=.65
+        state["follow"]=False;cam.lookat[:]=row["bodies"]["R_omnipicker_base_link"]["position_m"];cam.distance=.65
 glfw.set_cursor_pos_callback(window,cursor);glfw.set_scroll_callback(window,scroll);glfw.set_key_callback(window,key)
 def atomic(path,value):
     tmp=path.with_suffix(".tmp");tmp.write_text(json.dumps(value));os.replace(tmp,path)
 try:
     while not glfw.window_should_close(window):
-        began=time.monotonic();glfw.poll_events()
+        began=time.monotonic()
+        if ended:glfw.wait_events_timeout(.10)
+        else:glfw.poll_events()
+        before_stamp=stamp
         try:
-            fresh=json.loads((ROOT/"native_latest.json").read_text())
+            fresh=row if ended else json.loads((ROOT/"native_latest.json").read_text())
             if fresh["generation"]>=1 and (stamp is None or fresh["host_monotonic_ns"]>stamp):
                 row=fresh;stamp=fresh["host_monotonic_ns"];receipt=time.monotonic()
         except (OSError,ValueError,KeyError):pass
         ended=(ROOT/"live_review_finished.json").exists()
-        if row is not None:apply_recorded_native_frame(model,data,row,visual_kinematics_only=True)
+        if row is not None and stamp!=before_stamp:apply_recorded_native_frame(model,data,row,visual_kinematics_only=True)
+        if row is not None and state["follow"]:cam.lookat[:]=np.asarray(row["bodies"]["pelvis"]["position_m"])+[0,0,.2]
         mujoco.mjv_updateScene(model,data,opt,None,cam,mujoco.mjtCatBit.mjCAT_ALL,scene)
         if row is None:scene.ngeom=0
         width,height=glfw.get_framebuffer_size(window);viewport=mujoco.MjrRect(0,0,width,height)
@@ -59,9 +63,12 @@ try:
         detail="5 Body | 6 Gripper | mouse rotate / right-pan / wheel-zoom | ESC closes review and requests stop"
         mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,mujoco.mjtGridPos.mjGRID_TOPLEFT,viewport,mode,detail,context)
         if row:
-            p=row["bodies"]["pelvis"]["position_m"];phase=""
-            try:phase=json.loads((ROOT/"native_tracking_phase.json").read_text()).get("phase","")
-            except (OSError,ValueError):pass
+            p=row["bodies"]["pelvis"]["position_m"]
+            if not ended and began-state["phase_read_at"]>.5:
+                try:state["phase"]=json.loads((ROOT/"native_tracking_phase.json").read_text()).get("phase","")
+                except (OSError,ValueError):pass
+                state["phase_read_at"]=began
+            phase=state["phase"]
             mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL,mujoco.mjtGridPos.mjGRID_BOTTOMLEFT,viewport,f"sim={row['sim_time_s']:.3f}s | pelvis=({p[0]:.3f},{p[1]:.3f},{p[2]:.3f}) | {phase}","Actual WSL MuJoCo+MC states. This window has no physics or command publisher.",context)
         glfw.swap_buffers(window)
         if row and not ready_written:

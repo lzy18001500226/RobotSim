@@ -73,7 +73,7 @@ def change_friction(xml, *, both_hands=False, right_damping=None, right_kp=None,
         if len(nodes)!=1:raise ValueError('right position actuator not unique')
         nodes[0].set('kv',str(float(right_damping)))
     if right_kp is not None:
-        if not np.isfinite(right_kp) or float(right_kp) not in (2.,4.):raise ValueError('only source2 or diagnosed4 right claw kp is supported')
+        if not np.isfinite(right_kp) or float(right_kp) not in (2.,4.,6.):raise ValueError('only source2 or explicit SIMULATION_ONLY4/6 right claw kp is supported')
         nodes=root.findall('./actuator/position[@name="motor_R_claw_joint"]')
         if len(nodes)!=1:raise ValueError('right position actuator not unique')
         nodes[0].set('kp',str(float(right_kp)))

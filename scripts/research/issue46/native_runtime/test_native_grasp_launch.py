@@ -128,12 +128,13 @@ class NativeLaunchTests(TestCase):
         from scripts.research.issue46.native_runtime.claw_parameter_diagnostic import change_friction,JOINTS
         xml='<mujoco><worldbody>'+''.join('<body pos="'+str(i*2)+' 0 0"><joint name="'+n+'"/><geom type="sphere" size=".1"/></body>' for i,n in enumerate(JOINTS))+'</worldbody><actuator><position name="motor_R_claw_joint" joint="R_claw_joint" kp="2" kv="1.27" gear="-1" forcelimited="true" forcerange="-2 2"/></actuator></mujoco>'
         a=mujoco.MjModel.from_xml_string(change_friction(xml,right_damping=1.27))
-        z=mujoco.MjModel.from_xml_string(change_friction(xml,right_damping=1.27,right_kp=4.))
-        self.assertEqual(z.actuator_gainprm[0,0],4.)
-        self.assertEqual(z.actuator_biasprm[0,1],-4.)
-        self.assertEqual(z.actuator_biasprm[0,2],-1.27)
-        for key in ('actuator_forcerange','actuator_ctrlrange','jnt_range','jnt_pos','jnt_axis','body_mass','body_inertia','geom_friction'):
-            np.testing.assert_array_equal(getattr(a,key),getattr(z,key))
+        for kp in (4.,6.):
+            z=mujoco.MjModel.from_xml_string(change_friction(xml,right_damping=1.27,right_kp=kp))
+            self.assertEqual(z.actuator_gainprm[0,0],kp)
+            self.assertEqual(z.actuator_biasprm[0,1],-kp)
+            self.assertEqual(z.actuator_biasprm[0,2],-1.27)
+            for key in ('actuator_forcerange','actuator_ctrlrange','jnt_range','jnt_pos','jnt_axis','body_mass','body_inertia','geom_friction'):
+                np.testing.assert_array_equal(getattr(a,key),getattr(z,key))
         for value in (0.,-1.,4.1,float('nan')):
             with self.assertRaises(ValueError):change_friction(xml,right_kp=value)
 

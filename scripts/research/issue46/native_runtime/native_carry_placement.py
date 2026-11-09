@@ -199,6 +199,33 @@ def extend_existing_owner(script):
     return result
 
 
+
+def verify_right_claw_pd_only(source, current, source_sha256):
+    """Reuse a geometry-only screen only after exact compiled-model comparison."""
+    import hashlib,mujoco,numpy as np
+    from pathlib import Path
+    if hashlib.sha256(Path(source).read_bytes()).hexdigest()!=source_sha256:raise ValueError("aisle reference hash mismatch")
+    a=mujoco.MjModel.from_xml_path(str(source));b=mujoco.MjModel.from_xml_path(str(current))
+    i=mujoco.mj_name2id(a,mujoco.mjtObj.mjOBJ_ACTUATOR,"motor_R_claw_joint")
+    if i<0 or (a.nq,a.nv,a.nu,a.nbody,a.ngeom)!=(b.nq,b.nv,b.nu,b.nbody,b.ngeom):raise ValueError("aisle topology changed")
+    allowed={}
+    for name in ("actuator_gainprm","actuator_biasprm"):
+        x=getattr(a,name).copy();y=getattr(b,name)
+        x[i]=y[i];allowed[name]=x
+    if b.actuator_gainprm[i,0] not in (2.,4.,6.) or not np.array_equal(b.actuator_forcerange[i],[-2.,2.]):raise ValueError("unsupported claw control delta")
+    expected_gain=a.actuator_gainprm[i].copy();expected_gain[0]=b.actuator_gainprm[i,0]
+    expected_bias=a.actuator_biasprm[i].copy();expected_bias[1]=-b.actuator_gainprm[i,0]
+    if not np.array_equal(expected_gain,b.actuator_gainprm[i]) or not np.array_equal(expected_bias,b.actuator_biasprm[i]):raise ValueError("delta is not right-claw kp only")
+    checked=[]
+    for name in dir(a):
+        x=getattr(a,name)
+        if not isinstance(x,np.ndarray):continue
+        y=getattr(b,name)
+        if not np.array_equal(allowed.get(name,x),y,equal_nan=True):raise ValueError("aisle non-PD model delta:"+name)
+        checked.append(name)
+    return dict(scope="RIGHT_CLAW_KP_ONLY_GEOMETRY_CLEARANCE_REUSE_NOT_DYNAMICS",source=str(source),source_sha256=source_sha256,current=str(current),old_kp=float(a.actuator_gainprm[i,0]),new_kp=float(b.actuator_gainprm[i,0]),torque_cap_nm=2.,checked_array_count=len(checked),mj_step_calls=0)
+
+
 def prepare_delivery_scene(parent, config_path):
     """One actual-scene static screen; no mj_step and no source model edits."""
     import ast,copy,hashlib
@@ -213,8 +240,10 @@ def prepare_delivery_scene(parent, config_path):
     root=Path("/home/lzy18001500226/projects/RobotSim")
     record=json.loads(Path(parent).read_text());cfg=json.loads(Path(config_path).read_text())
     if cfg.get("schema")!="robotsim.x2.two-table-delivery.v1" or not record.get("approved_two_table_layout"):raise ValueError("two-table scene provenance")
-    if float(cfg.get("delivery_forward_command_m_s",.20)) not in (.20,.30):raise ValueError("delivery forward response profile bound")
-    if cfg.get("terminal_braking_aisle_reserve") and cfg["terminal_braking_aisle_reserve"]["scene_sha256"]!=record["generated"]["host_scene"]["sha256"]:raise ValueError("terminal aisle scene changed")
+    if float(cfg.get("delivery_forward_command_m_s",.20)) not in (.20,.30,.40,5./9.):raise ValueError("delivery forward response profile bound")
+    if cfg.get("terminal_braking_aisle_reserve") and cfg["terminal_braking_aisle_reserve"]["scene_sha256"]!=record["generated"]["host_scene"]["sha256"]:
+        ref=cfg["terminal_braking_aisle_reserve"]
+        record["terminal_aisle_control_equivalence"]=verify_right_claw_pd_only(ref["scene_path"],record["generated"]["host_scene"]["path"],ref["scene_sha256"])
     model=mujoco.MjModel.from_xml_path(record["generated"]["host_scene"]["path"]);data=mujoco.MjData(model);mujoco.mj_forward(model,data)
     table=mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_BODY,"raicom_delivery_table")
     points=[]
@@ -373,7 +402,12 @@ def placement_mode_observer_script():
         "sub=n.create_subscription(McCommonState,'/aima/mc/common/state',on_common,QoSProfile(depth=1,reliability=ReliabilityPolicy.BEST_EFFORT))",
         "client=n.create_client(GetMcAction,'/aimdk_5Fmsgs/srv/GetMcAction')",
         "try:",
-        " if not client.wait_for_service(timeout_sec=2.):raise RuntimeError('PLACEMENT_MODE_SERVICE_UNAVAILABLE')",
+        " discovery_started=time.monotonic();discovery_deadline=discovery_started+5.",
+        " while time.monotonic()<discovery_deadline:",
+        "  rclpy.spin_once(n,timeout_sec=.02)",
+        "  if client.service_is_ready() and state and (time.monotonic_ns()-state['received_ns'])*1e-9<=.20:break",
+        " if not client.service_is_ready():raise RuntimeError('PLACEMENT_MODE_SERVICE_UNAVAILABLE:'+json.dumps(n.get_service_names_and_types()))",
+        " if not state or (time.monotonic_ns()-state['received_ns'])*1e-9>.20:raise RuntimeError('PLACEMENT_COMMON_NOT_FRESH_DURING_DISCOVERY')",
         " q=GetMcAction.Request();q.request.header.stamp=n.get_clock().now().to_msg()",
         " future=client.call_async(q);deadline=time.monotonic()+1.",
         " while time.monotonic()<deadline:",
@@ -381,8 +415,8 @@ def placement_mode_observer_script():
         "  if future.done() and state and (time.monotonic_ns()-state['received_ns'])*1e-9<=.20:break",
         " if not future.done() or future.result() is None or not state:raise RuntimeError('PLACEMENT_FRESH_MODE_UNCONFIRMED')",
         " reply=message_to_ordereddict(future.result());common=state['raw']",
-        " passed=reply['response']['header']['code']==0 and reply['info']['action_desc']=='STAND_DEFAULT' and reply['info']['status']['value']==100 and common['action_info']['action_desc']=='STAND_DEFAULT' and common['action_info']['status']['value']==100 and common['body_status']['value']==1 and (time.monotonic_ns()-state['received_ns'])*1e-9<=.20",
-        " print(json.dumps(dict(pass_result=passed,get_mode=reply,common=common,completed_host_ns=time.monotonic_ns(),publishers_created=0,action_requests_sent=0)),flush=True)",
+        " passed=reply['header']['code']==0 and reply['info']['action_desc']=='STAND_DEFAULT' and reply['info']['status']['value']==100 and common['action_info']['action_desc']=='STAND_DEFAULT' and common['action_info']['status']['value']==100 and common['body_status']['value']==1 and (time.monotonic_ns()-state['received_ns'])*1e-9<=.20",
+        " print(json.dumps(dict(pass_result=passed,get_mode=reply,common=common,completed_host_ns=time.monotonic_ns(),discovery_elapsed_s=time.monotonic()-discovery_started,publishers_created=0,action_requests_sent=0)),flush=True)",
         " if not passed:raise RuntimeError('PLACEMENT_MODE_NOT_STAND')",
         "finally:n.destroy_node();rclpy.shutdown()",
     ])+"\n"

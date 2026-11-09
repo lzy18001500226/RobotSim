@@ -32,8 +32,8 @@
   "source_note": "human-approved90deg deliverytable at(0,1.6), original pickup/fixedstance+10cm; compiled geometry measurements20261108; actual reaching/placement remain live gates",
   "intermediate_turn_heading_tolerance_rad": 0.3,
   "gait_prepare_angular_rad_s": -0.1,
-  "intermediate_turn_stop_reserve_rad": 0.4,
-  "turn_stop_reserve_evidence": "061921 real terminal turn remaining.3941rad radius.2901m, later remaining.3881 radius.2998 before .3003m guard; .40rad trigger stays inside existing planning bound. Actual finalheading/composite/footprint gates unchanged",
+  "intermediate_turn_stop_reserve_rad": 0.15,
+  "turn_stop_reserve_evidence": "171657Z .40rad reserve under-turned by .318rad; .15 minimum with existing measured-rate reserve retained. 173706Z EARLY_SD rejected after actual .6655m/s brake peak; restore original >=1.05s zero before SD and full composite stop.",
   "retreat_cross_track_limit_m": 0.15,
   "retreat_corridor_scope": "preliminary transfer task; retain raw instantaneous50mm legacy result separately; not a strict straight-reference qualification",
   "turn_braking_footprint_m": 0.35,
@@ -94,8 +94,8 @@
     "static_clearance_sha256": "c6fb73e55e833649f98cfbf8a913edbaccddec8c7ceac958cf699ca3cd6f6c3e",
     "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
   },
-  "delivery_forward_command_m_s": 0.3,
-  "forward_response_profile": "SIMULATION_ONLY_EXISTING030_PURE_FORWARD_DIRECTION_PROBE_NOT_SIGN_INVERSION",
+  "delivery_forward_command_m_s": 0.5555555555555556,
+  "forward_response_profile": "SIMULATION_ONLY_STRAIGHT_SOURCE_EFFECTIVE050; SDK request .5/.9 within observedMC[-1,.8]; preserve min_run=.1 during turn to avoid global clamping; no gain/weight/geometry changes",
   "carry_reference_scope": "REVIEWED_HIGH_UPRIGHT_CARRY_NO_NATIVE_ARM_TAKEOVER",
   "activation_protocol": "EXISTING_GAIT_PREPARE_THEN_RETREAT",
   "post_turn_egress_m": 0.0,
@@ -117,5 +117,9 @@
   "turn_translation_strategy": "REVIEWED_COMPACT_CENTRE_FEEDBACK",
   "delivery_tracking_angular_cap_rad_s": 0.075,
   "route_goal_scope": "RETREAT_THEN_SINGLE_CLOCKWISE_TURN_TO_ACTUAL_SECOND_TABLE_BEARING_THEN_EXISTING_CLOSED_LOOP_DRIVE; reuse measured right-turn controls; left-turn drift160944Z is not accepted",
-  "delivery_turn_direction": "CLOCKWISE"
+  "delivery_turn_direction": "CLOCKWISE",
+  "transit_root_cap_m_s": 0.6,
+  "monitoring_policy": "SIMULATION_ONLY_TABLE_TRANSFER_ROOT060; 163201Z .5061m/s peak with source joint/actuator/pose bounds retained; .20 standing and unchanged composite stop; no model/controller gain change",
+  "restore_vendor_forward_parameter": false,
+  "forward_activation_ramp_s": 1.0
 }

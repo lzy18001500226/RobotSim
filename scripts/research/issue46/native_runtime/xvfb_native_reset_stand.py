@@ -1205,7 +1205,10 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
     result["carry_ready"]=ready
     result["carry_static_hold"]=qualify_static_carry_hold(output,ready)
     result['carry_route_profile']={'compact_turn':getattr(args,'carry_compact_turn',False),'compact_turn_angular_cap':getattr(args,'carry_compact_angular_cap',.30) if getattr(args,'carry_compact_turn',False) else None,'compact_turn_radius_m':.30 if getattr(args,'carry_compact_turn',False) else None,'classification':'SIMULATION_ONLY_FETCH_CARRY_ROUTE','maximum_task_motion_s':args.carry_timeout_s,'turn_centre_recovery_cap_m_s':getattr(args,'carry_turn_recovery_speed',.12),'turn_centre_recovery_scope':'TURN_POSITION_RECOVERY_ONLY_WITH_ZERO_ANGULAR','forward_cap_m_s':getattr(args,'carry_transit_command_speed',.12),'angular_cap_rad_s':getattr(args,'carry_compact_angular_cap',.30) if getattr(args,'carry_compact_turn',False) else .10 if (args.carry_sdk_minimum_turn or getattr(args,'carry_away_1m',False)) else .075,'root_cap_m_s':.20,'active_transit_and_bounded_braking_root_cap_m_s':.50 if getattr(args,'carry_transit_speed_policy_050',False) else .20,'pose_max_age_s':.20,'goal_tolerance_m':.15,'zero_window_s':1.05,'physical_stop_contract':'UNCHANGED_COMPOSITE','reference_path_tracking':'NOT_A_CURVED_OR_STRAIGHT_REFERENCE_QUALIFICATION','chair_seat_placement':'NOT_RUN'}
-    if getattr(args,"carry_delivery_config",None) is not None:result["carry_route_profile"]["delivery_forward_cap_m_s"]=float(json.loads(args.carry_delivery_config.read_text()).get("delivery_forward_command_m_s",.20))
+    if getattr(args,"carry_delivery_config",None) is not None:
+        profile=json.loads(args.carry_delivery_config.read_text())
+        result["carry_route_profile"]["delivery_forward_cap_m_s"]=float(profile.get("delivery_forward_command_m_s",.20))
+        result["carry_route_profile"]["active_transit_and_bounded_braking_root_cap_m_s"]=float(profile.get("transit_root_cap_m_s",.50))
     limits=retract["source_motion_limits"]
     pg.write_new_text(output/"native_carry_route.py",micro.build_carry_route_script(args.carry_goal_world_xy,limits,retract["robot_bodies"],carry_pid=ready["pid"],timeout_s=args.carry_timeout_s,angular_command_cap=.10 if args.carry_sdk_minimum_turn else .075,native_action_smoothing=args.carry_native_action_smoothing,native_step=args.carry_native_step_mode,transit_policy_050=getattr(args,"carry_transit_speed_policy_050",False),reverse_moving_arc=getattr(args,"carry_reverse_moving_arc",False),away_1m=getattr(args,"carry_away_1m",False),allow_carried_bottle_tilt=getattr(args,"allow_carried_bottle_tilt",False),straight_retreat_turn=getattr(args,"carry_straight_retreat_turn",False),inplace_centre_hold=getattr(args,"carry_inplace_centre_hold",False),turn_brake_delay_s=getattr(args,"carry_turn_brake_delay_s",0.),retreat_brake_delay_s=getattr(args,"carry_retreat_brake_delay_s",0.),turn_recovery_speed=getattr(args,"carry_turn_recovery_speed",.12),transit_command_speed=getattr(args,"carry_transit_command_speed",.12),compact_turn=getattr(args,"carry_compact_turn",False),gait_prepare=getattr(args,"carry_gait_prepare",False),compact_angular_cap=getattr(args,"carry_compact_angular_cap",.30),release_source_on_stop=getattr(args,"carry_release_source_on_stop",False),compact_centre_feedback=getattr(args,"carry_compact_centre_feedback",False),delivery=json.loads(args.carry_delivery_config.read_text()) if getattr(args,"carry_delivery_config",None) is not None else None,vendor_transition_table=getattr(args,"carry_vendor_transition_table",False)))
     controller=REPO/"ros2_ws/src/robotsim_navigation/robotsim_navigation/point_goal_controller.py"
@@ -1271,7 +1274,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
         if nav.get("pass_result") and recorded.get("pass") and not review_prefix:
             from scripts.research.issue46.native_runtime.native_carry_placement import placement_mode_observer_script
             pg.write_new_text(output/"native_placement_mode_observer.py",placement_mode_observer_script())
-            mode=run(["docker","exec",container,"bash","-lc",environment+"timeout 4s python3 /workspace/evidence/native_placement_mode_observer.py"],timeout_s=6.,check=False)
+            mode=run(["docker","exec",container,"bash","-lc",environment+"timeout 7s python3 /workspace/evidence/native_placement_mode_observer.py"],timeout_s=9.,check=False)
             pg.write_new_text(output/"placement_mode_readback.stdout",mode.stdout)
             observed=json.loads(mode.stdout.strip().splitlines()[-1]) if mode.returncode==0 else {}
             if not observed.get("pass_result"):raise RuntimeError("PLACEMENT_LIVE_STAND_READBACK_FAILED")
@@ -1910,8 +1913,22 @@ def main() -> None:
         ]
         if args.reviewed_foundationwalk_profile:
             source_profile,profile_record=stl_hand_startup.reviewed_foundationwalk_profile(RUNTIME)
+            profile_bytes=source_profile.read_bytes()
+            if (getattr(args,"carry_delivery_config",None) and
+                json.loads(args.carry_delivery_config.read_text()).get("restore_vendor_forward_parameter")):
+                selected=yaml.safe_load(profile_bytes)
+                native_source=yaml.safe_load(Path(profile_record["source_path"]).read_text())
+                native_value=native_source["FoundationWalkConfig"]["foundationwalk"]["min_run_velx"]
+                if native_value!=.5 or selected["FoundationWalkConfig"]["foundationwalk"]["min_run_velx"]!=.1:
+                    raise ValueError("forward-parameter source comparison changed")
+                selected["FoundationWalkConfig"]["foundationwalk"]["min_run_velx"]=native_value
+                profile_bytes=yaml.safe_dump(selected,sort_keys=False).encode()
+                profile_record["classification"]="SIMULATION_ONLY_SOURCE_MINRUN_RESTORED_KNEE019_NOT_VENDOR_DEFAULT"
+                profile_record["changed_values"]=[x for x in profile_record["changed_values"] if x.get("config_path")!="FoundationWalkConfig.foundationwalk.min_run_velx"]
+                profile_record["restore_vendor_forward_parameter"]={"previous_diagnostic":.1,"source_and_selected":native_value,"semantics":"EXPERIMENT_NOT_YET_PHYSICALLY_QUALIFIED"}
+                profile_record["overlay_sha256"]=hashlib.sha256(profile_bytes).hexdigest()
             staged_profile=output/"foundationwalk_reused_issue80.yaml"
-            pg.write_new_bytes(staged_profile,source_profile.read_bytes())
+            pg.write_new_bytes(staged_profile,profile_bytes)
             command[command.index(IMAGE):command.index(IMAGE)]=[
                 "--mount",f"type=bind,source={staged_profile},target=/workspace/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml,readonly"]
             result["foundationwalk_reviewed_profile"]={**profile_record,"staged_path":str(staged_profile)}
