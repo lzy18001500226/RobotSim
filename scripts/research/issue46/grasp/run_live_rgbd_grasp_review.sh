@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
 # LIVE native mj_step + MC, H300 bottle, RGB-D target, table-standing episode.
-# No walking, captured-pose playback, real hardware or alternate robot model.
+# Optional carry uses the existing bounded route; no hardware or model swap.
 set -euo pipefail
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "$repo"
 reviews=/home/lzy18001500226/projects/RobotSim/reviews/issue-46
 export DISPLAY="${DISPLAY:-:0}"
 export MUJOCO_GL=glfw
-/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46/native_runtime/wslg_input_preflight.py
+background_native=false
+for option in "$@"; do
+  if [[ "$option" == "--native-background-xvfb-tools" ]]; then background_native=true; fi
+done
+if "$background_native"; then
+  # The Python entrypoint verifies the hashed Xvfb tools and fixed native
+  # initialization. This backend sends no WSLg keyboard or mouse events.
+  echo '{"pointer_preflight":"NOT_APPLICABLE_EXPLICIT_BACKGROUND_NATIVE_X11"}'
+else
+  /home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python scripts/research/issue46/native_runtime/wslg_input_preflight.py
+fi
 exec bash scripts/research/issue46/grasp/run_truth_circle_review.sh \
   --source-pad-coacd-comparison \
   --initial-hands-fully-open \
