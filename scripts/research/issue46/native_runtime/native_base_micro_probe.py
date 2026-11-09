@@ -1336,6 +1336,31 @@ def run_carry_navigation(n,contract):
                     along=((p["x"]-origin["x"])*dx+(p["y"]-origin["y"])*dy)/length
                     if along>length+.15:raise RuntimeError("DELIVERY_GOAL_CROSSED_WITHOUT_ARRIVAL")
                     output=controller.step(Pose2D(p["x"],p["y"],p["yaw"],"native_scene_world",row["sample_monotonic_s"]),target,now_steady_s=time.monotonic())
+                    if output.state==NavState.DRIVE and mission.get("delivery_alignment_state") is not None:
+                        # A turn is physically stopped before forward reactivation.
+                        # Do not carry the pivot's transient base motion into DRIVE.
+                        n.deadline_zero();n.stop_started=True
+                        transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
+                        n.source_enabled(False) if cfg.get("release_source_on_stop") else None
+                        n.observe(1.05,baseline=baseline);n.stand_once()
+                        alignment_stop=n.observe(8.,baseline=baseline,require_stop=True)
+                        result.setdefault("delivery_alignment_stop_composites",[]).append(alignment_stop)
+                        if alignment_stop.get("pass") is not True:raise RuntimeError("DELIVERY_ALIGNMENT_STOP_NOT_QUALIFIED")
+                        n.await_graph();n.pump();stopped=n.sample()
+                        result.setdefault("delivery_alignment_stopped_poses",[]).append(stopped["pose"])
+                        if time.monotonic()>=until-5.:raise RuntimeError("DELIVERY_REARM_DEADLINE_INSUFFICIENT")
+                        transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
+                        closed_permits.append(transit_permit);transit_permit=None
+                        cfg["previous_permit_filename"]=cfg["permit_filename"]
+                        count=len(result["delivery_alignment_stop_composites"])
+                        cfg["permit_filename"]="carry_transit_delivery_rearm_"+str(count)+".json"
+                        transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
+                        mission["delivery_alignment_state"]=None;controller.reset()
+                        n.source_enabled(True);n.stop_started=False;acquired=False;activation_started=time.monotonic()
+                        progress_state=None;progress_best=None;progress_at=activation_started
+                        with n.lock:n.moving=True
+                        continue
+
                 else:
                     origin=mission["forward_origin_pose"];dx=p["x"]-origin["x"];dy=p["y"]-origin["y"]
                     along=math.cos(bearing)*dx+math.sin(bearing)*dy

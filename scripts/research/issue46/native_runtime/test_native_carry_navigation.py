@@ -1085,3 +1085,33 @@ class VendorActionTableTests(unittest.TestCase):
         self.assertIn("'native_action_smoothing': False",code)
         self.assertIn("'vendor_transition_table': True",code)
         with self.assertRaises(ValueError):m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True,native_action_smoothing=True)
+
+class DeliveryTurnStopGoTests(unittest.TestCase):
+    def test_real_generated_handoff_never_rearms_without_complete_stop(self):
+        import json,threading,time
+        from types import SimpleNamespace as NS
+        from unittest.mock import Mock
+        config=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=config,vendor_transition_table=True)
+        node=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.If) and 'output.state == NavState.DRIVE and mission.get' in ast.unparse(n.test))
+        wrapper=ast.parse("def actual_handoff():\n for _ in [0]:\n  pass\n")
+        wrapper.body[0].body[0].body=[node];wrapper.body[0].body.insert(0,ast.Global(names=["transit_permit"]));ast.fix_missing_locations(wrapper)
+        for passed in (False,True):
+            events=[]
+            n=NS(deadline_zero=lambda:events.append("zero"),source_enabled=lambda value:events.append("enable" if value else "disable"),
+                 observe=Mock(side_effect=[None,dict(pass_result=passed,**{"pass":passed})]),stand_once=lambda:events.append("stand"),
+                 await_graph=lambda:None,pump=lambda:None,sample=lambda:{"pose":{"x":0.,"y":0.,"yaw":0.}},
+                 latest_row={},lock=threading.Lock())
+            cfg=dict(release_source_on_stop=True,permit_filename="delivery.json")
+            ns=dict(n=n,mission={"delivery_alignment_state":"ALIGN"},output=NS(state="DRIVE"),NavState=NS(DRIVE="DRIVE"),cfg=cfg,
+                    baseline={},result={},transit_permit={},closed_permits=[],carry_transit_phase=lambda old,phase,c,row:{"phase":phase},
+                    time=time,until=1e99,controller=NS(reset=lambda:events.append("controller_reset")))
+            exec(compile(wrapper,"actual_delivery_handoff","exec"),ns)
+            if passed:
+                ns["actual_handoff"]();self.assertEqual(events,["zero","disable","stand","controller_reset","enable"])
+                self.assertIsNone(ns["mission"]["delivery_alignment_state"])
+            else:
+                with self.assertRaisesRegex(RuntimeError,"DELIVERY_ALIGNMENT_STOP_NOT_QUALIFIED"):ns["actual_handoff"]()
+                self.assertNotIn("enable",events)
+            self.assertEqual(n.observe.call_args_list[0].args,(1.05,))
+            self.assertTrue(n.observe.call_args_list[1].kwargs["require_stop"])
