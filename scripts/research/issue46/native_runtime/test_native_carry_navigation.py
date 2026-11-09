@@ -1103,7 +1103,7 @@ class DeliveryTurnStopGoTests(unittest.TestCase):
                  await_graph=lambda:None,pump=lambda:None,sample=lambda:{"pose":{"x":0.,"y":0.,"yaw":0.}},
                  latest_row={},lock=threading.Lock())
             cfg=dict(release_source_on_stop=True,permit_filename="delivery.json")
-            ns=dict(n=n,mission={"delivery_alignment_state":"ALIGN"},output=NS(state="DRIVE"),NavState=NS(DRIVE="DRIVE"),cfg=cfg,
+            ns=dict(stand_transition=lambda:(n.observe(1.05,baseline={}),n.stand_once()),n=n,mission={"delivery_alignment_state":"ALIGN"},output=NS(state="DRIVE"),NavState=NS(DRIVE="DRIVE"),cfg=cfg,
                     baseline={},result={},transit_permit={},closed_permits=[],carry_transit_phase=lambda old,phase,c,row:{"phase":phase},
                     time=time,until=1e99,controller=NS(reset=lambda:events.append("controller_reset")))
             exec(compile(wrapper,"actual_delivery_handoff","exec"),ns)
@@ -1133,3 +1133,20 @@ class TerminalPivotControlTests(unittest.TestCase):
             self.assertLessEqual(abs(out.linear_x),.20)
         self.assertIn('COMPACT_TURN_RADIUS_300MM',code)
         self.assertEqual(cfg["turn_braking_footprint_m"],.35)
+
+class ContinuousZeroStandStrategyTests(unittest.TestCase):
+    def test_actual_stop_strategy_preserves_zero_duration_and_default_order(self):
+        import json
+        from types import SimpleNamespace as NS
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,gait_prepare=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True)
+        helper=next(n for n in ast.walk(ast.parse(code)) if isinstance(n,ast.FunctionDef) and n.name=="stand_transition")
+        for strategy,expected in (("ZERO_WINDOW_THEN_SD",["zero_window","sd"]),("EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC",["sd","zero_window"])):
+            calls=[]
+            n=NS(stand_once=lambda:calls.append("sd"),observe=lambda seconds,**kw:(self.assertGreaterEqual(seconds,1.05),calls.append("zero_window")))
+            ns=dict(cfg={"delivery":{"stand_transition_strategy":strategy}},n=n,baseline={},result={})
+            exec(compile(ast.Module(body=[helper],type_ignores=[]),"actual_stop_strategy","exec"),ns)
+            ns["stand_transition"]();self.assertEqual(calls,expected)
+            self.assertNotIn("pass_result",ns["result"])
+        self.assertIn('require_stop=True',code)
+        self.assertIn('DELIVERY_ALIGNMENT_STOP_NOT_QUALIFIED',code)

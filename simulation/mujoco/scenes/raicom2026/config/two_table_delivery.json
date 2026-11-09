@@ -70,5 +70,6 @@
     "physical_validation": "NOT_RUN"
   },
   "turn_terminal_angular_taper_angle_rad": 1.2,
-  "turn_terminal_translation_free_angle_rad": 1.0
+  "turn_terminal_translation_free_angle_rad": 1.0,
+  "stand_transition_strategy": "EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"
 }

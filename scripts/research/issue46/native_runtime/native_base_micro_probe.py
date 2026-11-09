@@ -872,6 +872,7 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     """Reuse Micro transport/stop guards and the existing point-goal controller."""
     if vendor_transition_table and (native_action_smoothing or native_step or not delivery):raise ValueError("vendor action-table comparison scope")
     if delivery is not None:
+        if delivery.get("stand_transition_strategy","ZERO_WINDOW_THEN_SD") not in ("ZERO_WINDOW_THEN_SD","EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"):raise ValueError("stand transition diagnostic scope")
         if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
         if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
         if not .05<=float(delivery.get("retreat_cross_track_limit_m",.05))<=.15:raise ValueError("retreat task corridor bound")
@@ -1017,6 +1018,17 @@ def run_carry_navigation(n,contract):
     if cfg.get("away_1m"):result["classification"]="SIMULATION_ONLY_LEAVE_TURN_FORWARD_ONE_METRE"
     if cfg.get("straight_retreat_turn"):result["classification"]="SIMULATION_ONLY_STRAIGHT_RETREAT_AND_INPLACE_TURN_PREFIX"
     watchdog=None;began=None;baseline=None;transit_permit=None;graph_job=None;closed_permits=[];mission=None
+    def stand_transition():
+        strategy=(cfg.get("delivery") or {}).get("stand_transition_strategy","ZERO_WINDOW_THEN_SD")
+        result["stand_transition_strategy"]=strategy
+        if strategy=="EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC":
+            # Caller has already issued deadline-zero and disabled our source.
+            # SD acceptance is NOT stop confirmation. Retain >=1.05s of zero
+            # publication afterwards and the independent composite observation.
+            n.stand_once();n.observe(1.05,baseline=baseline)
+        else:
+            n.observe(1.05,baseline=baseline);n.stand_once()
+
     try:
         n.start_feedback();until=time.monotonic()+5.
         while time.monotonic()<until:
@@ -1068,7 +1080,7 @@ def run_carry_navigation(n,contract):
                 if n.moving:raise RuntimeError("CLOCK_RECOVERY_STILL_MOVING")
                 n.feedback_fault=None
                 n.source_enabled(False) if cfg.get("release_source_on_stop") else None
-                n.observe(1.05,baseline=baseline);n.stand_once()
+                stand_transition()
                 stopped=n.observe(8.,baseline=baseline,require_stop=True)
                 result["clock_recoveries"].append(dict(fault=fault,stop=stopped,t=time.monotonic()))
                 controller.reset();n.await_graph();n.pump()
@@ -1168,7 +1180,7 @@ def run_carry_navigation(n,contract):
                         n.deadline_zero();n.stop_started=True
                         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                         n.source_enabled(False) if cfg.get("release_source_on_stop") else None
-                        n.observe(1.05,baseline=baseline);n.stand_once()
+                        stand_transition()
                         result["retreat_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
                         n.await_graph();n.pump();stopped=n.sample()
                         mission["retreat_end_pose"]=stopped["pose"]
@@ -1266,7 +1278,7 @@ def run_carry_navigation(n,contract):
                         n.deadline_zero();n.stop_started=True
                         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                         n.source_enabled(False) if cfg.get("release_source_on_stop") else None
-                        n.observe(1.05,baseline=baseline);n.stand_once()
+                        stand_transition()
                         result["turn_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
                         if result["turn_stop_composite"].get("pass") is not True:raise RuntimeError("AWAY_TURN_STOP_NOT_QUALIFIED")
                         n.await_graph();n.pump();stopped=n.sample()
@@ -1347,7 +1359,7 @@ def run_carry_navigation(n,contract):
                         n.deadline_zero();n.stop_started=True
                         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
                         n.source_enabled(False) if cfg.get("release_source_on_stop") else None
-                        n.observe(1.05,baseline=baseline);n.stand_once()
+                        stand_transition()
                         alignment_stop=n.observe(8.,baseline=baseline,require_stop=True)
                         result.setdefault("delivery_alignment_stop_composites",[]).append(alignment_stop)
                         if alignment_stop.get("pass") is not True:raise RuntimeError("DELIVERY_ALIGNMENT_STOP_NOT_QUALIFIED")
@@ -1441,7 +1453,7 @@ def run_carry_navigation(n,contract):
         transit_permit=carry_transit_phase(transit_permit,"BRAKING",cfg,n.latest_row)
         if watchdog:watchdog.cancel()
         n.source_enabled(False) if cfg.get("release_source_on_stop") else None
-        n.observe(1.05,baseline=baseline);n.stand_once()
+        stand_transition()
         result["post_stop_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         end=n.sample()["pose"];result["end_pose"]=end
         acceptance=mission["forward_acceptance_xy_m"] if mission is not None and mission["phase"]=="FORWARD" else goal
