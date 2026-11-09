@@ -89,5 +89,6 @@
   },
   "delivery_forward_command_m_s": 0.3,
   "forward_response_profile": "SIMULATION_ONLY_LOADED_CARRY_FORWARD030_NOT_VENDOR_QUALIFICATION",
-  "carry_reference_scope": "PELVIS_RIGID_TCP_AND_AXIS_TO_AVOID_WAIST_DRIVEN_HIP_INTRUSION"
+  "carry_reference_scope": "PELVIS_RIGID_TCP_AND_AXIS_TO_AVOID_WAIST_DRIVEN_HIP_INTRUSION",
+  "activation_protocol": "VENDOR_DIRECT_RETREAT_NONZERO"
 }

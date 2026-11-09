@@ -918,7 +918,8 @@ def build_carry_route_script(goal_xy, joint_limits, robot_bodies, *, carry_pid, 
     if delivery is not None:
         if float(delivery.get("delivery_forward_command_m_s",.20)) not in (.20,.30):raise ValueError("delivery forward response profile bound")
         if delivery.get("stand_transition_strategy","ZERO_WINDOW_THEN_SD") not in ("ZERO_WINDOW_THEN_SD","EARLY_SD_CONTINUOUS_ZERO_DIAGNOSTIC"):raise ValueError("stand transition diagnostic scope")
-        if not (compact_turn and gait_prepare and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop profile")
+        direct_retreat=delivery.get("activation_protocol")=="VENDOR_DIRECT_RETREAT_NONZERO"
+        if not (compact_turn and (gait_prepare or direct_retreat and transit_command_speed==.20) and release_source_on_stop and compact_centre_feedback and not native_step):raise ValueError("delivery requires the measured FoundationWalk compact/stop or explicit vendor-direct retreat profile")
         if not .30<=float(delivery.get("turn_braking_footprint_m",.30))<=.35:raise ValueError("task turn braking footprint bound")
         extension=delivery.get("terminal_braking_aisle_reserve")
         if extension is not None:
@@ -1069,6 +1070,7 @@ def run_carry_navigation(n,contract):
     if cfg.get("reverse_moving_arc"):result.update(classification="SIMULATION_ONLY_REVERSE_MOVING_ARC_CARRY",goal_yaw_requirement="NOT_REQUIRED_FOR_KNOWN_CHAIR_AREA")
     if cfg.get("away_1m"):result["classification"]="SIMULATION_ONLY_LEAVE_TURN_FORWARD_ONE_METRE"
     if cfg.get("straight_retreat_turn"):result["classification"]="SIMULATION_ONLY_STRAIGHT_RETREAT_AND_INPLACE_TURN_PREFIX"
+    result["activation_protocol"]="YAW_PRESTEP_EXPERIMENT" if cfg.get("gait_prepare") else "VENDOR_DIRECT_RETREAT_NONZERO"
     watchdog=None;began=None;baseline=None;transit_permit=None;graph_job=None;closed_permits=[];mission=None
     def stand_transition():
         strategy=(cfg.get("delivery") or {}).get("stand_transition_strategy","ZERO_WINDOW_THEN_SD")

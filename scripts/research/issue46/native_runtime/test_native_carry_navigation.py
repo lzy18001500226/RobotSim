@@ -1206,3 +1206,18 @@ class DeliveryCumulativeProgressTests(unittest.TestCase):
         after=m.delivery_forward_progress(state,2.2,8.,True,"two")
         self.assertEqual(after["active_without_progress_s"],before)
         self.assertEqual(after["best_distance_m"],2.)
+
+class VendorDirectRetreatTests(unittest.TestCase):
+    def test_explicit_direct_profile_uses_formal_retreat_not_synthetic_yaw_prestep(self):
+        import json
+        cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        code=m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True,transit_command_speed=.20,gait_prepare=False)
+        compile(code,"direct_vendor_retreat","exec")
+        self.assertIn("'gait_prepare': False",code)
+        self.assertIn("'transit_command_speed': 0.2",code)
+        self.assertIn('bilateral_support_alternation_observed',code)
+        # Without the explicit protocol, the established experimental baseline
+        # still requires its own gait-preparation flag.
+        cfg.pop("activation_protocol")
+        with self.assertRaises(ValueError):
+            m.build_carry_route_script(None,{},[],carry_pid=19,away_1m=True,straight_retreat_turn=True,transit_policy_050=True,compact_turn=True,release_source_on_stop=True,compact_centre_feedback=True,delivery=cfg,vendor_transition_table=True,transit_command_speed=.20)
