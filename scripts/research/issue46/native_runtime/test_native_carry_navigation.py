@@ -1164,3 +1164,28 @@ class TerminalAisleClearanceTests(unittest.TestCase):
         actual=m.table_terminal_braking_footprint([pose(.4,.1)],origin,math.pi,.35,extension)
         self.assertFalse(actual["original_radial_criterion_pass"])
         self.assertTrue(actual["used_aisle_reserve"])
+
+class DeliveryAlignmentPermitTests(unittest.TestCase):
+    def test_actual_writer_requires_stop_revocation_and_shared_deadline(self):
+        import tempfile,time,json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            deadline=time.monotonic_ns()+90000000000
+            cfg=dict(pid=19,timeout_s=90.,compact_turn=True,delivery={"scope":"test"},absolute_command_deadline_ns=deadline)
+            row=dict(generation=1)
+            first=m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+            first=m.carry_transit_phase(first,"BRAKING",cfg,row,evidence=folder)
+            first=m.carry_transit_phase(first,"REVOKED",cfg,row,evidence=folder)
+            cfg.update(previous_permit_filename="carry_transit_permit.json",permit_filename="carry_transit_delivery_rearm_1.json")
+            with self.assertRaisesRegex(RuntimeError,"DELIVERY_ALIGNMENT_REARM_NOT_QUALIFIED"):
+                m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+            cfg["delivery_alignment_stop_pass"]=True
+            record=m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+            self.assertEqual(record["command_deadline_ns"],first["command_deadline_ns"])
+            self.assertEqual(record["task_interval_budget"],7)
+            self.assertEqual(m.carry_policy_speed_limit([first,record],time.monotonic_ns(),1,19),.50)
+            with self.assertRaisesRegex(RuntimeError,"CARRY_TRANSIT_REARM_FORBIDDEN"):
+                m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)
+            cfg["permit_filename"]="carry_transit_delivery_rearm_99.json"
+            with self.assertRaisesRegex(ValueError,"CARRY_PERMIT_PATH"):
+                m.carry_transit_phase(None,"TRANSIT",cfg,row,evidence=folder)

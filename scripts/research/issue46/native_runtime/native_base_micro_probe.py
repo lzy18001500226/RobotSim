@@ -126,7 +126,7 @@ def current_carry_transit_speed_limit(evidence, row, owner_pid):
     """Only a live PID/start-token verified process can permit .50."""
     import os,json,time
     from pathlib import Path
-    paths=[Path(evidence)/name for name in ("carry_transit_permit.json","carry_transit_forward_permit.json","carry_transit_delivery_permit.json",*[f"carry_transit_clock_recovery_{i}.json" for i in range(1,5)])]
+    paths=[Path(evidence)/name for name in ("carry_transit_permit.json","carry_transit_forward_permit.json","carry_transit_delivery_permit.json",*[f"carry_transit_delivery_rearm_{i}.json" for i in range(1,5)],*[f"carry_transit_clock_recovery_{i}.json" for i in range(1,5)])]
     records=[json.loads(path.read_text()) for path in paths if path.exists()]
     now=time.monotonic_ns()
     limit=min(carry_policy_speed_limit(records,now,row["generation"],owner_pid),
@@ -148,7 +148,7 @@ def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evi
     import os,json,time
     from pathlib import Path
     name=cfg.get("permit_filename","carry_transit_permit.json")
-    if name not in ("carry_transit_permit.json","carry_transit_forward_permit.json","carry_transit_delivery_permit.json",*[f"carry_transit_clock_recovery_{i}.json" for i in range(1,5)]):raise ValueError("CARRY_PERMIT_PATH")
+    if name not in ("carry_transit_permit.json","carry_transit_forward_permit.json","carry_transit_delivery_permit.json",*[f"carry_transit_delivery_rearm_{i}.json" for i in range(1,5)],*[f"carry_transit_clock_recovery_{i}.json" for i in range(1,5)]):raise ValueError("CARRY_PERMIT_PATH")
     path=Path(evidence)/name;now=time.monotonic_ns()
     if phase=="TRANSIT":
         if record is not None or path.exists():raise RuntimeError("CARRY_TRANSIT_REARM_FORBIDDEN")
@@ -158,6 +158,10 @@ def carry_transit_phase(record, phase, cfg, native_row, evidence="/workspace/evi
             previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
             if not cfg.get("delivery") or cfg.get("delivery_turn_stop_pass") is not True or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"]:
                 raise RuntimeError("DELIVERY_REARM_NOT_QUALIFIED")
+        if name in [f"carry_transit_delivery_rearm_{i}.json" for i in range(1,5)]:
+            previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
+            if not cfg.get("delivery") or cfg.get("delivery_alignment_stop_pass") is not True or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"] or cfg.get("absolute_command_deadline_ns")!=previous["command_deadline_ns"]:
+                raise RuntimeError("DELIVERY_ALIGNMENT_REARM_NOT_QUALIFIED")
         if name.startswith("carry_transit_clock_recovery_"):
             previous=json.loads((Path(evidence)/cfg["previous_permit_filename"]).read_text())
             if not cfg.get("compact_turn") or cfg.get("clock_stop_pass") is not True or previous.get("revoked_ns") is None or previous["owner_pid"]!=cfg["pid"] or previous["generation"]!=native_row["generation"]:
@@ -1398,6 +1402,7 @@ def run_carry_navigation(n,contract):
                         transit_permit=carry_transit_phase(transit_permit,"REVOKED",cfg,n.latest_row)
                         closed_permits.append(transit_permit);transit_permit=None
                         cfg["previous_permit_filename"]=cfg["permit_filename"]
+                        cfg["delivery_alignment_stop_pass"]=True
                         count=len(result["delivery_alignment_stop_composites"])
                         cfg["permit_filename"]="carry_transit_delivery_rearm_"+str(count)+".json"
                         transit_permit=carry_transit_phase(None,"TRANSIT",cfg,n.latest_row)
