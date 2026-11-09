@@ -44,7 +44,7 @@ class NativeLeftTests(unittest.TestCase):
         compile(code,"native_left_owner","exec")
         self.assertEqual(code.count("self.pub=self.create_publisher("),1)
         self.assertIn("native_left=select_native_carry_left(self,stage)",code)
-        self.assertIn("if native_left and name in LEFT:",code)
+        self.assertIn("if native_left and name in native_left:",code)
         self.assertEqual(code.count("def select_native_carry_left"),1)
 
     def test_only_left_follows_bounded_verified_native_commands(self):
@@ -65,6 +65,14 @@ class NativeLeftTests(unittest.TestCase):
             self.assertEqual(set(chosen),set(left))
             self.assertTrue(all(abs(j["position"]-.01)<1e-10 for j in chosen.values()))
             self.assertTrue(all(j["stiffness"]==40. for j in chosen.values()))
+            marker.update(arm_scope="FULL_SOURCE",turn_and_composite_stop_pass=False,standing_and_ld_source_handoff_pass=True)
+            chosen=policy.select_native_carry_left(n,"CARRY_HOLD")
+            self.assertEqual(set(chosen),set(NAMES))
+            self.assertTrue(all(j==FIELDS for j in chosen.values()))
+            marker["standing_and_ld_source_handoff_pass"]=False
+            with self.assertRaisesRegex(RuntimeError,"UNQUALIFIED_NATIVE"):
+                policy.select_native_carry_left(n,"CARRY_HOLD")
+            marker["standing_and_ld_source_handoff_pass"]=True
             n.get_publishers_info_by_topic=lambda topic:[endpoint("arbitrary_node")]
             with self.assertRaisesRegex(RuntimeError,"SOURCE_IDENTITY"):
                 policy.select_native_carry_left(n,"CARRY_HOLD")

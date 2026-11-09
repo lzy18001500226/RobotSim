@@ -1,7 +1,7 @@
-"""Opt-in unloaded-arm following in the existing grip owner.
+"""Opt-in native arm following in the existing grip owner.
 
 The MC remains the producer of native arm targets. There is still exactly one
-public arm publisher. The right grip/IK and every physical guard are unchanged.
+public arm publisher. Full-source mode yields arm commands to MC during carry;\ninitial grasp/placement IK, claw force control and physical guards remain.
 """
 import math
 import json
@@ -56,8 +56,9 @@ def select_native_carry_left(self, stage):
     marker_path=Path("/workspace/evidence/carry_unloaded_arm_follow.json")
     if stage!="CARRY_HOLD" or self.lift_phase.get("placement_active") or not marker_path.exists():return None
     marker=json.loads(marker_path.read_text())
+    selected_names=LEFT+RIGHT if marker.get("arm_scope")=="FULL_SOURCE" else LEFT
     if (marker.get("owner_pid")!=os.getpid() or marker.get("generation")!=self.native_generation or
-        marker.get("turn_and_composite_stop_pass") is not True or
+        (marker.get("standing_and_ld_source_handoff_pass") is not True if marker.get("arm_scope")=="FULL_SOURCE" else marker.get("turn_and_composite_stop_pass") is not True) or
         not marker["created_ns"]<=time.monotonic_ns()<marker["deadline_ns"]):
         raise RuntimeError("UNQUALIFIED_NATIVE_LEFT_HANDOFF")
     private=self.get_publishers_info_by_topic("/robotsim/issue46/mc/arm/command")
@@ -75,19 +76,20 @@ def select_native_carry_left(self, stage):
     if active:
         self.native_left_idle=None
         selected={}
-        previous=getattr(self,"native_left_last",None) or {n:float(self.arm[n]) for n in LEFT}
-        for name in LEFT:
+        previous=getattr(self,"native_left_last",None) or {n:float(self.arm[n]) for n in selected_names}
+        for name in selected_names:
             selected[name]=dict(packet["joints"][name])
-            step=.02*min(.5,float(limits[name][2]))
-            selected[name]["position"]=previous[name]+max(-step,min(step,selected[name]["position"]-previous[name]))
+            if marker.get("arm_scope")!="FULL_SOURCE":
+                step=.02*min(.5,float(limits[name][2]))
+                selected[name]["position"]=previous[name]+max(-step,min(step,selected[name]["position"]-previous[name]))
         self.native_left_last={n:j["position"] for n,j in selected.items()}
     else:
         if getattr(self,"native_left_idle",None) is None:
-            self.native_left_idle={n:float(self.arm[n]) for n in LEFT}
+            self.native_left_idle={n:float(self.arm[n]) for n in selected_names}
         self.native_left_last=None
-        selected={n:dict(position=self.native_left_idle[n],velocity=0.,effort=float(self.native_row["joints"][n]["bias_force"]),stiffness=GAINS[n][0],damping=GAINS[n][1]) for n in LEFT}
+        selected={n:dict(position=self.native_left_idle[n],velocity=0.,effort=float(self.native_row["joints"][n]["bias_force"]),stiffness=GAINS[n][0],damping=GAINS[n][1]) for n in selected_names}
     if self.last_trace_at is None or time.monotonic()-self.last_trace_at>=.05:
-        print(json.dumps({"native_unloaded_arm_follow":dict(active_native_gains=active,packet=packet,selected=selected,maximum_position_slew_rad_s=.5,right_arm_ik_unchanged=True)}),flush=True)
+        print(json.dumps({"native_unloaded_arm_follow":dict(active_native_gains=active,packet=packet,selected=selected,maximum_position_slew_rad_s=None if marker.get("arm_scope")=="FULL_SOURCE" else .5,right_arm_ik_unchanged=marker.get("arm_scope")!="FULL_SOURCE",arm_scope=marker.get("arm_scope","LEFT_SLEW"))}),flush=True)
     return selected
 
 
@@ -104,13 +106,18 @@ def extend_unloaded_arm_follow(script):
     for line in lines:
         if line.strip().startswith("def send("):in_send=True
         if line.startswith("rclpy.init") or line.startswith(" import gc"):in_send=False
-        if in_send and line.strip()=="for name in LEFT+RIGHT:":
-            out.append(" "* (len(line)-len(line.lstrip()))+"native_left=select_native_carry_left(self,stage)")
+        if in_send and line.strip()=="self.refresh_native()":
+            out.append(line)
+            out.append(" "*(len(line)-len(line.lstrip()))+"native_left=select_native_carry_left(self,stage)")
+            out.append(" "*(len(line)-len(line.lstrip()))+"target=dict(target)")
+            continue
+        if in_send and line.strip().startswith("if TRACK_NATIVE_CIRCLE and stage not in "):
+            line=line[:-1]+" and not (native_left and set(native_left)==set(LEFT+RIGHT)):"
         if in_send and line.strip().startswith("x=JointCommand();x.name=name;") and line.rstrip().endswith(";m.joints.append(x)"):
             indent=" "*(len(line)-len(line.lstrip()))
             line=line.rsplit(";m.joints.append(x)",1)[0]
             out.append(line)
-            out.extend([indent+"if native_left and name in LEFT:",
+            out.extend([indent+"if native_left and name in native_left:",
                         indent+" for field,value in native_left[name].items():setattr(x,field,float(value))",
                         indent+" target[name]=float(x.position)",
                         indent+"m.joints.append(x)"])

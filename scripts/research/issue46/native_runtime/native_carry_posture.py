@@ -9,27 +9,19 @@ import time
 def native_stand_arm_reference():
     from pathlib import Path
     import hashlib,yaml
-    source=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/cpgtelecon_config.yaml")
-    other=yaml.safe_load(source.read_text())["CPGTeleConConfig"]["other"]
-    targets={}
-    for side in ("left","right"):
-        for joint,value in (("shoulder_pitch",other["default_shoulder_pitch_pos"]),("shoulder_roll",other["default_shoulder_roll_pos"]),("shoulder_yaw",0.),("elbow",other["default_elbow_pos"]),("wrist_yaw",0.),("wrist_pitch",0.),("wrist_roll",0.)):
-            targets[side+"_"+joint+"_joint"]=float(value)
-    # Fixed operational carry pose solved against the actual source meshes;
-    # left arm is the operational folded pose used by the passing004726 episode. This is not a FoundationWalk policy reference or policy edit.
-    task_path=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/result.json")
-    if hashlib.sha256(task_path.read_bytes()).hexdigest()!="f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42":raise ValueError("upright carry task source changed")
-    task=json.loads(task_path.read_text())
-    if not task["static_screen"]["pass_static"] or max(abs(x) for x in task["task_residual"])>.0001:raise ValueError("upright task geometry unqualified")
-    if set(task["right_arm_rad"])!={n for n in targets if n.startswith("right_")}:raise ValueError("upright task scope")
-    targets.update(task["right_arm_rad"])
-    return dict(classification="SAVED_PREFIX_VALIDATED_OPERATIONAL_ARM_POSE_NOT_NATIVE_POLICY_REFERENCE",
-                source=str(source),source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
-                operational_right_arm_ik=dict(path=str(task_path),sha256="f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",source_native_frame=task["source_native_frame"],scene_sha256=task["scene_sha256"]),
-                arm_target_rad=targets,duration_s=6.,physical_validation="NOT_RUN",follow_native_unloaded_arm_after_turn=True)
+    source=Path("/home/lzy18001500226/projects/RobotSim/simulation/mujoco/raicom2026/mc/bin/mc_param/src/robot/lx2501_3_t2d5/rl/foundationwalk_config.yaml")
+    cfg=yaml.safe_load(source.read_text())
+    nominal=dict(zip(cfg["BaseConfig"]["seq"],cfg["ACConfig"]["robot"]["default_dof_pos"]))
+    targets={name:float(value) for name,value in nominal.items() if any(x in name for x in ("shoulder","elbow","wrist"))}
+    if len(targets)!=14:raise ValueError("native coordinated arm reference group")
+    return dict(classification="SIMULATION_ONLY_NATIVE_FULLBODY_ARM_REFERENCE_AND_PRIVATE_COMMAND_FOLLOW_NOT_VENDOR_CARRY_QUALIFICATION",
+        source=str(source),source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        arm_target_rad=targets,duration_s=6.,carry_reference_frame="TORSO_RIGID",
+        physical_validation="NOT_RUN",native_arm_follow_scope="FULL_SOURCE")
 
-def perform_native_neutral_stow(n, settings):
+def perform_native_neutral_stow(n, settings, *, result_name="native_neutral_stow_result.json"):
     import os
+    if result_name not in ("native_neutral_stow_result.json","native_preplacement_stow_result.json"):raise RuntimeError("STOW_RESULT_PATH")
     target=settings["arm_target_rad"]
     if set(target)!=set(LEFT+RIGHT) or settings["duration_s"]!=6.:raise RuntimeError("STOW_SCOPE")
     for name,value in target.items():
@@ -60,7 +52,7 @@ def perform_native_neutral_stow(n, settings):
         if getattr(n,"tracking_revision",None)==n.lift_phase["carry_pose_revision"]:break
     else:raise RuntimeError("STOW_TRACKER_REVISION_UNCONFIRMED")
     result=dict(pass_result=True,classification="MEASURED_JOINT_STOW_NOT_NEW_GRASP_OR_LIFT",settings=settings,elapsed_wall_s=time.monotonic()-began,max_actual_arm_error_rad=error,generation=n.native_generation,owner_pid=os.getpid(),end_base_world_m=n.native_row["bodies"]["pelvis"]["position_m"],end_bottle_world_m=n.native_row["bodies"]["test_cylinder"]["position_m"],object_pose_commands_sent=0,force_cap_nm_unchanged=2.)
-    write_durable_milestone("/workspace/evidence/native_neutral_stow_result.json",result)
+    write_durable_milestone("/workspace/evidence/"+result_name,result)
     return dict(target)
 
 def extend_native_stow(script, settings):
@@ -72,6 +64,7 @@ def extend_native_stow(script, settings):
         if text.startswith("def send("):in_send=True
         if line.startswith("rclpy.init()"):in_send=False
         if in_send:
+            line=line.replace("stage!=\'CARRY_HOLD\' and len(self.odom)>1", "stage!=\'CARRY_HOLD\' and not (stage==\'CARRY_STOW\' and getattr(self,\'placement_request\',None)) and len(self.odom)>1")
             line=line.replace("'CARRY_HOLD')","'CARRY_HOLD','CARRY_STOW')")
             line=line.replace("sum(forces.values()) if stage=='CARRY_HOLD'","sum(forces.values()) if stage in ('CARRY_HOLD','CARRY_STOW')")
             line=line.replace("if stage=='CARRY_HOLD':","if stage in ('CARRY_HOLD','CARRY_STOW'):")

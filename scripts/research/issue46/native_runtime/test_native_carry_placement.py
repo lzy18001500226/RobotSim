@@ -83,18 +83,19 @@ class PlacementTests(unittest.TestCase):
         exec(inspect.getsource(perform_native_neutral_stow),scope)
         with self.assertRaises(BeforePublish):scope["perform_native_neutral_stow"](Node(),settings)
 
-    def test_restored_pose_matches_the_measured_prefix_without_claiming_policy_neutral(self):
+    def test_native_fullbody_reference_is_source_matched_and_opt_in(self):
         from pathlib import Path
-        import json
+        import json,yaml
         from scripts.research.issue46.native_runtime.native_carry_posture import native_stand_arm_reference
         settings=native_stand_arm_reference()
         cfg=json.loads(Path("simulation/mujoco/scenes/raicom2026/config/two_table_delivery.json").read_text())
+        source=yaml.safe_load(Path(settings["source"]).read_text())
+        nominal=dict(zip(source["BaseConfig"]["seq"],source["ACConfig"]["robot"]["default_dof_pos"]))
         self.assertEqual(settings,cfg["carry_native_neutral_stow"])
-        self.assertEqual(settings["arm_target_rad"]["left_elbow_joint"],-1.2)
-        self.assertAlmostEqual(settings["arm_target_rad"]["right_wrist_roll_joint"],1.4604811268837392)
-        self.assertIn("NOT_NATIVE_POLICY_REFERENCE",settings["classification"])
-        self.assertEqual(settings.get("carry_reference_frame","TORSO_RIGID"),"TORSO_RIGID")
-        self.assertEqual(settings["duration_s"],6.0)
+        self.assertTrue(all(q==nominal[n] for n,q in settings["arm_target_rad"].items()))
+        self.assertEqual(settings["native_arm_follow_scope"],"FULL_SOURCE")
+        self.assertEqual(settings["duration_s"],6.)
+        self.assertEqual(settings["physical_validation"],"NOT_RUN")
 
     def test_pelvis_carry_reference_does_not_follow_independent_waist_sway(self):
         import numpy as np

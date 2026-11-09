@@ -64,7 +64,12 @@ def perform_native_placement(n, request):
         request.get("confirmed_stand") is not True or
         not 0.<=(time.monotonic_ns()-int(request["created_host_ns"]))*1e-9<=.20):
         raise RuntimeError("PLACEMENT_HANDOFF_NOT_QUALIFIED")
-    n.refresh_native();start_row=n.native_row;start_pose=start_row["bodies"]["pelvis"]["position_m"]
+    began=time.monotonic()
+    n.refresh_native();n.placement_root_start=list(n.native_row["bodies"]["pelvis"]["position_m"])
+    if request.get("preplacement_arm_settings"):
+        n.placement_request=request
+        perform_native_neutral_stow(n,request["preplacement_arm_settings"],result_name="native_preplacement_stow_result.json")
+    n.refresh_native();start_row=n.native_row;start_pose=n.placement_root_start
     hand=start_row["bodies"]["R_omnipicker_base_link"];H=hand["rotation"];local=CIRCLE_CONTRACT["circle_center_local_m"]
     initial=[hand["position_m"][i]+sum(H[3*i+j]*local[j] for j in range(3)) for i in range(3)]
     local_axis=CIRCLE_CONTRACT["local_bottle_axis_in_hand"]
@@ -73,7 +78,7 @@ def perform_native_placement(n, request):
     if math.dist(initial,clearance)>.45:raise RuntimeError("PLACEMENT_CARTESIAN_EXCURSION")
     target=dict(n.last_published_arm_target);n.placement_request=request;n.placement_release=False
     n.lift_phase.update(placement_active=True,placement_start_world_m=initial,placement_request=request)
-    rows=[];n.placement_rows=rows;began=time.monotonic()
+    rows=[];n.placement_rows=rows
     def tick(point,axis,hand_command):
         if time.monotonic()-began>35.:raise RuntimeError("PLACEMENT_WATCHDOG")
         n.lift_phase.update(placement_target_world_m=list(point),placement_axis_world=list(axis))
@@ -188,6 +193,7 @@ def extend_existing_owner(script):
                 "  if getattr(self,'placement_request',None):",
                 "   fault=physical_fault(row,native_pose(row),LIFT_CONTRACT['retract_preflight']['source_motion_limits'],robot_bodies=LIFT_CONTRACT['retract_preflight']['robot_bodies'],allowed_contact_pairs=[['test_cylinder',p] for p in ('R_hand_narrow3_Link','R_hand_wide3_Link')])",
                 "   if fault:raise RuntimeError('PLACEMENT_PHYSICAL_SAFETY:'+fault)",
+                '   if getattr(self,"placement_root_start",None) and math.dist(self.placement_root_start,self.native_row["bodies"]["pelvis"]["position_m"])>.08:raise RuntimeError("PLACEMENT_BASE_MOVED")',
             ])
     result="\n".join(output)+"\n";compile(result,"existing_owner_with_table_placement","exec")
     return result
@@ -302,6 +308,14 @@ def prepare_delivery_scene(parent, config_path):
         set_root(xy,yaw)
         bad=collision_screen()
         if bad:raise ValueError("nominal actual-scene route collision:"+str(bad[:3]))
+    preplacement=cfg.get("preplacement_arm_settings")
+    if preplacement:
+        pin=cfg["preplacement_reference"];reference_path=Path(pin["path"])
+        if hashlib.sha256(reference_path.read_bytes()).hexdigest()!=pin["sha256"] or json.loads(reference_path.read_text())["settings"]!=preplacement:
+            raise ValueError("preplacement operational source changed")
+        from scripts.research.issue46.native_runtime.native_carry_posture import screen_native_stow
+        preplace_screen=screen_native_stow(model,data,preplacement)
+        if not preplace_screen["pass_static"]:raise ValueError("preplacement arm path collision:"+str([x for x in preplace_screen["rows"] if x["collisions"]][:1]))
     names=constants["RIGHT"];ids=np.asarray([mujoco.mj_name2id(model,mujoco.mjtObj.mjOBJ_JOINT,n) for n in names])
     qa=model.jnt_qposadr[ids];dof=model.jnt_dofadr[ids];qseed=data.qpos[qa].copy()
     bounds=np.asarray([constants["LIFT_CONTRACT"]["retract_preflight"]["source_motion_limits"][n][:2] for n in names])

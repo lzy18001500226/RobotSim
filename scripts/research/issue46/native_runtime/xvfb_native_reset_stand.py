@@ -1389,7 +1389,7 @@ def main() -> None:
     if (args.carry_compact_angular_cap!=.30 or args.carry_release_source_on_stop) and not args.carry_compact_turn:raise ValueError("compact source/cap scope")
     if args.carry_vendor_transition_table and (args.carry_delivery_config is None or args.carry_native_action_smoothing or args.carry_native_step_mode):raise ValueError("vendor transition comparison scope")
     if args.carry_delivery_config is not None:
-        if (json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow") or {}).get("follow_native_unloaded_arm_after_turn") and not args.observe_native_arm_policy:raise ValueError("native unloaded arm following requires verified private MC arm producer")
+        if any((json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow") or {}).get(k) for k in ("follow_native_unloaded_arm_after_turn","native_arm_follow_scope")) and not args.observe_native_arm_policy:raise ValueError("native unloaded arm following requires verified private MC arm producer")
         direct_retreat=json.loads(args.carry_delivery_config.read_text()).get("activation_protocol")=="VENDOR_DIRECT_RETREAT_NONZERO" and args.carry_transit_command_speed==.20
         if not (args.carry_compact_turn and (args.carry_gait_prepare or direct_retreat) and args.carry_release_source_on_stop and args.carry_compact_centre_feedback and not args.carry_native_step_mode):raise ValueError("delivery profile requires qualified compact controls or explicit vendor-direct retreat")
     if args.carry_compact_centre_feedback and not args.carry_compact_turn:raise ValueError("compact centre feedback scope")
@@ -1421,7 +1421,7 @@ def main() -> None:
     if args.dock_command_speed_cap is not None and (args.dock_world_xy is None or not args.native_dock_truth_feedback or not .12<=args.dock_command_speed_cap<=.20):
         raise ValueError("bounded dock cap requires native feedback and .12..0.20 m/s")
 
-    native_left_follow=bool(args.carry_delivery_config and (json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow") or {}).get("follow_native_unloaded_arm_after_turn"))
+    native_left_follow=bool(args.carry_delivery_config and any((json.loads(args.carry_delivery_config.read_text()).get("carry_native_neutral_stow") or {}).get(k) for k in ("follow_native_unloaded_arm_after_turn","native_arm_follow_scope")))
     if args.observe_native_arm_policy and ((not args.micro_base_probe and not native_left_follow) or not args.capture_mc_rl_debug or args.native_arm_policy_relay or not args.disable_mc_arm_publisher or not args.disable_mc_hand_publisher):
         raise ValueError("arm policy capture requires isolated debug path or scoped unloaded carry arm, no bootstrap actuator relay")
     if args.carry_reverse_moving_arc and ((args.carry_goal_world_xy is None and not getattr(args,"carry_away_1m",False)) or not args.carry_transit_speed_policy_050 or args.carry_native_step_mode):raise ValueError("reverse arc requires bounded FoundationWalk carry, with approved transit policy")
