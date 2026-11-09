@@ -65,6 +65,27 @@ class CarryNavigationTests(unittest.TestCase):
         self.assertAlmostEqual(math.sin(target-bearing),0.,places=12)
         self.assertGreater(abs((pose["yaw"]-math.pi-bearing+math.pi)%(2*math.pi)-math.pi),1.)
 
+    def test_clockwise_table_target_unwraps_beyond_180_without_changing_bearing(self):
+        pose=dict(x=.6422,y=-1.5369,yaw=-.2109)
+        bearing,target=m.table_turn_target(pose,[.015,.98],clockwise=True)
+        self.assertLess(target-pose["yaw"],-math.pi)
+        self.assertGreater(target-pose["yaw"],-2.*math.pi)
+        self.assertAlmostEqual(math.sin(target-bearing),0.,places=12)
+        moved_bearing=1.79
+        continuous=target+(moved_bearing-target+math.pi)%(2*math.pi)-math.pi
+        self.assertLess(abs(continuous-target),.2)
+
+    def test_zero_startup_waits_for_fresh_clock_epoch_but_never_swallows_safety_fault(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        n=SimpleNamespace(messages={k:{} for k in ("common","imu","leg_state","leg_command")},
+                          readbacks={"get_mode":{}},await_graph=mock.Mock(),publish=mock.Mock(),pump=mock.Mock())
+        n.sample=mock.Mock(side_effect=[RuntimeError("CLOCK_GENERATION_PENDING"),dict(body_status=1)])
+        self.assertEqual(m.await_carry_initial_state(n)["body_status"],1)
+        self.assertEqual(n.publish.call_count,2)
+        n.sample=mock.Mock(side_effect=RuntimeError("POSTURE"))
+        with self.assertRaisesRegex(RuntimeError,"POSTURE"):m.await_carry_initial_state(n)
+
     def test_route_generation_uses_existing_controller_and_fixed_caps(self):
         code=m.build_carry_route_script([-.45,1.],{},["pelvis"],carry_pid=19,timeout_s=90.)
         compile(code,"carry_route","exec")

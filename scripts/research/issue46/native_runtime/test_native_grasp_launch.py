@@ -928,3 +928,45 @@ class NativeSlowConsumerReadTests(TestCase):
         streams=[io.BytesIO((json.dumps(row)+chr(10)).encode()) for _ in range(2)]
         with mock.patch.object(Path,'exists',return_value=True),mock.patch.object(Path,'open',side_effect=streams),mock.patch('time.monotonic_ns',side_effect=[0,300000000,310000000]):
             with self.assertRaisesRegex(RuntimeError,'STALE'):audit.require_fresh_sample(Path('/input'))
+
+
+import unittest
+
+class RuntimePlanHandoffTests(unittest.TestCase):
+    def test_parent_consumes_same_effective_contract_as_tracker(self):
+        import tempfile,json,subprocess
+        from pathlib import Path
+        from scripts.research.issue46.grasp.stl_approved_circle_native_trial import runtime_plan_result
+        with tempfile.TemporaryDirectory(prefix="i46-plan-handoff-") as tmp:
+            root=Path(tmp)
+            (root/"result.json").write_text(json.dumps(dict(reused_gain_cycle={"cycle_sha256":"proof"},gates={"RUNTIME_STATIC_IK":"PASS"})))
+            original=subprocess.CompletedProcess(["ik"],0,'diagnostic\n'+json.dumps(dict(output="/old",output_wsl="/old",gate="PASS"))+"\n","")
+            adapted=runtime_plan_result(original,root)
+            payload=json.loads(adapted.stdout.strip().splitlines()[-1])
+            contract=json.loads((Path(payload["output_wsl"])/"result.json").read_text())
+            self.assertEqual(contract["reused_gain_cycle"]["cycle_sha256"],"proof")
+            self.assertEqual(payload["gate"],"PASS")
+            self.assertTrue(adapted.stdout.startswith("diagnostic\n"))
+            self.assertIn('"/old"',original.stdout)
+
+
+class CarryContactPolicyConsistencyTests(unittest.TestCase):
+    def test_generated_carry_support_loop_keeps_approved_incidental_scope(self):
+        import ast
+        from types import SimpleNamespace
+        import textwrap
+        source=ast.parse(Path(__file__).with_name("stl_hand_startup.py").read_text())
+        template=next(n.value for n in ast.walk(source) if isinstance(n,ast.Constant) and isinstance(n.value,str)
+                      and "CARRY_OBJECT_EXTERNAL_SUPPORT" in n.value)
+        start=template.index("    for c in self.native_row.get('contacts',[]):")
+        end=template.index("    hand=self.native_row",start)
+        loop=ast.parse(textwrap.dedent(template[start:end])).body[0]
+        def run(other,depth,enabled=True):
+            row=dict(contacts=[dict(body1="test_cylinder",body2=other,distance_m=depth,local_force_torque=[3.856])])
+            namespace=dict(self=SimpleNamespace(native_row=row),LIFT_CONTRACT=dict(retract_preflight=dict(
+                incidental_contact_diagnostic=enabled,robot_bodies=["right_hip_roll_link"])))
+            exec(compile(ast.Module(body=[loop],type_ignores=[]),"actual_carry_contact_loop","exec"),namespace)
+        run("right_hip_roll_link",-.0011992617641919067)
+        for other,depth,enabled in (("right_hip_roll_link",-.006,True),("raicom_table_table",-.001,True),
+                                    ("right_hip_roll_link",-.001,False)):
+            with self.assertRaisesRegex(RuntimeError,"CARRY_OBJECT_EXTERNAL_SUPPORT"):run(other,depth,enabled)

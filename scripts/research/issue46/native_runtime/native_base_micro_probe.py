@@ -897,9 +897,10 @@ def table_terminal_braking_footprint(poses, origin, target_yaw, baseline_radius,
 
 
 
-def table_turn_target(pose, goal_xy):
+def table_turn_target(pose, goal_xy, clockwise=False):
     bearing=math.atan2(goal_xy[1]-pose["y"],goal_xy[0]-pose["x"])
     delta=(bearing-pose["yaw"]+math.pi)%(2*math.pi)-math.pi
+    if clockwise and delta>0.:delta-=2.*math.pi
     return bearing,pose["yaw"]+delta
 
 
@@ -1107,6 +1108,20 @@ def poll_carry_graph_check(n,job,now):
     return job
 
 
+def await_carry_initial_state(n):
+    """Acquire a genuinely current epoch while zero, within the existing 5s budget."""
+    n.await_graph()
+    deadline=time.monotonic()+5.
+    while time.monotonic()<deadline:
+        n.publish();n.pump()
+        if all(k in n.messages for k in ("common","imu","leg_state","leg_command")) and "get_mode" in n.readbacks:
+            try:return n.sample()
+            except RuntimeError as exc:
+                if str(exc)!="CLOCK_GENERATION_PENDING":raise
+        time.sleep(.01)
+    raise RuntimeError("CARRY_INITIAL_FRESH_EPOCH_NOT_READY")
+
+
 def run_carry_navigation(n,contract):
     """One bounded measured-pose task, with zero/qualified-stop clock recovery."""
     import threading
@@ -1132,12 +1147,7 @@ def run_carry_navigation(n,contract):
             n.observe(1.05,baseline=baseline);n.stand_once()
 
     try:
-        n.start_feedback();until=time.monotonic()+5.
-        while time.monotonic()<until:
-            n.publish();n.pump()
-            if all(k in n.messages for k in ("common","imu","leg_state","leg_command")) and "get_mode" in n.readbacks:break
-            time.sleep(.01)
-        n.await_graph();n.pump();baseline=n.sample()["body_status"]
+        n.start_feedback();baseline=await_carry_initial_state(n)["body_status"]
         result["pre_motion_composite"]=n.observe(8.,baseline=baseline,require_stop=True)
         start=n.sample()["pose"];result["start_pose"]=start
         goal=cfg["goal_xy_m"]
@@ -1325,7 +1335,7 @@ def run_carry_navigation(n,contract):
                         mission["turn_start_source_s"]=state["sample_monotonic_s"]
                         mission["away_heading_rad"]=(state["pose"]["yaw"]-math.pi+math.pi)%(2*math.pi)-math.pi
                         if (cfg.get("delivery") or {}).get("turn_to_delivery_bearing"):
-                            bearing,mission["target_unwrapped_yaw"]=table_turn_target(state["pose"],cfg["delivery"]["base_goal_world_xy"])
+                            bearing,mission["target_unwrapped_yaw"]=table_turn_target(state["pose"],cfg["delivery"]["base_goal_world_xy"],cfg["delivery"].get("delivery_turn_direction")=="CLOCKWISE")
                             mission["away_heading_rad"]=bearing;mission["turn_goal"]="ACTUAL_SECOND_TABLE_BEARING"
                         bearing=mission["away_heading_rad"]
                         origin=mission.get("retreat_origin_pose",start)
@@ -1353,7 +1363,8 @@ def run_carry_navigation(n,contract):
                         history[:]=[x for x in history if source-x[0]<=1.5]
                     if (cfg.get("delivery") or {}).get("turn_to_delivery_bearing"):
                         bearing,_=table_turn_target(p,cfg["delivery"]["base_goal_world_xy"])
-                        mission["target_unwrapped_yaw"]=mission["unwrapped_yaw"]+(bearing-p["yaw"]+math.pi)%(2*math.pi)-math.pi
+                        previous_target=mission["target_unwrapped_yaw"]
+                        mission["target_unwrapped_yaw"]=previous_target+(bearing-previous_target+math.pi)%(2*math.pi)-math.pi
                         mission["away_heading_rad"]=bearing
                     turn_error=mission["target_unwrapped_yaw"]-mission["unwrapped_yaw"]
                     history=mission.get("turn_yaw_history",[])
@@ -1379,7 +1390,7 @@ def run_carry_navigation(n,contract):
                         elif centre_error<=.01:mission["turn_centre_recovery"]=False
                     recovering=cfg.get("inplace_centre_hold") and mission.get("turn_centre_recovery",False)
                     if abs(turn_error)>max(.08,reserve) or recovering:
-                        if abs(turn_error)>math.pi+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
+                        if abs(turn_error)>(2.*math.pi if (cfg.get("delivery") or {}).get("delivery_turn_direction")=="CLOCKWISE" else math.pi)+.10:raise RuntimeError("CARRY_HEADING_RESPONSE_DIVERGED")
                         output=SimpleNamespace(state=NavState.ALIGN,distance_m=None,yaw_error_rad=turn_error,
                                                linear_x=0. if cfg.get("straight_retreat_turn") else -.12,angular_z=math.copysign(min(.30,cfg["angular_command_cap"]) if cfg.get("compact_turn") and abs(turn_error)<float((cfg.get("delivery") or {}).get("turn_terminal_angular_taper_angle_rad",.60)) else cfg["angular_command_cap"],turn_error) if cfg.get("straight_retreat_turn") else max(-cfg["angular_command_cap"],min(cfg["angular_command_cap"],.8*turn_error)))
                         if cfg.get("compact_centre_feedback") and not (cfg.get("delivery") or {}).get("turn_translation_strategy")=="PURE_YAW":

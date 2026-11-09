@@ -56,6 +56,15 @@ def verified_grasp_reuse(episode):
 
 
 
+def runtime_plan_result(result, effective_dir):
+    """Make parent and tracker consume the identical effective plan artifact."""
+    payload=json.loads(result.stdout.strip().splitlines()[-1])
+    payload.update(output=str(effective_dir),output_wsl=str(effective_dir))
+    previous=result.stdout.rstrip().rsplit("\n",1)
+    prefix=previous[0]+"\n" if len(previous)>1 else ""
+    return subprocess.CompletedProcess(result.args,result.returncode,prefix+json.dumps(payload)+"\n",result.stderr)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--baseline",type=Path,required=True)
@@ -278,6 +287,11 @@ def main():
                 pg.write_new_text(perception_output/'stop','snapshot acquired and reverified before arm execution\n')
                 perception_process.wait(timeout=3.)
                 if perception_process.returncode:raise RuntimeError('RGBD_SNAPSHOT_SENSOR_TEARDOWN_FAILED')
+            if args.reuse_verified_grasp_plan:
+                effective=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-cached-runtime-contract").native_path
+                pg.write_new_text(effective/"result.json",reference.read_text())
+                reference=effective/"result.json"
+                result=runtime_plan_result(result,effective)
             tracking_output=evidence/'native_tracking_target.json'
             track_command=['/home/lzy18001500226/.venvs/robotsim-mujoco336/bin/python',str(Path(__file__).with_name('stl_approved_circle_ik.py')),'--track-native',str(reference),str(evidence/'native_latest.json'),str(tracking_output)]
             pg.write_new_text(evidence/'native_tracking_command.json',json.dumps(track_command)+'\n')

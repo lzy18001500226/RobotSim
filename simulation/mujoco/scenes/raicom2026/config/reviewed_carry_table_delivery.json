@@ -52,7 +52,7 @@
     },
     "arm_target_rad": {
       "left_shoulder_pitch_joint": 0.4,
-      "left_shoulder_roll_joint": 0.0,
+      "left_shoulder_roll_joint": 0.15,
       "left_shoulder_yaw_joint": 0.0,
       "left_elbow_joint": -1.2,
       "left_wrist_yaw_joint": 0.0,
@@ -68,10 +68,18 @@
     },
     "duration_s": 6.0,
     "physical_validation": "NOT_RUN",
-    "reference_profile": "REVIEWED_UPRIGHT_CARRY",
+    "reference_profile": "REVIEWED_UPRIGHT_CARRY_LEFT_MARGIN",
     "reference_path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261109T004726Z/native_neutral_stow_result.json",
     "reference_sha256": "6e87d4eb66065fc5667a7b44f926d02ec8aaf32dc6e0af529b5427a0c2fed0b5",
-    "carry_reference_frame": "TORSO_RIGID"
+    "carry_reference_frame": "TORSO_RIGID",
+    "operational_pose_delta": {
+      "left_shoulder_roll_joint": {
+        "source_target_rad": 0.0,
+        "target_rad": 0.15,
+        "reason": "163946Z measured -.0628346 rad at source minimum -.061; preserve limit/gains and add commanded posture margin"
+      },
+      "geometry_and_controller_gains_changed": false
+    }
   },
   "turn_terminal_angular_taper_angle_rad": 0.6,
   "turn_terminal_translation_free_angle_rad": 0.0,
@@ -106,7 +114,8 @@
   "direction_probe_evidence": "145703Z: pure+.30 produced+13.561mm before1s artificial30mm performance cutoff; 5mm is only initial observed direction, never route/stop PASS. Alignment centre correction+.20 displaced toward rear wall; remove this extra translation only in DELIVERY_ALIGN. Physical/source limits unchanged.",
   "delivery_alignment_pure_yaw": true,
   "turn_to_delivery_bearing": true,
-  "turn_translation_strategy": "PURE_YAW",
+  "turn_translation_strategy": "REVIEWED_COMPACT_CENTRE_FEEDBACK",
   "delivery_tracking_angular_cap_rad_s": 0.075,
-  "route_goal_scope": "RETREAT_THEN_SINGLE_SHORTEST_TURN_TO_ACTUAL_SECOND_TABLE_BEARING_THEN_EXISTING_CLOSED_LOOP_DRIVE; no fixed180deg and secondALIGN detour"
+  "route_goal_scope": "RETREAT_THEN_SINGLE_CLOCKWISE_TURN_TO_ACTUAL_SECOND_TABLE_BEARING_THEN_EXISTING_CLOSED_LOOP_DRIVE; reuse measured right-turn controls; left-turn drift160944Z is not accepted",
+  "delivery_turn_direction": "CLOCKWISE"
 }

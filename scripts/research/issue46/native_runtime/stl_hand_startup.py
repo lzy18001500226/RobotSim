@@ -1374,7 +1374,10 @@ def _with_carry_lease(script, retract):
    if stage=='CARRY_HOLD':
     for c in self.native_row.get('contacts',[]):
      pair={c.get('body1'),c.get('body2')}
-     if 'test_cylinder' in pair and not pair.intersection({'R_hand_narrow3_Link','R_hand_wide3_Link'}) and float(c['local_force_torque'][0])>.1:raise RuntimeError('CARRY_OBJECT_EXTERNAL_SUPPORT')
+     if 'test_cylinder' in pair and not pair.intersection({'R_hand_narrow3_Link','R_hand_wide3_Link'}) and float(c['local_force_torque'][0])>.1:
+      incidental=(LIFT_CONTRACT or {}).get('retract_preflight',{}).get('incidental_contact_diagnostic')
+      if incidental and c.get('distance_m',-1.)>=-.005 and pair.intersection(set(LIFT_CONTRACT['retract_preflight']['robot_bodies'])):continue
+      raise RuntimeError('CARRY_OBJECT_EXTERNAL_SUPPORT')
     hand=self.native_row['bodies']['R_omnipicker_base_link'];obj=self.native_row['bodies']['test_cylinder'];H=hand['rotation'];B=obj['rotation']
     delta=[obj['position_m'][i]+CIRCLE_CONTRACT['height_above_center_m']*B[3*i+2]-hand['position_m'][i] for i in range(3)]
     local=[sum(H[3*i+j]*delta[i] for i in range(3)) for j in range(3)]

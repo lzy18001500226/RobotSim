@@ -20,6 +20,7 @@ def main():
     profile=REPO/"simulation/mujoco/scenes/raicom2026/config"/("reviewed_carry_table_delivery.json" if args.to_delivery_table else "retreat_turn_human_review.json")
     CMD[CMD.index("--carry-delivery-config")+1]=str(profile)
     if args.to_delivery_table:
+        CMD[CMD.index("--carry-compact-angular-cap")+1]="0.30"
         CMD.extend(["--reuse-verified-grasp-plan",str(ROOT/"raicom-stl-xvfb-native-reset-stand-20261109T150617Z")])
     if bool(json.loads(profile.read_text()).get("review_prefix_only"))==args.to_delivery_table:raise RuntimeError("review/transfer scope changed")
     if args.check_only:
