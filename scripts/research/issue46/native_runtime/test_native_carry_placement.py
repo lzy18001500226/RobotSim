@@ -82,3 +82,24 @@ class PlacementTests(unittest.TestCase):
         import inspect
         exec(inspect.getsource(perform_native_neutral_stow),scope)
         with self.assertRaises(BeforePublish):scope["perform_native_neutral_stow"](Node(),settings)
+
+    def test_pelvis_carry_reference_does_not_follow_independent_waist_sway(self):
+        import numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import tracking_task
+        identity=[1.,0.,0.,0.,1.,0.,0.,0.,1.]
+        row=dict(generation=1,bodies={"pelvis":dict(position_m=[1.,2.,.6],rotation=identity),
+             "torso_link":dict(position_m=[1.10,2.,.8],rotation=identity),
+             "R_omnipicker_base_link":dict(position_m=[1.2,2.,.8],rotation=identity),
+             "test_cylinder":dict(position_m=[1.2,2.,.7],rotation=identity)})
+        phase=dict(phase="CARRY_HOLD",native_arrival_pass=True,post_retract_physical_hold_pass=True,generation=1,
+             carry_heading_xy_m=[.2,0.],carry_world_z_m=.8,initial_object_in_hand_m=[0.,0.,0.],slip_reference="GRASP_SECTION",
+             carry_retention_only=True,allow_carried_bottle_tilt=True,carry_pose_frame="PELVIS_RIGID",
+             carry_rigid_offset_base_m=[.2,0.,.2],carry_rigid_axis_base=[0.,0.,1.])
+        target,axis=tracking_task(row,{"grasp_height_above_center_m":.1},phase)
+        np.testing.assert_allclose(target,[1.2,2.,.8])
+        row["bodies"]["torso_link"]["position_m"]=[1.2,2.,.55]
+        again,_=tracking_task(row,{"grasp_height_above_center_m":.1},phase)
+        np.testing.assert_allclose(again,target)
+        phase["carry_pose_frame"]="TORSO_RIGID"
+        torso,_=tracking_task(row,{"grasp_height_above_center_m":.1},phase)
+        self.assertGreater(np.linalg.norm(torso-target),.1)

@@ -188,12 +188,12 @@ def tracking_task(row, reference, phase=None):
                 raise RuntimeError('UNQUALIFIED_TABLE_PLACEMENT_TARGET')
             return point,axis
         frame=phase.get('carry_pose_frame','YAW_WORLD_UP')
-        if frame=='TORSO_RIGID':
+        if frame in ('TORSO_RIGID','PELVIS_RIGID'):
             delta=np.asarray(phase.get('carry_rigid_offset_base_m'),dtype=float)
             axis=np.asarray(phase.get('carry_rigid_axis_base'),dtype=float)
             if not phase.get('allow_carried_bottle_tilt',False) or delta.shape!=(3,) or axis.shape!=(3,) or not np.isfinite(delta).all() or not np.isfinite(axis).all() or np.linalg.norm(delta)>.8 or abs(np.linalg.norm(axis)-1.)>1e-5:
                 raise RuntimeError('INVALID_RIGID_CARRY_TASK_FRAME')
-            torso=row['bodies']['torso_link'];T=np.asarray(torso['rotation']).reshape(3,3)
+            torso=row['bodies']['pelvis' if frame=='PELVIS_RIGID' else 'torso_link'];T=np.asarray(torso['rotation']).reshape(3,3)
             return np.asarray(torso['position_m'])+T@delta,T@axis
         if frame!='YAW_WORLD_UP':raise RuntimeError('UNKNOWN_CARRY_TASK_FRAME')
         c,s=np.cos(yaw),np.sin(yaw)

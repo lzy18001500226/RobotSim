@@ -32,7 +32,7 @@ def native_stand_arm_reference():
                 source=str(walk_source),source_sha256=hashlib.sha256(walk_source.read_bytes()).hexdigest(),
                 historical_stand_reference=dict(path=str(source),sha256=hashlib.sha256(source.read_bytes()).hexdigest()),
                 operational_right_arm_ik=dict(path=str(task_path),sha256="f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",source_native_frame=task["source_native_frame"],scene_sha256=task["scene_sha256"]),
-                arm_target_rad=targets,duration_s=6.,physical_validation="NOT_RUN")
+                arm_target_rad=targets,duration_s=6.,carry_reference_frame="PELVIS_RIGID",physical_validation="NOT_RUN")
 
 def perform_native_neutral_stow(n, settings):
     import os
@@ -53,9 +53,11 @@ def perform_native_neutral_stow(n, settings):
     H=hand["rotation"];centre=CIRCLE_CONTRACT["circle_center_local_m"];local_axis=CIRCLE_CONTRACT["local_bottle_axis_in_hand"]
     tcp=[hand["position_m"][i]+sum(H[3*i+j]*centre[j] for j in range(3)) for i in range(3)]
     axis=[sum(H[3*i+j]*local_axis[j] for j in range(3)) for i in range(3)]
-    torso=n.native_row["bodies"]["torso_link"];T=torso["rotation"];delta=[tcp[i]-torso["position_m"][i] for i in range(3)]
+    frame=settings.get("carry_reference_frame","TORSO_RIGID")
+    if frame not in ("TORSO_RIGID","PELVIS_RIGID"):raise RuntimeError("STOW_CARRY_REFERENCE_FRAME")
+    torso=n.native_row["bodies"]["pelvis" if frame=="PELVIS_RIGID" else "torso_link"];T=torso["rotation"];delta=[tcp[i]-torso["position_m"][i] for i in range(3)]
     yaw=math.atan2(base["rotation"][3],base["rotation"][0]);dx=tcp[0]-base["position_m"][0];dy=tcp[1]-base["position_m"][1]
-    n.lift_phase.update(carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_pose_frame="TORSO_RIGID",carry_rigid_offset_base_m=[sum(T[3*i+j]*delta[i] for i in range(3)) for j in range(3)],carry_rigid_axis_base=[sum(T[3*i+j]*axis[i] for i in range(3)) for j in range(3)],carry_pose_revision=int(n.seq))
+    n.lift_phase.update(carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_pose_frame=frame,carry_rigid_offset_base_m=[sum(T[3*i+j]*delta[i] for i in range(3)) for j in range(3)],carry_rigid_axis_base=[sum(T[3*i+j]*axis[i] for i in range(3)) for j in range(3)],carry_pose_revision=int(n.seq))
     n.ff_offset={name:0. for name in RIGHT};n.write_phase(n.lift_phase)
     deadline=time.monotonic()+1.
     while time.monotonic()<deadline:
