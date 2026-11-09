@@ -103,3 +103,15 @@ class PlacementTests(unittest.TestCase):
         phase["carry_pose_frame"]="TORSO_RIGID"
         torso,_=tracking_task(row,{"grasp_height_above_center_m":.1},phase)
         self.assertGreater(np.linalg.norm(torso-target),.1)
+
+    def test_carry_nullspace_prefers_interior_without_changing_constrained_coordinates(self):
+        import numpy as np
+        from scripts.research.issue46.grasp.stl_approved_circle_ik import carry_posture_nullspace_direction
+        J=np.zeros((6,7));J[:5,:5]=np.eye(5)
+        q=np.ones(7);nominal=np.zeros(7)
+        delta=carry_posture_nullspace_direction(J,q,nominal)
+        self.assertLess(np.linalg.norm(J@delta),1e-5)
+        self.assertLess(delta[-1],0.)
+        self.assertLess(np.max(np.abs(delta)),.03)
+        with self.assertRaisesRegex(RuntimeError,"INVALID_CARRY_POSTURE_REFERENCE"):
+            carry_posture_nullspace_direction(J,q,np.full(7,np.nan))

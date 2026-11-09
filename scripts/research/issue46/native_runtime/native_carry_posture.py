@@ -22,8 +22,8 @@ def native_stand_arm_reference():
         if name.startswith("left_"):targets[name]=float(walking_neutral[name])
     # Fixed operational carry pose solved against the actual source meshes;
     # left arm remains the delivered neutral reference. It is not a policy edit.
-    task_path=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/result.json")
-    if hashlib.sha256(task_path.read_bytes()).hexdigest()!="f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42":raise ValueError("upright carry task source changed")
+    task_path=Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-carry-interior-joint-reserve-20261109T023948Z/result.json")
+    if hashlib.sha256(task_path.read_bytes()).hexdigest()!="f60d9e3f453025235351a487461f8e86b83f6816243ff02b22236f20738091c2":raise ValueError("upright carry task source changed")
     task=json.loads(task_path.read_text())
     if not task["static_screen"]["pass_static"] or max(abs(x) for x in task["task_residual"])>.0001:raise ValueError("upright task geometry unqualified")
     if set(task["right_arm_rad"])!={n for n in targets if n.startswith("right_")}:raise ValueError("upright task scope")
@@ -31,7 +31,7 @@ def native_stand_arm_reference():
     return dict(classification="NATIVE_FOUNDATIONWALK_LEFT_REFERENCE_AND_IK_UPRIGHT_RIGHT_PAYLOAD_NOT_VENDOR_CARRY_QUALIFICATION",
                 source=str(walk_source),source_sha256=hashlib.sha256(walk_source.read_bytes()).hexdigest(),
                 historical_stand_reference=dict(path=str(source),sha256=hashlib.sha256(source.read_bytes()).hexdigest()),
-                operational_right_arm_ik=dict(path=str(task_path),sha256="f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",source_native_frame=task["source_native_frame"],scene_sha256=task["scene_sha256"]),
+                operational_right_arm_ik=dict(path=str(task_path),sha256="f60d9e3f453025235351a487461f8e86b83f6816243ff02b22236f20738091c2",source_native_frame=task["source_native_frame"],scene_sha256=task["scene_sha256"]),
                 arm_target_rad=targets,duration_s=6.,carry_reference_frame="PELVIS_RIGID",physical_validation="NOT_RUN")
 
 def perform_native_neutral_stow(n, settings):
@@ -58,6 +58,7 @@ def perform_native_neutral_stow(n, settings):
     torso=n.native_row["bodies"]["pelvis" if frame=="PELVIS_RIGID" else "torso_link"];T=torso["rotation"];delta=[tcp[i]-torso["position_m"][i] for i in range(3)]
     yaw=math.atan2(base["rotation"][3],base["rotation"][0]);dx=tcp[0]-base["position_m"][0];dy=tcp[1]-base["position_m"][1]
     n.lift_phase.update(carry_heading_xy_m=[math.cos(yaw)*dx+math.sin(yaw)*dy,-math.sin(yaw)*dx+math.cos(yaw)*dy],carry_world_z_m=tcp[2],carry_pose_frame=frame,carry_rigid_offset_base_m=[sum(T[3*i+j]*delta[i] for i in range(3)) for j in range(3)],carry_rigid_axis_base=[sum(T[3*i+j]*axis[i] for i in range(3)) for j in range(3)],carry_pose_revision=int(n.seq))
+    if frame=="PELVIS_RIGID":n.lift_phase["carry_nominal_right_arm_rad"]={name:float(n.arm[name]) for name in RIGHT}
     n.ff_offset={name:0. for name in RIGHT};n.write_phase(n.lift_phase)
     deadline=time.monotonic()+1.
     while time.monotonic()<deadline:

@@ -49,8 +49,8 @@
       "sha256": "125956f6550e851c7dcded27c9c1e1df1e9a197377f1143ae9c0060288e985a1"
     },
     "operational_right_arm_ik": {
-      "path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/result.json",
-      "sha256": "f138e29388046309fce187d72ca1f10f4af040d758a52c20cc39077a4da22a42",
+      "path": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-carry-interior-joint-reserve-20261109T023948Z/result.json",
+      "sha256": "f60d9e3f453025235351a487461f8e86b83f6816243ff02b22236f20738091c2",
       "source_native_frame": "/home/lzy18001500226/projects/RobotSim/reviews/issue-46/native-upright-high-stow-task-reference-20261108T233416Z/reference_native_frame.json",
       "scene_sha256": "19e28179b803beae7f1898482aeae11786a3f2c1afa5d59ab9ae872ec5d95ecf"
     },
@@ -62,13 +62,13 @@
       "left_wrist_yaw_joint": 0.0,
       "left_wrist_pitch_joint": 0.0,
       "left_wrist_roll_joint": 0.0,
-      "right_shoulder_pitch_joint": 0.426480446125408,
-      "right_shoulder_roll_joint": -0.32510131786346647,
-      "right_shoulder_yaw_joint": -0.363785453021629,
-      "right_elbow_joint": -1.7276868974466384,
-      "right_wrist_yaw_joint": -0.6582008729633598,
-      "right_wrist_pitch_joint": -0.11454816873639194,
-      "right_wrist_roll_joint": 1.4604811268837392
+      "right_shoulder_pitch_joint": 0.6284685348675318,
+      "right_shoulder_roll_joint": -0.43639406960339977,
+      "right_shoulder_yaw_joint": -0.26082878667710674,
+      "right_elbow_joint": -1.8554667681300894,
+      "right_wrist_yaw_joint": -0.7506736273337448,
+      "right_wrist_pitch_joint": -0.2633558243707452,
+      "right_wrist_roll_joint": 1.1499737123681557
     },
     "duration_s": 6.0,
     "carry_reference_frame": "PELVIS_RIGID",

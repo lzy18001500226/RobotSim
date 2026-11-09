@@ -345,6 +345,16 @@ def screen_retract(model, state, seed, opening, center, section, offset_world, l
     return dict(joint_search_extra_reserve_rad=search_reserve,left_park=left_park,robot_bodies=robot_bodies,pass_result=all(x["pass_result"] for x in samples),classification="SOURCE_LIMITED_STATIC_CARRY_LOWER_NOT_PHYSICS_PASS" if carry_lower else "SOURCE_LIMITED_STATIC_RETRACT_NOT_PHYSICS_PASS",mj_step_calls=0,offset_world_m=offset.tolist(),duration_s=4.,hold_s=1.5,samples=samples)
 
 
+
+def carry_posture_nullspace_direction(jacobian, q, nominal):
+    """Kinematic redundancy preference, not a servo gain or relaxed task."""
+    J=np.asarray(jacobian);q=np.asarray(q);nominal=np.asarray(nominal)
+    if J.shape!=(6,7) or q.shape!=(7,) or nominal.shape!=(7,) or not all(np.isfinite(x).all() for x in (J,q,nominal)):
+        raise RuntimeError("INVALID_CARRY_POSTURE_REFERENCE")
+    toward=.05*np.clip(nominal-q,-.2,.2)
+    return toward-J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),J@toward)
+
+
 def solve_tracking_endpoint(model, row, reference, seed, phase=None):
     """Re-solve existing circle task using one actual native snapshot (offline MjData)."""
     data=mujoco.MjData(model)
@@ -372,6 +382,11 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         if np.linalg.norm(error[:3])<1e-4 and np.linalg.norm(error[3:])<1e-4:break
         J=jacobian(q)
         dq=J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),-error)
+        if phase is not None and phase.get("phase")=="CARRY_HOLD" and not phase.get("placement_active") and phase.get("carry_nominal_right_arm_rad") is not None:
+            nominal=phase["carry_nominal_right_arm_rad"]
+            if set(nominal)!=set(ik.ARM):raise RuntimeError("INVALID_CARRY_POSTURE_REFERENCE")
+            dq+=carry_posture_nullspace_direction(J,q,np.array([nominal[n] for n in ik.ARM]))
+
         q=np.clip(q+np.clip(dq,-.03,.03),bounds[:,0]+.001,bounds[:,1]-.001)
     error=residual(q)
     if np.linalg.norm(error[:3])>.001 or np.linalg.norm(error[3:])>.001:
