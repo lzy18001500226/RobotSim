@@ -1,7 +1,8 @@
 # Local03 → Local02：X2 两桌搬运交接
 
 更新：2026-11-10。只需先读本页，不用加载旧聊天/session。
-本次仅保存检查点，不合并 main、不删除工作树、不启动仿真。旧 Goal 保持暂停。
+交接检查点已保存；随后按用户要求合并两个旧文档任务并清理冗余工作树。
+旧 Goal 已清除，本次只做 Git 整理，不启动仿真。
 
 ## 分支与工作树
 
@@ -11,8 +12,15 @@
 - [PR #106](https://github.com/lzy18001500226/RobotSim/pull/106) 保持 OPEN / Draft；
   [Issue #46](https://github.com/lzy18001500226/RobotSim/issues/46) 保持 Open。
 - #80/#81 是历史导航任务，不要切回旧导航工作树。
-- 实查共3个工作树：项目根目录、agents-skill-routing、上述X2工作树。其余不动。
-- 不合并 main 的原因：22厘米整段未完成，当前配置的 START 复现未收尾，
+- 当前仅2个工作树：项目根目录 main，以及上述X2工作树。
+  项目根目录保存 .git、reference/、reviews/ 和仿真运行包，不能当作多余实验目录删除。
+- 旧资料清单 PR #107 已合并为 5081d0c25a5abe9307542ed7e5ece5433aa7cac6；
+  技能规则 PR #109 已合并为 9cd0e2a5f822a09c95fa70fdbe8a96b8df72872f。
+  agents-skill-routing 工作树及两个旧文档本地分支已清理，未新建工作树。
+- 清理恢复包和前后清单：
+  reviews/issue-46/worktree-consolidation-20261110T095433Z/。
+  X2的43个原有未提交文件逐个哈希一致，未修改或删除。
+- X2尚不合并 main 的原因：22厘米整段未完成，当前配置的 START 复现未收尾，
   PR 的 Agent infrastructure checks 仍有失败。新线程可以直接复用本工作树。
 - Git 操作不用于修改/删除旧 session；会话卡顿原因本次未作性能诊断。
 
