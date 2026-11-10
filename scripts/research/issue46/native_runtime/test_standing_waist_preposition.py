@@ -36,6 +36,13 @@ class TorsoTurnTest(unittest.TestCase):
             self.assertTrue(np.all(command>=source[:,0]+.01-1e-12))
             self.assertTrue(np.all(command<=source[:,1]-.01+1e-12))
         with self.assertRaises(ValueError):position_mode_tracking_bounds(source,bias,[0.,30.])
+    def test_frozen_gains_are_loaded_once_not_per_feedback_tick(self):
+        from scripts.research.issue46.grasp import stl_approved_circle_ik as ik
+        reference={};gain={name:(30.,2.) for name in ik.ik.ARM}
+        with patch("scripts.research.issue46.native_runtime.stl_hand_startup.load_animation_player_arm_pd_parameters",return_value=gain) as loader:
+            for _ in range(100):
+                self.assertEqual(ik.source_position_mode_kp(reference),(30.,)*7)
+            loader.assert_called_once()
     def test_position_mode_compensation_preserves_source_gains(self):
         desired=.175;actual=.175;bias=-8.2;kp=40.;kd=5.
         command=w.position_mode_setpoint(desired,actual,0.,bias,kp,kd,(-.314,.314,13.088),36.)

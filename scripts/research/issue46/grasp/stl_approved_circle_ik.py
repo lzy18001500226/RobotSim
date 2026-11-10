@@ -369,6 +369,16 @@ def carry_posture_nullspace_direction(jacobian, q, nominal):
     return toward-J.T@np.linalg.solve(J@J.T+1e-5*np.eye(6),J@toward)
 
 
+def source_position_mode_kp(reference):
+    """Load immutable delivered gains once per tracker, never in its hot loop."""
+    value=reference.get("_source_position_mode_kp")
+    if not isinstance(value,tuple):
+        from scripts.research.issue46.native_runtime.stl_hand_startup import load_animation_player_arm_pd_parameters
+        gains=load_animation_player_arm_pd_parameters()
+        value=tuple(float(gains[name][0]) for name in ik.ARM)
+        reference["_source_position_mode_kp"]=value
+    return value
+
 def position_mode_tracking_bounds(source, bias, kp, margin=.01):
     source=np.asarray(source,dtype=float);bias=np.asarray(bias,dtype=float);kp=np.asarray(kp,dtype=float)
     if not np.isfinite(source).all() or not np.isfinite(bias).all() or not np.isfinite(kp).all() or np.any(kp<=0.):raise ValueError("invalid position-mode planning inputs")
@@ -400,9 +410,7 @@ def solve_tracking_endpoint(model, row, reference, seed, phase=None):
         mujoco.mj_jac(model,data,linear,angular,point,hand)
         return np.vstack([linear[:,dofs],.1*np.cross(angular[:,dofs].T,R@local_axis).T])
     if reference.get("approach_staging"):
-        from scripts.research.issue46.native_runtime.stl_hand_startup import load_animation_player_arm_pd_parameters
-        gain=load_animation_player_arm_pd_parameters()
-        bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],[gain[n][0] for n in ik.ARM])
+        bounds=position_mode_tracking_bounds(bounds,[row["joints"][n]["bias_force"] for n in ik.ARM],source_position_mode_kp(reference))
     q=np.clip(seed,bounds[:,0]+.001,bounds[:,1]-.001)
     for iteration in range(20):
         error=residual(q)
@@ -447,6 +455,7 @@ def track_native(reference_path, latest_path, output_path):
         model=load_cached_model(reference['scene']['path'],cache['path'])
     else:model=mujoco.MjModel.from_xml_path(reference['scene']['path'])
     print(json.dumps({'tracker_initialization':'MODEL_READY','host_monotonic_ns':time.monotonic_ns()}),flush=True)
+    if reference.get("approach_staging"):source_position_mode_kp(reference)
     cycle_budget=float(reference.get('native_no_contact_gain_cycle_budget_s',0.))
     if cycle_budget not in (0.,9.):raise ValueError('unreviewed native no-contact cycle budget')
     seed=np.array([reference['initial_state']['arm_positions_rad'][n] for n in ik.ARM]);deadline=time.monotonic()+45.+cycle_budget;generation=None;trace=[];previous_carry=None;carry_velocity=np.zeros(7)
@@ -546,7 +555,8 @@ def refine_position_mode_margin(model,state,seed,center,target,local_axis):
     qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
     dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
     hand=ik.native.bid(model,"R_omnipicker_base_link");source=joint_planning_bounds(model,ik.ARM,state["runtime_source_motion_limits"])
-    kp=np.array([load_animation_player_arm_pd_parameters()[n][0] for n in ik.ARM])
+    gain=load_animation_player_arm_pd_parameters()
+    kp=np.array([gain[n][0] for n in ik.ARM])
     def evaluate(x):
         data.qpos[qa]=x[:7];mujoco.mj_forward(model,data)
         error=axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,np.array([0.,0.,1.]),local_axis)
