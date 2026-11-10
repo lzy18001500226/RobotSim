@@ -1380,6 +1380,11 @@ def carry_abort_last_command_hold(n, carry_error):
    n.spin(.02)
   except Exception:break
 
+def carry_trace_stdout_summary(trace):
+    """Keep the complete saved trace; stdout carries only its bounded preview."""
+    return dict(trace=trace[-3:],complete_trace_path="/workspace/evidence/native_hal_pregrasp_trace.json",
+                complete_trace_sample_count=len(trace))
+
 def _with_carry_lease(script, retract):
     """Keep the proven HAL grip/arm owner alive; it never publishes velocity."""
     lease=float(retract["carry_lease_s"])
@@ -1392,7 +1397,9 @@ def _with_carry_lease(script, retract):
         script=script.replace(old,new)
     import inspect
     from scripts.research.issue46.native_runtime.native_base_micro_probe import write_durable_milestone
-    replace("class Plan(Node):",inspect.getsource(write_durable_milestone)+"\n"+inspect.getsource(carry_abort_last_command_hold)+"\nclass Plan(Node):")
+    replace("class Plan(Node):",inspect.getsource(write_durable_milestone)+"\n"+inspect.getsource(carry_abort_last_command_hold)+"\n"+inspect.getsource(carry_trace_stdout_summary)+"\nclass Plan(Node):")
+    final_print=next(line for line in script.splitlines() if line.startswith(" print(json.dumps({'plan_mode':"))
+    replace(final_print,final_print.replace("'trace':n.trace","**carry_trace_stdout_summary(n.trace)"))
     replace("   if len(self.odom)>1 and math.hypot(","   if stage!='CARRY_HOLD' and len(self.odom)>1 and math.hypot(")
     replace("stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE')","stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE','CARRY_ABORT_HOLD')")
     replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')",count=2)

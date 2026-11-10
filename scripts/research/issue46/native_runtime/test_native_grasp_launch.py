@@ -912,6 +912,18 @@ class CompleteNativeTraceTests(TestCase):
             p.write_bytes(b'{"a":1}'+bytes([10])+b'BROKEN'+bytes([10]))
             with self.assertRaises(ValueError):audit.read_complete_native_rows(p)
 
+class CarryOutputCloseoutTests(unittest.TestCase):
+    def test_large_trace_is_not_duplicated_into_stdout(self):
+        from scripts.research.issue46.native_runtime.stl_hand_startup import carry_trace_stdout_summary
+        trace=[{"sample":i,"data":"x"*1000} for i in range(10000)]
+        summary=carry_trace_stdout_summary(trace)
+        self.assertEqual(len(summary["trace"]),3)
+        self.assertEqual(summary["complete_trace_sample_count"],10000)
+        self.assertEqual(len(trace),10000)
+        self.assertLess(len(json.dumps(summary)),4000)
+        self.assertTrue(summary["complete_trace_path"].endswith("native_hal_pregrasp_trace.json"))
+
+
 if __name__=='__main__':main()
 
 class NativeSlowConsumerReadTests(TestCase):
