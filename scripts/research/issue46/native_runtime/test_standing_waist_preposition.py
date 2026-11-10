@@ -18,6 +18,12 @@ class TorsoTurnTest(unittest.TestCase):
         self.assertAlmostEqual(w.clearance_posture_error(row,[.1,0.,0.],[.4,0.,.5])[2],0.)
         row["bodies"]["R_omnipicker_base_link"]["position_m"][0]+=.003
         self.assertAlmostEqual(w.clearance_posture_error(row,[.1,0.,0.],[.4,0.,.5])[2],.003)
+    def test_postured_startup_reuses_already_active_sd_without_reissuing(self):
+        script=native.stl_hand_startup.build_stand_client_script(observe_only=True)
+        self.assertNotIn("create_client(SetMcAction",script)
+        self.assertIn("time.monotonic() + 2.5",script)
+        self.assertIn("math.radians(15.0)",script)
+        self.assertIn("planar_drift <= 0.05",script)
     def test_position_mode_compensation_preserves_source_gains(self):
         desired=.175;actual=.175;bias=-8.2;kp=40.;kd=5.
         command=w.position_mode_setpoint(desired,actual,0.,bias,kp,kd,(-.314,.314,13.088),36.)

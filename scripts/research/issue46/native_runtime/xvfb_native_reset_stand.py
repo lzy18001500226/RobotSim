@@ -2181,7 +2181,11 @@ def main() -> None:
             raise RuntimeError(f"post-reset leg state is not complete: count={count}")
         result["post_reset_leg_joint_count"] = count
         result["gates"]["POST_RESET_LEG_STATE"] = "PASS"
-        sample = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/native_stand_sample.py"], timeout_s=14.0, check=False)
+        stand_observer="native_postdock_stand_observer.py" if args.standing_grasp_posture else "native_stand_sample.py"
+        if args.standing_grasp_posture:
+            if result["prearm"].get("mode_name")!="STAND_DEFAULT" or result["prearm"].get("mode_status")!=100:raise RuntimeError("POSTURED_STAND_PREARM_NOT_CONFIRMED")
+            result["post_reset_stand_protocol"]={"observer":"EXISTING_READ_ONLY_SD_OBSERVER","additional_set_action_requests":0,"prearm_confirmed_SD":True,"stability_thresholds_changed":False}
+        sample = run(["docker", "exec", container, "bash", "-lc", environment + "timeout 12s python3 /workspace/evidence/"+stand_observer], timeout_s=14.0, check=False)
         pg.write_new_text(output / "post_reset_stand_sample.stdout", sample.stdout)
         sample_data = json.loads(sample.stdout.strip().splitlines()[-1]) if sample.returncode == 0 else {"returncode": sample.returncode}
         result["post_reset_stand"] = sample_data
