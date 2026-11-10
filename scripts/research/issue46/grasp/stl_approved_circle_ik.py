@@ -525,6 +525,42 @@ def qualify_grasp_motion_branches(rows,model,state,opening,center,object_center,
 
 
 
+def staged_clear_approach(model,state,start,finish,opening,center,object_center,local_axis):
+    """Reuse bounded circle IK for a table-outside lift, then a high approach."""
+    data=mujoco.MjData(model);hand=ik.native.bid(model,"R_omnipicker_base_link")
+    ik.set_pose(model,data,state,start,np.zeros(3),0.,opening,np.zeros(3),0.,None)
+    initial=data.xpos[hand]+data.xmat[hand].reshape(3,3)@center
+    direction=object_center[:2]-initial[:2];length=float(np.linalg.norm(direction))
+    if length<.05:raise RuntimeError("NO_CLEAR_APPROACH_DIRECTION")
+    direction/=length
+    high=float(max(initial[2],object_center[2]+.06))
+    lift=initial.copy();lift[2]=high
+    near=object_center.copy();near[:2]-=.12*direction;near[2]=high
+    source=joint_planning_bounds(model,ik.ARM,state.get("runtime_source_motion_limits"))
+    lo=np.maximum(source[:,0]+.03,start[2:]-1.1);hi=np.minimum(source[:,1]-.03,start[2:]+1.1)
+    dofs=np.array([model.jnt_dofadr[ik.native.jid(model,n)] for n in ik.ARM])
+    qa=np.array([model.jnt_qposadr[ik.native.jid(model,n)] for n in ik.ARM])
+    points=[start.copy()];targets=[]
+    for point_index,target in enumerate((lift,near)):
+        def residual(arm):
+            data.qpos[qa]=arm;mujoco.mj_kinematics(model,data);mujoco.mj_comPos(model,data)
+            error=axis_grasp_error(data.xpos[hand],data.xmat[hand].reshape(3,3),center,target,np.array([0.,0.,1.]),local_axis)
+            return np.r_[error[:3],.00001*(arm-start[2:])] if point_index==0 else error
+        def jac(arm):
+            residual(arm);matrix=circle_task_jacobian(model,data,hand,center,local_axis,dofs)
+            return np.vstack([matrix[:3],.00001*np.eye(7)]) if point_index==0 else matrix
+        fitted=least_squares(residual,np.clip(points[-1][2:],lo+1e-5,hi-1e-5),jac=jac,bounds=(lo+1e-5,hi-1e-5),max_nfev=150,ftol=1e-9,xtol=1e-9,gtol=1e-9)
+        error=residual(fitted.x)
+        if np.linalg.norm(error[:3])>.001 or point_index>0 and np.linalg.norm(error[3:])>.001:raise RuntimeError("CLEARANCE_WAYPOINT_UNREACHABLE:"+str((point_index,float(np.linalg.norm(error[:3])),float(np.linalg.norm(error[3:])))))
+        points.append(np.r_[start[:2],fitted.x]);targets.append(target.tolist())
+    points.append(finish.copy());violations=[]
+    for segment,(a,b) in enumerate(zip(points,points[1:])):
+        for u in np.linspace(0.,1.,31):
+            d=mujoco.MjData(model);ik.set_pose(model,d,state,a+u*(b-a),np.zeros(3),0.,opening,np.zeros(3),0.,None)
+            pads,bad,table,robot_table=ik.contacts(model,d,ik.native.bid(model,"test_cylinder"))
+            if pads or bad or robot_table:violations.append(dict(segment=segment,fraction=float(u),pads=pads,forbidden_object=bad,robot_table=robot_table))
+    return dict(pass_result=not violations,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=93,violations=violations)
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--circle-review", type=Path, required=True)
@@ -740,8 +776,14 @@ def main():
             ik.set_pose(model,d,state,approach_start+(solved-approach_start)*fraction,np.zeros(3),0.,open_command,np.zeros(3),0.,None)
             pads,bad,table,robot_table=ik.contacts(model,d,ik.native.bid(model,"test_cylinder"))
             if pads or bad or robot_table:sweep.append({"fraction":float(fraction),"pads":pads,"forbidden_object":bad,"robot_table":robot_table})
+        approach_staging=None
+        if sweep and args.right_arm_seed:
+            try:
+                approach_staging=staged_clear_approach(model,state,approach_start,solved,open_command,center,object_center,local_axis)
+                if approach_staging["pass_result"]:sweep=[]
+            except RuntimeError as exc:approach_staging=dict(pass_result=False,failure=str(exc))
         row_gates={"RUNTIME_STATIC_IK":"PASS" if position_ok else "FAIL","LEFT_ARM_PARK_CLEAR":"PASS" if all(not any(n.startswith('L_') or n.startswith('left_') for n in c["robot_table_bodies"]+c["forbidden_object_bodies"]) for c in checked.values()) else "FAIL","OPEN_PREGRASP_CLEAR":"PASS" if open_clear and not checked[str(open_command)]["forbidden_object_bodies"] and not checked[str(open_command)]["robot_table_bodies"] else "FAIL","CLOSED_CONTACT_CLEAR":"PASS" if bilateral and clear else "FAIL","APPROACH_SWEEP":"PASS" if not sweep else "FAIL"}
-        rows.append({"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
+        rows.append({"approach_staging":approach_staging,"azimuth_rad":azimuth,"metrics":metrics,"contacts":checked,"gates":row_gates,"approach_sweep_violations":sweep,"q_rad":dict(zip(ik.ACTIVE,solved.tolist())),"pass":bool(position_ok and clear and open_clear and bilateral and not sweep)})
     # Arrival alone is insufficient: qualify the whole already requested
     # lift/retract on each existing grasp branch before selecting its winner.
     if args.physical_lift_test:
@@ -750,6 +792,7 @@ def main():
     rows.sort(key=lambda r:(not r["pass"],-r["metrics"]["minimum_joint_margin_rad"] if r["pass"] else r["metrics"]["hand_position_error_m"],r["metrics"]["hand_position_error_m"]))
     out=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-standing-ik").native_path
     record={"classification":"SIMULATION_ONLY_APPROVED_CIRCLE_STANDING_IK","mj_step_calls":0,"grasp_section_center_world_m":object_center.tolist(),"grasp_height_above_center_m":args.grasp_height_above_center_m,"circle_review":str(args.circle_review),"circle_review_sha256":hashlib.sha256(args.circle_review.read_bytes()).hexdigest(),"circle":match,"standing_state":str(args.standing_state),"scene":candidate["scene"],"perception":perception,"root_legs_waist_frozen":True,"commands":{"open":open_command,"match":command,"closure_probe":max(command-1,0)},"rows":rows,"gate":"PASS" if rows[0]["pass"] else "FAIL","dynamics":"NOT_RUN"}
+    if rows[0].get("approach_staging",{}):record["approach_staging"]=rows[0]["approach_staging"]
     record["source_joint_limits_rad"]={name:value for name,value in zip(ik.ACTIVE,joint_planning_bounds(model,ik.ACTIVE,state.get("runtime_source_motion_limits")).tolist())}
     record["target_source"]=args.target_source
     record["free_bottle_axis_roll"]=args.free_bottle_axis_roll

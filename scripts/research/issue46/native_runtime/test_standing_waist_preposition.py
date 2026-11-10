@@ -33,6 +33,16 @@ class TorsoTurnTest(unittest.TestCase):
             p=Path(t)/"native_latest.json";p.write_text(json.dumps(dict(generation=2,process_pid=8,engine_version=337,host_monotonic_ns=time.monotonic_ns())))
             with patch("scripts.research.issue46.native_runtime.native_grasp_audit.require_fresh_sample",return_value=dict(generation=1,process_pid=8)):
                 with self.assertRaises(RuntimeError):w.read_native(p)
+    def test_clearance_path_is_open_and_measured_before_original_approach(self):
+        import ast
+        from scripts.research.issue46.native_runtime import stl_hand_startup as h
+        gains=native.stl_hand_startup.load_animation_player_arm_pd_parameters()
+        script=h.build_hal_bilateral_arm_plan_script(gains,[0.]*7,[0.]*7,duration_s=6.,hold_s=1.,restore=False,use_native_joint_feedback=True)
+        ast.parse(script)
+        self.assertIn('CLEARANCE_WAYPOINT_NOT_REACHED',script)
+        self.assertLess(script.index('measured_clearance_waypoint'),script.index('n.approach_start=dict(start)'))
+        self.assertIn("'PREGRASP_CLEARANCE',HAND_OPEN",script)
+        self.assertIn("preclose_waist_error<=.05",script)
     def test_generated_relay_retains_single_owner(self):
         gains=native.stl_hand_startup.load_animation_player_arm_pd_parameters()
         script=w.extend_bootstrap(native.arm_bootstrap_hold_script(gains,relay_waist=True))

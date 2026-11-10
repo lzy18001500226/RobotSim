@@ -1025,7 +1025,7 @@ class Plan(Node):
      self.lift_contact_lost_since=self.lift_contact_lost_since or time.monotonic()
      if time.monotonic()-self.lift_contact_lost_since>.10:raise RuntimeError('BILATERAL_CONTACT_LOST_DURING_LIFT')
     else:self.lift_contact_lost_since=None
-   if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE'):
+   if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE'):
     endpoint=self.tracking_target();target=dict(target)
     if stage in ('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
      for name in RIGHT:
@@ -1124,6 +1124,25 @@ try:
    cycle.append({'command':final,'actual_q_rad':q,'actual_qvel_rad_s':v,'source_host_ns':n.native_receipt_ns})
    if abs(q+final)>.03 or abs(v)>.05:raise RuntimeError('GAIN_NO_CONTACT_CYCLE_NOT_SETTLED:'+json.dumps(cycle))
   write_durable_milestone('/workspace/evidence/right_claw_gain_no_contact_cycle.json',{'pass':True,'actual_native_physics':True,'zero_object_contact':True,'torque_cap_nm':2.,'samples':cycle})
+ staging=(CIRCLE_CONTRACT or {}).get("approach_staging")
+ if staging is not None:
+  if not USE_NATIVE_FEEDBACK or not staging.get("pass_result") or staging.get("duration_per_waypoint_s")!=3. or not 1<=len(staging["right_arm_waypoints_rad"])<=2:raise RuntimeError("INVALID_APPROACH_STAGING")
+  for index,waypoint in enumerate(staging["right_arm_waypoints_rad"]):
+   if set(waypoint)!=set(RIGHT) or any(not math.isfinite(waypoint[k]) or not SOURCE_LIMITS[k][0]+.01<=waypoint[k]<=SOURCE_LIMITS[k][1]-.01 for k in RIGHT):raise RuntimeError("CLEARANCE_SOURCE_LIMIT")
+   via={**start,**waypoint};segment_start=dict(start)
+   for step in range(150):
+    u=(step+1)/150.;u=u*u*(3.-2.*u)
+    n.send({name:segment_start[name]+u*(via[name]-segment_start[name]) for name in CONTROL},.02,'PREGRASP_CLEARANCE',HAND_OPEN)
+   deadline=time.monotonic()+1.5;error=None
+   while time.monotonic()<deadline:
+    n.send(via,.04,'PREGRASP_CLEARANCE',HAND_OPEN);n.refresh_native()
+    hand=n.native_row["bodies"]["R_omnipicker_base_link"];H=hand["rotation"];center=CIRCLE_CONTRACT["circle_center_local_m"]
+    point=[hand["position_m"][i]+sum(H[3*i+j]*center[j] for j in range(3)) for i in range(3)]
+    error=math.dist(point,staging["circle_waypoints_world_m"][index])
+    if error<=.02 and max(abs(n.arm[k]-via[k]) for k in RIGHT)<=.08:break
+   else:raise RuntimeError("CLEARANCE_WAYPOINT_NOT_REACHED:"+str(error))
+   print(json.dumps({"measured_clearance_waypoint":index,"circle_position_error_m":error,"native_source_ns":n.native_receipt_ns}),flush=True)
+   start={name:float(n.arm[name]) for name in CONTROL}
  n.approach_start=dict(start)
  steps=max(1,int(DURATION/.02))
  for i in range(steps):
@@ -1362,7 +1381,7 @@ def _with_carry_lease(script, retract):
     from scripts.research.issue46.native_runtime.native_base_micro_probe import write_durable_milestone
     replace("class Plan(Node):",inspect.getsource(write_durable_milestone)+"\n"+inspect.getsource(carry_abort_last_command_hold)+"\nclass Plan(Node):")
     replace("   if len(self.odom)>1 and math.hypot(","   if stage!='CARRY_HOLD' and len(self.odom)>1 and math.hypot(")
-    replace("stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE')","stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','CARRY_ABORT_HOLD')")
+    replace("stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE')","stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE','CARRY_ABORT_HOLD')")
     replace("('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')",count=2)
     replace("('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD')","('HAND_CLOSE_HOLD','LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD','RETRACT','RETRACT_HOLD','CARRY_HOLD')")
     replace("  self.tracking_metrics=r.get('metrics',{})","  self.tracking_metrics=r.get('metrics',{});self.tracking_velocity=r.get('right_velocity_rad_s',{})")

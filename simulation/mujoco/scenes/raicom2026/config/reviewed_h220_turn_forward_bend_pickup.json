@@ -1,0 +1,27 @@
+{
+  "schema": "robotsim.standing-grasp-posture.v1",
+  "scope": "INITIAL_GUESS_AND_POSTURE_TARGET_ONLY_ALL_LIVE_GATES_REQUIRED",
+  "roll_mode": "RETAIN_MEASURED",
+  "waist_target_rad": {
+    "waist_yaw_joint": 0.1819710676932243,
+    "waist_pitch_joint": 0.2585637865308902
+  },
+  "right_arm_seed_rad": {
+    "right_shoulder_pitch_joint": -0.296377534340726,
+    "right_shoulder_roll_joint": -0.09057932828705349,
+    "right_shoulder_yaw_joint": 0.10310202912937716,
+    "right_elbow_joint": -1.2220031862265157,
+    "right_wrist_yaw_joint": -0.3068646948409955,
+    "right_wrist_pitch_joint": -0.39066935514306395,
+    "right_wrist_roll_joint": -0.26585878519810735
+  },
+  "body_drop_m": 0.1,
+  "grasp_height_from_bottom_m": 0.12,
+  "grasp_height_above_center_m": 0.01,
+  "provenance": {
+    "static_seed_evidence": "reviews/issue-46/h220-turn-bend-qualified-crouch-ik-20261110T005605Z/result.json",
+    "actual_posture_evidence": "reviews/issue-46/raicom-stl-xvfb-native-reset-stand-20261110T015906Z/",
+    "scope": "INITIAL_GUESS_ONLY_FRESH_RGBD_STATE_AND_ALL_LIVE_GATES_REQUIRED",
+    "source_urdf_sha256": "35d228c9e7da2d38846e91940365becf461e83bcc44062db659bdfd3e23c0d4d"
+  }
+}
