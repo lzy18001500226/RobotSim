@@ -74,12 +74,7 @@ def extend_bootstrap(script):
     script=script.replace(old,"  m=override_waist(self,m)\n"+old,1)
     compile(script,"existing_waist_relay_preposition","exec");return script
 
-def read_native(path):
-    from scripts.research.issue46.native_runtime.native_grasp_audit import require_fresh_sample
-    checked=require_fresh_sample(path)
-    row=json.loads(Path(path).read_text())
-    if (row["generation"],row["process_pid"],row["engine_version"])!=(checked["generation"],checked["process_pid"],337) or not 0.<=(time.monotonic_ns()-row["host_monotonic_ns"])*1e-9<=.20:raise RuntimeError("WAIST_NATIVE_READ_NOT_FRESH")
-    return row
+from scripts.research.issue46.native_runtime.native_grasp_audit import read_fresh_native_row as read_native
 
 def request_and_wait(output, proposal, limits, effort_caps, *, retain_current=False):
     from scripts.agent import path_governance as pg

@@ -1299,7 +1299,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
             # Screen the same Cartesian placement against the actual arrived
             # state, not only the nominal navigation waypoint.
             cfg=json.loads(args.carry_delivery_config.read_text())
-            snapshot=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+            snapshot=native_grasp_audit.read_fresh_native_row(output/"native_latest.json")
             snapdir=output/"actual_placement_snapshot";snapdir.mkdir()
             pg.write_new_text(snapdir/"native_latest.json",json.dumps(snapshot))
             pg.write_new_bytes(snapdir/"native_hal_bilateral_arm_pregrasp.py",(output/"native_hal_bilateral_arm_pregrasp.py").read_bytes())
@@ -1314,7 +1314,7 @@ def execute_grasp_with_carry(container, environment, output, args, replan_record
             live_plan=prepare_delivery_scene(args.claw_control_overlay_result,snapdir/"config.json",host_model_cache=cache)
             live_plan_record=json.loads(live_plan.read_text())
             result["actual_placement_preflight"]={"result":str(live_plan),"sha256":sha256(live_plan),"plan":live_plan_record["delivery_static_plan"],"native_snapshot_sha256":sha256(snapdir/"native_latest.json"),"legacy_base150mm_pass":nav["final_distance_m"]<=.15}
-            after=native_grasp_audit.require_fresh_sample(output/"native_latest.json")
+            after=native_grasp_audit.read_fresh_native_row(output/"native_latest.json")
             if after["generation"]!=snapshot["generation"] or math.dist(after["bodies"]["pelvis"]["position_m"],base["position_m"])>.01:raise RuntimeError("PLACEMENT_POSE_CHANGED_AFTER_STATIC_SCREEN")
             pg.write_new_text(output/"native_placement_mode_observer.py",placement_mode_observer_script())
             mode=run(["docker","exec",container,"bash","-lc",environment+"timeout 7s python3 /workspace/evidence/native_placement_mode_observer.py"],timeout_s=9.,check=False)

@@ -188,6 +188,16 @@ def require_fresh_sample(path, *, now_ns=None):
     return {"pass":True,"age_s":age,"engine_version":row["engine_version"],"host_monotonic_ns":row["host_monotonic_ns"],"sim_time_s":row["sim_time_s"],"generation":row["generation"],"process_pid":row.get("process_pid"),"consumer_read_duration_s":(checked-began)*1e-9,"reacquired_after_slow_local_read":reacquired}
 
 
+def read_fresh_native_row(path):
+    """Return full native state; require_fresh_sample returns only its verdict."""
+    import time
+    path=Path(path);checked=require_fresh_sample(path)
+    latest=path.with_name("native_latest.json")
+    row=json.loads((latest if latest.exists() else path).read_text())
+    if (row["generation"],row["process_pid"],row["engine_version"])!=(checked["generation"],checked["process_pid"],337) or not 0.<=(time.monotonic_ns()-row["host_monotonic_ns"])*1e-9<=.20:
+        raise RuntimeError("NATIVE_ROW_IDENTITY_OR_FRESHNESS_CHANGED")
+    return row
+
 def await_native_startup_ready(path, *, timeout_s=4.):
     """Before MC only: require two advancing fresh frames, never relax age."""
     import time
