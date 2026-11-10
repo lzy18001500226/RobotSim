@@ -54,6 +54,17 @@ def evaluate_placed_hold(rows, request):
                 last=last,minimum_table_vertical_force_n=min((x["table_vertical_force_n"] for x in tail),default=None),
                 maximum_pad_normal_force_n=max((x["pad_normal_force_n"] for x in tail),default=None))
 
+def observe_released_support(tick,point,request,rows,*,deadline_s,clock=time.monotonic):
+    """Collect measured continuous support inside the existing placement budget."""
+    result=None
+    while clock()<deadline_s:
+        item=tick(point,[0.,0.,1.],HAND_OPEN)
+        if not item["inside_table"] or item["bottom_world_z_m"]<request["tabletop_world_z_m"]-.005 or item["forbidden"]:
+            raise RuntimeError("RELEASED_BOTTLE_LEFT_SAFE_TABLE_SUPPORT:"+json.dumps(item))
+        result=evaluate_placed_hold(rows[-175:],request)
+        if result["pass_result"]:return result
+    return result or dict(pass_result=False,classification="RELEASED_SUPPORT_OBSERVATION_INCOMPLETE",measured_hold_sim_s=0.,unique_samples=0)
+
 def perform_native_placement(n, request):
     # This function is injected into the existing owner process. It uses that
     # process's original send/tracker/force/feedback path, never a second owner.
@@ -116,11 +127,9 @@ def perform_native_placement(n, request):
         u=(index+1)/150.;u=u*u*(3.-2.*u)
         tick(point,[0.,0.,1.],start_command+u*(HAND_OPEN-start_command))
     n.placement_released=True
-    result=None
-    for _ in range(175):
-        tick(point,[0.,0.,1.],HAND_OPEN)
-        result=evaluate_placed_hold(rows[-175:],request)
-        if result["pass_result"]:break
+    # Reserve the unchanged 100 withdrawal ticks and 175 final hold ticks.
+    first_hold_deadline=began+35.-(100+175)*.02
+    result=observe_released_support(tick,point,request,rows,deadline_s=first_hold_deadline)
     if not result or not result["pass_result"]:raise RuntimeError("RELEASED_BOTTLE_NOT_STABLY_TABLE_SUPPORTED:"+json.dumps(result))
     # Clear the real open claw, then require the same independent released
     # support again. No geometric cage is counted as an independent placement.
@@ -133,9 +142,7 @@ def perform_native_placement(n, request):
     for index in range(100):
         u=(index+1)/100.;v=u*u*(3.-2.*u)
         tick([a+v*(b-a) for a,b in zip(start_point,retreat)],[0.,0.,1.],HAND_OPEN)
-    for _ in range(175):
-        tick(retreat,[0.,0.,1.],HAND_OPEN);result=evaluate_placed_hold(rows[-175:],request)
-        if result["pass_result"]:break
+    result=observe_released_support(tick,retreat,request,rows,deadline_s=began+35.)
     if not result["pass_result"]:raise RuntimeError("PLACEMENT_NOT_STABLE_AFTER_WITHDRAWAL:"+json.dumps(result))
     result["open_claw_withdrawal_m"]=.08
     result.update(owner_pid=os.getpid(),generation=n.native_generation,command_path="EXISTING_HAL_ARM_AND_HAND_OWNER",table_body="raicom_delivery_table",elapsed_wall_s=time.monotonic()-began,request=request)
@@ -147,7 +154,7 @@ def perform_native_placement(n, request):
 def extend_existing_owner(script):
     """Opt-in extension of the existing grip-owner source, not a new owner."""
     import inspect
-    helper="\n".join(inspect.getsource(f) for f in (placement_contact_state,evaluate_placed_hold,perform_native_placement))
+    helper="\n".join(inspect.getsource(f) for f in (placement_contact_state,evaluate_placed_hold,observe_released_support,perform_native_placement))
     if script.count("class Plan(Node):")!=1:raise ValueError("placement owner class anchor")
     script=script.replace("class Plan(Node):",helper+"\nclass Plan(Node):")
     lines=script.splitlines();output=[]

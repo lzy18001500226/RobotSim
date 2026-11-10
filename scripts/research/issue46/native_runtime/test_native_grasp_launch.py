@@ -912,7 +912,7 @@ class CompleteNativeTraceTests(TestCase):
             p.write_bytes(b'{"a":1}'+bytes([10])+b'BROKEN'+bytes([10]))
             with self.assertRaises(ValueError):audit.read_complete_native_rows(p)
 
-class CarryOutputCloseoutTests(unittest.TestCase):
+class CarryOutputCloseoutTests(TestCase):
     def test_large_trace_is_not_duplicated_into_stdout(self):
         from scripts.research.issue46.native_runtime.stl_hand_startup import carry_trace_stdout_summary
         trace=[{"sample":i,"data":"x"*1000} for i in range(10000)]

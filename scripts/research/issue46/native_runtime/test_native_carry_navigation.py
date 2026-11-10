@@ -1005,6 +1005,33 @@ class StraightRetreatInplaceTests(unittest.TestCase):
         self.assertLess(code.index('result["retreat_stop_composite"]=n.observe'),code.index('mission["phase"]="TURN"'))
         compile(code,'retreat_inplace','exec')
 
+class PlacementSettlingWindowTests(unittest.TestCase):
+    def test_complete_measured_window_after_late_convergence(self):
+        from scripts.research.issue46.native_runtime import native_carry_placement as p
+        from unittest.mock import patch
+        ticks=[];now=[0.]
+        def tick(*args):
+            now[0]+=.02;ticks.append(now[0]);return dict(inside_table=True,bottom_world_z_m=.55,forbidden=[])
+        def evaluate(rows,request):
+            span=max(0.,now[0]-1.56);return dict(pass_result=span>=2.,measured_hold_sim_s=span)
+        with patch.object(p,"HAND_OPEN",1.,create=True),patch.object(p,"evaluate_placed_hold",side_effect=evaluate):
+            result=p.observe_released_support(tick,[0,0,0],dict(tabletop_world_z_m=.55),[],deadline_s=5.,clock=lambda:now[0])
+        self.assertTrue(result["pass_result"])
+        self.assertGreater(len(ticks),175)
+        self.assertGreaterEqual(result["measured_hold_sim_s"],2.)
+    def test_observation_never_exceeds_wall_budget_or_ignores_a_drop(self):
+        from scripts.research.issue46.native_runtime import native_carry_placement as p
+        from unittest.mock import patch
+        now=[0.]
+        def tick(*args):now[0]+=.02;return dict(inside_table=True,bottom_world_z_m=.55,forbidden=[])
+        with patch.object(p,"HAND_OPEN",1.,create=True),patch.object(p,"evaluate_placed_hold",return_value=dict(pass_result=False,measured_hold_sim_s=1.94)):
+            result=p.observe_released_support(tick,[0,0,0],dict(tabletop_world_z_m=.55),[],deadline_s=1.,clock=lambda:now[0])
+        self.assertFalse(result["pass_result"]);self.assertLess(now[0],1.03)
+        with patch.object(p,"HAND_OPEN",1.,create=True):
+            with self.assertRaisesRegex(RuntimeError,"SAFE_TABLE_SUPPORT"):
+                p.observe_released_support(lambda *x:dict(inside_table=False,bottom_world_z_m=.4,forbidden=[]),[0,0,0],dict(tabletop_world_z_m=.55),[],deadline_s=10.,clock=lambda:0.)
+
+
 if __name__=="__main__":unittest.main()
 
 class EffectiveTransit020Tests(unittest.TestCase):
