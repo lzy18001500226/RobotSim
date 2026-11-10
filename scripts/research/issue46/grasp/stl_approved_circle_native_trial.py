@@ -61,6 +61,22 @@ def verified_grasp_reuse(episode):
 
 
 
+def verified_claw_cycle_reuse(episode, current_overlay):
+    """Reuse actual gain-cycle proof only across the checked bottle-only fixture."""
+    proof=verified_grasp_reuse(episode)
+    current=json.loads(Path(current_overlay).read_text())
+    current_scene=current["generated"]["host_scene"]
+    if current_scene["sha256"]!=proof["scene_sha256"]:
+        fixture=current.get("fixture_height_delta",{})
+        if not fixture.get("robot_and_environment_unchanged") or fixture.get("mj_step_calls")!=0 or (fixture.get("source_height_m"),fixture.get("height_m"),fixture.get("diameter_m"),fixture.get("mass_kg"))!=(.30,.22,.07,.2):
+            raise ValueError("cycle reuse requires exact scene or verified bottle-only H220 fixture")
+        parent=fixture["parent"];path=Path(parent["path"])
+        if native.sha256(path)!=parent["sha256"]:raise ValueError("fixture parent changed")
+        original=json.loads(path.read_text())["generated"]["host_scene"]
+        if original["sha256"]!=proof["scene_sha256"] or native.sha256(Path(original["path"]))!=proof["scene_sha256"]:
+            raise ValueError("fixture original robot/control differs from verified gain cycle")
+    return {**proof,"scope":"ACTUAL_UNCHANGED_CLAW_GAIN_CYCLE_ONLY_NOT_IK_OR_GRASP_ACCEPTANCE"}
+
 def runtime_plan_result(result, effective_dir):
     """Make parent and tracker consume the identical effective plan artifact."""
     payload=json.loads(result.stdout.strip().splitlines()[-1])
@@ -81,6 +97,7 @@ def main():
     p.add_argument("--circle-review",type=Path,required=True)
     p.add_argument("--candidate",type=Path,required=True)
     p.add_argument("--reuse-verified-grasp-plan",type=Path,help="prior actual grasp episode; reuse IK seed and verified unchanged gain cycle")
+    p.add_argument("--reuse-verified-claw-cycle",type=Path,help="verified unchanged gripper cycle only; never reuse its bottle pose or IK")
     p.add_argument("--fixed-reviewed-checkpoint",type=Path,help="initialize native episode with reviewed ungrasped keyframe; no walking claimed")
     p.add_argument("--checkpoint-base-offset-xy-m",type=float,nargs=2,default=(0.,0.),help="screened <=20mm per-axis episode-boundary stance diagnostic only")
     p.add_argument("--review-captured-run",type=Path)
@@ -298,7 +315,8 @@ def main():
             evidence=Path(command[command.index('--standing-state')+1]).parent
             if args.right_claw_kp is not None:
                 extended=json.loads(reference.read_text())
-                if args.reuse_verified_grasp_plan:extended["reused_gain_cycle"]=verified_grasp_reuse(args.reuse_verified_grasp_plan)
+                if args.reuse_verified_claw_cycle:extended["reused_gain_cycle"]=verified_claw_cycle_reuse(args.reuse_verified_claw_cycle,claw)
+                elif args.reuse_verified_grasp_plan:extended["reused_gain_cycle"]=verified_grasp_reuse(args.reuse_verified_grasp_plan)
                 else:extended['native_no_contact_gain_cycle_budget_s']=9.
                 reference=evidence/'native_gain_cycle_tracking_reference.json'
                 pg.write_new_text(reference,json.dumps(extended,indent=2)+'\n')
@@ -314,7 +332,7 @@ def main():
                 pg.write_new_text(perception_output/'stop','snapshot acquired and reverified before arm execution\n')
                 perception_process.wait(timeout=3.)
                 if perception_process.returncode:raise RuntimeError('RGBD_SNAPSHOT_SENSOR_TEARDOWN_FAILED')
-            if args.reuse_verified_grasp_plan or args.standing_grasp_posture:
+            if args.reuse_verified_grasp_plan or args.standing_grasp_posture or args.reuse_verified_claw_cycle:
                 effective=pg.create_unique_output_directory(Path("/home/lzy18001500226/projects/RobotSim/reviews/issue-46"),prefix="approved-circle-cached-runtime-contract").native_path
                 pg.write_new_text(effective/"result.json",reference.read_text())
                 reference=effective/"result.json"
