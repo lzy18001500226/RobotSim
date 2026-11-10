@@ -565,7 +565,12 @@ def staged_clear_approach(model,state,start,finish,opening,center,object_center,
     joints={j.attrib["name"]:j for j in ET.parse(source).getroot().findall("joint")}
     efforts={n:float(joints[n].find("limit").attrib["effort"]) for n in ik.ARM}
     motion={n:state["runtime_source_motion_limits"][n] for n in ik.ARM}
-    return dict(pass_result=not violations,source_effort_limits_nm=efforts,source_motion_limits=motion,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=93,violations=violations)
+    root=ik.native.bid(model,"pelvis")
+    root_position=np.asarray(state["base_pose_world"]["xyz_m"])
+    root_rotation=data.xmat[root].reshape(3,3).copy()
+    relative=[(root_rotation.T@(np.asarray(point)-root_position)).tolist() for point in targets]
+    robots=[mujoco.mj_id2name(model,mujoco.mjtObj.mjOBJ_BODY,i) for i in range(model.nbody) if model.body_rootid[i]==root]
+    return dict(pass_result=not violations,circle_waypoints_base_m=relative,root_reference_world_m=root_position.tolist(),robot_bodies=robots,all_source_motion_limits=state["runtime_source_motion_limits"],source_effort_limits_nm=efforts,source_motion_limits=motion,right_arm_waypoints_rad=[dict(zip(ik.ARM,q[2:].tolist())) for q in points[1:-1]],circle_waypoints_world_m=targets,duration_per_waypoint_s=3.,source="CURRENT_CAMERA_TARGET_AND_ACTUAL_ROBOT_STATE",sweep_samples=93,violations=violations)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

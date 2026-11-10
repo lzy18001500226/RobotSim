@@ -1025,6 +1025,11 @@ class Plan(Node):
      self.lift_contact_lost_since=self.lift_contact_lost_since or time.monotonic()
      if time.monotonic()-self.lift_contact_lost_since>.10:raise RuntimeError('BILATERAL_CONTACT_LOST_DURING_LIFT')
     else:self.lift_contact_lost_since=None
+   if stage=="PREGRASP_CLEARANCE":
+    staged=CIRCLE_CONTRACT["approach_staging"]
+    fault=physical_fault(self.native_row,native_pose(self.native_row),staged["all_source_motion_limits"],robot_bodies=staged["robot_bodies"],review_incidental_contacts=True)
+    if fault:raise RuntimeError("CLEARANCE_PHYSICAL:"+fault)
+    if math.dist(self.native_row["bodies"]["pelvis"]["position_m"],staged["root_reference_world_m"])>.05:raise RuntimeError("CLEARANCE_ROOT_DRIFT")
    if TRACK_NATIVE_CIRCLE and stage not in ('HAND_ACTIVATION','HAND_OPEN_PREGRASP','GAIN_NO_CONTACT_CYCLE','PREGRASP_CLEARANCE'):
     endpoint=self.tracking_target();target=dict(target)
     if stage in ('LIFT_PROBE','LIFT_PROBE_HOLD','LIFT','LIFT_HOLD'):
@@ -1143,12 +1148,10 @@ try:
    deadline=time.monotonic()+1.5;error=None
    while time.monotonic()<deadline:
     n.send(via,.04,'PREGRASP_CLEARANCE',HAND_OPEN);n.refresh_native()
-    hand=n.native_row["bodies"]["R_omnipicker_base_link"];H=hand["rotation"];center=CIRCLE_CONTRACT["circle_center_local_m"]
-    point=[hand["position_m"][i]+sum(H[3*i+j]*center[j] for j in range(3)) for i in range(3)]
-    error=math.dist(point,staging["circle_waypoints_world_m"][index])
+    point,expected,error=clearance_posture_error(n.native_row,CIRCLE_CONTRACT["circle_center_local_m"],staging["circle_waypoints_base_m"][index])
     if error<=.02 and max(abs(n.arm[k]-via[k]) for k in RIGHT)<=.08:break
    else:raise RuntimeError("CLEARANCE_WAYPOINT_NOT_REACHED:"+str(error))
-   print(json.dumps({"measured_clearance_waypoint":index,"circle_position_error_m":error,"native_source_ns":n.native_receipt_ns}),flush=True)
+   print(json.dumps({"measured_clearance_waypoint":index,"circle_position_error_m":error,"measurement_frame":"CURRENT_PELVIS_RELATIVE_CLEARANCE_POSTURE_NOT_GRASP","actual_world_m":point,"expected_world_m":expected,"native_source_ns":n.native_receipt_ns}),flush=True)
    start={name:float(n.arm[name]) for name in CONTROL}
  n.approach_start=dict(start)
  steps=max(1,int(DURATION/.02))
@@ -1274,8 +1277,11 @@ finally:
 """.replace("__LIFT_CONTRACT__", repr(lift_contract)).replace("__LEFT_TARGET__", json.dumps(left_target)).replace("__RIGHT_TARGET__", json.dumps(right_target)).replace("__GAINS__", serialized_gains).replace("__DURATION__", f"{duration_s:.17g}").replace("__HOLD__", f"{hold_s:.17g}").replace("__RESTORE__", "True" if restore else "False").replace("__HAND_RIGHT__", "None" if right_hand_command is None else f"{right_hand_command:.17g}").replace("__HAND_HOLD__", f"{hand_hold_s:.17g}").replace("__INITIAL_FALLBACK__", json.dumps(initial_arm_state or {}, sort_keys=True, allow_nan=False)).replace("__WAIST_NAMES__", repr(waist_names if waist_target is not None else ())).replace("__WAIST_TARGET__", repr(waist_target or [])).replace("__HAND_OPEN__", repr(hand_open_command)).replace("__CIRCLE_CONTRACT__", repr(circle_contract)).replace("__TRACK_NATIVE_CIRCLE__", repr(track_native_circle)).replace("__USE_NATIVE_BIAS__", repr(use_native_bias_effort)).replace("__USE_NATIVE_FEEDBACK__", repr(use_native_joint_feedback)).replace("__SOURCE_LIMITS__", repr(source_joint_limits or {})).replace("__ENABLE_CORRECTION__", repr(enable_measured_correction)).replace("__ENABLE_RESIDUAL_FF__", repr(enable_single_residual_feedforward))
     if (waist_target is not None or (circle_contract or {}).get("approach_staging")) and use_native_joint_feedback:
         import inspect
-        from scripts.research.issue46.native_runtime.standing_waist_preposition import position_mode_setpoint
-        script=inspect.getsource(position_mode_setpoint)+"\n"+script
+        from scripts.research.issue46.native_runtime.standing_waist_preposition import position_mode_setpoint,clearance_posture_error
+        script=inspect.getsource(clearance_posture_error)+"\n"+inspect.getsource(position_mode_setpoint)+"\n"+script
+        if (circle_contract or {}).get("approach_staging"):
+            from scripts.research.issue46.native_runtime.native_base_micro_probe import physical_fault,native_pose
+            script=inspect.getsource(native_pose)+"\n"+inspect.getsource(physical_fault)+"\n"+script
     if lift_contract and lift_contract.get('retract_preflight'):
         script = _with_postlift_retract(script, lift_contract)
         if use_native_joint_feedback:

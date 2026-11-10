@@ -8,6 +8,16 @@ from scripts.research.issue46.native_runtime import native_body_height as body
 class TorsoTurnTest(unittest.TestCase):
     def proposal(self):
         return dict(schema="robotsim.standing-grasp-posture.v1",roll_mode="RETAIN_MEASURED",waist_target_rad={"waist_yaw_joint":.18,"waist_pitch_joint":.25},body_drop_m=.1,grasp_height_above_center_m=.01,grasp_height_from_bottom_m=.12)
+    def test_clearance_posture_is_invariant_to_actual_base_translation_and_yaw(self):
+        I=[1.,0.,0.,0.,1.,0.,0.,0.,1.]
+        row=dict(bodies={"pelvis":dict(position_m=[0.,0.,0.],rotation=I),"R_omnipicker_base_link":dict(position_m=[.3,0.,.5],rotation=I)})
+        self.assertAlmostEqual(w.clearance_posture_error(row,[.1,0.,0.],[.4,0.,.5])[2],0.)
+        R=[0.,-1.,0.,1.,0.,0.,0.,0.,1.]
+        row["bodies"]["pelvis"]=dict(position_m=[.017,-.03,.02],rotation=R)
+        row["bodies"]["R_omnipicker_base_link"]=dict(position_m=[.017,.27,.52],rotation=R)
+        self.assertAlmostEqual(w.clearance_posture_error(row,[.1,0.,0.],[.4,0.,.5])[2],0.)
+        row["bodies"]["R_omnipicker_base_link"]["position_m"][0]+=.003
+        self.assertAlmostEqual(w.clearance_posture_error(row,[.1,0.,0.],[.4,0.,.5])[2],.003)
     def test_position_mode_compensation_preserves_source_gains(self):
         desired=.175;actual=.175;bias=-8.2;kp=40.;kd=5.
         command=w.position_mode_setpoint(desired,actual,0.,bias,kp,kd,(-.314,.314,13.088),36.)

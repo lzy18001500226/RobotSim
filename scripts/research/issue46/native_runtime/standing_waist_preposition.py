@@ -14,6 +14,13 @@ def load_proposal(path, limits):
     if value.get("body_drop_m")!=.10 or value.get("grasp_height_above_center_m")!=.01 or value.get("grasp_height_from_bottom_m")!=.12:raise ValueError("only qualified H220 modest-crouch task")
     return value
 
+def clearance_posture_error(row, local_center, pelvis_relative_target):
+    hand=row["bodies"]["R_omnipicker_base_link"];base=row["bodies"]["pelvis"]
+    H=hand["rotation"];B=base["rotation"]
+    actual=[hand["position_m"][i]+sum(H[3*i+j]*local_center[j] for j in range(3)) for i in range(3)]
+    expected=[base["position_m"][i]+sum(B[3*i+j]*pelvis_relative_target[j] for j in range(3)) for i in range(3)]
+    return actual,expected,math.dist(actual,expected)
+
 def position_mode_setpoint(desired, actual, velocity, bias, kp, kd, limits, effort_cap):
     lo,hi,speed=limits
     values=(desired,actual,velocity,bias,kp,kd,lo,hi,speed,effort_cap)
